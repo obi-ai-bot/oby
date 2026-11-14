@@ -634,14 +634,17 @@ impl Jobs {
     /// `accounts` the most room first, for a move (LIMITS-15, 19) and a new job (USAGE-11): `first`
     /// (the owner's default) while it's there, then the fullest window each reports now (one reset
     /// since reads empty, USAGE-10) emptiest, those reporting none (an API key, a ChatGPT login,
-    /// a Cursor figure) last. Ties keep their order (the tools', then the configuration's).
+    /// a Cursor figure) last. Ties keep their order (the tools', then the configuration's). A tool
+    /// whose kept version is known bad goes after every other, its order within kept (CLIVERSIONS-8).
     pub(super) fn by_room(
         &self,
         mut accounts: Vec<(Tool, crate::config::Account)>,
         first: Option<&str>,
     ) -> Vec<(Tool, crate::config::Account)> {
         let now = obi_protocol::time::now();
-        let rank = |id: &str| {
+        let rank = |(tool, account): &(Tool, crate::config::Account)| {
+            let id = account.id.as_str();
+            let ahead = (crate::cli_versions::known_bad(*tool), Some(id) != first);
             let usage = self.usage.get(id);
             let windows = [usage.five_hour_at(now), usage.seven_day_at(now)];
             let used = windows
@@ -651,14 +654,13 @@ impl Jobs {
                 .unwrap_or(1.0);
             // A Cursor figure is none beside another tool's; it orders Cursor's own (USAGE-9).
             match usage.advisory {
-                true => (Some(id) != first, 1.0, used),
-                false => (Some(id) != first, used, 0.0),
+                true => (ahead, 1.0, used),
+                false => (ahead, used, 0.0),
             }
         };
         // ponytail: no NaN is ever kept, so Equal never decides.
-        accounts.sort_by(|(_, a), (_, b)| {
-            (rank(&a.id).partial_cmp(&rank(&b.id))).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        accounts
+            .sort_by(|a, b| (rank(a).partial_cmp(&rank(b))).unwrap_or(std::cmp::Ordering::Equal));
         accounts
     }
 
@@ -1085,6 +1087,55 @@ mod tests {
         );
         jobs.mark_full("c1", None, obi_protocol::time::now());
         assert_eq!(picked(), "k2", "the emptier Cursor account first");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// CLIVERSIONS-8: an account of a tool whose kept version is known bad comes after another
+    /// tool's, the owner's default and the most room included, and is still taken when it's alone.
+    #[test]
+    fn cliversions_8_a_known_bad_tool_ranks_last() {
+        let root =
+            std::env::temp_dir().join(format!("obid-cliversions-8-{}", uuid::Uuid::new_v4()));
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"claude": {"bin": "/usr/bin/true", "accounts": [{"id": "c1", "name": "c1"}]},
+                           "codex": {"bin": "/usr/bin/true", "accounts": [{"id": "x", "name": "x"}]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(config, crate::events::Events::new(), Err("none".into())).unwrap();
+        let read = |five| crate::usage::Usage {
+            five_hour: Some(five),
+            seven_day: Some(five),
+            ..Default::default()
+        };
+        jobs.usage.record("c1", &read(0.1));
+        jobs.usage.record("x", &read(0.9));
+        let ranked = |first| -> Vec<String> {
+            let accounts = [Tool::Claude, Tool::Codex]
+                .into_iter()
+                .flat_map(|tool| jobs.accounts(tool).into_iter().map(move |a| (tool, a)))
+                .collect();
+            jobs.by_room(accounts, first)
+                .into_iter()
+                .map(|(_, a)| a.id)
+                .collect()
+        };
+        assert_eq!(ranked(None), ["c1", "x"], "the most room first");
+        crate::cli_versions::tests::KEPT
+            .with_borrow_mut(|kept| kept.insert("claude", "2.1.300".into()));
+        assert_eq!(ranked(None), ["x", "c1"], "known bad, however much room");
+        assert_eq!(
+            ranked(Some("c1")),
+            ["x", "c1"],
+            "known bad, the owner's default too"
+        );
+        let alone = jobs.by_room(
+            vec![(Tool::Claude, jobs.accounts(Tool::Claude).remove(0))],
+            None,
+        );
+        assert_eq!(alone[0].1.id, "c1", "taken when nothing else is there");
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -186,6 +186,19 @@ describe('ALERTS-2', () => {
     await launch();
     expect(mac.posted).toEqual([]);
   });
+
+  it('alerts_2_an_earlier_launch_posts_nothing_into_a_later_one', async () => {
+    // an earlier test's launch, its read of obid's list still waiting when that test ends
+    await launch();
+    mac.event('job', { id: 'j1', title: 'Fix it', status: 'running' });
+    fresh();
+    // the next test: what the Mac said under its own keys is no news, and nothing else posts into it
+    writeFileSync(join(mac.userData, 'alerts-said.json'), JSON.stringify({ 'item:p1': { what: 'open', needs: true } }));
+    mac.served = [permission];
+    await launch();
+    await new Promise((done) => setTimeout(done, 2500));
+    expect(mac.posted).toEqual([]);
+  });
 });
 
 describe('ALERTS-8', () => {

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""factory/bin/check-lock's own tests, with stand-in checks, never oby-check.sh or cargo.
+"""factory/bin/check-lock's own tests, with stand-in checks, never oby-check.sh.
 
 Run from the repository root: python3 factory/tests/test_check_lock.py
 Each test runs check-lock in a temporary git folder with a lock file of its own, never the gate's.
+Only test_second_worktree_builds_its_own_code runs real cargo, offline, with its build folder in that
+temporary folder: only Cargo itself shows its own freshness rule.
 """
 
 import fcntl
@@ -144,6 +146,38 @@ class CheckLock(unittest.TestCase):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         finally:
             os.close(fd)
+
+    def test_second_worktree_builds_its_own_code(self):
+        # Cargo gives a workspace crate the same build record in every worktree laid out alike, and
+        # finds it fresh when no source file is newer than that build: B's older files would run A's
+        # test binary, with B's own test missing, unless check-lock gives them the current time.
+        shared = self.dir / "core-target"
+        env = dict(os.environ, CARGO_TARGET_DIR=str(shared), CARGO_NET_OFFLINE="true")
+        lib = "pub fn one() -> u32 {\n    1\n}\n\n#[test]\nfn in_both() {\n    assert_eq!(one(), 1);\n}\n"
+        worktrees = {}
+        for name, source in (("a", lib), ("b", lib + "\n#[test]\nfn only_in_b() {\n    assert_eq!(one() + 1, 2);\n}\n")):
+            worktree = self.dir / name
+            (worktree / "core" / "src").mkdir(parents=True)
+            (worktree / "core" / "Cargo.toml").write_text('[package]\nname = "stand_in"\nversion = "0.1.0"\nedition = "2021"\n')
+            (worktree / "core" / "src" / "lib.rs").write_text(source)
+            subprocess.run(["git", "init", "-q", str(worktree)], check=True)
+            subprocess.run(["git", "-C", str(worktree), "add", "core"], check=True)
+            worktrees[name] = worktree
+
+        def check(worktree, *filter):
+            command = [str(CHECK_LOCK), str(self.lock), "cargo", "test", "--manifest-path", "core/Cargo.toml", *filter]
+            return subprocess.run(command, cwd=worktree, env=env, capture_output=True, text=True, timeout=300)
+
+        a = check(worktrees["a"])
+        self.assertEqual(a.returncode, 0, a.stderr)
+        hour_ago = time.time() - 3600
+        for folder, _, files in os.walk(worktrees["b"]):
+            for file in files:
+                os.utime(Path(folder) / file, (hour_ago, hour_ago))
+        b = check(worktrees["b"], "only_in_b")
+        self.assertEqual(b.returncode, 0, b.stderr)
+        self.assertIn("test only_in_b ... ok", b.stdout, b.stdout + b.stderr)
+        self.assertIn("1 passed", b.stdout, b.stdout + b.stderr)
 
 
 if __name__ == "__main__":

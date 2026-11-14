@@ -253,59 +253,12 @@ pub async fn association(gh: &std::path::Path, repo: &str, number: u64) -> Optio
     is_association(said).then(|| said.to_owned())
 }
 
-/// Who wrote, edited and renamed an issue and its comments, and as which login gh read it.
-const WHO_WROTE: &str = "query($owner: String!, $name: String!, $number: Int!) { viewer { login } \
-repository(owner: $owner, name: $name) { issue(number: $number) { author { login } authorAssociation \
-userContentEdits(first: 20) { pageInfo { hasNextPage } nodes { editor { login } } } \
-timelineItems(itemTypes: [RENAMED_TITLE_EVENT], first: 20) { pageInfo { hasNextPage } \
-nodes { ... on RenamedTitleEvent { actor { login } } } } \
-comments(first: 100) { nodes { id author { login } authorAssociation \
-userContentEdits(first: 20) { pageInfo { hasNextPage } nodes { editor { login } } } } } } } }";
-
 /// What Oby signs what it publishes with (crate::publish::body, every review obid posts,
 /// crate::review::SIGNED, and the issues the Mac app and the Swift runner file:
 /// Engine/Failures.swift's `oby-failure` issues, review follow-ups, research proposals), under
 /// whoever's login, a teammate's Oby's too: a text carrying it is an agent's or a model's, never
 /// the owner's own words. Forging it only makes text untrusted.
 pub(crate) const OBY_SIGNS: &str = "by oby:";
-
-/// Whether everything people wrote in `shown`, what `gh issue view --json
-/// title,body,author,comments,…` printed for issue `number` on `repo`, is the owner's own words
-/// (the owner's decision of 2026-10-24), as [`only_the_owners`] says. Read after `shown`, so an
-/// edit made in between counts. Anything obid can't read is untrusted.
-pub async fn issue_trusted(gh: &std::path::Path, repo: &str, number: u64, shown: &Value) -> bool {
-    let Some((holder, name)) = repo.split_once('/') else {
-        return false;
-    };
-    let args = [
-        "api".to_owned(),
-        "graphql".into(),
-        "-f".into(),
-        format!("query={WHO_WROTE}"),
-        // `-f`, a string as it is: `-F` would make `2048` a number and read a file for `@…`.
-        "-f".into(),
-        format!("owner={holder}"),
-        "-f".into(),
-        format!("name={name}"),
-        "-F".into(),
-        format!("number={number}"),
-    ];
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let Some(read) = crate::github::run(gh, &args)
-        .await
-        .ok()
-        .and_then(|said| serde_json::from_str::<Value>(&said).ok())
-    else {
-        return false;
-    };
-    let Some(login) = read["data"]["viewer"]["login"].as_str() else {
-        return false;
-    };
-    let Some(owner) = owner(login).await else {
-        return false;
-    };
-    only_the_owners(&owner, repo, &read["data"]["repository"]["issue"], shown)
-}
 
 /// Who wrote, edited and renamed an issue or a pull request, its comments, and a pull request's
 /// reviews and their comments, every list with whether GitHub gave it whole, and as which login gh
@@ -337,8 +290,8 @@ pub enum Wrote {
 /// and rename, every comment and its edits, and a pull request's every review and review comment,
 /// each list given whole. [`Wrote::Owner`] when the login obid's gh is signed in as wrote them all;
 /// [`Wrote::Members`] when every author is one [`Owner::trusts`] and every edit and rename (which
-/// carry no association) is still the owner's. For the owner's secrets (crate::secretspec),
-/// stricter than [`issue_trusted`]. Anything obid can't read is [`Wrote::Others`]. A text carrying
+/// carry no association) is still the owner's. For the owner's secrets (crate::secretspec).
+/// Anything obid can't read is [`Wrote::Others`]. A text carrying
 /// [`OBY_SIGNS`] is an Oby's, whoever's login posted it: never the owner's, but the item's own body
 /// when `signed_body` (obid wrote it for jobs that are the owner's own throughout). With `shown`,
 /// what obid quoted of it just before ([`quote`]), that is judged too ([`shown_by`]): a comment
@@ -481,55 +434,6 @@ fn all_by(login: &str, members: Option<(&Owner, &str)>, item: &Value, signed_bod
         })
     });
     renames && comments && reviews
-}
-
-/// [`issue_trusted`] on what [`WHO_WROTE`] read (`issue`): its author and the author of every
-/// comment in `shown` count ([`Owner::trusts`]), each text was edited only by its author or the
-/// owner and the title renamed only by its author or the owner, and no text in `shown` carries
-/// [`OBY_SIGNS`]. A comment in `shown` that `issue` doesn't hold, a list GitHub didn't give
-/// whole, or anyone it doesn't name: untrusted.
-fn only_the_owners(owner: &Owner, repo: &str, issue: &Value, shown: &Value) -> bool {
-    // Each of `list`, given whole, was done by `author` or the owner, as its `who` names them.
-    let only = |list: &Value, who: &str, author: Option<&str>| {
-        list["pageInfo"]["hasNextPage"] == false
-            && list["nodes"].as_array().is_some_and(|nodes| {
-                nodes.iter().all(|n| {
-                    n[who]["login"].as_str().is_some_and(|l| {
-                        l.eq_ignore_ascii_case(&owner.login)
-                            || author.is_some_and(|a| a.eq_ignore_ascii_case(l))
-                    })
-                })
-            })
-    };
-    // `read`'s author counts, only they or the owner edited it, and `text` isn't an Oby's.
-    let words = |read: &Value, text: &Value| {
-        let author = read["author"]["login"].as_str().filter(|l| is_login(l));
-        let association = read["authorAssociation"]
-            .as_str()
-            .filter(|a| is_association(a));
-        owner.trusts(repo, author, association)
-            && only(&read["userContentEdits"], "editor", author)
-            && text
-                .as_str()
-                .is_none_or(|t| !t.to_lowercase().contains(OBY_SIGNS))
-    };
-    let Some(comments) = issue["comments"]["nodes"].as_array() else {
-        return false;
-    };
-    words(issue, &shown["body"])
-        && only(
-            &issue["timelineItems"],
-            "actor",
-            issue["author"]["login"].as_str(),
-        )
-        && shown["comments"].as_array().is_none_or(|shown| {
-            shown.iter().all(|c| {
-                c["id"].is_string()
-                    && comments
-                        .iter()
-                        .any(|read| read["id"] == c["id"] && words(read, &c["body"]))
-            })
-        })
 }
 
 /// The read, from what `gh api graphql` printed: whose work it is (`viewer`), the lists, GitHub's
@@ -1682,6 +1586,65 @@ pub async fn start(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Who wrote, edited and renamed an issue and its comments, and as which login gh read it.
+    const WHO_WROTE: &str = "query($owner: String!, $name: String!, $number: Int!) { viewer { login } \
+    repository(owner: $owner, name: $name) { issue(number: $number) { author { login } authorAssociation \
+    userContentEdits(first: 20) { pageInfo { hasNextPage } nodes { editor { login } } } \
+    timelineItems(itemTypes: [RENAMED_TITLE_EVENT], first: 20) { pageInfo { hasNextPage } \
+    nodes { ... on RenamedTitleEvent { actor { login } } } } \
+    comments(first: 100) { nodes { id author { login } authorAssociation \
+    userContentEdits(first: 20) { pageInfo { hasNextPage } nodes { editor { login } } } } } } } }";
+
+    /// Whether everything people wrote in `shown` is the owner's own words, on what [`WHO_WROTE`]
+    /// read (`issue`): its author and the author of every comment in `shown` count
+    /// ([`Owner::trusts`]), each text was edited only by its author or the owner and the title
+    /// renamed only by its author or the owner, and no text in `shown` carries [`OBY_SIGNS`]. A
+    /// comment in `shown` that `issue` doesn't hold, a list GitHub didn't give whole, or anyone it
+    /// doesn't name: untrusted.
+    fn only_the_owners(owner: &Owner, repo: &str, issue: &Value, shown: &Value) -> bool {
+        // Each of `list`, given whole, was done by `author` or the owner, as its `who` names them.
+        let only = |list: &Value, who: &str, author: Option<&str>| {
+            list["pageInfo"]["hasNextPage"] == false
+                && list["nodes"].as_array().is_some_and(|nodes| {
+                    nodes.iter().all(|n| {
+                        n[who]["login"].as_str().is_some_and(|l| {
+                            l.eq_ignore_ascii_case(&owner.login)
+                                || author.is_some_and(|a| a.eq_ignore_ascii_case(l))
+                        })
+                    })
+                })
+        };
+        // `read`'s author counts, only they or the owner edited it, and `text` isn't an Oby's.
+        let words = |read: &Value, text: &Value| {
+            let author = read["author"]["login"].as_str().filter(|l| is_login(l));
+            let association = read["authorAssociation"]
+                .as_str()
+                .filter(|a| is_association(a));
+            owner.trusts(repo, author, association)
+                && only(&read["userContentEdits"], "editor", author)
+                && text
+                    .as_str()
+                    .is_none_or(|t| !t.to_lowercase().contains(OBY_SIGNS))
+        };
+        let Some(comments) = issue["comments"]["nodes"].as_array() else {
+            return false;
+        };
+        words(issue, &shown["body"])
+            && only(
+                &issue["timelineItems"],
+                "actor",
+                issue["author"]["login"].as_str(),
+            )
+            && shown["comments"].as_array().is_none_or(|shown| {
+                shown.iter().all(|c| {
+                    c["id"].is_string()
+                        && comments
+                            .iter()
+                            .any(|read| read["id"] == c["id"] && words(read, &c["body"]))
+                })
+            })
+    }
 
     /// The most nodes `query` may ask GitHub for, as GitHub counts them: each connection's
     /// `first`, times every connection's it is inside.

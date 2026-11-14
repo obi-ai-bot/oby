@@ -665,15 +665,21 @@ pub struct Status {
     pub scanner: ScannerJson,
     /// Each tool's binary and version (crate::cli_versions). Older obids don't send it.
     pub tools: Vec<ToolJson>,
+    /// The files obid kept aside or couldn't read, never loaded (HOME-8). Older obids don't send it.
+    pub unreadable: Vec<serde_json::Value>,
 }
 
 /// `status.tools[]`: the binary's absolute path and what its `--version` said, each null when
-/// it isn't found or can't be read.
+/// it isn't found or can't be read, and that version's status in the table (CLIVERSIONS-7).
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolJson {
     pub agent: &'static str,
     pub path: Option<String>,
     pub version: Option<String>,
+    pub version_status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub known_bad_reason: Option<String>,
 }
 
 /// `status.scanner`.
@@ -1054,13 +1060,19 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
             .zip(tools)
             .map(|(tool, read)| {
                 let read = read.ok();
+                let version = read.as_ref().and_then(|r| r.version.clone());
+                let (version_status, known_bad_reason) =
+                    crate::cli_versions::status(tool, version.as_deref());
                 ToolJson {
                     agent: tool.id(),
-                    path: read.as_ref().and_then(|r| Some(r.path.as_ref()?.display().to_string())),
-                    version: read.and_then(|r| r.version),
+                    path: read.and_then(|r| Some(r.path?.display().to_string())),
+                    version,
+                    version_status,
+                    known_bad_reason,
                 }
             })
             .collect(),
+        unreadable: crate::store::unreadable().clone(),
     }))
 }
 
@@ -1080,6 +1092,7 @@ pub fn disk_free(path: &Path) -> u64 {
 
 /// [`disk_usage`], stopping early once `cancelled` is set.
 fn disk_usage_unless(path: &Path, cancelled: &AtomicBool) -> u64 {
+    use std::os::unix::fs::MetadataExt;
     let mut seen = std::collections::HashSet::new();
     let mut total = 0u64;
     let mut stack = vec![path.to_path_buf()];
@@ -1090,19 +1103,10 @@ fn disk_usage_unless(path: &Path, cancelled: &AtomicBool) -> u64 {
         let Ok(meta) = std::fs::symlink_metadata(&next) else {
             continue;
         };
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            if meta.nlink() > 1 && !meta.is_dir() && !seen.insert((meta.dev(), meta.ino())) {
-                continue;
-            }
-            total += meta.blocks() * 512;
+        if meta.nlink() > 1 && !meta.is_dir() && !seen.insert((meta.dev(), meta.ino())) {
+            continue;
         }
-        #[cfg(not(unix))]
-        {
-            let _ = &mut seen;
-            total += meta.len();
-        }
+        total += meta.blocks() * 512;
         if meta.is_dir()
             && let Ok(entries) = std::fs::read_dir(&next)
         {

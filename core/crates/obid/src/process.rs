@@ -94,10 +94,10 @@ pub fn no_publish_env(temp: &Path) -> Vec<(&'static str, OsString)> {
 }
 
 /// The `GIT_CONFIG_PARAMETERS` of [`no_publish_env`] and of the egress proxy's environment, one
-/// value since a launch's last one wins: an empty credential helper, and `origin`'s push URLs
-/// emptied (an empty value resets git's list) and set to obid's invalid one
-/// (`crate::git::NO_PUSH_URL`), whatever the clone's own settings say. Never `GIT_CONFIG_KEY_0`:
-/// a Codex that drops `*KEY*` variables would leave git its count alone, and git refuses to run then.
+/// value since a launch's last one wins: an empty credential helper, and `origin`'s push URLs set
+/// to `crate::git::NO_PUSH_URL` after an empty one, which resets git's list only from 2.46 on: older
+/// git stops at the clone's own, listed first, which `git::ensure_clone` holds to obid's and no job's
+/// sandbox writes. Never `GIT_CONFIG_KEY_0`: a Codex dropping `*KEY*` leaves git a count it refuses.
 pub fn no_publish_git() -> OsString {
     format!(
         "'credential.helper=' 'remote.origin.pushurl=' 'remote.origin.pushurl={}'",
@@ -664,6 +664,21 @@ pub fn exec_in_own_session(argv: &[OsString]) -> std::io::Error {
         .args(args)
         .env_remove(NICE)
         .exec()
+}
+
+/// `argv` to run in `cwd` with `env` alone, ended when dropped: an error when it names nothing.
+pub fn command(
+    argv: &[OsString],
+    env: &[(OsString, OsString)],
+    cwd: &Path,
+) -> std::io::Result<tokio::process::Command> {
+    let (program, args) = argv
+        .split_first()
+        .ok_or_else(|| std::io::Error::other("nothing to run"))?;
+    let mut command = tokio::process::Command::new(program);
+    command.args(args).env_clear().envs(env.iter().cloned());
+    command.current_dir(cwd).kill_on_drop(true);
+    Ok(command)
 }
 
 /// What tells `obid __session` the nice its program runs at: a job's agent's (PUBLISHING-30).
@@ -1603,8 +1618,8 @@ pub(crate) mod tests {
     /// LANES-2: a boxed agent's environment and an own one's alike give git no settings but the
     /// repository's and an empty credential helper, and nothing that pushes or signs in reaches an
     /// agent, while obid's own gh and Publish keep `SSH_AUTH_SOCK`.
-    #[test]
-    fn lanes_2_neither_lane_can_publish() {
+    #[tokio::test]
+    async fn lanes_2_neither_lane_can_publish() {
         let root = std::env::temp_dir().join(format!("obid-lanes-2-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (worktree, temp, login) = (root.join("worktree"), root.join("tmp"), root.join("login"));
@@ -1658,8 +1673,10 @@ pub(crate) mod tests {
         }
 
         // And git itself: a clone whose settings push somewhere real, with a credential helper
-        // that would answer, pushes only to obid's invalid URL and asks nobody.
-        let repo = root.join("repo");
+        // that would answer, pushes only to obid's invalid URL and asks nobody once obid got it
+        // ready. git 2.46 and later reset the push URLs on the environment's word alone.
+        let home = root.join("home");
+        let repo = crate::git::clone_path(&home, "o/r");
         let asked = root.join("asked");
         let git = |args: &[&str], env: &[(OsString, OsString)]| {
             std::process::Command::new("git")
@@ -1720,24 +1737,51 @@ pub(crate) mod tests {
             said(git(&["config", "remote.origin.pushurl"], &plain)),
             "https://example.com/repo.git"
         );
-        for env in [&boxed, &own] {
-            assert_eq!(
-                said(git(&["config", "remote.origin.pushurl"], env)),
-                crate::git::NO_PUSH_URL
-            );
-            assert_eq!(
-                said(git(
-                    &["remote", "get-url", "--push", "--all", "origin"],
-                    env
-                )),
-                crate::git::NO_PUSH_URL
-            );
+        let version = said(git(&["--version"], &plain));
+        let numbers: Vec<u32> = version
+            .strip_prefix("git version ")
+            .and_then(|rest| rest.split_whitespace().next())
+            .map(|v| v.split('.').take(2).map_while(|n| n.parse().ok()).collect())
+            .unwrap_or_default();
+        let resets = match numbers[..] {
+            [major, minor] => (major, minor) >= (2, 46),
+            _ => panic!("can't read git's version: {version}"),
+        };
+        let push_fails = |env: &[(OsString, OsString)]| {
             let pushed = git(&["push", "origin", "HEAD:refs/heads/main"], env);
             let stderr = String::from_utf8_lossy(&pushed.stderr);
             assert!(!pushed.status.success(), "{stderr}");
             assert!(stderr.contains("obid-agents-cannot-push"), "{stderr}");
             assert!(!stderr.contains("example.com"), "{stderr}");
             assert!(!asked.exists(), "{stderr}");
+        };
+        let push_urls = |env: &[(OsString, OsString)]| {
+            said(git(
+                &["remote", "get-url", "--push", "--all", "origin"],
+                env,
+            ))
+        };
+        if resets {
+            for env in [&boxed, &own] {
+                assert_eq!(push_urls(env), crate::git::NO_PUSH_URL);
+                push_fails(env);
+            }
+        }
+        crate::git::ensure_clone(&home, "o/r", "https://example.com/repo.git", &[])
+            .await
+            .unwrap();
+        for env in [&boxed, &own] {
+            assert_eq!(
+                said(git(&["config", "remote.origin.pushurl"], env)),
+                crate::git::NO_PUSH_URL
+            );
+            let urls = push_urls(env);
+            assert_eq!(urls.lines().next(), Some(crate::git::NO_PUSH_URL), "{urls}");
+            assert!(!urls.contains("example.com"), "{urls}");
+            if resets {
+                assert_eq!(urls, crate::git::NO_PUSH_URL);
+            }
+            push_fails(env);
         }
         for name in [
             "SSH_AUTH_SOCK",

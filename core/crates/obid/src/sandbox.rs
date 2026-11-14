@@ -520,14 +520,6 @@ impl Spec {
     }
 }
 
-/// bubblewrap's arguments, in the order they apply: the whole system read-only, a private `/tmp`
-/// and `/dev`, every hidden folder replaced by an empty one, then the job's own paths bound back
-/// (read-only or writable), and finally the empty folders made read-only.
-#[cfg(test)]
-fn bubblewrap_args(spec: &Spec) -> Vec<OsString> {
-    bubblewrap_args_reading(spec, false, None)
-}
-
 /// What a confined process reads of the system on Linux ([`Sandbox::wrap_reading_only_its_own`]):
 /// its software and its settings, each bound read-only when it exists (a symbolic link, as on a
 /// merged `/usr`, made again as the same link).
@@ -573,6 +565,9 @@ pub const SYSTEM_READS_MACOS: [&str; 11] = [
     "/dev",
 ];
 
+/// bubblewrap's arguments, in the order they apply: the whole system read-only, a private `/tmp`
+/// and `/dev`, every hidden folder replaced by an empty one, then the job's own paths bound back
+/// (read-only or writable), and finally the empty folders made read-only.
 fn bubblewrap_args_reading(
     spec: &Spec,
     confined: bool,
@@ -727,15 +722,9 @@ fn bubblewrap_args_reading(
 /// A Seatbelt profile: everything allowed but what follows (later rules win). No writes but the
 /// job's own; no reads in a hidden folder but the job's own and the tools', with the folders above
 /// them visible by name only (their metadata, so paths resolve), never listed; nothing that has
-/// another process run or write something for it; no network for the check.
-#[cfg(test)]
-fn seatbelt_profile(spec: &Spec) -> String {
-    seatbelt_profile_reading(spec, false)
-}
-
-/// [`seatbelt_profile`]; `confined`, it reads no file's contents but the system's
-/// ([`SYSTEM_READS_MACOS`]) and the spec's own, before the hidden folders' rules (which still
-/// apply on top).
+/// another process run or write something for it; no network for the check. `confined`, it reads
+/// no file's contents but the system's ([`SYSTEM_READS_MACOS`]) and the spec's own, before the
+/// hidden folders' rules (which still apply on top).
 fn seatbelt_profile_reading(spec: &Spec, confined: bool) -> String {
     let mut profile =
         String::from("(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write*");
@@ -1104,11 +1093,6 @@ const KEYCHAIN: [&str; 11] = [
     "com.apple.security.KeychainStasher",
 ];
 
-/// The keychain's services a job keeps on macOS: the file-based keychains' securityd (see
-/// [`KEYCHAIN`]) and trustd, which checks a server's certificate.
-#[cfg(test)]
-const KEYCHAIN_KEPT: [&str; 2] = ["com.apple.SecurityServer", "com.apple.trustd.agent"];
-
 /// A path as an SBPL string literal.
 fn sbpl_string(path: &Path) -> String {
     sbpl_text(&path.to_string_lossy())
@@ -1330,6 +1314,20 @@ pub fn install_root(bin: &Path, hidden: &[PathBuf], never: &[PathBuf]) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// bubblewrap's arguments for a box that reads what isn't hidden.
+    fn bubblewrap_args(spec: &Spec) -> Vec<OsString> {
+        bubblewrap_args_reading(spec, false, None)
+    }
+
+    /// The Seatbelt profile of a box that reads what isn't hidden.
+    fn seatbelt_profile(spec: &Spec) -> String {
+        seatbelt_profile_reading(spec, false)
+    }
+
+    /// The keychain's services a job keeps on macOS: the file-based keychains' securityd (see
+    /// [`KEYCHAIN`]) and trustd, which checks a server's certificate.
+    const KEYCHAIN_KEPT: [&str; 2] = ["com.apple.SecurityServer", "com.apple.trustd.agent"];
 
     /// A folder a box may read shows nothing hidden: not a hidden folder, nor one that holds one,
     /// nor anything in obid's home.

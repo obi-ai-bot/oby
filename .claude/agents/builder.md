@@ -74,7 +74,8 @@ job's check waits for one lock on this Mac, so a builder's own run doubles the
 queue. Run only the test binaries and suites your change touched, never the
 whole check, which the gate runs next. Use your own build folder so you never
 touch the shared one: `cd <worktree> && CARGO_TARGET_DIR=<worktree>/core/target`
-in front of each Cargo command.
+in front of each Cargo command. test-run refuses a run whose `CARGO_TARGET_DIR`
+is the shared folder (`~/Library/Caches/oby-factory/core-target`).
 
 Every test, clippy and build run of your own goes through
 `factory/bin/test-run --`: one such run on the Mac at a time, at background

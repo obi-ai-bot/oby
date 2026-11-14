@@ -5,8 +5,10 @@ built the VM's side: `factory/remote/setup.sh` provisions it and `factory/remote
 commit's Linux check groups in one of four slots there. Task A00-10 built the gate's: `factory/bin/gate` runs
 those groups on the VM, starts it when it is stopped, keeps the macOS-only part on the Mac and falls back to
 the Mac, and the Mac's `factory/bin/job queue` deallocates the VM once it is idle. Gates use the VM once the
-owner adds `remote_gate` to `factory/config.json` ("The owner's steps", below). The scenarios are
-[REMOTE-1 to 15](contracts/remote-gate.md).
+owner adds `remote_gate` to `factory/config.json` ("The owner's steps", below). Task A00-18 added a second Mac,
+the owner's MacBook Pro, for the macOS part ("The second Mac", below), off until the owner adds `mac_worker`.
+Task A00-19 made the VM's SSH rule follow the Mac's IP and its idle stop count only the VM's uses. The
+scenarios are [REMOTE-1 to 21](contracts/remote-gate.md).
 
 ## The VM as it is
 
@@ -94,7 +96,7 @@ The Linux suite has been green since #2170, so most of the check no longer needs
   Mac's public IPv4 from `https://checkip.amazonaws.com` (AWS's plain-text echo, no key) and, when it is one
   global address other than the source of `oby-gateNSG/ssh-from-owner`, sets that rule's source to `<ip>/32`
   with `az network nsg rule update` and gives SSH 60 seconds more. `checks.md` says it moved the rule. The
-  rule only ever holds one `/32`; no other rule or resource is touched (REMOTE-13, 14).
+  rule only ever holds one `/32`; no other rule or resource is touched (REMOTE-19, 20).
 - **It falls back to the Mac.** If the VM can't be reached or started within 3 minutes, the remote gate
   couldn't judge or was cut off, or the commit isn't on origin, the gate runs the whole check on the Mac
   as without a VM, and `checks.md` says why. A real failure on the VM fails the gate.
@@ -102,7 +104,7 @@ The Linux suite has been green since #2170, so most of the check no longer needs
   it records its use in `factory/jobs/remote-gate/state.json`, open while it runs and then ended;
   `factory/bin/job queue` runs `factory/bin/gate --idle`, which deallocates it (`az vm deallocate --no-wait`)
   once no use is open and the last one ended 30 minutes ago, whatever stage any job is in, so a gate running
-  on the Mac doesn't keep it up. A use whose gate died counts as ended when it started (REMOTE-5, 15). Only
+  on the Mac doesn't keep it up. A use whose gate died counts as ended when it started (REMOTE-5, 21). Only
   deallocation stops compute billing; a stopped-but-allocated VM is billed as
   running. A VM the owner started by hand, with no gate since, is left to the 05:00 UTC shutdown.
 
@@ -156,7 +158,7 @@ Expected effect, an estimate until the gate uses the VM (A00-03 measured one com
 2. **Create the VM.** Claude can do this once you say so: a resource group `oby-factory`, the size above,
    Ubuntu 24.04, SSH key only. The owner chose pay-as-you-go in East US 2 with one 256 GB OS disk.
    The network rule (`oby-gateNSG/ssh-from-owner`) allows SSH from your IP only; when your IP changes,
-   the gate moves that rule's source to your new `/32` by itself (REMOTE-13).
+   the gate moves that rule's source to your new `/32` by itself (REMOTE-19).
 3. **Set a budget alert** in Cost Management on the resource group (for example $150 a month), so a
    VM that fails to stop can't surprise you.
 4. **Add an SSH host `oby-gate`** to `~/.ssh/config` and accept its host key once:
@@ -187,7 +189,107 @@ Steps 1 to 4 were done before A00-03 was built. After A00-10 merges:
   the Mac's gate runs as the owner: a commit's check could change the VM's tools for later gates. A user
   without `sudo` for the check is the owner's call.
 
+## The second Mac
+
+Built by task A00-18, and off until the owner turns it on (below). The scenarios are
+[REMOTE-13 to 18](contracts/remote-gate.md).
+
+Once the VM's part has passed, a gate whose diff touches macOS-only code still runs its rust group on this
+Mac, one at a time under the check lock (15 to 27 minutes each, 2 h 22 min of them on the night of
+2026-11-13), and swift and factory when planned. The owner's MacBook Pro takes that part when it is free:
+
+```
+ This Mac (orchestrator, job files, the lock)          oby-mac-pro (Apple M1 Pro, 10 cores, 16 GB)
+ ────────────────────────────────────────────          ───────────────────────────────────────────
+ factory/bin/gate <job>
+   ├─ the VM's part, as above; it passed
+   ├─ mac_worker set, the macOS list not empty:
+   │     ├─ ssh oby-mac-pro true, within 60 s ─────────▶ answers (asleep or off the network: no)
+   │     └─ ssh oby-mac-pro oby-worker/bin/oby-remote-gate \
+   │              --mac <commit> origin/dev rust swift factory
+   │                                         ──────────▶ the first free slot N of 2, else
+   │                                                     "both slots are busy" and exit 2 at once
+   │                                                     fetch the commit (public repo, no token)
+   │                                                     OBY_CHECK_ONLY=rust, swift, factory, offline
+   │        ◀──── output streamed, exit 0/1/2 ──────────
+   ├─ 0 or 1: the verdict; anything else: the same groups here, under the lock, as before
+   └─ checks.md: HOST: oby-gate, oby-mac-pro | oby-gate, mac
+```
+
+- **One queue, one set of job files.** The Pro holds no factory state: only `~/oby-worker` (a full bare
+  clone, two slots each with its own worktree, `target` and `cache`, and the runner in `bin/`) and
+  `oby-check-blok` in `~/.cargo/bin`, built from `origin/dev`.
+- **The same runner.** `oby-remote-gate --mac` is the VM's script with a flag: the same slot locks,
+  checkout, steps, stop on a dropped connection and verdict. It reads no plan and runs exactly the groups the
+  gate gives it, at half the Pro's cores each.
+- **It waits for nothing.** With both slots held, the runner says so and ends at once, and the gate runs that
+  part here as before: two gates' macOS parts run at once, one on each Mac. The factory never starts, wakes or
+  stops the Pro, and its part never takes this Mac's lock.
+- **The whole check stays here.** A change to the check's own files, a gate with no Linux group planned, and
+  any fallback from the VM run the whole check on this Mac, as before.
+
+### The owner's steps
+
+1. **Check the Pro answers** from this Mac: `ssh oby-mac-pro true`.
+2. **Set it up:** `factory/remote/setup-mac.sh oby-mac-pro` from the main checkout. It checks the Pro's tools
+   (git, python3, Xcode, rustup, cargo, rustc, node, gitleaks, an `iPhone 17` simulator) and stops, writing
+   nothing, when one is missing or the Pro's Rust or Xcode differs from this Mac's; then makes
+   `~/oby-worker`, installs the runner, builds `oby-check-blok` from `origin/dev`, tightens the modes on the
+   check's path and prints them, and its versions. Run it again whenever: what is there is left as it is.
+3. **Turn it on:** add this key to `factory/config.json` (protected, so the owner's edit), beside
+   `remote_gate`:
+   `"mac_worker": { "ssh_host": "oby-mac-pro" }`
+   Removing it, or setting it to `null`, turns it off. `FACTORY_MAC_WORKER` with the same JSON tries it for
+   one run.
+
+### Measured (A00-18, 2026-11-14)
+
+One real obid commit, its rust group run on the Pro by the gate's own command and on this Mac (the Air) as a
+gate runs it, through `factory/checks.sh` under the check lock:
+
+- **The commit:** `68ac2282` (#2170, `core/crates/obid/src/sandbox.rs`, a `MACOS_ONLY` file, and six test
+  files) against its parent `f2873943`. Its rust group: fmt, clippy on obid's targets, the lib's `jobs::`
+  and `sandbox::` tests, and eight test binaries (`jobs_api`, `jobs_setup`, `merge_api`, `review_job`,
+  `rooms`, `runner_api`, `sandbox`, `tetrix_api`).
+- **On the Pro:** `ssh oby-mac-pro oby-worker/bin/oby-remote-gate --mac 68ac2282… f2873943… rust`, with the
+  gate's ssh options and standard input an open pipe.
+
+| Where | Time | Verdict |
+|---|---|---|
+| Pro, cold (a new slot: empty build folder, crates fetched first) | 11 min 7 s | failed: `merge_api`'s `merging_40_rounds_stay_within_reviews`, the race #2206 fixed on `dev` after this commit; every other test passed |
+| Pro, warm (the same slot again) | 8 min 46 s | passed |
+| Air, the factory's shared build folder, under its check lock | 12 min 44 s, after 12 min 6 s waiting for the lock behind another gate (24 min 50 s in all) | passed |
+
+- **Setup:** `setup-mac.sh`'s first run took 33 s (the clone, the runner and `oby-check-blok`); its second,
+  which installed nothing, 3 s. It reported Node v26.12.0 on the Pro against v24.22.2 here, and stopped on
+  nothing.
+- **Disk on the Pro:** the bare clone 30 MB, slot 1 after both runs 7.9 GB; 333 GB free.
+
+### Risks
+
+- **swift over SSH is unproven.** The real run above is rust only. The iPhone simulator that swift's
+  `xcodebuild test` boots may need a logged-in session on the Pro. If it can't, swift there couldn't judge
+  (2) or fails: watch the first gates with swift, and leave the key off until it is seen to work.
+- **Homebrew's folders aren't tightened.** On the Pro the runner puts `/opt/homebrew/bin` and
+  `/usr/local/bin` on PATH (gitleaks, node and python3 are Homebrew's), and `tighten.sh` covers only
+  `~/.cargo`, `~/.rustup` and `~/oby-worker`. Anything that could write Homebrew's folders could change the
+  tools a check runs there.
+- **macOS's bash 3.2.** A command over SSH on the Pro gets `/bin/bash` 3.2, not Homebrew's bash, as
+  `scripts/oby-check.sh` gets on this Mac: `tighten.sh` is tested under it, and the warm run above passed on it,
+  but a later change to the check that needs bash 4 would fail there first.
+- **The Pro is someone's laptop.** It sleeps, roams and runs the owner's own work. A gate that finds it
+  asleep waits up to 60 seconds, then runs here; a gate on it while the owner works there is slower.
+- **The same trust as the VM.** The Pro runs code the factory's agents wrote, as this Mac's gate does, in
+  the owner's own account there. It holds no factory secret, and the check runs offline after `cargo fetch`.
+
 ## Still to build
+
+- **Builders' test runs on the Pro:** `factory/bin/test-run` sending a builder's run of a pushed commit to the
+  Pro when the builder lock here is taken and the Pro has a free slot.
+- **The nightly check on the Pro:** `factory/bin/nightly` running there when it's free, so the nightly full
+  check doesn't hold this Mac's lock for an hour.
+- **Whole checks on the Pro:** a change to the check's own files, a gate with no Linux group planned, and a
+  fallback from the VM, which all run the whole check on this Mac today.
 
 - **Re-run `factory/remote/setup.sh oby-gate` on the real VM**, starting it only for this and deallocating
   it after, and record the modes it prints before and after (task A00-12's last step, not done by its pull

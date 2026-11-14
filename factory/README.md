@@ -9,18 +9,21 @@ config.json     concurrency, rounds, the active sprint, routing, protected paths
 checks.sh       the gate's checks: scripts/oby-check.sh on the job's worktree
 bin/job         the only writer of jobs/<id>/job.json; reads the queue; refuses illegal moves; queues approved PRs
 bin/gate        runs checks.sh in a job's worktree → round-N/checks.md; with `remote_gate` set, the Linux groups on
-                the gate VM and the macOS-only part on the Mac, falling back to the Mac; `gate --idle` deallocates the
-                idle VM (job queue runs it)
+                the gate VM and the macOS-only part on the Mac, falling back to the Mac; with `mac_worker` set too, that
+                macOS part on the Mac worker (the second Mac) when it is free, else on this Mac; `gate --idle`
+                deallocates the idle VM (job queue runs it)
 bin/route       risk + surfaces → the job's reviewers and models
-bin/test-run    a builder's own test, clippy or build run at nice 15, half the cores; only runs that can build Rust or
-                Xcode code take turns on its own lock, other runs start at once
+bin/test-run    a builder's or approver's own test, clippy or build run at nice 15, half the cores; only runs that can
+                build Rust or Xcode code take turns on its own lock, other runs start at once; it refuses a run whose
+                CARGO_TARGET_DIR is the shared Cargo folder: they build in <worktree>/core/target
 bin/check-lock  the gate's lock holder for a check that builds Rust: one check at a time on the shared Cargo folder;
-                it stops the check's leftovers and passes its exit code through
+                inside the lock it gives the worktree's tracked core/ and tools/ files the current time, so the
+                worktree's own code is built; it stops the check's leftovers and passes its exit code through
 bin/child_session.py  runs a command in a session of its own and stops its leftovers; shared by check-lock, test-run
                 and nightly
 bin/nightly     the nightly full Mac check: checks.sh with OBY_CHECK_ALL=1 on origin/dev, when no gate waits →
                 jobs/nightly/<stamp>.md, and a fix task on a failure
-remote/         the gate VM's side: setup.sh provisions the gate VM over SSH; tighten.sh is what setup runs last on the host, to leave the check's path writable only by its owner; oby-remote-gate runs a commit's Linux check groups in one of four slots there
+remote/         the gate VM's and the Mac worker's side: setup.sh provisions the gate VM over SSH, setup-mac.sh the Mac worker; tighten.sh is what each runs last on its host, to leave the check's path writable only by its owner; oby-remote-gate runs a commit's Linux check groups in one of four slots on the VM, and with --mac the macOS groups it is given in one of two slots on the Mac worker
 tests/          the factory's own tests, stdlib only, from the repository root: python3 -m unittest discover -s factory/tests;
                 the check runs them when bin/, checks.sh, tests/ or config.json change
 queue/tasks/    open tasks, one file each (R01-02.md)
@@ -33,8 +36,12 @@ jobs/           runtime state, local to this Mac (gitignored); jobs/remote-gate/
 started, the log's last 80 lines) and its `<stamp>.log` per run, named by the UTC start time; the dashboard
 shows the newest.
 
-Builders' own test, clippy and build runs go through `bin/test-run`, so they don't slow a gate past the check's
-caps. Only runs that can build Rust or Xcode code (a command naming `cargo`, `cargo-nextest`, `nextest`, `rustc`,
+Builders', code reviewers' and approvers' own test, clippy and build runs go through `bin/test-run`, so they don't
+slow a gate past the check's caps, and build in the worktree's own folder:
+`CARGO_TARGET_DIR=<worktree>/core/target bin/test-run -- cargo test -p obid --test <x>`. test-run refuses a run
+whose `CARGO_TARGET_DIR` is the shared Cargo folder (`~/Library/Caches/oby-factory/core-target`), where another
+worktree's build of a workspace crate can run in place of this one's: only the gate's check builds there, under
+`bin/check-lock`. Only runs that can build Rust or Xcode code (a command naming `cargo`, `cargo-nextest`, `nextest`, `rustc`,
 `xcodebuild`, `oby-check.sh`, `oby-check-blok`, or `swift` with `build` or `test`) take turns, one at a time on
 `~/Library/Caches/oby-factory/test-run.lock`, never the gate's lock, so a gate never waits on them; the holder
 line records its pid, when it took the lock, its folder and its command, and a run still waiting says who holds
@@ -54,6 +61,10 @@ answer, it moves the VM's SSH rule to this Mac's current public IP (`/32`) if it
 `FACTORY_REMOTE_GATE` (the same JSON) turns it on for one run. Each use of the VM is recorded in
 `jobs/remote-gate/state.json`, and `bin/job queue` runs `bin/gate --idle`, which deallocates the VM once no use is
 open and the last one ended 30 minutes ago, whatever stage any job is in.
+With `mac_worker` (`{"ssh_host": "oby-mac-pro"}`, or `FACTORY_MAC_WORKER` for one run) also set, the Mac's part
+runs on that second Mac, set up by `remote/setup-mac.sh`, once the VM's part passed: in one call, `ssh
+oby-mac-pro oby-worker/bin/oby-remote-gate --mac <commit> origin/dev <group>...`. When it doesn't answer within
+60 seconds, both its slots are busy, it couldn't judge or was cut off, that part runs on this Mac as before.
 
 What differs from the reference factory: the queue is the task files here, not GitHub issues (the owner's
 decision of 2026-11-12). A task runs only in the active sprint (`sprint` in `config.json`) and after the tasks

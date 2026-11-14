@@ -13,10 +13,10 @@
 //!   processes of the same user read it (docs/ARCHITECTURE.md 5.3, "What the sandbox can't hide").
 //!   A common word or a weak pattern is refused. No API takes or returns a value.
 //! - **Where values go.** They join `crate::secrets::known()` as `vault <name>`, read again
-//!   whenever the store changed (`obid vault add` while obid runs), so the log layer
-//!   (`crate::logs`), the publish gate (`crate::scan`, `crate::publish`) and every text obid
-//!   redacts take them out, plain and in every encoded form `crate::secrets` knows. obid's own
-//!   calls read one with [`value`].
+//!   whenever the store changed (`obid vault add` while obid runs), so the log's writer
+//!   (`crate::secrets::Redacting`), the publish gate (`crate::scan`, `crate::publish`) and every
+//!   text obid redacts take them out, plain and in every encoded form `crate::secrets` knows.
+//!   obid's own calls read one with [`value`].
 //! - **Answers.** Every `/v1` answer has them taken out (`[vault: <name>]`). When the vault can't
 //!   be read a request is `503` with the reason and isn't carried out, except what only stops work
 //!   (a stop, stop-all, dismiss, a permission denied without words), so the owner can always stop

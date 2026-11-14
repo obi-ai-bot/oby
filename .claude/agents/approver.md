@@ -30,6 +30,13 @@ start every Bash command with `cd <worktree> && `, and give Read, Grep and Glob
 absolute paths under the worktree. The job folder is in the main checkout; your
 one file goes there.
 
+A cargo test, clippy or build run of your own, such as one to spot-check a
+criterion, goes through `factory/bin/test-run --` and builds in the worktree's
+own folder, never the factory's shared one
+(`~/Library/Caches/oby-factory/core-target`), where another worktree's build can
+run in place of this branch's; test-run refuses the shared folder. That is
+`cd <worktree> && CARGO_TARGET_DIR=<worktree>/core/target factory/bin/test-run -- cargo test -p obid --test <x>`.
+
 ## Read
 
 1. `AGENTS.md` (or `CLAUDE.md`).

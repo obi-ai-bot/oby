@@ -91,6 +91,71 @@ pub fn changed(tool: Tool, was: Option<&str>, now: Option<&str>) -> Option<Strin
     (was != now).then_some(line)
 }
 
+/// Each tool's tested range and known-bad versions (CLIVERSIONS-7), parsed once: the shipped
+/// `cli-versions.json`, or the file a debug build's `OBID_TEST_CLI_VERSIONS` names. One that can't
+/// be read or parsed is empty, so every version is untested.
+fn table() -> &'static serde_json::Value {
+    static TABLE: OnceLock<serde_json::Value> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        #[cfg(debug_assertions)]
+        if let Some(path) = std::env::var_os("OBID_TEST_CLI_VERSIONS") {
+            let text = std::fs::read_to_string(path).unwrap_or_default();
+            return serde_json::from_str(&text).unwrap_or_default();
+        }
+        serde_json::from_str(SHIPPED).unwrap_or_default()
+    })
+}
+
+#[cfg(not(test))]
+const SHIPPED: &str = include_str!("../cli-versions.json");
+#[cfg(test)]
+const SHIPPED: &str = tests::TABLE;
+
+/// `tested`, `untested` or `knownBad` for `tool` at `version`, and a known-bad one's reason
+/// (CLIVERSIONS-7): known bad only when listed, tested within `from..=to` by numeric dot-parts.
+pub fn status(tool: Tool, version: Option<&str>) -> (&'static str, Option<String>) {
+    let (entry, Some(version)) = (&table()[tool.id()], version) else {
+        return ("untested", None);
+    };
+    let mut listed = entry["knownBad"].as_array().into_iter().flatten();
+    if let Some(bad) = listed.find(|bad| bad["version"] == version) {
+        let reason = bad["reason"].as_str().unwrap_or_default();
+        return ("knownBad", Some(reason.into()));
+    }
+    let [from, to] = ["from", "to"].map(|end| entry["tested"][end].as_str().and_then(parts));
+    match (from, parts(version), to) {
+        (Some(from), Some(at), Some(to)) if from <= at && at <= to => ("tested", None),
+        _ => ("untested", None),
+    }
+}
+
+/// A version's dot-separated parts, each the number its leading digits make; none when one has none.
+fn parts(version: &str) -> Option<Vec<u64>> {
+    let digits = |part: &str| part.bytes().take_while(u8::is_ascii_digit).count();
+    let number = |part: &str| part[..digits(part)].parse().ok();
+    version.split('.').map(number).collect()
+}
+
+/// Whether `tool`'s last kept read is a known-bad version (CLIVERSIONS-8): a lookup of what's kept,
+/// never a read; none kept is not.
+pub fn known_bad(tool: Tool) -> bool {
+    let kept = |l: &Last| (l.tool == tool).then(|| l.read.version.clone())?;
+    let version = lock().iter().find_map(kept);
+    #[cfg(test)]
+    let version = tests::KEPT
+        .with_borrow(|k| k.get(tool.id()).cloned())
+        .or(version);
+    status(tool, version.as_deref()).0 == "knownBad"
+}
+
+/// What a job's transcript says when its round runs on a version the table knows breaks
+/// (CLIVERSIONS-9): none for any other.
+pub fn breaks(tool: Tool, version: Option<&str>) -> Option<String> {
+    let (name, reason, version) = (tool.name(), status(tool, version).1?, version?);
+    // Proposed words, Sangam's to change.
+    Some(format!("{name} {version} is known to break: {reason}"))
+}
+
 fn lock() -> MutexGuard<'static, Vec<Last>> {
     LAST.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -150,8 +215,62 @@ fn parse(said: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// The unit tests' table: Claude Code 2.1.300 known bad inside its tested range.
+    pub(super) const TABLE: &str = r#"{
+        "claude": {"tested": {"from": "2.1.296", "to": "2.1.302"},
+                   "knownBad": [{"version": "2.1.300", "reason": "resume loses the session", "issue": 1}]},
+        "cursor": {"tested": {"from": "2026.10.01", "to": "2026.10.01"}, "knownBad": []}}"#;
+
+    thread_local! {
+        /// What [`known_bad`] takes as a tool's last kept read on this test's thread, over `LAST`.
+        pub(crate) static KEPT: std::cell::RefCell<std::collections::HashMap<&'static str, String>> = Default::default();
+    }
+
+    #[test]
+    fn the_shipped_table_parses_with_each_tool() {
+        let table: serde_json::Value =
+            serde_json::from_str(include_str!("../cli-versions.json")).unwrap();
+        for tool in Tool::ALL {
+            let entry = &table[tool.id()];
+            assert!(entry["tested"]["from"].is_string(), "{}", tool.id());
+            assert!(entry["tested"]["to"].is_string(), "{}", tool.id());
+            assert!(entry["knownBad"].is_array(), "{}", tool.id());
+        }
+    }
+
+    #[test]
+    fn cliversions_7_a_versions_status_and_its_edges() {
+        let claude = |version| status(Tool::Claude, version).0;
+        assert_eq!(claude(Some("2.1.298")), "tested", "in range");
+        assert_eq!(claude(Some("2.1.296")), "tested", "at from");
+        assert_eq!(claude(Some("2.1.302")), "tested", "at to");
+        assert_eq!(claude(Some("2.1.295")), "untested", "below");
+        assert_eq!(claude(Some("2.1.303")), "untested", "above");
+        assert_eq!(claude(Some("2.1.1000")), "untested", "numeric, not text");
+        assert_eq!(claude(None), "untested", "no version");
+        assert_eq!(claude(Some("2.x.298")), "untested", "a part with no digit");
+        assert_eq!(
+            status(Tool::Claude, Some("2.1.300")),
+            ("knownBad", Some("resume loses the session".into())),
+            "listed beats the range"
+        );
+        assert_eq!(claude(Some("2.1.300-beta")), "tested", "known bad is exact");
+        assert_eq!(status(Tool::Cursor, Some("2026.10.1")).0, "tested");
+        assert_eq!(status(Tool::Cursor, Some("2026.10.01-d5b3271")).0, "tested");
+        assert_eq!(
+            status(Tool::Codex, Some("0.162.1")).0,
+            "untested",
+            "not in the table"
+        );
+        assert_eq!(
+            breaks(Tool::Claude, Some("2.1.300")).as_deref(),
+            Some("Claude Code 2.1.300 is known to break: resume loses the session")
+        );
+        assert_eq!(breaks(Tool::Claude, Some("2.1.301")), None);
+    }
 
     #[test]
     fn the_version_is_the_first_word_that_looks_like_one() {

@@ -408,7 +408,7 @@ impl Routines {
         if let Err(e) = crate::store::make_private_dir(&dir) {
             tracing::warn!("can't make {}: {e}", dir.display());
         }
-        let kept = crate::store::load_dir::<Routine>(&dir)
+        let kept = crate::store::load_dir::<Routine>(home, &dir)
             .into_iter()
             .map(|mut r| {
                 // Kept before `last_job` was: its latest run's that started one.

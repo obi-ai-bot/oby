@@ -1152,7 +1152,7 @@ impl Jobs {
         let stopped_cleanly = std::fs::remove_file(&clean).is_ok();
         // What its agents and checks it left running end before any job is picked up again, so
         // none goes on writing beside the job's next run (crate::groups).
-        crate::groups::reap(&crate::groups::dir(&config.home));
+        crate::groups::reap(&config.home);
         let now = obi_protocol::time::now();
         let mut jobs = HashMap::new();
         for mut job in store.load_all() {
@@ -9568,6 +9568,7 @@ impl Jobs {
         signal: &watch::Receiver<Signal>,
     ) -> Result<(), End> {
         let mut job = self.get(id).ok_or("the job is gone")?;
+        let mut ours = job.current_round(); // the round it last launched, all it ends (TASKS-22)
         if let Err(why) = &self.sandbox {
             return Err(End::Failed(format!(
                 "obid can't make the job sandbox on this machine, so it ran nothing: {why}"
@@ -10528,6 +10529,7 @@ impl Jobs {
                         job.step = format!("Starting {}", tool.name());
                     }
                 });
+                ours = round;
                 self.stamp_version(id, tool);
                 round_due = false;
                 stages.begin(&format!("agent round {round}"));
@@ -10905,9 +10907,7 @@ impl Jobs {
                         if words.is_empty() {
                             break;
                         }
-                        message = words.join("\n\n");
-                        noted = true;
-                        steered = owners;
+                        (message, noted, steered) = (words.join("\n\n"), true, owners);
                         continue;
                     }
                     message =
@@ -10926,9 +10926,7 @@ impl Jobs {
                         if words.is_empty() {
                             break;
                         }
-                        message = words.join("\n\n");
-                        noted = true;
-                        steered = owners;
+                        (message, noted, steered) = (words.join("\n\n"), true, owners);
                         // Their words decide: the reply to them says the goal again.
                         goal = None;
                         continue;
@@ -10946,9 +10944,7 @@ impl Jobs {
                     if words.is_empty() {
                         break;
                     }
-                    message = words.join("\n\n");
-                    noted = true;
-                    steered = owners;
+                    (message, noted, steered) = (words.join("\n\n"), true, owners);
                     continue;
                 }
                 // What obid declined last round, for a tool whose answers carry no words (ACP).
@@ -11025,7 +11021,7 @@ impl Jobs {
             // Nothing committed: done, as Claude Code is when its model stops, and the agent's
             // summary says why. A round the owner asked for says nothing of it: their words decide.
             if COMMITTING.contains(&job.kind.as_str()) && commits == 0 && !job.asked {
-                self.end_done(id, 0, job.pushed, |job| {
+                self.end_done(id, ours, 0, job.pushed, |job| {
                     job.reason = Some(NOTHING_COMMITTED.into());
                 });
                 return Ok(());
@@ -11033,7 +11029,7 @@ impl Jobs {
             // A review publishes nothing: one that committed is done, its review standing, its
             // commits counted and kept on its branch, never published.
             if job.kind == "review" && commits > 0 {
-                self.end_done(id, commits, job.pushed, |job| {
+                self.end_done(id, ours, commits, job.pushed, |job| {
                     job.reason = Some(crate::publish::REVIEW_COMMITTED.into());
                 });
                 self.offer_owner_review(id).await;
@@ -11047,7 +11043,7 @@ impl Jobs {
                     || Box::pin(self.sandboxed_git(id, &TRACKED, None)).await.ok()
                         != reviewed_tracked)
             {
-                self.end_done(id, 0, job.pushed, |job| {
+                self.end_done(id, ours, 0, job.pushed, |job| {
                     job.reason = Some(REVIEW_MOVED.into());
                 });
                 self.offer_owner_review(id).await;
@@ -11077,7 +11073,7 @@ impl Jobs {
                 .await
                     == 0
             {
-                self.end_done(id, commits, job.pushed, |job| {
+                self.end_done(id, ours, commits, job.pushed, |job| {
                     job.reason = Some(format!(
                         "The pull request of {first} was closed without merging, so Oby didn't publish its commits again: Publish opens a new pull request with them."
                     ));
@@ -11087,13 +11083,15 @@ impl Jobs {
             let pushed = self.still_pushed(&job, &head, commits).await;
             // Its check didn't pass on its commits alone: done, nothing published, and why.
             if let Err(why) = &verified {
-                self.end_done(id, commits, pushed, |job| job.reason = Some(why.clone()));
+                self.end_done(id, ours, commits, pushed, |job| {
+                    job.reason = Some(why.clone())
+                });
                 return Ok(());
             }
             if let Some(why) = by_hand.take()
                 && job.kind != "research"
             {
-                self.end_done(id, commits, pushed, |job| job.reason = Some(why));
+                self.end_done(id, ours, commits, pushed, |job| job.reason = Some(why));
                 return Ok(());
             }
             // The job as it would end, which is what gets published.
@@ -11111,7 +11109,7 @@ impl Jobs {
             if !ended.can_publish() || (!made_now && job.publish_error.is_some()) {
                 // Still waiting for Publish by hand: why its own publish failed still holds.
                 let waiting = ended.can_publish();
-                self.end_done(id, commits, pushed, |job| {
+                self.end_done(id, ours, commits, pushed, |job| {
                     if !waiting {
                         job.publish_error = None;
                     }
@@ -11217,7 +11215,7 @@ impl Jobs {
             let pushed = if went_out { Some(commits) } else { pushed };
             match published {
                 Ok(Some(url)) => {
-                    self.end_done(id, commits, Some(commits), |job| {
+                    self.end_done(id, ours, commits, Some(commits), |job| {
                         job.was_published(url);
                     });
                     self.follow.notify_one();
@@ -11226,18 +11224,20 @@ impl Jobs {
                 }
                 // Pushed to a remote that has no pull requests: that's all of it.
                 Ok(None) => {
-                    self.end_done(id, commits, Some(commits), |job| job.publish_error = None);
+                    self.end_done(id, ours, commits, Some(commits), |job| {
+                        job.publish_error = None
+                    });
                 }
                 // Pushed, and only the pull request failed: the commits count as out (#627).
                 Err(failure @ Failure::PullRequest(_)) => {
                     let why = failure.line();
-                    self.end_done(id, commits, Some(commits), |job| {
+                    self.end_done(id, ours, commits, Some(commits), |job| {
                         job.publish_error = Some(why)
                     });
                 }
                 Err(Failure::AlreadyOnBase(base)) => {
                     let line = Failure::AlreadyOnBase(base).line();
-                    self.end_done(id, 0, pushed, |job| {
+                    self.end_done(id, ours, 0, pushed, |job| {
                         job.summary = format!("{line}\n\n{}", job.summary);
                         job.publish_error = None;
                     });
@@ -11286,7 +11286,9 @@ impl Jobs {
                     | Failure::Refused(_)),
                 ) => {
                     let why = failure.line();
-                    self.end_done(id, commits, pushed, |job| job.publish_error = Some(why));
+                    self.end_done(id, ours, commits, pushed, |job| {
+                        job.publish_error = Some(why)
+                    });
                 }
             }
             return Ok(());
@@ -12108,11 +12110,18 @@ impl Jobs {
             .map_err(|e| e.to_string())
     }
 
-    /// Ends the job `id` done with `commits` (and `pushed` of them on its pull request), then
-    /// `change`: unless it was stopped meanwhile.
-    fn end_done(&self, id: &str, commits: u64, pushed: Option<u64>, change: impl FnOnce(&mut Job)) {
+    /// Ends the job `id` done in its round `ours` with `commits` (and `pushed` of them on its pull
+    /// request), then `change`: unless it was stopped meanwhile or its round moved on (TASKS-22).
+    fn end_done(
+        &self,
+        id: &str,
+        ours: u32,
+        commits: u64,
+        pushed: Option<u64>,
+        change: impl FnOnce(&mut Job),
+    ) {
         self.update(id, |job| {
-            if !job.status.is_active() {
+            if !job.status.is_active() || job.current_round() != ours {
                 return;
             }
             job.status = Status::Done;
@@ -14850,19 +14859,11 @@ pub async fn run_check(
 ) -> std::io::Result<CheckRun> {
     let (reader, writer) = std::io::pipe()?;
     clear_recorded_exit(env);
-    let (program, args) = argv
-        .split_first()
-        .ok_or_else(|| std::io::Error::other("nothing to run"))?;
-    let mut command = tokio::process::Command::new(program);
+    let mut command = crate::process::command(argv, env, cwd)?;
     command
-        .args(args)
-        .env_clear()
-        .envs(env.iter().map(|(k, v)| (k, v)))
-        .current_dir(cwd)
         .stdin(std::process::Stdio::null())
         .stdout(writer.try_clone()?)
-        .stderr(writer)
-        .kill_on_drop(true);
+        .stderr(writer);
     if let Some(group) = group {
         crate::groups::take(group)
             .await
@@ -18527,7 +18528,7 @@ mod tests {
     /// no word of an answer anywhere.
     #[tokio::test]
     async fn usage_6_8_9_a_cursor_accounts_figure_from_its_login_to_what_is_kept() {
-        use crate::cursor_usage::STAND_IN;
+        use crate::cursor_usage::tests::STAND_IN;
         use crate::cursor_usage::tests::{Answer, STAND_IN_TAKEN, TOKEN, body, stand_in};
         let _only = STAND_IN_TAKEN.lock().await;
         #[derive(Clone, Default)]
@@ -18629,7 +18630,7 @@ mod tests {
     /// job: its window share is the 5-hour window's and the week's, and this may be neither.
     #[tokio::test]
     async fn usage_9_a_cursor_figure_gives_a_running_job_no_window_share() {
-        use crate::cursor_usage::STAND_IN;
+        use crate::cursor_usage::tests::STAND_IN;
         use crate::cursor_usage::tests::{Answer, STAND_IN_TAKEN, TOKEN, body, stand_in};
         let _only = STAND_IN_TAKEN.lock().await;
         let root = std::env::temp_dir().join(format!("obid-share-{}", uuid::Uuid::new_v4()));
@@ -18695,7 +18696,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn keychain_8_a_slow_keychain_read_leaves_the_runtime_free() {
-        use crate::cursor_usage::STAND_IN;
+        use crate::cursor_usage::tests::STAND_IN;
         use crate::cursor_usage::tests::{RERUN, TOKEN, body, rerun, stand_in};
         if std::env::var_os(RERUN).is_none() {
             let root = std::env::temp_dir().join(format!("obid-slow-{}", uuid::Uuid::new_v4()));
@@ -22344,15 +22345,15 @@ mod tests {
         };
 
         // The rule's site: tunnelled, its hello naming it.
-        let hello = crate::egress::client_hello(Some("localhost"), false);
+        let hello = crate::egress::hello::client_hello(Some("localhost"), false);
         let (status_line, stream) = connect(format!("localhost:{up}"), Some(auth.clone())).await;
         assert_eq!(status_line, "200");
         assert_eq!(echoed(stream, hello.clone()).await, Some(hello));
         // Another name in its hello (a CDN would serve that site), an encrypted hello, or no TLS
         // at all: the tunnel closes, and nothing reached the echo.
         for bytes in [
-            crate::egress::client_hello(Some("attacker.workers.dev"), false),
-            crate::egress::client_hello(Some("localhost"), true),
+            crate::egress::hello::client_hello(Some("attacker.workers.dev"), false),
+            crate::egress::hello::client_hello(Some("localhost"), true),
             b"GET / HTTP/1.1\r\nHost: attacker.workers.dev\r\n\r\n".to_vec(),
         ] {
             let (status_line, stream) =

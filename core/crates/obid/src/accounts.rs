@@ -28,6 +28,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::agent::Tool;
 use crate::api::{AccountJson, ApiError, Shared, answer};
@@ -1174,21 +1175,8 @@ pub async fn remove(
     State(shared): State<Arc<Shared>>,
     UrlPath(id): UrlPath<String>,
 ) -> Result<Response, ApiError> {
-    find(&shared.config.agents.get(), &id).ok_or_else(|| no_account(&id))?;
-    // One change of the account at a time: a sign-in can't start while it's removed. Looked up
-    // again once held: it may have gone meanwhile.
-    let lock = shared.sign_ins.lock_for(&id);
-    let _held = lock.lock().await;
-    let (_, account) = find(&shared.config.agents.get(), &id).ok_or_else(|| no_account(&id))?;
-    if !shared.sign_ins.end(&id).await {
-        return Err(ApiError::new(
-            StatusCode::CONFLICT,
-            format!(
-                "{}'s sign-in didn't end within 5 seconds: try again in a moment.",
-                account.name
-            ),
-        ));
-    }
+    // One change of the account at a time: a sign-in can't start while it's removed.
+    let (_held, account) = sign_in_ended(&shared, &id).await?;
     let _changing = shared
         .jobs
         .begin_change(&id)
@@ -1270,21 +1258,27 @@ pub async fn end_sign_in(
     State(shared): State<Arc<Shared>>,
     UrlPath(id): UrlPath<String>,
 ) -> Result<Response, ApiError> {
-    find(&shared.config.agents.get(), &id).ok_or_else(|| no_account(&id))?;
     // A sign-in starting now finishes registering first, so it's the one ended.
-    let lock = shared.sign_ins.lock_for(&id);
-    let _held = lock.lock().await;
-    let (_, account) = find(&shared.config.agents.get(), &id).ok_or_else(|| no_account(&id))?;
-    if !shared.sign_ins.end(&id).await {
-        return Err(ApiError::new(
-            StatusCode::CONFLICT,
-            format!(
-                "{}'s sign-in didn't end within 5 seconds: try again in a moment.",
-                account.name
-            ),
-        ));
-    }
+    sign_in_ended(&shared, &id).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// Account `id`, with its change held, once its sign-in under way, if any, has ended: `409` when
+/// that didn't within 5 seconds. Looked up again once held: it may have gone meanwhile.
+async fn sign_in_ended(
+    shared: &Shared,
+    id: &str,
+) -> Result<(tokio::sync::OwnedMutexGuard<()>, Account), ApiError> {
+    find(&shared.config.agents.get(), id).ok_or_else(|| no_account(id))?;
+    let held = shared.sign_ins.lock_for(id).lock_owned().await;
+    let (_, account) = find(&shared.config.agents.get(), id).ok_or_else(|| no_account(id))?;
+    if !shared.sign_ins.end(id).await {
+        let name = &account.name;
+        let message =
+            format!("{name}'s sign-in didn't end within 5 seconds: try again in a moment.");
+        return Err(ApiError::new(StatusCode::CONFLICT, message));
+    }
+    Ok((held, account))
 }
 
 /// What's kept of a removed account: its id, never made again ([`new_id`]) nor laid over the
@@ -1802,23 +1796,7 @@ async fn start(
     };
     // What it prints, a line at a time (at most [`LONGEST_LINE`] of each), read until it ends:
     // only the link and the code are taken.
-    let (lines, mut said) = tokio::sync::mpsc::unbounded_channel::<String>();
-    for out in [
-        child
-            .stdout
-            .take()
-            .map(|o| Box::new(o) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),
-        child
-            .stderr
-            .take()
-            .map(|e| Box::new(e) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        tokio::spawn(read_lines(out, lines.clone()));
-    }
-    drop(lines);
+    let mut said = lines_of(&mut child);
     let wanted = async {
         let (mut url, mut code) = (None, None);
         while let Some(line) = said.recv().await {
@@ -2048,7 +2026,11 @@ async fn read_identity(shared: &Shared, tool: Tool, account: &Account) -> Option
     let scratch = scratch_folder(shared).ok()?;
     let dir = account.config_dir.as_deref();
     let said = match tool {
-        Tool::Codex => read_codex_account(&bin, dir, &scratch).await,
+        // Never refreshing a token.
+        Tool::Codex => {
+            let params = json!({"refreshToken": false});
+            ask_codex(&bin, dir, &scratch, "account/read", params).await
+        }
         _ => read_status(tool, &bin, dir, &scratch).await,
     };
     let _ = std::fs::remove_dir_all(&scratch);
@@ -2080,8 +2062,15 @@ async fn read_status(tool: Tool, bin: &Path, dir: Option<&Path>, scratch: &Path)
     }
 }
 
-/// Codex's `account/read`, from a server started for that alone, never refreshing a token.
-async fn read_codex_account(bin: &Path, dir: Option<&Path>, scratch: &Path) -> Option<Value> {
+/// Codex's answer to `method` with `params` (its `account/read`, its `model/list`), from a server
+/// started for that alone in `scratch`, on the account's folder `dir`.
+pub(crate) async fn ask_codex(
+    bin: &Path,
+    dir: Option<&Path>,
+    scratch: &Path,
+    method: &str,
+    params: Value,
+) -> Option<Value> {
     let mut argv: Vec<std::ffi::OsString> = vec![bin.into()];
     if dir.is_some() {
         argv.extend(["-c".into(), CODEX_FILE_STORE.into()]);
@@ -2108,8 +2097,7 @@ async fn read_codex_account(bin: &Path, dir: Option<&Path>, scratch: &Path) -> O
         own_sandbox: false,
         group: None,
     };
-    let params = json!({"refreshToken": false});
-    crate::codex::ask_once(&launch, STATUS_WITHIN, "account/read", params)
+    crate::codex::ask_once(&launch, STATUS_WITHIN, method, params)
         .await
         .ok()
 }
@@ -2190,11 +2178,20 @@ impl Drop for Pending {
     }
 }
 
+/// What `child` prints on its stdout and stderr, a line at a time ([`read_lines`]), until both end.
+pub(crate) fn lines_of(child: &mut tokio::process::Child) -> UnboundedReceiver<String> {
+    let (lines, said) = tokio::sync::mpsc::unbounded_channel();
+    if let Some(out) = child.stdout.take() {
+        tokio::spawn(read_lines(out, lines.clone()));
+    }
+    if let Some(err) = child.stderr.take() {
+        tokio::spawn(read_lines(err, lines));
+    }
+    said
+}
+
 /// Reads `out` a line at a time, each cut to [`LONGEST_LINE`] bytes, into `lines`, until it ends.
-pub(crate) async fn read_lines(
-    mut out: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
-    lines: tokio::sync::mpsc::UnboundedSender<String>,
-) {
+async fn read_lines(mut out: impl tokio::io::AsyncRead + Unpin, lines: UnboundedSender<String>) {
     use tokio::io::AsyncReadExt;
     let mut buffer = [0u8; 4096];
     let mut line = Vec::new();
@@ -2250,7 +2247,7 @@ fn command(
 const CODEX_FILE_STORE: &str = r#"cli_auth_credentials_store="file""#;
 
 /// A tool's command as [`command`] says, whatever it's asked.
-fn tool_command(bin: &Path, scratch: &Path) -> tokio::process::Command {
+pub(crate) fn tool_command(bin: &Path, scratch: &Path) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(bin);
     command
         .env_clear()

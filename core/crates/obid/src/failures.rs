@@ -280,7 +280,7 @@ fn stale(home: &Path, job: &Job, log: &Path) -> bool {
     };
     let written = written.as_secs() as i64;
     let finished = job.finished.unwrap_or(job.created);
-    crate::store::load_dir::<Record>(&folder(home))
+    crate::store::load_dir::<Record>(home, &folder(home))
         .iter()
         .any(|r| r.job == job.id && r.date < finished && written <= r.date)
 }
@@ -341,7 +341,7 @@ fn tail_chars(text: &str, limit: usize) -> String {
 
 /// The records kept, newest first, at most `limit`.
 pub fn list(home: &Path, limit: usize) -> Vec<Record> {
-    let mut records: Vec<Record> = crate::store::load_dir(&folder(home));
+    let mut records: Vec<Record> = crate::store::load_dir(home, &folder(home));
     records.sort_by(|a, b| b.date.cmp(&a.date).then_with(|| b.id.cmp(&a.id)));
     records.truncate(limit);
     records
