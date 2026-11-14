@@ -10,7 +10,7 @@ const APP = 'apps/electron/src';
 export const config: BrainConfig = {
   name: 'Oby',
   root: resolve(fileURLToPath(new URL('.', import.meta.url)), '../..'),
-  obid: { extractor: 'tools/brain/obid-extract', crate: 'core/crates/obid', apiDoc: 'docs/runner-api.md', goneSection: 'Routes obid does not serve' },
+  obid: { extractor: 'tools/brain/obid-extract', crate: 'core/crates/obid', apiDocs: ['docs/runner-api.md', 'docs/api/*.md'], goneSection: 'Routes obid does not serve' },
   app: {
     renderer: `${APP}/renderer/src`,
     main: [`${APP}/main`, `${APP}/preload`],

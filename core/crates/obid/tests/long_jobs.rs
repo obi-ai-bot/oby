@@ -1123,33 +1123,56 @@ fn recovery_16_a_spinning_agent_is_continued_at_most_twice() {
 
 /// RECOVERY-12: the CPU an idle agent's window starts from is read once it has gone quiet, so what
 /// it used starting and talking isn't counted: its first cut comes after one window, not two.
+/// Timed from obid hearing the agent's last line (its session) to obid's cut, as the job's events
+/// arrive, so the agent's start-up isn't counted.
 #[test]
 fn recovery_12_an_idle_jobs_first_cut_comes_after_one_window() {
+    use std::time::{Duration, Instant};
     let (_folder, obid) = obid_with("recovery-12-one-window", json!({"stallAfter": 6}), &[]);
+    let events = follow_events(&obid);
     let id = post_job(&obid, "QUIET ONCE");
+    let give_up_at = Instant::now() + Duration::from_secs(60);
+    let (mut quiet, mut cut) = (None, None);
+    let mut seen = Vec::new();
+    while cut.is_none() {
+        let left = give_up_at.saturating_duration_since(Instant::now());
+        let Ok((name, job)) = events.recv_timeout(left) else {
+            panic!("no cut within 60 seconds: {seen:?}");
+        };
+        let now = Instant::now();
+        if name != "job" || job["id"] != id.as_str() {
+            continue;
+        }
+        if quiet.is_none() && job["session"].as_str().is_some_and(|s| !s.is_empty()) {
+            quiet = Some(now);
+        }
+        if job["step"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("Trying again now"))
+        {
+            cut = Some(now);
+        }
+        seen.push((now, job["session"].clone(), job["step"].clone()));
+    }
+    let quiet = quiet.unwrap_or_else(|| panic!("cut before its session was heard: {seen:?}"));
+    // The init line is the last the agent says, so its session marks when it went quiet: one
+    // 6-second window from there, and half of one at least; two windows would be 12 and more.
+    let took = cut.unwrap() - quiet;
+    assert!(
+        took >= Duration::from_secs(3) && took < Duration::from_secs(12),
+        "{took:?} from its session to the cut: {seen:?}"
+    );
     let job = wait(&obid, &id);
     assert_eq!(job["status"], "done", "{job}");
     // Its rounds' starts: the first, and the one Oby continued once the window cut it.
     let transcript = call(&obid, "GET", &format!("/v1/jobs/{id}/transcript"), None).body;
-    let starts: Vec<i64> = transcript["entries"]
+    let starts = transcript["entries"]
         .as_array()
         .unwrap()
         .iter()
         .filter(|e| e["kind"] == "start")
-        .map(|e| {
-            e["at"]
-                .as_str()
-                .unwrap()
-                .parse::<jiff::Timestamp>()
-                .unwrap()
-                .as_second()
-        })
-        .collect();
-    assert_eq!(starts.len(), 2, "{transcript}");
-    // One 6-second window and the seconds the first round takes to start its agent (`at` is to
-    // the second); two windows would be 12 seconds and more.
-    let took = starts[1] - starts[0];
-    assert!((6..12).contains(&took), "{took} seconds: {transcript}");
+        .count();
+    assert_eq!(starts, 2, "{transcript}");
 }
 
 /// RECOVERY-4: the turn limit continues the same session, and counts with a quiet job's tries.

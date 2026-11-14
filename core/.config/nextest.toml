@@ -19,8 +19,3 @@ path = "junit.xml"
 # the Mac runs it once more only when it failed and is listed at the merge base too. The list only
 # shrinks: a new entry comes with its task, factory/queue/tasks/<key>.md, in the same change, and
 # the fix takes its entry out.
-
-# R01-19: the first cut must come 6 to 12 seconds of wall clock after the start (long_jobs.rs:1152)
-[[profile.ci.overrides]]
-filter = 'binary_id(obid::long_jobs) & test(=recovery_12_an_idle_jobs_first_cut_comes_after_one_window)'
-retries = 2

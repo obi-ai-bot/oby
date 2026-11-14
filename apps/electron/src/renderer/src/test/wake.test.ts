@@ -45,6 +45,7 @@ vi.mock('../../../main/device', () => ({ confirming() {}, ownersWords() {}, kept
 vi.mock('../../../main/words', () => ({ input() {}, space() {}, picked() {} }));
 vi.mock('../../../main/notify', () => ({ notifying() {}, windowLeft() {}, windowSeen() {} }));
 vi.mock('../../../main/updates', () => ({ updating() {} }));
+vi.mock('../../../main/runMarker', () => ({ started() {}, windowLoaded() {}, rendererGone() {}, childGone() {}, quitting() {}, quit() {} }));
 vi.mock('../../../shared/sphere', () => {
   class NotThisKey extends Error {}
   return {
