@@ -567,7 +567,9 @@ pub const SYSTEM_READS_MACOS: [&str; 11] = [
 
 /// bubblewrap's arguments, in the order they apply: the whole system read-only, a private `/tmp`
 /// and `/dev`, every hidden folder replaced by an empty one, then the job's own paths bound back
-/// (read-only or writable), and finally the empty folders made read-only.
+/// (read-only or writable), and finally the empty folders made read-only. A read-only path that is
+/// a symbolic link is left as the box shows it or made again as the same link, never bound onto:
+/// bubblewrap resolves an absolute link against its own setup root and can't create the file there.
 fn bubblewrap_args_reading(
     spec: &Spec,
     confined: bool,
@@ -648,9 +650,29 @@ fn bubblewrap_args_reading(
             resolver.over.as_os_str(),
         ]);
     }
+    // A link's folder the box shows as it is: another read-only entry that is a real folder, or, in
+    // no hidden folder, all of `/` (or, confined, the system's software).
+    let shown = |folder: &Path| {
+        let bound = spec.read_only.iter().any(|p| p == folder)
+            && folder.symlink_metadata().is_ok_and(|m| m.is_dir());
+        let in_hidden =
+            folder.starts_with("/tmp") || spec.hidden.iter().any(|h| folder.starts_with(h));
+        let in_root = !confined || SYSTEM_READS_LINUX.iter().any(|s| folder.starts_with(s));
+        bound || (!in_hidden && in_root)
+    };
     for path in &spec.read_only {
-        if path.exists() {
+        if !path.exists() {
+            continue;
+        }
+        if !path
+            .symlink_metadata()
+            .is_ok_and(|m| m.file_type().is_symlink())
+        {
             push(&["--ro-bind".as_ref(), path.as_os_str(), path.as_os_str()]);
+        } else if !path.parent().is_some_and(shown)
+            && let Ok(target) = std::fs::read_link(path)
+        {
+            push(&["--symlink".as_ref(), target.as_os_str(), path.as_os_str()]);
         }
     }
     if let Some(common) = &spec.git_common {
@@ -1469,6 +1491,87 @@ mod tests {
                 !roots.contains(&home.join(never)) && !roots.contains(&real(never)),
                 "{never}: {roots:?}"
             );
+        }
+    }
+
+    /// Cursor's install: an absolute link in `~/.local/bin` to its version folder, deep in a hidden
+    /// home. bubblewrap never binds onto the link: it leaves it where the box shows its folder, and
+    /// makes it again where it doesn't, binding no more of the home than before.
+    #[test]
+    fn bubblewrap_never_binds_onto_a_symbolic_link() {
+        let root = std::env::temp_dir().join(format!("obid-linked-bin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let home = root.canonicalize().unwrap().join("deep/hidden-home");
+        let version = home.join(".local/share/fake-agent/versions/1");
+        std::fs::create_dir_all(&version).unwrap();
+        std::fs::create_dir_all(home.join(".local/bin")).unwrap();
+        let real = version.join("fake-agent");
+        std::fs::write(&real, "").unwrap();
+        let bin = home.join(".local/bin/fake-agent");
+        std::os::unix::fs::symlink(&real, &bin).unwrap();
+        let hidden = vec![home.clone()];
+        let path = std::env::join_paths([home.join(".local/bin")]).unwrap();
+        let mut read_only = tool_roots(&path, &hidden, &[]);
+        read_only.extend(install_root(&bin, &hidden, &[]));
+        read_only.push(bin.clone());
+        let spec = |read_only: Vec<PathBuf>| {
+            let spec = Spec {
+                worktree: root.join("w"),
+                temp: root.join("t"),
+                read_only,
+                hidden: hidden.clone(),
+                ..Spec::default()
+            }
+            .canonical();
+            bubblewrap_args(&spec)
+        };
+        let shown = spec(read_only.clone());
+        let without_bin = spec(
+            read_only
+                .into_iter()
+                .filter(|p| *p != home.join(".local/bin"))
+                .collect(),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let bind = |p: &Path| -> [OsString; 3] { ["--ro-bind".into(), p.into(), p.into()] };
+        let (bin_link, version_dir, real_bin) = (bind(&bin), bind(&version), bind(&real));
+        assert!(!shown.windows(3).any(|w| w == bin_link), "{shown:?}");
+        for bound in [
+            bind(&home.join(".local/bin")),
+            version_dir.clone(),
+            real_bin.clone(),
+        ] {
+            assert!(shown.windows(3).any(|w| w == bound), "{bound:?}\n{shown:?}");
+        }
+        let remade: [OsString; 3] = ["--symlink".into(), real.clone().into(), bin.clone().into()];
+        assert!(!shown.windows(3).any(|w| w == remade), "{shown:?}");
+        assert!(
+            without_bin.windows(3).any(|w| w == remade),
+            "{without_bin:?}"
+        );
+        assert!(
+            !without_bin.windows(3).any(|w| w == bin_link),
+            "{without_bin:?}"
+        );
+        for args in [&shown, &without_bin] {
+            for never in [home.join(".local"), home.join(".local/share")] {
+                assert!(
+                    !args.iter().any(|a| Path::new(a) == never),
+                    "{never:?}\n{args:?}"
+                );
+            }
+            for w in args.windows(3) {
+                if ["--ro-bind", "--bind", "--symlink"]
+                    .map(OsString::from)
+                    .contains(&w[0])
+                {
+                    assert!(
+                        Path::new(&w[1]) != home && Path::new(&w[2]) != home,
+                        "{w:?}"
+                    );
+                }
+            }
         }
     }
 
