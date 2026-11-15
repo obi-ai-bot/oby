@@ -5,7 +5,7 @@ The business behavior contract for Settings › About's updater rows in the Elec
 ## Feature and status
 
 - **Outcome:** The owner keeps Oby current without thinking about it, or, with Update automatically off, decides when; an update that isn't Deskree's, or isn't what was published, never installs.
-- **Status:** **Implemented** in the Electron app (`apps/electron`): the decisions in `src/shared/updates.ts`, carried out by `src/main/updates.ts` with electron-updater; About's rows in `SettingsView.tsx` (`Updates`). Publishing a release (below) is the owner's step.
+- **Status:** **Implemented** in the Electron app (`apps/electron`): the decisions in `src/shared/updates.ts`, carried out by `src/main/updates.ts` with electron-updater; About's rows in `SettingsView.tsx` (`Updates`). Publishing a release (below) is a `v*` tag on `main`, cut in CI ([release.md](release.md)).
 - **Scope:** the Mac app's own build (the Electron app, obid inside it). **Out of scope:** the Swift Mac app's Sparkle feed on `downloads.oby.deskree.com` (the app was deleted from this repository on 2026-11-02; the feed stays, for installed 0.4.5 Macs), the iPhone and Watch (the App Store and TestFlight), Windows and Linux, a release channel or a beta, and Sangam's later screens (design/app: the island offering to restart; waiting for a runner's check before a restart).
 
 ## Behavior
@@ -62,12 +62,13 @@ The footer "Oby downloads updates in the background and installs them when you q
 - **electron-updater 6.8.12**, bundled into main (the app ships no `node_modules`), the `generic` provider, whole-zip downloads (no blockmaps). It needs `Contents/Resources/app-update.yml` (`apps/electron/build/app-update.yml`, through electron-builder.yml's `extraResources`) before any download, even with the feed set in code; `package.sh` refuses to notarize an app without it.
 - **What `scripts/package.sh` makes** (after notarizing and stapling): `dist/<name>-<version>-<arch>-mac.zip` per architecture (the arm64 one has `arm64` in its name: the updater picks it on Apple silicon, the other elsewhere) and `dist/latest-mac.yml` (version, each zip's sha512 and size, release date, `issued` (the UTC second it was written, `YYYY-MM-DDTHH:MM:SSZ`), `minimumVersion` (`minimum_version` in `package.sh`), and last `signature`). The version is `apps/electron/package.json`'s; `package.sh` stops before building when it's under `minimum_version`, or when the feed key is missing or isn't the one the app carries.
 
-### Publishing a release (the owner's step)
+### Publishing a release
 
-1. `OBY_FEED_KEY_FILE=<the feed key's file, outside the repository> apps/electron/scripts/package.sh` (both architectures: a feed with one leaves the other's Macs without an update).
-2. Upload both zips to the `oby-downloads` R2 bucket under `electron/`, then `latest-mac.yml` there last (no Mac is sent to a zip that isn't there yet). `latest-mac.yml` with `Cache-Control: no-cache`, so a new release is seen at the next look.
-3. The DMGs where downloads should point.
-4. To withdraw a bad release: publish the last good code under a higher version, with `minimum_version` in `package.sh` raised to that version, never by a downgrade (`allowDowngrade` stays false).
+The owner pushes a `v*` tag on `main` and approves the run; `.github/workflows/release.yml` does the rest ([release.md](release.md)):
+
+1. `apps/electron/scripts/package.sh arm64 x64`, with the feed key's file as `OBY_FEED_KEY_FILE` (both architectures: a feed with one leaves the other's Macs without an update).
+2. `apps/electron/scripts/upload-release.sh`: both zips and the DMGs to the `oby-downloads` R2 bucket under `electron/`, then `latest-mac.yml` there last (no Mac is sent to a zip that isn't there yet), with `Cache-Control: no-cache`, so a new release is seen at the next look.
+3. To withdraw a bad release: publish the last good code under a higher version, with `minimum_version` in `package.sh` raised to that version, never by a downgrade (`allowDowngrade` stays false).
 
 ## Acceptance scenarios
 

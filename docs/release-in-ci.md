@@ -2,6 +2,8 @@
 
 This is the answer to roadmap task R09-13, for R09-14 (the release workflow, `.github/workflows/release.yml`, on `v*` tags of `main`). It lists what a release needs today, records the owner's decisions on key custody, CI signing and the dev-to-main cadence, names what the owner sets up in GitHub, and leaves R09-14 the open points it needs answered.
 
+R09-14 built it: `.github/workflows/release.yml` and [contracts/release.md](contracts/release.md). Its answers to the open points below: the feed stays on `downloads.oby.dev` (UPDATES-5 and 9), with no GitHub Releases copy yet; the tag is cut on `main` once it moves; and nothing reads the bundle scripts from `apps/mac` any more (they are `apps/electron/scripts/bundle-*.sh`). The file and line references in "What a release needs today" are those before it.
+
 Nothing here ran on a runner. The signing test the task asked for needs the owner's certificate and notary key, which the factory never creates, reads or stores, so R09-14's test tag proves the method below instead (q044).
 
 ## What a release needs today

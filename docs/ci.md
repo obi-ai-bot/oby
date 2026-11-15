@@ -136,10 +136,10 @@ CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= PROVISIONING_PROFI
 
 - `CODE_SIGN_IDENTITY=-` with `CODE_SIGN_STYLE=Manual`, an empty `DEVELOPMENT_TEAM` and an empty `PROVISIONING_PROFILE_SPECIFIER`: the apps are signed **ad hoc**, with no team and no profile, because CI has no certificate, team or profile to sign with.
 
-Notarized builds of the Mac app are made on a Mac by `apps/electron/scripts/package.sh` (apps/electron/README.md), never by a check.
+Notarized builds of the Mac app are made by `apps/electron/scripts/package.sh` (apps/electron/README.md), on a Mac or in the release workflow ("Releases", below), never by a check.
 
 ## Releases
 
 Each release tag adds its own `core/crates/obid/tests/fixtures/released/<tag>/` (three jobs and a `config.json`, as the README there describes) in the release's pull request, so `tests/released_files.rs` proves today's obid still reads what that release wrote (docs/contracts/released-files.md).
 
-GitHub doesn't cut releases yet: the owner packages the Mac app by hand. R09-14 will, from a `v*` tag on `main`, as [release-in-ci.md](release-in-ci.md) says (what a release needs, the `release` environment and its secrets, and the cadence).
+A `v*` tag on `main` cuts the Mac release in `.github/workflows/release.yml` (the `Release` workflow, docs/contracts/release.md, RELEASE-1 to 3). Its `on-main` job, on `ubuntu-latest` with no secret, checks that the tag's commit is on `main` (`apps/electron/scripts/on-main.sh`). Its `mac` job needs it and runs on `macos-latest` in the `release` environment, so it waits for the owner's approval before any secret is read; it runs `package.sh`, then `upload-release.sh`. The environment, its secrets and the cadence are [release-in-ci.md](release-in-ci.md)'s. The workflow's permissions are `{}`, `on-main`'s `contents: read`, and `mac`'s `contents: read` and `issues: read` (the ChatGPT gate); every action is pinned by the same SHAs as `ci.yml`.
