@@ -1,6 +1,6 @@
 import { copyPlain } from './room';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Check, ChevronRight, File as FileIcon } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, File as FileIcon } from 'lucide-react';
 import { BrandMark } from './brands';
 import { ObyFace, PeerByline } from './ObyFace';
 import AskCard from './AskCard';
@@ -9,7 +9,9 @@ import { markRead, say, useConvos } from './peers';
 import StatusDot from './StatusDot';
 import { AskBlock, resultLine } from './TaskCard';
 import { useScrollThumb } from './useScrollThumb';
-import AgentPane, { WorkNow } from './AgentPane';
+import AgentThread, { WorkNow, openCards } from './AgentThread';
+import TaskMenu from './TaskMenu';
+import { replyTarget, type Box } from './replyTarget';
 import { span } from './jobPage';
 import Composer, { typingIn } from './Composer';
 import Formatted from './Formatted';
@@ -49,7 +51,9 @@ type Entry = Message | { who: 'oby'; ask: true; ago: number };
 // agent. kind 'peer': one with someone else's Oby (or a few) in the Obysphere
 // (peers.ts): each Oby's words under its owner's picture and name. Whatever is
 // happening now comes last: an Oby at work, or the agent's line. It lies over
-// what was open; back (in the title bar, or Esc) returns to it.
+// what was open; back (in the title bar, or Esc) returns to it. A task's card
+// opens in place, under it, into its agent's own conversation (AgentThread);
+// the message box at the foot never talks to a card's agent (replyTarget).
 export default function ChatView({ id, kind = 'task', leaving, covered = false, onBack, onGone, onOpenTask, onOpenMember }: {
   id: string;
   kind?: 'task' | 'oby' | 'peer';
@@ -57,7 +61,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   covered?: boolean;  // a task's page (from one of its cards) is open over it
   onBack: () => void;
   onGone: () => void;
-  onOpenTask: (id: string) => void;       // a card in the thread: that task's page
+  onOpenTask: (id: string) => void;       // a card in the thread: that task's page (its menu, View details)
   onOpenMember?: (owner: string) => void;  // a question's card: that person's thread
 }) {
   const tasks = useTasks();
@@ -74,10 +78,13 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   const name = task ? convoTitle(task.job) : talk ? talk.title : convo!.title;
   const j = task?.job;
   const { list, onScroll, thumbProps } = useScrollThumb<HTMLElement>();
-  // the task whose agent's own conversation is open beside this one (from its card)
-  const [opened, setPane] = useState<string | null>(null);
-  // (deleted, it closes with its task: there's nobody left to tell)
-  const pane = opened && tasks.some((t) => t.id === opened) ? opened : null;
+  // the cards the owner opened in place, and those needing them they folded during this need
+  // (deleted, a card goes with its task, opened or not: there's nobody left to tell)
+  const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
+  const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
+  // a card's menu (right-click), at the pointer
+  const [menu, setMenu] = useState<{ id: string; at: DOMRect } | null>(null);
+  const menuTask = menu && tasks.find((t) => t.id === menu.id);
   const agent = j ? agentOf(j.agent).name : 'Oby';
   // a task's: what came before, the decision (if any) where things stand, then
   // what's been said since (the decision has been waiting since Oby's last
@@ -93,6 +100,26 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
     // person's Oby from the same side, under its owner's name (by). Only you, the
     // person, get a bubble
     : { who: 'oby', by: m.who === 'oby' ? undefined : m.who, text: m.text, ago: m.ago, jobs: m.task ? [m.task] : undefined, streaming: m.streaming }));
+  // the cards that need the owner open by themselves, but for one they folded (LIVETASK-16);
+  // a task's own card in its own thread is never a card to open
+  const needing = thread.flatMap((m) => ('jobs' in m ? m.jobs ?? [] : []))
+    .filter((jid) => !(kind === 'task' && jid === id) && tasks.find((t) => t.id === jid)?.status === 'needs');
+  const open = openCards(opened, folded, needing);
+  const without = (s: ReadonlySet<string>, jid: string) => new Set([...s].filter((x) => x !== jid));
+  const toggle = (jid: string) => {
+    if (open.has(jid)) {
+      setOpened((s) => without(s, jid));
+      if (needing.includes(jid)) setFolded((s) => new Set(s).add(jid));
+    } else {
+      setOpened((s) => new Set(s).add(jid));
+      setFolded((s) => without(s, jid));
+    }
+  };
+  // a fold lasts as long as the need: a later one opens it again
+  useEffect(() => {
+    const ended = [...folded].filter((f) => tasks.find((t) => t.id === f)?.status !== 'needs');
+    if (ended.length) setFolded((s) => new Set([...s].filter((f) => !ended.includes(f))));
+  }, [tasks, folded]);
   // an Oby at work on an answer, and what it's on (someone else's: writing)
   const typing = !!(task ?? talk ?? convo)!.typing, step = talk ? talk.step : convo?.typing ? 'Writing' : undefined;
   // who's writing, in a conversation with other people's Obys: the first in it
@@ -140,14 +167,20 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   useEffect(() => {
     // with a task's page open over it, Esc is the page's
     if (covered) return;
-    // the agent's conversation first, if it's open beside this one
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !typingIn(e)) { if (pane) setPane(null); else onBack(); } };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !typingIn(e)) onBack(); };
     addEventListener('keydown', onKey);
     return () => removeEventListener('keydown', onKey);
-  }, [onBack, covered, pane]);
+  }, [onBack, covered]);
+
+  // where the message box's words go: Oby, a task's own agent, or another Oby (replyTarget)
+  const foot: Box = { foot: task ? { kind: 'task', id: task.id } : talk ? { kind: 'oby', id: talk.id } : { kind: 'peer', id: convo!.id } };
+  const sendFoot = (text: string, att: Parameters<typeof tellChat>[2]) => {
+    const to = replyTarget(foot);
+    return 'job' in to ? tell(to.job, text, att) : 'oby' in to ? (to.oby === WELCOME && typedFirst(text)) || tellChat(to.oby, text, att) : say(to.peer, text, att);
+  };
 
   return (
-    <div className={`chat-layer${leaving ? ' is-leaving' : ''}${covered ? ' is-covered' : ''}${pane ? ' has-agent-pane' : ''}`} inert={covered}>
+    <div className={`chat-layer${leaving ? ' is-leaving' : ''}${covered ? ' is-covered' : ''}`} inert={covered}>
       <div className="chat-scroll">
         <section ref={list} className="chat" aria-label={task ? `Conversation about ${task.title}` : name} onScroll={(e) => { onScroll(); const el = e.currentTarget; atEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
           <div className="chat-column">
@@ -194,7 +227,18 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                   // what this message started
                   ...('jobs' in m ? m.jobs ?? [] : []).map((jid) => {
                     const t = tasks.find((x) => x.id === jid);
-                    return t && <ThreadTask key={jid} task={t} current={kind === 'task' && jid === id} opened={pane === jid} onOpen={(open) => setPane(pane === open ? null : open)} />;
+                    return t && (
+                      <ThreadTask
+                        key={jid}
+                        task={t}
+                        current={kind === 'task' && jid === id}
+                        opened={open.has(jid)}
+                        onOpen={toggle}
+                        onMenu={(at) => setMenu({ id: jid, at })}
+                        // a follow-up its box started: its card opened, where this conversation lists it
+                        onFollowUp={(next) => setOpened((s) => new Set(s).add(next))}
+                      />
+                    );
                   }),
                 ].filter(Boolean);
                 const end = parts.pop();
@@ -266,14 +310,15 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
         style={{ '--i': 2 } as React.CSSProperties}
         placeholder={convo ? `Message ${convo.with.length > 1 ? 'the group' : `${writer}’s Oby`}…` : !task ? 'Reply to Oby…' : tellPlaceholder(task, agent)}
         label={convo ? `Message ${convo.title}` : task ? `Tell the agent about ${task.title}` : 'Reply to Oby'}
-        onSend={(text, att) => (task ? tell(task.id, text, att) : talk ? (talk.id === WELCOME && typedFirst(text)) || tellChat(talk.id, text, att) : say(convo!.id, text, att))}
+        onSend={sendFoot}
         repos={!!talk && !talk.local}
         conversation={talk?.id}
         talk={talk && !talk.local && (!onObid || talkReady(talk.id)) ? talk : undefined}
         draft={task ? draftBox.task(task.id) : talk ? draftBox.conversation(talk.id) : draftBox.peer(convo!.id)}
         onStop={talk && typing && ofObid(talk.id) && talkReady(talk.id) ? () => stopChat(talk.id) : undefined}
       />
-      {pane && <AgentPane key={pane} id={pane} onClose={() => setPane(null)} onDetails={onOpenTask} onFollowUp={setPane} />}
+      {/* a card's menu: its page, then Stop or Archive, and Delete */}
+      {menu && menuTask && <TaskMenu task={menuTask} at={menu.at} align="left" onClose={() => setMenu(null)} onViewDetails={() => onOpenTask(menu.id)} />}
     </div>
   );
 }
@@ -322,11 +367,19 @@ const Face = ({ live = false, talk }: { live?: boolean; talk?: number }) => <Oby
 // A task started in the conversation, as a small card under Oby's message: its title, how it stands
 // and who has it, and its status mark (as in the side panel). While it works, under that, its to-dos
 // with the current one lit and the last things it did (WorkNow); ended, what it left behind, in one
-// line. A click opens the agent's own conversation beside the chat (again: closes it); in a task's
-// own thread, its own card just shows where it stands. A status this build doesn't know says no
-// word and shows StatusDot's neutral mark (docs/contracts/wire.md, WIRE-3).
+// line. A click opens it in place into the agent's own conversation (AgentThread; again: folds it),
+// and a right-click opens its menu (onMenu, at the pointer); in a task's own thread, its own card
+// just shows where it stands. A status this build doesn't know says no word and shows StatusDot's
+// neutral mark (docs/contracts/wire.md, WIRE-3).
 const ENDED: Partial<Record<Task['job']['status'], string>> = { failed: 'Failed', stopped: 'Stopped', interrupted: 'Stopped' };
-export function ThreadTask({ task, current, opened = false, onOpen }: { task: Task; current: boolean; opened?: boolean; onOpen: (id: string) => void }) {
+export function ThreadTask({ task, current, opened = false, onOpen, onMenu, onFollowUp }: {
+  task: Task;
+  current: boolean;
+  opened?: boolean;
+  onOpen: (id: string) => void;
+  onMenu?: (at: DOMRect) => void;
+  onFollowUp?: (id: string) => void;
+}) {
   const j = task.job;
   const repo = j.repo.includes('/') ? j.repo.split('/')[1] : null;
   const atWork = task.status === 'running' || task.status === 'needs';
@@ -348,14 +401,26 @@ export function ThreadTask({ task, current, opened = false, onOpen }: { task: Ta
     </span>
     {/* stopped or failed isn't the check a finished one gets (Sangam's board "Stuck and failed") */}
     {task.status === 'done' && ENDED[j.status] ? <span className="status" role="img" aria-label={ENDED[j.status]}><span className="status-dot is-failed" /></span> : <StatusDot task={task} />}
-    {!current && <ChevronRight size={14} strokeWidth={1.8} className="msg-task-go" />}
+    {!current && (opened ? <ChevronDown size={14} strokeWidth={1.8} className="msg-task-go" /> : <ChevronRight size={14} strokeWidth={1.8} className="msg-task-go" />)}
   </>;
   return (
     <div className={`msg-task-work${atWork ? ' is-live' : ''}${opened ? ' is-on' : ''}`}>
       {current
         ? <div className="msg-task">{body}</div>
-        : <button className="msg-task is-link" onClick={() => onOpen(task.id)} aria-label={`Open ${task.title}`} aria-expanded={opened}>{body}</button>}
-      {atWork && <WorkNow task={task} onClick={current ? undefined : () => onOpen(task.id)} />}
+        : (
+          <button
+            className="msg-task is-link"
+            onClick={() => onOpen(task.id)}
+            onContextMenu={(e) => { e.preventDefault(); onMenu?.(new DOMRect(e.clientX, e.clientY, 0, 0)); }}
+            aria-label={`Open ${task.title}`}
+            aria-expanded={opened}
+          >
+            {body}
+          </button>
+        )}
+      {opened && !current
+        ? <AgentThread id={task.id} onFollowUp={(next) => onFollowUp?.(next)} />
+        : atWork && <WorkNow task={task} onClick={current ? undefined : () => onOpen(task.id)} />}
     </div>
   );
 }
