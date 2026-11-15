@@ -1,6 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { Chat } from '../chats';
+import { liveBridge } from './liveBridge';
 
 // Stop in the message box (docs/contracts/chat-first.md, CHATFIRST-33): the real ChatView on live's
 // state, its Composer a marker holding what it's given; the real Composer for the button itself.
@@ -28,7 +29,7 @@ function shown(working: Record<string, string>) {
 
 beforeAll(async () => {
   vi.stubGlobal('location', { search: '' });
-  vi.stubGlobal('window', { app: { obid: { call, follow: () => () => {} } } });
+  vi.stubGlobal('window', { app: { obid: { call, ...liveBridge().obid } } });
   vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {}, removeItem: () => {} });
   vi.stubGlobal('document', { createElement: () => ({}) });
   vi.stubGlobal('addEventListener', () => {});

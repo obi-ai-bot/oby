@@ -9,8 +9,9 @@ import { ipc, type Trusted } from './ipc';
 
 // obid, Oby's engine (core/, docs/runner-api.md), as this app reaches it: the obid already
 // answering on this Mac, adopted. Its token stays here in main: the renderer asks main for each
-// call ('obid') and for the event stream ('obid-follow'), and main adds the bearer. Nothing but
-// obid's /v1 API is reachable this way, and only from this app's own page (trusted).
+// call ('obid'), and main adds the bearer. Nothing but obid's /v1 API is reachable this way, and
+// only from this app's own page (trusted). obid's events the page gets from main's one follower
+// of them (live.ts), which keeps what obid has: a snapshot when it opens, then each event.
 
 // fixed: obid never moves to another port, and neither does the app. In development only,
 // OBID_PORT and OBID_HOME point it at a scratch obid run by hand (a live check's), never the
@@ -42,7 +43,7 @@ const token = () => readOwn('api-token', true);
 // still works, nothing yet ('waiting': the page says no reason, and an old error isn't one); else
 // obid's own reason (home/last-start-error, written by a start that failed and removed once it
 // listens, #1493); else what the connection said. 'approval': macOS waits for the person's.
-function reason(error?: unknown): Answer {
+export function reason(error?: unknown): Answer {
   // whatever listens now gets checked again before the next call
   mineUntil = 0;
   if (problem) return { status: 0, text: problem, ...(problem === APPROVAL ? { why: 'approval' } : {}) };
@@ -91,6 +92,8 @@ async function gone(error?: unknown): Promise<Answer> {
 // for each of the page's calls.
 const TAKEN = 'Something other than your Oby engine answers on 127.0.0.1:7777 (another user’s Oby on this Mac, or another program), so Oby sends it nothing. Quit it, or log that user out, and open Oby again.';
 let mineUntil = 0;
+// obid closed the event stream (live.ts): whatever listens now gets checked again
+export const streamEnded = () => { mineUntil = 0; };
 // The pids of this user's on the port
 async function listening(): Promise<string[]> {
   try {
@@ -353,10 +356,6 @@ export async function startObid() {
   }
 }
 
-let following: AbortController | null = null;
-// the window closed: nobody to send events to
-export const stopFollowing = () => { following?.abort(); following = null; };
-
 // One call, read whole
 export async function obid(method: string, path: string, body?: unknown, words?: string): Promise<Answer> {
   const r = await send(method, path, body, undefined, words);
@@ -389,32 +388,4 @@ export function bridge(trusted: Trusted, ownersWords: (method: string, path: str
 
   // the splash's Open Login Items, when obid waits for that approval
   channels.on('open-login-items', [], () => { void openLoginItems(); });
-
-  // The event stream (GET /v1/events), one at a time: each piece of its text goes to the page as
-  // it comes ('obid-chunk'), then how it ended ('obid-end'). Following again drops the one before.
-  channels.on('obid-follow', [], async (e) => {
-    following?.abort();
-    const control = new AbortController();
-    following = control;
-    const page = e.sender;
-    const end = (a: Answer) => { if (following === control && !page.isDestroyed()) page.send('obid-end', a); };
-    const r = await send('GET', '/v1/events', undefined, control.signal);
-    if (!(r instanceof Response)) return end(r);
-    if (!r.ok || !r.body) return end({ status: r.status, text: await r.text().catch(() => '') });
-    // obid answered: the page fetches what it shows now (an empty piece), with the events that
-    // come meanwhile applied over it
-    if (!page.isDestroyed()) page.send('obid-chunk', '');
-    try {
-      const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done || following !== control) break;
-        if (!page.isDestroyed()) page.send('obid-chunk', value);
-      }
-      mineUntil = 0;
-      end({ status: 0, text: 'obid closed the event stream.' });
-    } catch (err) {
-      if (!control.signal.aborted) end(reason(err));
-    }
-  });
 }
