@@ -674,6 +674,33 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual(self.feed.load_state()["A00-98"]["job"], "job-9")
         self.assertFalse((self.feed.FEED / "A00-98.start").exists())
 
+    def test_feedalive_1_a_lost_start_is_retried_with_its_saved_body_even_after_the_task_changed(self):
+        """obid makes the job but its answer is lost; dev then retitles the task and the account changes. The next
+        pass sends the very body it saved, so obid's key check (a changed body under one key is a 409) gives the job
+        back instead of refusing it and letting a later pass make a second build."""
+        task = {"key": "A00-98", "title": "another task", "body": ""}
+        self.feed.ready_tasks = lambda state: [] if "A00-98" in state else [(dict(task), True, {"y.py"})]
+        self.feed.free_gb = lambda: 100.0
+        self.feed.oby_jobs = lambda: []
+        bodies = []
+
+        def api(method, path, body=None, timeout=30):
+            bodies.append(body["job"])
+            if len(bodies) == 1:
+                self.feed.OBID_MISSED.append(path)
+                return None, None
+            return (201, {"id": "job-9"}) if body["job"] == bodies[0] else (409, {"error": "that key carried another job"})
+
+        self.feed.api = api
+        clock = iter(range(1000, 2000, 60))
+        with mock.patch.object(self.feed.time, "time", lambda: next(clock)):
+            self.assertIsNone(self.one_pass())
+            task["title"] = "another task, retitled on dev"
+            self.assertEqual(self.feed.one_pass(Namespace(max=3, min_free_gb=0, dry_run=False, account="other")), (1, 1))
+        self.assertEqual(bodies[0], bodies[1])
+        self.assertEqual(self.feed.load_state()["A00-98"]["job"], "job-9")
+        self.assertFalse((self.feed.FEED / "A00-98.start").exists())
+
     def test_feedalive_1_one_request_key_per_task_attempt_through_a_5xx_until_the_job_is_saved(self):
         """obid answers a start with a 503 while it restarts, then with the job: both posts carry the one key, which
         is still on disk when the job is saved and dropped only after; a 4xx refusal ends the attempt."""
