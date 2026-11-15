@@ -60,6 +60,7 @@ A decoder answers `{ value }` or `undefined` when it can't read the value, so `o
 | `updates.ts` | `updates` | `handle` | `orUndefined(oneOf('check', 'install', true, false))` | `null` |
 | `settings.ts` | `local-settings` | `handle` | none | `null` |
 | `settings.ts` | `local-setting` | `handle` | `rowKey`, `rowValue` | `null` |
+| `settings.ts` | `login-item` | `handle` | `orUndefined(boolean)` | `null` |
 | `sphere.ts` | `sphere-leave` | `handle` | none | `'Not this app’s page.'` |
 | `sphere.ts` | `sphere-policy` | `handle` | none | `null` |
 | `sphere.ts` | `sphere-set-policy` | `handle` | `safeInteger` | `null` (with no click main saw: a `failed` answer, [sphere-policy.md](sphere-policy.md) POLICY-4) |
@@ -77,7 +78,7 @@ A decoder answers `{ value }` or `undefined` when it can't read the value, so `o
 
 ## Interfaces and dependencies
 
-- **Renderer ↔ main:** the preload's `window.app` (`src/preload/index.ts`), unchanged: the same channel names, arguments and answers. Since R06-13 it also has `settings` (`local()`, `keep(key, value)`) for `local-settings` and `local-setting` ([live-state.md](live-state.md)), since R10-06 `spherePolicy()` and `sphereSetPolicy(version)` for `sphere-policy` and `sphere-set-policy` ([sphere-policy.md](sphere-policy.md)), and since R06-08 `obid.live` and `obid.load` for `obid-snapshot` and `obid-load` ([live-state.md](live-state.md), LIVE-10).
+- **Renderer ↔ main:** the preload's `window.app` (`src/preload/index.ts`), unchanged: the same channel names, arguments and answers. Since R06-13 it also has `settings` (`local()`, `keep(key, value)`) for `local-settings` and `local-setting` ([live-state.md](live-state.md)), since A00-90 `loginItem(on?)` for `login-item` ([live-state.md](live-state.md)), since R10-06 `spherePolicy()` and `sphereSetPolicy(version)` for `sphere-policy` and `sphere-set-policy` ([sphere-policy.md](sphere-policy.md)), and since R06-08 `obid.live` and `obid.load` for `obid-snapshot` and `obid-load` ([live-state.md](live-state.md), LIVE-10).
 - No runner API change (`docs/runner-api.md` is unchanged).
 
 ## Acceptance scenarios
