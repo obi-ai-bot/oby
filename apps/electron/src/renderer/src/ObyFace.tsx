@@ -62,14 +62,15 @@ export function PeerByline({ name }: { name: string }) {
 // from their name, until there are real photos), with a small Oby at the
 // bottom right saying it's their Oby, not them. The owner is what tells two
 // Obys apart; an Oby this small can't show its own colour or face clearly.
-const AVATAR_COLORS = ['#3a5a8c', '#7a4a8c', '#2f7a6a', '#8c5a3a', '#8c3a52', '#5a6a2f', '#3a7a8c', '#6a4a3a'];
+// color: its own (a profile's), in place of the one picked from the name
+export const AVATAR_COLORS = ['#3a5a8c', '#7a4a8c', '#2f7a6a', '#8c5a3a', '#8c3a52', '#5a6a2f', '#3a7a8c', '#6a4a3a'];
 // djb2: spreads similar names (Dima, Daniel) over different colours
 const hash = (s: string) => [...s].reduce((h, c) => ((h * 33) ^ c.charCodeAt(0)) >>> 0, 5381);
-export function OwnerAvatar({ name, size = 28, badge = true }: { name: string; size?: number; badge?: boolean }) {
+export function OwnerAvatar({ name, size = 28, badge = true, color }: { name: string; size?: number; badge?: boolean; color?: string }) {
   const hue = hash(name) % AVATAR_COLORS.length;
   const initials = name.split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
   return (
-    <span className="owner-avatar" style={{ width: size, height: size, background: AVATAR_COLORS[hue] }} aria-hidden="true">
+    <span className="owner-avatar" style={{ width: size, height: size, background: color ?? AVATAR_COLORS[hue] }} aria-hidden="true">
       {initials}
       {badge && <span className="owner-avatar-oby"><ObyFace size={Math.round(size * 0.5)} badge /></span>}
     </span>

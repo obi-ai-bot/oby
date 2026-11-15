@@ -1,6 +1,6 @@
 import { BRANDS, type Brand } from './brands';
 import { everything, onObid } from './lean';
-import type { RoomPost } from '../../shared/obid-wire';
+import type { Profile, RoomPost } from '../../shared/obid-wire';
 import { agentOf, type Archived, type GitHubItem, type Job, type Message, type Peer, type PeerConvo, type Place, type Share, type Stage, type StageId, type StageState, type Turn } from './view';
 
 // Mock data until the app talks to Oby's engine. The shapes follow the Mac
@@ -583,6 +583,13 @@ export const PLACES: Place[] = onObid ? [] : [
 ];
 export const SHARED_WITH_ME: Share[] = onObid ? [] : [
   { owner: 'Wellington', agent: 'claude', account: 'Deskree API', share: 30, used: 12, resets: 'Resets on the 1st' },
+];
+// The profiles on the mock (screen 07): Default, the one first made; Deskree, something in it
+// waiting on you; Acme. Each of the mock's conversations is one's (chats.ts, Chat.profile)
+export const MOCK_PROFILES: Profile[] = [
+  { id: 'default', name: 'Default', color: '#3a5a8c', default: true, waiting: false },
+  { id: 'deskree', name: 'Deskree', color: '#2f7a6a', default: false, waiting: true },
+  { id: 'acme', name: 'Acme', color: '#8c5a3a', default: false, waiting: false },
 ];
 
 export const PEER_CONVOS: PeerConvo[] = [
