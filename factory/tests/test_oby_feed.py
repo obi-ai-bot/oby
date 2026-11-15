@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""factory/bin/oby-feed's own tests (docs/contracts/factory.md, FEEDMODEL-1 to 4; task A00-80, FEED-1 to FEED-6),
+"""factory/bin/oby-feed's own tests (docs/contracts/factory.md, FEEDMODEL-1 to 5; task A00-80, FEED-1 to FEED-6),
 never obid, GitHub, ssh, Quint, the gate VM or the network.
 
 FEED-1 to FEED-6: the feeder's state is a temporary folder; obid's API and every `gh` call are stand-ins that log
@@ -389,6 +389,44 @@ class CheckModels(unittest.TestCase):
                                    {"safe": ("[violation] Found an issue (12ms).\nerror: found a counterexample\n", 1)})
         self.assertEqual(got, f"{PATH}: the invariant safe does not hold")
         self.assert_own_ports(verifies)
+
+    def test_feedmodel_5_model_name_with_shell_characters_never_reaches_the_vm_and_keeps_the_pr_waiting(self):
+        bad = "docs/models/a;touch x.qnt"
+        sent = []
+
+        def run(cmd, **_):
+            sent.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "// verify: main=a invariants=safe\n" if cmd[0] == "gh" else HOLDS[0], "")
+
+        item = {"key": "A00-95", "job": "j1", "state": "reviewing", "pr": 7}
+        pr = {"state": "OPEN", "headRefOid": HEAD, "files": [{"path": PATH}, {"path": bad}]}
+        approvals = [{"commit": HEAD, "verdict": "approved", "agent": tool} for tool in ("claude", "codex")]
+        config = dict(feed.job.CONFIG, remote_gate={"ssh_host": "oby-gate"})
+        with mock.patch.object(feed.subprocess, "run", side_effect=run), mock.patch.object(feed.job, "CONFIG", config), \
+                mock.patch.object(feed, "api", return_value=(200, {"approvals": approvals})), \
+                mock.patch.object(feed, "gh_json", return_value=pr), mock.patch.object(feed, "touches_security", return_value=[]):
+            self.assertTrue(feed.follow(item, []))
+        self.assertEqual(item["state"], "waiting")
+        self.assertIn(f"{bad} gave no verdict", item["note"])
+        self.assertFalse([cmd for cmd in sent if "touch x" in " ".join(cmd) and cmd[0] == "ssh"], sent)
+        self.assertFalse([cmd for cmd in sent if cmd[:3] == ["gh", "pr", "merge"]], sent)
+        self.assertTrue([cmd for cmd in sent if cmd[0] == "ssh" and VERIFY.search(cmd[-1]) and "oby_factory.qnt" in cmd[-1]], sent)
+
+    def test_feedmodel_5_remote_paths_are_shell_quoted_even_without_the_name_check(self):
+        sent = []
+
+        def run(cmd, **_):
+            sent.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "// verify: main=a invariants=safe\n" if cmd[0] == "gh" else HOLDS[0], "")
+
+        config = dict(feed.job.CONFIG, remote_gate={"ssh_host": "oby-gate"})
+        with mock.patch.object(feed, "MODEL_NAME", re.compile(r".+")), mock.patch.object(feed.job, "CONFIG", config), \
+                mock.patch.object(feed.subprocess, "run", side_effect=run):
+            self.assertIsNone(feed.check_models(["docs/models/a;touch x.qnt"], HEAD))
+        remote = [cmd[-1] for cmd in sent if cmd[0] == "ssh"]
+        self.assertEqual(len(remote), 3, remote)
+        for command in remote:
+            self.assertIn(f"'/tmp/oby-feed-{HEAD[:12]}-a;touch x.qnt'", command)
 
 
 if __name__ == "__main__":
