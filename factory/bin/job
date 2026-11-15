@@ -191,11 +191,19 @@ def section(path, heading):
     return m.group(1).strip() if m else None
 
 
-def proofs_hash(spec):
-    """The sha256 of spec.md's `## Proofs` section, or `none` without one: factory/bin/prove checks it is the one
+def section_hash(spec, heading):
+    """The sha256 of spec.md's `## heading` section, or `none` without one: factory/bin/prove checks it is the one
     recorded when the job left spec."""
-    body = section(spec, "Proofs") if spec.exists() else None
+    body = section(spec, heading) if spec.exists() else None
     return hashlib.sha256(body.encode()).hexdigest() if body is not None else "none"
+
+
+def proofs_hash(spec):
+    return section_hash(spec, "Proofs")
+
+
+def models_hash(spec):
+    return section_hash(spec, "Models")
 
 
 def round_dir(job, n=None):
@@ -204,6 +212,11 @@ def round_dir(job, n=None):
 
 def surfaces(job):
     return (job.get("intake") or {}).get("surfaces") or []
+
+
+def proves(job):
+    """Whether the job must go through prove: its surfaces hold `proofs` (Kani) or `model` (Quint)."""
+    return bool({"proofs", "model"} & set(surfaces(job)))
 
 
 def reviewers(job):
@@ -495,6 +508,7 @@ def advance(job, stage):
     elif old == "spec":
         require((d / "spec.md").exists(), "spec.md doesn't exist")
         job["proofs_hash"] = proofs_hash(d / "spec.md")
+        job["models_hash"] = models_hash(d / "spec.md")
         next_round(job)
 
     elif old == "build" and stage == "gate":
@@ -527,8 +541,8 @@ def advance(job, stage):
                 "checks.md was written for another commit; run the gate again")
         if stage in {"prove", "review"}:
             require(h.get("GATE") == "PASS", "the gate didn't pass")
-            require(stage == "prove" or "proofs" not in surfaces(job),
-                    f"{job['id']} has the proofs surface: `job advance {job['id']} prove`, "
+            require(stage == "prove" or not proves(job),
+                    f"{job['id']} has the proofs or model surface: `job advance {job['id']} prove`, "
                     f"then factory/bin/prove {job['id']}")
             if stage == "review":
                 job["reviews"] = {r: "pending" for r in reviewers(job)}
@@ -552,7 +566,7 @@ def advance(job, stage):
                 f"run factory/bin/prove {job['id']} again")
         verdict = header(proofs).get("PROOFS")
         if stage == "review":
-            passed = {"PASS", "ADVISORY-FAIL"} | ({"SKIPPED"} if "proofs" not in surfaces(job) else set())
+            passed = {"PASS", "ADVISORY-FAIL"} | ({"SKIPPED"} if not proves(job) else set())
             require(verdict in passed, f"proofs.md says PROOFS: {verdict}, not {' or '.join(sorted(passed))}")
             job["reviews"] = {r: "pending" for r in reviewers(job)}
         else:
