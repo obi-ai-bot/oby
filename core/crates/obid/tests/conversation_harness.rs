@@ -1074,6 +1074,31 @@ fn oby_offer_starts_nothing_until_the_owners_start() {
     );
 }
 
+/// TASKCONV-22: in a turn whose words an app of the owner's signed, oby_offer makes no card and
+/// starts nothing: the agent is told to dispatch what they asked for, or say it in words.
+#[test]
+fn taskconv_22_a_signed_turn_makes_no_start_card() {
+    let (_folder, obid) = obid("harness-signed-offer", true);
+    let offer = r#"OBY oby_offer {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build", "title": "Greeting"}"#;
+    let answer = call_typed(
+        &obid,
+        "POST",
+        "/v1/plans",
+        &json!({"said": offer, "new": true}),
+    );
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    assert!(
+        oby_said(&answer).contains("The owner's own words began this turn, so Oby makes no card: start what they asked for with oby_dispatch, or say in words what you would suggest."),
+        "{}",
+        answer.text
+    );
+    let inbox = call(&obid, "GET", "/v1/inbox", None);
+    let items = inbox.body.as_array().cloned().unwrap_or_default();
+    assert!(!items.iter().any(|i| i["kind"] == "start"), "{items:?}");
+    let jobs = call(&obid, "GET", "/v1/jobs", None);
+    assert_eq!(jobs.body.as_array().map_or(0, Vec::len), 0, "{}", jobs.text);
+}
+
 /// The check the owner named ("Check: …") goes on the job exactly, so obid runs it before it
 /// publishes; one the owner's words don't hold leaves the repository's own; one that isn't one
 /// line is refused.

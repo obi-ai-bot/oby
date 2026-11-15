@@ -60,6 +60,7 @@ const SANDBOXED_GIT_LIMIT: Duration = Duration::from_secs(600);
 /// How much of what git in a job's sandbox says on stderr obid keeps: its end.
 mod account_limits;
 mod after_pr;
+pub(crate) mod asks;
 mod authors;
 mod budget;
 mod by_github;
@@ -4175,10 +4176,14 @@ impl Jobs {
                 }
                 return Some(sent);
             }
+            // The owner's signed words carry their own work on at once (RECOVERY-18).
+            let asks = past_safety(&job)
+                && asks::past_safety_by(source, crate::merge::own_work(&job))
+                    == asks::PastSafety::Asks;
             return Some(match source {
                 // Past its safety limit, a follow-up would start its counters again: the Confirm
                 // carries the files too (ATTACH-17).
-                Source::Owner | Source::Api if past_safety(&job) => {
+                Source::Owner | Source::Api if asks => {
                     Err(self.confirm_past_safety_with(&job, text, attachments))
                 }
                 // It takes the owner's words the first job never heard (#930): they came while
@@ -4232,6 +4237,8 @@ impl Jobs {
                     });
                     if made.is_ok() && !job.heard.is_empty() {
                         self.take_heard(id);
+                        // Its line said why they waited (TASKCONV-21): they went with this one.
+                        self.update(id, |job| job.step.clear());
                     }
                     made.map_err(|e| Refused(e.to_string()))
                 }
@@ -4362,17 +4369,20 @@ impl Jobs {
                 next.short_title()
             ))));
         }
-        // Past its safety ceiling or budget, only the owner's Confirm carries it on, and gives it
-        // a new one: the owner's words anywhere else ask for that Confirm.
-        if past_safety(&job) && source != Source::Confirmed {
-            return Some(Err(if matches!(source, Source::Owner | Source::Api) {
-                self.confirm_past_safety(&job, text)
-            } else {
-                Refused(format!(
-                    "It stopped at its safety limit ({}): only the owner carries it on past that.",
-                    job.limit.as_deref().unwrap_or("")
-                ))
-            }));
+        // Past its safety ceiling or budget, only the owner's Confirm, or their signed words to
+        // their own work (RECOVERY-18), carry it on, and give it a new one: the owner's words
+        // anywhere else ask for that Confirm.
+        if past_safety(&job) {
+            match asks::past_safety_by(source, crate::merge::own_work(&job)) {
+                asks::PastSafety::CarriesOn => {}
+                asks::PastSafety::Asks => return Some(Err(self.confirm_past_safety(&job, text))),
+                asks::PastSafety::Refused => {
+                    return Some(Err(Refused(format!(
+                        "It stopped at its safety limit ({}): only the owner carries it on past that.",
+                        job.limit.as_deref().unwrap_or("")
+                    ))));
+                }
+            }
         }
         let moved = match job.moves.last() {
             Some(last) if job.session.is_none() => format!(
@@ -4488,7 +4498,8 @@ impl Jobs {
                         job.owners.insert(0, words.clone());
                         job.heard.insert(0, words.text.clone());
                     });
-                    self.unheard(&job, &words.text, &why.0);
+                    let signed = matches!(source, Source::Owner | Source::Confirmed);
+                    self.unheard(&job, &words.text, &why.0, signed);
                     return;
                 }
                 None => return,
@@ -4521,7 +4532,7 @@ impl Jobs {
                 Some(Ok(_)) if take(&words).is_some() => {}
                 Some(Err(why)) => {
                     if let Some(job) = self.get(id) {
-                        self.unheard(&job, &words, &why.0);
+                        self.unheard(&job, &words, &why.0, true);
                     }
                     return;
                 }
@@ -4531,26 +4542,33 @@ impl Jobs {
     }
 
     /// The owner's words a job that ended never heard couldn't start its follow-up: a Confirm
-    /// item tries again with them (`message_job`), unless its safety limit's already does. They
-    /// stay with the job meanwhile, and its next follow-up takes them.
-    fn unheard(&self, job: &Job, words: &str, why: &str) {
+    /// item tries again with them (`message_job`), unless its safety limit's already does, or,
+    /// for `signed` words to their own work, its step says why (TASKCONV-21). They stay with the
+    /// job meanwhile, and its next follow-up takes them.
+    fn unheard(&self, job: &Job, words: &str, why: &str, signed: bool) {
         tracing::info!(
             "job {}: the owner's words after it ended started nothing yet: {why}",
             job.id
         );
-        if past_safety(job) {
-            return;
+        let name = job.short_title();
+        let kept = format!(
+            "{name} ended before it heard what you told it, and that couldn't start its follow-up: {why} Your words are kept with it."
+        );
+        match asks::unheard_words(signed, crate::merge::own_work(job), past_safety(job)) {
+            asks::Unheard::Asks => {}
+            asks::Unheard::SafetyAsks => return,
+            asks::Unheard::Says => {
+                self.update(&job.id, |job| job.step = kept);
+                return;
+            }
         }
         let Some(hook) = self.confirm_hook.get() else {
             return;
         };
-        let name = job.short_title();
         hook(crate::sphere::inbox::confirm_item(
             &job.id,
             format!("Start a follow-up of {name}"),
-            format!(
-                "{name} ended before it heard what you told it, and that couldn't start its follow-up: {why} Your words are kept with it. Confirm tries again with them."
-            ),
+            format!("{kept} Confirm tries again with them."),
             crate::sphere::inbox::Confirmed {
                 action: crate::sphere::inbox::action::MESSAGE_JOB.into(),
                 target: job.id.clone(),
@@ -4695,7 +4713,7 @@ impl Jobs {
             return;
         };
         let same = |r: &String| r.eq_ignore_ascii_case(&job.repo);
-        if job.kind == "research"
+        let answered = job.kind == "research"
             || job.check.is_some()
             || job.review_of.is_some()
             || self
@@ -4704,8 +4722,9 @@ impl Jobs {
             || crate::settings::load(&self.config.home)
                 .no_check
                 .iter()
-                .any(same)
-        {
+                .any(same);
+        // Never for the owner's own conversation work (PUBLISHING-33).
+        if !asks::offers_check(crate::merge::own_work(job), !answered) {
             return;
         }
         let Ok(listed) = git::git(clone, &["ls-tree", "--name-only", commit]).await else {
@@ -18881,6 +18900,72 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// PUBLISHING-33: the owner's own conversation work is never offered a check, and isn't
+    /// marked `check_asked`; another Oby's job and a plain one in the same repository still are.
+    #[tokio::test]
+    async fn publishing_33_own_work_is_never_offered_a_check() {
+        let root = std::env::temp_dir().join(format!("obid-own-check-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        let clone = root.join("clone");
+        std::fs::create_dir_all(&clone).unwrap();
+        std::fs::write(clone.join("Makefile"), "test:\n\ttrue\n").unwrap();
+        let git = |args: &[&str]| cleanup_git(&clone, args);
+        git(&["init", "-q"]);
+        git(&["add", "."]);
+        git(&["commit", "-qm", "init"]);
+        let commit = git(&["rev-parse", "HEAD"]);
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "o", "repos": [
+                {"repo": "o/app", "remote": "https://github.com/o/app.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let items = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = items.clone();
+        jobs.on_confirm(Arc::new(move |item| kept.lock().unwrap().push(item)));
+        let job = |id: &str, own: bool, obi: bool| {
+            let mut job = Job::new(
+                id.into(),
+                "o/app".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "c".into(),
+            );
+            job.own_conversation = own;
+            job.obi = obi.then(|| crate::job::ObiRef {
+                correlation_id: "c".into(),
+                from: "ernesto".into(),
+                from_owner: "ernesto".into(),
+                request_id: "r".into(),
+            });
+            jobs.insert(job.clone()).unwrap();
+            job
+        };
+        jobs.offer_check(&job("ffff0001", true, false), &clone, &commit)
+            .await;
+        assert!(items.lock().unwrap().is_empty());
+        assert!(!jobs.get("ffff0001").unwrap().check_asked);
+        for (id, own, obi) in [("ffff0002", true, true), ("ffff0003", false, false)] {
+            jobs.offer_check(&job(id, own, obi), &clone, &commit).await;
+            let items = items.lock().unwrap().clone();
+            let item = items.last().unwrap();
+            assert_eq!(
+                (item.job.as_str(), item.title.as_str()),
+                (id, "Use `make test` as o/app's check before publishing?")
+            );
+            assert!(jobs.get(id).unwrap().check_asked);
+        }
+        assert_eq!(items.lock().unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A Jobs over `home` with `jobs` kept there before it opens, for the crash and claim tests.
     fn jobs_with_kept(home: &Path, jobs: &[&Job]) -> Arc<Jobs> {
         std::fs::create_dir_all(home.join("jobs")).unwrap();
@@ -19601,6 +19686,111 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// RECOVERY-18: the owner's signed words to their own conversation work past its safety
+    /// limit start its follow-up at once with the files, and their Try again carries it on with
+    /// a new window, with no item; unsigned words, and anyone else's work, still ask, and an
+    /// event's Try again is still refused.
+    #[tokio::test]
+    async fn recovery_18_signed_words_carry_own_work_past_its_safety_limit() {
+        let root = std::env::temp_dir().join(format!("obid-own-safety-{}", uuid::Uuid::new_v4()));
+        let account = root.join("accounts/c");
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(account.join(".credentials.json"), "{}").unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"claude": {"bin": "/usr/bin/true",
+                                      "accounts": [{"id": "c", "name": "C", "configDir": account}]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let items = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = items.clone();
+        jobs.on_confirm(Arc::new(move |item| kept.lock().unwrap().push(item)));
+        let stalled = |id: &str, own: bool, why: &str| {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "c".into(),
+            );
+            job.status = Status::Done;
+            job.branch = format!("oby/fix-{id}");
+            job.own_conversation = own;
+            job.limit = Some("its token ceiling".into());
+            job.ran_secs = Some(3600);
+            job.stalled = Some(crate::job::Stalled {
+                why: why.into(),
+                text: "its token ceiling".into(),
+                at: 0,
+                round: 1,
+                branch: job.branch.clone(),
+                commit: None,
+                commits: 0,
+                session: false,
+                note: String::new(),
+                note_by: "obid".into(),
+            });
+            jobs.insert(job).unwrap();
+        };
+        let files = ["/attachments/app/a/shot.png".to_owned()];
+        stalled("eeee0001", true, "ceiling");
+        let told = jobs.message_attaching("eeee0001", "Use this", Source::Owner, &files);
+        let Some(Ok(next)) = told else {
+            panic!("own work's signed words asked: {told:?}")
+        };
+        assert_eq!(next.follow_up_of.as_deref(), Some("eeee0001"));
+        assert_eq!(next.attachments.as_deref(), Some(&files[..]));
+        assert!(items.lock().unwrap().is_empty());
+
+        // Unsigned words, and the owner's to work that isn't their own conversation's, still ask.
+        stalled("eeee0002", true, "ceiling");
+        stalled("eeee0003", false, "ceiling");
+        for (id, source) in [("eeee0002", Source::Api), ("eeee0003", Source::Owner)] {
+            let told = jobs.message_attaching(id, "Use this", source, &files);
+            let Some(Err(refused)) = told else {
+                panic!("{id} started past its safety limit: {told:?}")
+            };
+            assert!(
+                refused.0.contains("waits for your Confirm"),
+                "{}",
+                refused.0
+            );
+        }
+        assert_eq!(items.lock().unwrap().len(), 2);
+
+        // Try again: an event's is still refused; the owner's carries it on, a new window.
+        stalled("eeee0004", true, "budget");
+        jobs.update("eeee0004", |job| {
+            job.status = Status::Interrupted;
+            job.session = Some("s".into());
+        });
+        let again = crate::brain::actions::TRY_AGAIN;
+        let Some(Err(refused)) = jobs.message("eeee0004", again, Source::Event) else {
+            panic!("an event carried it on")
+        };
+        assert_eq!(
+            refused.0,
+            "It stopped at its safety limit (its token ceiling): only the owner carries it on past that."
+        );
+        let tried = jobs.message("eeee0004", again, Source::Owner);
+        let Some(Ok(tried)) = tried else {
+            panic!("the owner's Try again asked: {tried:?}")
+        };
+        assert!(tried.budget_from.is_some());
+        assert_eq!(tried.ran_secs, None);
+        assert_eq!(items.lock().unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// TASKCONV-15 (#1661): the owner's own words to a queued task that ended before its first
     /// prompt took them (it failed getting ready, say) start its follow-up, each the way it came;
     /// words that weren't theirs never do, nor ride along; Try again's among them runs the task
@@ -19828,6 +20018,104 @@ mod tests {
             ["a".repeat(1200), "b".repeat(1200)]
         );
         assert!(jobs.get("eeee0002").unwrap().heard.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// TASKCONV-21: the owner's signed words their own conversation work never heard, refused by
+    /// its busy follow-up, make no Confirm: its step says why, they stay with it, and its next
+    /// follow-up takes them and clears the step. Words that came unsigned still ask.
+    #[tokio::test]
+    async fn taskconv_21_own_work_keeps_unheard_words_without_a_confirm() {
+        let root = std::env::temp_dir().join(format!("obid-own-unheard-{}", uuid::Uuid::new_v4()));
+        let account = root.join("accounts/c");
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(account.join(".credentials.json"), "{}").unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"claude": {"bin": "/usr/bin/true",
+                                      "accounts": [{"id": "c", "name": "C", "configDir": account}]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let items = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = items.clone();
+        jobs.on_confirm(Arc::new(move |item| kept.lock().unwrap().push(item)));
+        // An ended job with two of the owner's words it never heard, and its follow-up at work.
+        let ended = |id: &str, busy: &str, source: &str| {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "c".into(),
+            );
+            job.status = Status::Done;
+            job.branch = format!("oby/fix-{id}");
+            job.own_conversation = true;
+            job.heard = vec!["use a period".into(), "and a comma".into()];
+            job.owners = job
+                .heard
+                .iter()
+                .map(|text| crate::job::OwnersWords {
+                    text: text.clone(),
+                    source: source.into(),
+                    late: true,
+                })
+                .collect();
+            let mut next = Job::new(
+                busy.into(),
+                "o/r".into(),
+                "fix".into(),
+                "Other".into(),
+                "claude".into(),
+                "c".into(),
+            );
+            next.status = Status::Running;
+            next.follow_up_of = Some(id.into());
+            next.branch = job.branch.clone();
+            jobs.insert(job).unwrap();
+            jobs.insert(next).unwrap();
+        };
+        ended("eeee0001", "eeee0002", "owner");
+        jobs.left_words("eeee0001");
+        assert!(items.lock().unwrap().is_empty());
+        let job = jobs.get("eeee0001").unwrap();
+        assert_eq!(job.heard, ["use a period", "and a comma"]);
+        assert!(
+            job.step.starts_with(
+                "Fix it ended before it heard what you told it, and that couldn't start its follow-up: "
+            ) && job.step.ends_with(" Your words are kept with it."),
+            "{}",
+            job.step
+        );
+
+        // Its follow-up ended: the owner's next words start the next one, which takes them along.
+        jobs.update("eeee0002", |job| job.status = Status::Done);
+        let told = jobs.message("eeee0001", "go on", Source::Owner);
+        let Some(Ok(next)) = told else {
+            panic!("no follow-up: {told:?}")
+        };
+        assert_eq!(next.task, "go on");
+        assert_eq!(next.heard, ["use a period", "and a comma"]);
+        let job = jobs.get("eeee0001").unwrap();
+        assert!(job.heard.is_empty() && job.step.is_empty(), "{}", job.step);
+        assert!(items.lock().unwrap().is_empty());
+
+        // The same words sent unsigned still make the Confirm.
+        ended("eeee0003", "eeee0004", "api");
+        jobs.left_words("eeee0003");
+        let items = items.lock().unwrap().clone();
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0].title, "Start a follow-up of Fix it");
+        assert!(jobs.get("eeee0003").unwrap().step.is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 

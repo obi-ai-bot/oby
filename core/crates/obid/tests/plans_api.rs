@@ -1515,6 +1515,60 @@ fn research_cant_carry_a_job_past_its_safety_limit() {
     );
 }
 
+/// RECOVERY-18: a turn whose words an app of the owner's signed carries their own conversation
+/// work past its safety limit at once: its follow-up starts, and no Confirm waits.
+#[test]
+fn recovery_18_a_signed_turn_carries_own_work_past_its_safety_limit() {
+    let folder = Folder::new("brain-own-safety");
+    let mut spent = ended(
+        "b0d6e7a2",
+        "Spent it all",
+        obid::job::Status::Interrupted,
+        0,
+        None,
+    );
+    spent.stalled = Some(obid::job::Stalled {
+        why: "budget".into(),
+        text: "the task used 1000 tokens".into(),
+        at: obi_protocol::time::now(),
+        round: 1,
+        branch: spent.branch.clone(),
+        commit: None,
+        commits: 0,
+        session: true,
+        note: String::new(),
+        note_by: "obid".into(),
+    });
+    spent.limit = Some("the task used 1000 tokens".into());
+    spent.own_conversation = true;
+    let obid = started_with(&folder, &[spent]);
+    let answer = call_typed(
+        &obid,
+        "POST",
+        "/v1/plans",
+        &json!({"said": r#"OBY oby_tell_job {"id":"b0d6e7a2","words":"go on"}"#}),
+    );
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    assert!(
+        answer.body["text"]
+            .as_str()
+            .unwrap()
+            .contains("started a follow-up"),
+        "{}",
+        answer.text
+    );
+    assert!(items_of(&obid, "confirm").is_empty());
+    assert_eq!(
+        call(&obid, "GET", "/v1/jobs", None)
+            .body
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "its follow-up started"
+    );
+}
+
 /// What a job can't do says why, and fails.
 #[test]
 fn what_a_job_can_t_do_says_why() {
