@@ -27,6 +27,7 @@ The runner API is documented per area in `docs/api/<area>.md`. A change to the A
   - [`GET /v1/jobs/{id}`](api/jobs.md)
   - [`GET /v1/jobs/{id}/report`](api/jobs.md)
   - [`GET /v1/jobs/{id}/wait`](api/jobs.md)
+  - [`GET /v1/jobs/{id}/trace` (obid only)](api/jobs.md)
   - [`GET /v1/jobs/{id}/transcript` (obid only)](api/jobs.md)
   - [`GET /v1/jobs/{id}/transcript/{n}` (obid only)](api/jobs.md)
   - [`POST /v1/jobs/{id}/stop`](api/jobs.md)

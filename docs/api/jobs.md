@@ -285,6 +285,20 @@ Answers once the job has ended (`done`, `failed`, `stopped` or `interrupted`) wi
 
 The iPhone app waits on this as a background download: iOS keeps it going while the app is suspended and wakes the app when it's answered, so the Live Activity can say how the job ended: obid sends no Live Activity pushes ([Routes obid does not serve](#routes-obid-does-not-serve)).
 
+### `GET /v1/jobs/{id}/trace` (obid only)
+
+The job's trace of obid's dispatcher steps, in order (docs/contracts/failures.md): each line only a step name, its round (on a `round` line only), its start, how long it took in whole seconds and an outcome code, never any of the job's text. `{"lines": []}` for a job with no trace yet, `404` for a job obid doesn't have.
+
+```json
+{"lines": [{"step": "admit", "start": "2026-10-19T08:13:50Z", "seconds": 1, "outcome": "ok"},
+ {"step": "prepare", "start": "2026-10-19T08:13:51Z", "seconds": 3, "outcome": "ok"},
+ {"step": "round", "round": 1, "start": "2026-10-19T08:13:54Z", "seconds": 41, "outcome": "ok"},
+ {"step": "check", "start": "2026-10-19T08:14:35Z", "seconds": 12, "outcome": "ok"}]}
+```
+
+- `step`: `admit`, `prepare`, `setup`, `round`, `check`, `publish`, `rebase` (not written yet), `stall`, `retry`, `account_move`, `park`, `restart_recovery` or `crash`. `outcome`: `ok`, `queued`, `failed`, `limit`, `interrupted` or `stopped`, the job's state once the step ended.
+- Kept in `home/jobs/<id>/trace.ndjson` (0600), one JSON line per step, at most 2,000 lines (the oldest go first), removed when the job is deleted. A failure record's `evidence.log` holds its last 50 lines (docs/api/failures.md).
+
 ### `GET /v1/jobs/{id}/transcript` (obid only)
 
 The job's session as it happens (#381): one entry per tool call, the agent's words between them, the owner's words it heard, its to-do list and each round's start, numbered `n` from 1 in order. **A call comes twice under the same `n`**: running when it starts, then as it ended. So always update by `n`; never skip an `n` already seen. `?after=<n>` gives only the entries that came or changed after entry `n` first did, each as it is now: a call that was running then and has ended since comes again. With no `after`, every entry. A client that reconnects asks with the highest `n` it has and updates by `n`, so it never shows one twice, and two clients see the same order. `?limit=<k>` (1 to 1,000, 1,000 when left out) caps how many newer entries come; earlier ones that changed always come along (they're the calls that were running). `next` is the `n` to ask `after` for the rest, or null when there's no more. `404` for a job obid doesn't have, `422` when `after` or `limit` isn't a number.
