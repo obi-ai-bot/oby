@@ -290,11 +290,20 @@ def start(task, account, on_base):
     text = brief(task, on_base)
     if len(text) > 2000:
         return None, f"its file isn't on origin/{job.BASE} and its text is too long to send ({len(text)} characters): commit the task file first"
+    # The request key outlives a start obid didn't answer: if obid made the job and its answer was lost, the next
+    # pass's retry with the same key gets that job back instead of making a second one (POST /v1/jobs's receipts).
+    pending = FEED / f"{key}.start"
+    FEED.mkdir(parents=True, exist_ok=True)
+    request_id = pending.read_text().strip() if pending.exists() else f"feed-{key}-{int(time.time())}"
+    pending.write_text(request_id)
     sent = {"repo": GH_REPO, "kind": "build", "account": account, "base": job.BASE, "rounds": 3,
-            "title": f"{key} {task['title']}"[:60].strip(), "task": text, "clientRequestId": f"feed-{key}-{int(time.time())}"}
+            "title": f"{key} {task['title']}"[:60].strip(), "task": text, "clientRequestId": request_id}
     if account == "any":  # no account named: obid picks the one with the most room and moves the job at a limit
         del sent["account"]
     code, body = api("POST", "/v1/jobs", {"job": sent})
+    if code is None:
+        return None, "obid didn't answer"
+    pending.unlink()
     if code not in (200, 201) or not (body or {}).get("id"):
         return None, f"obid refused it: {(body or {}).get('error', code)}"
     return body["id"], None

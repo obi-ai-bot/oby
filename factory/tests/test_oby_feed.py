@@ -345,7 +345,9 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual(said, ["obid didn't answer: this pass is skipped, the next one tries again"])
 
     def obid(self, answer):
-        """The real api() against a stand-in urlopen: `answer(method, url)` returns the body's bytes, or raises."""
+        """The real api() against a stand-in urlopen: `answer(method, url)`, or `answer(method, url, data)` when it
+        takes the request's body too, returns the body's bytes, or raises."""
+        with_data = answer.__code__.co_argcount == 3
 
         class Res:
             status = 200
@@ -354,7 +356,8 @@ class ObyFeed(unittest.TestCase):
                 self.req = req
 
             def read(self):
-                return answer(self.req.get_method(), self.req.full_url)
+                args = (self.req.get_method(), self.req.full_url) + ((self.req.data,) if with_data else ())
+                return answer(*args)
 
             def __enter__(self):
                 return self
@@ -458,6 +461,31 @@ class ObyFeed(unittest.TestCase):
         self.assertIsNone(self.one_pass())
         self.assertEqual(len([c for c in self.stand.calls if c[:2] == ("api", "GET")]), 1)
         self.assertEqual(started, [])
+
+    def test_feedalive_1_a_start_whose_answer_was_lost_is_retried_with_the_same_request_key(self):
+        """obid makes the job but its answer is cut off: the next pass sends the same clientRequestId, so obid answers
+        that job back (200) instead of making a second one, and the key is dropped once answered."""
+        ready = {"key": "A00-98", "title": "another task", "body": ""}
+        self.feed.ready_tasks = lambda state: [] if "A00-98" in state else [(ready, True, {"y.py"})]
+        self.feed.free_gb = lambda: 100.0
+        keys = []
+
+        def answer(method, url, data):
+            if url.endswith("/v1/jobs?limit=200"):
+                return b"[]"
+            keys.append(json.loads(data)["job"]["clientRequestId"])
+            if len(keys) == 1:
+                raise http.client.IncompleteRead(b'{"id": "jo', 20)
+            return json.dumps({"id": "job-9"}).encode()
+
+        clock = iter(range(1000, 2000, 60))
+        with self.obid(answer), mock.patch.object(self.feed.time, "time", lambda: next(clock)):
+            self.assertIsNone(self.one_pass())
+            self.assertEqual(self.one_pass(), (1, 1))
+        self.assertEqual(len(keys), 2)
+        self.assertEqual(keys[0], keys[1])
+        self.assertEqual(self.feed.load_state()["A00-98"]["job"], "job-9")
+        self.assertFalse((self.feed.FEED / "A00-98.start").exists())
 
     def test_feedalive_1_an_interrupted_answer_never_ends_the_feeder(self):
         """A body cut off with no error, IncompleteRead and a reset mid-read: three skipped passes, never a crash."""
