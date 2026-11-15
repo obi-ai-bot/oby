@@ -299,7 +299,7 @@ def brief(task, on_base):
 
 def pending_start(pending):
     """What a task attempt saved before its POST: ({"job": body, "title", "files"}, its key), (None, a key saved
-    alone by an older feeder, sent again under a body built anew) or (None, None)."""
+    alone by an older feeder, only ever looked up in obid's job list, never sent) or (None, None)."""
     if not pending.exists():
         return None, None
     saved = pending.read_text().strip()
@@ -330,20 +330,21 @@ def post_start(pending, saved):
 def start(task, account, on_base):
     key = task["key"]
     # One request per task attempt, its body and key saved before the POST: if obid made the job and its answer was
-    # lost or was a 5xx, the next pass sends that same body again (resume_starts), so obid gives that job back
+    # lost or was a 5xx, the next pass finds that job by its key (reconcile_starts) or, with a slot free, sends that
+    # same body again (resume_starts), so obid gives that job back
     # instead of making a second one (POST /v1/jobs's receipts), even when the task's text or the account changed
     # since: a changed body under the same key would be a 409. A job obid answered ends the attempt once one_pass
     # saved it.
     pending = FEED / f"{key}.start"
     FEED.mkdir(parents=True, exist_ok=True)
-    saved, request_id = pending_start(pending)
-    if saved is None:
+    saved, _ = pending_start(pending)
+    if saved is None:  # never a key saved without its body: that body is gone, so it can't be sent again unchanged
         text = brief(task, on_base)
         if len(text) > 2000:
             return None, f"its file isn't on origin/{job.BASE} and its text is too long to send ({len(text)} characters): commit the task file first"
         sent = {"repo": GH_REPO, "kind": "build", "account": account, "base": job.BASE, "rounds": 3,
                 "title": f"{key} {task['title']}"[:60].strip(), "task": text,
-                "clientRequestId": request_id or f"feed-{key}-{int(time.time())}"}
+                "clientRequestId": f"feed-{key}-{int(time.time())}"}
         if account == "any":  # no account named: obid picks the one with the most room and moves the job at a limit
             del sent["account"]
         saved = {"job": sent, "title": task["title"], "files": sorted(job.code_files(task))}
@@ -351,19 +352,48 @@ def start(task, account, on_base):
     return post_start(pending, saved)
 
 
-def resume_starts(state):
-    """Settles every task attempt whose start obid left unanswered, before anything decides whether new work may
-    start: a job obid made is recorded and followed even when the disk has since filled, dev moved its task to a later
-    sprint or its slot is gone. Returns how many were recorded."""
-    recorded = 0
-    for pending in sorted(FEED.glob("*.start")):
-        key = pending.stem
-        if key in state:  # its job is saved already: the attempt is done
+def record_start(state, pending, saved, oby_id, how):
+    """Saves the job a task attempt made as the task's, `running`, and only then drops its saved start."""
+    key = pending.stem
+    item = {"key": key, "title": saved.get("title", key), "job": oby_id, "state": "running",
+            "files": saved.get("files", []), "started": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    state[key] = item
+    save(item)
+    pending.unlink()  # the attempt is recorded: its key is done
+    say(f"{key}: started as Oby job {oby_id}, {how}")
+
+
+def reconcile_starts(state, jobs):
+    """Settles every saved start without sending anything, before anything decides whether new work may start: a job
+    obid already made under its key is the task's job, recorded even when the disk has since filled, dev moved its task
+    to a later sprint or no slot is free. Returns (how many were recorded, the saved starts still waiting to be sent
+    again, each holding a slot)."""
+    made = {j["clientRequestId"]: j["id"] for j in jobs if j.get("clientRequestId") and j.get("id")}
+    recorded, waiting = 0, []
+    for pending in sorted(FEED.glob("*.start")) if FEED.exists() else []:
+        if pending.stem in state:  # its job is saved already: the attempt is done
             pending.unlink()
             continue
-        saved, _ = pending_start(pending)
-        if saved is None:  # a key saved alone: its body is built again when the task is ready
-            continue
+        saved, request_id = pending_start(pending)
+        if request_id in made:
+            record_start(state, pending, saved or {}, made[request_id], "made under its saved key")
+            recorded += 1
+        elif saved is None:  # a key an older feeder saved without its body, never used: the task starts anew
+            pending.unlink()
+        else:
+            waiting.append((pending, saved))
+    return recorded, waiting
+
+
+def resume_starts(state, waiting, slots, min_free_gb):
+    """Sends saved starts again, exactly as saved, but only into free slots and only with the disk above the minimum,
+    as a new start would be. Returns how many were recorded."""
+    recorded = 0
+    for pending, saved in waiting[:max(slots, 0)]:
+        key = pending.stem
+        if free_gb() < min_free_gb:
+            say(f"waiting to send {key}'s saved start again: {free_gb():.0f} GB free, under {min_free_gb} GB")
+            break
         oby_id, why = post_start(pending, saved)
         if OBID_MISSED:
             break
@@ -372,12 +402,7 @@ def resume_starts(state):
                 say(f"{key}: not started: {why}")
                 SAID.add(key)
             continue
-        item = {"key": key, "title": saved.get("title", key), "job": oby_id, "state": "running",
-                "files": saved.get("files", []), "started": time.strftime("%Y-%m-%dT%H:%M:%S")}
-        state[key] = item
-        save(item)
-        pending.unlink()  # the attempt is recorded: its key is done
-        say(f"{key}: started as Oby job {oby_id}, a start obid hadn't answered")
+        record_start(state, pending, saved, oby_id, "a start obid hadn't answered")
         recorded += 1
     return recorded
 
@@ -690,9 +715,12 @@ def one_pass(args):
         if (item["state"] in ACTIVE or item["state"] == "waiting") and follow(item, jobs):
             save(item)
             say(f"{item['key']}: {item['state']}" + (f" (#{item['pr']})" if item.get("pr") else "") + (f": {item['note']}" if item.get("note") else ""))
-    resumed = 0 if missed() or args.dry_run else resume_starts(state)
+    resumed, waiting = (0, []) if missed() or args.dry_run else reconcile_starts(state, jobs)
+    if waiting and not missed():  # a saved start holds a slot and is sent again only into a free one
+        resumed += resume_starts(state, waiting, args.max - len([i for i in state.values() if i["state"] in ACTIVE]),
+                                 args.min_free_gb)
     active = [i for i in state.values() if i["state"] in ACTIVE]
-    slots = args.max - len(active)
+    slots = args.max - len(active) - len([p for p, _ in waiting if p.exists()])
     started = 0
     if slots > 0 and not missed():
         taken = set()
@@ -702,7 +730,7 @@ def one_pass(args):
             if files & taken:
                 continue
             if not args.dry_run and pending_start(FEED / f"{task['key']}.start")[0]:
-                continue  # resume_starts sent its saved start this pass: obid answered it with a 5xx
+                continue  # its saved start waits for a slot, or obid left it unanswered this pass
             if free_gb() < args.min_free_gb:
                 say(f"waiting to start {task['key']}: {free_gb():.0f} GB free, under {args.min_free_gb} GB")
                 break

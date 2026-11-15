@@ -702,9 +702,9 @@ class ObyFeed(unittest.TestCase):
         self.assertFalse((self.feed.FEED / "A00-98.start").exists())
 
     def test_feedalive_1_a_lost_start_is_recorded_even_once_the_disk_is_full_or_the_task_left_the_sprint(self):
-        """obid makes the job but its answer is lost; before the next pass its build fills the disk under the minimum
-        and dev moves the task to a later sprint (it is no longer ready). The next pass still sends the saved start,
-        records obid's job with its files and counts it under way."""
+        """obid makes the job but its answer is lost; before the next pass its build fills the disk under the minimum,
+        dev moves the task to a later sprint (it is no longer ready) or no slot is free. The next pass finds obid's job
+        by the saved key in its job list, sends nothing, records the job with its files and counts it under way."""
         for change in ("disk full", "left the sprint", "no slot", "all three"):
             with self.subTest(change=change):
                 self.feed.FEED = self.dir / f"feed-{change}"
@@ -713,7 +713,8 @@ class ObyFeed(unittest.TestCase):
                 self.feed.ready_tasks = lambda state: [] if "A00-98" in state else list(ready)
                 disk = [100.0]
                 self.feed.free_gb = lambda: disk[0]
-                self.feed.oby_jobs = lambda: []
+                listed = []
+                self.feed.oby_jobs = lambda: list(listed)
                 bodies = []
 
                 def api(method, path, body=None, timeout=30):
@@ -726,6 +727,8 @@ class ObyFeed(unittest.TestCase):
                 self.feed.api = api
                 args = Namespace(max=3, min_free_gb=15, dry_run=False, account="acct")
                 self.assertIsNone(self.feed.one_pass(args))
+                listed.append({"id": "job-9", "kind": "build", "status": "running",
+                               "clientRequestId": bodies[0]["clientRequestId"]})
                 if change in ("disk full", "all three"):
                     disk[0] = 5.0
                 if change in ("left the sprint", "all three"):
@@ -733,11 +736,82 @@ class ObyFeed(unittest.TestCase):
                 if change in ("no slot", "all three"):
                     args.max = 0
                 self.assertEqual(self.feed.one_pass(args), (1, 1))
-                self.assertEqual(len(bodies), 2)
-                self.assertEqual(bodies[0], bodies[1])
+                self.assertEqual(len(bodies), 1)
                 item = self.feed.load_state()["A00-98"]
                 self.assertEqual((item["job"], item["state"], item["files"]), ("job-9", "running", ["factory/bin/y.py"]))
                 self.assertFalse((self.feed.FEED / "A00-98.start").exists())
+
+    def saved_start(self, key, body=True):
+        """A start an earlier pass saved and obid never answered: the whole body, or (an older feeder's) its key alone."""
+        request_id = f"feed-{key}-1000"
+        pending = self.feed.FEED / f"{key}.start"
+        pending.parent.mkdir(parents=True, exist_ok=True)
+        sent = {"repo": REPO, "kind": "build", "account": "acct", "title": f"{key} saved", "task": "saved",
+                "clientRequestId": request_id}
+        pending.write_text(json.dumps({"job": sent, "title": "saved", "files": [f"{key}.py"]}) if body else request_id)
+        return request_id, sent
+
+    def test_feedalive_1_a_key_saved_without_its_body_is_never_sent_under_a_body_built_anew(self):
+        """An older feeder saved only the key. Its body is gone, so it is never sent again: obid's job under that key
+        is the task's job; with none, obid never used the key and the task starts anew under a new one."""
+        for made in (True, False):
+            with self.subTest(made=made):
+                self.feed.FEED = self.dir / f"feed-{made}"
+                request_id, _ = self.saved_start("A00-98", body=False)
+                task = {"key": "A00-98", "title": "another task", "body": ""}
+                self.feed.ready_tasks = lambda state: [] if "A00-98" in state else [(task, True, {"y.py"})]
+                self.feed.free_gb = lambda: 100.0
+                self.feed.oby_jobs = lambda: [{"id": "job-7", "clientRequestId": request_id}] if made else []
+                keys = []
+
+                def api(method, path, body=None, timeout=30):
+                    keys.append(body["job"]["clientRequestId"])
+                    return 201, {"id": "job-9"}
+
+                self.feed.api = api
+                self.assertEqual(self.one_pass(), (1, 1))
+                self.assertNotIn(request_id, keys)
+                self.assertEqual(len(keys), 0 if made else 1)
+                self.assertEqual(self.feed.load_state()["A00-98"]["job"], "job-7" if made else "job-9")
+                self.assertFalse((self.feed.FEED / "A00-98.start").exists())
+
+    def test_feedalive_1_saved_starts_hold_slots_and_are_sent_again_only_into_free_ones(self):
+        """Saved starts obid never made count against --max and the disk check: with one task under way and --max 2,
+        only the first of two saved starts is sent again, exactly as saved; with no slot or the disk under the minimum,
+        none is; and two obid answers with a 503 still hold both slots of --max 2, so no new task takes one."""
+        for case in ("one slot", "no slot", "disk full", "unanswered"):
+            with self.subTest(case=case):
+                self.feed.FEED = self.dir / f"feed-{case}"
+                if case != "unanswered":
+                    self.task("running")
+                    self.feed.follow = lambda item, jobs: False
+                _, first = self.saved_start("A00-96")
+                self.saved_start("A00-97")
+                new = {"key": "A00-98", "title": "a new task", "body": ""}
+                self.feed.ready_tasks = lambda state: [] if "A00-98" in state else [(new, True, {"y.py"})]
+                self.feed.free_gb = lambda: 5.0 if case == "disk full" else 100.0
+                self.feed.oby_jobs = lambda: []
+                sent = []
+
+                def api(method, path, body=None, timeout=30):
+                    sent.append(body["job"])
+                    return (503, {"error": "restarting"}) if case == "unanswered" else (201, {"id": f"job-{len(sent)}"})
+
+                self.feed.api = api
+                args = Namespace(max={"no slot": 1, "unanswered": 2}.get(case, 2), min_free_gb=15, dry_run=False,
+                                 account="acct")
+                self.feed.one_pass(args)
+                state = self.feed.load_state()
+                if case == "one slot":
+                    self.assertEqual(sent, [first])
+                    self.assertEqual(state["A00-96"]["job"], "job-1")
+                    self.assertTrue((self.feed.FEED / "A00-97.start").exists())
+                elif case == "unanswered":
+                    self.assertEqual([s["clientRequestId"] for s in sent], ["feed-A00-96-1000", "feed-A00-97-1000"])
+                else:
+                    self.assertEqual(sent, [])
+                    self.assertTrue((self.feed.FEED / "A00-96.start").exists())
+                self.assertNotIn("A00-98", state)
 
     def test_feedalive_1_one_request_key_per_task_attempt_through_a_5xx_until_the_job_is_saved(self):
         """obid answers a start with a 503 while it restarts, then with the job: both posts carry the one key, which
