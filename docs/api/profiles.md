@@ -1,6 +1,6 @@
 ### obid only: profiles
 
-Chrome-style profiles on this Mac (docs/contracts/profiles.md): a local id and name, never an identity. PROF-1 keeps the registry and the list route, PROF-3a creates and renames profiles; nothing else in obid reads them yet, a second profile holds nothing of its own, and apps show nothing. The Swift runner has none: `404`.
+Chrome-style profiles on this Mac (docs/contracts/profiles.md): a local id and name, never an identity. PROF-1 keeps the registry and the list route, PROF-3a creates and renames profiles; nothing else in obid reads them yet. The Electron app lists and creates profiles for its panel's title, and a second profile still holds nothing of its own. The Swift runner has none: `404`.
 
 **Where.** `home/profiles.json` (0600): `{"profiles":[{"id","name","color","default"}]}`. An install with no file, or one whose `profiles` list is empty, gets one first profile on start (`id` a lower-case UUID, `name` `Default`, `color` `#3a5a8c`, `default` true) that holds everything the install already has: nothing moves, renames or signs out. An existing registry keeps its names (an install upgraded before PROF-3a keeps `Personal`). A file that doesn't read is left as it is, logged, and answered as that same first profile without writing over it; creating and renaming then answer `409` until obid starts with a file that reads. A profile that isn't the default has its own folder, `home/profiles/<id>` (0700), made when it is created and empty: nothing reads or writes in it yet.
 

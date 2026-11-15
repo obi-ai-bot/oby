@@ -117,6 +117,7 @@ export type Job = {
   ask?: Ask;
   summary?: string;    // the agent's report once it's done
   reason?: string;     // obid's: why it stopped, in its words
+  canTryAgain?: boolean;  // failed or interrupted, not let go, nothing carrying it on: its menu's Try again and Stop here (TASKS-25)
   commits?: number;
   published?: string;  // the pull request it opened
   publish?: { label: string; anyway?: true; why?: string };  // obid only: Publish by hand (jobPage.ts, publishOf)
@@ -129,6 +130,13 @@ export type Job = {
   created: number;     // minutes ago
   finished?: number;   // minutes ago
 };
+
+// An ended task's mark when it isn't a finished one's check (Sangam's board "Stuck and failed")
+export const ENDED: Partial<Record<Job['status'], string>> = { failed: 'Failed', stopped: 'Stopped', interrupted: 'Stopped' };
+// A failed or interrupted task's plain line (TASKS-25): the first line of obid's reason, else of
+// its summary, else its step
+export const stoppedLine = (j: Job): string | undefined =>
+  j.status === 'failed' || j.status === 'interrupted' ? (j.reason || j.summary || '').split('\n')[0] || j.step : undefined;
 
 // GitHub's work no job has yet (obid's GET /v1/github/work): a review asked of
 // you, an issue assigned to you, each with its project board's column when it's

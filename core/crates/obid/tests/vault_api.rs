@@ -176,11 +176,12 @@ fn the_apis_json_has_the_vaults_secrets_taken_out() {
     );
     ended(&obid, &clean);
     // obid saves the job once more after `/wait` may have answered: its cleanup pass, 30 seconds
-    // after obid started or at a job's end, keeps what freeing its builds freed (CLEANUP-1,
-    // `Jobs::clean_worktrees`). That save shows as `buildFreed`, so it's waited for.
-    within(60, "the cleanup pass kept its buildFreed", || {
+    // after obid started or at a job's end, frees its worktree (CLEANUP-3), or the builds of one it
+    // keeps (CLEANUP-1, `Jobs::clean_worktrees`). That save shows as `worktreeFreed` or
+    // `buildFreed`, so it's waited for.
+    within(60, "the cleanup pass kept what it freed", || {
         let job = call(&obid, "GET", &format!("/v1/jobs/{clean}"), None).body;
-        job.get("buildFreed").map(|_| ())
+        (job.get("worktreeFreed").or(job.get("buildFreed"))).map(|_| ())
     });
     let before = call(&obid, "GET", &format!("/v1/jobs/{clean}"), None);
     assert_eq!(before.status, 200, "{}", before.text);
@@ -199,7 +200,7 @@ fn the_apis_json_has_the_vaults_secrets_taken_out() {
     // job's peaks again once its worker is gone, grown or not, and nothing in the answer marks
     // that save's end; waiting for `revision` to stop changing would be a guess about timing. A
     // peak kept for the first time would add `peakRss` too: `metered` runs before the job's end
-    // wakes the cleanup pass, so the wait for `buildFreed` above is what keeps it before `before`,
+    // wakes the cleanup pass, so the wait for its save above is what keeps it before `before`,
     // unless a pass woken otherwise (30 seconds after obid started, or by another job) ran in
     // between, or a reading under way (`Jobs::measure`) keeps its peak late. Adding a vault
     // secret saves no job: answers are redacted as they're written.

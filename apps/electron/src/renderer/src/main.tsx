@@ -9,6 +9,7 @@ import FirstRun, { sizeWindow, useHandover, useOnboarding } from './FirstRun';
 import { everything, onObid } from './lean';
 import { connect, useLive } from './live';
 import { ChatGptWelcome } from './ChatGptPlan';
+import RenderError from './RenderError';
 
 // Line the title bar up with the traffic lights, where macOS actually put them
 const chrome = window.app?.chrome;
@@ -59,6 +60,6 @@ function App() {
 }
 
 if (onObid) connect();
-createRoot(document.getElementById('root')!).render(<App />);
+createRoot(document.getElementById('root')!).render(<RenderError><App /></RenderError>);
 // dev builds only: the control center (dev/ControlCenter.tsx), left out of a release build
 if (import.meta.env.DEV) import('./dev/ControlCenter');
