@@ -517,6 +517,55 @@ fn helpers_7_only_granted_connectors() {
     );
 }
 
+/// HELPERS-7: a turn under way when its helper is deleted gets no GitHub or Tetrix call through:
+/// the turn is cancelled, and its conversation is refused every connector.
+#[test]
+fn helpers_7_a_turn_under_way_when_its_helper_is_deleted_gets_no_connector() {
+    let (_folder, obid) = obid("helpers-7-deleted");
+    let (base, _seen) = fake_tetrix::fake_tetrix();
+    fake_tetrix::sign_in(&obid, &base);
+    let helper = make(&obid, asked("claude", json!([])));
+    say(&obid, &helper, "HELLO");
+    let oby = mcp(&obid, &helper)["mcpServers"]["oby"].clone();
+    let url = oby["url"].as_str().unwrap();
+    let tools = url[url.find("/v1/").unwrap()..].to_owned();
+    let tetrix = tools.replace("/v1/agent/mcp/", "/v1/agent/tetrix/");
+    let rpc = |name: &str, arguments: Value| {
+        json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+               "params": {"name": name, "arguments": arguments}})
+    };
+    let search = rpc("search_entities", json!({"query": "x"}));
+    // Through: a result that isn't an error; a refusal, a JSON-RPC error or no turn isn't.
+    let through =
+        |answer: &Answer| answer.status == 200 && answer.body["result"]["isError"] == false;
+    std::thread::scope(|scope| {
+        let lingering = scope.spawn(|| {
+            let body = json!({"said": "LINGER 6000", "conversation": helper["conversation"]});
+            call(&obid, "POST", "/v1/plans", Some(&body)).status
+        });
+        let token = within(10, "a turn under way", || {
+            let servers = mcp(&obid, &helper)["mcpServers"].clone();
+            let bearer = servers["oby"]["headers"]["Authorization"].as_str().unwrap();
+            let token = bearer.strip_prefix("Bearer ").unwrap().to_owned();
+            let answer = call_with_token(&obid, &token, "POST", &tetrix, Some(&search));
+            (answer.body["result"]["isError"] == true).then_some(token)
+        });
+        let path = format!("/v1/helpers/{}", helper["id"].as_str().unwrap());
+        assert_eq!(call(&obid, "DELETE", &path, None).status, 204);
+        let github = call_with_token(
+            &obid,
+            &token,
+            "POST",
+            &tools,
+            Some(&rpc("oby_github", json!({}))),
+        );
+        assert!(!through(&github), "{}", github.text);
+        let searched = call_with_token(&obid, &token, "POST", &tetrix, Some(&search));
+        assert!(!through(&searched), "{}", searched.text);
+        assert_eq!(lingering.join().unwrap(), 200);
+    });
+}
+
 /// HELPERS-9: a vault secret in a helper's instructions reaches neither its tool's arguments nor
 /// its MCP configuration, nor any `/v1/helpers` answer.
 #[test]

@@ -118,6 +118,9 @@ pub struct Helpers {
     helpers: Mutex<Vec<Helper>>,
     /// The file is there and doesn't read: no helpers, and nothing written over it.
     unread: bool,
+    /// The conversations of the helpers deleted since obid started: a turn still in one gets no
+    /// connector. A conversation goes with its helper, so no new turn starts in one.
+    deleted: Mutex<Vec<String>>,
 }
 
 impl Helpers {
@@ -134,6 +137,7 @@ impl Helpers {
             unread: matches!(read, Err(Some(_))),
             helpers: Mutex::new(read.map(|saved| saved.helpers).unwrap_or_default()),
             file,
+            deleted: Mutex::default(),
         }
     }
 
@@ -165,9 +169,30 @@ impl Helpers {
         (helpers.iter().find(|h| h.conversation == conversation)).cloned()
     }
 
-    /// Whether a turn in `conversation` may use `asked` now: any but a helper's not granted it.
+    /// Whether a turn in `conversation` may use `asked` now: any but a helper's not granted it, and
+    /// none in a deleted helper's.
     pub fn allows(&self, conversation: &str, asked: Connector) -> bool {
+        let deleted = self.deleted.lock().unwrap_or_else(|e| e.into_inner());
+        if deleted.iter().any(|d| d == conversation) {
+            return false;
+        }
+        drop(deleted);
         (self.of(conversation)).is_none_or(|h| may_use(h.granted(), asked))
+    }
+
+    /// Removes the helper `id`, kept, its conversation from then on a deleted helper's.
+    fn remove(&self, id: &str) -> Result<Helper, ApiError> {
+        let mut helpers = self.writable()?;
+        let at = (helpers.iter().position(|h| h.id == id))
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, NO_HELPER))?;
+        let gone = helpers.remove(at);
+        if let Err(e) = self.keep(&helpers) {
+            helpers.insert(at, gone);
+            return Err(e);
+        }
+        let mut deleted = self.deleted.lock().unwrap_or_else(|e| e.into_inner());
+        deleted.push(gone.conversation.clone());
+        Ok(gone)
     }
 }
 
@@ -273,23 +298,14 @@ pub async fn change(
     Ok(answer(StatusCode::OK, &helper))
 }
 
-/// `DELETE /v1/helpers/{id}`: the helper, then its conversation as `DELETE
-/// /v1/conversations/{id}` deletes one; the jobs it started stay.
+/// `DELETE /v1/helpers/{id}`: the helper and the turn under way in its conversation, then the
+/// conversation as `DELETE /v1/conversations/{id}` deletes one; the jobs it started stay.
 pub async fn delete(
     State(shared): State<Arc<Shared>>,
     UrlPath(id): UrlPath<String>,
 ) -> Result<Response, ApiError> {
-    let gone = {
-        let mut helpers = shared.helpers.writable()?;
-        let at = (helpers.iter().position(|h| h.id == id))
-            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, NO_HELPER))?;
-        let gone = helpers.remove(at);
-        if let Err(e) = shared.helpers.keep(&helpers) {
-            helpers.insert(at, gone);
-            return Err(e);
-        }
-        gone
-    };
+    let gone = shared.helpers.remove(&id)?;
+    shared.turns.cancel(Some(&gone.conversation));
     if let Err(e) = crate::conversation::forget(&shared, &gone.conversation, true).await {
         tracing::warn!("helper {id}'s conversation wasn't deleted: {e:?}");
     }
@@ -411,6 +427,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// HELPERS-7: a deleted helper's conversation gets no connector, not even one it was granted.
+    #[test]
+    fn helpers_7_a_deleted_helper_s_conversation_gets_no_connector() {
+        let home = std::env::temp_dir().join(format!("obid-helpers-7-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let mut granted = valid();
+        granted["connectors"] = json!(["github", "tetrix", "web"]);
+        let helper = Helper {
+            id: "h1".into(),
+            conversation: "c1".into(),
+            ..made(granted).unwrap()
+        };
+        let saved = json!({ "helpers": [helper] }).to_string();
+        std::fs::write(home.join("helpers.json"), saved).unwrap();
+        let helpers = Helpers::open(&home);
+        let all = [Connector::Github, Connector::Tetrix, Connector::Web];
+        assert!(all.iter().all(|c| helpers.allows("c1", *c)));
+        helpers.remove("h1").unwrap();
+        assert!(
+            all.iter().all(|c| !helpers.allows("c1", *c)),
+            "it fails closed"
+        );
+        assert!(
+            helpers.allows("c2", Connector::Github),
+            "another conversation is as it was"
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// HELPERS-11: a helper's conversation outlives 200 of the owner's, and is never the latest.

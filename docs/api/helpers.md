@@ -24,7 +24,7 @@ A helper is an assistant of the owner's for one kind of general work (docs/contr
 
 **`PATCH /v1/helpers/{id}`** with any of `name`, `color`, `instructions`, `tool` and `connectors`: `200` with the helper as changed. A new tool, instructions or web grant applies from the conversation's next turn; taking `github` or `tetrix` away also refuses those calls in a turn under way.
 
-**`DELETE /v1/helpers/{id}`**: `204`. The helper goes, then its conversation as `DELETE /v1/conversations/{id}` deletes one: its turns and attached files go, offers made in it close and its sessions end. The jobs it started stay.
+**`DELETE /v1/helpers/{id}`**: `204`. The helper goes and the turn under way in its conversation is cancelled; from then on that conversation is refused every connector, so nothing a turn there still calls reaches GitHub or Tetrix. Then its conversation goes as `DELETE /v1/conversations/{id}` deletes one: its turns and attached files go, offers made in it close and its sessions end. The jobs it started stay.
 
 **Refusals.** The checks are the same on `POST` and `PATCH` (on `PATCH`, for each key sent). A refused request keeps nothing and makes no conversation.
 
