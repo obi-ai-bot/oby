@@ -20,6 +20,18 @@ export const oneOf = <const T extends readonly unknown[]>(...values: T): Decoder
 export const method = oneOf('GET', 'POST', 'PUT', 'PATCH', 'DELETE');
 export const v1Path = when((v): v is string => typeof v === 'string' && v.startsWith('/v1/'));
 
+// What the page asks main to read for it (main/live.ts, obid-load): exactly one of a conversation's
+// turns, a job, or the limit decisions
+export type LoadWhat = { conversation: string } | { job: string } | { limits: true };
+export const loadWhat: Decoder<LoadWhat> = (v) => {
+  if (!v || typeof v !== 'object' || Array.isArray(v) || Object.keys(v).length !== 1) return undefined;
+  const { conversation, job, limits } = v as Record<string, unknown>;
+  if (typeof conversation === 'string' && conversation) return { value: { conversation } };
+  if (typeof job === 'string' && job) return { value: { job } };
+  if (limits === true) return { value: { limits } };
+  return undefined;
+};
+
 // Lenient, for arguments main took as they came before it decoded them: these never fail.
 // true only for exactly true
 export const flag: Decoder<boolean> = (v) => ({ value: v === true });

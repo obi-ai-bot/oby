@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { liveBridge } from './liveBridge';
 
 // Settings › Agents' choices kept on this Mac before obid kept them (docs/contracts/agents.md,
 // AGENTS-7): moved to obid once, then forgotten here, so nobody's choice is lost.
@@ -7,7 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 type Answer = { status: number; body?: unknown; hold?: Promise<unknown> };
 const calls: { method: string; path: string; body?: unknown }[] = [];
 let answers: Record<string, Answer> = {};
-let feed: (text: string) => void = () => {};
+// main's one follower of obid's events, as the page meets it
+let bridge = liveBridge();
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 function memory(): Storage {
@@ -31,9 +33,9 @@ async function load(kept: Record<string, unknown>) {
     await a.hold;
     return { status: a.status, text: a.body === undefined ? '' : JSON.stringify(a.body) };
   };
-  // obid's event stream, as main passes it on: fed by the test
-  const follow = (onChunk: (text: string) => void) => { feed = onChunk; return () => {}; };
-  vi.stubGlobal('window', { app: { obid: { call, follow } } });
+  // main's one follower of obid's events, as the page meets it: fed by the test
+  bridge = liveBridge();
+  vi.stubGlobal('window', { app: { obid: { call, ...bridge.obid } } });
   // Settings › Agents' hooks called as a render would, with no DOM: state as first drawn, effects
   // not run, a store read as it is
   vi.doMock('react', async (actual) => ({
@@ -83,11 +85,8 @@ describe('Settings › Agents on obid', () => {
   it('a model picked while an `accounts` event comes: the other accounts keep what the event said, the picked one gets obid\'s answer (#1709)', async () => {
     const { settings, live } = await load({});
     answers['GET /v1/status'] = { status: 200, body: status({ defaultAccount: null }) };
-    answers['GET /v1/jobs?limit=100'] = { status: 200, body: [] };
-    answers['GET /v1/inbox'] = { status: 200, body: [] };
-    answers['GET /v1/conversations?limit=200'] = { status: 200, body: [] };
     live.connect();
-    feed('');
+    bridge.sync({ status: status({ defaultAccount: null }) });
     for (let i = 0; i < 5; i++) await flush();
     expect(live.liveState().connection).toBe('live');
 
@@ -99,7 +98,7 @@ describe('Settings › Agents on obid', () => {
     const tuned = tune('a1', { model: 'claude-sonnet-5-5' });
     await flush();
     const event = [{ ...account('a1'), running: 1 }, { ...account('a2'), fiveHour: 40 }];
-    feed(`event: accounts\ndata: ${JSON.stringify(event)}\n\n`);
+    bridge.event('accounts', event);
     go();
     await tuned;
     const [a1, a2] = live.liveState().status!.accounts;

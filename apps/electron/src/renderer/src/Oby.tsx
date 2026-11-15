@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { PolicyAnswer } from '../../shared/sphere';
 import type { Update } from '../../shared/updates';
+import type { LoadWhat } from '../../shared/decode';
+import type { LiveMessage, LiveSnapshot } from '../../shared/live-wire';
 
 type Point = { x: number; y: number };
 declare global {
@@ -29,14 +31,15 @@ declare global {
       // the Obysphere's rules, and the members rule added at the version read (preload, main/sphere.ts)
       spherePolicy?(): Promise<PolicyAnswer | null>;
       sphereSetPolicy?(version: number): Promise<PolicyAnswer | null>;
-      // obid, through main (preload, main/obid.ts)
+      // obid, through main (preload, main/obid.ts); its events, from main's one follower (main/live.ts)
       obid: {
         call(method: string, path: string, body?: unknown): Promise<{ status: number; text: string }>;
         confirm(item: string): Promise<{ status: number; text: string }>;
         publish(job: string, action: string, choices: { anyway?: boolean; force?: boolean; to?: string }): Promise<{ status: number; text: string }>;
         limitAnswer(item: string, revision: number, choice: string, account?: string): Promise<{ status: number; text: string }>;
         pairInvite(): Promise<{ status: number; text: string }>;
-        follow(onChunk: (text: string) => void, onEnd: (a: { status: number; text: string; why?: 'waiting' | 'approval' }) => void): () => void;
+        live(onSnapshot: (s: LiveSnapshot) => void, onMessage: (m: LiveMessage) => void): () => void;
+        load(what: LoadWhat): Promise<true | string | null>;
       };
     };
   }

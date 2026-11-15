@@ -1,7 +1,7 @@
 // A typed client of obid's API (docs/runner-api.md), copied from apps/web/src/api.ts and trimmed
-// to what this app shows: the status, jobs, the inbox, the conversations and the event stream.
-// Every call goes through main (window.app.obid, main/obid.ts), which holds obid's token and adds
-// it: the page never sees it.
+// to what this app shows: the status, jobs, the inbox and the conversations; obid's events come
+// from main's one follower of them (main/live.ts, live.ts). Every call goes through main
+// (window.app.obid, main/obid.ts), which holds obid's token and adds it: the page never sees it.
 
 import type { SharingRule } from './sharing';
 import type {

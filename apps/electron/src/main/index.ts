@@ -2,7 +2,8 @@ import { app, BrowserWindow, dialog, Menu, screen, shell } from 'electron';
 import { createRequire } from 'node:module';
 import { lstatSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { bridge, startObid, stopFollowing, type Trusted } from './obid';
+import { bridge, startObid, type Trusted } from './obid';
+import { living } from './live';
 import { confirming, ownersWords } from './device';
 import { input, space, picked } from './words';
 import { notifying, windowLeft, windowSeen } from './notify';
@@ -160,7 +161,7 @@ function createWindow() {
   win.on('restore', () => track(true));
   win.on('hide', () => track(false));
   win.on('minimize', () => track(false));
-  win.on('closed', () => { track(false); stopFollowing(); win = null; windowLeft(); });
+  win.on('closed', () => { track(false); win = null; windowLeft(); });
   // Oby's alerts (notify.ts): none for what the window shows while it's in front
   win.on('focus', windowSeen);
   for (const ev of ['blur', 'hide', 'minimize'] as const) win.on(ev as 'blur', windowLeft);
@@ -207,6 +208,8 @@ app.whenReady().then(() => {
   };
   // a clicked alert opens it
   notifying(trusted, () => win, front);
+  // obid's events, followed once from here until Oby quits, for the alerts and the window (live.ts)
+  living(trusted, () => win);
   // Oby's own updates (updates.ts), told to About while the window is there
   updating(trusted, () => win);
   // Settings rows obid has no setting for yet, kept in settings.json (settings.ts)
