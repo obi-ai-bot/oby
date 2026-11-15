@@ -17484,7 +17484,7 @@ mod tests {
         assert!(!standing_rules(&job).unwrap().contains("GOAL MET"));
     }
 
-    /// A follow-up's branch and start are its chain's (`job::chain::place`, PUBLISHING-33, 34, 27),
+    /// A follow-up's branch and start are its chain's (`job::chain::place`, PUBLISHING-38, 34, 27),
     /// never the one job's: `follow_up` sets none of them, whatever that job did. Bypass isn't
     /// carried.
     #[test]

@@ -670,11 +670,11 @@ fn rewrite_job(home: &Path, id: &str, change: impl FnOnce(&mut Value)) {
     std::fs::write(&stored, kept.to_string()).unwrap();
 }
 
-/// PUBLISHING-33 (#1859): a follow-up that failed before it committed anything doesn't break its
+/// PUBLISHING-38 (#1859): a follow-up that failed before it committed anything doesn't break its
 /// task's line. The owner's words to it start one on the task's branch, at its head, and that one's
 /// publish adds to the task's pull request: no second one opens.
 #[test]
-fn publishing_33_another_round_after_a_failed_follow_up_keeps_the_branch() {
+fn publishing_38_another_round_after_a_failed_follow_up_keeps_the_branch() {
     let folder = Folder::new("publish-33");
     let bin = fake_gh(&folder.0);
     std::fs::write(folder.0.join("gh/view.json"), OPEN_VIEW).unwrap();

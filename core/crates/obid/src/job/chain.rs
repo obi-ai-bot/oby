@@ -2,7 +2,7 @@
 //! job's branch on, decided once by [`holds`] over a follower's facts and found by
 //! [`branch_carrier`] (PUBLISHING-3, 32), and the walks along `follow_up_of` that make one line of
 //! follow-ups ([`chain_tip`], [`follows_up`]); each job's chain, its root's [`Record`], and where
-//! its next follow-up starts ([`start`], PUBLISHING-33 to 37). Only they write `chain_record` and
+//! its next follow-up starts ([`start`], PUBLISHING-34 to 38). Only they write `chain_record` and
 //! `carried`, and they read only their arguments, never the clock, the disk, a lock or the log.
 
 use std::collections::{BTreeSet, HashMap};
@@ -35,7 +35,7 @@ pub struct Line {
     pub closed: bool,
 }
 
-/// Where a follow-up starts (PUBLISHING-33, 34, 27).
+/// Where a follow-up starts (PUBLISHING-38, 34, 27).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Start {
     /// Its base, on a branch of its own.
@@ -514,9 +514,9 @@ mod tests {
         (next.branch, next.start_from, next.follow_up_of.unwrap())
     }
 
-    /// PUBLISHING-33, 34, 27: each of the 8 lines gives its start, and only these.
+    /// PUBLISHING-38, 34, 27: each of the 8 lines gives its start, and only these.
     #[test]
-    fn publishing_33_each_line_gives_its_start() {
+    fn publishing_38_each_line_gives_its_start() {
         let cases = [
             ((false, false, false), Start::Base),
             ((false, false, true), Start::Base),
@@ -537,11 +537,11 @@ mod tests {
         }
     }
 
-    /// PUBLISHING-33 (#1859): a follow-up that failed with no commits keeps the line. The chain's
+    /// PUBLISHING-38 (#1859): a follow-up that failed with no commits keeps the line. The chain's
     /// branch and pull request are its task's, and the owner's words to the failed one carry that
     /// branch on, following it up.
     #[test]
-    fn publishing_33_a_failed_follow_up_keeps_the_chains_branch() {
+    fn publishing_38_a_failed_follow_up_keeps_the_chains_branch() {
         let mut task = made("a", 1, None, "oby/build-a", Status::Done);
         (task.commits, task.published, task.pull_request) =
             (Some(1), Some(URL.into()), read("OPEN"));
@@ -817,7 +817,7 @@ mod proofs {
         }
     }
 
-    /// PROOF-1 (PUBLISHING-33): a follow-up carries the chain's branch exactly when the chain has
+    /// PROOF-1 (PUBLISHING-38): a follow-up carries the chain's branch exactly when the chain has
     /// work on it and its pull request was neither merged nor closed, published or not, whatever
     /// the job before it did.
     #[kani::proof]

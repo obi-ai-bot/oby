@@ -3516,7 +3516,7 @@ fn a_follow_up_doesnt_republish_a_closed_pull_requests_commits() {
     assert_eq!(follow["reason"], turned_down, "{follow}");
 
     // A follow-up of that follow-up carries the same turned-down commits, on that one's branch, which
-    // no pull request was closed on (PUBLISHING-33): nor does it.
+    // no pull request was closed on (PUBLISHING-38): nor does it.
     let told = request(
         &obid,
         "POST",
