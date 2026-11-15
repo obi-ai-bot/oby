@@ -694,6 +694,31 @@ class ObyFeed(unittest.TestCase):
                 self.one_pass()
                 self.assertEqual(self.task_now()["state"], "merged")
 
+    def test_feedloop_12_a_security_path_holds_the_last_attempt_instead_of_ending_it(self):
+        for case in ("third head refused by the queue", "third follow-up failed"):
+            with self.subTest(case=case):
+                self.setUp()
+                self.no_ready()
+                if case.startswith("third head"):
+                    self.task("merging", head=OLD, attempt=3, armedAt="2026-11-15T10:00:00Z")
+                    self.stand.graphql = queue(removed={"createdAt": "2026-11-15T10:05:00Z", "reason": GITHUB})
+                else:
+                    self.task("running", head=OLD, attempt=3)
+                    self.stand.jobs[JOB].update(status="failed")
+                self.stand.view = None  # unread: nothing ends while the pull request can't be read
+                self.one_pass()
+                self.assertNotIn(self.task_now()["state"], ("failed", "waiting"))
+                self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "AGENTS.md"}]}
+                self.one_pass()
+                self.one_pass()
+                item = self.task_now()
+                self.assertEqual(self.stand.sent, [])
+                self.assertEqual((item["state"], item["pr"], item["attempt"]), ("waiting", PR, 3))
+                self.assertEqual(item["note"], f"{self.feed.SECURITY_HOLD} (AGENTS.md): merge it yourself")
+                self.stand.view["state"] = "MERGED"
+                self.one_pass()
+                self.assertEqual(self.task_now()["state"], "merged")
+
     # FEEDLOOP-13: a held follow-up whose job obid lost is never posted to it: a new build, or the end at the cap
     def test_feedloop_13_a_held_follow_up_whose_job_was_lost_takes_the_new_build_path(self):
         self.no_ready()

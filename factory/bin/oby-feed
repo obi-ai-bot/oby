@@ -346,8 +346,20 @@ def next_attempt(item, j, case=None):
 
 def retry(item, j, case):
     """Decides how the task carries on, as next_attempt() says: it ends now, or waits `retrying` for one_pass() to
-    start its attempt through a new start's checks (--max, free disk, files, --dry-run). Returns True."""
+    start its attempt through a new start's checks (--max, free disk, files, --dry-run). An attempt that ends it reads
+    its pull request first: one that touches a security path waits for the owner instead, and one that can't be read
+    leaves the task as it was, judged again at the next pass. Returns True when it changed."""
     verdict, why = next_attempt(item, j, case)
+    if verdict == "end" and item.get("pr"):
+        pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", VIEW)
+        if not pr:
+            return False
+        hit = touches_security([f["path"] for f in pr.get("files", [])]) if pr["state"] == "OPEN" else []
+        if hit:
+            strip_build_folders(item["job"])
+            gone = " and obid no longer has its job" if j is None else ""
+            item.update(state="waiting", note=f"{SECURITY_HOLD} ({hit[0]}){gone}: merge it yourself")
+            return True
     strip_build_folders(item["job"])
     if verdict == "end":
         item.update(state="failed", note=why[:240])
