@@ -459,7 +459,10 @@ def check_task_closed(job):
 
 def reclose_task(job):
     """Merging the base brought the task's file back next to its closed copy: close it again, with the base's
-    text, and push that. A branch whose tasks/ file differs from the base's is left for check_task_closed."""
+    text. A branch whose tasks/ file differs from the base's is left for check_task_closed.
+    It pushes only a branch origin already has at HEAD: then what leaves is a deletion and the base's own text,
+    both on origin already, so nothing the secret scan hasn't passed goes out. Otherwise the commit stays here
+    and the gate refuses the unpushed branch, for the builder to push as it pushes everything else."""
     key = job["issue"]
     done, todo = f"factory/queue/done/{key}.md", f"factory/queue/tasks/{key}.md"
     if not (in_head(job, done) and in_head(job, todo)):
@@ -467,11 +470,15 @@ def reclose_task(job):
     base = git(job, "show", f"origin/{BASE}:{todo}", check=False)
     if base.returncode != 0 or git(job, "show", f"HEAD:{todo}").stdout != base.stdout:
         return
+    git(job, "fetch", "origin", job["branch"], check=False)
+    remote = git(job, "rev-parse", f"origin/{job['branch']}", check=False).stdout.strip()
+    pushed = remote == git(job, "rev-parse", "HEAD").stdout.strip()
     git(job, "rm", "-q", todo)
     (Path(job["worktree"]) / done).write_text(base.stdout)
     git(job, "add", done)
     git(job, "commit", "-q", "-m", f"chore(factory): close {key} again after merging {BASE}")
-    git(job, "push", "origin", job["branch"])
+    if pushed:
+        git(job, "push", "origin", job["branch"])
 
 
 def check_reviews_done(job):

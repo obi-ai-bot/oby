@@ -114,7 +114,9 @@ the slot count and a long-running importer such as `bin/oby-feed` never hold one
 job (`advance`, `merge`, `answer`, `feedback`, `reject`, `agents`, `sync`) holds that job's lock, while it reads,
 decides and saves, and lets it go when it ends, a refusal included. When merging `dev` into a job's branch brings
 `queue/tasks/<KEY>.md` back next to its `queue/done/<KEY>.md`, `job advance <job> gate` closes the task again in a
-commit of its own, with `dev`'s text of the task, and pushes it; a branch with no `done/` copy, or one whose
+commit of its own, with `dev`'s text of the task. It pushes that only when origin already had the branch at
+its head, so nothing leaves but a deletion and text already on origin; an unpushed branch keeps the commit and is
+refused as unpushed, for the builder to push. A branch with no `done/` copy, or one whose
 `tasks/` file differs from `dev`'s, is refused as before.
 
 ## From AGENTS.md

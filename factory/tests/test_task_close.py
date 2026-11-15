@@ -122,6 +122,23 @@ class TaskClose(unittest.TestCase):
                          self.git(self.wt, "rev-parse", "HEAD").strip())
         self.assertEqual(self.git(self.wt, "status", "--porcelain"), "")
 
+    def test_taskclose_1_an_unpushed_branch_is_closed_again_here_and_nothing_is_pushed(self):
+        self.write("code.txt", "the change\n")
+        self.write(DONE, EARLIER)
+        self.commit("fix: something")
+        self.dev_queues_the_task_and_the_branch_merges_it()  # the merge itself isn't pushed
+        on_origin = self.git(self.wt, "ls-remote", "origin", self.branch).split()[0]
+
+        res = self.advance()
+
+        self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+        self.assertIn("isn't pushed", res.stderr)
+        self.assertEqual(self.stage(), "build")
+        self.assertEqual(self.git(self.wt, "ls-remote", "origin", self.branch).split()[0], on_origin)
+        self.assertEqual(self.git(self.wt, "log", "-1", "--format=%s").strip(),
+                         f"chore(factory): close {KEY} again after merging dev")
+        self.assertFalse(self.in_head(TODO))
+
     def assert_refused_as_today(self):
         self.push()
         before = self.git(self.wt, "rev-parse", "HEAD").strip()
