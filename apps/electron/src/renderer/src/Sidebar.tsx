@@ -4,7 +4,8 @@ import { BookOpen, Check, Mail, UserPlus, ChevronDown, EllipsisVertical, Plus, S
 import { ChatsCircleIcon, GearSixIcon, HouseIcon, ListChecksIcon, PlusIcon } from '@phosphor-icons/react';
 import { BrandMark } from './brands';
 import { ARCHIVE_AFTER, TYPES, archivedTasks, asksWaiting, countOf, getArchiveAfter, hasFresh, markSeen, openOf, renameTask, setArchiveAfter, tasksOf, tasksWith, toDoOf, useTasks, type Task } from './tasks';
-import { OBYS, ago } from './mock';
+import { OBYS } from './mock';
+import { ago } from './view';
 import { ObyFace, OwnerAvatar } from './ObyFace';
 import { useScrollThumb } from './useScrollThumb';
 import { Menu } from './Menu';

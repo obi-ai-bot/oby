@@ -1,4 +1,4 @@
-import type { Message } from './mock';
+import type { Message } from './view';
 import { onObid } from './lean';
 
 // Oby's words come in a word at a time, as a model's do: its message goes in

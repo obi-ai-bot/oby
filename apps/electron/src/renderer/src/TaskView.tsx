@@ -4,7 +4,7 @@ import { useScrollThumb } from './useScrollThumb';
 import TaskCard from './TaskCard';
 import { SESSIONS } from './session';
 import { markSeen, useTasks, type Task } from './tasks';
-import type { Attachments } from './mock';
+import type { Attachments } from './view';
 import { box as draftBox } from './drafts';
 import { onObid } from './lean';
 

@@ -5,8 +5,8 @@ The business behavior contract for the one rule by which what obid has (its jobs
 ## Feature and status
 
 - **Outcome:** The owner sees the same tasks, conversations, cards and Home as before. What changes is underneath: whether an object from obid replaces the one the app holds is decided in one place, a pure function tested on its own, instead of by hand at each event and each answer in `live.ts`. A late answer can't undo a newer event, a deleted task or conversation can't come back, and an older answer can't reopen an item the iPhone settled.
-- **Status:** **Implemented** (roadmap R06-06 for jobs, R06-07 for the other kinds): `apps/electron/src/shared/live-state.ts`, used by `apps/electron/src/renderer/src/live.ts`. Running the rule in main is R06-08. Related: #1707 (an answer applied over the state as it is when it comes) and #1709 (revisions and deleted jobs).
-- **Scope:** The `job`, `jobGone`, `conversation`, `conversationGone`, `turn`, `turnAsks`, `inbox`, `accounts` and `github` events; every job a call to obid answers with, the turns `GET /v1/conversation` answers with, and the status `GET /v1/status` answers with; and the reconnect's sync of jobs, conversations, the inbox, the status and GitHub's work. **Out of scope:** the `step`, `delta`, `roomPost` and `peerThread` events, a job's session (its transcript), the limit decisions (`limits`, which have their own revision and refresh), the repositories (`repos`), the jobs the app saw when it opened, the fields the app writes before obid answers (R06-10, R06-11), running the rule in main (R06-08), any screen, and obid and its API ([runner-api.md](../runner-api.md) is unchanged).
+- **Status:** **Implemented** (roadmap R06-06 for jobs, R06-07 for the other kinds): `apps/electron/src/shared/live-state.ts`, used by `apps/electron/src/renderer/src/live.ts`. Since R06-08 the rule runs in main: `apps/electron/src/main/live.ts`, main's one follower of obid's events, keeps the state the window and the Mac's alerts read (LIVE-10, LIVE-11). Related: #1707 (an answer applied over the state as it is when it comes) and #1709 (revisions and deleted jobs).
+- **Scope:** The `job`, `jobGone`, `conversation`, `conversationGone`, `turn`, `turnAsks`, `inbox`, `accounts` and `github` events; every job a call to obid answers with, the turns `GET /v1/conversation` answers with, and the status `GET /v1/status` answers with; and the reconnect's sync of jobs, conversations, the inbox, the status and GitHub's work; and main's follower of the events (`main/live.ts`), with its snapshot, live and load channels to the page (below, "Main's follower"). **Out of scope:** the `step`, `delta`, `roomPost` and `peerThread` events, a job's session (its transcript), the limit decisions (`limits`, which have their own revision and refresh), the repositories (`repos`), the jobs the app saw when it opened, the fields the cards and task actions write before obid answers (R06-11), any screen, and obid and its API ([runner-api.md](../runner-api.md) is unchanged).
 
 ## Behavior
 
@@ -61,10 +61,18 @@ The answers go through the same rule: `answer(state, job)` takes a job a call re
 ### Invariants and boundaries
 
 - The rule is pure: no I/O, no module state, nothing of the screens or of Electron; it imports only obid's wire types. It never changes the state it's given, and the same events from the same state give the same result.
-- It's written once: nothing else in the app compares the revision of a job, a conversation, a turn or an inbox item, or writes `gone`, `goneConversations` or `settledInbox`. A limit decision's revision is another thing, and stays `live.ts`'s.
-- What a turn shows while it's under way (what it's on, Oby's words so far and as paced, the words still waiting for their answer, a new conversation's id in the app) is `live.ts`'s, worked out from the state the rule left; a turn the rule kept out changes none of it.
+- It's written once: nothing else in the app compares the revision of a job, a conversation, a turn or an inbox item, or writes `gone`, `goneConversations` or `settledInbox`. A limit decision's revision is another thing, and stays `main/live.ts`'s.
+- What a turn shows while it's under way (what it's on, Oby's words so far and as paced, a new conversation's id in the app) is `live.ts`'s, worked out from the state the rule left; a turn the rule kept out changes none of it. A send's own fields before obid answers (the words still waiting for their answer) are `pending.ts`'s (below, "Words to Oby as a pending overlay"); the cards' and task actions' are still `live.ts`'s until R06-11.
 - A rename shows its new title before obid answers, and puts the old one back if obid refuses: that's not an answer and doesn't go through the rule. It keeps the held revision, so it can't break it.
 - The owner's Delete hides a conversation and its turns at once, but that's not a deletion obid said: it adds nothing to `goneConversations`, so one obid refuses to delete can come back. Only obid's `conversationGone` keeps it out.
+
+### Main's follower
+
+- **Main** (`apps/electron/src/main/live.ts`) follows `GET /v1/events?alerts=1` from launch until Oby quits, window open or not; nothing else in the app opens obid's events. Once the stream answers it reads the status, the latest 100 jobs, the inbox, every conversation, GitHub's work and the limit decisions, merges them with `synced`, sends the page a snapshot, then applies and passes on, in order, the events that came while it read. Each later event is parsed once: the kinds the rule takes go through `apply`, then on to the page; a job's session, a turn's steps and words, the room's posts and a thread's change are passed on as they come and never kept. It reads the job of an inbox item it doesn't hold, and after each sync the turns of the conversations the page loaded (100) and of the 20 newest (2).
+- **Down and back:** a stream that can't open, ends or fails, or a sync that fails, sets `down` with the page's words of before (a 401: "obid refused this Mac’s token (api-token)."; an ended stream: "obid closed the event stream."; obid's JSON `error`, else "obid answered <n>."; main's own reason). Main opens it again after 1 s while no status was read and obid starts (`why: 'waiting'`), else after `min(10 s, 1 s·2^retry)`, `retry` back to 0 after a good sync.
+- **The limit decisions** are main's, refreshed 300 ms after a `limitDecision`, `job` or `accounts` event, when the page asks, and every 15 s while live; an older answer than a newer request is dropped, and a change goes to the page.
+- **The page** asks `obid-snapshot` when it opens (main's state, the limit decisions, the connection, and `seq`, the number of the last message main sent), after listening on `obid-live`, where main numbers each message (a snapshot after a sync, an event, a load's turns, the limit decisions, a connection change); the preload hands on the snapshot, then only the messages past its number, once each, in order (`shared/live-wire.ts`). It asks `obid-load` for a conversation's turns (`GET /v1/conversation?id=…&limit=100`, through `answerTurns`, then each job they name that main doesn't hold and that isn't deleted, through `answer` and on as a `job` event), a job, or the limit decisions again; the answer is `true`, or why not. The page's own call answers are still applied in the page, through the same rule; obid's events bring them to main.
+- **The alerts** (`main/notify.ts`) read the inbox, the limit decisions and the conversations' titles from main's state, and take main's messages in the order main applied them.
 
 ## Interfaces and dependencies
 
@@ -72,7 +80,7 @@ Reads the `job`, `conversation`, `turn`, `turnAsks`, `inbox`, `accounts` and `gi
 
 ## Acceptance scenarios
 
-Tests: [`apps/electron/src/renderer/src/test/liveState.test.ts`](../../apps/electron/src/renderer/src/test/liveState.test.ts) calls the rule directly. Through `live.ts`, [`taskActions.test.ts`](../../apps/electron/src/renderer/src/test/taskActions.test.ts) covers the answers that cross events ("obid's answers over the events that came meanwhile", #1707), a job with no revision, the sync after a restart that took a revision back ("back after obid restarted with a lower revision: obid's list wins, but a newer answer that came while it was read stays") and after a deletion while the stream was away ("back after the stream was away: a task deleted meanwhile (on the iPhone) leaves, the older ones a conversation fetched stay"), a deleted task not fetched back, and the turns that cross a conversation's fetch.
+Tests: [`apps/electron/src/renderer/src/test/liveState.test.ts`](../../apps/electron/src/renderer/src/test/liveState.test.ts) calls the rule directly. Through `live.ts`, [`taskActions.test.ts`](../../apps/electron/src/renderer/src/test/taskActions.test.ts) covers the answers that cross events ("obid's answers over the events that came meanwhile", #1707), a job with no revision, and the turns that cross a conversation's fetch. The reconnect's sync tests live in [`mainLive.test.ts`](../../apps/electron/src/renderer/src/test/mainLive.test.ts), against `main/live.ts`: after a restart that took a revision back ("back after obid restarted with a lower revision: obid's list wins, but a newer answer that came while it was read stays") and after a deletion while the stream was away ("back after the stream was away: a task deleted meanwhile (on the iPhone) leaves, the older ones a conversation fetched stay"); a deleted task not fetched back is in LIVE-10's.
 
 - **LIVE-1** (implemented): Given the state holds job J at revision 5, when a `job` event or an answer brings J at revision 4, then the state keeps revision 5.
 - **LIVE-2** (implemented): Given a `job` event with `deleted: true` for J, when any later answer or event brings J, then J stays out of the state.
@@ -83,6 +91,48 @@ Tests: [`apps/electron/src/renderer/src/test/liveState.test.ts`](../../apps/elec
 - **LIVE-7** (implemented): Given a `conversationGone` for C, when a `conversation` event for C (with or without a revision) or a reconnect's complete list holding C comes, then C stays out, and so do its turns, from a later `turn` event or answer too.
 - **LIVE-8** (implemented): Given an answer during the reconnect's read brought a newer conversation and inbox item, obid's lists hold those at a lower revision and another conversation at a lower revision than its unchanged held copy (a restart), and the events that came meanwhile bring a newer turn and a `conversationGone`, when `synced` and then those events run, then the state holds exactly obid's newest copy of each object.
 - **LIVE-9** (implemented): Given a conversation, a turn and an inbox item with no revision, when they come over held copies with revisions or over an empty state, then each is taken as it comes, in the order they came.
+- **LIVE-10** (implemented): Given the renderer asks main to load a conversation's turns, when obid answers, then the turns enter the state through `apply` and every open window gets the events. `obid-load` with `{ conversation: 'c1' }` reads `GET /v1/conversation?id=c1&limit=100`; a held turn at a higher revision stays; the window gets the turns, then a `job` event for each job they name that main didn't hold (a deleted one isn't read); the call answers `true`. A job and the limit decisions load the same way, and what obid refuses answers its words. `mainLive.test.ts`: `live_10_a_conversation_the_page_loads_goes_into_mains_state_and_the_window_gets_it`, `live_10: a job, and the limit decisions, read for the page; what obid refuses says why`.
+- **LIVE-11** (implemented): Given obid stops, when main's stream ends, then the window shows 'down' with obid's reason as today, and main reconnects with the same back-off. The window gets a connection change to `down` with "obid closed the event stream.", or "obid refused this Mac’s token (api-token)." for a 401, or obid's own `error`; main opens the next stream after 1 s, then 2 s, then 4 s while syncs fail, and every 1 s while no status was read and obid starts. `mainLive.test.ts`: `live_11_when_obids_stream_ends_the_window_shows_down_and_main_reconnects_with_the_same_back_off`, `live_11: obid refusing the token, and a refusal in obid’s own words`, `live_11: while obid starts, before any status was read, main tries every second`.
+
+## Words to Oby as a pending overlay (R06-10)
+
+The business behavior contract for the owner's words to Oby on their way, from [the template](../business-contract-template.md). Roadmap task R06-10 (`factory/queue/done/R06-10.md`). Scenarios LIVE-15 to LIVE-18; their tests are named after them in [`apps/electron/src/renderer/src/test/pending.test.ts`](../../apps/electron/src/renderer/src/test/pending.test.ts).
+
+### Feature and status
+
+- **Outcome:** The owner's words show at once, "Thinking" under them, and stay until Oby answers, as before. Underneath, the app no longer guesses which new conversation is its own by the words' text: words of the same text sent from another device meanwhile start their own conversation on screen too.
+- **Status:** **Implemented** in the Electron app: `apps/electron/src/renderer/src/pending.ts`, used by `live.ts`.
+- **Scope:** the words `ask` sends (`POST /v1/plans`), from the send until obid's state answers for them. **Out of scope:** a visible "sending" state (it needs Sangam's design), the cards' and task actions' fields before obid answers (R06-11), main's signing, and obid and its API.
+
+### Actors and ownership
+
+- **obid** owns the turn id and what it answers for it: the user's turn takes the id the app gave the words, and the same words sent again with it answer `{"kind": "none", "repeated": true}` while that turn is kept (`Conversations::begin`, [conversations.md](../api/conversations.md)).
+- **The page** keeps one pending entry per send, keyed by that turn id (`pending.ts`, a pure module): the conversation as shown (obid's id, or the app's own `new:<n>` for words starting one), obid's conversation once known, the words as sent, their files as the screen shows them, and whether the plan's answer said an answer is coming. What the screen shows is obid's reduced state plus these entries: the same message box, words, "Thinking" and cards as before.
+
+### When an entry leaves
+
+- obid's state holds Oby's answer to it: a turn of Oby's answering words (not a job's report or a routine's run) after the entry's own user turn, in that conversation, whether it came as an event or in a conversation's turns.
+- The plan's answer says no answer is coming: `kind: "none"` without `repeated: true`.
+- The send failed: obid refused it, anything else threw, or obid answered none of its tries.
+- obid's `conversationGone` named its conversation.
+
+Words that started a conversation never leave before obid's own conversation for them is listed, so the page opened for them stays open; meanwhile their row shows under `new:<n>`, with the words and their files until obid's turn shows them.
+
+### Adoption by id only
+
+- The conversation shown under `new:<n>` is the one the words' own user turn is in (the turn whose id is the entry's), or the one the plan's answer to that very request names. Either maps obid's id onto `new:<n>`; nothing else does, and the words' text is never compared.
+
+### Failures and recovery
+
+- REST answers clear or fail an entry and never write obid's state: the plan's answer adds no conversation, its jobs go through the rule, and a new conversation's turns come through `GET /v1/conversation`.
+- A send obid didn't answer (status 0) is sent again only as the very same request, the same body and id, 3 tries 1 s apart (`sent`). Nothing else sends words again: not a reconnect, a snapshot, a conversation's turns nor a connection change. A connection `down` ends what only events said was under way, but the entries stay until their own end.
+
+### Acceptance scenarios
+
+- **LIVE-15** (implemented): Given words sent with no conversation, when obid's events bring conversation `cA` and a user turn in it with the sent id and another text, then the `new:1` row is `cA`'s with its turns, `realId('new:1')` is `cA`, no second row shows for `cA`, and once Oby's answer is in the state the entry is gone. `LIVE-15: obid's turn with the sent id adopts its conversation, whatever its text`.
+- **LIVE-16** (implemented): Given words sent with no conversation and the plan's answer held, when obid's events bring first `cB` with a user turn of the same text and another id, then `cA` with this app's id, then `cB` shows as its own row under its own id and `new:1` shows `cA`'s turns. `LIVE-16: another device's words of the same text start their own conversation, never this app's`.
+- **LIVE-17** (implemented): Given `POST /v1/plans` answers status 0, then `{"kind": "none", "repeated": true}`, when the words are sent, then exactly two calls go with deep-equal bodies and the same id, the entry stays across the retry, `c1` holds one user turn of that id once it arrives, and no third call is made. `LIVE-17: a send obid didn't answer goes again as the very same request, and its words are taken once`.
+- **LIVE-18** (implemented): Given a send whose plan answer is held, when the connection goes down and a new snapshot comes, then no further call is made, the entry stays and its `new:1` row still shows the words; it leaves once its turn and Oby's answer arrive, or once the held answer comes back `422`. `LIVE-18: it leaves once its turn and Oby's answer arrive`, `LIVE-18: it leaves once the held answer is let go as a 422`.
 
 ## Settings rows obid has no setting for yet (R06-13)
 
@@ -148,3 +198,9 @@ Kept outside this channel, in the page's `localStorage` (`useKeptSetting`): `mod
 #### Test it when it's done (on a real Mac)
 
 1. `npm run dev`: turn Open at login off in Settings › General, quit Oby and open it again: it shows off. Notifications and Update automatically keep their own choices.
+
+## The live path without the mock (R06-12)
+
+The view types the screens draw (`Job`, `Message`, `Ask`, ...), their constants (`AGENTS`, `TELL`, `STEER`, `ASK_LABEL`) and pure helpers (`agentOf`, `hasAttachments`, `ago`) live in `apps/electron/src/renderer/src/view.ts`, which imports nothing from `mock.ts` or `lean.ts`; `mock.ts` holds only the demo data and the functions that read it. Roadmap task R06-12 (`factory/queue/done/R06-12.md`).
+
+- **LIVE-22** (implemented) Given the source of `live.ts`, when the test reads its imports, then none is `./mock`. `live_22_live_ts_imports_nothing_from_the_mock`, and `live_22: view.ts imports nothing from the mock or lean.ts`, in `apps/electron/src/renderer/src/test/view.test.ts`.

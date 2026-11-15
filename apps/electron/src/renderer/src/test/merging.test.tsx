@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { stagesOf } from '../jobPage';
 import { fresh, launch, mac, served } from './macAlerts';
 import type { Job } from '../obid';
-import type { Job as JobView, Stage } from '../mock';
+import type { Job as JobView, Stage } from '../view';
 
 // The task card's Review and Merged stages in obid's own words (docs/contracts/merging.md)
 const job = (more: Partial<Job> = {}): Job => ({
@@ -23,7 +23,7 @@ async function card(stages: Stage[], more: Partial<JobView> = {}) {
   vi.stubGlobal('location', { search: '' });
   vi.stubGlobal('window', {});
   const { default: TaskCard } = await import('../TaskCard');
-  const { AGENTS } = await import('../mock');
+  const { AGENTS } = await import('../view');
   const view = {
     id: 'j1', type: 'tasks', title: 'Fix it', request: 'Fix it', agent: 'claude', account: 'Personal', model: 'Opus',
     repo: 'deskree-inc/oby', branch: 'oby/fix-1', base: 'dev', status: 'done', step: '', stages, created: 20, finished: 1, ...more,

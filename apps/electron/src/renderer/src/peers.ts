@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
-import { PEER_CONVOS, hasAttachments, type Attachments, type PeerConvo, type PeerMessage } from './mock';
+import { PEER_CONVOS } from './mock';
+import { hasAttachments, type Attachments, type PeerConvo, type PeerMessage } from './view';
 import { plainId } from '../../shared/obid-wire';
 import { ApiError, api, peerThreadOf, type AskMark, type PeerExchange, type PeerPost, type PeerThread } from './obid';
 import { draft, keep, leftInBox } from './drafts';
