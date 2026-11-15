@@ -6387,15 +6387,13 @@ impl Jobs {
 
     /// What a passing check of the job `id` with `command` counts for at merge (`Job::checked`):
     /// the clean head it passed on, and why it can't stand for the Mac's checks, from the files its
-    /// change touches against its base (crate::merge::check_apart).
+    /// change touches against its base (crate::merge::checked).
     async fn checked(&self, id: &str, command: &str) -> Option<crate::job::Checked> {
         let commit = self.clean_head(id).await?;
         let job = self.get(id)?;
         let changed = self.changed_files(&job, &commit).await;
-        Some(crate::job::Checked {
-            apart: crate::merge::check_apart(&job, command, changed.as_deref()),
-            commit,
-        })
+        let checked = crate::merge::checked(&job, command, changed.as_deref(), commit);
+        Some(checked)
     }
 
     /// The files `head` changes against the job's base as the clone has it

@@ -90,6 +90,9 @@ pub enum CheckRan {
     Stands,
     /// It passed on the head, but can't stand for the Mac's ([`check_apart`]).
     Apart,
+    /// It passed on the head, and the job's outside read ([`Job::someone_elses`]) is the only
+    /// reason it can't stand for the Mac's ([`checked`]).
+    OutsideRead,
     /// It didn't pass on exactly the head.
     NotOnHead,
     /// The repository has no check.
@@ -97,12 +100,27 @@ pub enum CheckRan {
 }
 
 /// Whether how the check ran (`ran`) leaves the merge to the owner's own Merge: a missing check
-/// doesn't, for the owner's own conversation work (`own`, MERGING-47).
+/// doesn't, for the owner's own conversation work (`own`, MERGING-47), nor one whose only reason
+/// not to stand is its outside read, which its second review guards (MERGING-57).
 pub fn check_holds(ran: CheckRan, own: bool) -> bool {
     match ran {
         CheckRan::Stands => false,
         CheckRan::NoCheck => !own,
+        CheckRan::OutsideRead => !own,
         CheckRan::Apart | CheckRan::NotOnHead => true,
+    }
+}
+
+/// How the check ran (MERGING-57, 58), from whether the job has a check (`has_check`), one passed
+/// on exactly the head (`on_head`), it can't stand for the Mac's (`apart`), and the job's outside
+/// read is the only reason why (`read_only`).
+pub fn check_ran(has_check: bool, on_head: bool, apart: bool, read_only: bool) -> CheckRan {
+    match (on_head, apart, read_only) {
+        (false, _, _) if has_check => CheckRan::NotOnHead,
+        (false, _, _) => CheckRan::NoCheck,
+        (true, false, _) => CheckRan::Stands,
+        (true, true, true) => CheckRan::OutsideRead,
+        (true, true, false) => CheckRan::Apart,
     }
 }
 
@@ -932,28 +950,36 @@ pub fn ready_as(
 /// `mac` (this repository's remembered workflow, and what `proposed` offers wherever GitHub's checks
 /// aren't green): the job's own check, passed in its box on exactly `head` (`Job::checked`), is
 /// this Mac's check, where it can stand for it ([`check_apart`]). Otherwise, one that didn't pass
-/// on that head, or a job with no check (but the owner's own conversation work, MERGING-47), and
-/// only the owner's own Merge merges it ([`Blocked::yours`]). (A `github` workflow waits for
-/// GitHub's checks instead.)
+/// on that head, or a job with no check (but the owner's own conversation work, MERGING-47, and
+/// its check that only its outside read keeps apart, MERGING-57), and only the owner's own Merge
+/// merges it ([`Blocked::yours`]); own work's card names its other reason (MERGING-58). (A
+/// `github` workflow waits for GitHub's checks instead.)
 fn mac_checks(job: &Job, workflow: &Workflow, head: &str) -> Result<(), Blocked> {
     if workflow.checks != Checks::Mac {
         return Ok(());
     }
+    let own = own_work(job);
+    let has_check = job.check.is_some();
     let (ran, why) = match &job.checked {
-        Some(checked) if checked.commit == head => match &checked.apart {
-            None => (CheckRan::Stands, String::new()),
-            Some(why) => (CheckRan::Apart, why.clone()),
-        },
-        _ if job.check.is_none() => (
-            CheckRan::NoCheck,
+        Some(checked) if checked.commit == head => {
+            let read_only = checked.outside_read && checked.apart_besides.is_none();
+            let ran = check_ran(has_check, true, checked.apart.is_some(), read_only);
+            let why = match &checked.apart_besides {
+                Some(besides) if own && checked.outside_read => Some(besides),
+                _ => checked.apart.as_ref(),
+            };
+            (ran, why.cloned().unwrap_or_default())
+        }
+        _ if !has_check => (
+            check_ran(has_check, false, false, false),
             "No check ran on its head (this repository has none), so it's yours to merge.".into(),
         ),
         _ => (
-            CheckRan::NotOnHead,
+            check_ran(has_check, false, false, false),
             "Its check didn't pass on exactly this commit, so it's yours to merge.".into(),
         ),
     };
-    if check_holds(ran, own_work(job)) {
+    if check_holds(ran, own) {
         Err(yours(why))
     } else {
         Ok(())
@@ -1133,13 +1159,47 @@ fn plain_why(job: &Job, why: &str) -> String {
 /// change edits the check itself ([`check_files`]), or when it touches what only the Mac tests
 /// ([`mac_only`]). Fails closed: the owner's Merge is asked.
 pub fn check_apart(job: &Job, command: &str, changed: Option<&[String]>) -> Option<String> {
-    if let Some(why) = job.check_refuses_secrets() {
-        let why = plain_why(job, &why);
+    match job.not_owners_words() {
+        Some(why) => Some(format!(
+            "Its check passed, but {}, so it's yours to merge.",
+            plain_why(job, &why)
+        )),
+        None => apart_besides_words(job, command, changed),
+    }
+}
+
+/// What a passing check with `command` counts for at merge (`Job::checked`), on `commit`: why it
+/// can't stand ([`check_apart`]), whether that includes the job's outside read
+/// ([`Job::someone_elses`]), and then why else ([`apart_besides_words`]), its `vetted` false that
+/// same read (MERGING-57, 58).
+pub fn checked(
+    job: &Job,
+    command: &str,
+    changed: Option<&[String]>,
+    commit: String,
+) -> crate::job::Checked {
+    let outside_read = job.someone_elses().is_some();
+    crate::job::Checked {
+        apart: check_apart(job, command, changed),
+        apart_besides: outside_read
+            .then(|| apart_besides_words(job, command, changed))
+            .flatten(),
+        outside_read,
+        commit,
+    }
+}
+
+/// [`check_apart`]'s reasons past the owner's own words, in its order: a reach past the
+/// registries (MERGING-31), declared secrets withheld (MERGING-30), changes it couldn't read,
+/// the check's own files, what only the Mac tests.
+fn apart_besides_words(job: &Job, command: &str, changed: Option<&[String]>) -> Option<String> {
+    if let Some(why) = &job.reached {
         return Some(format!(
             "Its check passed, but {why}, so it's yours to merge."
         ));
     }
     if let Some(why) = &job.check_withheld {
+        let why = plain_why(job, why);
         return Some(format!(
             "Declared secrets withheld: {why}. Its check ran without them, so it's yours to merge."
         ));
@@ -3182,6 +3242,7 @@ mod tests {
         left.checked = Some(crate::job::Checked {
             commit: head(),
             apart: Some(MAC_LEFT.into()),
+            ..Default::default()
         });
         let none = view(|v| v["statusCheckRollup"] = json!([]));
         let (mac_pr, mac_merging) = read(&none, &pages(vec![]));
@@ -3797,6 +3858,7 @@ mod tests {
         checked.checked = Some(crate::job::Checked {
             commit: head(),
             apart: None,
+            ..Default::default()
         });
         let none = view(|v| v["statusCheckRollup"] = json!([]));
         for text in [&none, &view(|_| {})] {
@@ -3838,11 +3900,13 @@ mod tests {
         left.checked = Some(crate::job::Checked {
             commit: head(),
             apart: Some(MAC_LEFT.into()),
+            ..Default::default()
         });
         let mut elsewhere = left.clone();
         elsewhere.checked = Some(crate::job::Checked {
             commit: "b".repeat(40),
             apart: None,
+            ..Default::default()
         });
         let mut unchecked = settled();
         unchecked.check = None;
@@ -4055,7 +4119,8 @@ mod tests {
 
     /// MERGING-47: in a repository with no check, the owner's own conversation work merges on
     /// Oby's review alone; any other work is the owner's. A check that didn't pass on the head, or
-    /// can't stand for the Mac's, still holds own work too.
+    /// can't stand for the Mac's for a reason besides an outside read (MERGING-57, 58), still holds
+    /// own work too.
     #[test]
     fn merging_47_only_a_missing_check_is_lifted_for_own_work() {
         let mac = Workflow {
@@ -4079,6 +4144,7 @@ mod tests {
         elsewhere.checked = Some(crate::job::Checked {
             commit: "b".repeat(40),
             apart: None,
+            ..Default::default()
         });
         assert_eq!(
             check(&elsewhere, Some(&mac), &none),
@@ -4090,10 +4156,214 @@ mod tests {
         left.checked = Some(crate::job::Checked {
             commit: head(),
             apart: Some(MAC_LEFT.into()),
+            ..Default::default()
         });
         assert_eq!(check(&left, Some(&mac), &none), Err(yours(MAC_LEFT)));
         left.checked.as_mut().unwrap().apart = None;
         assert_eq!(check(&left, Some(&mac), &none), Ok(()));
+    }
+
+    /// The line a check's card says for the owner's job an outside read marked, but for own work
+    /// whose only reason it is (MERGING-57).
+    const READ_LINE: &str =
+        "Its check passed, but its task read something Oby didn't write, so it's yours to merge.";
+
+    /// [`own`], marked by `mark`, its check passed on the head with `changed` ([`checked`]).
+    fn own_checked(mark: fn(&mut Job), changed: Option<&[&str]>) -> Job {
+        let mut job = own();
+        mark(&mut job);
+        job.check = Some("scripts/oby-check.sh".into());
+        let changed: Option<Vec<String>> =
+            changed.map(|names| names.iter().map(|n| (*n).to_owned()).collect());
+        job.checked = Some(checked(
+            &job,
+            "scripts/oby-check.sh",
+            changed.as_deref(),
+            head(),
+        ));
+        job
+    }
+
+    /// An outside read as obid marks a job: its conversation read something untrusted, or one
+    /// that wrote its words did (`brain::written_in`, `vetted` false with it).
+    const OUTSIDE_READS: [fn(&mut Job); 2] = [
+        |job| job.untrusted = true,
+        |job| {
+            job.foreign = Some(
+                "Oby's conversation that wrote its words read the title of job 665a79b6".into(),
+            );
+            job.vetted = false;
+        },
+    ];
+
+    /// Claude's approving review of `head()`, a second tool's beside [`oby_review`]'s Codex.
+    fn second_tool() -> crate::job::Review {
+        crate::job::Review {
+            agent: "claude".into(),
+            ..oby_review("approved")
+        }
+    }
+
+    /// MERGING-57: the owner's own conversation work an outside read marked, its check passed on
+    /// the head with that read its only reason not to stand for the Mac's, waits with no card for
+    /// a second approving review by another tool, a member's approval on GitHub standing in for
+    /// none, then merges by itself; a review that asks for changes after its rounds keeps its item
+    /// and the owner's Merge (MERGING-50).
+    #[test]
+    fn merging_57_own_work_an_outside_read_marked_waits_for_a_second_review_with_no_card() {
+        let none = view(|v| v["statusCheckRollup"] = json!([]));
+        let oby = Workflow {
+            review: Approval::Oby,
+            checks: Checks::Mac,
+            ..obis()
+        };
+        let person = Workflow {
+            review: Approval::Person,
+            ..oby.clone()
+        };
+        let nobody = Reviewers {
+            owner: Some("wellprado".into()),
+            ..Reviewers::default()
+        };
+        let (pr, merging) = read(&none, &pages(vec![]));
+        let member = rest(3, "ana", "User", "APPROVED", &head(), "MEMBER");
+        let (member_pr, member_merging) = read(&none, &pages(vec![member]));
+        for mark in OUTSIDE_READS {
+            let mut job = own_checked(mark, Some(&["a.rs"]));
+            job.approvals = vec![oby_review("approved")];
+            let waits = ready(&job, Some(&oby), &pr, &merging, Some(&nobody)).unwrap_err();
+            assert!(!waits.needs_you, "{}", waits.why);
+            assert!(waits.why.contains(SECOND_REVIEW_WAITS), "{}", waits.why);
+            assert!(!waits.why.contains("yours to merge"), "{}", waits.why);
+            let member = ready(
+                &job,
+                Some(&person),
+                &member_pr,
+                &member_merging,
+                Some(&nobody),
+            )
+            .unwrap_err();
+            assert!(!member.needs_you, "{}", member.why);
+            assert!(member.why.contains(SECOND_REVIEW_WAITS), "{}", member.why);
+            let mut flagged = job.clone();
+            flagged.review = reviewed("changesRequested", &head()).review;
+            assert!(flagged.review_needs_you());
+            let blocked = ready(&flagged, Some(&oby), &pr, &merging, Some(&nobody));
+            assert_eq!(blocked, Err(yours(REVIEW_ASKS)));
+            assert!(on_review_item(&blocked.unwrap_err()));
+            job.approvals.push(second_tool());
+            assert_eq!(
+                ready(&job, Some(&oby), &pr, &merging, Some(&nobody)),
+                Ok(())
+            );
+        }
+    }
+
+    /// MERGING-58: every other reason the owner's own work's check can't stand keeps its card,
+    /// which says that reason and not its outside read; work that isn't own keeps the read's line
+    /// word for word, and own work that didn't start from the owner's words keeps its own.
+    #[test]
+    fn merging_58_every_other_reason_keeps_its_card_and_names_itself() {
+        let mac = Workflow {
+            checks: Checks::Mac,
+            ..obis()
+        };
+        let none = view(|v| v["statusCheckRollup"] = json!([]));
+        let untrusted = OUTSIDE_READS[0];
+        let reached = own_checked(
+            |job| {
+                job.untrusted = true;
+                job.reached = Some("its agent reached docs.example.com:443".into());
+            },
+            Some(&["a.rs"]),
+        );
+        let withheld = own_checked(
+            |job| {
+                job.untrusted = true;
+                job.check_withheld = job.someone_elses();
+            },
+            Some(&["a.rs"]),
+        );
+        let mut elsewhere = own_checked(untrusted, Some(&["a.rs"]));
+        elsewhere.checked.as_mut().unwrap().commit = "b".repeat(40);
+        let mut cases = vec![
+            (
+                reached,
+                "Its check passed, but its agent reached docs.example.com:443, so it's yours to merge.",
+            ),
+            (
+                withheld,
+                "Declared secrets withheld: its task read something Oby didn't write. Its check ran without them, so it's yours to merge.",
+            ),
+            (
+                elsewhere,
+                "Its check didn't pass on exactly this commit, so it's yours to merge.",
+            ),
+        ];
+        for mark in OUTSIDE_READS {
+            for (changed, why) in [
+                (
+                    None,
+                    "Its check passed, but Oby couldn't read what the change touches, so it's yours to merge.",
+                ),
+                (
+                    Some(&["a.rs", "scripts/oby-check.sh"][..]),
+                    "Its check passed, but this change edits the check itself (scripts/oby-check.sh), so it's yours to merge.",
+                ),
+                (Some(&["Engine/Jobs.swift"][..]), MAC_LEFT),
+            ] {
+                cases.push((own_checked(mark, changed), why));
+            }
+        }
+        for (mut job, why) in cases {
+            job.approvals.push(second_tool());
+            let blocked = check(&job, Some(&mac), &none);
+            assert_eq!(blocked, Err(yours(why)));
+            let said = blocked.unwrap_err().why;
+            assert!(
+                !said.contains("its task read something Oby didn't write, so it's yours to merge"),
+                "{said}"
+            );
+        }
+        // Not the owner's own work: the read's own line, as before.
+        for mark in OUTSIDE_READS {
+            let mut theirs = own_checked(mark, Some(&["a.rs"]));
+            theirs.own_conversation = false;
+            let mut unsigned = own_checked(mark, Some(&["a.rs"]));
+            unsigned.unsigned = true;
+            for job in [theirs, unsigned] {
+                assert_eq!(check(&job, Some(&mac), &none), Err(yours(READ_LINE)));
+            }
+        }
+        // Not the owner's own words, with no mark: no outside read, and its own line.
+        let unvetted = own_checked(|_| {}, Some(&["a.rs"]));
+        assert!(!unvetted.checked.as_ref().unwrap().outside_read);
+        assert_eq!(
+            check(&unvetted, Some(&mac), &none),
+            Err(yours(
+                "Its check passed, but it didn't start from the owner's own words in Oby's apps, so it's yours to merge."
+            ))
+        );
+    }
+
+    /// MERGING-58: a check an older obid recorded, with no word of an outside read, keeps its card
+    /// on the owner's own work.
+    #[test]
+    fn merging_58_a_check_an_older_obid_recorded_keeps_its_card() {
+        let mac = Workflow {
+            checks: Checks::Mac,
+            ..obis()
+        };
+        let none = view(|v| v["statusCheckRollup"] = json!([]));
+        let older: crate::job::Checked =
+            serde_json::from_value(json!({"commit": head(), "apart": READ_LINE})).unwrap();
+        assert!(!older.outside_read && older.apart_besides.is_none());
+        let mut job = own();
+        job.untrusted = true;
+        job.check = Some("scripts/oby-check.sh".into());
+        job.checked = Some(older);
+        job.approvals = vec![second_tool()];
+        assert_eq!(check(&job, Some(&mac), &none), Err(yours(READ_LINE)));
     }
 
     /// [`own`], Oby's own review asking for changes on its head, with nothing more happening by
@@ -5664,7 +5934,7 @@ esac
 #[cfg(test)]
 mod proofs {
     #![cfg(kani)]
-    //! Kani's proofs of the owner's own conversation work's merge (MERGING-45 to 47): `kani::any()`
+    //! Kani's proofs of the owner's own conversation work's merge (MERGING-45 to 58): `kani::any()`
     //! stands for every value of the bools and the enum below.
 
     use super::*;
@@ -5675,6 +5945,7 @@ mod proofs {
             0 => CheckRan::Stands,
             1 => CheckRan::Apart,
             2 => CheckRan::NotOnHead,
+            3 => CheckRan::OutsideRead,
             _ => CheckRan::NoCheck,
         }
     }
@@ -5701,8 +5972,38 @@ mod proofs {
         match ran {
             CheckRan::Stands => assert!(!holds),
             CheckRan::NoCheck => assert_eq!(holds, !own),
+            CheckRan::OutsideRead => assert_eq!(holds, !own),
             CheckRan::Apart | CheckRan::NotOnHead => assert!(holds),
         }
+    }
+
+    /// MERGING-57: a check whose only reason not to stand for the Mac's is the outside read holds
+    /// exactly the work that isn't own; every other way it ran holds as before.
+    #[kani::proof]
+    fn merging_55_an_outside_read_holds_only_work_not_own() {
+        let (ran, own) = (any_ran(), kani::any::<bool>());
+        let holds = check_holds(ran, own);
+        match ran {
+            CheckRan::OutsideRead => assert_eq!(holds, !own),
+            CheckRan::Stands => assert!(!holds),
+            CheckRan::NoCheck => assert_eq!(holds, !own),
+            CheckRan::Apart | CheckRan::NotOnHead => assert!(holds),
+        }
+    }
+
+    /// MERGING-58: only a check that passed on the head, can't stand, and has the outside read as
+    /// its only reason is an outside read; any other reason is apart, one off the head is not on
+    /// it or none by whether there is a check, and one that stands stands.
+    #[kani::proof]
+    fn merging_56_only_the_read_alone_comes_out_as_an_outside_read() {
+        let (has_check, on_head, apart, read_only): (bool, bool, bool, bool) =
+            (kani::any(), kani::any(), kani::any(), kani::any());
+        let ran = check_ran(has_check, on_head, apart, read_only);
+        assert_eq!(ran == CheckRan::OutsideRead, on_head && apart && read_only);
+        assert_eq!(ran == CheckRan::Apart, on_head && apart && !read_only);
+        assert_eq!(ran == CheckRan::Stands, on_head && !apart);
+        assert_eq!(ran == CheckRan::NotOnHead, !on_head && has_check);
+        assert_eq!(ran == CheckRan::NoCheck, !on_head && !has_check);
     }
 
     /// MERGING-46: with a learned workflow every job follows it; with none, own work merges by

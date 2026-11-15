@@ -274,7 +274,7 @@ pub struct ReviewFailed {
 }
 
 /// A passing run of a job's own check ([`Job::checked`]).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Checked {
     /// The worktree's head it ran on, clean.
@@ -283,6 +283,14 @@ pub struct Checked {
     /// (crate::merge::check_apart); none when it can.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub apart: Option<String>,
+    /// Why it can't stand includes the job's outside read ([`Job::someone_elses`]) (MERGING-57).
+    /// A check an older obid recorded says false, and keeps its card (MERGING-58).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outside_read: bool,
+    /// With [`Checked::outside_read`], why it can't stand apart from that read, in the owner's
+    /// words; none when the read is the only reason (crate::merge::checked).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apart_besides: Option<String>,
 }
 
 /// Oby's latest verdict on a job's published work (docs/runner-api.md, "Oby's review").

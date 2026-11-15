@@ -1618,6 +1618,7 @@ fn merging_1_the_jobs_own_check_merges_a_repository_without_github_checks() {
     checked.checked = Some(obid::job::Checked {
         commit: head(),
         apart: None,
+        ..Default::default()
     });
     let obid = started_with(&folder, false, Some(MAC), checked, &[]);
     view_now(&folder, |v| v["statusCheckRollup"] = json!([]));
@@ -3871,6 +3872,70 @@ fn merging_48_untrusted_own_work_into_main_waits_for_a_second_review_then_merges
     let merged = merged_with_no_card(&obid, "oby");
     merged_into(&merged, "main");
     assert_eq!(calls(&folder.0).matches("-X PUT").count(), 1);
+}
+
+/// MERGING-57: the same untrusted own work into main, in a repository with no checks on GitHub,
+/// its own check passed on the head with its outside read the only reason not to stand for the
+/// Mac's, waits for a second review by another tool with no card and nothing sent, then merges by
+/// itself. The same check on work that isn't the owner's own keeps its card.
+#[test]
+fn merging_57_untrusted_own_work_whose_check_passed_waits_for_a_second_review_then_merges() {
+    let read =
+        "Its check passed, but its task read something Oby didn't write, so it's yours to merge.";
+    let untrusted = |second: Option<&str>, own: bool, base: &str| {
+        let mut job = needs_two(second);
+        job.outgoing[0].date -= obid::merge::CHECKS_SETTLE;
+        job.own_conversation = own;
+        job.untrusted = true;
+        job.base = Some(base.into());
+        job.check = Some("true".into());
+        job.checked = Some(obid::job::Checked {
+            commit: head(),
+            apart: Some(read.into()),
+            outside_read: true,
+            apart_besides: None,
+        });
+        job
+    };
+    let folder = Folder::new("merge-own-checked-waits");
+    let waits = untrusted(None, true, "main");
+    let obid = started_into(&folder, None, waits, "main", &["person", "bare"]);
+    let reads = || calls(&folder.0).matches("pr view 7").count();
+    within(30, "a few reads", || (reads() >= 4).then_some(()));
+    let waiting = job(&obid);
+    assert!(merge_cards(&obid).is_empty(), "{:?}", merge_cards(&obid));
+    assert_eq!(waiting["mergeNeedsYou"], false, "{waiting}");
+    assert!(waiting["mergeError"].is_null(), "{waiting}");
+    assert!(waiting["mergedBy"].is_null(), "{waiting}");
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    // What its check counts for is kept in its file, never in the API.
+    let text = waiting.to_string();
+    assert!(waiting.get("checked").is_none(), "{waiting}");
+    assert!(
+        !text.contains("outsideRead") && !text.contains("apartBesides"),
+        "{text}"
+    );
+    drop(obid);
+
+    let folder = Folder::new("merge-own-checked-merges");
+    let both = untrusted(Some("claude"), true, "main");
+    let obid = started_into(&folder, None, both, "main", &["person", "bare"]);
+    let merged = merged_with_no_card(&obid, "oby");
+    merged_into(&merged, "main");
+    assert_eq!(calls(&folder.0).matches("-X PUT").count(), 1);
+    drop(obid);
+
+    let folder = Folder::new("merge-not-own-checked");
+    let theirs = untrusted(None, false, "dev");
+    let obid = started_into(&folder, None, theirs, "dev", &["person", "bare"]);
+    let card = within(30, "the card", || {
+        merge_cards(&obid)
+            .into_iter()
+            .find(|c| c["title"] == "Ready to merge: Fix the thing")
+    });
+    // The card lists the hold as a line (MERGING-21).
+    assert_eq!(card["text"], asks("dev", &[read]));
+    assert!(!calls(&folder.0).contains("-X PUT"));
 }
 
 /// A conversation kept in obid's home before it starts, with no turn yet: its id.
