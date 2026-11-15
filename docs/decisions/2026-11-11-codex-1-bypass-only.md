@@ -3,7 +3,7 @@
 - **Date:** 2026-11-11
 - **Status:** In force
 - **Replaced:** Nothing AGENTS.md names
-- **Changed by:** Nothing
+- **Changed by:** [2026-11-15-codex-builds-in-the-box.md](2026-11-15-codex-builds-in-the-box.md)
 - **Contracts and scenarios:** [lanes.md](../contracts/lanes.md) (LANES-18)
 
 ## The owner's words
