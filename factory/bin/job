@@ -38,6 +38,7 @@ import re
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -123,18 +124,22 @@ def job_dir(job_id):
     return JOBS / job_id
 
 
-_locks = {}
-
-
 def load(job_id):
-    """Read a job, holding its lock until this process exits."""
+    """Read a job, taking no lock: save() replaces job.json at once, so a read never sees half a write."""
     path = job_dir(job_id) / "job.json"
     if not path.exists():
         die(f"no job {job_id}")
-    if job_id not in _locks:
-        _locks[job_id] = open(job_dir(job_id) / ".lock", "w")
-        fcntl.flock(_locks[job_id], fcntl.LOCK_EX)
     return json.loads(path.read_text())
+
+
+@contextmanager
+def load_for_update(job_id):
+    """A job (its id or task key) read under its lock, held only until the block ends, a refusal included:
+    two changes to one job wait for each other, and a reader never waits."""
+    job_id = resolve(job_id)["id"]
+    with open(job_dir(job_id) / ".lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield load(job_id)
 
 
 def save(job):
@@ -452,6 +457,23 @@ def check_task_closed(job):
             f"(a task that isn't on origin/{BASE} yet is copied to {done} from the main checkout)")
 
 
+def reclose_task(job):
+    """Merging the base brought the task's file back next to its closed copy: close it again, with the base's
+    text, and push that. A branch whose tasks/ file differs from the base's is left for check_task_closed."""
+    key = job["issue"]
+    done, todo = f"factory/queue/done/{key}.md", f"factory/queue/tasks/{key}.md"
+    if not (in_head(job, done) and in_head(job, todo)):
+        return
+    base = git(job, "show", f"origin/{BASE}:{todo}", check=False)
+    if base.returncode != 0 or git(job, "show", f"HEAD:{todo}").stdout != base.stdout:
+        return
+    git(job, "rm", "-q", todo)
+    (Path(job["worktree"]) / done).write_text(base.stdout)
+    git(job, "add", done)
+    git(job, "commit", "-q", "-m", f"chore(factory): close {key} again after merging {BASE}")
+    git(job, "push", "origin", job["branch"])
+
+
 def check_reviews_done(job):
     rd = round_dir(job)
     missing = [r for r in reviewers(job) if not (rd / f"review-{r}.md").exists()]
@@ -517,6 +539,7 @@ def advance(job, stage):
         require(not git(job, "status", "--porcelain").stdout.strip(), "the worktree has uncommitted changes")
         require(int(git(job, "rev-list", "--count", f"origin/{BASE}..HEAD").stdout) > 0,
                 f"{job['branch']} has no commits on top of origin/{BASE}")
+        reclose_task(job)
         check_task_closed(job)
         git(job, "fetch", "origin", job["branch"], check=False)
         head = git(job, "rev-parse", "HEAD").stdout.strip()
@@ -1231,22 +1254,28 @@ def main(argv):
         elif cmd == "add" and len(args) == 1:
             cmd_add(args[0], sys.stdin.read())
         elif cmd == "advance" and len(args) == 2:
-            job = advance(sync(resolve(args[0])), args[1])
-            save(sync(job))
+            with load_for_update(args[0]) as job:
+                job = advance(sync(job), args[1])
+                save(sync(job))
             print(f"{job['id']}: {job['stage']} (round {job['round']})")
         elif cmd == "merge" and len(args) == 1:
-            cmd_merge(resolve(args[0]))
+            with load_for_update(args[0]) as job:
+                cmd_merge(job)
         elif cmd == "answer" and len(args) == 1:
-            cmd_answer(resolve(args[0]), sys.stdin.read())
+            with load_for_update(args[0]) as job:
+                cmd_answer(job, sys.stdin.read())
         elif cmd == "feedback" and len(args) == 1:
-            cmd_feedback(resolve(args[0]), sys.stdin.read())
+            with load_for_update(args[0]) as job:
+                cmd_feedback(job, sys.stdin.read())
         elif cmd == "reject" and len(args) == 1:
-            cmd_reject(resolve(args[0]), sys.stdin.read())
+            with load_for_update(args[0]) as job:
+                cmd_reject(job, sys.stdin.read())
         elif cmd == "agents" and len(args) == 2:
-            cmd_agents(sync(resolve(args[0])), args[1])
+            with load_for_update(args[0]) as job:
+                cmd_agents(sync(job), args[1])
         elif cmd == "sync" and len(args) == 1:
-            job = sync(resolve(args[0]))
-            save(job)
+            with load_for_update(args[0]) as job:
+                save(sync(job))
             reviews = " ".join(f"{k}:{v}" for k, v in job["reviews"].items())
             print(f"{job['id']}: {job['stage']} round {job['round']} gate {job['gate'] or '-'} "
                   f"proofs {job.get('proofs') or '-'} {reviews}".rstrip())
