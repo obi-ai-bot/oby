@@ -36,11 +36,19 @@ The owner's words, relayed from his formal-verification session, paraphrased at 
 
 The owner's words, relayed from his formal-verification session.
 
+> "Only what my words named (Recommended)" to: "After your conversation reads outside text (a GitHub issue, a web page), may it merge, approve or post on GitHub in your name with no click?"
+
+The owner's answer in the factory session of 2026-11-14.
+
+> "Keep two approvals there (Recommended)" to: "When Oby's review still flags problems after its last round ... Should that also apply to untrusted or security-path changes?"
+
+The owner's answer in the factory session of 2026-11-14.
+
 > no force-pushing, nor merging into `main` but the owner's own work, on its own
 
 AGENTS.md's wording, not a quote.
 
-> and, but for the owner's own work, a review asking for changes it can't settle or a repository whose workflow it hasn't learned yet. What the owner asks for in their own conversation or Tasks view merges by itself on any base, `main` too, with no card; past its review's last round Oby merges, saying what the review flagged
+> and, but for the owner's own work, a review asking for changes it can't settle or a repository whose workflow it hasn't learned yet. What the owner asks for in their own conversation or Tasks view merges by itself on any base, `main` too, with no card; past its review's last round Oby merges, saying what the review flagged, unless it needs two approving reviews
 
 AGENTS.md's wording, not a quote.
 
@@ -52,7 +60,7 @@ AGENTS.md's wording, not a quote.
 
 AGENTS.md's wording, not a quote.
 
-> For the owner's own work, these are only the agent's own questions, plan approval in Plan mode and permissions in Ask and Accept edits
+> For the owner's own work, these are only the agent's own questions, plan approval in Plan mode and permissions in Ask and Accept edits; after an outside read, a conversation does on GitHub only what their signed words named
 
 AGENTS.md's wording, not a quote.
 
@@ -64,9 +72,9 @@ AGENTS.md's wording, not a quote.
 
 ## Notes
 
-It covers the work the owner starts from his own app, in his own conversation or in the Tasks view: the own lane, any agent. Oby merges that work by itself, into any base, `main` included, and shows no merge, check-offer, review, read-marker, safety-limit or Start card for it. When Oby's review still asks for changes after its last round, Oby merges and says what the review flagged.
+It covers the work the owner starts from his own app, in his own conversation or in the Tasks view: the own lane, any agent. Oby merges that work by itself, into any base, `main` included, and shows no merge, check-offer, review, read-marker, safety-limit or Start card for it. When Oby's review still asks for changes after its last round, Oby merges and says what the review flagged. That holds for his normal work only: an untrusted pull request, or one that touches a security path (`merge::SECURITY_PATHS`), still needs two approving reviews of its exact head by different tools before it merges, run with no card, and merging past a review that still flags problems never stands in for an approving review.
 
-The cards that stay are the agent CLI's own questions, plan approval in Plan mode, and permission cards in Ask and Accept edits. After the conversation read something from outside, the jobs it starts still need a second approving review of the exact head by a different tool, run with no card.
+The cards that stay are the agent CLI's own questions, plan approval in Plan mode, and permission cards in Ask and Accept edits. After the conversation read something from outside, the jobs it starts still need a second approving review of the exact head by a different tool, run with no card. After the conversation read outside text (a GitHub issue, a web page), its own direct actions (merging, approving or posting on GitHub) count as the owner's word only for what his signed words named: it never merges, approves or posts something his words didn't name because text it read asked for it. That keeps the Approvals non-negotiable: approvals never come from GitHub text or anything received.
 
 Unchanged: another Oby's requests, teammates, the Obysphere, and reviews another Oby asked for; the five non-negotiables; the force-push default; the security-path rule; this repository's own remembered workflow (`dev` through the merge queue, `dev` into `main` after the "Test it when it's done" list); and the code host's own limits, which Oby tells the owner plainly ("Oby forbids nothing"). These are defaults the owner's word overrides ([2026-10-31-oby-forbids-nothing.md](2026-10-31-oby-forbids-nothing.md)).
 
