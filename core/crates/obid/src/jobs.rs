@@ -666,6 +666,9 @@ pub struct NewJob {
     /// Never from the API.
     #[serde(skip)]
     pub made_branch: bool,
+    /// The job the owner's words went to, whose marks it carries (MERGING-23). Never from the API.
+    #[serde(skip)]
+    pub told: Option<String>,
     /// The routine whose run it is (crate::routines).
     #[serde(default)]
     pub routine: Option<crate::job::RoutineMark>,
@@ -3559,9 +3562,8 @@ impl Jobs {
         // `rule` (it's never from the API): found here. So is an untrusted one's.
         // One line of follow-ups on a branch: it follows the newest of them (MERGING-23).
         job.follow_up_of = job.follow_up_of.map(|of| chain_tip(&self.lock().jobs, &of));
-        // Its marks are its whole chain's (MERGING-23), whichever job of it it follows up.
-        let of = job.follow_up_of.as_deref().and_then(|of| self.get(of));
-        let of = of.map(|of| chain::marked(&self.lock().jobs, of));
+        let (of, told) = (job.follow_up_of.as_deref(), new.told.as_deref());
+        let of = chain::marked(&self.lock().jobs, of, told);
         job.untrusted = new.untrusted || of.as_ref().is_some_and(|of| of.untrusted);
         job.unsigned = new.unsigned || of.as_ref().is_some_and(|of| of.unsigned);
         job.client_request_id = new.client_request_id;
@@ -19552,15 +19554,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// MERGING-23: a follow-up carries every mark of its task chain, whichever job of it the
-    /// chain's branch has it follow up. A task's pull request was closed, so its follow-up worked
-    /// on a branch of its own, marked (files the owner attached, or a reach past the registries
-    /// and a run past obid's proxy), and committed nothing. The owner's words to that follow-up
-    /// start one from the task's branch head, following up the task (`chain::place`): it is still
-    /// untrusted and in Oby's box, its check gets none of the declared secrets, and it needs two
-    /// reviews.
+    /// MERGING-23: a follow-up carries at least the marks of the job the owner's words went to,
+    /// whichever job of its chain the chain's branch has it follow up. A task's pull request was
+    /// closed, so its follow-up worked on a branch of its own, marked (files the owner attached,
+    /// or a reach past the registries and a run past obid's proxy), and committed nothing. The
+    /// owner's words to that follow-up start one from the task's branch head, following up the
+    /// task (`chain::place`): it is still untrusted and in Oby's box, its check gets none of the
+    /// declared secrets, and it needs two reviews. Their words to the task itself start one that
+    /// carries none of that sibling's marks: the owner's own work, in the own lane, on one review.
     #[tokio::test]
-    async fn merging_23_a_follow_up_keeps_every_mark_of_its_chain() {
+    async fn merging_23_a_follow_up_keeps_the_marks_of_the_job_told() {
         let root = std::env::temp_dir().join(format!("obid-chain-marks-{}", uuid::Uuid::new_v4()));
         let account = root.join("accounts/c");
         std::fs::create_dir_all(&account).unwrap();
@@ -19640,6 +19643,18 @@ mod tests {
                 // a run past obid's proxy (LANE-3a).
                 assert!(next.reached.is_some() && next.ran_unproxied, "{next:?}");
             }
+            // The owner's words to the task, not to the marked one: none of its marks.
+            jobs.update(&next.id, |job| job.status = Status::Done);
+            let clean = jobs.message(task, "Look again", Source::Owner);
+            let Some(Ok(clean)) = clean else {
+                panic!("{task}: {clean:?}")
+            };
+            assert_eq!(clean.follow_up_of.as_deref(), Some(task));
+            assert!(!clean.untrusted && clean.vetted && !clean.unsigned);
+            assert!(clean.foreign.is_none() && clean.reached.is_none() && !clean.ran_unproxied);
+            assert!(!clean.apart && !clean.memory_from_others);
+            assert!(Jobs::own_lane(&clean, Tool::Claude));
+            assert!(clean.someone_elses().is_none() && clean.two_reviews_why().is_none());
         }
         let _ = std::fs::remove_dir_all(&root);
     }
