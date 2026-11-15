@@ -86,6 +86,17 @@ The Linux suite has been green since #2170, so most of the check no longer needs
    │           touches a macOS-only path, OBY_CHECK_ONLY=swift when planned,
    │           and OBY_CHECK_ONLY=factory when planned
    └─ round-N/checks.md: verdict, commit, checks.sh hash, HOST: oby-gate | oby-gate, mac | mac
+ factory/bin/gate <job>, with gate_shards {"linux": L, "mac": M} (REMOTE-58 to 65)
+   ├─ the same steps up to the VM call, and the same whole-check cases on the Mac
+   ├─ every part at once, each to its end:
+   │     ├─ one reach, one VM use, L calls ──────────▶ oby-remote-gate --shard k/L <commit> <base>
+   │     │                                            slot per shard; OBY_CHECK_SHARD=k/L for rust only;
+   │     │                                            shard 1 also runs electron and scan
+   │     ├─ ssh oby-mac-pro … --mac --shard k/M … rust (k = 1 to M-1; shard 1 with swift, factory)
+   │     └─ this Mac, one run at a time: OBY_CHECK_ONLY=rust OBY_CHECK_SHARD=M/M
+   │           (no Mac worker: every macOS shard here, swift and factory after shard 1)
+   └─ one verdict: FAIL when any part failed, couldn't judge here, or didn't report;
+        checks.md adds `Sharded: …` and `## Time` (the wall clock, each host's seconds)
  factory/bin/job queue → gate --idle
    └─ no VM use open, the last ended 30 min ago: az vm deallocate --no-wait ──▶ deallocated
 ```
@@ -127,6 +138,14 @@ The Linux suite has been green since #2170, so most of the check no longer needs
 - **It falls back to the Mac.** If the VM can't be reached or started within 3 minutes, the remote gate
   couldn't judge or was cut off, or the commit isn't on origin, the gate runs the whole check on the Mac
   as without a VM, and `checks.md` says why. A real failure on the VM fails the gate.
+- **Shards, when the owner turns them on.** With `gate_shards` in `factory/config.json`, one gate spreads
+  obid's test binaries over the VM's slots and the two Macs instead of running them on one host after
+  another. `scripts/oby-check.sh` alone decides which binary is in which shard (`OBY_CHECK_SHARD=k/n`): the
+  tree's `core/crates/obid/tests/*.rs`, ranked by lines, dealt round-robin, so the split is the same on
+  every host. Everything else in the rust group (the limits, fmt, clippy, the lib tests, the other crates)
+  runs in shard 1. Every part starts at once, the macOS part no longer waiting for the VM's verdict, and runs
+  to its end. A shard whose host couldn't judge, was cut off, was busy or couldn't be reached runs on this
+  Mac; one that ran nowhere, or ended without its verdict line, fails the gate.
 - **The Mac stops it.** The VM has no managed identity, so it can't deallocate itself. Every gate that uses
   it records its use in `factory/jobs/remote-gate/state.json`, open while it runs and then ended;
   `factory/bin/job queue` runs `factory/bin/gate --idle`, which deallocates it (`az vm deallocate --no-wait`)
@@ -199,6 +218,13 @@ Steps 1 to 4 were done before A00-03 was built. After A00-10 merges:
    sends every gate's Linux groups to the VM:
    `"remote_gate": { "ssh_host": "oby-gate", "resource_group": "oby-factory", "vm": "oby-gate" }`.
    Removing it, or setting it to `null`, turns the path off again.
+7. **Turn shards on (after A00-60 merges):** first run `factory/remote/setup.sh oby-gate` and
+   `factory/remote/setup-mac.sh oby-mac-pro` again, so both hosts have the runner that takes `--shard`
+   (until then each VM shard falls back to this Mac, and the Mac worker fails its runner check), then add
+   this key to `factory/config.json` beside `remote_gate`, for example
+   `"gate_shards": {"linux": 4, "mac": 2}`: four Linux shards in the VM's slots, and two macOS shards, one
+   on the Mac worker and one here. `linux` is 1 to 64, `mac` 1 to 3; removing the key, or setting it to
+   `null`, turns shards off again. An invalid value runs unsharded, and checks.md says why.
 
 ## Risks
 
