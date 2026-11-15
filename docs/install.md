@@ -103,6 +103,44 @@ systemctl --user status obid           # Linux
 
 On a Mac, open Oby: Settings › Runner shows **This Mac** connected. On Linux, the log and status above say it is running.
 
+## Command line
+
+`oby` drives obid from a shell, a script, a CI step or a git hook, on a Mac or on Linux, with one exit code a script can trust ([contracts/cli.md](contracts/cli.md)). Install it from a checkout (it needs Rust):
+
+```sh
+cargo install --locked --path tools/oby
+```
+
+It finds obid by itself: the address is `OBID_URL` (`http://127.0.0.1:7777` unless set) and the home is `OBID_HOME` (the home in the table above unless set). It reads the token from `api-token` in that home, only when it is a regular file of yours with no group or other permissions, and sends it only to `127.0.0.1`, `localhost` or `[::1]`, never through a proxy. The token is never passed on the command line, and `oby` never prints it.
+
+| Command | What it does |
+| --- | --- |
+| `oby status` | obid's engine and version |
+| `oby jobs` | the latest jobs, one line each |
+| `oby job <id>` | one job |
+| `oby run <repo> <task\|-> [--kind K] [--agent A] [--account A] [--mode M] [--check C] [--title T] [--id KEY] [--wait] [--timeout D]` | starts a job (`--kind` is `fix` unless given; `-` reads the task from standard input; `--id` is a retry key, so the same key twice makes one job) |
+| `oby wait <id> [--timeout D]` | waits until the job ends or waits for you |
+| `oby stop <id>` | stops a job |
+| `oby routine run <id>` | runs a routine now |
+
+Each prints `key=value` lines, or obid's JSON with `--json`. `D` is a whole number and `s`, `m` or `h` (`30m`). How a run ends:
+
+| Exit code | |
+| --- | --- |
+| 0 | done |
+| 1 | failed or stopped (or obid refused the call, saying why) |
+| 2 | usage: nothing was sent |
+| 3 | the job waits for you (a permission, a question, a limit, a plan or a Confirm): `inbox=` and `kind=` name it |
+| 4 | timed out: the job goes on |
+| 5 | obid isn't reachable, or no usable token |
+
+```sh
+oby run obi-ai-bot/oby "fix the lint" --wait --timeout 30m
+case $? in 0) echo fixed ;; 3) echo "Oby is asking you something" ;; *) echo "not fixed" ;; esac
+```
+
+Jobs `oby` starts aren't signed by your app, so their checks get none of your declared secrets ([api/jobs.md](api/jobs.md), `POST /v1/jobs`).
+
 ## Update
 
 obid doesn't update itself yet (#456). To update, run the install line again, or `install.sh --archive` with a newer archive. It stops the service, replaces the program in the prefix, and starts it again. Your home, token and `config.json` are kept. `obid --version` says what is installed. An archive older than the obid already there installs too, with a warning: that is how you roll back.
