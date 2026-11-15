@@ -11,8 +11,9 @@ checks.sh       the gate's checks: scripts/oby-check.sh on the job's worktree
 bin/job         the only writer of jobs/<id>/job.json; reads the queue; refuses illegal moves; queues approved PRs
 bin/gate        runs checks.sh in a job's worktree → round-N/checks.md; with `remote_gate` set, the Linux groups on
                 the gate VM and the macOS-only part on the Mac, falling back to the Mac; with `mac_worker` set too, that
-                macOS part on the Mac worker (the second Mac) when it is free, else on this Mac; `gate --idle`
-                deallocates the idle VM (job queue runs it)
+                macOS part on the Mac worker (the second Mac) when it is free, else on this Mac; with `gate_shards`
+                set too, obid's test binaries in shards on the VM's slots, the Mac worker and this Mac, all at
+                once, with one verdict; `gate --idle` deallocates the idle VM (job queue runs it)
 bin/prove       re-runs the Kani harnesses a job's spec.md lists under `## Proofs` on the commit its gate passed, through
                 bin/test-run, checks each can fail on its declared broken rule and that the branch adds nothing that
                 games them; for a `model` job, runs `quint typecheck`, `run` and `verify` on each Quint model its
@@ -75,6 +76,13 @@ With `mac_worker` (`{"ssh_host": "oby-mac-pro"}`, or `FACTORY_MAC_WORKER` for on
 runs on that second Mac, set up by `remote/setup-mac.sh`, once the VM's part passed: in one call, `ssh
 oby-mac-pro oby-worker/bin/oby-remote-gate --mac <commit> origin/dev <group>...`. When it doesn't answer within
 60 seconds, both its slots are busy, it couldn't judge or was cut off, that part runs on this Mac as before.
+With `gate_shards` (`{"linux": 4, "mac": 2}`, or `FACTORY_GATE_SHARDS` for one run) also set, after the owner ran
+`remote/setup.sh` and `remote/setup-mac.sh` again, one gate deals obid's test binaries into shards
+(`OBY_CHECK_SHARD`, decided by `scripts/oby-check.sh` alone) and starts every part at once: `linux` calls of
+`oby-remote-gate --shard k/<linux>` on the VM, and macOS rust shards on the Mac worker (`--mac --shard`) and this
+Mac, without waiting for the VM's verdict. A shard that couldn't judge or whose host is busy or unreachable runs on
+this Mac; one that ran nowhere fails the gate. checks.md adds `Sharded: …` and `## Time`. Without the key, nothing
+changes.
 
 Builders' heavy runs go to the gate VM too once the owner has run `remote/setup.sh` again (it adds the no-sudo
 user `oby-builder` and its `/srv/oby-builder`) and set `builder_slots` in `remote_gate` (`"slots": 4,
