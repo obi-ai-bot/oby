@@ -5,7 +5,7 @@ import SphereTile from './SphereTile';
 import { SAMPLE, memberCount } from './spheres';
 import { tetrixFor } from './knowledge';
 import { SAMPLE_TALK, Sphere, SphereHowTo, still } from './Welcome';
-import { AGENTS, type Agent, type SetupStep } from './mock';
+import { AGENTS, type Agent, type SetupStep } from './view';
 import { FIRST_TASK, accountOf, cancelAgent, connectTetrix, pick, sceneDone, sceneReplayed, sendAgentCode, signInAgent, signInGitHub, tetrixFailed, useSetup, type Code } from './onboarding';
 import { onObid } from './lean';
 import { PasteCode } from './SettingsView';

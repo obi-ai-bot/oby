@@ -3,7 +3,7 @@ import { useScrollThumb } from './useScrollThumb';
 import TaskCard from './TaskCard';
 import { CommandWindow } from './Connectors';
 import { BrandMark, BRANDS } from './brands';
-import { ago, ASK_LABEL, type GitHubItem } from './mock';
+import { ago, ASK_LABEL, type GitHubItem } from './view';
 import { columnsOf, gitHubError, hasToDo, openOnGitHub, putOff, startGitHub, tasksIn, toDoOf, useTasks, type Tab, type TaskType } from './tasks';
 
 // how long the way out takes (the sink animation in app.css)

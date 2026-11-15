@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { Job as JobView } from '../mock';
+import type { Job as JobView } from '../view';
 import type { Entry } from '../session';
 import { around, knownUpTo, lastSteps, thoughtWords, withEntries, withLine } from '../liveTask';
 import { parseEvent } from '../../../shared/obid-wire';
@@ -20,7 +20,7 @@ async function views(entries: Entry[], more: Partial<JobView> = {}, status: 'run
   const { default: AgentPane } = await import('../AgentPane');
   const { SESSIONS } = await import('../session');
   const { replaceTasks } = await import('../tasks');
-  const { AGENTS } = await import('../mock');
+  const { AGENTS } = await import('../view');
   SESSIONS.j1 = entries;
   const job = {
     id: 'j1', type: 'issues', title: 'Fix the login test', request: 'Fix it', agent: 'claude', account: 'Personal', model: 'Opus',
