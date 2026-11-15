@@ -1,0 +1,20 @@
+[workspace]
+
+[package]
+name = "oby"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "The oby command: obid's loopback API from a shell, with fixed exit codes (docs/contracts/cli.md)."
+
+[[bin]]
+name = "oby"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+# The current user's uid, and opening the token without following a link: no unsafe code of ours.
+rustix = { version = "1", features = ["fs", "process"] }
+
+[dev-dependencies]
+tempfile = "3"
