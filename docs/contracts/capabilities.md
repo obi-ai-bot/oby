@@ -35,8 +35,9 @@ The business behavior contract for `capabilities` on `GET /v1/status`, from [the
 
 ## Interfaces and dependencies
 
-- `GET /v1/status`: `"capabilities": ["folders-v1"]`, add-only (docs/runner-api.md, `GET /v1/status`, with its Capabilities table: Name, What it means, Since).
+- `GET /v1/status`: `"capabilities": ["events-replay-v1", "folders-v1", "projects-v1", "revisions-v1"]`, add-only (docs/runner-api.md, `GET /v1/status`, with its Capabilities table: Name, What it means, Since).
 - `folders-v1`: obid takes working folders (`folders` on `POST /v1/plans`, on conversations and on `PATCH /v1/conversations/{id}`), the behaviour `folders: true` announces, since #1572.
+- `projects-v1`: obid keeps projects and a conversation's `project` ([projects.md](projects.md)), since A00-70: an app sends `project` only to an obid that lists it.
 - Older clients ignore the key: the iPhone's `RunnerStatus` (Swift's `Decodable`) and the Electron app's `Status` ignore unknown keys.
 
 ## Acceptance scenarios
