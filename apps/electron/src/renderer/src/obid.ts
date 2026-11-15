@@ -15,6 +15,7 @@ import type {
   Job,
   LimitDecision,
   PlanAnswer,
+  Profile,
   Repo,
   RoomAnswer,
   RoomPost,
@@ -158,6 +159,9 @@ export const api = {
   // one uploaded for words that never went: it goes (obid keeps one that words or a task use)
   unload: (path: string) => call<null>('DELETE', `/v1/attachments${q({ path })}`),
   repos: () => call<{ repos: Repo[] }>('GET', '/v1/repos'),
+  // obid only: the profiles on this Mac (docs/api/profiles.md), and a new one; older runners answer 404
+  profiles: () => call<Profile[]>('GET', '/v1/profiles'),
+  createProfile: (name: string, color: string) => call<Profile>('POST', '/v1/profiles', { name, color }),
   // Settings › Permissions: the mode new jobs get, and the rules Always allow saved
   permissions: () => call<{ mode: string }>('GET', '/v1/settings/permissions'),
   setPermissions: (mode: string) => call<{ mode: string }>('PUT', '/v1/settings/permissions', { mode }),

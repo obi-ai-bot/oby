@@ -155,14 +155,26 @@ export function SettingsPage({ title, label = title, leaving, covered = false, o
 
 // General: opening at login, how much this Mac's own jobs ask, Voice, Notifications
 function General() {
-  const [login, setLogin] = useSetting('login', true);
+  const [kept, setLogin] = useSetting('login', true);
+  // Open at login as macOS has the app's login item (main/settings.ts), read as General opens and
+  // after each turn; none (a browser, a copy that registers nothing) shows the kept row
+  const loginItem = window.app?.loginItem;
+  const [item, setItem] = useState<boolean | null>(null);
+  useEffect(() => { void loginItem?.().then(setItem, () => setItem(null)); }, []);
+  const turnLogin = (on: boolean) => {
+    setLogin(on);
+    if (!loginItem) return;
+    setItem(on);
+    loginItem(on).then(setItem, () => setItem(null));
+  };
+  const login = typeof item === 'boolean' ? item : kept;
   const [speaks, setSpeaks] = useSetting('voice.speaks', true);
   const [unreadable, setUnreadable] = useState(onObid ? [] : UNREADABLE_FILES);
   useEffect(() => { if (onObid) api.status().then((s) => setUnreadable(s.unreadable ?? []), () => {}); }, []);
   return <>
     <UnreadableFiles files={unreadable} />
     <Group i={1}>
-      <Row label="Open at login"><Switch on={login} onChange={setLogin} label="Open at login" /></Row>
+      <Row label="Open at login"><Switch on={login} onChange={turnLogin} label="Open at login" /></Row>
     </Group>
     <Group i={2} title="Permissions on this Mac" footer="Default mode sets how often your agents check with you before they edit files or run commands. To change it for one task, use that task’s Mode menu. Always allow adds a rule here; remove it to be asked again.">
       {onObid ? <MacPermissions /> : <MockMacPermissions />}

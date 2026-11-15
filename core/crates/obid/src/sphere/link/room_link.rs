@@ -105,7 +105,7 @@ fn job_words(job: &Job) -> (String, Value) {
     let pr = job
         .published
         .as_deref()
-        .and_then(|url| crate::github::pull_request_number(url, &job.repo))
+        .and_then(|url| job.pull_request_number(url))
         .or(job.pr);
     let title = job_name(job);
     match pr {

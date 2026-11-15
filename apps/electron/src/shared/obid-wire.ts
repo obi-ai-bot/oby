@@ -262,6 +262,10 @@ export type Status = {
 // check: the one its jobs run (none: null); noCheck: the owner said No check (#1062)
 export type Repo = { repo: string; defaultBranch: string; listed: boolean; check?: string | null; noCheck?: boolean };
 
+// obid only: "GET /v1/profiles" (docs/api/profiles.md), a local profile on this Mac: its name and
+// colour, the one obid made first (default), and whether something in it waits on the owner
+export type Profile = { id: string; name: string; color: string; default: boolean; waiting: boolean };
+
 // A rule Always allow saved (or a deny), for a repository or `conversations` ("GET /v1/permissions/rules")
 export type SavedRule = { id: string; rule: string; repo: string; decision: 'allow' | 'deny' | (string & {}) };
 

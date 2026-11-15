@@ -244,7 +244,7 @@ async function main() {
   const mine = await onTop(page);
   const chatsColumn = await page.locator('.sidebar-content').innerText();
   // (the demo's own words name people and tools, so its rows, not its text)
-  assert.ok(chatsColumn.startsWith('Chats'), chatsColumn.slice(0, 80));
+  assert.ok(chatsColumn.startsWith('Default'), chatsColumn.slice(0, 80));
   assert.equal(await page.locator('.oby-row, .sphere-group').count(), 0, 'no Sphere’s people under the chats');
   await shot(page, '3-panel');
   await page.locator('.rail-button[aria-label="Deskree"]').click();
