@@ -1030,7 +1030,7 @@ fn routines_4_a_check_starts_one_routine_at_most() {
     assert_eq!(runs("a4000002").len(), 1, "nothing missed: {}", obid.log());
 }
 
-// ROUTINES-9 to 14 (docs/contracts/routines.md): routines on GitHub events, started by the feed's
+// ROUTINES-9 to 17 (docs/contracts/routines.md): routines on GitHub events, started by the feed's
 // reads from the fake gh (tests/agents/gh) on the stand-in Claude Code (tests/agents/fake-claude).
 
 const REPO: &str = "obi-e2e/fixture-app";
@@ -1058,7 +1058,7 @@ struct Feed {
 impl Feed {
     fn open(folder: &Folder) -> Feed {
         let remote = fixture(&folder.0.join("fixture"));
-        for pr in ["702", "703"] {
+        for pr in ["702", "703", "704", "705"] {
             let status = std::process::Command::new("git")
                 .args([
                     "update-ref",
@@ -1370,6 +1370,123 @@ fn routines_14_obys_own_push_starts_nothing() {
     );
     let jobs = call(&feed.obid, "GET", "/v1/jobs", None).body;
     assert_eq!(jobs.as_array().unwrap().len(), 1, "no job started: {jobs}");
+}
+
+/// ROUTINES-15: one read starts 3 of a routine's jobs at most; the 4th is held, its offer left
+/// open, and the next read starts it.
+#[test]
+fn routines_15_a_read_starts_three_jobs_at_most() {
+    let folder = Folder::new("routines-15");
+    let feed = Feed::open(&folder);
+    let id = feed.routine(reviews_on(), "Say what the README covers.");
+    let reviews: Vec<Value> = [(702, 'a'), (703, 'b'), (704, 'c'), (705, 'd')]
+        .iter()
+        .map(|(n, c)| review(*n, &sha(*c)))
+        .collect();
+    feed.read(reviews.clone(), vec![]);
+
+    assert_eq!(feed.jobs_of(&id).len(), 3, "{}", feed.obid.log());
+    let receipts = feed.kept(&id)["receipts"].clone();
+    let of = |outcome: &str| -> Vec<Value> {
+        let all = receipts.as_array().unwrap().iter();
+        all.filter(|c| c["outcome"] == outcome).cloned().collect()
+    };
+    assert_eq!(of("started").len(), 3, "{receipts}");
+    let held = of("held");
+    assert_eq!(held.len(), 1, "{receipts}");
+    assert_eq!(
+        held[0]["reason"],
+        "This routine started 3 jobs at this read of GitHub."
+    );
+    let title = format!("Review requested: fixture-app #{}", held[0]["number"]);
+    let open = github_items(&feed.obid, "open");
+    assert!(
+        open.iter().any(|i| i["title"] == title.as_str()),
+        "{open:?}"
+    );
+
+    feed.read(reviews, vec![]);
+    assert_eq!(feed.jobs_of(&id).len(), 4, "{}", feed.obid.log());
+    let receipts = feed.kept(&id)["receipts"].clone();
+    let fourth = receipts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["key"] == held[0]["key"]);
+    assert_eq!(fourth.unwrap()["outcome"], "started", "{receipts}");
+}
+
+/// ROUTINES-16: after 10 jobs of a routine on any of its items in 24 hours, an 11th event is held.
+#[test]
+fn routines_16_an_eleventh_start_in_a_day_is_held() {
+    let folder = Folder::new("routines-16");
+    let mut feed = Feed::open(&folder);
+    let id = feed.routine(reviews_on(), "Say what the README covers.");
+    let now = obi_protocol::time::now();
+    let path = feed.obid.home.join(format!("routines/{id}.json"));
+    feed.restart(&folder, || {
+        let mut kept: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let receipts: Vec<Value> = (0..10u64)
+            .map(|n| {
+                let (job, number) = (format!("aaaa16{n:02}"), 801 + n);
+                ended_job(&folder, &job, |_| {});
+                json!({"key": format!("{REPO}#{number}@reviewRequested@{}", sha('a')),
+                       "repo": REPO, "number": number, "outcome": "started", "reason": null,
+                       "job": job, "at": now - 3_600 * (10 - n as i64)})
+            })
+            .collect();
+        kept["receipts"] = json!(receipts);
+        std::fs::write(&path, kept.to_string()).unwrap();
+    });
+    feed.read(vec![review(702, &sha('b'))], vec![]);
+
+    let receipts = feed.kept(&id)["receipts"].clone();
+    let held = receipts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["number"] == 702);
+    let held = held.unwrap_or_else(|| panic!("a receipt on 702: {receipts}"));
+    assert_eq!(held["outcome"], "held", "{receipts}");
+    assert_eq!(
+        held["reason"],
+        "This routine started 10 jobs in the last 24 hours."
+    );
+    let jobs = call(&feed.obid, "GET", "/v1/jobs", None).body;
+    assert_eq!(jobs.as_array().unwrap().len(), 10, "no job started: {jobs}");
+}
+
+/// ROUTINES-17: a trigger's label with any control character, or a line or paragraph separator,
+/// is refused; a plain space isn't.
+#[test]
+fn routines_17_a_label_with_a_control_character_is_refused() {
+    let folder = Folder::new("routines-17");
+    let obid = obid(&folder);
+    let body = |label: &str| {
+        json!({"name": "Labeled", "repo": REPO, "task": "Review it.", "zone": "UTC",
+               "on": {"github": {"repo": REPO, "event": "labeled", "label": label}}})
+    };
+    for label in [
+        "bug\r",
+        "a\tb",
+        "a\u{0}b",
+        "a\u{85}b",
+        "a\u{2028}b",
+        "a\u{2029}b",
+    ] {
+        let refused = call(&obid, "POST", "/v1/routines", Some(&body(label)));
+        assert_eq!(refused.status, 422, "{label:?}: {}", refused.text);
+        assert!(
+            refused
+                .text
+                .contains("label is one line of 1 to 50 characters."),
+            "{label:?}: {}",
+            refused.text
+        );
+    }
+    let made = call(&obid, "POST", "/v1/routines", Some(&body("needs review")));
+    assert_eq!(made.status, 201, "{}", made.text);
 }
 
 /// ROUTINES-9: a routine on GitHub events is checked as it's made, and shown with obid's words
