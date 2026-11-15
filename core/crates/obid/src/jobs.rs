@@ -12928,10 +12928,7 @@ impl Jobs {
                 goal: &goal,
             };
             let why = match link.as_ref() {
-                Some(link) => match link.ask_teammate(&change).await {
-                    crate::sphere::approval::Teammate::Waiting(_) => None,
-                    crate::sphere::approval::Teammate::NeedsYou(why) => Some(why),
-                },
+                Some(link) => link.ask_teammate(&change).await.card(),
                 None => Some(String::new()),
             };
             why.map(|why| {
@@ -13149,10 +13146,7 @@ impl Jobs {
             head,
             goal: &goal,
         };
-        Ok(match link.ask_teammate(&change).await {
-            crate::sphere::approval::Teammate::Waiting(said)
-            | crate::sphere::approval::Teammate::NeedsYou(said) => said,
-        })
+        Ok(link.ask_teammate(&change).await.words())
     }
 
     /// The owner's Merge, or Merge and remember, on the job `id`'s "Ready to merge?" card about

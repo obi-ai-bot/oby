@@ -1306,6 +1306,8 @@ pub struct SphereState {
     pub rate_limit: HashMap<String, u32>,
     /// Requests refused with `403 policy_denied`.
     pub deny_requests: bool,
+    /// Requests to this Obi refused with this status, code and message.
+    pub refuse_requests_to: HashMap<String, (u16, String, String)>,
     /// After this many more reads of the directory, this entry replaces the one with its `obi`: a
     /// Sphere that serves something else between two reads ([`TestObi::entry_as`]).
     pub swap_member: Option<(u32, Value)>,
@@ -2367,6 +2369,11 @@ fn record(state: &Mutex<SphereState>, headers: &HeaderMap, body: &[u8]) -> Respo
                 StatusCode::FORBIDDEN,
                 sphere_error(StatusCode::FORBIDDEN, "policy_denied", "no rule allows it"),
             );
+        }
+        let to = env["to"].as_str().unwrap_or("");
+        if let Some((status, code, message)) = state.refuse_requests_to.get(to).cloned() {
+            let status = StatusCode::from_u16(status).unwrap();
+            return answer(&mut state, status, sphere_error(status, &code, &message));
         }
     } else {
         let all: Vec<Value> = state

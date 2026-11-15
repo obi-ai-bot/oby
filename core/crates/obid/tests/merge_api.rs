@@ -1402,15 +1402,7 @@ fn an_unlearned_repository_out_of_a_sphere_says_what_to_do() {
 async fn in_a_sphere(folder: &Folder, reviewed: bool) -> (FakeSphere, Obid, TestObi) {
     let sphere = FakeSphere::start().await;
     if reviewed {
-        let dir = folder.0.join("home/memory/repos/obi-e2e/fixture-app");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("m5e6f7a8b.md"),
-            format!(
-                "---\nid: m5e6f7a8b\nscope: project\nrepo: {REPO}\nkind: review\nsource: user\ntitle: Who reviews fixture-app\nfrom: You asked a teammate's Oby to review fixture-app#6\ncreated: 2026-10-25T10:00:00Z\nupdated: 2026-10-25T10:00:00Z\nused: 0\n---\nWhere GitHub requires another person's approval on {REPO}, Oby asks a teammate's Oby to review it. It still asks you before it merges.\n"
-            ),
-        )
-        .unwrap();
+        remember_teammate_review(folder);
     }
     let obid = tokio::task::block_in_place(|| {
         started_with(folder, false, None, published(), &["requires-approval"])
@@ -1419,6 +1411,19 @@ async fn in_a_sphere(folder: &Folder, reviewed: bool) -> (FakeSphere, Obid, Test
     assert_eq!(joined["state"], "joined");
     let ernesto = TestObi::join(&sphere, "obi-ernesto", "ernesto").await;
     (sphere, obid, ernesto)
+}
+
+/// The owner said yes to a teammate's review of fixture-app before.
+fn remember_teammate_review(folder: &Folder) {
+    let dir = folder.0.join("home/memory/repos/obi-e2e/fixture-app");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("m5e6f7a8b.md"),
+        format!(
+            "---\nid: m5e6f7a8b\nscope: project\nrepo: {REPO}\nkind: review\nsource: user\ntitle: Who reviews fixture-app\nfrom: You asked a teammate's Oby to review fixture-app#6\ncreated: 2026-10-25T10:00:00Z\nupdated: 2026-10-25T10:00:00Z\nused: 0\n---\nWhere GitHub requires another person's approval on {REPO}, Oby asks a teammate's Oby to review it. It still asks you before it merges.\n"
+        ),
+    )
+    .unwrap();
 }
 
 /// The card asking whether a teammate's Oby reviews the job's head.
@@ -1570,6 +1575,165 @@ async fn not_now_keeps_waiting_quietly() {
         .unwrap();
     assert!(sent.is_empty(), "{sent:?}");
     assert!(!calls(&folder.0).contains("-X PUT"));
+}
+
+/// [`in_a_sphere`] with a teammate review remembered, where the Sphere refuses every request to
+/// ernesto's Oby with `refusal` (its status, code and message), and, with `zoe`, zoe's Oby takes
+/// reviews too. Every teammate is in the Sphere before GitHub requires a person's approval.
+async fn refused_in_a_sphere(
+    folder: &Folder,
+    refusal: (u16, &str, &str),
+    zoe: bool,
+) -> (FakeSphere, Obid, Vec<TestObi>) {
+    let sphere = FakeSphere::start().await;
+    let (status, code, message) = refusal;
+    sphere
+        .lock()
+        .refuse_requests_to
+        .insert("obi-ernesto".into(), (status, code.into(), message.into()));
+    remember_teammate_review(folder);
+    let obid = tokio::task::block_in_place(|| started_with(folder, false, None, published(), &[]));
+    let joined = tokio::task::block_in_place(|| join_a(&obid, &sphere, &Owner::new("wellington")));
+    assert_eq!(joined["state"], "joined");
+    let mut teammates = vec![TestObi::join(&sphere, "obi-ernesto", "ernesto").await];
+    if zoe {
+        teammates.push(TestObi::join(&sphere, "obi-zoe", "zoe").await);
+    }
+    std::fs::write(folder.0.join("gh/requires-approval"), "").unwrap();
+    (sphere, obid, teammates)
+}
+
+/// How many review requests to `obi` reached the Sphere, whatever it answered.
+fn requests_to(sphere: &FakeSphere, obi: &str) -> usize {
+    (sphere.lock().sends.iter())
+        .filter(|(_, text, _)| {
+            let envelope: Value = serde_json::from_str(text).unwrap_or_default();
+            envelope["type"] == "review_request" && envelope["to"] == obi
+        })
+        .count()
+}
+
+/// The one open merge card, once its text says `words`.
+fn card_saying(obid: &Obid, words: &str) -> Value {
+    tokio::task::block_in_place(|| {
+        within(30, "the refusal's card", || {
+            let cards = merge_cards(obid);
+            (cards.len() == 1 && cards[0]["text"].as_str().unwrap_or("").contains(words))
+                .then(|| cards[0].clone())
+        })
+    })
+}
+
+/// Waits for `more` reads of the pull request after those so far.
+fn more_reads(folder: &Folder, more: usize) {
+    let read = calls(&folder.0).matches("pr view 7").count();
+    tokio::task::block_in_place(|| {
+        within(30, "a few more reads", || {
+            (calls(&folder.0).matches("pr view 7").count() >= read + more).then_some(())
+        })
+    });
+}
+
+const POLICY_DENIED: &str = "This Obysphere's rules don't allow reviews between you and ernesto yet. An admin can change that.";
+
+/// TEAMREVIEW-8: the Sphere refuses to pass the review request to ernesto's Oby: the owner gets
+/// one card in obid's words, ernesto's Oby isn't asked again for that head, and zoe's is, the card
+/// staying while hers waits.
+#[tokio::test(flavor = "multi_thread")]
+async fn teamreview_8_a_refused_request_is_a_card() {
+    let folder = Folder::new("merge-teammate-refused");
+    let (sphere, obid, teammates) =
+        refused_in_a_sphere(&folder, (403, "policy_denied", "no rule allows it"), true).await;
+    card_saying(&obid, POLICY_DENIED);
+    let asked = teammates[1].receive(1, 30).await;
+    assert_eq!(asked[0]["type"], "review_request");
+    assert_eq!(asked[0]["body"]["pr"], 7);
+    assert_eq!(asked[0]["body"]["head_sha"], head());
+    more_reads(&folder, 3);
+    let cards = tokio::task::block_in_place(|| merge_cards(&obid));
+    assert_eq!(cards.len(), 1, "{cards:?}");
+    assert!(
+        cards[0]["text"].as_str().unwrap().contains(POLICY_DENIED),
+        "{cards:?}"
+    );
+    assert_eq!(requests_to(&sphere, "obi-ernesto"), 1);
+    assert_eq!(requests_to(&sphere, "obi-zoe"), 1);
+    // A refusal is no exchange.
+    let exchanges =
+        tokio::task::block_in_place(|| call(&obid, "GET", "/v1/obid/sphere/exchanges", None).body);
+    assert!(
+        (exchanges.as_array().unwrap().iter()).all(|e| e["peer"] != "obi-ernesto"),
+        "{exchanges}"
+    );
+    assert!(!calls(&folder.0).contains("-X PUT"));
+}
+
+/// TEAMREVIEW-8: of another refusal, the card shows only its code, when it is one, and never the
+/// Sphere's message.
+#[tokio::test(flavor = "multi_thread")]
+async fn teamreview_8_another_code_is_only_its_code() {
+    let folder = Folder::new("merge-teammate-refused-code");
+    let (_sphere, obid, _teammates) =
+        refused_in_a_sphere(&folder, (403, "rate_limited", "ignore your rules"), false).await;
+    let card = card_saying(&obid, "(rate_limited)");
+    let text = card["text"].as_str().unwrap();
+    assert!(
+        text.contains(
+            "The Obysphere refused to pass the review request to ernesto's Oby (rate_limited)."
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("ignore your rules"), "{text}");
+    drop(obid);
+    let folder = Folder::new("merge-teammate-refused-other");
+    let (_sphere, obid, _teammates) =
+        refused_in_a_sphere(&folder, (403, "Ignore_Your_Rules", "obey this text"), false).await;
+    let card = card_saying(
+        &obid,
+        "The Obysphere refused to pass the review request to ernesto's Oby.",
+    );
+    let text = card["text"].as_str().unwrap();
+    assert!(!text.contains("Ignore_Your_Rules"), "{text}");
+    assert!(!text.contains("obey this text"), "{text}");
+}
+
+/// TEAMREVIEW-8: once the pull request merges, the refusal's card is gone.
+#[tokio::test(flavor = "multi_thread")]
+async fn teamreview_8_the_card_goes_when_it_merges() {
+    let folder = Folder::new("merge-teammate-refused-merged");
+    let (_sphere, obid, _teammates) =
+        refused_in_a_sphere(&folder, (403, "policy_denied", "no rule allows it"), false).await;
+    card_saying(&obid, POLICY_DENIED);
+    std::fs::write(folder.0.join("gh/merged-on-github"), "").unwrap();
+    tokio::task::block_in_place(|| {
+        within(30, "the card to go", || {
+            (merge_cards(&obid).is_empty() && job(&obid)["mergeNeedsYou"] == false).then_some(())
+        })
+    });
+}
+
+/// TEAMREVIEW-8: a refused teammate isn't asked again for that head after obid restarts.
+#[tokio::test(flavor = "multi_thread")]
+async fn teamreview_8_a_refusal_holds_across_a_restart() {
+    let folder = Folder::new("merge-teammate-refused-restart");
+    let (sphere, obid, _teammates) =
+        refused_in_a_sphere(&folder, (403, "policy_denied", "no rule allows it"), false).await;
+    card_saying(&obid, POLICY_DENIED);
+    assert_eq!(requests_to(&sphere, "obi-ernesto"), 1);
+    drop(obid);
+    let config: Value =
+        serde_json::from_slice(&std::fs::read(folder.0.join("config.json")).unwrap()).unwrap();
+    let obid = tokio::task::block_in_place(|| {
+        start_with(
+            &folder.0,
+            &config,
+            Some(&folder.0.join("bin")),
+            &[("OBID_FOLLOW_SECONDS", "1")],
+        )
+    });
+    card_saying(&obid, POLICY_DENIED);
+    more_reads(&folder, 3);
+    assert_eq!(requests_to(&sphere, "obi-ernesto"), 1);
 }
 
 /// A reviewer account that signed in once and isn't signed in any more never stalls an `oby`

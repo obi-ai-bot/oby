@@ -815,8 +815,17 @@ impl Link {
         body: &[u8],
         meant: Option<Meant<'_>>,
     ) -> Result<Value, ApiError> {
+        self.request_sent(body, meant).await.map_err(|n| n.error)
+    }
+
+    /// [`Link::request_for`], saying when the Sphere refused the request itself ([`NotSent`]).
+    pub(super) async fn request_sent(
+        &self,
+        body: &[u8],
+        meant: Option<Meant<'_>>,
+    ) -> Result<Value, NotSent> {
         let map = object(body, &["to", "type", "body", "expiresIn"])?;
-        let invalid = |m: String| api(StatusCode::UNPROCESSABLE_ENTITY, m);
+        let invalid = |m: String| NotSent::from(api(StatusCode::UNPROCESSABLE_ENTITY, m));
         let joined = self.joined()?;
         let to = text_field(&map, "to")?.to_owned();
         let kind = text_field(&map, "type")?.to_owned();
@@ -908,15 +917,15 @@ impl Link {
         action: Value,
         expires_in: i64,
         meant: Option<Meant<'_>>,
-    ) -> Result<Value, ApiError> {
-        let invalid = |m: String| api(StatusCode::UNPROCESSABLE_ENTITY, m);
+    ) -> Result<Value, NotSent> {
+        let invalid = |m: String| NotSent::from(api(StatusCode::UNPROCESSABLE_ENTITY, m));
         // Built, sealed and sent; once more after a seal refusal, with the directory read again.
         let mut attempt = 0;
         loop {
             attempt += 1;
             if let Err(e) = self.read_directory().await {
                 self.note_error(&e);
-                return Err(from_client(&e));
+                return Err(from_client(&e).into());
             }
             let (envelope, peer_owner) = {
                 let state = self.lock();
@@ -934,7 +943,8 @@ impl Link {
                     return Err(api(
                         StatusCode::CONFLICT,
                         "That Oby now says it acts for someone else: nothing was sent.",
-                    ));
+                    )
+                    .into());
                 }
                 if !member.accepts.contains(&kind) {
                     return Err(invalid(format!("{to}'s card doesn't accept {kind}.")));
@@ -947,7 +957,8 @@ impl Link {
                         format!(
                             "{to} seals, and obid trusts no seal key of its now: nothing was sent."
                         ),
-                    ));
+                    )
+                    .into());
                 }
                 if matches!(kind.as_str(), "share_offer" | "run_request") {
                     return Err(invalid(
@@ -1031,12 +1042,13 @@ impl Link {
             exchange.asked_by_owner = meant.is_some_and(|m| m.by_owner);
             // Kept before it goes, so a reply that comes back at once finds it.
             self.lock().exchanges.insert(cid.clone(), exchange.clone());
+            // Whether the Sphere answered the send itself, not the token's exchange.
             let sent = match self.token().await {
                 Ok(token) => match self.client() {
-                    Ok(client) => client.send(&token, &envelope).await,
-                    Err(e) => Err(e),
+                    Ok(client) => client.send(&token, &envelope).await.map_err(|e| (e, true)),
+                    Err(e) => Err((e, false)),
                 },
-                Err(e) => Err(e),
+                Err(e) => Err((e, false)),
             };
             match sent {
                 Ok(sent) => {
@@ -1055,7 +1067,7 @@ impl Link {
                     });
                     return Ok(updated.unwrap_or(exchange).to_json());
                 }
-                Err(e) => {
+                Err((e, answered)) => {
                     self.lock().exchanges.remove(&cid);
                     self.exchanges.remove(&cid);
                     // The Sphere kept nothing: `to`'s card gained a seal key, or another, since the
@@ -1074,7 +1086,16 @@ impl Link {
                         continue;
                     }
                     self.refused_token(&e);
-                    return Err(from_client(&e));
+                    let refused = match &e {
+                        ClientError::Refused { status, code, .. } if answered && *status != 401 => {
+                            Some(code.clone())
+                        }
+                        _ => None,
+                    };
+                    return Err(NotSent {
+                        error: from_client(&e),
+                        refused,
+                    });
                 }
             }
         }
@@ -1087,7 +1108,28 @@ impl Link {
     /// host"). Call it again whenever the merge step looks: one teammate at a time, the next when
     /// one can't, and never another after a review that asked for changes. A new head asks again.
     /// The merge itself stays the merge step's, once GitHub shows the approval of that head.
+    /// A teammate the Sphere refused to pass it to isn't asked again for that head, across a
+    /// restart, and the owner hears why (TEAMREVIEW-8, [`approval::with_refusals`]).
     pub async fn ask_teammate(&self, change: &approval::Change<'_>) -> approval::Teammate {
+        let asked = self.ask_next_teammate(change).await;
+        let refused: Vec<String> = {
+            let mut state = self.lock();
+            // A new head asks everyone again.
+            let before = state.refusals.len();
+            (state.refusals).retain(|r| !r.of(change.repo, change.pr) || r.head == change.head);
+            if state.refusals.len() != before {
+                self.keep_refusals(&state.refusals);
+            }
+            (state.refusals.iter())
+                .filter(|r| r.of(change.repo, change.pr))
+                .map(|r| approval::refused_words(&r.owner, &r.code))
+                .collect()
+        };
+        approval::with_refusals(asked, &refused)
+    }
+
+    /// [`Link::ask_teammate`], but for the refusals before this one's.
+    async fn ask_next_teammate(&self, change: &approval::Change<'_>) -> approval::Teammate {
         use approval::{Asked, Teammate};
         // The directory as the Sphere has it now; the one read last when it can't be reached.
         if let Err(e) = self.read_directory().await {
@@ -1142,6 +1184,12 @@ impl Link {
                     Asked::Spent => asked.push(e.peer.clone()),
                 }
             }
+            // The Sphere won't pass it to them for this head.
+            asked.extend(
+                (state.refusals.iter())
+                    .filter(|r| r.of(change.repo, change.pr) && r.head == change.head)
+                    .map(|r| r.obi.clone()),
+            );
             let members: Vec<(String, String)> = state
                 .directory
                 .members
@@ -1181,19 +1229,56 @@ impl Link {
         let (to, owner) = next;
         let ask = json!({"to": to, "type": "review_request", "expiresIn": approval::REQUEST_LIFETIME,
                          "body": approval::request_body(change)});
-        match self.request(ask.to_string().as_bytes()).await {
+        match self.request_sent(ask.to_string().as_bytes(), None).await {
             Ok(_) => Teammate::Waiting(format!(
                 "Asked {owner}'s Oby to review it and approve it on GitHub."
             )),
+            // The Sphere's rule, not a blip: that teammate isn't asked again for this head.
+            Err(NotSent {
+                refused: Some(code),
+                ..
+            }) => {
+                let words = approval::refused_words(&owner, &code);
+                let mut state = self.lock();
+                state.refusals.push(approval::Refusal {
+                    repo: change.repo.to_owned(),
+                    pr: change.pr,
+                    head: change.head.to_owned(),
+                    obi: to,
+                    owner,
+                    code,
+                });
+                self.keep_refusals(&state.refusals);
+                Teammate::Refused(words)
+            }
             // The Sphere can't be reached now: asked again next time.
-            Err(e) if e.status.is_server_error() => Teammate::Waiting(format!(
-                "Oby couldn't reach the Obysphere to ask {owner}'s Oby: {}",
-                e.message
-            )),
-            Err(e) => Teammate::NeedsYou(format!(
+            Err(NotSent { error: e, .. }) if e.status.is_server_error() => {
+                Teammate::Waiting(format!(
+                    "Oby couldn't reach the Obysphere to ask {owner}'s Oby: {}",
+                    e.message
+                ))
+            }
+            Err(NotSent { error: e, .. }) => Teammate::NeedsYou(format!(
                 "Oby couldn't ask {owner}'s Oby to approve it: {}",
                 e.message
             )),
+        }
+    }
+
+    /// Keeps `refusals` in `home/sphere/teammate-refusals.json` (0600).
+    fn keep_refusals(&self, refusals: &[approval::Refusal]) {
+        let path = refusals_path(&self.config.home);
+        let kept = path
+            .parent()
+            .map_or(Ok(()), crate::store::make_private_dir)
+            .and_then(|()| {
+                crate::store::write_private(
+                    &path,
+                    &serde_json::to_vec(refusals).unwrap_or_default(),
+                )
+            });
+        if let Err(e) = kept {
+            tracing::error!("can't keep the teammates the Sphere refused: {e}");
         }
     }
 
@@ -1213,4 +1298,17 @@ impl Link {
     pub fn exchange_json(&self, cid: &str) -> Option<Value> {
         self.lock().exchanges.get(cid).map(Exchange::to_json)
     }
+}
+
+fn refusals_path(home: &std::path::Path) -> std::path::PathBuf {
+    home.join("sphere").join("teammate-refusals.json")
+}
+
+/// The teammates the Sphere refused to pass a request for an approval to, as obid kept them: none
+/// when there's no file, or it can't be read.
+pub(super) fn load_refusals(home: &std::path::Path) -> Vec<approval::Refusal> {
+    std::fs::read(refusals_path(home))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
 }

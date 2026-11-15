@@ -201,6 +201,9 @@ struct State {
     /// Every envelope id obid has handled: the messages of its exchanges, and the ones it dropped.
     seen: HashSet<String>,
     dropped: Vec<String>,
+    /// The teammates the Sphere refused to pass a request for an approval to, by head
+    /// (TEAMREVIEW-8, [`Link::ask_teammate`]), in `home/sphere/teammate-refusals.json`.
+    refusals: Vec<approval::Refusal>,
 }
 
 impl State {
@@ -605,6 +608,23 @@ fn from_client(error: &ClientError) -> ApiError {
     }
 }
 
+/// Why a request didn't go ([`Link::request_sent`]): the API's error, and the Sphere's code when it
+/// refused the request itself, by any status but `401` (the token's): TEAMREVIEW-8 reads that
+/// code, never the error's message.
+pub(crate) struct NotSent {
+    pub error: ApiError,
+    pub refused: Option<String>,
+}
+
+impl From<ApiError> for NotSent {
+    fn from(error: ApiError) -> NotSent {
+        NotSent {
+            error,
+            refused: None,
+        }
+    }
+}
+
 /// What the app needs of the delegation obid holds to sign the next one before it ends (#1215): its
 /// scope and when it ends. Never the JWT itself.
 fn delegation_json(delegation: &str) -> Value {
@@ -892,6 +912,7 @@ impl Link {
             all_self_answers: Vec::new(),
             seen,
             dropped: Vec::new(),
+            refusals: reviews::load_refusals(&config.home),
         };
         let link = Arc::new(Link {
             config,
