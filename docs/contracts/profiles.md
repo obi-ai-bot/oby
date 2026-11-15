@@ -8,26 +8,38 @@ The business behavior contract for local profiles on this Mac (Chrome-style), fr
 - **Status:**
   - **PROF-1 is implemented**: `home/profiles.json`, `GET /v1/profiles` returning `[{id, name, color, default, waiting}]`, and the upgrade that gives an install with no file one first profile holding everything it already has. Nothing else in obid reads the registry yet; apps show nothing (no circle, no name under Chats yet: docs/contracts/chat-first.md).
   - **PROF-2 is implemented**: an internal refactor. `Config.mac_home` names the Mac-wide stores; it adds no screen, setting, API field or profile selection.
-  - **Not built yet:** switching, creating or renaming a profile; scoping jobs, conversations, accounts or settings to a profile (PROF-3); anything the apps show.
-- **Scope for PROF-1:** the registry file, the list route, the upgrade. **Scope for PROF-2:** Mac-wide vs profile storage roots. **Out of scope:** UI, profile switching, moving data between profiles, linking a profile to a person or an Obysphere member.
+  - **PROF-3a is implemented**: creating a profile (`POST /v1/profiles`) and renaming or recolouring one (`PATCH /v1/profiles/{id}`), and the storage-root rule that gives each profile its folder, with its Kani proof (PROFILES-17).
+  - **Not built yet:** switching, or deleting a profile, or changing which one is the default; scoping jobs, conversations, projects, accounts, settings, permissions or the vault to a profile; a way for a request to say which profile it is for; a `waiting` flag that is ever `true`; anything the apps show.
+- **Plain statement:** a second profile does not yet hold anything of its own. Its folder is made and stays empty, and every job, conversation, account, setting, permission and vault secret is still the install's, whichever profiles exist.
+- **Scope for PROF-1:** the registry file, the list route, the upgrade. **Scope for PROF-2:** Mac-wide vs profile storage roots. **Scope for PROF-3a:** the create and rename routes and the storage-root rule. **Out of scope:** UI, profile switching, moving data between profiles, linking a profile to a person or an Obysphere member.
 
 ## Behavior
 
 ### Actors and ownership
 
-- **obid** owns the registry (`home/profiles.json`, 0600), writes the first profile on upgrade, answers `GET /v1/profiles`, and owns all storage decisions (Mac-wide vs profile roots).
-- **Clients** may call the list route; for PROF-1 they show nothing from it. PROF-2 adds no client surface.
+- **obid** owns the registry (`home/profiles.json`, 0600), writes the first profile on upgrade, answers `GET /v1/profiles`, creates and changes profiles, and owns all storage decisions (Mac-wide vs profile roots).
+- **Clients** may call the routes; they show nothing from them yet. PROF-2 adds no client surface.
 
 ### Triggers and prerequisites
 
 - obid starts, or `GET /v1/profiles` is asked: with no `profiles.json` (or one whose `profiles` list is empty), obid writes one first profile and leaves every other file and folder in its home as they were.
-- A profile's `id` is a lower-case UUID obid makes. Its first `name` is `Personal` (a label, never who the person is). Its first `color` is `#3a5a8c` (Sangam's first avatar colour). It is `default: true`. `waiting` is always `false` until later work has something in a profile that waits on the owner.
+- A profile's `id` is a lower-case UUID obid makes. On a new install, the first profile's `name` is `Default` (a label, never who the person is); an install whose registry already exists keeps its names, so one upgraded before PROF-3a keeps `Personal`. Its first `color` is `#3a5a8c` (Sangam's first avatar colour). It is `default: true`. `waiting` is always `false` until later work has something in a profile that waits on the owner.
 
 ### States and transitions
 
 - **No registry:** upgrade writes the first profile; existing jobs, conversations, accounts, usage, permissions, logins and every other home path stay where they are, with the same names and contents. Nothing signs out.
 - **Registry present:** obid answers its profiles as kept; it does not rewrite them on start.
-- **Unreadable registry:** obid logs why, answers one first profile for the request, and does not write over the file.
+- **Unreadable registry:** obid logs why, answers one first profile for the request, and does not write over the file: creating and renaming are refused until obid starts again with a file that reads.
+
+### Creating and renaming (PROF-3a)
+
+- `POST /v1/profiles` takes `{"name", "color"}`, both required, and no other key. The name is trimmed and must be 1 to 40 characters; the colour must be `#` and six hex digits, kept as sent. obid makes a lower-case UUID id, makes the profile's folder (0700, and `home/profiles` if missing), adds `{id, name, color, default: false}` to `profiles.json` and answers it as `GET` shows it.
+- `PATCH /v1/profiles/{id}` takes `name`, `color` or both, checked the same way, and changes only those. `id` and `default` can't be changed: a body with them, with no key, or with any other key is refused. The default profile can be renamed or recoloured; it stays the one default.
+- A refused request writes nothing. A failed write leaves the registry as it was.
+
+### Storage root
+
+A profile's own things go under its storage root: the default profile's is obid's `home` itself, whatever its id, so an existing install has nothing moved; any other profile's is `home/profiles/<id>`, only when its id is a lower-case UUID (hex digits with `-` at 8, 13, 18 and 23). Any other id (empty, the wrong length, holding `/`, `\`, `.`, a NUL or an upper-case letter) has no root. Only creating a profile uses the rule yet, to make the folder.
 
 ### Failures and recovery
 
@@ -35,13 +47,17 @@ The business behavior contract for local profiles on this Mac (Chrome-style), fr
 |---|---|---|
 | `profiles.json` can't be written on upgrade | Logged; `GET` may still answer the in-memory first profile | Nothing yet (apps show nothing) |
 | `profiles.json` doesn't parse | Logged; answered as one first profile; file left as it is | Nothing yet |
+| A bad name or colour, a body that isn't a profile, an unknown key, or a change with no key | `400` with the reason; nothing written | Nothing yet |
+| `PATCH` of an unknown id | `404`; nothing written | Nothing yet |
+| Create or rename while `profiles.json` didn't read at start | `409`: the file couldn't be read and is left as it is; nothing written | Nothing yet |
+| The folder or `profiles.json` can't be written | `500` with the reason; the registry is left as it was | Nothing yet |
 
 ### Invariants and boundaries
 
 - A profile is a local id and name on this Mac, never an identity, never sent to another Oby, an agent, GitHub or the Obysphere.
 - Upgrade never moves, renames, deletes or signs out a job, conversation, account, login, setting or any other home path.
-- API add-only: `GET /v1/profiles` is new; no existing key or closed enum the Swift or Kotlin apps decode gains a new value.
-- Nothing else in obid reads the registry in PROF-1: jobs, conversations, accounts and settings stay global to the install as they were.
+- API add-only: `GET /v1/profiles`, `POST /v1/profiles` and `PATCH /v1/profiles/{id}` are new; no existing key or closed enum the Swift or Kotlin apps decode gains a new value.
+- Nothing else in obid reads the registry or a storage root yet: jobs, conversations, accounts and settings stay global to the install as they were, and nothing reads or writes inside `home/profiles/<id>`.
 
 ## Implemented: Mac-wide storage (PROF-2)
 
@@ -56,13 +72,22 @@ Per-profile stores (including `home/profiles.json`) and `Jobs::open` are unchang
 
 - Persistence: `home/profiles.json` (0600), `{"profiles":[{"id","name","color","default"}]}` under the profile root (`home`). Mac-wide stores use `Config.mac_home` (today equal to `home`).
 - `GET /v1/profiles` (obid only): `[{id, name, color, default, waiting}]`. Older runners answer `404`. Documented in [runner-api.md](../runner-api.md), "obid only: profiles".
+- `POST /v1/profiles` (`{name, color}` → `201` and the profile) and `PATCH /v1/profiles/{id}` (`{name?, color?}` → `200` and the profile), obid only, on the same token as the list; phones can't reach them through the gateway. Documented in [api/profiles.md](../api/profiles.md).
+- A profile's folder: `home/profiles/<id>` (0700), empty.
 
 ## Acceptance scenarios
 
-- **PROFILES-1** (`profiles_1_upgrade_keeps_everything_in_the_first_profile`): an install with no `profiles.json` (and with accounts, jobs, usage and permissions already there) → after start, `GET /v1/profiles` is one profile `{id, name: "Personal", color: "#3a5a8c", default: true, waiting: false}`, `profiles.json` holds that profile, and every other home file is byte-identical; the account is still signed in. A home that already has a registry keeps it and answers it with `waiting: false`.
+- **PROFILES-1** (`profiles_1_upgrade_keeps_everything_in_the_first_profile`): an install with no `profiles.json` (and with accounts, jobs, usage and permissions already there) → after start, `GET /v1/profiles` is one profile `{id, name: "Default", color: "#3a5a8c", default: true, waiting: false}`, `profiles.json` holds that profile, and every other home file is byte-identical; the account is still signed in. A home that already has a registry keeps it and answers it with `waiting: false`.
 - **PROFILES-12** (`profiles_12_mac_stores_use_the_mac_home`): With distinct internal `mac_home` and `home` roots, startup prepares the Mac root, uses its API token, devices/pairing, gateway, relay and push stores, and measures its worktrees. Profile stores remain under `home`. Normal configuration still makes both roots equal.
+- **PROFILES-13** (`profiles_13_a_new_profile_is_added_with_its_own_folder`): on an install with accounts, usage and permissions, `POST /v1/profiles {"name":"  Acme  ","color":"#7a4a8c"}` answers `201` with exactly `id` (a lower-case UUID), `name: "Acme"`, `color`, `default: false` and `waiting: false`; `GET` then lists both, the first still the default; `profiles.json` (0600) holds both; `home/profiles/<id>` is an empty 0700 folder; every other file is byte-identical and the account is still listed.
+- **PROFILES-14** (`profiles_14_a_bad_name_or_colour_writes_nothing`): an empty, blank or 41-character name, a colour `red` or `#12345`, a missing colour, an extra key or a body that isn't JSON each answer `400` with an `error`; `profiles.json` is byte-identical, `home/profiles` doesn't exist, and `GET` lists one profile.
+- **PROFILES-15** (`profiles_15_a_profile_changes_only_its_name_and_colour`): renaming the default profile keeps its id, colour and `default: true`; recolouring a created one changes only its colour; `{"default":true}`, `{"id":"x"}` and `{}` answer `400` and an unknown id `404`, each leaving `profiles.json` byte-identical; exactly one profile stays the default.
+- **PROFILES-16** (`profiles_16_an_unreadable_registry_is_never_written_over`): with `profiles.json` holding `not json`, `GET` answers one first profile, and creating and renaming answer `409`; the file still reads `not json` and `home/profiles` doesn't exist.
+- **PROFILES-17** (`profiles_17_a_storage_root_is_inside_home_under_its_id`, and the Kani harness `profiles_17_only_a_lower_case_uuid_is_a_profile_id` in `core/crates/obid/src/profiles.rs`): the default profile's root is `home`; another's is `home/profiles/<id>`, inside `home`, for a lower-case UUID id; an empty, `.`, `..`, `../x`, `a/b`, upper-case, dotted, slashed, 35- or 37-character id has none. Kani proves that of every 36 bytes, exactly the lower-case UUIDs are accepted, so an accepted id never holds a path separator, a dot, a NUL or an upper-case letter.
+- **PROFILES-18** (`profiles_18_an_install_with_one_profile_behaves_as_before`): an install with accounts, usage, permissions and one default profile named `Personal` starts as before: `GET` answers that profile with `waiting: false`, every file is byte-identical, `home/profiles` doesn't exist, and the account is listed.
 
 **Test it when it's done (real Mac):**
 
-1. On a Mac that has used Oby before this build (jobs and an account already there), upgrade and open nothing new: `curl -s -H "Authorization: Bearer $(cat \"$HOME/Library/Application Support/Oby/Runner/home/api-token\")" http://127.0.0.1:7777/v1/profiles` shows one Personal profile; Settings › Agents still shows the same accounts; no conversation or task is gone.
+1. On a Mac that has used Oby before this build (jobs and an account already there), upgrade and open nothing new: `curl -s -H "Authorization: Bearer $(cat \"$HOME/Library/Application Support/Oby/Runner/home/api-token\")" http://127.0.0.1:7777/v1/profiles` shows the one profile it had (`Personal` on a Mac upgraded before PROF-3a; `Default` on a new install); Settings › Agents still shows the same accounts; no conversation or task is gone.
 2. Restart Oby with the existing configuration. Confirm existing paired devices remain listed, the app connects with its existing API token, and a paired phone still connects and receives notifications. No files should move or require pairing again.
+3. With `TOKEN` set to that API token, create and rename a profile: `curl -s -X POST -H "Authorization: Bearer $TOKEN" -d '{"name":"Acme","color":"#7a4a8c"}' http://127.0.0.1:7777/v1/profiles` answers the new profile; `curl -s -X PATCH -H "Authorization: Bearer $TOKEN" -d '{"name":"Acme Corp"}' http://127.0.0.1:7777/v1/profiles/<its id>` answers it renamed; `GET /v1/profiles` lists both; `home/profiles/<its id>` is an empty folder; Settings › Agents, the conversations and the tasks are as before.
