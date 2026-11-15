@@ -485,6 +485,35 @@ fn linux_2_agents_are_the_first_to_go() {
     }
 }
 
+/// Cursor's install in a deep, unusual home (the CLI canary's): `.local/bin/<cli>` an absolute link
+/// to its version folder, both hidden, with `.local/bin` on the tools path. The CLI starts in the
+/// box by its link, as a job starts it, and bubblewrap never binds onto the link.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_linked_cli_in_a_deep_hidden_home_starts_in_the_box() {
+    use std::os::unix::fs::PermissionsExt;
+    let world = world("linked-cli");
+    let home = world.outside.join("home/runner/work/_temp/cursor-home");
+    let version = home.join(".local/share/fake-agent/versions/1");
+    std::fs::create_dir_all(&version).unwrap();
+    std::fs::create_dir_all(home.join(".local/bin")).unwrap();
+    let real = version.join("fake-agent");
+    std::fs::write(&real, "#!/bin/sh\necho linked-cli-ran\n").unwrap();
+    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let bin = home.join(".local/bin/fake-agent");
+    std::os::unix::fs::symlink(&real, &bin).unwrap();
+    let mut job = spec(&world, false, false, false);
+    job.hidden.push(home.clone());
+    let never = [world.home.clone()];
+    let path = std::env::join_paths([home.join(".local/bin")]).unwrap();
+    job.read_only = obid::sandbox::tool_roots(&path, &job.hidden, &never);
+    job.read_only
+        .extend(obid::sandbox::install_root(&bin, &job.hidden, &never));
+    job.read_only.push(bin.clone());
+    let out = printed(&world, &job, &format!("'{}'", bin.display()));
+    assert_eq!(out.trim(), "linked-cli-ran");
+}
+
 fn expect(ran: &Ran, what: &str, result: &str) {
     assert_eq!(
         ran.lines.get(what).map(String::as_str),
