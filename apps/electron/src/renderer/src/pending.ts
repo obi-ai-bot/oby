@@ -1,4 +1,5 @@
 import type { Conversation, Turn } from '../../shared/obid-wire';
+import type { Ask } from './view';
 
 // Words to Oby on their way (docs/contracts/live-state.md, LIVE-15 to 18): one entry per send, by
 // the turn id POST /v1/plans takes, until obid's own state answers for it. What the screen shows is
@@ -21,7 +22,7 @@ type Obid = { turns: Readonly<Record<string, Turn[]>>; conversations: readonly C
 
 // words that start a conversation: shown under the app's own id until obid's is known
 export const starts = (e: Pending) => e.shown.startsWith('new:');
-const without = (p: Pendings, id: string) => { const { [id]: _, ...rest } = p; return rest; };
+const without = <T,>(p: Readonly<Record<string, T>>, id: string) => { const { [id]: _, ...rest } = p; return rest; };
 // words that started a conversation stay until obid lists it (one it never named has nothing to wait for)
 const held = (e: Pending, s: Pick<Obid, 'conversations'>) => starts(e) && !!e.conversation && !s.conversations.some((c) => c.id === e.conversation);
 const leaving = (p: Pendings, e: Pending, s: Pick<Obid, 'conversations'>) => (held(e, s) ? { ...p, [e.id]: { ...e, over: true } } : without(p, e.id));
@@ -81,6 +82,33 @@ export function settled(p: Pendings, s: Obid, answers: (t: Turn) => boolean): Pe
 export function adopted(alias: Readonly<Record<string, string>>, e: Pending | undefined, conversation: string | null | undefined): Readonly<Record<string, string>> {
   if (!e || !conversation || !starts(e) || alias[conversation] === e.shown) return alias;
   return { ...Object.fromEntries(Object.entries(alias).filter(([, v]) => v !== e.shown)), [conversation]: e.shown };
+}
+
+// The owner's answers to cards and task actions on their way (LIVE-19 to 21): one entry per click,
+// by what it acts on, until obid's state holds that object at a newer revision, or the call fails.
+// What a card shows is obid's reduced state plus these.
+export type Action = {
+  what: 'answer' | 'stop' | 'archive' | 'delete' | 'rename';
+  in: 'jobs' | 'inbox' | 'limits';  // where obid's state keeps what it acts on
+  on: string;                       // its id there: a job's, an inbox item's, or a limit card's
+  of: { revision?: number };        // obid's copy it acts on, and so its revision (none from an older obid)
+  option?: string;                  // the answer, as the card shows it
+  ask?: Ask;                        // the card it answered, as it was
+  title?: string;                   // a rename's new name
+};
+export type Actions = Readonly<Record<string, Action>>;
+const keyOf = (a: Pick<Action, 'what' | 'on'>) => `${a.what}:${a.on}`;
+export const acting = (p: Actions, a: Action): Actions => ({ ...p, [keyOf(a)]: a });
+// the call failed, or its click is over: its own entry leaves, never a later click's
+export const unacted = (p: Actions, a: Action): Actions => (p[keyOf(a)] === a ? without(p, keyOf(a)) : p);
+export const actionOn = (p: Actions, what: Action['what'], on: string): Action | undefined => p[keyOf({ what, on })];
+// obid's copy is newer than the one acted on: a higher revision, another copy where either has none, or none any more
+const newer = (now: { revision?: number } | undefined, a: Action) =>
+  !now || (now.revision !== undefined && a.of.revision !== undefined ? now.revision > a.of.revision : now !== a.of);
+// Against obid's state (`copyOf` finds what an entry acts on): those it holds newer leave. Unchanged, the same object.
+export function confirmed(p: Actions, copyOf: (a: Action) => { revision?: number } | undefined): Actions {
+  const left = Object.entries(p).filter(([, a]) => !newer(copyOf(a), a));
+  return left.length === Object.keys(p).length ? p : Object.fromEntries(left);
 }
 
 // an answer to these words is still coming

@@ -572,7 +572,10 @@ describe('obid\'s answers over the events that came meanwhile', () => {
         const { tasks, live } = await asked();
         await live.answerJob('j1', 'Done');
         expect(sent()).toEqual([['/v1/inbox/orchestrator-1/answer', { answer: 'Done' }]]);
-        expect(task(tasks)).toMatchObject({ status: 'done', answer: 'Done' });
+        // obid settled it: the task shows obid's state, its answer's entry gone (LIVE-19)
+        expect(task(tasks)).toMatchObject({ status: 'done', answer: undefined });
+        expect(ask(tasks)).toBeUndefined();
+        expect(live.liveState().actions).toEqual({});
       });
       it('Tell it something sends the owner\'s words to the task, never as the question\'s answer', async () => {
         const { live } = await asked();

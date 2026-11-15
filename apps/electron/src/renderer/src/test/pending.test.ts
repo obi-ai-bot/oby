@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { added, adopted, answered, awaited, awaitedIn, failed, gone, settled, type Pending } from '../pending';
+import { acting, actionOn, added, adopted, answered, awaited, awaitedIn, confirmed, failed, gone, settled, unacted, type Action, type Pending } from '../pending';
 import type { Conversation, Turn } from '../../../shared/obid-wire';
-import { liveBridge } from './liveBridge';
+import { liveBridge, type Listed } from './liveBridge';
 
 // Words to Oby as a pending overlay keyed by their turn id (docs/contracts/live-state.md, LIVE-15 to
 // LIVE-18): pending.ts's rules on their own, then the page through main's bridge.
@@ -61,6 +61,24 @@ describe('pending.ts', () => {
     expect(adopted(alias, undefined, 'cA')).toBe(alias);
     expect(adopted(alias, { ...e, shown: 'c1' }, 'cA')).toBe(alias);
   });
+
+  it('actions: an entry stays while obid holds what it acts on at the same revision, and leaves once newer, gone or failed', () => {
+    const item = { revision: 3 };
+    const a: Action = { what: 'answer', in: 'inbox', on: 'i1', of: item, option: 'Allow' };
+    const p = acting({}, a);
+    expect(actionOn(p, 'answer', 'i1')).toBe(a);
+    expect(confirmed(p, () => ({ revision: 3 }))).toBe(p);
+    expect(confirmed(p, () => ({ revision: 4 }))).toEqual({});
+    expect(confirmed(p, () => undefined)).toEqual({});
+    // with no revision, only another copy is newer
+    const old: Action = { ...a, of: {} };
+    expect(confirmed(acting({}, old), () => old.of)).toEqual(acting({}, old));
+    expect(confirmed(acting({}, old), () => ({}))).toEqual({});
+    // a failed call takes its own entry, never a later click's
+    const again = { ...a, option: 'Deny' };
+    expect(unacted(acting(p, again), a)).toEqual(acting({}, again));
+    expect(unacted(p, a)).toEqual({});
+  });
 });
 
 // The page, through main's bridge: obid as the test answers it, each answer held until it lets it go
@@ -68,6 +86,7 @@ type Answer = { status: number; body?: unknown; hold?: Promise<unknown> };
 type Call = { method: string; path: string; body?: unknown };
 const calls: Call[] = [];
 let plan: (n: number) => Answer = () => ({ status: 404 });
+let routes: Record<string, Answer> = {};
 let bridge = liveBridge();
 const flush = () => new Promise((r) => setTimeout(r, 0));
 const plans = () => calls.filter((c) => c.path === '/v1/plans');
@@ -83,7 +102,7 @@ function held() {
   const hold = new Promise<void>((done) => { go = done; });
   return { hold, go };
 }
-async function load(conversations: Conversation[] = []) {
+async function load(conversations: Conversation[] = [], listed: Omit<Listed, 'conversations'> = {}) {
   vi.resetModules();
   calls.length = 0;
   vi.stubGlobal('location', { search: '' });
@@ -91,7 +110,7 @@ async function load(conversations: Conversation[] = []) {
   vi.stubGlobal('matchMedia', () => ({ matches: true }));
   const call = async (method: string, path: string, body?: unknown) => {
     calls.push({ method, path, body });
-    const a: Answer = path === '/v1/plans' ? plan(plans().length) : path.startsWith('/v1/conversation?') ? { status: 200, body: [] } : { status: 404, body: { error: 'Not found.' } };
+    const a: Answer = routes[`${method} ${path}`] ?? (path === '/v1/plans' ? plan(plans().length) : path.startsWith('/v1/conversation?') ? { status: 200, body: [] } : { status: 404, body: { error: 'Not found.' } });
     await a.hold;
     return { status: a.status, text: a.body === undefined ? '' : JSON.stringify(a.body) };
   };
@@ -99,13 +118,15 @@ async function load(conversations: Conversation[] = []) {
   vi.stubGlobal('window', { app: { obid: { call, confirm: async () => ({ status: 200, text: '{}' }), ...bridge.obid } } });
   const live = await import('../live');
   const chats = await import('../chats');
+  const tasks = await import('../tasks');
   live.connect();
-  bridge.sync({ conversations });
+  bridge.sync({ ...listed, conversations });
   for (let i = 0; i < 5; i++) await flush();
   const rows = () => chats.dev!.get();
   const row = (id: string) => rows().find((c) => c.id === id);
   const sentAs = () => vi.waitFor(() => { expect(plans().length).toBeGreaterThan(0); return (plans()[0].body as { id: string }).id; }, { timeout: 5000 });
-  return { live, rows, row, sentAs };
+  const task = (id: string) => tasks.dev!.get().find((t) => t.id === id)!;
+  return { live, rows, row, sentAs, task };
 }
 
 describe('words to Oby as a pending overlay', { timeout: 15_000 }, () => {
@@ -206,5 +227,80 @@ describe('words to Oby as a pending overlay', { timeout: 15_000 }, () => {
       expect(row('new:1')).toBeUndefined();
       expect(plans()).toHaveLength(1);
     });
+  });
+});
+
+// Answers to cards and task actions as pending entries (LIVE-19 to LIVE-21): a job waiting on its
+// permission, and its inbox item, as obid has them
+const now = new Date().toISOString();
+const job = (more: Record<string, unknown> = {}) => ({
+  id: 'j1', request: 'Fix it', title: 'Fix it', agent: 'claude', account: 'a1', repo: 'o/r', branch: 'oby/fix-1', base: 'dev', issue: null,
+  kind: 'work', status: 'running', step: 'Waiting on you', summary: '', created: now, finished: null, commits: 0, published: null,
+  rounds: 1, round: 1, check: null, model: null, dismissed: null, pipeline: null, archived: null,
+  permission: { id: 'p1', detail: 'rm -rf build' }, revision: 1, ...more,
+});
+const permission = (more: Record<string, unknown> = {}) => ({
+  id: 'j1-permission-p1', kind: 'permission', job: 'j1', title: 'Fix it', text: 'Run rm -rf build?', options: ['Allow', 'Deny'], details: null,
+  created: now, state: 'open', later: null, headline: null, recommended: null, revision: 1, ...more,
+});
+
+describe('answers to cards and task actions as pending entries', { timeout: 15_000 }, () => {
+  beforeEach(() => { routes = {}; });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('LIVE-19: Allow on a job\'s permission card shows answered until obid\'s newer inbox event, then obid\'s state', async () => {
+    const { hold, go } = held();
+    routes['POST /v1/jobs/j1/permission'] = { status: 200, body: job({ permission: null, step: 'Working', revision: 2 }), hold };
+    const { live, task } = await load([], { jobs: [job()], inbox: [permission()] });
+    expect(task('j1')).toMatchObject({ status: 'needs', answer: undefined });
+    const answering = live.answerJob('j1', 'Allow');
+    await flush();
+    expect(calls.at(-1)).toMatchObject({ method: 'POST', path: '/v1/jobs/j1/permission', body: { id: 'p1', decision: 'allow' } });
+    expect(task('j1')).toMatchObject({ status: 'running', answer: 'Allow' });
+    expect(task('j1').job.ask).toMatchObject({ kind: 'permission', detail: 'rm -rf build' });
+    expect(Object.keys(live.liveState().actions)).toEqual(['answer:j1-permission-p1']);
+    // the same revision changes nothing; obid's newer copy settles it
+    bridge.event('inbox', permission());
+    expect(task('j1').answer).toBe('Allow');
+    bridge.event('inbox', permission({ state: 'done', revision: 2 }));
+    expect(live.liveState().actions).toEqual({});
+    expect(task('j1')).toMatchObject({ status: 'running', answer: undefined });
+    expect(task('j1').job.ask).toBeUndefined();
+    go();
+    await answering;
+    expect(task('j1').job.step).toBe('Working');
+  });
+
+  it('LIVE-20: a Stop that fails shows the job as obid has it, and the reason', async () => {
+    const { hold, go } = held();
+    routes['POST /v1/jobs/j1/stop'] = { status: 409, body: { error: 'It already ended.' }, hold };
+    const { live, task } = await load([], { jobs: [job({ permission: null, step: 'Working' })] });
+    const stopping = live.stopJob('j1');
+    await flush();
+    expect(Object.keys(live.liveState().actions)).toEqual(['stop:j1']);
+    expect(task('j1').job).toMatchObject({ status: 'running', step: 'Working' });
+    // obid's job moves on meanwhile; the card follows it
+    bridge.event('job', job({ permission: null, step: 'Checking', revision: 2 }));
+    go();
+    await stopping;
+    expect(live.liveState().actions).toEqual({});
+    expect(task('j1').job).toMatchObject({ status: 'running', step: 'Checking' });
+    expect(live.liveState().problem).toBe('It already ended.');
+  });
+
+  it('LIVE-21: obid\'s event before the call\'s answer: when the answer arrives, nothing changes on the card', async () => {
+    const { hold, go } = held();
+    routes['POST /v1/jobs/j1/permission'] = { status: 200, body: job({ permission: null, step: 'Allowed', revision: 2 }), hold };
+    const { live, task } = await load([], { jobs: [job()], inbox: [permission()] });
+    const answering = live.answerJob('j1', 'Allow');
+    await flush();
+    bridge.event('inbox', permission({ state: 'done', revision: 2 }));
+    bridge.event('job', job({ permission: null, status: 'done', step: 'Done', finished: now, revision: 3 }));
+    const card = JSON.stringify(task('j1'));
+    expect(task('j1')).toMatchObject({ answer: undefined, job: { status: 'done', step: 'Done' } });
+    go();
+    await answering;
+    expect(JSON.stringify(task('j1'))).toBe(card);
+    expect(live.liveState().actions).toEqual({});
   });
 });

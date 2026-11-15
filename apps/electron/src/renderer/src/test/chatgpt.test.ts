@@ -142,7 +142,7 @@ describe('Continue with ChatGPT', () => {
     const onPlan = { accounts: [row({ signedIn: true, login: 'chatgpt', fullUntil: '2030-01-01T00:00:00Z' })] };
     const decision = { id: 'd1', revision: 1, account: 'c2', agent: 'codex', resetAt: null, jobs: [{ id: 'j1', title: 'Fix it' }],
       options: [{ kind: 'resume' }, { kind: 'stop' }] };
-    const state = { ...live.liveState(), status: onPlan, limits: [decision], answering: new Set<string>() } as never;
+    const state = { ...live.liveState(), status: onPlan, limits: [decision], actions: {} } as never;
     const [card] = live.limitAsks(state);
     expect(card.ask!.headline).toBe('Usage limit reached');
     expect(card.ask!.options[0]).toBe('Manage usage');
@@ -155,7 +155,7 @@ describe('Continue with ChatGPT', () => {
     expect(calls.filter((c) => c.method !== 'GET')).toEqual([]);
     // Another account's card is as it was.
     const onLogin = { accounts: [row({ signedIn: true })] };
-    const [other] = live.limitAsks({ ...live.liveState(), status: onLogin, limits: [decision], answering: new Set<string>() } as never);
+    const [other] = live.limitAsks({ ...live.liveState(), status: onLogin, limits: [decision], actions: {} } as never);
     expect(other.ask!.headline).toContain('reached its limit');
     expect(other.ask!.options[0]).toBe('Resume when available');
   });

@@ -134,6 +134,38 @@ Words that started a conversation never leave before obid's own conversation for
 - **LIVE-17** (implemented): Given `POST /v1/plans` answers status 0, then `{"kind": "none", "repeated": true}`, when the words are sent, then exactly two calls go with deep-equal bodies and the same id, the entry stays across the retry, `c1` holds one user turn of that id once it arrives, and no third call is made. `LIVE-17: a send obid didn't answer goes again as the very same request, and its words are taken once`.
 - **LIVE-18** (implemented): Given a send whose plan answer is held, when the connection goes down and a new snapshot comes, then no further call is made, the entry stays and its `new:1` row still shows the words; it leaves once its turn and Oby's answer arrive, or once the held answer comes back `422`. `LIVE-18: it leaves once its turn and Oby's answer arrive`, `LIVE-18: it leaves once the held answer is let go as a 422`.
 
+## Answers to cards and task actions as pending entries (R06-11)
+
+The business behavior contract for the owner's answers to cards and actions on a task while obid hasn't answered for them, from [the template](../business-contract-template.md). Roadmap task R06-11 (`factory/queue/done/R06-11.md`). Scenarios LIVE-19 to LIVE-21; their tests are named after them in [`apps/electron/src/renderer/src/test/pending.test.ts`](../../apps/electron/src/renderer/src/test/pending.test.ts).
+
+### Feature and status
+
+- **Outcome:** A card the owner answered, or a task they stopped, shows as before until obid's state confirms it, and then shows exactly what obid says. The task card is obid's state plus one overlay.
+- **Status:** **Implemented** in the Electron app: `apps/electron/src/renderer/src/pending.ts` (`Action`), used by `live.ts` (`answerJob`, `answerOffer`, a limit card's answer, `stopJob`, `archiveJob`, `deleteJob`, `renameJob`).
+- **Scope:** from the click until obid's state answers for it. **Out of scope:** a spinner or any other new look (it needs Sangam's design); main's signing of Confirms and limit answers (`device.ts`, kept as it is); obid and its API. An answer to another Oby's question (`answerQuestion`) keeps no entry: its card keeps the owner's words itself, and its answer comes back as the item.
+
+### Actors and ownership
+
+- **obid** owns the jobs, the inbox items and the limit decisions, and their revisions.
+- **The page** keeps one entry per click, keyed by what it is (an answer, Stop, Archive, Delete, Rename) and the id of what it acts on: an inbox item's, else the job's, or a limit card's. The entry holds obid's copy as it was clicked, so its revision, and, for an answer, the option and the card as it was asked; for a rename, the new name.
+- **What shows:** while an answer's entry is there, the task card shows the pick on the card as it was asked (Later: put off), and Home's stack and the conversation leave its item out; while a rename's is, the task shows the new name. Stop, Archive and Delete change nothing shown.
+
+### When an entry leaves
+
+- obid's state holds what it acts on at a newer revision, or no longer holds it (an item settled, a job deleted). Where obid sent no revision, any other copy is newer.
+- The call failed: obid refused it, or anything else threw. Only that click's entry leaves, never a later one's.
+- A Delete obid asks to confirm first, and a limit card's answer once its call is over (the decisions are read again either way).
+
+### Failures and recovery
+
+- A call's answer goes through the shared rule (`take`) and is never written into the state: an answer older than an event that came meanwhile changes nothing.
+
+### Acceptance scenarios
+
+- **LIVE-19** (implemented): Given the owner clicks Allow on a job's permission card, when obid's `inbox` event at a newer revision arrives, then the card shows obid's state and the entry goes. Until then the task shows Allow on the permission card and isn't waiting on the owner; the same revision again changes nothing. `LIVE-19: Allow on a job's permission card shows answered until obid's newer inbox event, then obid's state`.
+- **LIVE-20** (implemented): Given the owner clicks Stop, when the call fails, then the card shows the job as obid has it and the reason, as before. `LIVE-20: a Stop that fails shows the job as obid has it, and the reason`.
+- **LIVE-21** (implemented): Given the owner answers a card and obid's event arrives before the call's answer, when the answer arrives, then nothing changes on the card. `LIVE-21: obid's event before the call's answer: when the answer arrives, nothing changes on the card`.
+
 ## Settings rows obid has no setting for yet (R06-13)
 
 The business behavior contract for Settings rows whose choice obid doesn't keep yet, from [the template](../business-contract-template.md). Roadmap task R06-13 (`factory/queue/done/R06-13.md`); it uses R06-04's channels ([ipc.md](ipc.md)). Scenarios LIVE-25 and LIVE-26; the tests that prove them are named after them (`live_25_…`, `live_26_…`, `apps/electron/src/renderer/src/test/localSettings.test.ts` and `.tsx`).

@@ -156,7 +156,7 @@ describe('TASKCONV-7: the Confirm Oby’s answer made shows under it, and on Hom
 
   it('taskconv_7_answered_on_home_it_leaves_the_conversation_too', () => {
     const s = live.liveState();
-    expect(live.chatOf({ ...s, inbox: [merge], turns: { c1: turns }, answering: new Set(['confirm-1']) }, convo).said.some((m) => m.confirm)).toBe(false);
+    expect(live.chatOf({ ...s, inbox: [merge], turns: { c1: turns }, actions: { 'answer:confirm-1': { what: 'answer', in: 'inbox', on: 'confirm-1', of: merge, option: 'Confirm' } } }, convo).said.some((m) => m.confirm)).toBe(false);
     expect(live.chatOf({ ...s, inbox: [], turns: { c1: turns } }, convo).said.some((m) => m.confirm)).toBe(false);
   });
 });

@@ -19,7 +19,7 @@ import type { GitHubItem } from './view';
 import type { GitHubWork } from './obid';
 import { lookAgain, takeRoomPost } from './room';
 import { lookAgainAtThreads, plainId, threadChanged } from './peers';
-import { added, adopted, answered as planAnswered, awaited, awaitedIn, conversationOf, failed as sendFailed, gone as goneWith, settled, starts, type Pendings } from './pending';
+import { acting, actionOn, added, adopted, answered as planAnswered, awaited, awaitedIn, confirmed, conversationOf, failed as sendFailed, gone as goneWith, settled, starts, unacted, type Action, type Actions, type Pendings } from './pending';
 
 // What obid has (docs/runner-api.md), as main's one follower of its events keeps it (main/live.ts):
 // main's snapshot when the page opens and after each sync, then each event main applied, applied
@@ -50,11 +50,9 @@ type Live = ObidState & {
   // obid's id for a conversation words of this app's started, by their turn or the plan's answer
   // only, onto the app's own id they're shown under ('new:1'), so its page stays open
   alias: Record<string, string>;
-  // decisions answered here, by job: what was asked, the pick, and the inbox item it settles.
-  // The cards keep showing it answered (as the mock's do), and the stack lets it go.
-  answered: Record<string, { ask: Ask; option: string; item?: string; until?: number }>;
-  // items with no task answered from Home's stack, their answer on its way: off the stack meanwhile
-  answering: Set<string>;
+  // answers to cards and task actions on their way, until obid's state holds what they act on at a
+  // newer revision (pending.ts): a card shows its pick meanwhile, and the stack lets it go
+  actions: Actions;
   // the repository last picked for words sent here, by conversation (its app id), and when
   picked: Record<string, { repo: string; at: string }>;
   // the files your words took, by their turn: the name obid kept, the one picked, a photo's preview
@@ -63,11 +61,15 @@ type Live = ObidState & {
 
 let state: Live = {
   connection: 'connecting', problem: null, status: null, repos: [], github: null, jobs: {}, firstJobs: new Set(), seen: new Set(), inbox: [], limits: [],
-  conversations: [], turns: {}, loaded: new Set(), working: {}, on: {}, pending: {}, unanswered: new Set(), words: {}, pace: {}, waiting: {}, alias: {}, answered: {}, answering: new Set(), picked: {}, previews: {}, gone: new Set(), goneConversations: new Set(), settledInbox: {},
+  conversations: [], turns: {}, loaded: new Set(), working: {}, on: {}, pending: {}, unanswered: new Set(), words: {}, pace: {}, waiting: {}, alias: {}, actions: {}, picked: {}, previews: {}, gone: new Set(), goneConversations: new Set(), settledInbox: {},
 };
 const listeners = new Set<() => void>();
+// what an entry acts on, as obid's state now holds it
+const copyOf = (s: Live, a: Action) => (a.in === 'jobs' ? s.jobs[a.on] : a.in === 'inbox' ? s.inbox.find((i) => i.id === a.on) : s.limits.find((d) => `limit:${d.id}:${d.revision}` === a.on));
+const answering = (s: Live, on: string) => !!actionOn(s.actions, 'answer', on);
 const set = (patch: Partial<Live>) => {
-  state = { ...state, ...patch }; publish(); listeners.forEach((l) => l());
+  const next = { ...state, ...patch };
+  state = { ...next, actions: confirmed(next.actions, (a) => copyOf(next, a)) }; publish(); listeners.forEach((l) => l());
   if (!pacing && Object.keys(state.pace).length) { ticked = performance.now(); pacing = setInterval(tick, WORD_MS); }
 };
 // An event, or obid's answer to a call as one, over the state as it is when it's taken: never a
@@ -161,7 +163,7 @@ export function chatOf(s: Live, c: Conversation): Chat {
   // Home's stack: obid's words under the headline, not put off, not on their way (#1680)
   const now = Date.now();
   const confirms = s.inbox.filter((i) => i.kind === 'confirm' && i.conversation === c.id
-    && !(i.later && Date.parse(i.later) > now) && !s.answering.has(i.id));
+    && !(i.later && Date.parse(i.later) > now) && !answering(s, i.id));
   const confirmed = new Set<string>();
   const confirm = (m: Omit<Message, 'confirm'>, by?: string) => confirms.filter((i) => (by === undefined || Date.parse(i.created) <= Date.parse(by)) && !confirmed.has(i.id) && confirmed.add(i.id))
     .forEach((i) => said.push({ ...m, confirm: { id: i.id, ask: { ...itemAsk(i), text: i.text } } }));
@@ -383,7 +385,7 @@ const onHome = (i: InboxItem) => ON_HOME.has(i.kind) || !!questionOf(i) || !!rev
 function asksOf(s: Live): Asking[] {
   const now = Date.now();
   const open = s.inbox.filter((i) => onHome(i) && !s.jobs[i.job] && (!i.triage || i.triage === 'needs_you' || i.triage === 'pending')
-    && !(i.later && Date.parse(i.later) > now) && !s.answering.has(i.id));
+    && !(i.later && Date.parse(i.later) > now) && !answering(s, i.id));
   return [
     ...open.filter((i) => !i.offer).map((i) => {
       const question = questionOf(i);
@@ -444,7 +446,7 @@ const limitLater = new Map<string, number>();  // Later: put off an hour, in thi
 const limitError = new Map<string, string>();  // why the last answer to it didn't go
 export function limitAsks(s: Live, conversation?: string, job?: string): Asking[] {
   const now = Date.now();
-  return s.limits.filter((d) => (limitLater.get(`${d.id}:${d.revision}`) ?? 0) < now && !s.answering.has(`limit:${d.id}:${d.revision}`)
+  return s.limits.filter((d) => (limitLater.get(`${d.id}:${d.revision}`) ?? 0) < now && !answering(s, `limit:${d.id}:${d.revision}`)
     && (!conversation && !job || d.jobs.some((j) => job === j.id || (!!conversation && s.jobs[j.id]?.conversation === realId(conversation)))))
     .map((d) => {
       const source = s.status?.accounts.find((a) => a.id === d.account);
@@ -475,14 +477,14 @@ async function answerLimitAsk(id: string, option: string) {
   const decision = state.limits.find((d) => d.id === decisionId && String(d.revision) === revision);
   const picked = decision?.options.find((o) => limitLabel(o) === option);
   if (!decision || !picked) throw new Error('This choice changed. Look at it again before choosing.');
-  answering(id, true);
+  const a = act('answer', 'limits', id, { option });
   try {
     await answerLimit(decision, picked);
     limitError.delete(decisionId);
   } catch (e) {
     limitError.set(decisionId, `Couldn’t save your choice: ${e instanceof Error ? e.message : String(e)}`);
     throw e;
-  } finally { answering(id, false); }
+  } finally { drop(a); }
 }
 
 // GitHub's work no job is on yet (once one is, the job is the task), as To do's cards: reviews and
@@ -516,14 +518,15 @@ function workOf(w: GitHubWork | null): GitHubItem[] {
 export function taskOf(s: Live, j: Job): Task {
   // a status this build doesn't know: placed as done, with no ask, shown neutral (WIRE-3)
   const unknown = !isJobStatus(j.status);
-  // answered here: answered until obid asks something else. Put off: until its time, by obid's item
-  // where there's one, so a restart keeps it; settled meanwhile, it's over
-  const now = askOf(s, j), was = unknown ? undefined : s.answered[j.id], item = itemOf(s, j.id);
-  const putOff = !!now && (item?.later ? Date.parse(item.later) > Date.now() : was?.option === 'Later' && item?.id === was.item && (was.until ?? 0) > Date.now());
-  const answer = putOff ? 'Later' : was && was.option !== 'Later' && (!now || item?.id === was.item) ? was.option : undefined;
-  const ask = answer && !putOff ? was!.ask : now;
+  // answered here: answered, as it was asked, until obid's state holds what it answered newer (its
+  // entry, pending.ts). Put off: until its time, by obid's item, so a restart keeps it
+  const now = askOf(s, j), item = itemOf(s, j.id), was = unknown ? undefined : actionOn(s.actions, 'answer', item?.id ?? j.id);
+  const putOff = !!now && (item?.later ? Date.parse(item.later) > Date.now() : was?.option === 'Later');
+  const answer = putOff ? 'Later' : was?.option !== 'Later' ? was?.option : undefined;
+  const ask = answer && !putOff ? was!.ask ?? now : now;
+  const title = actionOn(s.actions, 'rename', j.id)?.title ?? j.title;
   const job: JobView = {
-    id: j.id, type: j.kind === 'review' ? 'review' : j.issue != null ? 'issues' : 'tasks', title: j.title, request: j.request,
+    id: j.id, type: j.kind === 'review' ? 'review' : j.issue != null ? 'issues' : 'tasks', title, request: j.request,
     agent: j.agent, account: s.status?.accounts.find((a) => a.id === j.account)?.name ?? j.account,
     model: j.model ?? s.status?.models[j.agent]?.model ?? 'default', repo: j.repo, branch: j.branch || '—', base: j.base ?? '—',
     check: j.check ?? undefined, repoCheck: s.repos.find((r) => r.repo === j.repo)?.check, status: j.status, step: j.step, waiting: j.waiting ?? undefined,
@@ -537,7 +540,7 @@ export function taskOf(s: Live, j: Job): Task {
   const needs = !!now && (!answer || putOff);
   job.page = pageOf(j, s.status?.accounts.find((a) => a.id === j.account), needs);
   return {
-    id: j.id, type: job.type, title: j.title, brand: agentOf(j.agent).brand, job,
+    id: j.id, type: job.type, title, brand: agentOf(j.agent).brand, job,
     status: needs ? 'needs' : j.status === 'queued' || j.status === 'running' ? 'running' : 'done',
     fresh: !s.firstJobs.has(j.id) && !s.seen.has(j.id), answer, ...(unknown ? { unknown } : {}),
   };
@@ -556,7 +559,7 @@ function publish() {
   // what's put off comes back when its time comes, which obid sends no event for: look again then
   // (the soonest, and at least hourly)
   clearTimeout(waking);
-  const due = Math.min(...[...state.inbox.map((i) => (i.later ? Date.parse(i.later) : Infinity)), ...Object.values(state.answered).map((a) => a.until ?? Infinity), ...limitLater.values()].filter((t) => t > Date.now()));
+  const due = Math.min(...[...state.inbox.map((i) => (i.later ? Date.parse(i.later) : Infinity)), ...limitLater.values()].filter((t) => t > Date.now()));
   if (due < Infinity) waking = setTimeout(() => set({}), Math.min(due - Date.now() + 500, 3600_000));
   // the week's share, else the 5-hour window's; unknown until the tool says (never a made-up 0%).
   // Only when obid's status changed: publish runs at every change, each word of Oby's included,
@@ -939,8 +942,16 @@ export const tellAgent = async (id: string, text: string, files?: { path?: strin
 export async function changeMode(id: string, mode: string) {
   try { const j = await api.mode(id, mode); take({ kind: 'job', job: j }); } catch (e) { say(e); }
 }
+// A click on its way (pending.ts), on obid's copy as it is now; and its entry gone (its call failed)
+function act(what: Action['what'], where: Action['in'], on: string, more: Pick<Action, 'option' | 'ask' | 'title'> = {}): Action {
+  const a: Action = { what, in: where, on, of: copyOf(state, { what, in: where, on, of: {} }) ?? {}, ...more };
+  set({ actions: acting(state.actions, a) });
+  return a;
+}
+const drop = (a: Action) => set({ actions: unacted(state.actions, a) });
 export async function stopJob(id: string) {
-  try { const j = await keyed((key) => api.stop(id, key)); take({ kind: 'job', job: j }); } catch (e) { say(e); }
+  const a = act('stop', 'jobs', id);
+  try { const j = await keyed((key) => api.stop(id, key)); take({ kind: 'job', job: j }); } catch (e) { drop(a); say(e); }
 }
 
 // The task's menu: Rename (PATCH /v1/jobs/{id}), shown at once as the mock does it; Archive
@@ -948,30 +959,28 @@ export async function stopJob(id: string) {
 // obid's job comes back and the task follows it; a refusal (a 409: still running, its pull request
 // still open) shows in obid's own words and leaves the task as it was.
 export async function renameJob(id: string, title: string) {
-  const had = state.jobs[id];
   // the same name again (a blur with nothing changed): nothing to tell obid
-  if (had?.title === title) return;
-  if (had) set({ jobs: { ...state.jobs, [id]: { ...had, title } } });
-  try { const j = await api.rename(id, title); take({ kind: 'job', job: j }); } catch (e) {
-    const now = state.jobs[id];
-    if (had && now?.title === title) set({ jobs: { ...state.jobs, [id]: { ...now, title: had.title } } });
-    say(e);
-  }
+  if ((actionOn(state.actions, 'rename', id)?.title ?? state.jobs[id]?.title) === title) return;
+  const a = act('rename', 'jobs', id, { title });
+  try { const j = await api.rename(id, title); take({ kind: 'job', job: j }); } catch (e) { drop(a); say(e); }
 }
 export async function archiveJob(id: string) {
-  try { const j = await api.archive(id); take({ kind: 'job', job: j }); } catch (e) { say(e); }
+  const a = act('archive', 'jobs', id);
+  try { const j = await api.archive(id); take({ kind: 'job', job: j }); } catch (e) { drop(a); say(e); }
 }
 // true once it's gone (obid deleted it, or had no such job). With commits that aren't published,
 // obid asks first: its Confirm comes onto the task's card (and Home's stack), naming the commits
 // lost, and only the owner's click there deletes it (answerJob, signed by main).
+// (obid asking first leaves the job as it was: its entry goes then too)
 export async function deleteJob(id: string) {
+  const a = act('delete', 'jobs', id);
   try {
     const { deleted, ask } = await api.deleteJob(id);
     if (ask) take({ kind: 'inbox', item: ask });
     if (!deleted) return false;
   } catch (e) {
     if (!(e instanceof ApiError && e.status === 404)) { say(e); return false; }
-  }
+  } finally { drop(a); }
   take({ kind: 'jobGone', id });
   return true;
 }
@@ -1050,8 +1059,8 @@ export async function answerJob(id: string, option: string, words?: string) {
   if (id.startsWith('limit:')) return answerLimitAsk(id, option).catch(say);
   const j = state.jobs[id], item = itemOf(state, id) ?? state.inbox.find((i) => i.id === id), ask = j && askOf(state, j);
   const shown = option === 'Edit' && words ? `Use ${words}` : (option === TELL || option === STEER) && words ? words : option;
-  if (ask) set({ answered: { ...state.answered, [id]: { ask, option: shown, item: item?.id, ...(option === 'Later' ? { until: Date.now() + 3600_000 } : {}) } } });
-  else if (item) answering(item.id, true);
+  // on its way by what it answers (an item, else the job's own card), as the card asked it
+  const a = act('answer', item ? 'inbox' : 'jobs', item?.id ?? id, { option: shown, ...(ask ? { ask } : {}) });
   try {
     if (checkOf(item) && option !== 'Later') {
       let asked = item!;
@@ -1077,7 +1086,7 @@ export async function answerJob(id: string, option: string, words?: string) {
       // obid leaves the question open while the task runs on, so it's settled here; refused, it's
       // still asked. Tell it what to do (TASKS-17) is the task page's shape: conversation true, then Done
       if (await tellJob(id, words!, [], option === STEER)) await settleQuestion(item);
-      set({ answered: without(state.answered, id) });
+      drop(a);
     } else if (item) {
       // (an agent's question by its own item, never the job's permission, which can lag behind the
       // inbox: Tell it something sends the owner's words as its answer)
@@ -1087,10 +1096,8 @@ export async function answerJob(id: string, option: string, words?: string) {
     }
   } catch (e) {
     // not taken: it's still yours to answer
-    set({ answered: without(state.answered, id) });
+    drop(a);
     say(e);
-  } finally {
-    if (!j && item) answering(item.id, false);
   }
 }
 // A failed or interrupted task's menu (TASKS-25). Try again tells its agent obid's Try-again words
@@ -1135,19 +1142,15 @@ export async function answerQuestion(id: string, words: string) {
   take({ kind: 'inbox', item: await keyed((key) => api.answer(id, { answer: words }, key)) });
 }
 
-// an item with no task answered from Home's stack, its answer on its way (or not any more)
-const answering = (item: string, on: boolean) =>
-  set({ answering: new Set(on ? [...state.answering, item] : [...state.answering].filter((x) => x !== item)) });
-
 // An offer answered (OfferCard.tsx), for each of its jobs still waiting: Dispatch is the owner's own
 // Start, which only this tap gives (POST /v1/inbox/{id}/answer); Skip cancels it; Later puts it
 // off an hour. What starts comes as its job's event, its card under the answer.
 export async function answerOffer(offer: string, option: 'Dispatch' | 'Skip' | 'Later') {
   const items = state.inbox.filter((i) => i.offer?.id === offer);
-  items.forEach((i) => answering(i.id, true));
-  for (const item of items) {
+  const acts = items.map((i) => act('answer', 'inbox', i.id, { option }));
+  for (const [n, item] of items.entries()) {
     const body = option === 'Later' ? { later: new Date(Date.now() + 3600_000).toISOString().replace(/\.\d+Z$/, 'Z') } : { answer: option === 'Dispatch' ? 'Start' : 'Cancel' };
-    try { take({ kind: 'inbox', item: await keyed((key) => api.answer(item.id, body, key)) }); } catch (e) { say(e); } finally { answering(item.id, false); }
+    try { take({ kind: 'inbox', item: await keyed((key) => api.answer(item.id, body, key)) }); } catch (e) { drop(acts[n]); say(e); }
   }
 }
 
