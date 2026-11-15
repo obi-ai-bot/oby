@@ -3,7 +3,7 @@ import { Check, ChevronDown, ChevronRight, Info } from 'lucide-react';
 import { BrandMark } from './brands';
 import StatusDot from './StatusDot';
 import { MODES } from './modes';
-import { ASK_LABEL, agentOf, STEER, TELL, ago, type CheckRow, type Job, type Page, type Stage, type ToolGroup } from './mock';
+import { ASK_LABEL, agentOf, STEER, TELL, ago, type CheckRow, type Job, type Page, type Stage, type ToolGroup } from './view';
 import { api, type PublishChoices } from './obid';
 import { answer, changeCheck, changeMode, markSeen, openOnGitHub, type Task } from './tasks';
 import { prName, prUrl } from './jobPage';

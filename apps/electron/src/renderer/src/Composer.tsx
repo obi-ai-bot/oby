@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowUp, Check, ChevronLeft, File, FolderGit2, FolderOpen, Gauge, Laptop, ListChecks, Plus, Search, Settings, Square, X } from 'lucide-react';
 import { ObyIcon, OwnerAvatar } from './ObyFace';
-import { OBYS, agentOf, PLACES, SHARED_WITH_ME, type Attachments } from './mock';
+import { OBYS, PLACES, SHARED_WITH_ME } from './mock';
+import { agentOf, type Attachments } from './view';
 
 import MessageEditor, { type EditorHandle, type MentionKey } from './MessageEditor';
 import { mentioned } from './textTokens';

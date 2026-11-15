@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
-import { JOBS, TURNS as LOG, convoTitle, followUpsOf, hasAttachments, type Attachments, type Message } from './mock';
+import { JOBS, TURNS as LOG, convoTitle, followUpsOf } from './mock';
+import { hasAttachments, type Attachments, type Message } from './view';
 import { addTask, conversationOfTask, relay } from './tasks';
 import { streamWords, wait } from './stream';
 import { everything, onObid } from './lean';

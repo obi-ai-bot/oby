@@ -1,8 +1,16 @@
-// Oby's own updates (docs/contracts/updates.md): what Settings › About shows, and what main's
-// updater (main/updates.ts) does next. No Electron here, so its tests run anywhere.
+// Oby's own updates (docs/contracts/updates.md): what Settings › About shows, what main's updater
+// (main/updates.ts) does next, and whether a feed is Deskree's: one is trusted only when Deskree's
+// key signed it (verifyFeed). No Electron here, so its tests run anywhere.
+import { createPublicKey, verify, type KeyObject } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
+import { load } from 'js-yaml';
 
 // Where the builds are (scripts/package.sh writes latest-mac.yml and the zips for it): https only
 export const FEED = 'https://downloads.oby.dev/electron';
+// Deskree's public key for the feed (ed25519, SPKI DER in base64): scripts/sign-feed.mjs reads this
+// line and signs only with its private half, which never is in the repository
+export const FEED_KEY = 'MCowBQYDK2VwAyEA2PAZCZ8StseJm63/g0XJWsvq0r0iprM7HHTd3SRkihI=';
+export const FEED_PUBLIC_KEY = createPublicKey({ key: Buffer.from(FEED_KEY, 'base64'), format: 'der', type: 'spki' });
 // with Update automatically on, how often Oby looks (Sangam's design/app: every 6 hours)
 export const EVERY = 6 * 60 * 60 * 1000;
 
@@ -97,7 +105,8 @@ function decide(u: Update, e: Event, auto: boolean, installing: boolean): [Updat
 
 // latest-mac.yml's files, resolved against the feed as electron-updater resolves them: each one https
 // on the feed's own host, or the update is refused (thrown: the updater's 'error', About offers
-// Check for Updates again). Whoever writes the feed can't send Macs to another host.
+// Check for Updates again). Whoever writes the feed can't send Macs to another host; whether
+// Deskree wrote it is verifyFeed's.
 export function onFeed(info: { files?: { url: string }[]; path?: string }) {
   const feed = new URL(`${FEED}/`);
   for (const u of [...(info.files ?? []).map((f) => f.url), ...(info.path ? [info.path] : [])]) {
@@ -106,9 +115,49 @@ export function onFeed(info: { files?: { url: string }[]; path?: string }) {
   }
 }
 
+// A feed is Deskree's only when its last line is `signature: '<base64>'`, ed25519 by key over
+// every byte before it (scripts/sign-feed.mjs writes it), and the signed bytes parse, as
+// electron-updater parses them, to exactly info: what the updater acts on is what was signed.
+// Then it's refused when issued is before lastIssued (the last one this Mac accepted: an old feed
+// replayed), or its version is under its own minimumVersion. The answer is its issued, to keep;
+// a refusal is thrown, naming only why.
+const SIGNATURE = /^signature: '([A-Za-z0-9+/]{86}==)'$/;
+const ISSUED = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+const VERSION = /^\d+\.\d+\.\d+$/;
+const readable = (t: unknown): t is string => typeof t === 'string' && ISSUED.test(t) && !Number.isNaN(Date.parse(t));
+const parts = (v: string) => v.split('.').map(Number);
+const under = (v: string, floor: string) => {
+  const [a, b] = [parts(v), parts(floor)];
+  const i = a.findIndex((n, k) => n !== b[k]);
+  return i >= 0 && a[i] < b[i];
+};
+
+export function verifyFeed(raw: Buffer, info: unknown, lastIssued: unknown, key: KeyObject): { issued: string } {
+  const refuse = (why: string) => new Error(`refused the feed: ${why}`);
+  const end = raw.length - 1;
+  if (end < 0 || raw[end] !== 0x0a) throw refuse('no signature');
+  const start = raw.lastIndexOf(0x0a, end - 1) + 1;
+  const signed = raw.subarray(0, start);
+  const sig = SIGNATURE.exec(raw.subarray(start, end).toString('utf8'))?.[1];
+  if (!sig || signed.toString('utf8').split('\n').some((l) => l.startsWith('signature:'))) throw refuse('no signature');
+  if (!verify(null, signed, key, Buffer.from(sig, 'base64'))) throw refuse('bad signature');
+  let feed: unknown;
+  try { feed = load(raw.toString('utf8')); } catch { throw refuse('not the feed that was checked'); }
+  if (!isDeepStrictEqual(feed, info)) throw refuse('not the feed that was checked');
+  const { issued, minimumVersion, version } = feed as Record<string, unknown>;
+  if (!readable(issued)) throw refuse('unreadable issued');
+  if (typeof version !== 'string' || !VERSION.test(version) || typeof minimumVersion !== 'string' || !VERSION.test(minimumVersion)) {
+    throw refuse('unreadable version');
+  }
+  if (readable(lastIssued) && Date.parse(issued) < Date.parse(lastIssued)) throw refuse('a replay');
+  if (under(version, minimumVersion)) throw refuse('under its minimum version');
+  return { issued };
+}
+
 // electron-updater's settings for Update automatically: never a lower version or a pre-release,
 // downloads and installs at quit only when it's on; always the whole zip (package.sh makes no
-// blockmaps for a part of one)
+// blockmaps for a part of one). Which feed counts at all is verifyFeed's, in main's
+// isUpdateSupported.
 export const settings = (auto: boolean) => ({
   autoDownload: auto, autoInstallOnAppQuit: auto, allowDowngrade: false, allowPrerelease: false, disableDifferentialDownload: true,
 });

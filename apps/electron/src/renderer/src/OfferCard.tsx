@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ASK_LABEL, type Offer } from './mock';
+import { ASK_LABEL, type Offer } from './view';
 import { answerOffer } from './live';
 
 // Work Oby offers to start (obid's oby_offer), under its answer: each job in obid's words with the

@@ -1,14 +1,15 @@
 import { waitSays } from './chatgpt';
 import { useEffect, useMemo } from 'react';
-import { ArrowUpRight, Check, X } from 'lucide-react';
+import { Check } from 'lucide-react';
 import Composer from './Composer';
 import { Earlier, Line, liveFor, useEntries, useLiveEnd, useLiveLines, useTail } from './SessionView';
 import { AskBlock } from './TaskCard';
 import { box as draftBox } from './drafts';
 import { onObid } from './lean';
+import { replyTarget } from './replyTarget';
 import { tellAgent } from './live';
 import { around, lastSteps, thoughtWords, todosOf, type Step, type Todo } from './liveTask';
-import { agentOf } from './mock';
+import { agentOf } from './view';
 import { markSeen, stop, tell, tellPlaceholder, useTasks, type Task } from './tasks';
 
 // How the to-do it's on stands: at work, waiting on you, stopped by a failure, or just ended;
@@ -85,17 +86,16 @@ export function WorkNow({ task, onClick }: { task: Task; onClick?: () => void })
   );
 }
 
-// The agent's own conversation (Sangam's board "The agent's own conversation"): opened beside the chat
-// from its card, over it in a narrow window. From the start, what it said, did and thought and what
-// you told it, its to-dos on top, and the box to tell it something, as a task's own page does
-// (POST /v1/jobs/{id}/messages). Told something once it's finished, it starts a follow-up, which this
-// then follows.
-export default function AgentPane({ id, onClose, onDetails, onFollowUp }: {
-  id: string;
-  onClose: () => void;
-  onDetails: (id: string) => void;
-  onFollowUp: (id: string) => void;
-}) {
+// Which cards in a conversation show opened (LIVETASK-16): the ones the owner opened, and every one
+// that needs them unless they folded it during this need. Opening by itself never folds one.
+export const openCards = (opened: ReadonlySet<string>, folded: ReadonlySet<string>, needing: readonly string[]) =>
+  new Set([...opened, ...needing.filter((id) => !folded.has(id))]);
+
+// The agent's own conversation (Sangam's screens 03 and 04, docs/design/oby-home/), opened in place
+// under its card: from the start, what it said, did and thought and what you told it, its to-dos on
+// top, the decision it waits on, and the box to tell it something (POST /v1/jobs/{id}/messages), with
+// Stop in it while it runs. Told something once it's finished, it starts a follow-up (onFollowUp).
+export default function AgentThread({ id, onFollowUp }: { id: string; onFollowUp: (id: string) => void }) {
   const tasks = useTasks();
   const task = tasks.find((t) => t.id === id)!;
   const entries = useEntries(id);
@@ -107,41 +107,34 @@ export default function AgentPane({ id, onClose, onDetails, onFollowUp }: {
   const j = task.job, agent = agentOf(j.agent), todos = todosOf(entries);
   // its to-dos are on top, not in the conversation as well
   const tail = useTail(useMemo(() => entries.filter((e) => e.kind !== 'plan'), [entries]));
+  // words typed here go to this job and nothing else (replyTarget, LIVETASK-17)
   const send = (text: string, att: Parameters<typeof tell>[2]) => {
-    if (!onObid) return void tell(id, text, att);
-    void tellAgent(id, text, att?.files).then((next) => { if (next) onFollowUp(next); });
+    const { job } = replyTarget({ card: id });
+    if (!onObid) return void tell(job, text, att);
+    void tellAgent(job, text, att?.files).then((next) => { if (next) onFollowUp(next); });
   };
   return (
-    <aside className="agent-pane" aria-label={`Conversation with ${agent.name}`}>
-      <header className="agent-pane-bar">
-        <button className="icon-button" aria-label="Close this conversation" onClick={onClose}><X size={16} strokeWidth={1.8} /></button>
-        <div className="agent-pane-title">
-          <span>{task.title}</span>
-          <span>{agent.name} · {j.account}{j.repo.includes('/') && <> · {j.repo.split('/')[1]}</>}</span>
-        </div>
-        {task.status === 'running' && <button className="set-button is-danger" onClick={() => stop(id)}>Stop</button>}
-        {/* proposed: the task's page (what went out, Publish), which the card used to open */}
-        <button className="icon-button" aria-label="Open the task’s page" title="Open the task’s page" onClick={() => onDetails(id)}><ArrowUpRight size={16} strokeWidth={1.8} /></button>
-      </header>
-      {todos && <div className="agent-pane-todos"><Todos todos={todos} task={task} /></div>}
-      <div className="agent-pane-scroll">
-        <section ref={list} className="agent-pane-thread" onScroll={onListScroll}>
+    <div className="lt-thread" role="group" aria-label={`Conversation with ${agent.name}`}>
+      {todos && <div className="lt-thread-todos"><Todos todos={todos} task={task} /></div>}
+      <div className="lt-thread-scroll">
+        <section ref={list} className="lt-thread-lines" onScroll={onListScroll}>
           <ol className="ss-entries">
             <Earlier count={tail.earlier} onClick={tail.more} />
-            {tail.shown.map((e, i) => <Line key={e.n ?? i} entry={e} job={id} brand={agent.brand} live={liveFor(e, live)} inPane />)}
+            {tail.shown.map((e, i) => <Line key={e.n ?? i} entry={e} job={id} brand={agent.brand} live={liveFor(e, live)} inCard />)}
           </ol>
         </section>
         <div {...thumbProps} />
       </div>
-      {task.status === 'needs' && j.ask && <div className="msg-ask agent-pane-ask"><AskBlock task={task} inChat /></div>}
+      {task.status === 'needs' && j.ask && <div className="lt-thread-ask"><AskBlock task={task} inChat /></div>}
       <Composer
-        className="task-composer"
+        className="lt-box"
         autoFocus={false}
         placeholder={tellPlaceholder(task, agent.name)}
         label={`Tell the agent about ${task.title}`}
         onSend={send}
         draft={draftBox.task(id)}
+        onStop={task.status === 'running' ? () => stop(id) : undefined}
       />
-    </aside>
+    </div>
   );
 }

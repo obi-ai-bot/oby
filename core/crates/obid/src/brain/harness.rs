@@ -163,6 +163,11 @@ impl Session {
                 }
             }
             if tokio::time::Instant::now() >= until {
+                tracing::warn!(
+                    "conversation {}: a call of {tool} waited out its {} s for obid's reader, so the turn counts as having read something untrusted",
+                    self.conversation,
+                    wait.as_secs()
+                );
                 self.taint();
                 return;
             }
@@ -2280,14 +2285,6 @@ async fn one(
                     "Read" | "Grep" | "Glob" | "Tool" if own_codex => "Bash",
                     name => name,
                 };
-                // Untrusted content read this turn (the web, repo code) taints it: work it
-                // dispatches then waits for the owner (N1).
-                if taints(judged, &input, &bounds, &place.repos) {
-                    session.taint();
-                }
-                if let Some(tool) = name.strip_prefix("mcp__oby__") {
-                    session.wrote(&id, tool, &input);
-                }
                 // Fail closed for the owner's secrets (crate::secretspec): a call obid doesn't know
                 // keeps what the conversation read the owner's own marks it. Oby's own tools are
                 // judged where they answer (super::tools).
@@ -2297,6 +2294,14 @@ async fn one(
                     shared
                         .conversations
                         .mark(&control.conversation, format!("its Oby used {judged}"));
+                }
+                // Untrusted content read this turn (the web, repo code) taints it: work it
+                // dispatches then waits for the owner (N1).
+                if taints(judged, &input, &bounds, &place.repos) {
+                    session.taint();
+                }
+                if let Some(tool) = name.strip_prefix("mcp__oby__") {
+                    session.wrote(&id, tool, &input);
                 }
                 let index = steps.len() + 1;
                 let line = (

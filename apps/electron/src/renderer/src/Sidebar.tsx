@@ -4,11 +4,13 @@ import { BookOpen, Check, Mail, UserPlus, ChevronDown, EllipsisVertical, Plus, S
 import { ChatsCircleIcon, GearSixIcon, HouseIcon, ListChecksIcon, PlusIcon } from '@phosphor-icons/react';
 import { BrandMark } from './brands';
 import { ARCHIVE_AFTER, TYPES, archivedTasks, asksWaiting, countOf, getArchiveAfter, hasFresh, markSeen, openOf, renameTask, setArchiveAfter, tasksOf, tasksWith, toDoOf, useTasks, type Task } from './tasks';
-import { OBYS, ago } from './mock';
+import { OBYS } from './mock';
+import { ago } from './view';
 import { ObyFace, OwnerAvatar } from './ObyFace';
 import { useScrollThumb } from './useScrollThumb';
 import { Menu } from './Menu';
 import { SETTINGS_PAGES } from './SettingsView';
+import { ConfirmModal } from './SphereSettings';
 import InviteModal from './InviteModal';
 import CreateSphereModal from './CreateSphereModal';
 import SphereTile from './SphereTile';
@@ -183,6 +185,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     if (all.some((x) => x.id === sphereId)) return;
     if (all[0]) setSphereId(all[0].id);
     setSection((s) => (s === 'obysphere' ? SECTIONS[0].id : s));
+    setLeaving(null);
   }, [all.length, sphereId]);
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
@@ -206,8 +209,11 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   // your account's menu (your picture at the icons' foot): who you are, Settings, log out
   const [accountMenu, setAccountMenu] = useState<DOMRect | null>(null);
   // the Obysphere's ⋮: which one it is, then its settings; leave it, for those
-  // invited in (not its admins; Leave does nothing yet here, Settings' does)
+  // invited in (not its admins), through Settings' own confirmation (ConfirmModal)
   const [sphereMenu, setSphereMenu] = useState<DOMRect | null>(null);
+  // the one being left from it: its confirmation is open, and goes with it
+  const [leaving, setLeaving] = useState<string | null>(null);
+  const leavingSphere = all.find((x) => x.id === leaving);
   // inviting people into the Obysphere (Invite member): its modal is open
   const [inviting, setInviting] = useState(false);
   const archiveAfter = getArchiveAfter();
@@ -473,17 +479,20 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
         </div>
 
         {/* the Obysphere: what its Obys share (Knowledge: the knowledge sources
-            connected for everyone), and inviting someone in (InviteModal), first */}
+            connected for everyone), and inviting someone in (InviteModal), first;
+            Invite member is the mock's and the sample's, not on a joined one */}
         {section === 'obysphere' && (
           <>
             <button className={`sidebar-new is-stacked${knowing ? ' is-active' : ''}${sphere.sample && tour.call === 'Knowledge' ? ' is-calling' : ''}`} aria-current={knowing || undefined} onClick={() => (sphere.sample ? tourDid('Knowledge') : onOpenKnowledge(sphere.id))}>
               <BookOpen size={16} strokeWidth={1.6} />
               <span className="sidebar-new-label">Knowledge</span>
             </button>
-            <button className="sidebar-new is-stacked" aria-haspopup={sphere.sample ? undefined : 'dialog'} onClick={() => (sphere.sample ? tourDid('invite') : setInviting(true))}>
-              <UserPlus size={16} strokeWidth={1.6} />
-              <span className="sidebar-new-label">Invite member</span>
-            </button>
+            {!sphere.live && (
+              <button className="sidebar-new is-stacked" aria-haspopup={sphere.sample ? undefined : 'dialog'} onClick={() => (sphere.sample ? tourDid('invite') : setInviting(true))}>
+                <UserPlus size={16} strokeWidth={1.6} />
+                <span className="sidebar-new-label">Invite member</span>
+              </button>
+            )}
           </>
         )}
         {newAction && (
@@ -752,10 +761,11 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
           <button role="menuitem" onClick={() => { setSphereMenu(null); onOpenSphereSetting(sphere.id); }}>Settings</button>
           {!sphere.admin && <>
             <hr />
-            <button role="menuitem" className="is-danger" onClick={() => setSphereMenu(null)}>Leave {sphere.name}</button>
+            <button role="menuitem" className="is-danger" onClick={() => { setSphereMenu(null); setLeaving(sphere.id); }}>Leave {sphere.name}</button>
           </>}
         </Menu>
       )}
+      {leavingSphere && <ConfirmModal sphere={leavingSphere} onClose={() => setLeaving(null)} />}
       {archiveMenu && (
         <Menu at={archiveMenu} onClose={() => setArchiveMenu(null)} height={everything ? 290 : 170} width={180}>
           {everything && <>

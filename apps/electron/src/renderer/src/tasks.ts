@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { BRANDS, type Brand } from './brands';
-import { ARCHIVE, GITHUB_WORK, JOBS, agentOf, hasAttachments, STEER, TELL, type Archived, type Ask, type Attachments, type GitHubItem, type Job, type Message, type Offer } from './mock';
+import { ARCHIVE, GITHUB_WORK, JOBS } from './mock';
+import { agentOf, hasAttachments, STEER, TELL, type Archived, type Ask, type Attachments, type GitHubItem, type Job, type Message, type Offer } from './view';
 import { modeLabel } from './modes';
 import { streamWords, wait } from './stream';
 import { chatFirst, everything, onObid } from './lean';

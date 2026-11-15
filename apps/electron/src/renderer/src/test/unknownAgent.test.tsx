@@ -61,7 +61,7 @@ const option = (select: string, id: string) => host.querySelector<HTMLOptionElem
 
 describe('PROVIDERS-5: an agent this build doesn’t know shows under its id', () => {
   it('providers_5_unknown_agent_shows_its_id_and_a_lettered_mark', async () => {
-    const { agentOf } = await import('../mock');
+    const { agentOf } = await import('../view');
     const { BrandMark, BRANDS } = await import('../brands');
     const gemini = agentOf('gemini');
     expect(gemini.name).toBe('gemini');

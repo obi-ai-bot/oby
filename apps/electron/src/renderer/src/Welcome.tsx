@@ -7,7 +7,8 @@ import { ObyFace, OwnerAvatar } from './ObyFace';
 import SphereTile from './SphereTile';
 import { CAN_CREATE, SUFFIX, slugOf } from './spheres';
 import { clock } from './stream';
-import { AGENTS, PEER_CONVOS, type Agent } from './mock';
+import { PEER_CONVOS } from './mock';
+import { AGENTS, type Agent } from './view';
 
 // First launch: what Oby found signed in on this Mac, then four short scenes of
 // what it does with them. Each scene plays as beats; the ones that tell a

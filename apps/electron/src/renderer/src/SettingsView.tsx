@@ -2,7 +2,8 @@ import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from 'rea
 import { Check } from 'lucide-react';
 import { BrandMark } from './brands';
 import { useScrollThumb } from './useScrollThumb';
-import { AGENTS, UNREADABLE_FILES, agentOf, type Agent } from './mock';
+import { UNREADABLE_FILES } from './mock';
+import { AGENTS, agentOf, type Agent } from './view';
 import { MODES, SANDBOX } from './modes';
 import { OwnerAvatar } from './ObyFace';
 import { useSpheres } from './spheres';

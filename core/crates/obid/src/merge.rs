@@ -1298,10 +1298,11 @@ fn oby_approved_but_waiting(job: &Job, head: &str) -> bool {
 
 /// The paths where a change merges only after two approving reviews by different tools, whoever
 /// wrote it (MERGING-15), besides the files the repository's check runs ([`check_files`]): what
-/// steers agents, the secret scan, CI and who must review. A name ending in `/` is a folder, any
-/// other a file's name; both at any depth, and in any letter case (macOS reads `claude.md` as
+/// steers agents, the secret scan, CI and who must review. A name ending in `/` is a folder, a
+/// name with a `/` inside it the whole path from the repository root, any other a file's name;
+/// folders and names at any depth, and all in any letter case (macOS reads `claude.md` as
 /// `CLAUDE.md`).
-pub const SECURITY_PATHS: [&str; 22] = [
+pub const SECURITY_PATHS: [&str; 26] = [
     "AGENTS.md",
     "AGENTS.override.md",
     "CLAUDE.md",
@@ -1324,7 +1325,37 @@ pub const SECURITY_PATHS: [&str; 22] = [
     "bitbucket-pipelines.yml",
     "Jenkinsfile",
     ".travis.yml",
+    "docs/agents-rules-manifest.md",
+    "docs/build-and-run.md",
+    "docs/agent-clis.md",
+    "docs/contracts/publishing.md",
 ];
+
+/// How a [`SECURITY_PATHS`] entry matches a changed path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Anchor {
+    Name,
+    Folder,
+    Whole,
+}
+
+/// What a changed path is to one entry, read from the two strings: the same file name, inside
+/// the entry's folder at any depth, or the same whole path from the repository root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fit {
+    pub name: bool,
+    pub folder: bool,
+    pub whole: bool,
+}
+
+/// Whether a path with `fit` is on an entry anchored as `anchor` (MERGING-15).
+pub fn fits(anchor: Anchor, fit: Fit) -> bool {
+    match anchor {
+        Anchor::Name => fit.name,
+        Anchor::Folder => fit.folder,
+        Anchor::Whole => fit.whole,
+    }
+}
 
 /// The files of `changed` on a security path ([`SECURITY_PATHS`]), or that the check `command`
 /// runs.
@@ -1338,10 +1369,17 @@ pub fn security_paths(changed: &[String], command: Option<&str>) -> Vec<String> 
             own.iter().any(|f| f.eq_ignore_ascii_case(path))
                 || SECURITY_PATHS.iter().any(|p| {
                     let p = p.to_ascii_lowercase();
-                    match p.strip_suffix('/') {
-                        Some(_) => lower.starts_with(&p) || lower.contains(&format!("/{p}")),
-                        None => name == p,
-                    }
+                    let anchor = match (p.ends_with('/'), p.contains('/')) {
+                        (true, _) => Anchor::Folder,
+                        (false, true) => Anchor::Whole,
+                        (false, false) => Anchor::Name,
+                    };
+                    let fit = Fit {
+                        name: name == p,
+                        folder: lower.starts_with(&p) || lower.contains(&format!("/{p}")),
+                        whole: lower == p,
+                    };
+                    fits(anchor, fit)
                 })
         })
         .cloned()
@@ -3385,6 +3423,43 @@ mod tests {
             two_reviews(&own, None).as_deref(),
             Some("Oby couldn't read what it changes")
         );
+    }
+
+    /// MERGING-15: the docs that hold AGENTS.md's guard lines and its rules manifest are security
+    /// paths, as their whole path from the repository root, in any letter case.
+    #[test]
+    fn merging_15_agents_md_guard_docs_need_two_reviews() {
+        for path in [
+            "docs/agents-rules-manifest.md",
+            "docs/build-and-run.md",
+            "docs/agent-clis.md",
+            "docs/contracts/publishing.md",
+            "DOCS/Agent-CLIs.md",
+            "Docs/Contracts/PUBLISHING.md",
+        ] {
+            let changed = vec![path.to_owned()];
+            assert_eq!(security_paths(&changed, None), changed, "{path}");
+        }
+    }
+
+    /// MERGING-15: a whole-path entry matches only that path, so a doc of the same name, or the
+    /// same tail, elsewhere is no security path.
+    #[test]
+    fn merging_15_a_same_named_doc_elsewhere_is_no_security_path() {
+        for path in [
+            "publishing.md",
+            "contracts/publishing.md",
+            "src/docs/contracts/publishing.md",
+            "apps/docs/agent-clis.md",
+            "build-and-run.md",
+            "docs/agents-rules-manifest.md.bak",
+        ] {
+            assert_eq!(
+                security_paths(&[path.to_owned()], None),
+                Vec::<String>::new(),
+                "{path}"
+            );
+        }
     }
 
     /// Oby's own review of the exact head is the review for the owner's own pull request (the
@@ -5684,8 +5759,8 @@ esac
 #[cfg(test)]
 mod proofs {
     #![cfg(kani)]
-    //! Kani's proofs of the owner's own work and its merge (MERGING-44 to 47): `kani::any()` stands
-    //! for every value of the bools and the enum below.
+    //! Kani's proofs of the owner's own work and its merge (MERGING-44 to 47), and of [`fits`]
+    //! (MERGING-15): `kani::any()` stands for every value of the bools and the enum below.
 
     use super::*;
 
@@ -5792,5 +5867,31 @@ mod proofs {
         }
         let signed: bool = kani::any();
         assert_eq!(own_work_of(signed, false, !signed), signed);
+    }
+
+    /// Any fit at all.
+    fn any_fit() -> Fit {
+        Fit {
+            name: kani::any(),
+            folder: kani::any(),
+            whole: kani::any(),
+        }
+    }
+
+    /// MERGING-15: a whole-path entry matches exactly the same whole path, whatever the file's
+    /// name or folder says.
+    #[kani::proof]
+    fn merging_15_a_whole_path_entry_matches_only_its_own_path() {
+        let fit = any_fit();
+        assert_eq!(fits(Anchor::Whole, fit), fit.whole);
+    }
+
+    /// MERGING-15: a name entry still matches by file name alone, and a folder entry by folder
+    /// alone.
+    #[kani::proof]
+    fn merging_15_name_and_folder_entries_match_as_before() {
+        let fit = any_fit();
+        assert_eq!(fits(Anchor::Name, fit), fit.name);
+        assert_eq!(fits(Anchor::Folder, fit), fit.folder);
     }
 }
