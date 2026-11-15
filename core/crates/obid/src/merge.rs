@@ -12,8 +12,9 @@
 //! - a workflow says how the repository merges (the owner's `workflow` memory,
 //!   crate::memory::workflow; free text never drives a merge), and the pull request's base is the
 //!   one it names: `main`, `master` or `trunk` only on the owner's own Merge, never by itself
-//!   whatever a workflow says ([`on_their_word`], the owner's decision of 2026-10-31), and the
-//!   default branch only when it names it;
+//!   whatever a workflow says ([`on_their_word`], the owner's decision of 2026-10-31), but for
+//!   their own conversation work ([`own_work`], MERGING-45), and the default branch only when it
+//!   names it;
 //! - it's the job's own: a branch obid made for it ([`Job::own_branch`]) in the repository itself, published by obid, its head
 //!   the commit obid pushed last, nothing unpublished, and the secret scan of that push clean; the
 //!   job is done, the owner's own (never another Obi's), and not dismissed;
@@ -67,6 +68,63 @@ pub fn protected(branch: &str) -> bool {
         branch.to_ascii_lowercase().as_str(),
         "main" | "master" | "trunk"
     )
+}
+
+/// The owner's own conversation work (MERGING-44): planned in a turn of their conversation on
+/// words an app of theirs signed, or a follow-up of that (`Job::own_conversation`), not another
+/// Obi's, and reached by no unsigned words. It merges by itself on any base (MERGING-45 to 48).
+pub fn own_work(job: &Job) -> bool {
+    job.own_conversation && job.obi.is_none() && !job.unsigned
+}
+
+/// Whether a pull request into a `protected` base waits for the owner's word ([`on_their_word`]):
+/// never the owner's own conversation work (`own`, MERGING-45).
+pub fn base_waits_for_word(protected: bool, own: bool) -> bool {
+    protected && !own
+}
+
+/// How the job's own check ran on the head, for a `mac` workflow ([`mac_checks`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckRan {
+    /// It passed on the head and stands for the Mac's.
+    Stands,
+    /// It passed on the head, but can't stand for the Mac's ([`check_apart`]).
+    Apart,
+    /// It didn't pass on exactly the head.
+    NotOnHead,
+    /// The repository has no check.
+    NoCheck,
+}
+
+/// Whether how the check ran (`ran`) leaves the merge to the owner's own Merge: a missing check
+/// doesn't, for the owner's own conversation work (`own`, MERGING-47).
+pub fn check_holds(ran: CheckRan, own: bool) -> bool {
+    match ran {
+        CheckRan::Stands => false,
+        CheckRan::NoCheck => !own,
+        CheckRan::Apart | CheckRan::NotOnHead => true,
+    }
+}
+
+/// How the follower merges a job's pull request ([`merges_by`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MergesBy {
+    /// By the workflow Oby learned for its base, saying so (`mergedBy` `memory`).
+    Learned,
+    /// By itself, by the workflow [`proposed`] gives, remembering nothing (`mergedBy` `oby`).
+    Itself,
+    /// Only on the owner's own Merge, which its card asks for.
+    OwnersMerge,
+}
+
+/// How a job's pull request merges, by whether a workflow is `learned` for its base and whether
+/// it's the owner's own conversation work (`own`, MERGING-46).
+pub fn merges_by(learned: bool, own: bool) -> MergesBy {
+    match (learned, own) {
+        (true, _) => MergesBy::Learned,
+        (false, true) => MergesBy::Itself,
+        (false, false) => MergesBy::OwnersMerge,
+    }
 }
 
 /// Why a pull request didn't merge, in obid's words.
@@ -316,9 +374,10 @@ pub fn handed() -> Blocked {
 /// view its merge goes by once GitHub lets go; none when anything else holds it (MERGING-41). Its
 /// checks still running, within the hour after obid pushed its head (MERGING-5 asks after that),
 /// with GitHub saying `BLOCKED` (required checks pending, or a merge queue), are taken as passed;
-/// then every rule of [`ready`] holds, its base isn't main, master or trunk (MERGING-7), and only a
-/// learned workflow is ever handed over. `UNSTABLE` (only optional checks running) isn't: gh's
-/// `--auto` merges it at once, so obid waits for its checks as before.
+/// then every rule of [`ready`] holds, its base isn't main, master or trunk but for the owner's own
+/// conversation work (MERGING-7, 46), and only a learned workflow, or that work's, is handed over.
+/// `UNSTABLE` (only optional checks running) isn't: gh's `--auto` merges it at once, so obid waits
+/// for its checks as before.
 pub fn by_github(
     job: &Job,
     workflow: &Workflow,
@@ -337,8 +396,8 @@ pub fn by_github(
     let mut settled = merging.clone();
     settled.checks = Some("SUCCESS");
     settled.merge_state = Some("CLEAN".into());
-    (!protected(&pr.base) && ready(job, Some(workflow), pr, &settled, reviewers).is_ok())
-        .then_some(settled)
+    let waits = base_waits_for_word(protected(&pr.base), own_work(job));
+    (!waits && ready(job, Some(workflow), pr, &settled, reviewers).is_ok()).then_some(settled)
 }
 
 /// Why the owner's Merge didn't go when what it goes on couldn't be read: it may go later.
@@ -713,7 +772,10 @@ pub fn ready_as(
                 .into_iter()
                 .flatten()
                 .map(|b| b.why)
-                .chain(on_their_word(base))
+                .chain(
+                    on_their_word(base)
+                        .filter(|_| base_waits_for_word(protected(base), own_work(job))),
+                )
                 .collect();
             // Only a signed answer to a card that named them lifts the rest.
             if let Some(lift) = lift {
@@ -762,23 +824,31 @@ pub fn ready_as(
 /// `mac` (this repository's remembered workflow, and what `proposed` offers wherever GitHub's checks
 /// aren't green): the job's own check, passed in its box on exactly `head` (`Job::checked`), is
 /// this Mac's check, where it can stand for it ([`check_apart`]). Otherwise, one that didn't pass
-/// on that head, or a job with no check, and only the owner's own Merge merges it
-/// ([`Blocked::yours`]). (A `github` workflow waits for GitHub's checks instead.)
+/// on that head, or a job with no check (but the owner's own conversation work, MERGING-47), and
+/// only the owner's own Merge merges it ([`Blocked::yours`]). (A `github` workflow waits for
+/// GitHub's checks instead.)
 fn mac_checks(job: &Job, workflow: &Workflow, head: &str) -> Result<(), Blocked> {
     if workflow.checks != Checks::Mac {
         return Ok(());
     }
-    match &job.checked {
+    let (ran, why) = match &job.checked {
         Some(checked) if checked.commit == head => match &checked.apart {
-            None => Ok(()),
-            Some(why) => Err(yours(why.clone())),
+            None => (CheckRan::Stands, String::new()),
+            Some(why) => (CheckRan::Apart, why.clone()),
         },
-        _ if job.check.is_none() => Err(yours(
-            "No check ran on its head (this repository has none), so it's yours to merge.",
-        )),
-        _ => Err(yours(
-            "Its check didn't pass on exactly this commit, so it's yours to merge.",
-        )),
+        _ if job.check.is_none() => (
+            CheckRan::NoCheck,
+            "No check ran on its head (this repository has none), so it's yours to merge.".into(),
+        ),
+        _ => (
+            CheckRan::NotOnHead,
+            "Its check didn't pass on exactly this commit, so it's yours to merge.".into(),
+        ),
+    };
+    if check_holds(ran, own_work(job)) {
+        Err(yours(why))
+    } else {
+        Ok(())
     }
 }
 
@@ -1325,7 +1395,8 @@ fn owned<'a>(
             "Not merged: the task has no pull request of its own.",
         ));
     }
-    // Into main, master or trunk too: only the owner's word merges there ([`on_their_word`]).
+    // Into main, master or trunk too: only the owner's word merges there ([`on_their_word`]), or
+    // their own conversation work by itself ([`base_waits_for_word`]).
     let Some(workflow) = workflow.filter(|w| crate::git::is_branch_name(&w.base)) else {
         return Err(needs_you(format!(
             "I don't know how {} merges yet, so I left it open.",
@@ -1840,7 +1911,7 @@ pub const APPROVAL: &str = "Oby reviewed this commit and approves it. Its review
 /// pull request's base (main, master or trunk only on the owner's own Merge), approved the way it was (Oby's own review
 /// of the head, else the reviewer account's approval, else a person's) and checked the way it
 /// was (GitHub's checks, else the owner's Mac's). The card shows only when the merge would hold
-/// by it ([`ready`]).
+/// by it ([`ready`]). The owner's own conversation work merges by it with no card (MERGING-46).
 pub fn proposed(
     job: &Job,
     pr: &PullRequest,
@@ -3699,6 +3770,100 @@ mod tests {
         );
     }
 
+    /// [`settled`], as the owner's own conversation work (MERGING-44).
+    fn own() -> Job {
+        let mut job = settled();
+        job.own_conversation = true;
+        job
+    }
+
+    /// MERGING-44: the owner's own conversation work is a job marked so, not another Obi's, that
+    /// no unsigned words reached; nothing else is.
+    #[test]
+    fn merging_44_own_work_is_signed_conversation_work_alone() {
+        assert!(!own_work(&job()));
+        assert!(own_work(&own()));
+        let mut theirs = own();
+        theirs.obi = Some(crate::job::ObiRef {
+            correlation_id: "c".into(),
+            from: "f".into(),
+            from_owner: "o".into(),
+            request_id: "r".into(),
+        });
+        assert!(!own_work(&theirs));
+        let mut unsigned = own();
+        unsigned.unsigned = true;
+        assert!(!own_work(&unsigned));
+    }
+
+    /// MERGING-45: the owner's own conversation work into main, master or trunk is ready with
+    /// nothing held for its base; any other work there still waits for their word.
+    #[test]
+    fn merging_45_own_work_into_main_master_or_trunk_holds_nothing_of_the_base() {
+        for base in ["main", "master", "trunk"] {
+            let workflow = Workflow {
+                base: base.into(),
+                ..obis()
+            };
+            let text = view(|v| v["baseRefName"] = json!(base));
+            let mut mine = own();
+            mine.base = Some(base.into());
+            assert_eq!(check(&mine, Some(&workflow), &text), Ok(()), "{base}");
+            let mut theirs = mine.clone();
+            theirs.own_conversation = false;
+            let blocked = check(&theirs, Some(&workflow), &text).unwrap_err();
+            assert_eq!(blocked.why, on_their_word(base).unwrap(), "{base}");
+            assert!(blocked.yours && blocked.needs_you, "{base}");
+        }
+        assert_eq!(
+            on_their_word("main").unwrap(),
+            "Its base is main, which Oby merges into only on your word, so it's yours to merge."
+        );
+    }
+
+    /// MERGING-47: in a repository with no check, the owner's own conversation work merges on
+    /// Oby's review alone; any other work is the owner's. A check that didn't pass on the head, or
+    /// can't stand for the Mac's, still holds own work too.
+    #[test]
+    fn merging_47_only_a_missing_check_is_lifted_for_own_work() {
+        let mac = Workflow {
+            checks: Checks::Mac,
+            ..obis()
+        };
+        let none = view(|v| v["statusCheckRollup"] = json!([]));
+        let mut unchecked = own();
+        unchecked.check = None;
+        assert_eq!(check(&unchecked, Some(&mac), &none), Ok(()));
+        let mut theirs = unchecked.clone();
+        theirs.own_conversation = false;
+        assert_eq!(
+            check(&theirs, Some(&mac), &none),
+            Err(yours(
+                "No check ran on its head (this repository has none), so it's yours to merge."
+            ))
+        );
+        let mut elsewhere = own();
+        elsewhere.check = Some("scripts/oby-check.sh".into());
+        elsewhere.checked = Some(crate::job::Checked {
+            commit: "b".repeat(40),
+            apart: None,
+        });
+        assert_eq!(
+            check(&elsewhere, Some(&mac), &none),
+            Err(yours(
+                "Its check didn't pass on exactly this commit, so it's yours to merge."
+            ))
+        );
+        let mut left = elsewhere.clone();
+        left.checked = Some(crate::job::Checked {
+            commit: head(),
+            apart: Some(MAC_LEFT.into()),
+        });
+        assert_eq!(check(&left, Some(&mac), &none), Err(yours(MAC_LEFT)));
+        left.checked.as_mut().unwrap().apart = None;
+        assert_eq!(check(&left, Some(&mac), &none), Ok(()));
+    }
+
     /// MERGING-21: a Ready to merge card says what it asks once, in Sangam's words ("Merge
     /// tetrix-ee #497 into dev?"), then each hold on a line of its own, with no "Not merged yet: "
     /// or "so it's yours to merge" again (the drive of 2026-10-31), and the owner's signed answer to
@@ -5097,5 +5262,65 @@ esac
                 "Not merged: it conflicts with dev. Ask Oby to rebase it onto dev, or settle it on GitHub.".into()
             )
         );
+    }
+}
+
+#[cfg(test)]
+mod proofs {
+    #![cfg(kani)]
+    //! Kani's proofs of the owner's own conversation work's merge (MERGING-45 to 47): `kani::any()`
+    //! stands for every value of the bools and the enum below.
+
+    use super::*;
+
+    /// How the check ran, from a number.
+    fn any_ran() -> CheckRan {
+        match kani::any::<u8>() {
+            0 => CheckRan::Stands,
+            1 => CheckRan::Apart,
+            2 => CheckRan::NotOnHead,
+            _ => CheckRan::NoCheck,
+        }
+    }
+
+    /// MERGING-45: own work never waits on its base; any other waits exactly on main, master or
+    /// trunk.
+    #[kani::proof]
+    fn merging_45_own_work_never_waits_on_its_base() {
+        let (protected, own): (bool, bool) = (kani::any(), kani::any());
+        let waits = base_waits_for_word(protected, own);
+        if own {
+            assert!(!waits);
+        } else {
+            assert_eq!(waits, protected);
+        }
+    }
+
+    /// MERGING-47: a missing check holds only work that isn't own; one that can't stand for the
+    /// Mac's or didn't pass on the head holds every job; one that stands holds none.
+    #[kani::proof]
+    fn merging_47_only_a_missing_check_is_lifted_for_own_work() {
+        let (ran, own) = (any_ran(), kani::any::<bool>());
+        let holds = check_holds(ran, own);
+        match ran {
+            CheckRan::Stands => assert!(!holds),
+            CheckRan::NoCheck => assert_eq!(holds, !own),
+            CheckRan::Apart | CheckRan::NotOnHead => assert!(holds),
+        }
+    }
+
+    /// MERGING-46: with a learned workflow every job follows it; with none, own work merges by
+    /// itself and any other waits for the owner's Merge.
+    #[kani::proof]
+    fn merging_46_unlearned_own_work_merges_by_itself() {
+        let (learned, own): (bool, bool) = (kani::any(), kani::any());
+        let by = merges_by(learned, own);
+        if learned {
+            assert_eq!(by, MergesBy::Learned);
+        } else if own {
+            assert_eq!(by, MergesBy::Itself);
+        } else {
+            assert_eq!(by, MergesBy::OwnersMerge);
+        }
     }
 }
