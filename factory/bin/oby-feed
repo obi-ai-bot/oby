@@ -24,7 +24,7 @@ frees the disk afterwards:
   rule, imported: an invariant passes only when Quint says it holds, and a witness only when Quint reports a
   violation. A model with no such line, or one that fails, keeps the pull request waiting, its head held the same
   way; so does a run with no verdict (a name error, a crash, a timeout, nothing printed), with a note saying which
-  check gave none.
+  check gave none, and so does a model whose file name isn't `[A-Za-z0-9_.-]+.qnt`, never sent to the VM.
 - A build's own build folders (core/target, node_modules) are removed as soon as its pull request is open:
   reviews and follow-ups have worktrees of their own.
 - When the pull request is merged, the task's Oby jobs (the build, its follow-ups, its reviews) are
@@ -40,6 +40,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -128,6 +129,8 @@ VERIFY = re.compile(r"^// verify: (.+)$", re.M)
 # The feeder's first Apalache port on the gate VM: above Quint's default 8822 and the builder slots' 8823 to 8886
 # (apalache_port in factory/remote/oby-remote-gate, 8822 + N for N up to MAX_SLOTS 64).
 APALACHE_PORT = 8900
+# A model's file name comes from the pull request and reaches the gate VM's shell, so only these get there.
+MODEL_NAME = re.compile(r"[A-Za-z0-9_.-]+\.qnt")
 
 
 def check_models(files, head):
@@ -149,6 +152,8 @@ def check_models(files, head):
         return "it changes a Quint model and no gate VM is configured to verify it"
     port = APALACHE_PORT
     for path in models:
+        if not MODEL_NAME.fullmatch(Path(path).name):
+            return f"{path} gave no verdict: its file name isn't letters, digits, '_', '.' and '-' only, so it isn't sent to the gate VM"
         got = subprocess.run(["gh", "api", f"repos/{GH_REPO}/contents/{path}?ref={head}", "-H", "Accept: application/vnd.github.raw"],
                              cwd=REPO, capture_output=True, text=True)
         if got.returncode != 0:
@@ -156,7 +161,7 @@ def check_models(files, head):
         runs = VERIFY.findall(got.stdout)
         if not runs:
             return f"{path} has no '// verify:' line, so nothing says what must hold"
-        name = f"/tmp/oby-feed-{head[:12]}-{Path(path).name}"
+        name = shlex.quote(f"/tmp/oby-feed-{head[:12]}-{Path(path).name}")
         put = subprocess.run(["ssh", "-o", "BatchMode=yes", host, f"cat > {name}"], input=got.stdout, capture_output=True, text=True)
         if put.returncode != 0:
             return f"the gate VM didn't take {path}: {put.stderr.strip()[:120]}"
