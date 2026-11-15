@@ -1542,7 +1542,7 @@ fn owned<'a>(
     if job
         .published
         .as_deref()
-        .and_then(|url| github::pull_request_number(url, &job.repo))
+        .and_then(|url| job.pull_request_number(url))
         .is_none()
     {
         return Err(needs_you(
@@ -1650,7 +1650,8 @@ pub async fn arm(
 /// <n> --disable-auto`, once a head no longer passes every hold. What went out: `autoMergeOff`.
 pub async fn disarm(gh: &Path, job: &Job) -> Result<Outgoing, String> {
     let url = job.published.as_deref().unwrap_or_default();
-    let n = github::pull_request_number(url, &job.repo)
+    let n = job.pull_request_number(url);
+    let n = n
         .ok_or("it isn't one of its repository's pull requests")?
         .to_string();
     github::run(
@@ -1730,8 +1731,9 @@ async fn merging(
     };
     let repo = job.repo.as_str();
     let url = job.published.as_deref().unwrap_or_default();
-    let number = github::pull_request_number(url, repo)
-        .ok_or_else(|| needs_you("Not merged: the task has no pull request of its own."))?;
+    let number = job.pull_request_number(url);
+    let number =
+        number.ok_or_else(|| needs_you("Not merged: the task has no pull request of its own."))?;
     let unread = |_| wait("Not merged yet: GitHub couldn't be read. Oby tries again shortly.");
     let (pr, merging) = github::view_merging(gh, repo, number, obi_protocol::time::now())
         .await
@@ -2310,7 +2312,7 @@ pub fn yours_card(job: &Job, head: &str, why: &str, workflow: &Workflow, into: &
     let number = job
         .published
         .as_deref()
-        .and_then(|url| crate::github::pull_request_number(url, &job.repo));
+        .and_then(|url| job.pull_request_number(url));
     // Sangam's merge card's headline: "Merge tetrix-ee #497 into dev?"
     let asks = match number {
         Some(n) => format!("Merge {} #{n} into {into}?", name(&job.repo)),
@@ -2440,7 +2442,7 @@ pub async fn approve(
     let number = job
         .published
         .as_deref()
-        .and_then(|url| github::pull_request_number(url, &job.repo));
+        .and_then(|url| job.pull_request_number(url));
     let own = merging
         .author
         .as_deref()

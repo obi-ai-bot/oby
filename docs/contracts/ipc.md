@@ -6,7 +6,7 @@ The business behavior contract for how the Electron app's page reaches its main 
 
 - **Outcome:** Nothing the owner sees changes. Underneath, no channel from the page into main can forget to check who sent a message or act on an argument it didn't read first, so a page or frame that isn't Oby's own, or a script that took the page over, gets no more from main than it did, and a new channel gets the same checks by being written the one way main has.
 - **Status:** **Implemented** in the Electron app (`apps/electron`): the helper in `src/main/ipc.ts`, the decoders in `src/shared/decode.ts`, every channel moved onto them. `window-chrome` and `full-screen` gained the sender check in this change; every other channel answers as it did.
-- **Scope:** the 23 channels main registers for the page (below). **Out of scope:** the preload's API (`src/preload/`), the window's sandbox, context isolation and node integration, `app.enableSandbox()`, what main sends the page (`webContents.send`), what obid accepts on a path (obid stays the authority), a lint rule, and new channels.
+- **Scope:** the 25 channels main registers for the page (below). **Out of scope:** the preload's API (`src/preload/`), the window's sandbox, context isolation and node integration, `app.enableSandbox()`, what main sends the page (`webContents.send`), what obid accepts on a path (obid stays the authority), a lint rule, and new channels.
 
 ## Behavior
 
@@ -45,6 +45,7 @@ A decoder answers `{ value }` or `undefined` when it can't read the value, so `o
 | `index.ts` | `setup-window` | `on`, sync | `flag` | `null` |
 | `index.ts` | `open-external` | `on` | `https` | nothing |
 | `index.ts` | `pick-folders` | `handle` | an absolute path, else none (never fails) | `[]` |
+| `index.ts` | `render-error` | `on` | `string`, `string`, `string` | nothing |
 | `obid.ts` | `obid` | `handle` | `method`, `v1Path`, `anything`, `flag` | sender: `{ status: 403, text: '' }`; argument: `{ status: 400, text: '{"error":"Not an obid call."}' }` |
 | `obid.ts` | `open-login-items` | `on` | none | nothing |
 | `device.ts` | `obid-confirm` | `handle` | `string`, `flag` | `{ status: 403, text: '' }` |
@@ -60,6 +61,7 @@ A decoder answers `{ value }` or `undefined` when it can't read the value, so `o
 | `updates.ts` | `updates` | `handle` | `orUndefined(oneOf('check', 'install', true, false))` | `null` |
 | `settings.ts` | `local-settings` | `handle` | none | `null` |
 | `settings.ts` | `local-setting` | `handle` | `rowKey`, `rowValue` | `null` |
+| `settings.ts` | `login-item` | `handle` | `orUndefined(boolean)` | `null` |
 | `sphere.ts` | `sphere-leave` | `handle` | none | `'Not this app’s page.'` |
 | `sphere.ts` | `sphere-policy` | `handle` | none | `null` |
 | `sphere.ts` | `sphere-set-policy` | `handle` | `safeInteger` | `null` (with no click main saw: a `failed` answer, [sphere-policy.md](sphere-policy.md) POLICY-4) |
@@ -77,14 +79,14 @@ A decoder answers `{ value }` or `undefined` when it can't read the value, so `o
 
 ## Interfaces and dependencies
 
-- **Renderer ↔ main:** the preload's `window.app` (`src/preload/index.ts`), unchanged: the same channel names, arguments and answers. Since R06-13 it also has `settings` (`local()`, `keep(key, value)`) for `local-settings` and `local-setting` ([live-state.md](live-state.md)), since R10-06 `spherePolicy()` and `sphereSetPolicy(version)` for `sphere-policy` and `sphere-set-policy` ([sphere-policy.md](sphere-policy.md)), and since R06-08 `obid.live` and `obid.load` for `obid-snapshot` and `obid-load` ([live-state.md](live-state.md), LIVE-10).
+- **Renderer ↔ main:** the preload's `window.app` (`src/preload/index.ts`), unchanged: the same channel names, arguments and answers. Since R06-13 it also has `settings` (`local()`, `keep(key, value)`) for `local-settings` and `local-setting` ([live-state.md](live-state.md)), since A00-90 `loginItem(on?)` for `login-item` ([live-state.md](live-state.md)), since R10-06 `spherePolicy()` and `sphereSetPolicy(version)` for `sphere-policy` and `sphere-set-policy` ([sphere-policy.md](sphere-policy.md)), since R06-08 `obid.live` and `obid.load` for `obid-snapshot` and `obid-load` ([live-state.md](live-state.md), LIVE-10), and since A00-91 `renderError(name, message, componentStack)` for `render-error` ([engine.md](engine.md), ENGINE-20).
 - No runner API change (`docs/runner-api.md` is unchanged).
 
 ## Acceptance scenarios
 
-- **IPC-1** Given a message on any of the 23 channels from a frame that isn't the window's own main frame, when main gets it, then its handler doesn't run (no obid call, no dialog, no page in the browser, no settings written) and the answer is that channel's refusal as listed above (`null` for most; sendSync channels get it as their `returnValue`). The window's own page still gets `window-chrome`'s and `full-screen`'s real answers. `ipc_1_a_sender_that_isnt_the_windows_page_gets_the_channels_refusal_and_nothing_runs`, `ipc_1: the window's own page still gets window-chrome and full-screen`; the test fails when a channel is added or missed.
+- **IPC-1** Given a message on any of the 25 channels from a frame that isn't the window's own main frame, when main gets it, then its handler doesn't run (no obid call, no dialog, no page in the browser, no settings or crash line written) and the answer is that channel's refusal as listed above (`null` for most; sendSync channels get it as their `returnValue`). The window's own page still gets `window-chrome`'s and `full-screen`'s real answers. `ipc_1_a_sender_that_isnt_the_windows_page_gets_the_channels_refusal_and_nothing_runs`, `ipc_1: the window's own page still gets window-chrome and full-screen`; the test fails when a channel is added or missed.
 - **IPC-2** Given the `obid` channel from the window's own page, when the method isn't exactly `GET`, `POST`, `PUT`, `PATCH` or `DELETE`, or the path isn't a string starting `/v1/`, then the answer is `{ status: 400, text: '{"error":"Not an obid call."}' }` and nothing is signed or sent to obid; `GET /v1/status` reaches it, with the owner's words only for exactly `true`. `ipc_2_obid_takes_only_its_methods_and_v1_paths_before_anything_is_signed`.
-- **IPC-3** Given any channel, when an argument fails its decoder, then the handler doesn't run and the answer is the channel's refusal (`obid-confirm`'s non-string id, `obid-limit-answer`'s non-integer revision or unknown choice, `obid-publish`'s bad choices: `{ status: 403, text: '' }` with no obid call; `obid-load`'s `{}`, `{ job: '' }`, `{ limits: 1 }` or two keys at once: `null` with no obid call; `open-external`'s `http://` page: not opened). `ipc_3_an_argument_a_decoder_cant_read_never_reaches_the_handler`, `ipc_3: real channels refuse what they can't read, with no obid call`, `ipc_3: the decoders`.
+- **IPC-3** Given any channel, when an argument fails its decoder, then the handler doesn't run and the answer is the channel's refusal (`obid-confirm`'s non-string id, `obid-limit-answer`'s non-integer revision or unknown choice, `obid-publish`'s bad choices: `{ status: 403, text: '' }` with no obid call; `obid-load`'s `{}`, `{ job: '' }`, `{ limits: 1 }` or two keys at once: `null` with no obid call; `open-external`'s `http://` page: not opened; `render-error`'s non-string argument: no crash line). `ipc_3_an_argument_a_decoder_cant_read_never_reaches_the_handler`, `ipc_3: real channels refuse what they can't read, with no obid call`, `ipc_3: the decoders`.
 - **IPC-4** Given the source of `apps/electron/src/main`, when the test reads every `.ts` file in it but `ipc.ts`, then none calls `ipcMain.handle(` or `ipcMain.on(`. `ipc_4_only_main_ipc_ts_registers_a_channel`; seen red with one raw `ipcMain.on` added to `sphere.ts`.
 
 ### Test it when it's done (on a real Mac)

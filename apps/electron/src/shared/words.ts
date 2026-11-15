@@ -17,9 +17,9 @@ const shaped = (body: Body, keys: Record<string, (v: unknown) => boolean>) =>
   Object.entries(body).every(([k, v]) => keys[k]?.(v) ?? false);
 // the label of the button that answers a permission (live.ts, DECISIONS)
 export const DECISIONS: Record<string, string> = { allow: 'Allow', always: 'Always allow', deny: 'Deny' };
-// A failed task's another round: this button's label also stands for obid's Try-again words to a
+// The task menu's Try again (TASKS-25): this label also stands for obid's Try-again words to a
 // job, the one message whose words needn't be the text a click held (docs/runner-api.md)
-export const ANOTHER_ROUND = 'Give it another round';
+export const TRY_AGAIN_LABEL = 'Try again';
 export const TRY_AGAIN = 'Try again, picking up where you left off. Finish with a short summary as asked.';
 
 // The yes to work nobody's watching using a ChatGPT login (docs/contracts/chatgpt-sign-in.md): this
@@ -84,7 +84,7 @@ export function owners(method: string, path: string, body: unknown, held: string
     if (!n) return null;
     if (answers && i === 0 && earlier.some((e) => norm(e) === n)) continue;
     const round = w === TRY_AGAIN && MESSAGES.test(path.split('?')[0]);
-    const at = held.findIndex((h, j) => !used.includes(j) && (norm(h) === n || (round && norm(h) === norm(ANOTHER_ROUND))));
+    const at = held.findIndex((h, j) => !used.includes(j) && (norm(h) === n || (round && norm(h) === norm(TRY_AGAIN_LABEL))));
     if (at < 0) return null;
     used.push(at);
   }

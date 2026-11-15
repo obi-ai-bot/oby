@@ -33,6 +33,16 @@ fn obid_and_remote(folder: &Folder, signed_out: bool) -> (Obid, PathBuf) {
 
 /// [`obid_and_remote`], with `more` in its configuration.
 fn obid_with(folder: &Folder, signed_out: bool, more: Value) -> (Obid, PathBuf) {
+    obid_with_env(folder, signed_out, more, &[])
+}
+
+/// [`obid_with`], with `env` set over what a test's obid is given.
+fn obid_with_env(
+    folder: &Folder,
+    signed_out: bool,
+    more: Value,
+    env: &[(&str, &str)],
+) -> (Obid, PathBuf) {
     let remote = fixture(&folder.0.join("fixture"));
     let mut config = config(&folder.0, &remote, &agents().join("fake-claude"));
     for (key, value) in more.as_object().unwrap() {
@@ -63,7 +73,7 @@ fn obid_with(folder: &Folder, signed_out: bool, more: Value) -> (Obid, PathBuf) 
         r#"{"authInfo": {"email": "owner@example.com"}, "version": 1, "permissions": {"allow": ["Shell(*)"], "deny": []}}"#,
     )
     .unwrap();
-    (start(&folder.0, &config, None), remote)
+    (start_with(&folder.0, &config, None, env), remote)
 }
 
 fn dispatch(obid: &Obid, job: Value) -> String {
@@ -269,6 +279,102 @@ fn lanes_18_a_running_own_codex_job_that_leaves_bypass_goes_on_boxed() {
     assert_eq!(kept["sandbox"], "danger-full-access", "{kept}");
     assert_eq!(kept["approvalPolicy"], "untrusted", "{kept}");
     assert!(kept["task"].as_str().unwrap().contains("its mode changed"));
+    assert!(job["resumeCommand"].is_null(), "{job}");
+}
+
+/// LANES-19 (docs/contracts/lanes.md, the owner's choice of 2026-11-15, "Build in Oby's box"): the
+/// owner's Codex job that builds, in Bypass, runs in Oby's box, not in Codex's own sandbox, whose
+/// profile hides the folders above its worktree. On an obid whose home is a hidden folder inside
+/// the person's, as the factory's `~/.oby-factory/home` is, it loads a Cargo workspace whose
+/// member is `crates/*` (`cargo metadata --offline`), resolves its worktree's path and lists its
+/// crates, while obid's `worktrees`, obid's home and the person's home stay unlisted.
+#[cfg(target_os = "macos")]
+#[test]
+fn lanes_19_a_codex_job_that_builds_runs_in_the_box() {
+    let folder = Folder::new("codex-builds-boxed");
+    // The person's home is obid's `HOME`, which every box hides, and obid's home is inside it.
+    let person = folder.0.join("env-home");
+    let home = person.join(".oby-factory/home");
+    // The person's Rust toolchain, as obid finds it from its own `HOME` (process::rust_reads).
+    let real = PathBuf::from(std::env::var_os("HOME").unwrap());
+    let rust =
+        |var: &str, default: &str| std::env::var_os(var).map_or(real.join(default), PathBuf::from);
+    let (rustup, cargo) = (rust("RUSTUP_HOME", ".rustup"), rust("CARGO_HOME", ".cargo"));
+    let env = [
+        ("RUSTUP_HOME", rustup.to_str().unwrap()),
+        ("CARGO_HOME", cargo.to_str().unwrap()),
+    ];
+    let (obid, remote) = obid_with_env(&folder, false, json!({"home": home}), &env);
+    let work = folder.0.join("work");
+    let url = remote.to_str().unwrap();
+    git(&folder.0, &["clone", "-q", url, work.to_str().unwrap()]);
+    for (file, text) in [
+        (
+            "core/Cargo.toml",
+            "[workspace]\nmembers = [\"crates/*\"]\nresolver = \"2\"\n",
+        ),
+        (
+            "core/crates/app/Cargo.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        ("core/crates/app/src/lib.rs", ""),
+        ("core/.gitignore", "Cargo.lock\n"),
+    ] {
+        std::fs::create_dir_all(work.join(file).parent().unwrap()).unwrap();
+        std::fs::write(work.join(file), text).unwrap();
+    }
+    git(&work, &["add", "core"]);
+    git(
+        &work,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "core",
+        ],
+    );
+    git(&work, &["push", "-q", "origin", "HEAD:main"]);
+    let unlisted = [home.join("worktrees"), home.clone(), person.clone()];
+    let tries: Vec<String> = unlisted
+        .iter()
+        .map(|d| format!("'{}'", d.display()))
+        .collect();
+    let task = format!(
+        "RUN: cargo metadata --offline --manifest-path core/Cargo.toml --format-version 1 | grep -o '\"name\":\"app\"' | head -n 1; echo \"real: $(realpath .)\"; ls core/crates; for d in {}; do ls \"$d\" >/dev/null 2>&1 && echo \"listed: $d\" || echo \"hidden: $d\"; done",
+        tries.join(" ")
+    );
+    let id = dispatch(
+        &obid,
+        json!({"agent": "codex", "kind": "build", "task": task, "mode": "bypass"}),
+    );
+    let job = ended(&obid, &id);
+    let said = summary(&job);
+    let lines: Vec<&str> = said.lines().collect();
+    let worktree = home.join("worktrees").join(&id).canonicalize().unwrap();
+    assert!(lines.contains(&r#""name":"app""#), "{job}\n{}", obid.log());
+    assert!(
+        lines.contains(&format!("real: {}", worktree.display()).as_str()),
+        "{job}"
+    );
+    assert!(lines.contains(&"app"), "{job}");
+    for dir in &unlisted {
+        let hidden = format!("hidden: {}", dir.display());
+        assert!(lines.contains(&hidden.as_str()), "{hidden}: {job}");
+    }
+    // In Oby's box: its thread in the job's copy of the login, every approval obid's.
+    let login = home.join("logins").join(&id);
+    let thread = job["session"].as_str().unwrap();
+    let kept: Value = serde_json::from_str(
+        &std::fs::read_to_string(login.join(format!("threads/{thread}.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(kept["sandbox"], "danger-full-access", "{kept}");
     assert!(job["resumeCommand"].is_null(), "{job}");
 }
 

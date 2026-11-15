@@ -486,8 +486,11 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .tc-done { margin-top: 12px; display: grid; grid-template-rows: 1fr; transition: grid-template-rows 360ms var(--warm), opacity var(--fade), margin-top 360ms var(--warm); }
 .tc-done > div { min-height: 0; overflow: hidden; }
 .tc-done .tc-result { margin: 0; }
+.tc-done .tc-result + .tc-result { margin-top: 4px; }
 .task-card.is-open .tc-done { grid-template-rows: 0fr; opacity: 0; margin-top: 0; }
 .tc-result { margin: 8px 0 0; color: var(--muted); font-size: var(--text-sm); }
+/* failed or interrupted: why, the line the owner reads, so in --text (TASKS-25) */
+.tc-result.is-stopped { color: var(--text); }
 .tc-result a { color: var(--text); text-decoration: none; }
 .tc-result a:hover { color: var(--ink); text-decoration: underline; }
 
@@ -1259,6 +1262,22 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
   overflow: hidden;
   mask-image: var(--fade-out);
 }
+/* chat first: the open profile's name, its menu under it (screen 07), the text where a plain title's is;
+   a long name ends in an ellipsis instead of the fade, so its chevron always shows */
+.sidebar-title:has(> .sidebar-title-button) { mask-image: none; }
+.sidebar-title-button { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; height: 32px; margin-left: -6px; padding: 0 6px; border-radius: 8px; transition: background-color var(--fade); }
+.sidebar-title-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-title-button svg { flex: none; color: var(--muted); }
+.sidebar-title-button:is(:hover, .is-on) { background: var(--hover); }
+/* its menu's rows: the profile's initial on its colour, its name, then its dot and the check */
+.row-menu button.profile-choice { height: 34px; padding: 0 10px; gap: 12px; }
+.profile-choice .owner-avatar { font-size: 9px; }
+.profile-choice .status-dot { margin-left: auto; }
+.profile-choice .status-dot + .menu-check { margin-left: 8px; }
+/* New profile's colours */
+.profile-swatches { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.profile-swatch { width: 24px; height: 24px; border-radius: 50%; transition: box-shadow var(--fade); }
+.profile-swatch.is-on { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--ink); }
 /* a side panel row: a picture or logo, a name, a line under it; conversations
    and Members share it */
 .connector, .task {

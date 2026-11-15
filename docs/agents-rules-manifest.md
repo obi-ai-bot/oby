@@ -75,7 +75,7 @@ Every line of the root `AGENTS.md` at `3ff84b79` that states a rule (each bullet
 - `AGENTS.md`: In the **own lane**, work the owner asked for runs on their own login under the CLI's own sandbox, with no login copy (LANE-1, LANES-12). It holds every Claude Code job of the owner's own; on macOS, their Claude Code conversations and, in Bypass, their Codex jobs (CODEX-1, LANES-18) and conversations (CODEX-2, LANES-13).
 
 ### L46
-- `AGENTS.md`: In the **foreign lane**, work another Oby asked for or marked untrusted stays in Oby's box. Until their steps land, that is another Oby's job or conversation, one marked `untrusted`, Oby's own review, a Codex job or conversation in any other mode or on a ChatGPT login, a Codex job off macOS, every Cursor job and conversation, and an owner's conversation off macOS.
+- `AGENTS.md`: In the **foreign lane**, work another Oby asked for or marked untrusted stays in Oby's box. Until their steps land, that is another Oby's job or conversation, one marked `untrusted`, Oby's own review, Codex work in any other mode or on a ChatGPT login, a Codex job off macOS or that builds, every Cursor job and conversation, and an owner's conversation off macOS.
 
 ### L47
 - `AGENTS.md`: `claudeOwnSandbox` is accepted and ignored (LANE-9). Each step changes those rules in the same pull request.
@@ -366,7 +366,7 @@ Every line of the root `AGENTS.md` at `3ff84b79` that states a rule (each bullet
 - `core/AGENTS.md`: Codex ([why](docs/decisions/2026-11-11-codex-1-bypass-only.md)):
 
 ### L182
-- `core/AGENTS.md`: CODEX-1 (docs/contracts/lanes.md, LANES-18): every Codex job of the owner's own in Bypass on a `codex login`, on macOS (not another Oby's, not `untrusted`, not a review, not the rest of a run its approved Plan card resumed: its thread is in the box's `CODEX_HOME`), runs unboxed by obid, on its account's own folder as `CODEX_HOME` (its own `auth.json`, `config.toml`, skills and MCP servers, refreshed by Codex) and the person's own `HOME`, with no copy and no egress proxy.
+- `core/AGENTS.md`: CODEX-1 (docs/contracts/lanes.md, LANES-18): every Codex job of the owner's own in Bypass on a `codex login`, on macOS (not another Oby's, not `untrusted`, not a review, not one that builds: LANES-19, nor the rest of a run its approved Plan card resumed, whose thread is in the box's `CODEX_HOME`), runs unboxed by obid, on its account's own folder as `CODEX_HOME` (its own `auth.json`, `config.toml`, skills and MCP servers, refreshed by Codex) and the person's own `HOME`, with no copy and no egress proxy.
 
 ### L183
 - `core/AGENTS.md`: From its first such launch its check gets none of the declared secrets, whatever its mode, tool or account becomes, nor does its follow-up's (LANE-3a): obid saves that in the job's file before the run starts, starts none if it can't, and no later save of the job undoes it.

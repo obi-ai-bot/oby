@@ -3,14 +3,14 @@ import { closeSync, constants, openSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { now, writeOwn } from './device';
 
-// The app's own run records (docs/contracts/engine.md, ENGINE-17 to 19), three private files in its
+// The app's own run records (docs/contracts/engine.md, ENGINE-17 to 20), three private files in its
 // own folder: how its last run ended (run-marker), its starts per version that never loaded the
 // window (start-attempts.json), and its crash lines (crashes.jsonl). Nothing here ever stops a
 // start, a reload or a quit: a file that can't be read reads as empty, one that can't be written
 // is left as it was.
 
 export type Marker = 'running' | 'quitting' | 'clean' | 'quit_timeout';
-export type Crash = { kind: string; reason: string; exitCode?: number; previous?: string; time: string };
+export type Crash = { kind: string; reason: string; exitCode?: number; previous?: string; message?: string; componentStack?: string; time: string };
 
 // the crash lines kept, the newest; and how long a quit may take
 export const KEPT_CRASHES = 100;
@@ -90,6 +90,21 @@ export function rendererGone(details: Gone, page: { reload(): void; isDestroyed(
   crashed(line('renderer', details));
   if (details.reason === 'clean-exit' || !page || page.isDestroyed() || reloading) return;
   reloading = true;
+  try { page.reload(); } catch (e) { console.error(`Oby: couldn’t reload the window: ${e}`); }
+}
+
+// A render error the page's root boundary caught (renderer's RenderError.tsx), each field the
+// page's own text, untrusted: its name and message cut, and of its component stack only the
+// components' names (no URL or path: a frame without a name, its place for one a URL or path,
+// is dropped). The window is reloaded after the first one of this run only: a page load doesn't
+// clear that, so a page that fails on every load can't loop.
+let renderReloaded = false;
+const names = (stack: string) => stack.split('\n').map((l) => l.trim().replace(/^(?:at|in) /, '').split(/[ (]/)[0])
+  .filter((name) => /^[A-Za-z_$][\w$.-]*$/.test(name)).join('\n').slice(0, 4000);
+export function renderFailed(error: { name: string; message: string; componentStack: string }, page: { reload(): void; isDestroyed(): boolean } | null) {
+  crashed({ kind: 'render', reason: error.name.slice(0, 100), message: error.message.slice(0, 1000), componentStack: names(error.componentStack), time: now() });
+  if (!page || page.isDestroyed() || renderReloaded) return;
+  renderReloaded = true;
   try { page.reload(); } catch (e) { console.error(`Oby: couldn’t reload the window: ${e}`); }
 }
 

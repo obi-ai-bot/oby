@@ -747,6 +747,9 @@ pub trait Hooks: Send + Sync {
     fn by_itself(&self) -> bool {
         false
     }
+    /// The name GitHub gives the job's repository now, read at its pull request step, for the
+    /// job's file (PUBLISHING-38).
+    fn named_on_github(&self, _name: &str) {}
 }
 
 /// Where a job publishes from and to.
@@ -1272,6 +1275,21 @@ pub async fn publish(
             "couldn't open the pull request: GitHub's CLI (gh) isn't installed.".into(),
         )
     })?;
+    // A repository renamed or moved on GitHub opens its pull request under its new name: asked
+    // once, kept with the job; one that can't be read leaves the configured name alone
+    // (PUBLISHING-38).
+    let named = if job.repo_on_github.is_none()
+        && let Some(name) = github::name_on_github(gh, &job.repo).await
+    {
+        hooks.named_on_github(&name);
+        Some(Job {
+            repo_on_github: Some(name),
+            ..job.clone()
+        })
+    } else {
+        None
+    };
+    let job = named.as_ref().unwrap_or(job);
     let file = target.scratch.join("pull-request.md");
     let _ = std::fs::remove_file(&file);
     crate::store::write_private(&file, description.as_bytes()).map_err(|e| {
@@ -1281,7 +1299,7 @@ pub async fn publish(
     })?;
     let opened = if by_hand.branch(job) == job.branch
         && let Some(url) = target.chain.pull_request.as_deref()
-        && let Some(number) = github::pull_request_number(url, &job.repo)
+        && let Some(number) = job.pull_request_number(url)
         && job.follow_up_of.is_some()
         && job.start_from.as_deref() == Some(job.branch.as_str())
         // Only a PR that's still open carries the branch: one closed meanwhile goes the usual way.
@@ -1318,7 +1336,8 @@ pub async fn publish(
         let mut heads = vec![head.as_str()];
         heads.extend(job.pushed_head());
         heads.extend(before.as_deref());
-        github::open_pull_request(gh, &job.repo, base, to, &heads, &title, &file).await
+        let on_github = job.repo_on_github.as_deref();
+        github::open_pull_request(gh, &job.repo, on_github, base, to, &heads, &title, &file).await
     };
     let _ = std::fs::remove_file(&file);
     let (url, sent) = opened.map_err(Failure::PullRequest)?;
