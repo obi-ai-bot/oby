@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""factory/bin/oby-feed [--once] [--max N] [--account ID] [--dry-run] [--min-free-gb N]
+"""factory/bin/oby-feed [--once | --until-idle] [--max N] [--account ID|any] [--dry-run] [--min-free-gb N] [--idle-every S]
    factory/bin/oby-feed --clean
    factory/bin/oby-feed --status
 
@@ -23,8 +23,13 @@ frees the disk afterwards:
   own `// verify:` lines say, each check on an Apalache port of its own. Each run is read with factory/bin/prove's
   rule, imported: an invariant passes only when Quint says it holds, and a witness only when Quint reports a
   violation. A model with no such line, or one that fails, keeps the pull request waiting, its head held the same
-  way; so does a run with no verdict (a name error, a crash, a timeout, nothing printed), with a note saying which
+  way; so does a run with no verdict (a name error, a crash, a timeout), with a note saying which
   check gave none, and so does a model whose file name isn't `[A-Za-z0-9_.-]+.qnt`, never sent to the VM.
+- A passing failure is tried again at the next pass, the head not held: a merge GitHub didn't take for the network,
+  a 5xx, a 429 or "try again", or a gate VM ssh couldn't reach. At most 3 times per head, then the head is held.
+- The loop runs until it is stopped (SIGTERM, Ctrl-C), every --idle-every seconds while nothing is under way;
+  --until-idle stops it after a pass with nothing under way or started. A pass that can't reach obid or GitHub is
+  skipped with one line, and the wait doubles, up to 10 minutes, until a pass gets through.
 - A build's own build folders (core/target, node_modules) are removed as soon as its pull request is open:
   reviews and follow-ups have worktrees of their own.
 - When the pull request is merged, the task's Oby jobs (the build, its follow-ups, its reviews) are
@@ -67,6 +72,8 @@ GH_REPO = os.environ.get("OBY_FACTORY_REPO", "obi-ai-bot/oby")
 FEED = HOME / "feed"
 ACTIVE = {"running", "reviewing", "merging"}
 SAID = set()
+GH_MISSED = []  # this pass's `gh` calls that exited non-zero
+BACKOFF_MAX = 600
 BUILD_FOLDERS = ("core/target", "apps/electron/node_modules", "apps/electron/out", "node_modules")
 
 
@@ -89,10 +96,14 @@ def api(method, path, body=None, timeout=30):
             return e.code, json.loads(text)
         except ValueError:
             return e.code, {"error": text[:300]}
+    except OSError:  # obid unreachable (a restart, an update): URLError, a timeout
+        return None, None
 
 
 def gh_json(*args):
     res = subprocess.run(["gh", *args], cwd=REPO, capture_output=True, text=True)
+    if res.returncode != 0:
+        GH_MISSED.append((res.stderr or res.stdout).strip()[:120])
     return json.loads(res.stdout) if res.returncode == 0 and res.stdout.strip() else None
 
 
@@ -133,6 +144,10 @@ APALACHE_PORT = 8900
 MODEL_NAME = re.compile(r"[A-Za-z0-9_.-]+\.qnt")
 
 
+class Unreached(str):
+    """check_models()'s note when ssh couldn't reach the gate VM: a passing failure, tried again at the next pass."""
+
+
 def check_models(files, head):
     """Verifies each Quint model the pull request touches, on the gate VM. Returns why it can't merge, or None."""
 
@@ -164,7 +179,7 @@ def check_models(files, head):
         name = shlex.quote(f"/tmp/oby-feed-{head[:12]}-{Path(path).name}")
         put = subprocess.run(["ssh", "-o", "BatchMode=yes", host, f"cat > {name}"], input=got.stdout, capture_output=True, text=True)
         if put.returncode != 0:
-            return f"the gate VM didn't take {path}: {put.stderr.strip()[:120]}"
+            return Unreached(f"the gate VM didn't take {path}: {put.stderr.strip()[:120]}")
         for line in runs:
             opts = dict(part.split("=", 1) for part in line.split() if "=" in part)
             base = f"--main={opts.get('main', '')} --max-steps={opts.get('steps', '12')}"
@@ -189,7 +204,9 @@ def check_models(files, head):
                     detail = ("it timed out after 900s" if result == "TIMEOUT"
                               else first[:100] if first else f"it printed nothing (exit {run.code})")
                     check = "invariant" if kind == "invariants" else "witness"
-                    return f"{path}: the {check} {inv} (main={opts.get('main', '')}) gave no verdict: {detail}"
+                    note = f"{path}: the {check} {inv} (main={opts.get('main', '')}) gave no verdict: {detail}"
+                    # ssh exits 255 on its own failure, and its own words go to stderr, never captured as the output
+                    return Unreached(note) if run.code == 255 and not said else note
         subprocess.run(["ssh", "-o", "BatchMode=yes", host, f"rm -f {name}"], capture_output=True)
     return None
 
@@ -199,7 +216,10 @@ def free_gb():
 
 
 def oby_jobs():
+    """obid's jobs, or None when obid didn't answer."""
     code, jobs = api("GET", "/v1/jobs?limit=200")
+    if code is None:
+        return None
     return jobs if code == 200 and isinstance(jobs, list) else []
 
 
@@ -261,9 +281,11 @@ def start(task, account, on_base):
     text = brief(task, on_base)
     if len(text) > 2000:
         return None, f"its file isn't on origin/{job.BASE} and its text is too long to send ({len(text)} characters): commit the task file first"
-    code, body = api("POST", "/v1/jobs", {"job": {
-        "repo": GH_REPO, "kind": "build", "account": account, "base": job.BASE, "rounds": 3,
-        "title": f"{key} {task['title']}"[:60].strip(), "task": text, "clientRequestId": f"feed-{key}-{int(time.time())}"}})
+    sent = {"repo": GH_REPO, "kind": "build", "account": account, "base": job.BASE, "rounds": 3,
+            "title": f"{key} {task['title']}"[:60].strip(), "task": text, "clientRequestId": f"feed-{key}-{int(time.time())}"}
+    if account == "any":  # no account named: obid picks the one with the most room and moves the job at a limit
+        del sent["account"]
+    code, body = api("POST", "/v1/jobs", {"job": sent})
     if code not in (200, 201) or not (body or {}).get("id"):
         return None, f"obid refused it: {(body or {}).get('error', code)}"
     return body["id"], None
@@ -278,7 +300,8 @@ HELD = "approved twice, but "
 
 
 def may_arm(j, pr, refused):
-    """The one rule for arming a pull request's head: ("arm", its tools), ("pending", None) or ("wait", why).
+    """The one rule for arming a pull request's head: ("arm", its tools), ("pending", None), ("wait", why) or
+    ("retry", why) when the gate VM couldn't be reached.
     The cheap checks come first, so the models are verified only for a head that passed every other one."""
     head = pr["headRefOid"]
     if head == refused:
@@ -294,9 +317,26 @@ def may_arm(j, pr, refused):
     if hit:
         return "wait", f"{HELD}it touches a security path ({hit[0]}): merge it yourself"
     why = check_models(files, head)
+    if isinstance(why, Unreached):
+        return "retry", why
     if why:
         return "wait", (HELD + why)[:240]
     return "arm", sorted(tools)
+
+
+# A failure that may not happen again: the network, GitHub's 5xx or rate limit, its own "try again".
+PASSING = re.compile(r"\b(5\d\d|429)\b|timed? ?out|timeout|connection|network|try again|temporar|rate limit|\bEOF\b", re.I)
+TRIES = 3
+
+
+def tried_again(item, head, why):
+    """A passing failure leaves the head waiting, unrefused, to be tried at the next pass: at most TRIES times a head."""
+    tries = item.get("tries", 0) + 1 if item.get("triedHead") == head else 1
+    item.update(state="waiting", head=head, tries=tries, triedHead=head)
+    if tries > TRIES:
+        item.update(refused=head, note=f"{why[:200]}; held after {TRIES} tries")
+    else:
+        item.update(note=f"{why[:200]}; tried again at the next pass ({tries} of {TRIES})")
 
 
 def arm(item, head, tools):
@@ -304,7 +344,10 @@ def arm(item, head, tools):
     res = subprocess.run(["gh", "pr", "merge", str(item["pr"]), "--repo", GH_REPO, "--auto", "--match-head-commit", head],
                          cwd=REPO, capture_output=True, text=True)
     if res.returncode != 0:
-        item.update(state="waiting", head=head, refused=head, note=("GitHub refused the merge: " + (res.stderr or res.stdout).strip())[:200])
+        said = (res.stderr or res.stdout).strip()
+        if PASSING.search(said):
+            return tried_again(item, head, ("GitHub didn't take the merge: " + said)[:160])
+        item.update(state="waiting", head=head, refused=head, note=("GitHub refused the merge: " + said)[:200])
         return
     item.update(state="merging", head=head, approved=tools, armedAt=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
 
@@ -359,6 +402,9 @@ def follow(item, jobs):
         verdict, said = may_arm(j, pr, item.get("refused"))
         if verdict == "pending":
             return False
+        if verdict == "retry":
+            tried_again(item, head, said)
+            return True
         if verdict == "wait":
             item.update(state="waiting", head=head, note=said)
             if said.startswith(HELD):  # a head held after two approvals isn't judged again
@@ -407,6 +453,9 @@ def follow(item, jobs):
         if verdict == "arm":
             arm(item, head, said)
             return True
+        if verdict == "retry":
+            tried_again(item, head, said)
+            return True
         if verdict == "wait" and said.startswith(HELD):  # a new head held: judged once, not at every pass
             item.update(head=head, refused=head, note=said)
             return True
@@ -443,9 +492,14 @@ def ready_tasks(state):
 
 
 def one_pass(args):
+    """One look at everything: (tasks under way, tasks started), or None when obid or GitHub couldn't be reached."""
     subprocess.run(["git", "fetch", "-q", "origin", job.BASE], cwd=REPO)
     state = load_state()
     jobs = oby_jobs()
+    if jobs is None:
+        say("obid didn't answer: this pass is skipped, the next one tries again")
+        return None
+    GH_MISSED.clear()
     for item in state.values():
         if (item["state"] in ACTIVE or item["state"] == "waiting") and follow(item, jobs):
             save(item)
@@ -481,6 +535,9 @@ def one_pass(args):
             say(f"{task['key']}: started as Oby job {oby_id} on {args.account}")
             started += 1
             taken |= files
+    if GH_MISSED:
+        say(f"GitHub didn't answer ({GH_MISSED[0] or 'no words'}): the next pass tries again")
+        return None
     return len([i for i in state.values() if i["state"] in ACTIVE]), started
 
 
@@ -499,7 +556,7 @@ def clean():
     """Deletes every ended Oby job the feeder isn't still working on and whose pull request, if it has one,
     is merged or closed: their worktrees go with them."""
     state = load_state()
-    jobs = oby_jobs()
+    jobs = oby_jobs() or []
     keep = set()
     for item in state.values():
         if item["state"] in ACTIVE or item["state"] == "waiting":
@@ -526,10 +583,13 @@ def clean():
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[1])
     ap.add_argument("--once", action="store_true", help="one pass, then stop")
+    ap.add_argument("--until-idle", action="store_true", help="stop after a pass with nothing under way and nothing started")
     ap.add_argument("--max", type=int, default=3, help="tasks under way at once (default 3: each builds on this Mac)")
-    ap.add_argument("--account", default="deskree-team", help="the obid account that builds (default deskree-team)")
+    ap.add_argument("--account", default="deskree-team",
+                    help="the obid account that builds, or 'any' for obid to pick one and fail over (default deskree-team)")
     ap.add_argument("--min-free-gb", type=int, default=15, help="start nothing new under this much free disk (default 15)")
     ap.add_argument("--every", type=int, default=60, help="seconds between passes (default 60)")
+    ap.add_argument("--idle-every", type=int, default=300, help="seconds between passes while nothing is under way (default 300)")
     ap.add_argument("--dry-run", action="store_true", help="say what would start, start nothing")
     ap.add_argument("--clean", action="store_true", help="delete ended Oby jobs and their worktrees, then stop")
     ap.add_argument("--status", action="store_true", help="list what was fed and where it stands, then stop")
@@ -538,14 +598,22 @@ def main():
         return status()
     if args.clean:
         return clean()
-    while True:
-        active, started = one_pass(args)
-        if args.once or args.dry_run:
-            return
-        if not active and not started:
-            say("nothing under way and nothing ready: stopping")
-            return
-        time.sleep(args.every)
+    wait = args.every
+    try:
+        while True:
+            got = one_pass(args)
+            if args.once or args.dry_run:
+                return
+            if got is None:  # obid or GitHub didn't answer: back off, up to BACKOFF_MAX, until a pass gets through
+                wait = min(wait * 2, BACKOFF_MAX)
+            elif args.until_idle and not any(got):
+                say("nothing under way and nothing ready: stopping")
+                return
+            else:
+                wait = args.every if any(got) else args.idle_every
+            time.sleep(wait)
+    except KeyboardInterrupt:
+        say("stopped")
 
 
 if __name__ == "__main__":

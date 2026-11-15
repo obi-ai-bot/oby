@@ -72,6 +72,7 @@ class StandIns:
         self.view = None  # `gh pr view ... --json headRefOid,state,files`
         self.graphql = None  # `gh api graphql` with job.QUEUE_READ
         self.merge_code = 0
+        self.merge_err = "refused"
 
     def api(self, method, path, body=None, timeout=30):
         self.calls.append(("api", method, path))
@@ -93,7 +94,7 @@ class StandIns:
             code = self.merge_code
         elif cmd[:2] != ["git", "fetch"]:
             raise AssertionError(f"unexpected command: {cmd}")
-        return subprocess.CompletedProcess(cmd, code, stdout=out, stderr="refused" if code else "")
+        return subprocess.CompletedProcess(cmd, code, stdout=out, stderr=self.merge_err if code else "")
 
     def merges(self):
         return [c[1:] for c in self.calls if c[:4] == ("run", "gh", "pr", "merge")]
@@ -306,6 +307,174 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual(self.feed.may_arm(j, pr, None)[0], "wait")
         self.assertEqual(self.feed.may_arm({"approvals": approvals(OLD, "claude")}, pr, None), ("pending", None))
         self.assertEqual(self.feed.may_arm(j, pr, OLD)[0], "wait")
+
+    def main(self, *argv, passes=None):
+        """Runs main() with `argv`; each sleep is logged and `passes(n)` is called before the n-th one, from 1,
+        until it raises Stop."""
+        sleeps = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            if passes:
+                passes(len(sleeps))
+
+        with mock.patch.object(self.feed.sys, "argv", ["oby-feed", *argv]), mock.patch.object(self.feed.time, "sleep", sleep):
+            try:
+                self.feed.main()
+            except Stop:
+                pass
+        return sleeps
+
+    # FEEDALIVE-1: obid down is a skipped pass, never a crash
+    def test_feedalive_1_obid_down_is_a_skipped_pass_with_one_line(self):
+        feed = load_feed()
+        feed.HOME = self.dir
+        feed.FEED = self.dir / "feed"
+        feed.subprocess = Namespace(run=self.stand.run)
+        (self.dir / "home").mkdir()
+        (self.dir / "home" / "api-token").write_text("token\n")
+        feed.URL = "http://127.0.0.1:1"  # nothing listens on port 1
+        self.assertEqual(feed.api("GET", "/v1/jobs", timeout=5), (None, None))
+        said = []
+        feed.say = said.append
+        feed.ready_tasks = lambda state: self.fail("a pass with obid down went on")
+        self.assertIsNone(feed.one_pass(Namespace(max=3, min_free_gb=0, dry_run=False, account="acct")))
+        self.assertEqual(said, ["obid didn't answer: this pass is skipped, the next one tries again"])
+
+    def test_feedalive_1_backoff_doubles_to_ten_minutes_and_resets(self):
+        got = iter([None] * 5 + [(1, 0)])
+
+        def pass_(args):
+            nxt = next(got, Stop)
+            if nxt is Stop:
+                raise Stop
+            return nxt
+
+        self.feed.one_pass = pass_
+        self.assertEqual(self.main(), [120, 240, 480, 600, 600, 60])
+
+    # FEEDALIVE-2: an idle pass doesn't end the loop; --until-idle does
+    def test_feedalive_2_the_loop_outlives_idle_passes_and_until_idle_stops_it(self):
+        self.no_ready()
+        self.feed.oby_jobs = lambda: []
+
+        def passes(n):
+            if n == 4:
+                raise Stop
+
+        self.assertEqual(self.main(passes=passes), [300, 300, 300, 300])
+        self.assertEqual(self.main("--until-idle", passes=lambda n: self.fail("--until-idle went on")), [])
+
+    # FEEDALIVE-3: a task file ready after idle passes starts at the next pass
+    def test_feedalive_3_a_task_ready_after_idle_passes_starts_at_the_next_pass(self):
+        self.feed.oby_jobs = lambda: []
+        self.feed.free_gb = lambda: 100.0
+        ready = []
+        self.feed.ready_tasks = lambda state: [] if not ready or "A00-98" in state else ready
+        started = []
+        self.feed.start = lambda task, account, on_base: (started.append(task["key"]) or "job-9", None)
+
+        def passes(n):
+            if n == 3:
+                ready.append(({"key": "A00-98", "title": "another task"}, True, {"y.py"}))
+            if n == 4:
+                raise Stop
+
+        sleeps = self.main(passes=passes)
+        self.assertEqual(started, ["A00-98"])
+        self.assertEqual(sleeps, [300, 300, 300, 60])
+        self.assertEqual(self.feed.load_state()["A00-98"]["state"], "running")
+
+    # FEEDALIVE-4: a 502 from `gh pr merge` is tried again; GitHub refusing the merge holds the head
+    def test_feedalive_4_a_502_is_tried_again_and_a_refusal_holds_the_head(self):
+        self.no_ready()
+        self.task("reviewing")
+        self.stand.jobs[JOB]["approvals"] = approvals(OLD, "claude", "codex")
+        self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "x.py"}]}
+        self.stand.merge_code = 1
+        self.stand.merge_err = "HTTP 502: Bad Gateway (https://api.github.com/graphql)"
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual(item["state"], "waiting")
+        self.assertNotIn("refused", item)
+        self.assertIn("502", item["note"])
+        self.stand.merge_err = "GraphQL: Pull request is not mergeable (enablePullRequestAutoMerge)"
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual(len(self.stand.merges()), 2)
+        self.assertEqual(item["refused"], OLD)
+        self.assertTrue(item["note"].startswith("GitHub refused the merge"))
+        self.one_pass()
+        self.assertEqual(len(self.stand.merges()), 2)
+
+    def test_feedalive_4_a_passing_failure_is_tried_at_most_three_times_a_head(self):
+        self.no_ready()
+        self.task("waiting", head=OLD)
+        self.stand.jobs[JOB]["approvals"] = approvals(OLD, "claude", "codex")
+        self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "x.py"}]}
+        self.stand.merge_code = 1
+        self.stand.merge_err = "error connecting to api.github.com: connection reset"
+        for _ in range(6):
+            self.one_pass()
+        self.assertEqual(len(self.stand.merges()), 4)
+        self.assertEqual(self.task_now()["refused"], OLD)
+
+    # FEEDALIVE-5: ssh failing to reach the gate VM leaves the head unrefused, tried again
+    def test_feedalive_5_an_unreachable_gate_vm_leaves_the_head_unrefused(self):
+        self.no_ready()
+        self.task("reviewing")
+        self.stand.jobs[JOB]["approvals"] = approvals(OLD, "claude", "codex")
+        self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": PATH}]}
+        self.feed.touches_security = lambda files: []
+        puts = []
+
+        def run(cmd, **kwargs):
+            if cmd[:2] == ["gh", "api"] and "contents" in cmd[2]:
+                return subprocess.CompletedProcess(cmd, 0, "// verify: main=m invariants=safe\n", "")
+            if cmd[0] == "ssh":
+                puts.append(cmd)
+                return subprocess.CompletedProcess(cmd, 255, "", "ssh: connect to host oby-gate port 22: Connection refused")
+            return self.stand.run(cmd, **kwargs)
+
+        self.feed.subprocess = Namespace(run=run)
+        config = dict(self.feed.job.CONFIG, remote_gate={"ssh_host": "oby-gate"})
+        with mock.patch.object(self.feed.job, "CONFIG", config):
+            self.one_pass()
+            item = self.task_now()
+            self.assertEqual(item["state"], "waiting")
+            self.assertNotIn("refused", item)
+            self.assertIn("Connection refused", item["note"])
+            self.one_pass()
+        self.assertEqual(len(puts), 2)
+        self.assertNotIn("refused", self.task_now())
+        self.assertEqual(self.stand.merges(), [])
+
+    def test_feedalive_5_a_dropped_verify_run_is_unreached_and_a_failing_invariant_holds(self):
+        j = {"approvals": approvals(OLD, "claude", "codex")}
+        pr = {"headRefOid": OLD, "files": [{"path": PATH}]}
+        self.feed.touches_security = lambda files: []
+        self.feed.check_models = lambda files, head: self.feed.Unreached("gave no verdict: it printed nothing (exit 255)")
+        self.assertEqual(self.feed.may_arm(j, pr, None)[0], "retry")
+        self.feed.check_models = lambda files, head: f"{PATH}: the invariant safe does not hold"
+        self.assertEqual(self.feed.may_arm(j, pr, None)[0], "wait")
+
+    # FEEDALIVE-6: --account any names no account; the default names deskree-team
+    def test_feedalive_6_account_any_sends_no_account_and_the_default_sends_deskree_team(self):
+        self.feed.oby_jobs = lambda: []
+        self.feed.free_gb = lambda: 100.0
+        task = {"key": "A00-98", "title": "another task", "body": ""}
+        self.feed.ready_tasks = lambda state: [] if "A00-98" in state else [(task, True, set())]
+        sent = []
+        self.feed.api = lambda method, path, body=None, timeout=30: (sent.append(body["job"]), (201, {"id": "job-9"}))[1]
+        self.main("--once", "--account", "any")
+        self.assertNotIn("account", sent[0])
+        self.feed.FEED = self.dir / "feed-2"
+        self.main("--once")
+        self.assertEqual(sent[1]["account"], "deskree-team")
+
+
+class Stop(Exception):
+    """Ends a test's main() loop."""
 
 
 class CheckModels(unittest.TestCase):
