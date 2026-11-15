@@ -3,7 +3,7 @@
 - **Date:** 2026-10-23
 - **Status:** In force
 - **Replaced:** Nothing AGENTS.md names
-- **Changed by:** [2026-10-24-every-job-publishes-by-itself.md](2026-10-24-every-job-publishes-by-itself.md), [2026-10-24-org-members-words.md](2026-10-24-org-members-words.md), [2026-10-24-honest-end-for-hand-published-prs.md](2026-10-24-honest-end-for-hand-published-prs.md), [2026-10-27-bypass-after-an-untrusted-read.md](2026-10-27-bypass-after-an-untrusted-read.md)
+- **Changed by:** [2026-10-24-every-job-publishes-by-itself.md](2026-10-24-every-job-publishes-by-itself.md), [2026-10-24-org-members-words.md](2026-10-24-org-members-words.md), [2026-10-24-honest-end-for-hand-published-prs.md](2026-10-24-honest-end-for-hand-published-prs.md), [2026-10-27-bypass-after-an-untrusted-read.md](2026-10-27-bypass-after-an-untrusted-read.md), [2026-11-14-own-work-merges-itself.md](2026-11-14-own-work-merges-itself.md)
 - **Contracts and scenarios:** None named in AGENTS.md
 
 ## The owner's words

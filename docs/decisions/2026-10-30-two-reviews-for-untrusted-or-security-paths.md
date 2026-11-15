@@ -3,7 +3,7 @@
 - **Date:** 2026-10-30
 - **Status:** In force
 - **Replaced:** Nothing AGENTS.md names
-- **Changed by:** [2026-11-06-split-it.md](2026-11-06-split-it.md), [2026-11-06-tool-api-hosts-dont-mark-a-job.md](2026-11-06-tool-api-hosts-dont-mark-a-job.md)
+- **Changed by:** [2026-11-06-split-it.md](2026-11-06-split-it.md), [2026-11-06-tool-api-hosts-dont-mark-a-job.md](2026-11-06-tool-api-hosts-dont-mark-a-job.md), [2026-11-14-own-work-merges-itself.md](2026-11-14-own-work-merges-itself.md)
 - **Contracts and scenarios:** [merging.md](../contracts/merging.md) (MERGING-13 to 16)
 
 ## The owner's words
