@@ -63,8 +63,7 @@ function fill() {
     item('fyi-1', 'github', '', at(90), { triage: 'fyi' }),
     item('later-1', 'question', '', at(80), { later: at(-60) }),
   ];
-  s.answering = new Set();
-  s.answered = {};
+  s.actions = {};
 }
 
 let root: Root | undefined;

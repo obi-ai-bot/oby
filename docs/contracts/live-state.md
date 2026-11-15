@@ -141,7 +141,7 @@ The business behavior contract for the owner's answers to cards and actions on a
 ### Feature and status
 
 - **Outcome:** A card the owner answered, or a task they stopped, shows as before until obid's state confirms it, and then shows exactly what obid says. The task card is obid's state plus one overlay.
-- **Status:** **Implemented** in the Electron app: `apps/electron/src/renderer/src/pending.ts` (`Action`), used by `live.ts` (`answerJob`, `answerOffer`, `answerQuestion`, a limit card's answer, `stopJob`, `archiveJob`, `deleteJob`, `renameJob`).
+- **Status:** **Implemented** in the Electron app: `apps/electron/src/renderer/src/pending.ts` (`Action`), used by `live.ts` (`answerJob`, `answerOffer`, `answerQuestion`, a limit card's answer, `stopJob`, `archiveJob`, `deleteJob`, `renameJob`); the cards and tasks read obid's state plus these in `liveView.ts` (`askOf`, `taskOf`, `asksOf`, `chatOf`, `limitAsks`).
 - **Scope:** from the click until obid's state answers for it. **Out of scope:** a spinner or any other new look (it needs Sangam's design); main's signing of Confirms and limit answers (`device.ts`, kept as it is); obid and its API.
 
 ### Actors and ownership
