@@ -1766,7 +1766,10 @@ pub fn report_merges_past_review(shared: std::sync::Arc<Shared>) {
 
 /// Tells `job`'s conversation it merged past Oby's review, with what that review still flagged
 /// (crate::merge::merged_past_review), once for that head: the mark goes on with the turn. A turn
-/// that couldn't be written is tried again; a conversation that's gone never will be.
+/// that couldn't be written is tried again; a conversation that's gone never will be. It is a
+/// report of the job's (`Turn::ended`), so a session hears only its first line, obid's own words,
+/// and never the review agent's (TASKCONV-17, 20); with a vault that can't be read, the review's
+/// words are left out.
 fn tell_merged_past(shared: &Shared, job: &crate::job::Job) {
     let Some((conversation, head)) = crate::merge::merged_past(job) else {
         return;
@@ -1774,13 +1777,13 @@ fn tell_merged_past(shared: &Shared, job: &crate::job::Job) {
     let flagged = (job.review.as_ref())
         .and_then(|r| shared.jobs.get(&r.job))
         .and_then(|review| crate::review::verdict(&review.summary))
-        .and_then(|(_, text)| whole_report(&crate::secrets::known().redact(&text)));
+        .and_then(|(_, text)| crate::vault::for_agent(&text).ok())
+        .and_then(|text| whole_report(&crate::secrets::known().redact(&text)));
     let title = crate::brain::briefing::line(&job.short_title(), 80);
     let base = job.pull_request.as_ref().map_or("", |pr| pr.base.as_str());
     let text = crate::merge::merged_past_review(&title, base, flagged.as_deref());
     let (id, foreign) = (job.id.as_str(), summary_foreign(Some(job), &job.id));
-    let card = vec![id.to_owned()];
-    match (shared.conversations).append(conversation, "oby", text, card, foreign) {
+    match (shared.conversations).job_ended(conversation, text, id.to_owned(), foreign) {
         Err(Error::Io(e)) => {
             tracing::warn!("job {id} merged; conversation {conversation} couldn't be told: {e}");
             return;

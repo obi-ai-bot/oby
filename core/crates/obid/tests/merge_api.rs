@@ -3979,6 +3979,8 @@ fn merging_49_own_work_flagged_after_its_last_round_merges_and_says_what_was_fla
         assert_eq!(turns.len(), 1, "{turns:?}");
         assert_eq!(turns[0]["who"], "oby", "{turns:?}");
         assert_eq!(turns[0]["jobs"], json!([ID]), "{turns:?}");
+        // A report of the job's: a session hears its first line only (TASKCONV-17).
+        assert_eq!(turns[0]["ended"], true, "{turns:?}");
         assert!(review_items(&obid).is_empty(), "{by}");
         assert!(merge_cards(&obid).is_empty(), "{by}");
         let sent = calls(&folder.0);
