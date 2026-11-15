@@ -6,8 +6,8 @@ Run from the repository root: python3 -m unittest discover -s factory/tests -p '
 Each test builds a throwaway repository holding copies of factory/bin/mutants, factory/bin/prove, factory/bin/job and
 factory/bin/child_session.py, a config.json the test writes, the crates core/crates/demo and core/crates/second, and
 a job whose gate passed its branch's head. The stand-in test-run beside them records each call (its argv, cwd,
-CARGO_TARGET_DIR, PID and the mutants.diff in its cwd), then prints the file STAND_IN_OUTPUT names and exits
-STAND_IN_CODE; with STAND_IN=sleep it prints that file, flushed, then sleeps.
+CARGO_TARGET_DIR, CARGO_MUTANTS_JOBS, PID and the mutants.diff in its cwd), then prints the file STAND_IN_OUTPUT
+names and exits STAND_IN_CODE; with STAND_IN=sleep it prints that file, flushed, then sleeps.
 """
 
 import json
@@ -106,7 +106,8 @@ from pathlib import Path
 diff = Path("mutants.diff")
 with open(os.environ["STAND_IN_LOG"], "a") as f:
     f.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "target": os.environ.get("CARGO_TARGET_DIR"),
-                        "pid": os.getpid(), "diff": diff.read_text() if diff.exists() else None}) + "\\n")
+                        "jobs": os.environ.get("CARGO_MUTANTS_JOBS"), "pid": os.getpid(),
+                        "diff": diff.read_text() if diff.exists() else None}) + "\\n")
 out = os.environ.get("STAND_IN_OUTPUT")
 if out:
     sys.stdout.write(Path(out).read_text())
@@ -154,7 +155,7 @@ class Mutants(unittest.TestCase):
             "STAND_IN_LOG": str(self.calls),
             "STAND_IN_OUTPUT": str(self.output),
         }
-        for name in ("STAND_IN", "STAND_IN_CODE"):
+        for name in ("STAND_IN", "STAND_IN_CODE", "CARGO_MUTANTS_JOBS"):
             self.env.pop(name, None)
         self.stand_in("1 mutant tested: 1 caught\n")
         self.git("init", "-q", "-b", "dev")
@@ -270,9 +271,12 @@ class Mutants(unittest.TestCase):
         before = self.worktrees()
         self.mutants(d.name, 0)
         [call] = self.stand_in_calls()
-        self.assertEqual(call["argv"], ["--", "cargo", "mutants", "--in-diff", "mutants.diff", "-p", "alpha", "-p",
-                                        "demo", "-j", "1", "--no-times", "--caught", "--unviable", "--colors",
+        self.assertEqual(call["argv"], ["--", "cargo", "mutants", "--in-place", "--in-diff", "mutants.diff", "-p",
+                                        "alpha", "-p", "demo", "--no-times", "--caught", "--unviable", "--colors",
                                         "never"])
+        # cargo-mutants refuses -j (or CARGO_MUTANTS_JOBS) beside --in-place, and runs one build at a time without it
+        self.assertFalse([w for w in call["argv"] if w.startswith(("-j", "--jobs"))], call["argv"])
+        self.assertIsNone(call["jobs"], call)
         self.assertTrue(call["cwd"].endswith("/scratch/core"), call)
         self.assertFalse(call["cwd"].startswith(str(worktree)), call)
         self.assertEqual(call["target"], call["cwd"] + "/target")
@@ -280,8 +284,8 @@ class Mutants(unittest.TestCase):
         self.assertEqual(plus, ["+++ b/crates/demo/src/lib.rs", "+++ b/crates/second/src/lib.rs"])
         self.assertNotIn("README", call["diff"])
         self.assertNotIn("Cargo.lock", call["diff"])
-        self.assertIn(f"COMMAND: `{self.repo / 'factory' / 'bin' / 'test-run'} -- cargo mutants --in-diff "
-                      "mutants.diff -p alpha -p demo -j 1 --no-times --caught --unviable --colors never`",
+        self.assertIn(f"COMMAND: `{self.repo / 'factory' / 'bin' / 'test-run'} -- cargo mutants --in-place "
+                      "--in-diff mutants.diff -p alpha -p demo --no-times --caught --unviable --colors never`",
                       self.mutants_md(d).splitlines())
         self.assertFalse(Path(call["cwd"]).exists())
         self.assertEqual(self.worktrees(), before)
@@ -317,8 +321,8 @@ class Mutants(unittest.TestCase):
         ])
         self.assertEqual(self.section(text, "Missed in functions a Kani proof calls"), ["None."])
         log = (d / "round-1" / "mutants.log").read_text()
-        self.assertIn("==== cargo mutants --in-diff mutants.diff -p demo -j 1 --no-times --caught --unviable "
-                      "--colors never (2 caught, 2 missed, 1 timeout, 1 unviable, ", log)
+        self.assertIn("==== cargo mutants --in-place --in-diff mutants.diff -p demo --no-times --caught "
+                      "--unviable --colors never (2 caught, 2 missed, 1 timeout, 1 unviable, ", log)
         self.assertIn(self.output.read_text(), log)
         self.assertEqual(res.stdout.strip(), f"MUTANTS: 2 caught, 2 missed, 1 timeout, 1 unviable ({d.name} round 1)")
 
@@ -369,6 +373,8 @@ class Mutants(unittest.TestCase):
             mutant("MISSED", LIB, SHAPE_LIB, "a > 10", "replace > with >= in big"),
         ]) + "\n")
         d = self.make_job("001-a00-99-timeout")
+        worktree = Path(json.loads((d / "job.json").read_text())["worktree"])
+        status = self.git("status", "--porcelain", cwd=worktree)
         before = self.worktrees()
         self.mutants(d.name, 0, STAND_IN="sleep")
         text = self.mutants_md(d)
@@ -381,9 +387,12 @@ class Mutants(unittest.TestCase):
             os.kill(call["pid"], 0)
         self.assertFalse(Path(call["cwd"]).exists())
         self.assertEqual(self.worktrees(), before)
+        self.assertEqual(self.git("status", "--porcelain", cwd=worktree), status)
 
     def test_mutants_6_a_stop_ends_the_run_and_removes_the_scratch_copy(self):
         d = self.make_job("001-a00-99-stopped")
+        worktree = Path(json.loads((d / "job.json").read_text())["worktree"])
+        status = self.git("status", "--porcelain", cwd=worktree)
         before = self.worktrees()
         proc = subprocess.Popen([str(self.repo / "factory" / "bin" / "mutants"), d.name], cwd=self.repo,
                                 env={**self.env, "STAND_IN": "sleep"}, stdout=subprocess.PIPE,
@@ -404,6 +413,7 @@ class Mutants(unittest.TestCase):
         self.assertFalse((d / "round-1" / "mutants.md").exists())
         self.assertFalse(Path(calls[0]["cwd"]).exists())
         self.assertEqual(self.worktrees(), before)
+        self.assertEqual(self.git("status", "--porcelain", cwd=worktree), status)
 
     # ---- MUTANTS-7 ------------------------------------------------------------------------------
 
