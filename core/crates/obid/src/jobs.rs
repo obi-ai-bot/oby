@@ -683,6 +683,10 @@ pub struct NewJob {
     /// a follow-up of a vetted job told by those words. Nothing else sets it.
     #[serde(default)]
     pub vetted: bool,
+    /// Planned in the owner's own conversation on words an app of theirs signed
+    /// ([`Job::own_conversation`]). Only obid's own code sets it, never the API.
+    #[serde(default)]
+    pub own_conversation: bool,
     /// Why its words aren't on obid's allowlist from the start (crate::secretspec): Oby's
     /// conversation that wrote them read something that isn't. It keeps to a clone apart, and its
     /// check gets none of the owner's secrets.
@@ -3558,6 +3562,8 @@ impl Jobs {
         let of = chain::marked(&self.lock().jobs, of, told);
         job.untrusted = new.untrusted || of.as_ref().is_some_and(|of| of.untrusted);
         job.unsigned = new.unsigned || of.as_ref().is_some_and(|of| of.unsigned);
+        job.own_conversation =
+            new.own_conversation || of.as_ref().is_some_and(|o| o.own_conversation);
         job.client_request_id = new.client_request_id;
         job.memory_from_others = of.as_ref().is_some_and(|of| of.memory_from_others);
         // Someone else's code from the start keeps to a clone apart; a follow-up to its job's.
@@ -12719,7 +12725,8 @@ impl Jobs {
     /// review approved its head, Oby's approval posted as its reviewer account; then the merge its
     /// repository's workflow says, or, where Oby can't go on by itself, one card for the owner
     /// about that head (a new head settles the old one). A repository Oby hasn't learned gets a
-    /// "Ready to merge?" card once everything else holds.
+    /// "Ready to merge?" card once everything else holds, but the owner's own conversation work
+    /// merges by itself (MERGING-46).
     async fn carry(
         self: &Arc<Self>,
         id: &str,
@@ -12929,58 +12936,24 @@ impl Jobs {
             })
             .filter(|c| !c.text.is_empty())
         } else {
-            match learned
-                .as_ref()
-                .and_then(|m| m.workflow.as_ref().map(|w| (m, w)))
-            {
-                Some((memory, workflow)) => {
-                    let by = crate::job::MergedBy {
-                        by: "memory".into(),
-                        memory: Some(memory.id.clone()),
-                        at: obi_protocol::time::now(),
-                    };
-                    let outcome = match crate::merge::ready(
-                        &job,
-                        Some(workflow),
-                        pr,
-                        &merging,
-                        reviewers.as_ref(),
-                    ) {
-                        Ok(()) => {
-                            let go = |action: &str| {
-                                self.about_to_send(id, &head, action, Some(by.clone()), None)
-                            };
-                            match reviewers.as_ref() {
-                                Some(r) => {
-                                    crate::merge::merge(gh, &home, &job, workflow, r, None, &go)
-                                        .await
-                                }
-                                None => Err(crate::merge::unread_reviewers()),
-                            }
-                        }
-                        Err(blocked) => Err(blocked),
-                    };
-                    let seen = (pr, &merging, reviewers.as_ref());
-                    let outcome = self.by_github(gh, &job, workflow, seen, &by, outcome).await;
-                    if let Ok(merged) = &outcome {
-                        for sent in &merged.outgoing {
-                            tracing::info!(
-                                "job {id}: sent {} {} {}",
-                                sent.action,
-                                sent.repo,
-                                sent.id
-                            );
-                        }
-                        crate::memory::note_used(&home, &memory.id);
+            // A learned workflow is followed; the owner's own conversation work merges by itself
+            // by the proposed one, on Oby's own review (MERGING-46); any other asks first.
+            let learned =
+                (learned.as_ref()).and_then(|m| Some((m.id.as_str(), m.workflow.as_ref()?)));
+            let seen = (pr, &merging, reviewers.as_ref());
+            match crate::merge::merges_by(learned.is_some(), crate::merge::own_work(&job)) {
+                crate::merge::MergesBy::Learned => match learned {
+                    Some((memory, w)) => self.merges(gh, &job, w, seen, Some(memory)).await,
+                    None => None,
+                },
+                crate::merge::MergesBy::Itself => {
+                    let r = reviewers.as_ref();
+                    match r.and_then(|r| crate::merge::own_proposed(&job, pr, &merging, r)) {
+                        Some(w) => self.merges(gh, &job, &w, seen, None).await,
+                        None => None,
                     }
-                    self.update(id, |job| crate::merge::note(job, &outcome, by));
-                    outcome
-                        .err()
-                        .filter(|b| b.needs_you && !crate::merge::on_review_item(b))
-                        .filter(|b| !(b.rebase && self.round_after_pr(id, &head, &b.why)))
-                        .map(|b| crate::merge::blocked_card(&job, &head, &b, workflow, &pr.base))
                 }
-                None => {
+                crate::merge::MergesBy::OwnersMerge => {
                     // Not learned yet: the safe default asks before it merges, once everything else
                     // holds by the workflow its card proposes. Merge rules GitHub won't show are
                     // the owner's to fix even so.
@@ -16462,6 +16435,33 @@ mod tests {
             })
             .unwrap();
         assert!(!of_event.vetted);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// MERGING-44: a follow-up of the owner's own conversation work is that work too, whatever
+    /// words made it; a follow-up of any other job isn't.
+    #[tokio::test]
+    async fn merging_44_a_follow_up_carries_own_conversation_work() {
+        let (jobs, _clone, root) = jobs_with_a_clone("own-conversation").await;
+        let new = |task: &str| NewJob {
+            repo: "o/r".into(),
+            kind: "fix".into(),
+            task: task.into(),
+            ..NewJob::default()
+        };
+        let own = jobs
+            .create(NewJob {
+                own_conversation: true,
+                ..new("Fix it")
+            })
+            .unwrap();
+        assert!(own.own_conversation);
+        let next = jobs.create(follow_up(&own, "and the docs")).unwrap();
+        assert!(next.own_conversation);
+        let other = jobs.create(new("From the Tasks view")).unwrap();
+        assert!(!other.own_conversation);
+        let after = jobs.create(follow_up(&other, "go on")).unwrap();
+        assert!(!after.own_conversation);
         let _ = std::fs::remove_dir_all(&root);
     }
 

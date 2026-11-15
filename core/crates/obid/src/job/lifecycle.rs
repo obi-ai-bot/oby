@@ -425,8 +425,9 @@ mod tests {
                 window_share, ran_secs, budget_from, changes, moves, named, routine, unattended,
                 untrusted, own_lane, ran_unproxied, unsigned, client_request_id,
                 memory_from_others, foreign, foreign_by_api, withheld, check_withheld,
-                check_withheld_was, reached, made, apart, clone_root, vetted, merge_error, told,
-                merge_needs_you, merged_by, sending, auto_merge, auto_merge_refused, extra,
+                check_withheld_was, reached, made, apart, clone_root, vetted, own_conversation,
+                merge_error, told, merge_needs_you, merged_by, sending, auto_merge,
+                auto_merge_refused, extra,
             ],
         }
     }

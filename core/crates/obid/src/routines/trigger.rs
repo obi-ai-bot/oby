@@ -1,11 +1,17 @@
 //! What one GitHub event does for a routine on GitHub events (docs/contracts/routines.md,
-//! ROUTINES-9 to 14): start its job, ignore it or hold it, from a few facts about it. Pure, so
+//! ROUTINES-9 to 17): start its job, ignore it or hold it, from a few facts about it. Pure, so
 //! Kani proves it: the receipts, the jobs and the clock are routines.rs's.
 
 use serde::{Deserialize, Serialize};
 
 /// The most jobs one routine starts on one item in 24 hours (ROUTINES-12).
 pub const STARTS_A_DAY: u32 = 3;
+
+/// The most jobs one routine starts at one read of the GitHub work feed (ROUTINES-15).
+pub const STARTS_A_READ: u32 = 3;
+
+/// The most jobs one routine starts across all its items in 24 hours (ROUTINES-16).
+pub const ROUTINE_STARTS_A_DAY: u32 = 10;
 
 /// What came of an event, as its receipt keeps it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,6 +30,8 @@ pub enum Why {
     NoMarker,
     OpenJob,
     DayLimit,
+    RoutineDayLimit,
+    ReadLimit,
 }
 
 impl Why {
@@ -34,6 +42,8 @@ impl Why {
             Why::NoMarker => "GitHub didn't say which commit it's on.",
             Why::OpenJob => "This routine's job on it is still open.",
             Why::DayLimit => "This routine started 3 jobs on it in the last 24 hours.",
+            Why::RoutineDayLimit => "This routine started 10 jobs in the last 24 hours.",
+            Why::ReadLimit => "This routine started 3 jobs at this read of GitHub.",
         }
     }
 }
@@ -61,10 +71,15 @@ pub struct Facts {
     pub open_job: bool,
     /// This routine's `started` receipts on the same repository and number in the last 24 hours.
     pub starts_today: u32,
+    /// This routine's `started` receipts on any item in the last 24 hours.
+    pub routine_starts_today: u32,
+    /// The jobs this routine started earlier in this read.
+    pub starts_this_read: u32,
 }
 
 /// What one event does: a key dealt with is done; Oby's own and markerless events are ignored; one
-/// behind an open job or past the day's starts is held; any other starts its job.
+/// behind an open job, past the item's or the routine's day's starts or past the read's starts is
+/// held; any other starts its job.
 pub fn decide(event: Facts) -> Decision {
     match event.receipt {
         None | Some(Outcome::Held) => {}
@@ -82,6 +97,12 @@ pub fn decide(event: Facts) -> Decision {
     if event.starts_today >= STARTS_A_DAY {
         return Decision::Hold(Why::DayLimit);
     }
+    if event.routine_starts_today >= ROUTINE_STARTS_A_DAY {
+        return Decision::Hold(Why::RoutineDayLimit);
+    }
+    if event.starts_this_read >= STARTS_A_READ {
+        return Decision::Hold(Why::ReadLimit);
+    }
     Decision::Start
 }
 
@@ -95,10 +116,12 @@ mod tests {
         marker: true,
         open_job: false,
         starts_today: 0,
+        routine_starts_today: 0,
+        starts_this_read: 0,
     };
 
     #[test]
-    fn routines_10_to_14_each_rule_decides() {
+    fn routines_10_to_16_each_rule_decides() {
         // ROUTINES-9: a new event, nothing against it, starts; a held one starts once it's free.
         assert_eq!(decide(NEW), Decision::Start);
         let held = Facts {
@@ -107,6 +130,13 @@ mod tests {
             ..NEW
         };
         assert_eq!(decide(held), Decision::Start);
+        let under = Facts {
+            receipt: Some(Outcome::Held),
+            routine_starts_today: 9,
+            starts_this_read: 2,
+            ..NEW
+        };
+        assert_eq!(decide(under), Decision::Start);
         // ROUTINES-10: a key dealt with is done, whatever else holds.
         for outcome in [Outcome::Started, Outcome::Ignored, Outcome::Failed] {
             let dealt = Facts {
@@ -115,6 +145,8 @@ mod tests {
                 marker: false,
                 open_job: true,
                 starts_today: 9,
+                routine_starts_today: u32::MAX,
+                starts_this_read: u32::MAX,
             };
             assert_eq!(decide(dealt), Decision::Done, "{outcome:?}");
         }
@@ -149,6 +181,41 @@ mod tests {
             Why::DayLimit.reason(),
             "This routine started 3 jobs on it in the last 24 hours."
         );
+        // ROUTINES-16 at exactly 10, then ROUTINES-15 at exactly 3, each after ROUTINES-12.
+        let capped = Facts {
+            starts_today: 3,
+            routine_starts_today: 10,
+            starts_this_read: 3,
+            ..NEW
+        };
+        assert_eq!(decide(capped), Decision::Hold(Why::DayLimit));
+        let both = Facts {
+            starts_today: 0,
+            ..capped
+        };
+        assert_eq!(decide(both), Decision::Hold(Why::RoutineDayLimit));
+        for routine_starts_today in [10, 11, u32::MAX] {
+            let full = Facts {
+                routine_starts_today,
+                ..NEW
+            };
+            assert_eq!(decide(full), Decision::Hold(Why::RoutineDayLimit));
+        }
+        for starts_this_read in [3, 4, u32::MAX] {
+            let full = Facts {
+                starts_this_read,
+                ..NEW
+            };
+            assert_eq!(decide(full), Decision::Hold(Why::ReadLimit));
+        }
+        assert_eq!(
+            Why::RoutineDayLimit.reason(),
+            "This routine started 10 jobs in the last 24 hours."
+        );
+        assert_eq!(
+            Why::ReadLimit.reason(),
+            "This routine started 3 jobs at this read of GitHub."
+        );
     }
 }
 
@@ -178,6 +245,8 @@ mod proofs {
             marker: kani::any(),
             open_job: kani::any(),
             starts_today: kani::any(),
+            routine_starts_today: kani::any(),
+            starts_this_read: kani::any(),
         }
     }
 
@@ -209,6 +278,58 @@ mod proofs {
         let facts = any_facts();
         if facts.starts_today >= STARTS_A_DAY {
             assert_ne!(decide(facts), Decision::Start);
+        }
+    }
+
+    /// ROUTINES-15: with 3 or more starts at this read, nothing starts.
+    #[kani::proof]
+    fn routines_15_no_fourth_start_in_a_read() {
+        assert_eq!(STARTS_A_READ, 3);
+        let facts = any_facts();
+        if facts.starts_this_read >= STARTS_A_READ {
+            assert_ne!(decide(facts), Decision::Start);
+        }
+    }
+
+    /// ROUTINES-15: an event only the read's cap stops is held, so a later read starts it.
+    #[kani::proof]
+    fn routines_15_a_capped_event_is_held() {
+        let facts = any_facts();
+        if matches!(facts.receipt, None | Some(Outcome::Held))
+            && !facts.by_oby
+            && facts.marker
+            && !facts.open_job
+            && facts.starts_today < STARTS_A_DAY
+            && facts.routine_starts_today < ROUTINE_STARTS_A_DAY
+            && facts.starts_this_read >= STARTS_A_READ
+        {
+            assert_eq!(decide(facts), Decision::Hold(Why::ReadLimit));
+        }
+    }
+
+    /// ROUTINES-16: with 10 or more starts of the routine in 24 hours, nothing starts.
+    #[kani::proof]
+    fn routines_16_no_eleventh_start_in_a_day() {
+        assert_eq!(ROUTINE_STARTS_A_DAY, 10);
+        let facts = any_facts();
+        if facts.routine_starts_today >= ROUTINE_STARTS_A_DAY {
+            assert_ne!(decide(facts), Decision::Start);
+        }
+    }
+
+    /// ROUTINES-16: an event only the routine's day cap stops is held, so it starts once the
+    /// routine is under the cap again.
+    #[kani::proof]
+    fn routines_16_a_capped_event_is_held() {
+        let facts = any_facts();
+        if matches!(facts.receipt, None | Some(Outcome::Held))
+            && !facts.by_oby
+            && facts.marker
+            && !facts.open_job
+            && facts.starts_today < STARTS_A_DAY
+            && facts.routine_starts_today >= ROUTINE_STARTS_A_DAY
+        {
+            assert_eq!(decide(facts), Decision::Hold(Why::RoutineDayLimit));
         }
     }
 

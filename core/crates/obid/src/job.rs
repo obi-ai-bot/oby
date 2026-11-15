@@ -852,6 +852,11 @@ pub struct Job {
     /// code ([`Job::foreign`]). Never in the API's job.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub vetted: bool,
+    /// It was planned in a turn of the owner's own conversation whose words an app of theirs
+    /// signed (crate::brain::actions), or follows up such a job: its pull request merges by itself
+    /// on any base (crate::merge::own_work, MERGING-44). In its file, never in the API.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub own_conversation: bool,
     /// Why obid didn't merge its pull request, when only the owner can take it on from here
     /// (crate::merge); none otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -902,11 +907,12 @@ pub struct Sending {
     pub login: Option<String>,
 }
 
-/// Who had obid merge a job's pull request (crate::merge): the owner, with a tap, or the
-/// repository's workflow the owner taught it (a `workflow` memory, #854).
+/// Who had obid merge a job's pull request (crate::merge): the owner, with a tap, the
+/// repository's workflow the owner taught it (a `workflow` memory, #854), Oby by itself for the
+/// owner's own conversation work (MERGING-46), or GitHub.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MergedBy {
-    /// `owner` or `memory`.
+    /// `owner`, `memory`, `oby` or `github`.
     pub by: String,
     /// The workflow memory it followed, for `memory`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
