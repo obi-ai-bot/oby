@@ -19628,7 +19628,7 @@ mod tests {
             let Some(Ok(next)) = next else {
                 panic!("{marked}: {next:?}")
             };
-            // The chain's branch is the task's: the new one follows up the task, not `marked`.
+            // The chain's branch is the task's: it follows the task, not `marked`, with its marks.
             assert_eq!(next.follow_up_of.as_deref(), Some(task));
             assert_eq!(next.start_from, Some(format!("oby/fix-{task}")));
             if marked == "aaaa2302" {
