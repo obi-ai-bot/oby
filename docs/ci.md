@@ -102,7 +102,7 @@ The Mac's `scripts/oby-check.sh` runs the suites each change reaches, tests incl
 
 | Area | On a Mac |
 | --- | --- |
-| Rust core | In `core/`: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked` (workers: only the test binaries they touched; before a merge: all of obid, with `--no-fail-fast`). |
+| Rust core | In `core/`: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked` (workers: every obid test binary for a change to obid's code outside its tests, only the test binaries they touched for a change to its tests alone (docs/contracts/ci.md, CI-45 to 47); before a merge: all of obid, with `--no-fail-fast`). |
 | Plug-ins | In `core/`: `OBI_PLUGIN_HOST_REQUIRE_SANDBOX=1 cargo test --locked -p obi-plugin-api -p obi-plugin-host`. |
 | Electron app | In `apps/electron/`: `npm run typecheck`, `npm test`, `npm run build`. |
 | iPhone and Watch | `xcodebuild -project apps/Oby.xcodeproj -scheme ObyPhone -destination 'platform=iOS Simulator,name=iPhone 17' test`. |
