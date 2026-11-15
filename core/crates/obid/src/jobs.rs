@@ -12731,6 +12731,17 @@ impl Jobs {
             });
             return cards(None);
         }
+        let at_work = job
+            .reviewing
+            .as_deref()
+            .and_then(|review| self.get(review))
+            .is_some_and(|review| review.status.is_active());
+        // A head GitHub's merge queue dropped stops here, first, card or not: no round, approval
+        // or merge of the follower's after it (MERGING-57).
+        let dropped = (!at_work).then(|| self.queue_stopped(&job, &head, &pr.base));
+        if let Some(card) = dropped.flatten() {
+            return self.offer_merge_card(id, link.as_deref(), card);
+        }
         let home = self.config.home.clone();
         let Some(owner) = crate::github_login::read_status(gh).await.user else {
             // Signed out for sure: the owner hears it. A gh that only didn't answer waits.
@@ -12838,16 +12849,7 @@ impl Jobs {
         };
         let stop =
             stop.or_else(|| crate::merge::owner_must_settle(pr, &merging).map(str::to_owned));
-        let at_work = job
-            .reviewing
-            .as_deref()
-            .and_then(|review| self.get(review))
-            .is_some_and(|review| review.status.is_active());
-        let dropped = (!at_work).then(|| self.queue_stopped(&job, &head, &pr.base));
-        let card = if let Some(card) = dropped.flatten() {
-            // A head GitHub's merge queue dropped stops here, before any round (MERGING-57).
-            card
-        } else if at_work || self.red_round(id, gh, &head, &stop, &merging).await {
+        let card = if at_work || self.red_round(id, gh, &head, &stop, &merging).await {
             // Oby's own review is at work on it (MERGING-26), or its agent on its red checks
             // (MERGING-39): it's no one's to merge yet, and "nobody has approved" would be untrue.
             // One stopped, at its account's limit say, stays named until the owner decides.
@@ -18990,6 +18992,101 @@ mod tests {
             assert_eq!(raised, item, "{review}");
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// One follower pass ([`Jobs::follow`]) over `job`, done and published at `head` into dev
+    /// with GitHub's auto-merge armed there, once GitHub's merge queue dropped that head, its
+    /// merge state `state`; obid's gh signed out, so a pass that goes on past the drop's stop
+    /// reads it and says so. The job after it, and its file.
+    async fn after_a_drop(mut job: Job, head: &str, state: &str) -> Job {
+        let root = std::env::temp_dir().join(format!("obid-queue-drop-{}", uuid::Uuid::new_v4()));
+        job.status = Status::Done;
+        job.branch = "oby/fix".into();
+        job.base = Some("dev".into());
+        job.published = Some("https://github.com/o/r/pull/7".into());
+        let push = crate::publish::Outgoing::new("push", "o/r", head, Some("oby/fix"));
+        job.outgoing.push(push);
+        job.auto_merge = Some(crate::job::Sending {
+            action: "autoMerge".into(),
+            head: head.into(),
+            by: None,
+            login: None,
+        });
+        let jobs = jobs_with_kept(&root.join("home"), &[&job]);
+        let gh = root.join("gh");
+        std::fs::write(&gh, "#!/bin/sh\necho '{\"hosts\":{}}'\n").unwrap();
+        std::fs::set_permissions(&gh, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let said = json!({"state": "OPEN", "baseRefName": "dev", "headRefOid": head,
+            "autoMergeRequest": null, "isInMergeQueue": false});
+        let pr = crate::github::decode(&said.to_string(), 0).unwrap();
+        let merging = crate::github::Merging {
+            merge_state: Some(state.into()),
+            ..Default::default()
+        };
+        jobs.follow(&job.id, &gh, &pr, merging).await;
+        let after = jobs.get(&job.id).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        after
+    }
+
+    /// A job of `o/r` named `id`.
+    fn queue_job(id: &str) -> Job {
+        let (agent, repo, task) = ("claude".to_owned(), "o/r".to_owned(), "Fix it".to_owned());
+        Job::new(id.into(), repo, "fix".into(), task, agent, "c".into())
+    }
+
+    /// MERGING-57: a second drop stops the follower first, before any of its other paths: the
+    /// pull request conflicting with dev (MERGING-38's rebase) or obid's gh signed out isn't
+    /// reached, and the card says the queue dropped it twice.
+    #[tokio::test]
+    async fn merging_57_a_second_drop_stops_before_any_other_path() {
+        let (first, second) = ("a".repeat(40), "b".repeat(40));
+        let mut job = queue_job("aaaa0001");
+        job.queue_drops.push(crate::job::QueueDrop {
+            head: first,
+            stopped: true,
+            ..Default::default()
+        });
+        let job = after_a_drop(job, &second, "DIRTY").await;
+        let twice = crate::merge::queue_dropped(2, "dev");
+        assert_eq!(job.merge_error.as_deref(), Some(twice.as_str()), "{job:?}");
+        assert!(job.merge_needs_you);
+        assert!(job.queue_drops.iter().all(|d| d.stopped), "{job:?}");
+        assert_eq!(job.status, Status::Done);
+        assert!(job.auto_merge.is_none());
+    }
+
+    /// MERGING-57: the owner's own work stops at a dropped head too, with no card: nothing after
+    /// the stop runs (no round, approval or merge, nor the signed-out gh's card), and its
+    /// conversation is due its one line.
+    #[tokio::test]
+    async fn merging_57_own_work_stops_at_a_drop_with_only_its_line() {
+        let head = "a".repeat(40);
+        let mut job = queue_job("aaaa0001");
+        job.own_conversation = true;
+        job.conversation = Some("c1".into());
+        let job = after_a_drop(job, &head, "CLEAN").await;
+        assert!(!job.merge_needs_you, "{job:?}");
+        assert_eq!(job.merge_error, None);
+        assert_eq!(job.status, Status::Done);
+        assert!(job.auto_merge.is_none());
+        assert_eq!(crate::merge::queue_line(&job), Some(("c1", head.as_str())));
+    }
+
+    /// MERGING-56: a job the owner let go whose head GitHub's merge queue dropped gets no round,
+    /// stays let go, and isn't read again.
+    #[tokio::test]
+    async fn merging_56_a_job_let_go_is_dropped_with_no_round_and_read_no_more() {
+        let head = "a".repeat(40);
+        let mut job = queue_job("aaaa0001");
+        job.dismissed = Some(1);
+        let job = after_a_drop(job, &head, "CLEAN").await;
+        assert_eq!(job.queue_drops.len(), 1, "{job:?}");
+        assert_eq!((job.status, job.dismissed), (Status::Done, Some(1)));
+        assert_eq!(job.checks_rounds, 0);
+        assert!(job.auto_merge.is_none());
+        let now = obi_protocol::time::now();
+        assert_eq!(by_github::follow_every(&job, now), i64::MAX);
     }
 
     /// MERGING-30: job `agent` of the owner's own words reaches `host` on 443 and goes through:

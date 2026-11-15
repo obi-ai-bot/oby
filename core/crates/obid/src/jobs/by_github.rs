@@ -8,8 +8,12 @@ use crate::merge::{Blocked, Merged, Reviewers};
 
 /// How long a read of the job's pull request stands ([`follow_interval`]): at most 30 seconds in
 /// the 10 minutes after obid armed GitHub's auto-merge on it, so a hold or a head someone else
-/// pushed turns it off sooner; then the usual, for GitHub's rate limits (MERGING-41).
+/// pushed turns it off sooner; then the usual, for GitHub's rate limits (MERGING-41). A job the
+/// owner let go whose head GitHub's merge queue dropped is read no more (MERGING-56).
 pub(super) fn follow_every(job: &Job, now: i64) -> i64 {
+    if job.dismissed.is_some() && !job.queue_drops.is_empty() {
+        return i64::MAX;
+    }
     let armed = (job.outgoing.iter().rev()).find(|o| o.action == "autoMerge");
     let soon = job.auto_merge.is_some() && armed.is_some_and(|o| now - o.date < 600);
     follow_interval().min(if soon { 30 } else { i64::MAX })
@@ -38,9 +42,11 @@ impl Jobs {
     /// GitHub's merge queue dropped the head obid armed on the job `id`'s pull request (`pr`, its
     /// `mergeStateStatus` then `state`): GitHub turned its auto-merge off, so obid forgets it,
     /// notes the drop (MERGING-55), and the first drop of the job gets one round
-    /// ([`Jobs::queue_round`], MERGING-56).
+    /// ([`Jobs::queue_round`], MERGING-56), but never a job the owner let go, which isn't read
+    /// again ([`follow_every`]).
     fn dropped(self: &Arc<Self>, id: &str, pr: &crate::github::PullRequest, state: Option<&str>) {
-        let armed = self.get(id).and_then(|j| j.auto_merge.map(|a| a.head));
+        let Some(job) = self.get(id) else { return };
+        let armed = job.auto_merge.map(|a| a.head);
         if crate::merge::queued_at(armed.as_deref(), pr) != crate::merge::Queued::Dropped {
             return;
         }
@@ -56,7 +62,9 @@ impl Jobs {
                 });
             }
         });
-        self.queue_round(id, &head);
+        if job.dismissed.is_none() {
+            self.queue_round(id, &head);
+        }
     }
 
     /// The stop at `job`'s `head` into `base` when GitHub's merge queue dropped that head, before
