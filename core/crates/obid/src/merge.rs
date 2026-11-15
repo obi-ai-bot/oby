@@ -70,11 +70,19 @@ pub fn protected(branch: &str) -> bool {
     )
 }
 
-/// The owner's own conversation work (MERGING-44): planned in a turn of their conversation on
-/// words an app of theirs signed, or a follow-up of that (`Job::own_conversation`), not another
-/// Obi's, and reached by no unsigned words. It merges by itself on any base (MERGING-45 to 48).
+/// The owner's own work (MERGING-44): planned in a turn of their conversation on words an app of
+/// theirs signed, started by a `POST /v1/jobs` an app of theirs signed, or a follow-up of either
+/// (`Job::own_conversation`), not another Obi's, and reached by no unsigned words. It merges by
+/// itself on any base (MERGING-45 to 48, 52).
 pub fn own_work(job: &Job) -> bool {
-    job.own_conversation && job.obi.is_none() && !job.unsigned
+    own_work_of(job.own_conversation, job.obi.is_some(), job.unsigned)
+}
+
+/// Whether a job is the owner's own work (MERGING-44): `marked` where it was made (a signed
+/// conversation turn's plan, a signed `POST /v1/jobs`, or a follow-up of either), not
+/// `another_obis`, and reached by no `unsigned` words.
+pub fn own_work_of(marked: bool, another_obis: bool, unsigned: bool) -> bool {
+    marked && !another_obis && !unsigned
 }
 
 /// Whether a pull request into a `protected` base waits for the owner's word ([`on_their_word`]):
@@ -4026,6 +4034,18 @@ mod tests {
         let mut unsigned = own();
         unsigned.unsigned = true;
         assert!(!own_work(&unsigned));
+        for marked in [false, true] {
+            for another in [false, true] {
+                for words in [false, true] {
+                    let own = own_work_of(marked, another, words);
+                    assert_eq!(
+                        own,
+                        marked && !another && !words,
+                        "{marked} {another} {words}"
+                    );
+                }
+            }
+        }
     }
 
     /// MERGING-45: the owner's own conversation work into main, master or trunk is ready with
@@ -5664,8 +5684,8 @@ esac
 #[cfg(test)]
 mod proofs {
     #![cfg(kani)]
-    //! Kani's proofs of the owner's own conversation work's merge (MERGING-45 to 47): `kani::any()`
-    //! stands for every value of the bools and the enum below.
+    //! Kani's proofs of the owner's own work and its merge (MERGING-44 to 47): `kani::any()` stands
+    //! for every value of the bools and the enum below.
 
     use super::*;
 
@@ -5755,5 +5775,22 @@ mod proofs {
         if own && !two_reviews {
             assert_eq!(flagged(true, own, two_reviews), Flagged::MergesPast);
         }
+    }
+
+    /// MERGING-44: a job is own work exactly when it was marked, isn't another Obi's and no
+    /// unsigned words reached it, so a `POST /v1/jobs` job (marked `typed`, unsigned `!typed`) is
+    /// own work exactly when an app of the owner's signed it.
+    #[kani::proof]
+    fn merging_44_own_work_needs_the_owners_signed_words() {
+        let (mark, theirs, words): (bool, bool, bool) = (kani::any(), kani::any(), kani::any());
+        let own = own_work_of(mark, theirs, words);
+        if own {
+            assert!(mark && !theirs && !words);
+        }
+        if mark && !theirs && !words {
+            assert!(own);
+        }
+        let signed: bool = kani::any();
+        assert_eq!(own_work_of(signed, false, !signed), signed);
     }
 }
