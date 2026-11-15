@@ -70,8 +70,12 @@ For ACCEPT, rate:
   security path (`.claude/`, AGENTS.md, CI files, the check's files);
   `proofs` if it changes pure, synchronous decision logic in Rust (a pure
   function, a state machine transition, an encode/decode pair, an ordering
-  or arithmetic rule): Kani, the only proof tool wired in, proves it. No
-  `proofs` outside Rust. Never for async, I/O or concurrency code.
+  or arithmetic rule): Kani proves it. No `proofs` outside Rust. Never for
+  async, I/O or concurrency code: those are `model`'s;
+  `model` if it changes an async protocol (a job's stop, retry, move or end;
+  account failover and waits; a conversation's drain; restart recovery; the
+  merge queue): a Quint design model under `docs/models/` checks it. It may
+  stand with `proofs`, `ui` and `security`.
   Any of them together, or `none`.
 
 ## Write intake.md
@@ -79,7 +83,7 @@ For ACCEPT, rate:
 ```markdown
 DECISION: ACCEPT | NEEDS-INFO | REJECT
 RISK: low | medium | high
-SURFACES: ui, security, proofs | ui | security | proofs | none
+SURFACES: ui, security, proofs, model | ui | security | proofs | model | none
 RESCOPED: yes | no
 
 ## Summary

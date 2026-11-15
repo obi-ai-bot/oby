@@ -111,7 +111,7 @@ pub fn check_holds(ran: CheckRan, own: bool) -> bool {
 pub enum MergesBy {
     /// By the workflow Oby learned for its base, saying so (`mergedBy` `memory`).
     Learned,
-    /// By itself, by the workflow [`proposed`] gives, remembering nothing (`mergedBy` `oby`).
+    /// By itself, by the workflow [`own_proposed`] gives, remembering nothing (`mergedBy` `oby`).
     Itself,
     /// Only on the owner's own Merge, which its card asks for.
     OwnersMerge,
@@ -775,6 +775,15 @@ pub fn ready_as(
                         "Not merged yet: nobody has approved its head."
                     }
                 })),
+            }
+        }
+        // The owner's own conversation work waits for Oby's own review of its head too, two where
+        // it needs them, whoever else approved it (MERGING-45, the owner's answer of 2026-11-15).
+        if own_work(job) && second.is_none() {
+            match oby_approval(job, head) {
+                Err(_) if left_to_owner(job, head) => second = Some(yours(REVIEW_ASKS)),
+                Err(blocked) => lifted.push(held(blocked.why)),
+                Ok(()) => {}
             }
         }
         if second.is_none()
@@ -3876,10 +3885,11 @@ mod tests {
             &pages(vec![rest(3, "ana", "User", "APPROVED", &head(), "MEMBER")]),
         );
         let mut mine = own();
+        mine.review = None;
         let theirs = proposed(&mine, &pr, &merging, &signed_in()).unwrap();
         assert_eq!(theirs.review, Approval::Person);
         assert_eq!(
-            ready(&mine, Some(&theirs), &pr, &merging, Some(&signed_in())),
+            ready(&settled(), Some(&theirs), &pr, &merging, Some(&signed_in())),
             Ok(())
         );
         let workflow = own_proposed(&mine, &pr, &merging, &signed_in()).unwrap();
@@ -3898,17 +3908,7 @@ mod tests {
             held.why
         );
         // Approved by Oby's review, it merges; needing two, it waits for the second tool's.
-        mine.review = Some(crate::job::Review {
-            verdict: "approved".into(),
-            job: "r1".into(),
-            agent: "codex".into(),
-            account: "default".into(),
-            same_account: false,
-            round: 1,
-            date: 0,
-            commit: head(),
-            two_reviews: None,
-        });
+        mine.review = Some(oby_review("approved"));
         assert_eq!(
             ready(&mine, Some(&workflow), &pr, &merging, Some(&signed_in())),
             Ok(())
@@ -3919,10 +3919,75 @@ mod tests {
         assert!(waits.why.contains(SECOND_REVIEW_WAITS), "{}", waits.why);
     }
 
-    /// [`settled`], as the owner's own conversation work (MERGING-44).    /// [`settled`], as the owner's own conversation work (MERGING-44).
+    /// Oby's own review of `head()`, by Codex, saying `verdict`.
+    fn oby_review(verdict: &str) -> crate::job::Review {
+        crate::job::Review {
+            verdict: verdict.into(),
+            job: "r1".into(),
+            agent: "codex".into(),
+            account: "default".into(),
+            same_account: false,
+            round: 1,
+            date: 0,
+            commit: head(),
+            two_reviews: None,
+        }
+    }
+
+    /// MERGING-45: under a learned workflow a person or a teammate approves, the owner's own
+    /// conversation work merges by itself only once Oby's own review approved its head too, never
+    /// while that review flags it; other work goes on the approval alone, as before.
+    #[test]
+    fn merging_45_a_learned_persons_approval_waits_for_obys_own_review_on_own_work() {
+        let (pr, merging) = read(
+            &view(|_| {}),
+            &pages(vec![rest(3, "ana", "User", "APPROVED", &head(), "MEMBER")]),
+        );
+        let reviewers = signed_in();
+        for by in [Approval::Person, Approval::Teammate] {
+            let workflow = Workflow {
+                review: by,
+                ..obis()
+            };
+            let check = |job: &Job| ready(job, Some(&workflow), &pr, &merging, Some(&reviewers));
+            assert_eq!(check(&settled()), Ok(()), "{by:?}");
+            let mut mine = own();
+            mine.review = None;
+            let held = check(&mine).unwrap_err();
+            assert!(!held.needs_you, "{by:?}: {}", held.why);
+            assert!(
+                held.why.contains("Oby's review hasn't approved its head"),
+                "{}",
+                held.why
+            );
+            // Oby's review flags it: its review's item asks, and no merge card (MERGING-8, 17).
+            mine.review = Some(oby_review("changesRequested"));
+            let flagged = check(&mine).unwrap_err();
+            assert!(
+                flagged.why.starts_with(REVIEW_ASKS),
+                "{by:?}: {}",
+                flagged.why
+            );
+            assert!(on_review_item(&flagged), "{by:?}: {}", flagged.why);
+            mine.review = Some(oby_review("approved"));
+            assert_eq!(check(&mine), Ok(()), "{by:?}");
+            mine.untrusted = true;
+            mine.approvals = vec![oby_review("approved")];
+            let waits = check(&mine).unwrap_err();
+            assert!(
+                waits.why.contains(SECOND_REVIEW_WAITS),
+                "{by:?}: {}",
+                waits.why
+            );
+        }
+    }
+
+    /// [`settled`], as the owner's own conversation work (MERGING-44), which Oby's own review
+    /// approved at its head.
     fn own() -> Job {
         let mut job = settled();
         job.own_conversation = true;
+        job.review = Some(oby_review("approved"));
         job
     }
 

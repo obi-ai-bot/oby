@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Re-run a job's Kani proofs on the commit its gate passed: round-N/proofs.md (docs/contracts/factory.md, PROVE).
+"""Re-run a job's Kani proofs and Quint models on the commit its gate passed: round-N/proofs.md
+(docs/contracts/factory.md, PROVE).
 
 Usage:
   prove <job-id>    write round-N/proofs.md; exit 0 on PASS, ADVISORY-FAIL or SKIPPED, 1 on FAIL or TIMEOUT,
                     2 when it can't judge (no round, no passing checks.md, invalid settings)
 
 It reads the job's job.json (never writing it or taking its lock), spec.md, round-N/checks.md and config.json
-beside it, and stops at the first step that decides the verdict:
+beside it. A job with neither `proofs` nor `model` in its intake's surfaces is SKIPPED, with nothing run. For
+`proofs` it stops at the first step that decides the Kani verdict:
 
-  a. a job without `proofs` in its intake's surfaces is SKIPPED, with nothing run;
   b. spec.md's `## Proofs` section differs from the one hashed when the job left spec: FAIL;
   c. the section is missing, has no `### PROOF-<n>` entry, or an entry misses a key or has an invalid value: FAIL;
   d. the branch's added `.rs` lines (git diff origin/<base>...<commit>) hold a construct that games a proof: FAIL;
@@ -16,12 +17,26 @@ beside it, and stops at the first step that decides the verdict:
      --harness <name>` from its core/; once it is SUCCESSFUL, its broken rule is applied, the harness runs again and
      must end VERIFICATION:- FAILED, and the file is restored.
 
+For `model` it does the same with spec.md's `## Models`:
+
+  a. the section differs from the one hashed when the job left spec: FAIL;
+  b. the section is missing, has no `### MODEL-<n>` entry, or an entry has a missing, repeated or invalid key, or a
+     File that isn't in the commit: FAIL;
+  c. in one scratch worktree at the commit, from its root, each entry runs `test-run -- quint typecheck <file>`, then
+     `quint run --main=<main> --max-steps=<depth> <file>`, then `quint verify` with the same options and
+     `--invariant=<name>` for each invariant, which must hold, and for each witness, which must be violated. A
+     typecheck or run that isn't OK leaves the entry's later runs not run. Each result is read from Quint's own
+     `[ok] No violation found` and `[violation] Found an issue` lines, never from the exit code alone.
+
+A job with both gets one proofs.md, its Kani sections first, and one verdict: the worse of the two.
+
 Settings are config.json's `proofs`: `mode` (`advisory`, the default, or `blocking`) and `timeout_s` (a positive
 integer, by default 600, for each run). In advisory mode FAIL and TIMEOUT are written as ADVISORY-FAIL, with
 `RESULT:` keeping which. Each run's output is appended to round-N/proofs.log. SIGTERM or SIGINT stops the test-run
 it started, by its PID, removes the scratch copy and exits 128 + signal, with no proofs.md.
 """
 
+import contextlib
 import importlib.machinery
 import importlib.util
 import json
@@ -33,14 +48,19 @@ import subprocess
 import sys
 import tempfile
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 BIN = Path(__file__).resolve().parent
 KEYS = ("property", "scenario", "crate", "harness", "assumes", "unwind", "broken file", "broken old", "broken new")
+MODEL_KEYS = ("file", "main", "depth", "invariant")
 CRATE = re.compile(r"[A-Za-z0-9_-]+")
 HARNESS = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 SCENARIO = re.compile(r"[A-Z][A-Z0-9]*(-[A-Z0-9]+)*-[0-9]+")
+INVARIANT = re.compile(rf"`(?P<name>{HARNESS.pattern})`\s+for\s+(?P<scenario>{SCENARIO.pattern}),"
+                       rf"\s+witness\s+`(?P<witness>{HARNESS.pattern})`")
 SUCCESSFUL, FAILED = "VERIFICATION:- SUCCESSFUL", "VERIFICATION:- FAILED"
+NO_VIOLATION, VIOLATION, FOUND = "[ok] No violation found", "[violation]", "[violation] Found an issue"
+DEPTH = "12"  # a model entry's Depth when its line is left out
 KILL_AFTER = 30  # seconds between the SIGTERM and the SIGKILL of a run that timed out
 
 
@@ -151,6 +171,63 @@ def entries(spec):
     return found, problems
 
 
+# ---- The `## Models` section -----------------------------------------------
+
+
+def model_file(value):
+    """Whether a File value names a `.qnt` file under docs/models/ with no `..`. An absolute path's first part is
+    `/`, so it is never under docs/models/."""
+    path = PurePosixPath(value)
+    return path.parts[:2] == ("docs", "models") and ".." not in path.parts and path.suffix == ".qnt"
+
+
+def models(spec):
+    """The `### MODEL-<n>` entries of spec.md's `## Models`, and the problems that make them unusable."""
+    body = JOB.section(spec, "Models") if spec.exists() else None
+    if body is None:
+        return [], ["spec.md has no `## Models` section"]
+    parts = re.split(r"^###[ \t]+(MODEL-[0-9]+)[ \t]*$", body, flags=re.M)
+    if len(parts) < 3:
+        return [], ["spec.md's `## Models` has no `### MODEL-<n>` entry"]
+    found, problems = [], []
+    for name, text in zip(parts[1::2], parts[2::2]):
+        raw = {key: [] for key in MODEL_KEYS}
+        for line in text.splitlines():
+            m = re.match(r"\s*[-*]\s+([A-Za-z ]+?)\s*:(.*)$", line)
+            if m and m.group(1).lower() in MODEL_KEYS:
+                raw[m.group(1).lower()].append(m.group(2).strip())
+        entry, bad = {"name": name, "depth": DEPTH, "invariants": []}, []
+        for key in ("file", "main", "depth"):
+            values = raw[key]
+            if len(values) > 1:
+                bad.append(f"{name}: {key.capitalize()} appears {len(values)} times")
+                continue
+            if not values:
+                if key != "depth":
+                    bad.append(f"{name}: {key.capitalize()} is missing")
+                continue
+            value = values[0] if key == "depth" else backticked(values[0])
+            ok = value is not None and {
+                "file": model_file,
+                "main": lambda v: HARNESS.fullmatch(v),
+                "depth": lambda v: re.fullmatch(r"[1-9][0-9]*", v),
+            }[key](value)
+            if not ok:
+                bad.append(f"{name}: {key.capitalize()} has an invalid value: {values[0]!r}")
+            entry[key] = value
+        if not raw["invariant"]:
+            bad.append(f"{name}: Invariant is missing")
+        for value in raw["invariant"]:
+            m = INVARIANT.fullmatch(value)
+            if m:
+                entry["invariants"].append((m["name"], m["scenario"], m["witness"]))
+            else:
+                bad.append(f"{name}: Invariant has an invalid value: {value!r}")
+        problems += bad
+        found.append(entry)
+    return found, problems
+
+
 # ---- The forbidden-construct scan --------------------------------------------
 
 
@@ -255,19 +332,20 @@ def forbidden(worktree, base, commit, found):
 
 
 class Run:
-    """One test-run call: its result word, exit code, output and seconds."""
+    """One test-run call of `command` from `folder` in the scratch copy: its result word (`verdict` reads it from the
+    run), exit code, output and seconds."""
 
     current = None  # the test-run running now, for a stop
 
-    def __init__(self, scratch, entry, timeout, log, label):
-        self.command = ["cargo", "kani", "-p", entry["crate"], "--tests", "--harness", entry["harness"]]
+    def __init__(self, scratch, folder, command, verdict, timeout, log, label):
+        self.command = command
         out = Path(tempfile.mkstemp(prefix="prove-", suffix=".out")[1])
         start, self.timed_out, self.code = time.monotonic(), False, None
         try:
             with out.open("w") as sink:
                 env = dict(os.environ, CARGO_TARGET_DIR=str(scratch / "core" / "target"))
                 try:
-                    Run.current = subprocess.Popen([str(BIN / "test-run"), "--", *self.command], cwd=scratch / "core",
+                    Run.current = subprocess.Popen([str(BIN / "test-run"), "--", *self.command], cwd=folder,
                                                    env=env, stdin=subprocess.DEVNULL, stdout=sink,
                                                    stderr=subprocess.STDOUT)
                 except OSError as e:
@@ -285,20 +363,63 @@ class Run:
             out.unlink(missing_ok=True)
         self.seconds = time.monotonic() - start
         self.code = 128 - self.code if self.code is not None and self.code < 0 else self.code
-        lines = {line.strip() for line in self.output.splitlines()}
-        if self.code == 0 and SUCCESSFUL in lines and FAILED not in lines:
-            self.result = "SUCCESSFUL"
-        elif self.timed_out:
-            self.result = "TIMEOUT"
-        elif FAILED in lines:
-            self.result = "FAILED"
-        else:
-            self.result = f"NO VERDICT ({self.error or f'exit {self.code}'})"
-        times = re.findall(r"Verification Time:\s*([0-9.]+)s", self.output)
-        self.verification = times[-1] if times else "-"
+        self.lines = [line.strip() for line in self.output.splitlines()]
+        self.result = verdict(self)
         with log.open("a") as f:
             f.write(f"==== {label}: {' '.join(self.command)} ({self.result}, {self.seconds:.1f}s) ====\n"
                     f"{self.output}\n")
+
+    def says(self, start):
+        """Whether a line of the output, stripped, starts with `start`."""
+        return any(line.startswith(start) for line in self.lines)
+
+
+def no_verdict(run):
+    return f"NO VERDICT ({run.error or f'exit {run.code}'})"
+
+
+def kani_result(run):
+    if run.code == 0 and SUCCESSFUL in run.lines and FAILED not in run.lines:
+        return "SUCCESSFUL"
+    if run.timed_out:
+        return "TIMEOUT"
+    return "FAILED" if FAILED in run.lines else no_verdict(run)
+
+
+def kani(scratch, entry, timeout, log, label):
+    """The entry's harness run from the scratch copy's core/, with Kani's verification seconds."""
+    command = ["cargo", "kani", "-p", entry["crate"], "--tests", "--harness", entry["harness"]]
+    run = Run(scratch, scratch / "core", command, kani_result, timeout, log, label)
+    times = re.findall(r"Verification Time:\s*([0-9.]+)s", run.output)
+    run.verification = times[-1] if times else "-"
+    return run
+
+
+def typecheck_result(run):
+    """A successful typecheck prints nothing: OK is exit 0 with no `error` line."""
+    if run.code == 0 and not run.says("error"):
+        return "OK"
+    return "TIMEOUT" if run.timed_out else f"FAILED ({run.error or f'exit {run.code}'})"
+
+
+def no_violation(run):
+    return run.code == 0 and run.says(NO_VIOLATION) and not run.says(VIOLATION)
+
+
+def run_result(run):
+    if no_violation(run):
+        return "OK"
+    if run.timed_out:
+        return "TIMEOUT"
+    return "VIOLATED" if run.says(VIOLATION) else no_verdict(run)
+
+
+def verify_result(run):
+    if no_violation(run):
+        return "HOLDS"
+    if run.timed_out:
+        return "TIMEOUT"
+    return "VIOLATED" if run.code != 0 and run.says(FOUND) and not run.says(NO_VIOLATION) else no_verdict(run)
 
 
 def end(proc):
@@ -332,7 +453,7 @@ def broken_rule(scratch, entry, timeout, log):
     lines[matches[0]] = (indent + new if new else "") + eol
     target.write_text("".join(lines))
     try:
-        run = Run(scratch, entry, timeout, log, f"{entry['name']} broken rule")
+        run = kani(scratch, entry, timeout, log, f"{entry['name']} broken rule")
     finally:
         git(scratch, "checkout", "--", str(target.relative_to(scratch)))
     left = git(scratch, "status", "--porcelain").strip()
@@ -342,16 +463,31 @@ def broken_rule(scratch, entry, timeout, log):
     return word, run
 
 
-def harnesses(worktree, commit, found, timeout, log):
-    """Each entry run in one scratch copy at the commit: its proofs.md section and its reasons."""
+@contextlib.contextmanager
+def scratch_copy(worktree, commit):
+    """A scratch worktree at the commit, removed however prove ends; a stop ends the run going on first."""
     holder = Path(tempfile.mkdtemp(prefix="prove-")).resolve()
     scratch = holder / "scratch"
-    sections, reasons = [], []
     try:
         git(worktree, "worktree", "add", "--detach", str(scratch), commit)
+        yield scratch
+    except Stopped:
+        if Run.current is not None and Run.current.poll() is None:
+            end(Run.current)
+        raise
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", str(scratch)], cwd=worktree, capture_output=True)
+        subprocess.run(["git", "worktree", "prune"], cwd=worktree, capture_output=True)
+        shutil.rmtree(holder, ignore_errors=True)
+
+
+def harnesses(worktree, commit, found, timeout, log):
+    """Each entry run in one scratch copy at the commit: its proofs.md section and its reasons."""
+    sections, reasons = [], []
+    with scratch_copy(worktree, commit) as scratch:
         for entry in found:
             name = f"{entry['name']} `{entry['harness']}`"
-            run = Run(scratch, entry, timeout, log, entry["name"])
+            run = kani(scratch, entry, timeout, log, entry["name"])
             if run.result == "SUCCESSFUL":
                 broken, broken_run = broken_rule(scratch, entry, timeout, log)
             else:
@@ -374,15 +510,84 @@ def harnesses(worktree, commit, found, timeout, log):
                 f"- Broken rule: {broken}"
                 + (f" (verification seconds {broken_run.verification}, VM seconds {broken_run.seconds:.1f})"
                    if broken_run else "") + "\n")
-    except Stopped:
-        if Run.current is not None and Run.current.poll() is None:
-            end(Run.current)
-        raise
-    finally:
-        subprocess.run(["git", "worktree", "remove", "--force", str(scratch)], cwd=worktree, capture_output=True)
-        subprocess.run(["git", "worktree", "prune"], cwd=worktree, capture_output=True)
-        shutil.rmtree(holder, ignore_errors=True)
     return sections, reasons
+
+
+# ---- Models ------------------------------------------------------------------
+
+
+def model_runs(worktree, commit, found, timeout, log):
+    """Each model entry's runs in one scratch copy at the commit: its proofs.md section and its reasons."""
+    sections, reasons = [], []
+    with scratch_copy(worktree, commit) as scratch:
+        for entry in found:
+            sections.append(model_entry(scratch, entry, timeout, log, reasons))
+    return sections, reasons
+
+
+def model_entry(scratch, entry, timeout, log, reasons):
+    """One entry's typecheck, run, invariants and witnesses, in that order: its proofs.md section. Its reasons are
+    added to `reasons`; a run that wasn't run adds none, as the typecheck or run that stopped it has one."""
+    name, file, depth = entry["name"], entry["file"], entry["depth"]
+    options = [f"--main={entry['main']}", f"--max-steps={depth}"]
+    target = Path(os.path.realpath(scratch / file))
+    blocked = None
+    if not (target.is_file() and target.is_relative_to(scratch / "docs" / "models")):
+        blocked = f"`{file}` isn't a regular file inside docs/models/ in the scratch copy"
+        reasons.append(("FAIL", f"{name}: {blocked}"))
+    lines = []
+
+    def step(head, label, command, verdict):
+        if blocked:
+            result, seconds, timed_out = f"not run: {blocked}", "-", False
+        else:
+            run = Run(scratch, scratch, command, verdict, timeout, log, f"{name} {label}")
+            result, seconds, timed_out = run.result, f"{run.seconds:.1f}s", run.timed_out
+        lines.append(f"- {head}: {result} ({seconds}): `{' '.join(command)}`\n")
+        return result, timed_out
+
+    def reason(timed_out, why):
+        reasons.append(("TIMEOUT", f"{why} after {timeout}s") if timed_out else ("FAIL", why))
+
+    for head, kind, command, verdict in (("Typecheck", "typecheck", ["quint", "typecheck", file], typecheck_result),
+                                         ("Run", "run", ["quint", "run", *options, file], run_result)):
+        result, timed_out = step(head, kind, command, verdict)
+        if result != "OK" and not blocked:
+            reason(timed_out, f"{name} {kind}: {result}")
+            blocked = f"the {kind} was {result}"
+    for inv, scenario, _ in entry["invariants"]:
+        result, timed_out = step(f"Invariant `{inv}` ({scenario})", f"invariant {inv}",
+                                 ["quint", "verify", *options, f"--invariant={inv}", file], verify_result)
+        if result != "HOLDS" and not blocked:
+            reason(timed_out, f"{name} `{inv}` ({scenario}): {result}")
+    for inv, _, witness in entry["invariants"]:
+        result, timed_out = step(f"Witness `{witness}` of `{inv}`", f"witness {witness}",
+                                 ["quint", "verify", *options, f"--invariant={witness}", file], verify_result)
+        if result == "HOLDS":
+            reasons.append(("FAIL", f"{name} witness `{witness}` of `{inv}`: vacuous: it holds, so `{inv}` holding "
+                                    "proves nothing"))
+        elif result != "VIOLATED" and not blocked:
+            reason(timed_out, f"{name} witness `{witness}` of `{inv}`: {result}")
+    return (f"## {name} {file} {entry['main']}\n"
+            f"- Commands: `{BIN / 'test-run'} -- quint …`, from the root of a scratch copy of the commit, with "
+            f"CARGO_TARGET_DIR=core/target there\n"
+            f"- Depth: {depth}\n" + "".join(lines))
+
+
+def judge_models(job, spec, commit, timeout, log):
+    """The model checks a to c, stopping at the first that finds a reason: proofs.md's MODEL sections and reasons."""
+    if JOB.models_hash(spec) != job.get("models_hash", "none"):
+        return [], [("FAIL", "models changed after spec: spec.md's `## Models` isn't the section hashed when the "
+                             "job left spec")]
+    found, problems = models(spec)
+    for entry in found:
+        if entry.get("file") and model_file(entry["file"]) and subprocess.run(
+                ["git", "cat-file", "-e", f"{commit}:{entry['file']}"], cwd=job["worktree"],
+                capture_output=True).returncode != 0:
+            problems.append(f"{entry['name']}: File `{entry['file']}` isn't in the commit")
+    if problems:
+        return [], [("FAIL", p) for p in problems]
+    return model_runs(job["worktree"], commit, found, timeout, log)
 
 
 # ---- The verdict -------------------------------------------------------------
@@ -421,10 +626,13 @@ def prove(job_id):
     log.write_text("")
 
     sections, reasons = [], []
-    if "proofs" not in JOB.surfaces(job):
+    if not JOB.proves(job):
         verdict = "SKIPPED"
     else:
-        sections, reasons = judge(job, spec, commit, timeout, log)
+        for surface, check in (("proofs", judge), ("model", judge_models)):
+            if surface in JOB.surfaces(job):
+                more, why = check(job, spec, commit, timeout, log)
+                sections, reasons = sections + more, reasons + why
         levels = {level for level, _ in reasons}
         verdict = "FAIL" if "FAIL" in levels else "TIMEOUT" if "TIMEOUT" in levels else "PASS"
     result = verdict if verdict in {"FAIL", "TIMEOUT"} else None

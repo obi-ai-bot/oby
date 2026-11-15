@@ -3714,6 +3714,29 @@ fn merging_45_own_work_into_main_merges_by_itself_with_no_card() {
     }
 }
 
+/// MERGING-45: under a learned workflow a person approves, the owner's own conversation work
+/// whose Oby review still flags it doesn't merge on that person's approval; once Oby's review
+/// approved the head, it merges by itself by that workflow, with no card.
+#[test]
+fn merging_45_a_learned_persons_approval_never_merges_past_obys_flagging_review() {
+    let folder = Folder::new("merge-own-person-flagged");
+    let mut flagged = changes_asked();
+    flagged.own_conversation = true;
+    let obid = started_with(&folder, false, Some(PERSON), flagged, &["person"]);
+    let reads = || calls(&folder.0).matches("pr view 7").count();
+    within(30, "a few reads", || (reads() >= 4).then_some(()));
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    assert!(job(&obid)["mergedBy"].is_null());
+    assert!(merge_cards(&obid).is_empty(), "{:?}", merge_cards(&obid));
+    drop(obid);
+
+    let folder = Folder::new("merge-own-person-approved");
+    let obid = started_with(&folder, false, Some(PERSON), own(), &["person"]);
+    let merged = merged_with_no_card(&obid, "memory");
+    merged_into(&merged, "dev");
+    assert_eq!(calls(&folder.0).matches("-X PUT").count(), 1);
+}
+
 /// MERGING-46: with no workflow learned for its base, the owner's own conversation work merges by
 /// a squash into its own base on Oby's own review, with no "Ready to merge?" and nothing
 /// remembered: into dev with nothing learned, and into release with a workflow learned into dev.

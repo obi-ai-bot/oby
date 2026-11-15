@@ -118,7 +118,7 @@ pub(crate) fn table() -> Vec<Tool> {
              "accountFailover": {"type": "boolean"},
              "defaultMode": {"type": "string", "enum": ["ask", "acceptEdits", "plan", "sandbox", "bypass"]}}})) },
         Tool { name: "oby_routines", server: Server::Conversation, confirm_unless_owners_word: false, owner_only: false, marks_on_result: Answer, read_only: true, does: Does::Conversation(|shared, _, _| at_once(Ok(routines(shared))), "Lists the owner's routines (requests Oby runs on a schedule, a job each time): id, name, schedule, next run, on or paused, and the last run.", json!({"type": "object", "properties": {}})) },
-        Tool { name: "oby_routine", server: Server::Conversation, confirm_unless_owners_word: true, owner_only: false, marks_on_result: Nothing, read_only: false, does: Does::Conversation(|shared, session, args| at_once(propose_routine(shared, session, args)), "Proposes a routine: a request Oby runs on a schedule, starting a job each time, as oby_dispatch would. Nothing is saved until the owner confirms it in their inbox. Hourly is its most often.",
+        Tool { name: "oby_routine", server: Server::Conversation, confirm_unless_owners_word: true, owner_only: false, marks_on_result: Nothing, read_only: false, does: Does::Conversation(|shared, session, args| at_once(propose_routine(shared, session, args)), "Proposes a routine: a request Oby runs on a schedule or on a GitHub event, starting a job each time, as oby_dispatch would. Nothing is saved until the owner confirms it in their inbox. Hourly is its most often.",
          json!({"type": "object", "properties": {
              "name": {"type": "string", "description": "A short name, 3 to 6 words, like a job's title."},
              "repo": {"type": "string", "description": "owner/name, one of the owner's repositories."},
@@ -128,8 +128,9 @@ pub(crate) fn table() -> Vec<Tool> {
              "account": {"type": "string", "description": "An account by name, or auto."},
              "mode": {"type": "string", "enum": ["ask", "acceptEdits", "plan", "bypass"], "description": "Leave it out for the owner's default."},
              "schedule": {"type": "object", "description": "One of {\"every\": \"hourly\", \"minute\": 15}, {\"every\": \"daily\", \"at\": \"09:00\"}, {\"every\": \"weekdays\", \"at\": \"09:00\"} (Monday to Friday) or {\"every\": \"weekly\", \"days\": [\"mon\", \"thu\"], \"at\": \"08:30\"}; at is 24-hour HH:MM in zone."},
+             "on": {"type": "object", "description": "Instead of schedule: {\"github\": {\"repo\", \"event\": \"reviewRequested\"|\"assigned\"|\"checksFailed\"|\"labeled\", \"label\" for labeled}}."},
              "zone": {"type": "string", "description": "The owner's IANA time zone, like America/Sao_Paulo; left out, the Mac's."}},
-             "required": ["name", "repo", "task", "schedule"]})) },
+             "required": ["name", "repo", "task"]})) },
         Tool { name: "oby_change_routine", server: Server::Conversation, confirm_unless_owners_word: true, owner_only: false, marks_on_result: Answer, read_only: false, does: Does::Conversation(|shared, session, args| at_once(change_routine(shared, session, args)), "Changes a routine by id, as the owner said: pause it, resume it, run it now, delete it, or give it a new schedule. What waits for their Confirm says so.",
          json!({"type": "object", "properties": {
              "id": {"type": "string", "description": "The routine's id, as oby_routines gives it."},
@@ -1122,7 +1123,7 @@ fn routines(shared: &Shared) -> String {
                 "{} · {} · {} ({}) · {} in {} · {next} · {last}",
                 r.id,
                 r.name,
-                r.schedule.words(),
+                r.when(),
                 r.zone,
                 r.kind,
                 r.repo
@@ -1141,7 +1142,7 @@ fn routine_words(routine: &crate::routines::Routine) -> String {
     format!(
         "{} ({}, {})",
         routine.name,
-        routine.schedule.words(),
+        routine.when(),
         super::actions::describe(&job)
     )
 }
@@ -1169,7 +1170,8 @@ struct Propose {
     name: String,
     repo: String,
     task: String,
-    schedule: Value,
+    schedule: Option<Value>,
+    on: Option<Value>,
     zone: Option<String>,
     kind: Option<String>,
     agent: Option<String>,
@@ -1185,14 +1187,17 @@ fn propose_routine(shared: &Shared, session: &Session, args: Value) -> Result<St
         repo,
         task,
         schedule,
+        on,
         zone,
         kind,
         agent,
         account,
         mode,
     } = parse(args)?;
-    let schedule: crate::routines::Schedule = serde_json::from_value(schedule)
+    let schedule = (schedule.map(serde_json::from_value).transpose())
         .map_err(|e| format!("That isn't a schedule Oby runs: {e}"))?;
+    let on = (on.map(serde_json::from_value).transpose())
+        .map_err(|e| format!("That isn't a GitHub event Oby runs on: {e}"))?;
     let zone = zone.filter(|z| !z.trim().is_empty()).unwrap_or_else(|| {
         jiff::tz::TimeZone::system()
             .iana_name()
@@ -1204,6 +1209,7 @@ fn propose_routine(shared: &Shared, session: &Session, args: Value) -> Result<St
         repo,
         task,
         schedule,
+        on,
         zone,
         kind,
         agent,
@@ -1224,7 +1230,7 @@ fn propose_routine(shared: &Shared, session: &Session, args: Value) -> Result<St
     let mut t = now;
     let tz = jiff::tz::TimeZone::get(&routine.zone).unwrap_or(jiff::tz::TimeZone::UTC);
     while next.len() < 3 {
-        let Some(after) = routine.schedule.next_after(&tz, t) else {
+        let Some(after) = (routine.schedule.as_ref()).and_then(|s| s.next_after(&tz, t)) else {
             break;
         };
         next.push(local(&routine.zone, after));
@@ -1232,11 +1238,18 @@ fn propose_routine(shared: &Shared, session: &Session, args: Value) -> Result<St
     }
     let what = routine_words(&routine);
     let nonce = super::briefing::nonce();
+    let (bypass, next) = (bypass_line(&routine), next.join("; "));
+    let plan = match routine.on {
+        Some(_) => format!(
+            "{what}. Each matching event starts a job by itself, as one you start from your GitHub work does.{bypass}"
+        ),
+        None => format!(
+            "{what}, in {}.{bypass} Each run starts a job, as one you ask for does. Its next runs: {next}.",
+            routine.zone
+        ),
+    };
     let text = format!(
-        "Oby's brain planned a routine: {what}, in {}.{} Each run starts a job, as one you ask for does. Its next runs: {}. It's saved only if you confirm.\n\n{}\n{}",
-        routine.zone,
-        bypass_line(&routine),
-        next.join("; "),
+        "Oby's brain planned a routine: {plan} It's saved only if you confirm.\n\n{}\n{}",
         super::briefing::fence_rule(&nonce, "the task Oby planned"),
         super::briefing::fence(&nonce, &crate::secrets::known().redact(&routine.task)),
     );
@@ -1252,8 +1265,12 @@ fn propose_routine(shared: &Shared, session: &Session, args: Value) -> Result<St
         },
     );
     Ok(format!(
-        "The routine {what} waits for the owner's OK in their inbox: nothing repeats until they confirm it. Its next runs would be {}.",
-        next.join("; ")
+        "The routine {what} waits for the owner's OK in their inbox: nothing repeats until they confirm it.{}",
+        if next.is_empty() {
+            String::new()
+        } else {
+            format!(" Its next runs would be {next}.")
+        }
     ))
 }
 
@@ -1350,9 +1367,9 @@ fn change_routine(shared: &Shared, session: &Session, args: Value) -> Result<Str
                 format!("Reschedule the routine {}", routine_words(&moved)),
                 format!(
                     "Oby's brain planned to change when {name} runs: {} in {}, instead of {} in {}. It happens only if you confirm.",
-                    moved.schedule.words(),
+                    moved.when(),
                     moved.zone,
-                    routine.schedule.words(),
+                    routine.when(),
                     routine.zone
                 ),
                 json!({"action": "reschedule", "schedule": schedule, "zone": zone}),
