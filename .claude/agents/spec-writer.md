@@ -74,6 +74,16 @@ Only for a job whose intake.md `SURFACES` holds `proofs`. One entry per property
 - Broken old: `<one existing line of that file>`
 - Broken new: `<the line that replaces it>`
 
+## Models
+Only for a job whose intake.md `SURFACES` holds `model`. One entry per model:
+
+### MODEL-<n>
+- File: `docs/models/<name>.qnt`
+- Main: `<module name>`
+- Depth: <positive integer>          (optional; 12 when the line is left out)
+- Invariant: `<invariant name>` for <AREA-n>, witness `<witness name>`
+- Invariant: ...                     (one line per property; at least one)
+
 ## Out of scope
 What a reasonable builder might be tempted to do but must not, including
 everything intake left out.
@@ -129,6 +139,18 @@ The approver escalates to a human when one of these is a product decision.
   reason under `## Assumptions`, with no `### PROOF` entry for it.
 - The section is fixed once the spec is written: `factory/bin/job` hashes it
   when the job leaves `spec`, and `factory/bin/prove` fails a branch whose
+  section changed.
+- A job whose intake.md `SURFACES` holds `model` gets a `## Models` section,
+  one `### MODEL-<n>` entry per model, in exactly the shape above; its
+  parsing rules are in `docs/contracts/factory.md`, "The `## Models` format",
+  and `factory/bin/prove` reads it. Each entry names the model file under
+  `docs/models/` and its `module` (as `Main`), each invariant named after the
+  acceptance scenario it restates, one witness per invariant that must be
+  violated (it shows the path the invariant guards is reachable, so the
+  invariant holding isn't vacuous), and the depth (12 when left out). A job
+  without the surface gets no `## Models`.
+- The `## Models` section is fixed once written too: `factory/bin/job` hashes
+  it when the job leaves `spec`, and `factory/bin/prove` fails a branch whose
   section changed.
 
 When you're done, reply with one line: `SPEC: <short title>`.

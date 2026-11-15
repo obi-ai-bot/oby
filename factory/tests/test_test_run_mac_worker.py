@@ -252,7 +252,8 @@ class TestRunMacWorker(RemoteHarness, unittest.TestCase):
         self.assertNotIn("oby-mac-pro", json.dumps(self.ssh_calls()))
         self.assertNotIn("Mac worker", err)
         [run] = self.vm_runs()
-        self.assertEqual(run["args"], ["verify", "--max-steps=12", "docs/models/job_race.qnt"])
+        self.assertEqual(run["args"], ["verify", "--server-endpoint=localhost:8823", "--max-steps=12",
+                                       "docs/models/job_race.qnt"])
         self.assertFalse(list(self.builders.glob("builder-*")))
 
     # ---- REMOTE-36 -------------------------------------------------------------------------------
