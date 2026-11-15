@@ -1,9 +1,9 @@
 # The software factory
 
 `/factory run` in Claude Code, from the repository root, builds the roadmap's tasks one pull request each:
-intake → spec → build → gate → prove → review → approve, where only a job whose intake names the `proofs`
-surface must pass through `prove`, and every other job may still go from gate straight to review. How to run it
-and what each piece does: `.claude/skills/factory/SKILL.md`. The roadmap and its 180 tasks: `queue/README.md`.
+intake → spec → build → gate → prove → review → approve, where only a job whose intake names the `proofs` (Kani)
+or `model` (Quint) surface must pass through `prove`, and every other job may still go from gate straight to review.
+How to run it and what each piece does: `.claude/skills/factory/SKILL.md`. The roadmap and its 180 tasks: `queue/README.md`.
 
 ```
 config.json     concurrency, rounds, the active sprint, routing, protected paths, prices
@@ -15,7 +15,9 @@ bin/gate        runs checks.sh in a job's worktree → round-N/checks.md; with `
                 deallocates the idle VM (job queue runs it)
 bin/prove       re-runs the Kani harnesses a job's spec.md lists under `## Proofs` on the commit its gate passed, through
                 bin/test-run, checks each can fail on its declared broken rule and that the branch adds nothing that
-                games them → round-N/proofs.md; advisory by default (docs/contracts/factory.md, PROVE)
+                games them; for a `model` job, runs `quint typecheck`, `run` and `verify` on each Quint model its
+                `## Models` lists, each invariant holding and each witness violated → round-N/proofs.md; advisory by
+                default (docs/contracts/factory.md, PROVE)
 bin/mutants     runs cargo-mutants on the core/crates/ Rust a job's gated commit changes, through bin/test-run on a gate
                 VM builder slot, within a time budget → round-N/mutants.md, the missed mutants for reviewer-code and the
                 approver; advisory only, it never moves a job (docs/contracts/factory.md, MUTANTS)
