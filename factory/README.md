@@ -99,6 +99,15 @@ folder (`/factory <answer>`), and nothing reads or writes a GitHub issue or the 
 stays a draft until the approver says APPROVE; then GitHub merges it, and the job waits in the stage `queued`
 while GitHub's merge queue holds it.
 
+## From AGENTS.md
+
+From the root [AGENTS.md](../AGENTS.md)'s "Software factory".
+
+`/factory run` (Claude Code, from the repository root) builds the open tasks of the active sprint in `factory/queue/tasks/`, each through intake → spec → build → gate → review → approve, one pull request per task into `dev`. A task runs once the tasks its `DEPENDS` line names are in `factory/queue/done/`; its own pull request moves its file there. State is in `factory/jobs/` (gitignored); `factory/bin/job` is its only writer. The gate's checks are `factory/checks.sh`, which runs `scripts/oby-check.sh` in the job's worktree with one shared Cargo build folder (`~/Library/Caches/oby-factory/core-target`). Dashboard: `cd factory && python3 -m http.server`, then open http://localhost:8000/dashboard.html. How it runs: `.claude/skills/factory/SKILL.md`; what it is and its licence: `factory/README.md`.
+
+- A fresh checkout needs `oby-check-blok` installed once on the Mac ("Build and run") and `gitleaks`; for the Electron app, `cd apps/electron && npm install`. To see a screen on a given port: [apps/electron/AGENTS.md](../apps/electron/AGENTS.md#build-and-run).
+- Each job works in its own git worktree, a full checkout at `.worktrees/<job-id>` (gitignored), on a branch `factory/<job-id>`. A tool at the repository root that doesn't read `.gitignore` sees those copies too: exclude `.worktrees/` in its settings.
+
 ## Licence
 
 The factory is adapted from ZazenCodes' Software Factory for Claude Code v2
