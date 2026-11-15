@@ -31,6 +31,8 @@ const PULL: &str = "https://github.com/obi-e2e/fixture-app/pull/7";
 /// pull request's head for a moment after a push), whether `pr list` fails (`list-fails`, or once for the
 /// branch's own lookup, as GitHub's 502: `list-fails-once`), and what `pr view` answers
 /// (`view.json`). Like GitHub, `pr create` refuses a branch it opened one for already (`opened`).
+/// `repo view` answers the name GitHub gives the repository now (`name-on-github`), and `pr create`
+/// prints the pull request `pull` names, or [`PULL`].
 fn fake_gh(folder: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let bin = folder.join("bin");
@@ -62,12 +64,13 @@ case "$1 $2" in
       case "$a" in --title=*) printf '%s' "${{a#--title=}}" > "$dir/title" ;; esac
       prev="$a"
     done
+    pull=$(cat "$dir/pull" 2>/dev/null || echo '{PULL}')
     # GitHub refuses a second pull request of a branch into the same base (#1663).
-    [ "$(cat "$dir/opened" 2>/dev/null)" = "$branch" ] && {{ echo "a pull request for branch \"$branch\" into branch \"main\" already exists:" >&2; echo '{PULL}' >&2; exit 1; }}
+    [ "$(cat "$dir/opened" 2>/dev/null)" = "$branch" ] && {{ echo "a pull request for branch \"$branch\" into branch \"main\" already exists:" >&2; echo "$pull" >&2; exit 1; }}
     printf '%s' "$branch" > "$dir/opened"
-    echo '[{{"url":"{PULL}","isCrossRepository":false,"headRefOid":"__HEAD__","baseRefName":"main"}}]' > "$dir/open"
+    echo "[{{\"url\":\"$pull\",\"isCrossRepository\":false,\"headRefOid\":\"__HEAD__\",\"baseRefName\":\"main\"}}]" > "$dir/open"
     echo 'Creating pull request…'
-    echo '{PULL}'
+    echo "$pull"
     exit 0 ;;
   "pr edit")
     for a in "$@"; do [ "$prev" = --body-file ] && cp "$a" "$dir/body"; prev="$a"; done
@@ -75,6 +78,8 @@ case "$1 $2" in
   "pr view") [ -f "$dir/view.json" ] && cat "$dir/view.json" && exit 0; exit 1 ;;
   "issue view") [ -f "$dir/issue.json" ] && cat "$dir/issue.json" && exit 0; exit 1 ;;
   "api graphql") [ -f "$dir/who.json" ] && cat "$dir/who.json" && exit 0; exit 1 ;;
+  "repo view") [ -f "$dir/name-on-github" ] && printf '{{"nameWithOwner": "%s"}}\n' "$(cat "$dir/name-on-github")" && exit 0
+    echo "gh: not in this test" >&2; exit 1 ;;
   *) echo "gh: not in this test" >&2; exit 1 ;;
 esac
 "#,
@@ -1424,6 +1429,94 @@ fn a_forks_pull_request_of_the_same_branch_is_never_taken_for_obids() {
     let calls = calls_now(&folder.0);
     assert!(calls.contains("pr create"), "{calls}");
     assert!(!calls.contains("pr edit"), "{calls}");
+}
+
+/// PUBLISHING-38: the repository was renamed on GitHub since it was configured, and `gh` opens its
+/// pull request under the new name: it's the job's own, published and followed, with the name
+/// asked of `gh repo view` once and kept in the job's file, never in the API.
+#[test]
+fn publishing_38_a_renamed_repositorys_pull_request_is_its_own() {
+    let folder = Folder::new("publish-renamed");
+    let bin = fake_gh(&folder.0);
+    let renamed = "https://github.com/obi-e2e/fixture-app-renamed/pull/7";
+    std::fs::write(
+        folder.0.join("gh/name-on-github"),
+        "obi-e2e/fixture-app-renamed",
+    )
+    .unwrap();
+    std::fs::write(folder.0.join("gh/pull"), renamed).unwrap();
+    std::fs::write(
+        folder.0.join("gh/view.json"),
+        r#"{"state":"OPEN","reviewDecision":"REVIEW_REQUIRED","mergedAt":null,"baseRefName":"main","headRefOid":""}"#,
+    )
+    .unwrap();
+    let (obid, _, _) = obid_with(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt"}),
+    );
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
+    assert_eq!(job["publishError"], Value::Null, "{job}");
+    assert_eq!(job["published"], renamed, "{job}");
+    let opened = job["outgoing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["action"] == "pullRequest");
+    assert_eq!(opened.map(|o| &o["id"]), Some(&json!(renamed)), "{job}");
+    // Followed: obid reads the pull request it opened, under the repository's configured name.
+    let followed = within(30, "obid reads the pull request", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        job["pullRequest"].is_object().then_some(job)
+    });
+    assert_eq!(followed["pullRequest"]["state"], "OPEN");
+    assert!(followed.get("repoOnGithub").is_none(), "{followed}");
+    let calls = calls_now(&folder.0);
+    assert!(
+        calls.contains("pr view 7 --repo obi-e2e/fixture-app "),
+        "{calls}"
+    );
+    let asked: Vec<&str> = calls
+        .lines()
+        .filter(|c| c.starts_with("repo view"))
+        .collect();
+    assert_eq!(
+        asked,
+        ["repo view obi-e2e/fixture-app --json nameWithOwner"],
+        "{calls}"
+    );
+    let kept = std::fs::read(obid.home.join(format!("jobs/{id}.json"))).unwrap();
+    let kept: Value = serde_json::from_slice(&kept).unwrap();
+    assert_eq!(
+        kept["repoOnGithub"], "obi-e2e/fixture-app-renamed",
+        "{kept}"
+    );
+}
+
+/// PUBLISHING-38: when `gh` can't say what GitHub calls the repository now, only its configured
+/// name counts: a pull request opened under another is still refused, as before.
+#[test]
+fn publishing_38_an_unread_name_widens_nothing() {
+    let folder = Folder::new("publish-unnamed");
+    let bin = fake_gh(&folder.0);
+    let renamed = "https://github.com/obi-e2e/fixture-app-renamed/pull/7";
+    std::fs::write(folder.0.join("gh/pull"), renamed).unwrap();
+    let (obid, _, _) = obid_with(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt"}),
+    );
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
+    assert_eq!(job["published"], Value::Null, "{job}");
+    assert_eq!(
+        job["publishError"], "Pushed, but gh opened no pull request of this repository.",
+        "{job}"
+    );
+    assert!(calls_now(&folder.0).contains("repo view obi-e2e/fixture-app --json nameWithOwner"));
+    let kept = std::fs::read_to_string(obid.home.join(format!("jobs/{id}.json"))).unwrap();
+    assert!(!kept.contains("repoOnGithub"), "{kept}");
 }
 
 /// The base can't be fetched when it publishes: nothing goes out, and `publishError` says so

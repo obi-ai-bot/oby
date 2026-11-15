@@ -8987,7 +8987,7 @@ impl Jobs {
                 job.repo == repo
                     && job.outgoing.iter().any(|o| {
                         matches!(o.action.as_str(), "pullRequest" | "pullRequestEdit")
-                            && crate::github::pull_request_number(&o.id, repo) == Some(number)
+                            && job.pull_request_number(&o.id) == Some(number)
                     })
             })
             .map(|job| job.id)
@@ -9024,10 +9024,11 @@ impl Jobs {
         }
     }
 
-    /// Notes that obid opened or described pull request `url` of `repo` for job `id`.
-    fn note_described(&self, repo: &str, url: &str, id: &str) {
+    /// Notes that obid opened or described pull request `url` of job `id`'s repository for it.
+    fn note_described(&self, id: &str, url: &str) {
         static NOTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let Some(number) = crate::github::pull_request_number(url, repo) else {
+        let Some(job) = self.get(id) else { return };
+        let Some(number) = job.pull_request_number(url) else {
             return;
         };
         let _noting = NOTING.lock().unwrap_or_else(|e| e.into_inner());
@@ -9036,7 +9037,7 @@ impl Jobs {
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
-        let ids = kept.entry(format!("{repo}#{number}")).or_default();
+        let ids = kept.entry(format!("{}#{number}", job.repo)).or_default();
         if !ids.iter().any(|i| i == id) {
             ids.push(id.to_owned());
         }
@@ -11972,7 +11973,7 @@ impl Jobs {
             let number = author
                 .published
                 .as_deref()
-                .and_then(|url| crate::github::pull_request_number(url, &author.repo))
+                .and_then(|url| author.pull_request_number(url))
                 .map_or("its pull request".to_owned(), |n| format!("#{n}"));
             let error = (!retry).then(|| format!("{}{number}: {why}", crate::job::COULDNT_REVIEW));
             let author = self.update(&of, |job| {
@@ -12655,7 +12656,7 @@ impl Jobs {
             self.lock()
                 .followed
                 .insert(job.id.clone(), (url.clone(), now));
-            let read = match (&gh, crate::github::pull_request_number(&url, &job.repo)) {
+            let read = match (&gh, job.pull_request_number(&url)) {
                 (Some(gh), Some(number)) => {
                     crate::github::view_merging(gh, &job.repo, number, now).await
                 }
@@ -12750,7 +12751,7 @@ impl Jobs {
         let number = job
             .published
             .as_deref()
-            .and_then(|url| crate::github::pull_request_number(url, &job.repo));
+            .and_then(|url| job.pull_request_number(url));
         let (Some(number), Some(head)) = (number, pr.head.clone()) else {
             return cards(None);
         };
@@ -13104,7 +13105,7 @@ impl Jobs {
         let number = job
             .published
             .as_deref()
-            .and_then(|url| crate::github::pull_request_number(url, &job.repo))
+            .and_then(|url| job.pull_request_number(url))
             .ok_or("The job has no pull request of its own.")?;
         let link = self
             .link
@@ -13307,7 +13308,7 @@ impl Jobs {
         let number = job
             .published
             .as_deref()
-            .and_then(|url| crate::github::pull_request_number(url, &job.repo))
+            .and_then(|url| job.pull_request_number(url))
             .ok_or("The job has no pull request of its own.")?;
         let home = self.config.home.clone();
         let (pr, merging) =
@@ -13575,6 +13576,11 @@ impl crate::publish::Hooks for PublishHooks {
         self.signal.is_some()
     }
 
+    fn named_on_github(&self, name: &str) {
+        self.jobs
+            .update(&self.id, |job| job.repo_on_github = Some(name.into()));
+    }
+
     fn sent(&self, outgoing: crate::publish::Outgoing) {
         // The journal: one line per action, ids only.
         tracing::info!(
@@ -13589,8 +13595,7 @@ impl crate::publish::Hooks for PublishHooks {
             self.jobs.pushed(&outgoing);
         }
         if matches!(outgoing.action.as_str(), "pullRequest" | "pullRequestEdit") {
-            self.jobs
-                .note_described(&outgoing.repo, &outgoing.id, &self.id);
+            self.jobs.note_described(&self.id, &outgoing.id);
         }
         self.jobs
             .update(&self.id, |job| job.outgoing.push(outgoing));
@@ -16655,9 +16660,9 @@ mod tests {
         assert!(jobs.described_clean("o/r", 7));
         assert!(!jobs.described_clean("o/r", 8));
         // A job that described it and is gone since (deleted) leaves it someone else's.
-        jobs.note_described("o/r", "https://github.com/o/r/pull/7", "deleted-since");
+        std::fs::write(jobs.described_file(), r#"{"o/r#7": ["deleted-since"]}"#).unwrap();
         assert!(!jobs.described_clean("o/r", 7));
-        jobs.note_described("o/r", "https://github.com/o/r/pull/9", "j");
+        jobs.note_described("j", "https://github.com/o/r/pull/9");
         assert!(jobs.described_clean("o/r", 9));
         // One whose check got none of the owner's secrets (a reach past the registries) isn't
         // clean either: its description could carry what it reached (MERGING-31).

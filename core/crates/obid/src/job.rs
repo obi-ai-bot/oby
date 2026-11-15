@@ -469,6 +469,11 @@ pub struct Job {
     /// ended done: the only commit publishing pushes (docs/contracts/publishing.md, PUBLISHING-1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checked_head: Option<String>,
+    /// The name GitHub gives its repository now (`gh repo view`), when that was read at its pull
+    /// request step: a pull request under it is its own too (PUBLISHING-38). Kept in its file only,
+    /// never in the API, like `checked_head`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_on_github: Option<String>,
     pub mode: Option<String>,
     pub waiting: Option<Waiting>,
     pub phase: Option<Phase>,
@@ -1439,9 +1444,13 @@ impl Job {
             .outgoing
             .iter()
             .any(|o| o.action == "pullRequest" && o.id == url);
-        (!opened)
-            .then(|| crate::github::pull_request_number(url, &self.repo))
-            .flatten()
+        (!opened).then(|| self.pull_request_number(url)).flatten()
+    }
+
+    /// The number of pull request `url` when it's one of its repository's, under its configured
+    /// name or the one GitHub gives it now (PUBLISHING-38).
+    pub fn pull_request_number(&self, url: &str) -> Option<u64> {
+        crate::github::pull_request_number(url, &self.repo, self.repo_on_github.as_deref())
     }
 
     /// It just published to `url`: an observation of another pull request no longer holds, nor why
@@ -2215,6 +2224,31 @@ mod tests {
         let mut plain = job();
         plain.upgrade();
         assert_eq!(plain.check_withheld, None);
+    }
+
+    /// PUBLISHING-38: the name GitHub gives its repository stays in the job's file, never in the
+    /// API, and a pull request under it is the job's.
+    #[test]
+    fn publishing_38_the_name_on_github_stays_in_its_file() {
+        let mut named = job();
+        named.repo_on_github = Some("deskree-inc/oby-renamed".into());
+        let file = serde_json::to_value(&named).unwrap();
+        assert_eq!(file["repoOnGithub"], "deskree-inc/oby-renamed");
+        let read: Job = serde_json::from_value(file).unwrap();
+        assert_eq!(
+            read.repo_on_github.as_deref(),
+            Some("deskree-inc/oby-renamed")
+        );
+        assert!(named.to_json().get("repoOnGithub").is_none());
+        let url = "https://github.com/deskree-inc/oby-renamed/pull/7";
+        assert_eq!(read.pull_request_number(url), Some(7));
+        assert_eq!(job().pull_request_number(url), None);
+        assert!(
+            serde_json::to_value(job())
+                .unwrap()
+                .get("repoOnGithub")
+                .is_none()
+        );
     }
 
     fn job() -> Job {
