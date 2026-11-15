@@ -262,8 +262,9 @@ async function moveToApplications() {
 }
 
 // An obid launchd started before its executable was replaced (a newer Oby put over this one) runs
-// its old code: restarted once it runs no job. ponytail: waits for its jobs at most 10 minutes,
-// then restarts anyway (they carry on after a restart, docs/runner-api.md)
+// its old code: restarted once a restart cuts nothing, `restart.ready` (ENGINE-13), or, from an
+// older obid with no `restart`, once it runs no job. ponytail: waits at most 10 minutes, then
+// restarts anyway, until the hold and Restart now exist (jobs carry on after a restart, docs/runner-api.md)
 async function restartIfStale(label: string, printed: string) {
   try {
     // in C's words: Date.parse reads no other language's month names
@@ -272,8 +273,8 @@ async function restartIfStale(label: string, printed: string) {
   } catch { return; }
   for (let i = 0; i < 20; i++) {
     const r = await send('GET', '/v1/status', undefined);
-    const running = r instanceof Response && r.ok ? await r.json().then((s: { running?: number }) => s.running, () => 0) : 0;
-    if (!running) break;
+    const busy = r instanceof Response && r.ok ? await r.json().then((s: { running?: number; restart?: { ready?: boolean } }) => s.restart ? s.restart.ready !== true : !!s.running, () => false) : false;
+    if (!busy) break;
     await sleep(30_000);
   }
   // starting again while it comes back (startObid's finally clears it)

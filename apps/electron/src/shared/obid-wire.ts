@@ -255,6 +255,9 @@ export type Status = {
   unreadable?: { path: string; error: string; since: string }[];
   // obid only: the optional features it serves, by name (docs/contracts/capabilities.md); an obid before R06-01 sends none
   capabilities?: string[];
+  // obid only: what a restart would cut now, `ready` only with none (docs/contracts/engine.md,
+  // ENGINE-13); `kind` is an open string, and an older obid sends no `restart`
+  restart?: { ready: boolean; waitingFor: { kind: string; id?: string }[] };
 };
 
 // obid only: "GET /v1/repos", the repositories a job may start in: the listed ones first, then

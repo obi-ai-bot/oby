@@ -9,6 +9,8 @@ const mac = vi.hoisted(() => ({
   calls: [] as string[][], registered: [] as boolean[], refuse: false, lingers: 0, hangs: false, printHangs: false, inApplications: true,
   // the app's own folder and version, and its app.exit calls (runMarker.ts)
   userData: '/nonexistent', version: '1.0.0', exits: [] as number[],
+  // when ps says obid started (ENGINE-13): none by default, so it's never found stale
+  lstart: '',
 }));
 
 vi.mock('electron', () => ({
@@ -37,6 +39,7 @@ vi.mock('node:child_process', () => ({
   execFile: (file: string, args: string[], ...rest: unknown[]) => {
     const done = rest[rest.length - 1] as (e: unknown, r?: unknown) => void;
     mac.calls.push([file, ...args]);
+    if (file.endsWith('/ps')) return done(null, { stdout: mac.lstart });
     if (file.endsWith('lsof')) {
       const pids = [...mac.pids];
       // the booted-out obid leaves the port a little after launchctl comes back
@@ -82,7 +85,7 @@ const stopped = 'state = not running\nlast exit code = 0';
 
 beforeEach(() => {
   rmSync(HOME, { recursive: true, force: true });
-  Object.assign(mac, { jobs: {}, pids: [], answers: false, loginItem: 'not-registered', calls: [], registered: [], refuse: false, lingers: 0, hangs: false, printHangs: false, inApplications: true, userData: '/nonexistent', version: '1.0.0', exits: [] });
+  Object.assign(mac, { jobs: {}, pids: [], answers: false, loginItem: 'not-registered', calls: [], registered: [], refuse: false, lingers: 0, hangs: false, printHangs: false, inApplications: true, userData: '/nonexistent', version: '1.0.0', exits: [], lstart: '' });
   Object.defineProperty(process, 'platform', { value: 'darwin' });
   vi.stubGlobal('fetch', async () => {
     // as undici says it
@@ -242,6 +245,65 @@ describe('the engine while the window is open', () => {
     const call = await adopted();
     Object.assign(mac, { pids: [], answers: false, jobs: {} });
     expect(await call()).toEqual({ status: 0, text: 'Nothing answers on 127.0.0.1:7777: obid isn’t running.' });
+  });
+});
+
+describe('the engine after an update', () => {
+  const resources = process.resourcesPath;
+  afterEach(() => {
+    vi.useRealTimers();
+    Object.defineProperty(process, 'resourcesPath', { value: resources, configurable: true });
+  });
+
+  // launchctl kickstart -k <domain>/<label>
+  const kicked = () => mac.calls.filter(([, v]) => v === 'kickstart').map((c) => c[3].split('/').pop());
+  // this app's own, up, started before its helper was put in place (a newer Oby over this one), its
+  // status answering `status()`; startObid runs until it restarts it
+  async function stale(status: () => object) {
+    const app = mkdtempSync(`${process.env.TMPDIR ?? '/tmp'}/oby-engine-app-`);
+    mkdirSync(`${app}/Helpers`);
+    writeFileSync(`${app}/Helpers/obid`, '');
+    Object.defineProperty(process, 'resourcesPath', { value: `${app}/Resources`, configurable: true });
+    Object.assign(mac, { jobs: { [OWN]: 'state = running\npid = 200' }, pids: ['200'], answers: true, loginItem: 'enabled', lstart: 'Mon Jan  1 00:00:00 2001' });
+    const runner = `${HOME}/Library/Application Support/Oby/Runner`;
+    mkdirSync(runner, { recursive: true });
+    writeFileSync(`${runner}/api-token`, 'token', { mode: 0o600 });
+    const polls = { n: 0 };
+    // the app's own asks (with its token) counted, not its look for an answer after the kickstart
+    vi.stubGlobal('fetch', async (url: string, init?: { headers?: Record<string, string> }) => {
+      if (!String(url).endsWith('/v1/status') || !init?.headers?.Authorization) return new Response('{}');
+      polls.n++;
+      return new Response(JSON.stringify(status()));
+    });
+    vi.useFakeTimers();
+    vi.resetModules();
+    const { startObid } = await import('../../../main/obid');
+    return { started: startObid(), polls };
+  }
+
+  it('engine_13_the_app_waits_while_a_restart_would_cut_work', async () => {
+    let ready = false;
+    const { started, polls } = await stale(() => ({ running: 0, restart: { ready, waitingFor: ready ? [] : [{ kind: 'turn', id: 't1' }] } }));
+    await vi.advanceTimersByTimeAsync(0);
+    for (let i = 0; i < 4; i++) await vi.advanceTimersByTimeAsync(30_000);
+    expect(polls.n).toBeGreaterThanOrEqual(4);
+    expect(kicked()).toEqual([]);
+    ready = true;
+    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await started;
+    expect(kicked()).toEqual([OWN]);
+  });
+
+  it('engine_13_an_older_obid_is_judged_by_running', async () => {
+    const { started, polls } = await stale(() => ({ running: 0 }));
+    await vi.advanceTimersByTimeAsync(0);
+    // no 30 seconds' wait: the first answer lets it go
+    expect(polls.n).toBe(1);
+    expect(kicked()).toEqual([OWN]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await started;
+    expect(polls.n).toBe(1);
   });
 });
 
