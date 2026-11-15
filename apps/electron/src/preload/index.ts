@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { WITHIN_MS, owners } from '../shared/words';
 import type { PolicyAnswer } from '../shared/sphere';
+import type { LoadWhat } from '../shared/decode';
+import { following, type LiveMessage, type LiveSnapshot } from '../shared/live-wire';
 
 type Point = { x: number; y: number };
 // obid's answer: its status and body, or (status 0) why it didn't answer (main/obid.ts, reason)
@@ -132,8 +134,8 @@ contextBridge.exposeInMainWorld('app', {
   // what it signs. null: refused
   spherePolicy: () => ipcRenderer.invoke('sphere-policy') as Promise<PolicyAnswer | null>,
   sphereSetPolicy: (version: number) => ipcRenderer.invoke('sphere-set-policy', version) as Promise<PolicyAnswer | null>,
-  // obid, through main, which holds its token (main/obid.ts): one call, and the event stream's
-  // text as it comes, then how it ended. Following again replaces the stream before.
+  // obid, through main, which holds its token (main/obid.ts): one call; and what main's one follower
+  // of obid's events holds (main/live.ts), then each message it sends, and what it reads for the page
   obid: {
     // the owner's words go signed (signs): main adds this Mac's signature
     call: (method: string, path: string, body?: unknown) => ipcRenderer.invoke('obid', method, path, body, signs(method, path, body)) as Promise<Answer>,
@@ -146,14 +148,14 @@ contextBridge.exposeInMainWorld('app', {
       ipcRenderer.invoke('obid-limit-answer', item, revision, choice, account) as Promise<Answer>,
     // Pair a device: main signs the invitation with this Mac's device key
     pairInvite: () => ipcRenderer.invoke('obid-pair-invite') as Promise<Answer>,
-    follow(onChunk: (text: string) => void, onEnd: (a: Answer) => void) {
-      const chunk = (_: unknown, text: string) => onChunk(text);
-      const end = (_: unknown, a: Answer) => { stop(); onEnd(a); };
-      const stop = () => { ipcRenderer.off('obid-chunk', chunk); ipcRenderer.off('obid-end', end); };
-      ipcRenderer.on('obid-chunk', chunk);
-      ipcRenderer.on('obid-end', end);
-      ipcRenderer.send('obid-follow');
-      return stop;
-    },
+    // main's snapshot, then every message after it once, in order (shared/live-wire.ts); a function
+    // that stops listening
+    live: (onSnapshot: (s: LiveSnapshot) => void, onMessage: (m: LiveMessage) => void) => following((on) => {
+      const listener = (_: unknown, m: LiveMessage) => on(m);
+      ipcRenderer.on('obid-live', listener);
+      return () => { ipcRenderer.off('obid-live', listener); };
+    }, () => ipcRenderer.invoke('obid-snapshot') as Promise<LiveSnapshot | null>, onSnapshot, onMessage),
+    // a conversation's turns, a job, or the limit decisions, read and kept by main: true, else why not
+    load: (what: LoadWhat) => ipcRenderer.invoke('obid-load', what) as Promise<true | string | null>,
   },
 });

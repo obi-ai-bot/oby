@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { liveBridge } from './liveBridge';
 
 // No request waiting on the owner goes unseen once the Tasks list and Home's icon are gone
 // (docs/contracts/chat-first.md, CHATFIRST-25 to 31). From obid's own answers, through live.ts, to the
@@ -23,7 +24,7 @@ vi.mock('../Composer', () => ({ default: () => <div data-box="" />, typingIn: ()
 vi.mock('../Oby', () => ({ default: () => <div data-oby="" /> }));
 
 let answers: Record<string, unknown> = {};
-let feed: (text: string) => void = () => {};
+let bridge = liveBridge();
 const flush = async () => { for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0)); };
 const at = '2026-10-30T10:00:00Z';
 const job = (id: string, conversation: string | null, more: Record<string, unknown> = {}) => ({
@@ -51,16 +52,12 @@ async function on({ jobs = [], inbox = [], conversations = [], limits = [] }: { 
       return a === undefined ? { status: 404, text: '{"error":"Not found."}' } : { status: 200, text: JSON.stringify(a) };
     },
     confirm: async () => ({ status: 200, text: '{}' }),
-    follow: (onChunk: (text: string) => void) => { feed = onChunk; return () => {}; },
+    ...(bridge = liveBridge()).obid,
   } } });
   answers['GET /v1/status'] = { runner: { version: '0.2.4', host: 'mac' }, accounts: [], models: {}, maxRunning: 6, running: 0 };
-  answers['GET /v1/jobs?limit=100'] = jobs;
-  answers['GET /v1/inbox'] = inbox;
-  answers['GET /v1/conversations?limit=200'] = conversations;
-  answers['GET /v1/limit-decisions'] = limits;
   const live = await import('../live');
   live.connect();
-  feed('');
+  bridge.sync({ jobs, inbox, conversations, limits });
   await flush();
   expect(live.liveState().connection).toBe('live');
   const { default: Sidebar } = await import('../Sidebar');
@@ -134,12 +131,14 @@ describe('what waits on the owner', () => {
   }
 
   it('CHATFIRST-26: a job past the latest 100 still shows: it’s fetched, its row lights, and it’s on the stack', async () => {
-    answers['GET /v1/jobs/old'] = job('old', 'c-old');
     const s = await on({
       jobs: Array.from({ length: 100 }, (_, i) => job(`n${i}`, null, { status: 'done', created: '2026-11-01T10:00:00Z' })),
       conversations: [talk('c-old')],
       inbox: [item('i', 'permission', { job: 'old', title: 'Run this?', headline: 'Run this?' })],
     });
+    // main reads it after its sync and passes it on as its event (mainLive.test.ts)
+    bridge.event('job', job('old', 'c-old'));
+    await flush();
     expect(s.tasks.tasksWith('needs').map((t) => t.id)).toEqual(['old']);
     expect(lit(s.side(), 'Talk c-old')).toBe(true);
     expect(icon(s.side())).toBe(true);
@@ -181,7 +180,7 @@ describe('what waits on the owner', () => {
     const s = await on({ conversations: [talk('c1')], inbox: [item('conf', 'confirm', { conversation: 'c1', options: ['Confirm', 'Cancel'], later: '2026-11-03T13:00:00Z' })] });
     expect(lit(s.side(), 'Talk c1')).toBe(false);
     expect(icon(s.side())).toBe(false);
-    feed(`event: inbox\ndata: ${JSON.stringify(item('conf', 'confirm', { conversation: 'c1', options: ['Confirm', 'Cancel'], later: '2026-11-03T11:00:00Z' }))}\n\n`);
+    bridge.event('inbox', item('conf', 'confirm', { conversation: 'c1', options: ['Confirm', 'Cancel'], later: '2026-11-03T11:00:00Z' }));
     await flush();
     expect(lit(s.side(), 'Talk c1')).toBe(true);
     expect(icon(s.side())).toBe(true);
@@ -237,7 +236,7 @@ describe('what waits on the owner', () => {
     expect(s.stack()).not.toContain('Run this?');
     expect(lit(s.side(), 'Talk c1')).toBe(true);
     vi.setSystemTime(new Date('2026-11-03T13:00:01Z'));
-    feed(`event: inbox\ndata: ${JSON.stringify({ ...asked, later: '2026-11-03T13:00:00Z', state: 'later' })}\n\n`);
+    bridge.event('inbox', { ...asked, later: '2026-11-03T13:00:00Z', state: 'later' });
     await flush();
     expect(s.stack()).toContain('Run this?');
     expect(lit(s.side(), 'Talk c1')).toBe(true);
@@ -250,7 +249,7 @@ describe('what waits on the owner', () => {
     await s.live.answerJob('j', 'Later');
     await flush();
     expect(lit(s.side(), 'Talk c1')).toBe(true);
-    feed(`event: inbox\ndata: ${JSON.stringify({ ...asked, state: 'done' })}\n\n`);
+    bridge.event('inbox', { ...asked, state: 'done' });
     await flush();
     expect(lit(s.side(), 'Talk c1')).toBe(false);
     expect(icon(s.side())).toBe(false);
@@ -285,10 +284,11 @@ describe('what waits on the owner', () => {
   });
 
   it('CHATFIRST-26: an item that comes as an event for a job past the latest 100 fetches it', async () => {
-    answers['GET /v1/jobs/old'] = job('old', 'c-old');
     const s = await on({ conversations: [talk('c-old')] });
     expect(icon(s.side())).toBe(false);
-    feed(`event: inbox\ndata: ${JSON.stringify(item('i', 'permission', { job: 'old', title: 'Run this?', headline: 'Run this?' }))}\n\n`);
+    bridge.event('inbox', item('i', 'permission', { job: 'old', title: 'Run this?', headline: 'Run this?' }));
+    // main reads its job and passes it on as its event (mainLive.test.ts)
+    bridge.event('job', job('old', 'c-old'));
     await flush();
     expect(lit(s.side(), 'Talk c-old')).toBe(true);
     expect(s.stack()).toContain('Run this?');

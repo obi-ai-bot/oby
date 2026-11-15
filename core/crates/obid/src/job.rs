@@ -283,8 +283,8 @@ pub struct Checked {
     /// (crate::merge::check_apart); none when it can.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub apart: Option<String>,
-    /// Why it can't stand includes the job's outside read ([`Job::someone_elses`]) (MERGING-57).
-    /// A check an older obid recorded says false, and keeps its card (MERGING-58).
+    /// Why it can't stand includes the job's outside read ([`Job::someone_elses`]) (MERGING-55).
+    /// A check an older obid recorded says false, and keeps its card (MERGING-56).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub outside_read: bool,
     /// With [`Checked::outside_read`], why it can't stand apart from that read, in the owner's
@@ -856,8 +856,9 @@ pub struct Job {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub vetted: bool,
     /// It was planned in a turn of the owner's own conversation whose words an app of theirs
-    /// signed (crate::brain::actions), or follows up such a job: its pull request merges by itself
-    /// on any base (crate::merge::own_work, MERGING-44). In its file, never in the API.
+    /// signed (crate::brain::actions), or started by a `POST /v1/jobs` an app of theirs signed
+    /// (crate::routes::dispatch), or follows up such a job: its pull request merges by itself on
+    /// any base (crate::merge::own_work, MERGING-44). In its file, never in the API.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub own_conversation: bool,
     /// Why obid didn't merge its pull request, when only the owner can take it on from here

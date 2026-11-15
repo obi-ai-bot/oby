@@ -70,11 +70,19 @@ pub fn protected(branch: &str) -> bool {
     )
 }
 
-/// The owner's own conversation work (MERGING-44): planned in a turn of their conversation on
-/// words an app of theirs signed, or a follow-up of that (`Job::own_conversation`), not another
-/// Obi's, and reached by no unsigned words. It merges by itself on any base (MERGING-45 to 48).
+/// The owner's own work (MERGING-44): planned in a turn of their conversation on words an app of
+/// theirs signed, started by a `POST /v1/jobs` an app of theirs signed, or a follow-up of either
+/// (`Job::own_conversation`), not another Obi's, and reached by no unsigned words. It merges by
+/// itself on any base (MERGING-45 to 48, 52).
 pub fn own_work(job: &Job) -> bool {
-    job.own_conversation && job.obi.is_none() && !job.unsigned
+    own_work_of(job.own_conversation, job.obi.is_some(), job.unsigned)
+}
+
+/// Whether a job is the owner's own work (MERGING-44): `marked` where it was made (a signed
+/// conversation turn's plan, a signed `POST /v1/jobs`, or a follow-up of either), not
+/// `another_obis`, and reached by no `unsigned` words.
+pub fn own_work_of(marked: bool, another_obis: bool, unsigned: bool) -> bool {
+    marked && !another_obis && !unsigned
 }
 
 /// Whether a pull request into a `protected` base waits for the owner's word ([`on_their_word`]):
@@ -101,7 +109,7 @@ pub enum CheckRan {
 
 /// Whether how the check ran (`ran`) leaves the merge to the owner's own Merge: a missing check
 /// doesn't, for the owner's own conversation work (`own`, MERGING-47), nor one whose only reason
-/// not to stand is its outside read, which its second review guards (MERGING-57).
+/// not to stand is its outside read, which its second review guards (MERGING-55).
 pub fn check_holds(ran: CheckRan, own: bool) -> bool {
     match ran {
         CheckRan::Stands => false,
@@ -111,7 +119,7 @@ pub fn check_holds(ran: CheckRan, own: bool) -> bool {
     }
 }
 
-/// How the check ran (MERGING-57, 58), from whether the job has a check (`has_check`), one passed
+/// How the check ran (MERGING-55, 56), from whether the job has a check (`has_check`), one passed
 /// on exactly the head (`on_head`), it can't stand for the Mac's (`apart`), and the job's outside
 /// read is the only reason why (`read_only`).
 pub fn check_ran(has_check: bool, on_head: bool, apart: bool, read_only: bool) -> CheckRan {
@@ -951,8 +959,8 @@ pub fn ready_as(
 /// aren't green): the job's own check, passed in its box on exactly `head` (`Job::checked`), is
 /// this Mac's check, where it can stand for it ([`check_apart`]). Otherwise, one that didn't pass
 /// on that head, or a job with no check (but the owner's own conversation work, MERGING-47, and
-/// its check that only its outside read keeps apart, MERGING-57), and only the owner's own Merge
-/// merges it ([`Blocked::yours`]); own work's card names its other reason (MERGING-58). (A
+/// its check that only its outside read keeps apart, MERGING-55), and only the owner's own Merge
+/// merges it ([`Blocked::yours`]); own work's card names its other reason (MERGING-56). (A
 /// `github` workflow waits for GitHub's checks instead.)
 fn mac_checks(job: &Job, workflow: &Workflow, head: &str) -> Result<(), Blocked> {
     if workflow.checks != Checks::Mac {
@@ -1171,7 +1179,7 @@ pub fn check_apart(job: &Job, command: &str, changed: Option<&[String]>) -> Opti
 /// What a passing check with `command` counts for at merge (`Job::checked`), on `commit`: why it
 /// can't stand ([`check_apart`]), whether that includes the job's outside read
 /// ([`Job::someone_elses`]), and then why else ([`apart_besides_words`]), its `vetted` false that
-/// same read (MERGING-57, 58).
+/// same read (MERGING-55, 56).
 pub fn checked(
     job: &Job,
     command: &str,
@@ -4090,6 +4098,18 @@ mod tests {
         let mut unsigned = own();
         unsigned.unsigned = true;
         assert!(!own_work(&unsigned));
+        for marked in [false, true] {
+            for another in [false, true] {
+                for words in [false, true] {
+                    let own = own_work_of(marked, another, words);
+                    assert_eq!(
+                        own,
+                        marked && !another && !words,
+                        "{marked} {another} {words}"
+                    );
+                }
+            }
+        }
     }
 
     /// MERGING-45: the owner's own conversation work into main, master or trunk is ready with
@@ -4119,7 +4139,7 @@ mod tests {
 
     /// MERGING-47: in a repository with no check, the owner's own conversation work merges on
     /// Oby's review alone; any other work is the owner's. A check that didn't pass on the head, or
-    /// can't stand for the Mac's for a reason besides an outside read (MERGING-57, 58), still holds
+    /// can't stand for the Mac's for a reason besides an outside read (MERGING-55, 56), still holds
     /// own work too.
     #[test]
     fn merging_47_only_a_missing_check_is_lifted_for_own_work() {
@@ -4164,7 +4184,7 @@ mod tests {
     }
 
     /// The line a check's card says for the owner's job an outside read marked, but for own work
-    /// whose only reason it is (MERGING-57).
+    /// whose only reason it is (MERGING-55).
     const READ_LINE: &str =
         "Its check passed, but its task read something Oby didn't write, so it's yours to merge.";
 
@@ -4204,13 +4224,13 @@ mod tests {
         }
     }
 
-    /// MERGING-57: the owner's own conversation work an outside read marked, its check passed on
+    /// MERGING-55: the owner's own conversation work an outside read marked, its check passed on
     /// the head with that read its only reason not to stand for the Mac's, waits with no card for
     /// a second approving review by another tool, a member's approval on GitHub standing in for
     /// none, then merges by itself; a review that asks for changes after its rounds keeps its item
     /// and the owner's Merge (MERGING-50).
     #[test]
-    fn merging_57_own_work_an_outside_read_marked_waits_for_a_second_review_with_no_card() {
+    fn merging_55_own_work_an_outside_read_marked_waits_for_a_second_review_with_no_card() {
         let none = view(|v| v["statusCheckRollup"] = json!([]));
         let oby = Workflow {
             review: Approval::Oby,
@@ -4259,11 +4279,11 @@ mod tests {
         }
     }
 
-    /// MERGING-58: every other reason the owner's own work's check can't stand keeps its card,
+    /// MERGING-56: every other reason the owner's own work's check can't stand keeps its card,
     /// which says that reason and not its outside read; work that isn't own keeps the read's line
     /// word for word, and own work that didn't start from the owner's words keeps its own.
     #[test]
-    fn merging_58_every_other_reason_keeps_its_card_and_names_itself() {
+    fn merging_56_every_other_reason_keeps_its_card_and_names_itself() {
         let mac = Workflow {
             checks: Checks::Mac,
             ..obis()
@@ -4346,10 +4366,10 @@ mod tests {
         );
     }
 
-    /// MERGING-58: a check an older obid recorded, with no word of an outside read, keeps its card
+    /// MERGING-56: a check an older obid recorded, with no word of an outside read, keeps its card
     /// on the owner's own work.
     #[test]
-    fn merging_58_a_check_an_older_obid_recorded_keeps_its_card() {
+    fn merging_56_a_check_an_older_obid_recorded_keeps_its_card() {
         let mac = Workflow {
             checks: Checks::Mac,
             ..obis()
@@ -5934,8 +5954,8 @@ esac
 #[cfg(test)]
 mod proofs {
     #![cfg(kani)]
-    //! Kani's proofs of the owner's own conversation work's merge (MERGING-45 to 58): `kani::any()`
-    //! stands for every value of the bools and the enum below.
+    //! Kani's proofs of the owner's own work and its merge (MERGING-44 to 56): `kani::any()` stands
+    //! for every value of the bools and the enum below.
 
     use super::*;
 
@@ -5977,7 +5997,7 @@ mod proofs {
         }
     }
 
-    /// MERGING-57: a check whose only reason not to stand for the Mac's is the outside read holds
+    /// MERGING-55: a check whose only reason not to stand for the Mac's is the outside read holds
     /// exactly the work that isn't own; every other way it ran holds as before.
     #[kani::proof]
     fn merging_55_an_outside_read_holds_only_work_not_own() {
@@ -5991,7 +6011,7 @@ mod proofs {
         }
     }
 
-    /// MERGING-58: only a check that passed on the head, can't stand, and has the outside read as
+    /// MERGING-56: only a check that passed on the head, can't stand, and has the outside read as
     /// its only reason is an outside read; any other reason is apart, one off the head is not on
     /// it or none by whether there is a check, and one that stands stands.
     #[kani::proof]
@@ -6056,5 +6076,22 @@ mod proofs {
         if own && !two_reviews {
             assert_eq!(flagged(true, own, two_reviews), Flagged::MergesPast);
         }
+    }
+
+    /// MERGING-44: a job is own work exactly when it was marked, isn't another Obi's and no
+    /// unsigned words reached it, so a `POST /v1/jobs` job (marked `typed`, unsigned `!typed`) is
+    /// own work exactly when an app of the owner's signed it.
+    #[kani::proof]
+    fn merging_44_own_work_needs_the_owners_signed_words() {
+        let (mark, theirs, words): (bool, bool, bool) = (kani::any(), kani::any(), kani::any());
+        let own = own_work_of(mark, theirs, words);
+        if own {
+            assert!(mark && !theirs && !words);
+        }
+        if mark && !theirs && !words {
+            assert!(own);
+        }
+        let signed: bool = kani::any();
+        assert_eq!(own_work_of(signed, false, !signed), signed);
     }
 }

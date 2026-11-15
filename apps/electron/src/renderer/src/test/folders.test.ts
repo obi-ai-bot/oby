@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { has } from '../../../shared/capabilities';
+import { liveBridge } from './liveBridge';
 
 // FOLDERS-11 (docs/contracts/folders.md): with an obid whose status has no folders, the app keeps
 // them itself, as #1564 does; once it says folders: true, the app sends them and shows obid's.
@@ -95,9 +96,6 @@ async function onObid(status: Record<string, unknown>, s: Storage) {
   vi.stubGlobal('localStorage', s);
   const answers: Record<string, { status: number; body?: unknown }> = {
     'GET /v1/status': { status: 200, body: { runner: { version: '0.2.4', host: 'mac' }, accounts: [], models: {}, maxRunning: 6, running: 0, ...status } },
-    'GET /v1/jobs?limit=100': { status: 200, body: [] },
-    'GET /v1/inbox': { status: 200, body: [] },
-    'GET /v1/conversations?limit=200': { status: 200, body: [conversation('c1')] },
     'POST /v1/plans': { status: 200, body: { kind: 'reply', text: 'Looking.', jobs: [], conversation: 'c2' } },
   };
   const call = async (method: string, path: string, body?: unknown) => {
@@ -107,13 +105,12 @@ async function onObid(status: Record<string, unknown>, s: Storage) {
       : answers[`${method} ${path}`] ?? { status: 404, body: { error: 'Not found.' } };
     return { status: a.status, text: JSON.stringify(a.body) };
   };
-  let feed: (text: string) => void = () => {};
-  const follow = (onChunk: (text: string) => void) => { feed = onChunk; return () => {}; };
-  vi.stubGlobal('window', { app: { obid: { call, confirm: async () => ({ status: 200, text: '{}' }), follow } } });
+  const bridge = liveBridge();
+  vi.stubGlobal('window', { app: { obid: { call, confirm: async () => ({ status: 200, text: '{}' }), ...bridge.obid } } });
   const live = await import('../live');
   const f = await import('../folders');
   live.connect();
-  feed('');
+  bridge.sync({ status: answers['GET /v1/status'].body, conversations: [conversation('c1')] });
   for (let i = 0; i < 5; i++) await flush();
   expect(live.liveState().connection).toBe('live');
   calls.length = 0;
