@@ -40,7 +40,7 @@
 /* the agent's own conversation, opened in place: under the card's head, inside its border, lined up
    with its title (16px mark + 10px gap + 12px padding) */
 .msg-task-work.is-on .msg-task { border-bottom-color: var(--divider); border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
-.lt-thread { padding: 12px 12px 12px 38px; display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--line); border-top: 0; border-radius: 0 0 14px 14px; background: rgba(255, 255, 255, 0.06); user-select: text; }
+.lt-thread { padding: 12px 12px 12px 38px; display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--line-strong); border-top: 0; border-radius: 0 0 14px 14px; background: rgba(255, 255, 255, 0.06); user-select: text; }
 .lt-thread-todos { padding-bottom: 10px; border-bottom: 1px solid var(--divider); }
 .lt-thread-scroll { position: relative; min-height: 0; }
 .lt-thread-lines { max-height: 420px; overflow-y: auto; scrollbar-width: none; }
