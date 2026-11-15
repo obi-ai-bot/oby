@@ -50,6 +50,8 @@ WARNING = "[libprotobuf WARNING] a stand-in for the VM's warning, which mentions
 HOLDS = ("The outcome is: NoError\n[ok] No violation found (12ms).\n", 0)
 VIOLATED = ("The outcome is: Error\n[violation] Found an issue (12ms).\nerror: found a counterexample\n", 1)
 VERIFY = re.compile(r"\bquint verify\b")
+AGENT = "STATUS: READY the agent's own summary, never for a brief"
+GITHUB = "FAILED_CHECKS"
 
 
 def approvals(head, *tools):
@@ -68,10 +70,11 @@ class StandIns:
 
     def __init__(self):
         self.calls = []
-        self.jobs = {JOB: {"id": JOB, "kind": "build", "status": "done", "approvals": []}}
-        self.view = None  # `gh pr view ... --json headRefOid,state,files`
+        self.jobs = {JOB: {"id": JOB, "kind": "build", "status": "done", "approvals": [], "summary": AGENT}}
+        self.view = None  # `gh pr view ... --json headRefOid,state,files,mergeable,mergeStateStatus`
         self.graphql = None  # `gh api graphql` with job.QUEUE_READ
         self.merge_code = 0
+        self.sent = []  # the body of every POST to obid: briefs and messages
 
     def api(self, method, path, body=None, timeout=30):
         self.calls.append(("api", method, path))
@@ -80,6 +83,11 @@ class StandIns:
             return (200, found) if found else (404, {"error": "no such job"})
         if method == "DELETE":
             return 204, None
+        if method == "POST" and (path == "/v1/jobs" or path.endswith("/messages")):
+            self.sent.append((path, body))
+            new = f"job-{len(self.sent) + 1}"
+            self.jobs[new] = {"id": new, "kind": "build", "status": "running", "approvals": []}
+            return 201, self.jobs[new]
         return 500, {"error": "unexpected"}
 
     def run(self, cmd, **kwargs):
@@ -110,7 +118,17 @@ class ObyFeed(unittest.TestCase):
         self.feed.GH_REPO = REPO
         self.feed.api = self.stand.api
         self.feed.subprocess = Namespace(run=self.stand.run)
-        self.feed.say = lambda msg: None
+        self.said = []
+        self.feed.say = self.said.append
+        self.addCleanup(self.nothing_from_outside)
+
+    def nothing_from_outside(self):
+        """FEEDLOOP-7, on every test: no brief or message carries the agent's summary or GitHub's text."""
+        for path, body in self.stand.sent:
+            text = json.dumps(body)
+            self.assertNotIn("the agent's own summary", text, path)
+            self.assertNotIn(GITHUB, text, path)
+            self.assertNotIn("GitHub says", text, path)
 
     def task(self, state, **more):
         item = {"key": "A00-99", "title": "a task", "job": JOB, "state": state, "pr": PR, "files": ["x.py"], **more}
@@ -126,18 +144,17 @@ class ObyFeed(unittest.TestCase):
     def no_ready(self):
         self.feed.ready_tasks = lambda state: []
 
-    # FEED-1: a merge GitHub's queue refused leaves `merging` for `waiting`, remembering the armed head
+    # FEED-1: a merge GitHub's queue refused leaves `merging`, remembering the armed head (A00-96: for a follow-up)
     def test_feed_1_refused_merge_goes_to_waiting_with_its_head(self):
         self.no_ready()
         self.task("merging", head=OLD, approved=["claude", "codex"], armedAt="2026-11-15T10:00:00Z")
         self.stand.graphql = queue(removed={"createdAt": "2026-11-15T10:05:00Z", "reason": "FAILED_CHECKS"})
         active, started = self.one_pass()
         item = self.task_now()
-        self.assertEqual(item["state"], "waiting")
+        self.assertEqual(item["state"], "running")
         self.assertEqual(item["refused"], OLD)
-        self.assertIn(OLD, item["note"])
-        self.assertIn("FAILED_CHECKS", item["note"])
-        self.assertEqual((active, started), (0, 0))
+        self.assertIn(f"GitHub's queue didn't merge {OLD}: FAILED_CHECKS", self.said[0])
+        self.assertEqual((active, started), (1, 0))
         read = [c for c in self.stand.calls if c[:4] == ("run", "gh", "api", "graphql")][0]
         self.assertIn("owner=owner", read)
         self.assertIn("name=repo", read)
@@ -149,10 +166,8 @@ class ObyFeed(unittest.TestCase):
         self.task("merging", head=OLD, armedAt="2026-11-15T10:00:00Z")
         self.stand.graphql = queue(removed={"createdAt": "2026-11-14T10:00:00Z", "reason": "FAILED_CHECKS"})
         self.one_pass()
-        item = self.task_now()
-        self.assertEqual(item["state"], "waiting")
-        self.assertNotIn("FAILED_CHECKS", item["note"])
-        self.assertIn("couldn't be read", item["note"])
+        self.assertNotIn("FAILED_CHECKS", self.said[0])
+        self.assertIn("couldn't be read", self.said[0])
 
     def test_feed_1_stays_merging_while_in_the_queue(self):
         self.no_ready()
@@ -306,6 +321,134 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual(self.feed.may_arm(j, pr, None)[0], "wait")
         self.assertEqual(self.feed.may_arm({"approvals": approvals(OLD, "claude")}, pr, None), ("pending", None))
         self.assertEqual(self.feed.may_arm(j, pr, OLD)[0], "wait")
+
+    def builds(self):
+        return [body["job"] for path, body in self.stand.sent if path == "/v1/jobs"]
+
+    def messages(self):
+        return [(path, body["text"]) for path, body in self.stand.sent if path.endswith("/messages")]
+
+    # FEEDLOOP-1: an interrupted job at attempt 1 of 3 starts a new build job whose brief carries obid's reason
+    def test_feedloop_1_an_interrupted_job_starts_a_new_build_with_obids_reason(self):
+        self.no_ready()
+        self.task("running", attempt=1)
+        self.stand.jobs[JOB].update(status="interrupted", nextStep="Try again",
+                                    reason="GOAL NOT MET: the agent's own words", summary=AGENT)
+        self.one_pass()
+        item = self.task_now()
+        [build] = self.builds()
+        self.assertIn("Attempt 2 of 3: the last one ended with interrupted: Try again", build["task"])
+        self.assertNotIn("GOAL NOT MET", build["task"])
+        self.assertTrue(build["task"].startswith("You are building roadmap task A00-99: a task."))
+        self.assertTrue(build["clientRequestId"].startswith("feed-A00-99-2-"))
+        self.assertEqual((item["state"], item["job"], item["attempt"]), ("running", "job-2", 2))
+        self.assertEqual(self.messages(), [])
+
+    # FEEDLOOP-2: a job obid lost (404), or done with nothing published, starts again the same way
+    def test_feedloop_2_a_lost_job_starts_again(self):
+        self.no_ready()
+        self.task("running", job="job-gone")
+        self.one_pass()
+        [build] = self.builds()
+        self.assertIn("ended with lost: obid no longer has its job", build["task"])
+        self.assertEqual(self.task_now()["attempt"], 2)
+
+    def test_feedloop_2_done_with_nothing_published_starts_again(self):
+        self.no_ready()
+        self.task("running", attempt=1)
+        self.stand.jobs[JOB].update(status="done", published=None)
+        self.one_pass()
+        [build] = self.builds()
+        self.assertIn("ended with done: it ended with nothing published", build["task"])
+        self.assertNotIn("pr", self.task_now())
+
+    # FEEDLOOP-3: a head GitHub's queue refused sends one fixed message, and the follow-up obid starts is followed
+    def test_feedloop_3_a_refused_head_gets_one_follow_up(self):
+        self.no_ready()
+        self.task("merging", head=OLD, armedAt="2026-11-15T10:00:00Z")
+        self.stand.graphql = queue(removed={"createdAt": "2026-11-15T10:05:00Z", "reason": GITHUB})
+        self.one_pass()
+        self.assertEqual(self.messages(), [(f"/v1/jobs/{JOB}/messages", f"GitHub's merge queue didn't merge {OLD}: "
+                                            "rebase onto dev, run the check, and make the queue's Check pass; "
+                                            "read the pull request's checks with gh.")])
+        item = self.task_now()
+        self.assertEqual((item["state"], item["job"], item["attempt"]), ("running", "job-2", 2))
+        self.one_pass()
+        self.assertEqual(len(self.stand.sent), 1)
+        self.assertEqual(self.task_now()["state"], "running")
+
+    # FEEDLOOP-4: a pull request CONFLICTING with dev, or BEHIND it, gets the same follow-up with the rebase sentence
+    def test_feedloop_4_a_conflicting_or_behind_pull_request_gets_the_rebase_follow_up(self):
+        for state, view in (("reviewing", {"mergeable": "CONFLICTING", "mergeStateStatus": "DIRTY"}),
+                            ("waiting", {"mergeable": "MERGEABLE", "mergeStateStatus": "BEHIND"})):
+            with self.subTest(state=state):
+                self.setUp()
+                self.no_ready()
+                self.task(state, head=OLD)
+                self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "x.py"}], **view}
+                self.one_pass()
+                [(path, text)] = self.messages()
+                self.assertEqual(path, f"/v1/jobs/{JOB}/messages")
+                self.assertEqual(text, "This pull request conflicts with dev or is behind it: " + self.feed.REBASE)
+                self.assertEqual(self.task_now()["state"], "running")
+
+    # FEEDLOOP-5: after the third attempt the task ends `failed` with the last reason and starts nothing more
+    def test_feedloop_5_the_third_attempt_ends_it_with_the_last_reason(self):
+        self.no_ready()
+        self.task("running", attempt=3)
+        self.stand.jobs[JOB].update(status="failed", publishError="the push was refused")
+        self.one_pass()
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual(item["state"], "failed")
+        self.assertEqual(item["note"], "attempt 3 of 3 ended: failed: the push was refused")
+        self.assertEqual(self.stand.sent, [])
+        with mock.patch("builtins.print") as printed:
+            self.feed.status()
+        self.assertIn("attempt 3 of 3", printed.call_args_list[0].args[0])
+
+    def test_feedloop_5_a_refused_head_at_the_third_attempt_ends_it(self):
+        self.no_ready()
+        self.task("merging", head=OLD, attempt=3, armedAt="2026-11-15T10:00:00Z")
+        self.stand.graphql = queue(removed={"createdAt": "2026-11-15T10:05:00Z", "reason": GITHUB})
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual(item["state"], "failed")
+        self.assertTrue(item["note"].startswith(f"attempt 3 of 3 ended: GitHub's merge queue didn't merge {OLD}"))
+        self.assertEqual(self.stand.sent, [])
+
+    # FEEDLOOP-6: STATUS: BLOCKED, a stopped job and a security-path hold are never retried
+    def test_feedloop_6_blocked_stopped_and_security_holds_are_never_retried(self):
+        for status, summary in (("done", "STATUS: BLOCKED: the task can't be done as written"), ("stopped", "")):
+            with self.subTest(status=status):
+                self.setUp()
+                self.no_ready()
+                self.task("running", attempt=1)
+                self.stand.jobs[JOB].update(status=status, summary=summary)
+                self.one_pass()
+                self.assertEqual(self.task_now()["state"], "failed")
+                self.assertEqual(self.stand.sent, [])
+        self.setUp()
+        self.no_ready()
+        self.task("waiting", head=OLD, note="approved twice, but it touches a security path (AGENTS.md): merge it yourself")
+        self.stand.jobs[JOB]["reviewNeedsYou"] = True
+        self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "AGENTS.md"}], "mergeable": "CONFLICTING"}
+        self.one_pass()
+        self.assertEqual(self.task_now()["state"], "waiting")
+        self.assertEqual(self.stand.sent, [])
+
+    # FEEDLOOP-7: no brief or message carries GitHub's text or the agent's summary (also checked after every test)
+    def test_feedloop_7_nothing_from_github_or_the_agent_reaches_a_brief_or_message(self):
+        self.no_ready()
+        self.task("running", attempt=1)
+        self.stand.jobs[JOB].update(status="interrupted", nextStep="Try again", summary=AGENT)
+        self.one_pass()
+        self.task("merging", job="job-2", head=OLD, attempt=2, armedAt="2026-11-15T10:00:00Z")
+        self.stand.jobs["job-2"].update(status="done", summary=AGENT)
+        self.stand.graphql = queue(removed={"createdAt": "2026-11-15T10:05:00Z", "reason": GITHUB})
+        self.one_pass()
+        self.assertEqual(len(self.stand.sent), 2)
+        self.nothing_from_outside()
 
 
 class CheckModels(unittest.TestCase):

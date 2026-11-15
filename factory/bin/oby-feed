@@ -17,8 +17,14 @@ frees the disk afterwards:
   One that touches a security path waits for the owner (AGENTS.md, "Carrying and merging").
 - A `waiting` task is looked at again at every pass, without holding a slot: Oby's follow-up takes it back to
   `running`, a merge by anyone to `merged`, and two approvals of a new head arm it again.
-- A merge GitHub's queue refused (the pull request open, out of the queue, auto-merge off) goes back to
-  `waiting`, remembering the refused head: that head is never armed again, a new one can be.
+- A merge GitHub's queue refused (the pull request open, out of the queue, auto-merge off) remembers the refused
+  head: that head is never armed again, a new one can be.
+- A task gets at most MAX_ATTEMPTS (3) jobs from the feeder, and next_attempt() is the one rule for an attempt that
+  ended: a job that failed, was interrupted or lost, or ended done with nothing published, starts a new build job
+  whose brief adds obid's own reason; a head the queue refused, a pull request that conflicts with dev or is behind
+  it, or a review that ran out of rounds gets a follow-up on the same pull request (POST /v1/jobs/{id}/messages) in
+  fixed words. STATUS: BLOCKED, a stopped job and a security-path hold are never retried; out of attempts the task
+  ends `failed` with the last reason.
 - A Quint model the pull request adds or changes (docs/models/*.qnt) is verified first, on the gate VM, as its
   own `// verify:` lines say, each check on an Apalache port of its own. Each run is read with factory/bin/prove's
   rule, imported: an invariant passes only when Quint says it holds, and a witness only when Quint reports a
@@ -66,6 +72,7 @@ URL = os.environ.get("OBY_FACTORY_URL", "http://127.0.0.1:7811")
 GH_REPO = os.environ.get("OBY_FACTORY_REPO", "obi-ai-bot/oby")
 FEED = HOME / "feed"
 ACTIVE = {"running", "reviewing", "merging"}
+MAX_ATTEMPTS = 3  # the jobs oby-feed starts or follows up for one task, its first build included (beside --max)
 SAID = set()
 BUILD_FOLDERS = ("core/target", "apps/electron/node_modules", "apps/electron/out", "node_modules")
 
@@ -256,14 +263,17 @@ def brief(task, on_base):
     return text
 
 
-def start(task, account, on_base):
+def start(task, account, on_base, why=None, attempt=1):
     key = task["key"]
     text = brief(task, on_base)
+    if why:  # obid's own words for the attempt before, never the agent's or GitHub's
+        text += f"\n\nAttempt {attempt} of {MAX_ATTEMPTS}: the last one ended with {why}"
     if len(text) > 2000:
         return None, f"its file isn't on origin/{job.BASE} and its text is too long to send ({len(text)} characters): commit the task file first"
     code, body = api("POST", "/v1/jobs", {"job": {
         "repo": GH_REPO, "kind": "build", "account": account, "base": job.BASE, "rounds": 3,
-        "title": f"{key} {task['title']}"[:60].strip(), "task": text, "clientRequestId": f"feed-{key}-{int(time.time())}"}})
+        "title": f"{key} {task['title']}"[:60].strip(), "task": text,
+        "clientRequestId": f"feed-{key}-{attempt}-{int(time.time())}"}})
     if code not in (200, 201) or not (body or {}).get("id"):
         return None, f"obid refused it: {(body or {}).get('error', code)}"
     return body["id"], None
@@ -272,6 +282,82 @@ def start(task, account, on_base):
 def pr_number(url):
     m = re.search(r"/pull/(\d+)", url or "")
     return int(m.group(1)) if m else None
+
+
+REBASE = "rebase onto dev, run the check, and make the queue's Check pass; read the pull request's checks with gh."
+# The fixed words of a follow-up on the same pull request, by why it can't merge as it is: never GitHub's text.
+AGAIN = {
+    "queue": "GitHub's merge queue didn't merge {head}: " + REBASE,
+    "conflict": "This pull request conflicts with dev or is behind it: " + REBASE,
+    "review": "Oby's review still asks for changes after its last round: fix what it asks, run the check, "
+              "and finish with a short summary.",
+}
+
+
+def obid_reason(j):
+    """Why an attempt ended, in obid's own words: its status and its nextStep, publishError or waiting text."""
+    if j is None:
+        return "lost: obid no longer has its job"
+    waiting = j.get("waiting")
+    said = (j.get("nextStep") or j.get("publishError") or (waiting.get("text") if isinstance(waiting, dict) else waiting)
+            or ("it ended with nothing published" if j.get("status") == "done" else ""))
+    return (f"{j.get('status')}: {said}" if said else str(j.get("status")))[:300]
+
+
+def next_attempt(item, j, case=None):
+    """The one rule for a task whose attempt ended (docs/contracts/factory.md, FEEDLOOP-1 to 7): ("build", why) starts
+    a new build job, ("message", words) a follow-up on its pull request, ("end", why) ends it for good. `j` is obid's
+    job (None when obid lost it); `case` is "queue", "conflict" or "review" for a pull request that can't merge as it is,
+    None for a job that ended without one."""
+    if j is not None and j.get("status") == "stopped":
+        return "end", "the owner stopped its job"
+    first = ((j or {}).get("summary") or "").strip().splitlines()[0:1]
+    if case is None and first and first[0].startswith("STATUS: BLOCKED"):
+        return "end", first[0][:200]
+    head = item.get("head") or ""
+    why = AGAIN[case].format(head=head if re.fullmatch(r"[0-9a-f]{40}", head) else "its head") if case else obid_reason(j)
+    if item.get("attempt", 1) >= MAX_ATTEMPTS:
+        return "end", f"attempt {item.get('attempt', 1)} of {MAX_ATTEMPTS} ended: {why}"
+    return ("message" if case else "build"), why
+
+
+def retry(item, j, case, account):
+    """Carries the task on as next_attempt() says. Returns True when it changed."""
+    verdict, why = next_attempt(item, j, case)
+    strip_build_folders(item["job"])
+    if verdict == "end":
+        item.update(state="failed", note=why[:240])
+        return True
+    attempt = item.get("attempt", 1) + 1
+    if verdict == "build":
+        on_base = item.get("onBase", True)
+        task = item if on_base else job.read_task(job.TASKS / f"{item['key']}.md")
+        oby_id, err = start(task, account, on_base, why, attempt)
+        for k in ("pr", "head", "refused", "armedAt", "approved") if oby_id else ():
+            item.pop(k, None)
+    else:
+        code, body = api("POST", f"/v1/jobs/{item['job']}/messages", {"text": why})
+        oby_id, err = (body["id"], None) if code in (200, 201) and (body or {}).get("id") else (None, (body or {}).get("error", code))
+    if not oby_id:  # tried again at the next pass
+        say(f"{item['key']}: attempt {attempt} not started: {err}")
+        return False
+    item.update(job=oby_id, state="running", attempt=attempt, note=why[:240])
+    return True
+
+
+VIEW = "headRefOid,state,files,mergeable,mergeStateStatus"
+
+
+def stuck(pr, j):
+    """Why an open pull request needs a follow-up before it can merge ("conflict" or "review"), or None. One that
+    touches a security path waits for the owner instead, as today."""
+    if touches_security([f["path"] for f in pr.get("files", [])]):
+        return None
+    if pr.get("mergeable") == "CONFLICTING" or pr.get("mergeStateStatus") in ("DIRTY", "BEHIND"):
+        return "conflict"
+    if j.get("reviewNeedsYou") and not j.get("reviewError"):  # Oby's review ran out of rounds asking for changes
+        return "review"
+    return None
 
 
 HELD = "approved twice, but "
@@ -314,13 +400,12 @@ def merged(item, jobs):
     item.update(state="merged", note=f"merged; {gone} Oby jobs and their worktrees removed")
 
 
-def follow(item, jobs):
+def follow(item, jobs, account):
     """One look at a task that is under way or waiting. Returns True when it changed."""
     key = item["key"]
     code, j = api("GET", f"/v1/jobs/{item['job']}")
     if code == 404:
-        item.update(state="failed", note="obid no longer has its job")
-        return True
+        return retry(item, None, None, account)
     if code != 200:
         return False
     # a follow-up carries the work on: follow the newest job of the chain
@@ -333,20 +418,14 @@ def follow(item, jobs):
         if j["status"] in ("queued", "running"):
             return False
         first = (j.get("summary") or "").strip().splitlines()[0:1]
-        if j["status"] != "done" or (first and first[0].startswith("STATUS: BLOCKED")):
-            item.update(state="failed", note=(first[0] if first else j["status"])[:200])
-            strip_build_folders(item["job"])
-            return True
-        pr = pr_number(j.get("published"))
-        if not pr:
-            item.update(state="failed", note=(j.get("publishError") or "it ended with nothing published")[:200])
-            strip_build_folders(item["job"])
-            return True
+        pr = pr_number(j.get("published")) if j["status"] == "done" else None
+        if not pr or (first and first[0].startswith("STATUS: BLOCKED")):
+            return retry(item, j, None, account)
         strip_build_folders(item["job"])
         item.update(state="reviewing", pr=pr)
         return True
     if item["state"] == "reviewing":
-        pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", "headRefOid,state,files")
+        pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", VIEW)
         if not pr:
             return False
         if pr["state"] == "MERGED":
@@ -355,6 +434,8 @@ def follow(item, jobs):
         if pr["state"] != "OPEN":
             item.update(state="failed", note="its pull request was closed")
             return True
+        if stuck(pr, j):
+            return retry(item, j, stuck(pr, j), account)
         head = pr["headRefOid"]
         verdict, said = may_arm(j, pr, item.get("refused"))
         if verdict == "pending":
@@ -390,10 +471,12 @@ def follow(item, jobs):
             why = removed.get("reason") or "no reason given"
         else:
             why = "its reason couldn't be read"
-        item.update(state="waiting", refused=item.get("head"), note=f"GitHub's queue didn't merge {item.get('head')}: {why}"[:240])
+        say(f"{key}: GitHub's queue didn't merge {item.get('head')}: {why}")
+        item.update(refused=item.get("head"), note=f"GitHub's queue didn't merge {item.get('head')}: {why}"[:240])
+        retry(item, j, "queue", account)
         return True
     if item["state"] == "waiting":
-        pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", "headRefOid,state,files")
+        pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", VIEW)
         if not pr:
             return False
         if pr["state"] == "MERGED":
@@ -402,6 +485,8 @@ def follow(item, jobs):
         if pr["state"] == "CLOSED":
             item.update(state="failed", note="its pull request was closed")
             return True
+        if stuck(pr, j):
+            return retry(item, j, stuck(pr, j), account)
         head = pr["headRefOid"]
         verdict, said = may_arm(j, pr, item.get("refused"))
         if verdict == "arm":
@@ -447,7 +532,7 @@ def one_pass(args):
     state = load_state()
     jobs = oby_jobs()
     for item in state.values():
-        if (item["state"] in ACTIVE or item["state"] == "waiting") and follow(item, jobs):
+        if (item["state"] in ACTIVE or item["state"] == "waiting") and follow(item, jobs, args.account):
             save(item)
             say(f"{item['key']}: {item['state']}" + (f" (#{item['pr']})" if item.get("pr") else "") + (f": {item['note']}" if item.get("note") else ""))
     active = [i for i in state.values() if i["state"] in ACTIVE]
@@ -475,7 +560,7 @@ def one_pass(args):
                     SAID.add(task["key"])
                 continue
             item = {"key": task["key"], "title": task["title"], "job": oby_id, "state": "running",
-                    "files": sorted(files), "started": time.strftime("%Y-%m-%dT%H:%M:%S")}
+                    "files": sorted(files), "started": time.strftime("%Y-%m-%dT%H:%M:%S"), "attempt": 1, "onBase": on_base}
             state[task["key"]] = item
             save(item)
             say(f"{task['key']}: started as Oby job {oby_id} on {args.account}")
@@ -488,7 +573,8 @@ def status():
     state = load_state()
     for item in sorted(state.values(), key=lambda i: i.get("started", "")):
         pr = f" #{item['pr']}" if item.get("pr") else ""
-        print(f"{item['state']:<10} {item['key']:<7} {item['job']}{pr}  {item.get('note') or item['title']}"[:160])
+        print(f"{item['state']:<10} {item['key']:<7} {item['job']}{pr}  attempt {item.get('attempt', 1)} of {MAX_ATTEMPTS}  "
+              f"{item.get('note') or item['title']}"[:180])
     counts = {}
     for item in state.values():
         counts[item["state"]] = counts.get(item["state"], 0) + 1
