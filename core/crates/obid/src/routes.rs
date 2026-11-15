@@ -273,6 +273,16 @@ pub async fn report(
     Ok(json(StatusCode::OK, report))
 }
 
+/// `GET /v1/jobs/{id}/trace`: the job's dispatcher steps, in order (docs/contracts/failures.md).
+pub async fn trace(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    shared.jobs.get(&id).ok_or_else(|| no_job(&shared, &id))?;
+    let lines = crate::jobs::trace::lines(&shared.config.home, &id);
+    Ok(json(StatusCode::OK, json!({ "lines": lines })))
+}
+
 /// `GET /v1/jobs/{id}/transcript?after=<n>&limit=<k>`: the entries that came or changed after
 /// entry `n`, at most `k`, and the `n` to ask after next when there's more.
 pub async fn transcript(

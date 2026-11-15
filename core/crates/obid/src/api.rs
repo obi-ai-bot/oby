@@ -177,6 +177,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/v1/jobs/{id}/wait", get(crate::routes::wait))
         .route("/v1/jobs/{id}/report", get(crate::routes::report))
         .route("/v1/jobs/{id}/transcript", get(crate::routes::transcript))
+        .route("/v1/jobs/{id}/trace", get(crate::routes::trace))
         .route(
             "/v1/jobs/{id}/transcript/{n}",
             get(crate::routes::transcript_entry),

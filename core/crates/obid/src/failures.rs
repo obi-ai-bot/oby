@@ -63,6 +63,10 @@ pub struct Evidence {
     pub step: String,
     /// The end of what its check printed, and why its publish failed, or none.
     pub check: Option<String>,
+    /// The last lines of the job's trace as stored, each a JSON line (crate::jobs::trace); none in
+    /// a record written before obid kept traces.
+    #[serde(default)]
+    pub log: Vec<String>,
 }
 
 /// A failure record as obid keeps it.
@@ -106,7 +110,7 @@ impl Record {
                 "step": self.evidence.step,
                 "check": self.evidence.check,
                 "reviews": [],
-                "log": [],
+                "log": self.evidence.log,
                 "worktree": null,
                 "source": null,
             },
@@ -264,6 +268,7 @@ fn evidence(home: &Path, job: &Job) -> Evidence {
         summary: secrets.redact(&tail_chars(&job.summary, 4000)),
         step: secrets.redact(&step(job)),
         check: (!check.is_empty()).then(|| secrets.redact(&check.join("\n\n"))),
+        log: crate::jobs::trace::last(home, &job.id, 50),
     }
 }
 
@@ -557,6 +562,21 @@ mod tests {
         let older: Record = serde_json::from_value(kept).unwrap();
         assert_eq!(older.agent_version, None);
         assert_eq!(older.to_json()["agentVersion"], Value::Null);
+    }
+
+    #[test]
+    fn a_record_written_before_traces_loads_with_an_empty_log() {
+        let home = Home::new("log");
+        let mut failed = job(Status::Failed);
+        failed.finished = Some(obi_protocol::time::now());
+        observe(&home.0, &failed);
+        let records = home.records();
+        let file = folder(&home.0).join(format!("{}.json", records[0].id));
+        let mut kept: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        kept["evidence"].as_object_mut().unwrap().remove("log");
+        let older: Record = serde_json::from_value(kept).unwrap();
+        assert!(older.evidence.log.is_empty());
+        assert_eq!(older.to_json()["evidence"]["log"], json!([]));
     }
 
     #[test]

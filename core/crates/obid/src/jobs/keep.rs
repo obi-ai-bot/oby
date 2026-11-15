@@ -24,6 +24,7 @@ impl Jobs {
             return Err(e.to_string());
         }
         state.unkept.remove(id);
+        super::trace::observe(&self.config.home, state.jobs.get(id), &next);
         state.jobs.insert(id.to_owned(), next.clone());
         Ok(next)
     }

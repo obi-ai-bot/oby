@@ -30,10 +30,13 @@ impl Jobs {
             return true;
         }
         tracing::info!("job {id}: running its repository's setup");
+        let start = obi_protocol::time::now();
         let failed = failure(self.run_setup(id, &command, spec, false, signal).await);
         if *signal.borrow() != Signal::Run {
             return false;
         }
+        let end = obi_protocol::time::now();
+        super::trace::setup(&self.config.home, id, start, end, failed.is_none());
         self.update(id, |job| {
             job.changed(match &failed {
                 None => format!("Ran its repository's setup, `{command}`."),

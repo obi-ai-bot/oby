@@ -6,6 +6,7 @@ use super::*;
 impl Jobs {
     /// A deleted job's worktree and folders, once a sweep ended its own runs' leftovers (LANES-16).
     pub(super) async fn remove_folders(&self, clone: &Path, id: &str) {
+        super::trace::remove(&self.config.home, id);
         let worktree = self.worktree_path(id);
         let (temp, login) = (self.temp_path(id), self.login_path(id));
         if crate::conn::sweep_records(&temp, &worktree, &login, true) {

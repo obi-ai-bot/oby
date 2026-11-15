@@ -146,10 +146,11 @@ fn the_api_lists_failures_and_fixes_them() {
             ("worktree", Value::Null),
             ("source", Value::Null),
             ("reviews", json!([])),
-            ("log", json!([])),
         ] {
             assert_eq!(evidence.get(key), Some(&value), "{key} in {evidence}");
         }
+        // The job's trace's last lines (FAILURES-3).
+        assert!(evidence["log"].is_array(), "log in {evidence}");
     }
 
     let id = list[1]["id"].as_str().unwrap().to_owned();
@@ -339,4 +340,105 @@ fn a_job_obid_keeps_going_down_with_stays_interrupted() {
     std::fs::write(folder.0.join("home/stopped-cleanly"), "").unwrap();
     let obid = start(&folder.0, &settings, None);
     assert_eq!(wait(&obid, "cccc0003")["status"], "done");
+}
+
+/// The stored lines of job `id`'s trace (`home/jobs/<id>/trace.ndjson`).
+fn trace_file(folder: &Path, id: &str) -> Vec<String> {
+    std::fs::read_to_string(folder.join(format!("home/jobs/{id}/trace.ndjson")))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// FAILURES-1: a job that runs one round and its check leaves `admit`, `prepare`, `round` (1)
+/// and `check`, in that order, each line only a step, its round, a start, seconds and an outcome
+/// code: never the job's task or what its agent printed.
+#[test]
+fn failures_1_a_job_leaves_its_steps_in_order() {
+    let folder = Folder::new("failures-trace");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote, &fake_claude()), None);
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build",
+               "task": "COMMIT: a.txt zebrafish-words", "check": "true", "rounds": 1}),
+    );
+    let job = wait(&obid, &id);
+    let answer = call(&obid, "GET", &format!("/v1/jobs/{id}/trace"), None);
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    let lines = answer.body["lines"].as_array().expect("lines").clone();
+    let steps: Vec<&str> = lines.iter().map(|l| l["step"].as_str().unwrap()).collect();
+    assert!(
+        steps.starts_with(&["admit", "prepare", "round", "check"]),
+        "{steps:?} of {job}"
+    );
+    assert_eq!(lines[2]["round"], 1, "{lines:?}");
+    let codes = ["ok", "queued", "failed", "limit", "interrupted", "stopped"];
+    for line in &lines {
+        let keys = line.as_object().unwrap().keys();
+        for key in keys {
+            assert!(
+                ["step", "round", "start", "seconds", "outcome"].contains(&key.as_str()),
+                "{key} in {line}"
+            );
+        }
+        assert!(line["seconds"].is_u64(), "{line}");
+        assert!(codes.contains(&line["outcome"].as_str().unwrap()), "{line}");
+    }
+    let raw = trace_file(&folder.0, &id).join("\n");
+    assert!(!raw.is_empty());
+    for text in [raw.as_str(), answer.text.as_str()] {
+        for content in ["zebrafish", "COMMIT", "Added a.txt"] {
+            assert!(!text.contains(content), "{content} in {text}");
+        }
+    }
+}
+
+/// FAILURES-3: a job that fails gets a record whose `evidence.log` is its trace's last lines.
+#[test]
+fn failures_3_a_failure_record_carries_the_trace() {
+    let folder = Folder::new("failures-log");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote, &fake_claude()), None);
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: a.txt",
+               "check": "echo the check failed; false", "rounds": 1}),
+    );
+    assert_eq!(wait(&obid, &id)["status"], "interrupted");
+    let list = failures(&obid, "");
+    let record = list
+        .iter()
+        .find(|r| r["job"] == id.as_str())
+        .expect("a record");
+    let log: Vec<String> = record["evidence"]["log"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l.as_str().unwrap().to_owned())
+        .collect();
+    assert!(!log.is_empty(), "{record}");
+    let kept = trace_file(&folder.0, &id);
+    assert_eq!(log, kept[kept.len().saturating_sub(50)..], "{record}");
+}
+
+/// FAILURES-4: deleting an ended job removes its trace with its folder.
+#[test]
+fn failures_4_a_deleted_job_loses_its_trace() {
+    let folder = Folder::new("failures-delete");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote, &fake_claude()), None);
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Look around"}),
+    );
+    assert_eq!(wait(&obid, &id)["status"], "done");
+    let traced = folder.0.join(format!("home/jobs/{id}"));
+    assert!(traced.join("trace.ndjson").exists());
+    let deleted = call(&obid, "DELETE", &format!("/v1/jobs/{id}"), None);
+    assert_eq!(deleted.status, 204, "{}", deleted.text);
+    assert!(!traced.exists());
+    let answer = call(&obid, "GET", &format!("/v1/jobs/{id}/trace"), None);
+    assert_eq!(answer.status, 404, "{}", answer.text);
 }

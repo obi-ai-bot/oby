@@ -65,6 +65,7 @@ POST /v1/jobs/{id}/publish
 GET /v1/jobs/{id}/report
 POST /v1/jobs/{id}/start
 POST /v1/jobs/{id}/stop
+GET /v1/jobs/{id}/trace
 GET /v1/jobs/{id}/transcript
 GET /v1/jobs/{id}/transcript/{n}
 GET /v1/jobs/{id}/wait

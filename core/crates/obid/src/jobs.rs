@@ -79,6 +79,7 @@ mod review_reads;
 mod secrets;
 mod setup;
 mod slots;
+pub(crate) mod trace;
 mod unjudged;
 mod versions;
 pub use logins::person_homes;
@@ -1274,6 +1275,7 @@ impl Jobs {
                     job.recovery.cut = Some(WENT_DOWN.into());
                 }
             }
+            trace::restarted(&config.home, &job, at_work, left_here.is_some());
             if let Some(why) = left_here {
                 tracing::warn!("job {}: left interrupted: {why}", job.id);
                 job.status = Status::Interrupted;

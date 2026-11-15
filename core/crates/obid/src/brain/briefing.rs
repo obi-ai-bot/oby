@@ -1172,6 +1172,7 @@ mod tests {
                 summary: summary.into(),
                 step: format!("Stage 2 of 5, Work: Round {rounds} of {rounds}"),
                 check,
+                log: Vec::new(),
             },
         }
     }

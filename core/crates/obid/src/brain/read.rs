@@ -436,6 +436,7 @@ mod tests {
                     summary: "Nothing committed: VaultTests still fail.".into(),
                     step: "Stage 2 of 5, Work: Round 3 of 3".into(),
                     check: Some("error: VaultTests.testSecret() failed".into()),
+                    log: Vec::new(),
                 },
             };
             std::fs::write(
