@@ -110,6 +110,7 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   updates: { args: ['check'], refusal: null },
   'local-settings': { args: [], refusal: null },
   'local-setting': { args: ['login', false], refusal: null },
+  'login-item': { args: [false], refusal: null },
   'sphere-leave': { args: [], refusal: 'Not this app’s page.' },
   'sphere-policy': { args: [], refusal: null },
   'sphere-set-policy': { args: [0], refusal: null },
