@@ -16,9 +16,11 @@
 //   2 hours. Expected: neverSilent is VIOLATED (witness there).
 // teammate_fixed: TEAMREVIEW-8 as built and TEAMREVIEW-7 as proposed. A refusal spends that teammate and tells the
 //   owner, and the next untried one is asked (the task's prose, which its intake ruled wins over the model as first
-//   pasted: neither ask nor sphereRefuses waits on not(refused) any more, and mustAct asks the next untried teammate
-//   after a refusal too). Expected: neverSilent holds. This version is checked again with Quint 0.33.1 by the
-//   factory's prove step, not the one verified on 2026-11-15.
+//   pasted: neither ask nor sphereRefuses waits on not(refused) any more, so the next untried teammate is asked
+//   after a refusal too). mustAct leaves out the state just after a refusal, where the next ask may wait for Oby's
+//   next look: there neverSilent holds only because the refusal told the owner, so a refusal that doesn't
+//   (sphereRefuses with told' = told) violates it. Expected: neverSilent holds. This version is checked again with
+//   Quint 0.33.1 by the factory's prove step, not the one verified on 2026-11-15.
 // oneTeammateAtATime (both): at most one teammate asked that hasn't answered and isn't 15 minutes silent.
 // The limit: a model checks the design, not that obid implements it.
 
@@ -93,7 +95,7 @@ module teammate_fixed {
   action tellNoOneLeft = all { not(approved), fresh.size() == 0, untried.size() == 0, not(told), told' = true,
                                asked' = asked, answered' = answered, refused' = refused, now' = now, approved' = approved }
   // time passes only once Oby has done what it does at once (the next ask, the owner told)
-  val mustAct = not(approved) and fresh.size() == 0 and (untried.size() > 0 or not(told))
+  val mustAct = not(approved) and fresh.size() == 0 and ((untried.size() > 0 and not(refused)) or (untried.size() == 0 and not(told)))
   action tick = all { now < 40, not(mustAct), now' = now + 1, asked' = asked, answered' = answered, refused' = refused, told' = told, approved' = approved }
   action step = any { ask, sphereRefuses, mateApproves, tellNoOneLeft, tick }
 
