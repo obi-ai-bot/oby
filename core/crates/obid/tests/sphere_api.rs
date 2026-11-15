@@ -3630,9 +3630,11 @@ fn receipts_15_a_confirm_with_its_used_approval_is_409() {
         let key = [("Idempotency-Key", "confirm-15")];
         call_with_headers(&obid, TOKEN, "POST", target, Some(&body), &key)
     };
-    // Both signed while the item is open, as an app signs what it shows; a second apart.
-    let used = confirm_approval(&obid, "dddd0015-confirm");
-    let fresh = confirm_approval_at(&obid, "dddd0015-confirm", obi_protocol::time::now() - 1);
+    // Both signed while the item is open, as an app signs what it shows; a second apart, from one
+    // clock read, so a slow machine never has them sign the same second.
+    let now = obi_protocol::time::now();
+    let used = confirm_approval_at(&obid, "dddd0015-confirm", now);
+    let fresh = confirm_approval_at(&obid, "dddd0015-confirm", now - 1);
     let first = send(&used);
     assert_eq!(first.status, 200, "{}", first.text);
     assert!(get(&obid, "/v1/jobs/dddd0015")["dismissed"].is_string());

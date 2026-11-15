@@ -39,8 +39,9 @@ QUINT = FACTORY / "remote" / "quint"
 # The stand-in check: the plan prints $FAKE/groups' groups; a run records its slot, CARGO_TARGET_DIR,
 # OBY_CHECK_ONLY, its pid and a background child's (and in $FAKE/env its OBY_BUILD_JOBS, OBY_CHECK_CACHE
 # and PATH), waits for $FAKE/release or $FAKE/release-<slot>, and exits with $FAKE/exit-<group>'s code
-# (0 without one).
+# (0 without one). Each run, the plan's too, records its OBY_CHECK_SHARD (or `unset`) in $FAKE/shards.
 FAKE_CHECK = """#!/bin/sh
+echo "${OBY_CHECK_ONLY:-plan} ${OBY_CHECK_SHARD-unset}" >>"$FAKE/shards"
 if [ -n "$OBY_CHECK_PLAN" ]; then
     for group in $(cat "$FAKE/groups"); do echo "oby-check: group $group"; done
     echo "oby-check: planned, nothing run"
@@ -176,9 +177,9 @@ class RemoteGate(unittest.TestCase):
     def groups(self, *names):
         (self.fake / "groups").write_text(" ".join(names) + "\n")
 
-    def start(self, commit=None, base=None, mac=None, counts=()):
-        """oby-remote-gate, or with mac (a list of groups) oby-remote-gate --mac."""
-        args = [*counts, commit or self.commit, base or "origin/dev"]
+    def start(self, commit=None, base=None, mac=None, counts=(), shard=()):
+        """oby-remote-gate, or with mac (a list of groups) oby-remote-gate --mac; shard, its words after the counts."""
+        args = [*counts, *shard, commit or self.commit, base or "origin/dev"]
         proc = subprocess.Popen(
             [str(GATE), *(["--mac", *args, *mac] if mac is not None else args)],
             env=self.env,
@@ -412,6 +413,74 @@ class RemoteGate(unittest.TestCase):
             self.assertIn(f"oby-remote-gate: {said}", gate.lines)
         self.assertEqual(self.runs(), [])
         self.assertFalse((self.root / "slot-1").exists(), "a usage error took a slot")
+
+    # ---- REMOTE-61: --shard -------------------------------------------------------------------
+
+    def shards(self):
+        """Each run's group (`plan` for the plan's) and the OBY_CHECK_SHARD it got, or `unset`."""
+        path = self.fake / "shards"
+        return path.read_text().splitlines() if path.exists() else []
+
+    def test_remote_61_a_later_shard_runs_only_rust_with_its_shard(self):
+        self.groups("rust", "electron", "scan")
+        (self.fake / "release").touch()
+        gate = self.start(base=self.base, shard=("--shard", "2/3"))
+        self.assertEqual(gate.finish(), 0, gate.output())
+        self.assertEqual([run[2] for run in self.runs()], ["rust"])
+        self.assertEqual(self.shards(), ["plan unset", "rust 2/3"])
+        self.assertEqual(gate.lines[gate.lines.index(f"oby-remote-gate: slot {gate.slot()}") + 1],
+                         "oby-remote-gate: shard 2/3")
+        self.assertIn("oby-remote-gate: groups rust", gate.lines)
+        self.assertFalse((self.fake / "npm").exists(), "a later shard ran electron's npm ci")
+        self.assertRegex(gate.lines[-1], r"^oby-remote-gate: passed in slot 1 after \d+s$")
+
+    def test_remote_61_shard_1_runs_every_linux_group_and_only_rust_gets_the_shard(self):
+        self.groups("rust", "electron", "scan")
+        (self.fake / "release").touch()
+        gate = self.start(base=self.base, counts=("--slots", "4", "--builder-slots", "0"), shard=("--shard", "1/3"))
+        self.assertEqual(gate.finish(), 0, gate.output())
+        self.assertEqual([run[2] for run in self.runs()], ["rust", "electron", "scan"])
+        self.assertEqual(self.shards(), ["plan unset", "rust 1/3", "electron unset", "scan unset"])
+        self.assertIn("oby-remote-gate: shard 1/3", gate.lines)
+
+    def test_remote_61_a_later_shard_with_no_rust_planned_runs_nothing_and_passes(self):
+        self.groups("electron", "scan")
+        gate = self.start(shard=("--shard", "3/3"))
+        self.assertEqual(gate.finish(), 0, gate.output())
+        self.assertEqual(self.runs(), [])
+        self.assertIn("oby-remote-gate: shard 3/3 runs only rust, which isn't planned: nothing to run here", gate.lines)
+        self.assertRegex(gate.lines[-1], r"^oby-remote-gate: passed in slot 1 after \d+s$")
+
+    def test_remote_61_mac_gives_the_shard_to_rust_only(self):
+        (self.fake / "release").touch()
+        gate = self.start(base=self.base, mac=["rust", "factory"], shard=("--shard", "1/2"))
+        self.assertEqual(gate.finish(), 0, gate.output())
+        self.assertEqual([run[2] for run in self.runs()], ["rust", "factory"])
+        self.assertEqual(self.shards(), ["rust 1/2", "factory unset"])
+        self.assertIn("oby-remote-gate: shard 1/2", gate.lines)
+
+    def test_remote_61_an_invalid_shard_is_a_usage_error(self):
+        (self.fake / "release").touch()
+        for shard in (("--shard", "0/2"), ("--shard", "3/2"), ("--shard", "1/65"), ("--shard", "01/2"),
+                      ("--shard", "a/b"), ("--shard", "1"), ("--shard",)):
+            for mac in (None, ["rust"]):
+                gate = self.start(mac=mac, shard=shard)
+                self.assertEqual(gate.finish(), 2, gate.output())
+                if len(shard) == 2:
+                    self.assertIn("oby-remote-gate: --shard takes <k>/<n>, with 1 <= k <= n <= 64 and no leading zero",
+                                  gate.lines)
+        self.assertEqual((self.runs(), self.shards()), ([], []))
+        self.assertFalse((self.root / "slot-1").exists(), "a usage error took a slot")
+
+    def test_remote_61_without_shard_no_shard_reaches_the_check(self):
+        self.groups("rust", "scan")
+        self.env["OBY_CHECK_SHARD"] = "2/3"
+        (self.fake / "release").touch()
+        for mac in (None, ["rust"]):
+            gate = self.start(base=self.base, mac=mac)
+            self.assertEqual(gate.finish(), 0, gate.output())
+            self.assertFalse(any("shard" in line for line in gate.lines), gate.output())
+        self.assertEqual(self.shards(), ["plan unset", "rust unset", "scan unset", "rust unset"])
 
 
 # The builder's cargo for REMOTE-34. Its first run leaves what a hostile run could: an ignored file in the worktree,

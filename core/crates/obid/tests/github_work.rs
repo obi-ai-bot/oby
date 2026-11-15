@@ -878,11 +878,11 @@ fn taskconv_2_a_task_from_github_gets_its_own_conversation() {
     assert_eq!(turns.last().unwrap()["jobs"], json!([id]));
 }
 
-/// MERGING-51 (docs/contracts/merging.md): GitHub work a tap starts isn't the owner's own work,
+/// MERGING-54 (docs/contracts/merging.md): GitHub work a tap starts isn't the owner's own work,
 /// even sent signed: its job's file holds no own mark, so its pull request keeps its card
 /// (`merge_api::merging_46_work_not_from_the_owners_conversation_keeps_its_card`).
 #[test]
-fn merging_51_github_work_started_by_a_tap_gets_no_own_mark() {
+fn merging_54_github_work_started_by_a_tap_gets_no_own_mark() {
     let folder = Folder::new("merging-51");
     let remote = fixture(&folder.0.join("fixture"));
     let config = config(&folder.0, &remote, &agents().join("fake-claude"));

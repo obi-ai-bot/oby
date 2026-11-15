@@ -614,6 +614,10 @@ pub struct Job {
     /// before a merge is weighed, never kept.
     #[serde(skip)]
     pub unfollowed: Option<String>,
+    /// A follow-up is at work on its branch, so a merge past Oby's review waits for what it pushes
+    /// (crate::merge, MERGING-49): set by obid right before a merge is weighed, never kept.
+    #[serde(skip)]
+    pub follow_up_at_work: bool,
     /// Its activity at a glance, from its transcript (`crate::activity`, #730).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<Value>,
@@ -857,6 +861,11 @@ pub struct Job {
     /// the same job tells it again. Kept in its file, never in the API.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub told: Option<i64>,
+    /// The head its conversation was told it merged at past Oby's review (crate::merge,
+    /// `merged_past`, MERGING-49): another merged head tells it again. Kept in its file, never in
+    /// the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub told_merged_past: Option<String>,
     /// The merge stopped where the owner takes over: `merge_error` says why.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub merge_needs_you: bool,
