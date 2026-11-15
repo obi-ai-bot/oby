@@ -59,6 +59,32 @@ impl Jobs {
         self.queue_round(id, &head);
     }
 
+    /// The stop at `job`'s `head` into `base` when GitHub's merge queue dropped that head, before
+    /// any round, card or merge of the follower's (MERGING-57): it's never armed again, nothing
+    /// more happens by itself, and the card says why ([`crate::merge::queue_stop`]: none for the
+    /// owner's own work, whose conversation hears it). None for any other head.
+    pub(super) fn queue_stopped(
+        &self,
+        job: &Job,
+        head: &str,
+        base: &str,
+    ) -> Option<Option<crate::sphere::inbox::Item>> {
+        let drop = job.queue_drops.iter().find(|d| d.head == head)?;
+        if !drop.stopped {
+            self.update(&job.id, |job| {
+                let drops = job.queue_drops.iter_mut();
+                drops
+                    .filter(|d| d.head == head)
+                    .for_each(|d| d.stopped = true)
+            });
+        }
+        let stop = crate::merge::queue_stop(job, base);
+        Some(
+            stop.needs_you
+                .then(|| crate::merge::stopped_card(job, head, &stop.why)),
+        )
+    }
+
     /// A push obid just made (`sent`): GitHub's auto-merge armed at another head of that branch is
     /// turned off at once (MERGING-41), since GitHub cancels it only for a push by someone without
     /// write access, and obid pushes with the owner's.
@@ -200,18 +226,6 @@ impl Jobs {
         if job.auto_merge.as_ref().is_some_and(|a| a.head == head) {
             self.lock().handed.insert(id.to_owned());
             return Err(crate::merge::handed());
-        }
-        // A head GitHub's merge queue dropped is never armed again (MERGING-57).
-        if let Some(drop) = job.queue_drops.iter().find(|d| d.head == head) {
-            if !drop.stopped {
-                self.update(id, |job| {
-                    let drops = job.queue_drops.iter_mut();
-                    drops
-                        .filter(|d| d.head == head)
-                        .for_each(|d| d.stopped = true)
-                });
-            }
-            return Err(crate::merge::queue_stop(job, &pr.base));
         }
         if let Some((at, why)) = &job.auto_merge_refused
             && at == head

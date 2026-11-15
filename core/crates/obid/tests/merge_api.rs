@@ -3065,18 +3065,25 @@ fn merging_56_a_drop_gets_one_rebase_round_and_its_new_head_is_armed() {
     assert!(merge_cards(&obid).is_empty());
 }
 
-/// MERGING-57: a second drop on the job starts no round: work that isn't the owner's own gets the
-/// card saying the queue dropped it twice, and nothing is armed again. A drop on a branch obid
-/// didn't make starts none either.
+/// MERGING-57: a second drop on the job starts no round, even where it now conflicts with dev
+/// (no MERGING-38 rebase round either): work that isn't the owner's own gets the card saying the
+/// queue dropped it twice, and nothing is armed again. A drop on a branch obid didn't make starts
+/// none either, and its card says the queue dropped it.
 #[test]
 fn merging_57_a_second_drop_or_a_branch_obid_didnt_make_gets_no_round() {
     let folder = Folder::new("merge-queue-twice");
     let (obid, id, _, remote) = dropped_for_real(&folder, |_| {});
     rounded(&obid, &id);
     armed_again(&obid, &folder, &id, &remote, 1);
+    conflicting(&folder);
     std::fs::remove_file(folder.0.join("gh/armed")).unwrap();
     card_saying(&obid, &obid::merge::queue_dropped(2, "dev"));
     no_second_round(&obid, &id);
+    assert!(
+        open_merge_cards(&obid)
+            .iter()
+            .all(|c| c["text"] != CONFLICT)
+    );
     assert_eq!(auto_merges(&folder).len(), 2);
     let twice = kept(&folder, &id);
     assert_eq!(twice["queueDrops"].as_array().unwrap().len(), 2, "{twice}");
@@ -3104,12 +3111,14 @@ fn merging_57_a_second_drop_or_a_branch_obid_didnt_make_gets_no_round() {
         (kept["queueDrops"][0]["head"] == head.as_str()).then_some(())
     });
     no_round(&obid, &id);
+    card_saying(&obid, &obid::merge::queue_dropped(1, "dev"));
     assert!(job_of(&obid, &id)["autoMerge"].is_null());
     assert!(auto_merges(&folder).is_empty());
 }
 
 /// MERGING-57: the owner's own work stopped at a dropped head hears why in its conversation,
-/// once, in obid's words, with no card; nothing is armed again.
+/// once, in obid's words, with no card, red checks on that head since included; nothing is armed
+/// again.
 #[test]
 fn merging_57_own_work_hears_why_in_its_conversation_with_no_card() {
     let folder = Folder::new("merge-queue-own");
@@ -3124,6 +3133,7 @@ fn merging_57_own_work_hears_why_in_its_conversation_with_no_card() {
     });
     assert_eq!(turns[0]["who"], "oby", "{turns:?}");
     assert_eq!(turns[0]["ended"], true, "{turns:?}");
+    red(&folder, None);
     a_few_reads(&folder);
     assert_eq!(told(&obid, &conversation, &said).len(), 1, "once");
     assert!(merge_cards(&obid).is_empty(), "{:?}", merge_cards(&obid));

@@ -12843,7 +12843,11 @@ impl Jobs {
             .as_deref()
             .and_then(|review| self.get(review))
             .is_some_and(|review| review.status.is_active());
-        let card = if at_work || self.red_round(id, gh, &head, &stop, &merging).await {
+        let dropped = (!at_work).then(|| self.queue_stopped(&job, &head, &pr.base));
+        let card = if let Some(card) = dropped.flatten() {
+            // A head GitHub's merge queue dropped stops here, before any round (MERGING-57).
+            card
+        } else if at_work || self.red_round(id, gh, &head, &stop, &merging).await {
             // Oby's own review is at work on it (MERGING-26), or its agent on its red checks
             // (MERGING-39): it's no one's to merge yet, and "nobody has approved" would be untrue.
             // One stopped, at its account's limit say, stays named until the owner decides.
