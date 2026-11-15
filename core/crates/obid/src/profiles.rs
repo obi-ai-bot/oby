@@ -115,6 +115,14 @@ impl Profiles {
             .map(Profile::to_json)
             .collect()
     }
+
+    /// `id` when a profile has it, or with none the default profile's id (crate::helpers).
+    pub fn id_of(&self, id: Option<&str>) -> Option<String> {
+        let saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
+        let mut profiles = saved.profiles.iter();
+        let found = profiles.find(|p| id.map_or(p.default, |id| p.id == id));
+        found.map(|p| p.id.clone())
+    }
 }
 
 /// One first profile: local id and name, the default, Sangam's first colour.

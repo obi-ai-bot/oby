@@ -37,6 +37,8 @@ pub struct Shared {
     pub devices: crate::devices::Devices,
     /// Chrome-style profiles on this Mac (`GET /v1/profiles`); nothing else reads them yet.
     pub profiles: crate::profiles::Profiles,
+    /// The owner's helpers (`/v1/helpers`).
+    pub helpers: crate::helpers::Helpers,
     /// The phones paired with the gateway, and the open invitation (crate::gateway).
     pub gateway: crate::gateway::Gateway,
     /// `status.gateway`: whether the gateway listens, and why not; none with no `gateway` configured.
@@ -256,6 +258,14 @@ pub fn router(shared: Arc<Shared>) -> Router {
                 .delete(crate::artifacts::remove),
         )
         .route("/v1/profiles", get(crate::profiles::list_route))
+        .route(
+            "/v1/helpers",
+            get(crate::helpers::list).post(crate::helpers::create),
+        )
+        .route(
+            "/v1/helpers/{id}",
+            axum::routing::patch(crate::helpers::change).delete(crate::helpers::delete),
+        )
         .route(
             "/v1/artifacts/{id}/{version}/{*path}",
             get(crate::artifacts::file),

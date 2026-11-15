@@ -46,6 +46,10 @@ POST /v1/github/sign-in
 GET /v1/github/work
 POST /v1/github/work/refresh
 POST /v1/github/work/{id}/start
+GET /v1/helpers
+POST /v1/helpers
+DELETE /v1/helpers/{id}
+PATCH /v1/helpers/{id}
 GET /v1/inbox
 POST /v1/inbox/{id}/answer
 GET /v1/jobs
