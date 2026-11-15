@@ -778,11 +778,15 @@ def cmd_queue():
     jobs = {j["issue"]: j for j in all_jobs()}
     # A job is done once its PR is merged on GitHub, which also moves its task to queue/done.
     # A queued job is read through the merge queue's own rules instead, at most every READ_EVERY seconds.
-    for j in jobs.values():
-        if j["stage"] == "queued":
-            settle(j)
-        elif j["stage"] not in TERMINAL and j["pr"] and pr_state(j) == "MERGED":
-            save(advance(sync(j), "merged"))
+    # What changes a job does so under its lock, on the job read again inside it, as every other change does.
+    for key, j in jobs.items():
+        if j["stage"] == "queued" or (j["stage"] not in TERMINAL and j["pr"] and pr_state(j) == "MERGED"):
+            with load_for_update(j["id"]) as j:
+                if j["stage"] == "queued":
+                    settle(j)
+                elif j["stage"] not in TERMINAL and j["pr"] and pr_state(j) == "MERGED":
+                    save(advance(sync(j), "merged"))
+                jobs[key] = j
     cmd_clean(quiet=True)
     done = done_keys() | {k for k, j in jobs.items() if j["stage"] == "merged"}
     tasks = open_tasks()

@@ -60,7 +60,18 @@ class JobLocks(unittest.TestCase):
         }, indent=2) + "\n")
         (self.job_dir / "decision.md").write_text("ESCALATE\n\n## Why\nA person decides.\n")
         (self.dir / "claude").mkdir()
-        self.env = {**os.environ, "CLAUDE_CONFIG_DIR": str(self.dir / "claude")}
+        path_dir = self.dir / "path"
+        path_dir.mkdir()
+        gh = path_dir / "gh"  # a stand-in that says every PR is merged
+        gh.write_text('#!/bin/sh\ncase "$*" in\n    "pr view 7 --json state") echo \'{"state":"MERGED"}\' ;;\n'
+                      '    *) echo "stand-in gh: unexpected: $*" >&2; exit 1 ;;\nesac\n')
+        gh.chmod(0o755)
+        self.env = {
+            **{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
+            "CLAUDE_CONFIG_DIR": str(self.dir / "claude"),
+            "CARGO_TARGET_DIR_FACTORY": str(self.dir / "no-shared-cargo"),
+            "PATH": f"{path_dir}{os.pathsep}{os.environ['PATH']}",
+        }
         self.holders = []
 
     def tearDown(self):
@@ -107,6 +118,25 @@ class JobLocks(unittest.TestCase):
         self.assertEqual(second.returncode, 0, err)
         job = self.saved()
         self.assertEqual((job["stage"], job.get("note")), ("needs-human", "kept"))
+
+    def test_joblock_2_job_queue_marking_a_merged_job_waits_for_a_change_and_keeps_it(self):
+        job = self.saved()
+        job["pr"] = 7
+        (self.job_dir / "job.json").write_text(json.dumps(job, indent=2) + "\n")
+        first = self.holder("update", JOB_ID)
+        self.assertEqual(first.stdout.readline(), "locked\n")
+        queue = subprocess.Popen([str(self.job), "queue"], cwd=self.repo, env=self.env,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(1)
+        self.assertIsNone(queue.poll(), "job queue waits for the change holding the job")
+        first.stdin.write("\n")
+        first.stdin.flush()
+        self.assertEqual(first.stdout.readline(), "ready\n")
+        out, err = queue.communicate(timeout=30)
+        self.assertEqual(queue.returncode, 0, err)
+        self.assertNotIn("stand-in gh: unexpected", err)
+        job = self.saved()
+        self.assertEqual((job["stage"], job.get("note")), ("merged", "kept"))
 
     def test_joblock_3_a_change_releases_its_lock_when_it_ends(self):
         with self.subTest("a process that goes on running"):
