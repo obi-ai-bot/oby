@@ -50,8 +50,13 @@ for up to 30 seconds, sends SIGKILL to what's left, and answers `couldn't judge`
 maxDuration of <N>s`, followed by the test binaries the script named as still running (`: tests/<name>.rs, …
 were still running`). The host's own timeout is the limit plus 60 seconds. A full run (`check` with
 `OBY_CHECK_ALL`) gives the Rust group (`rust-affected-tests`) the full-run limit, 60 minutes
-(`FULL_RUN_RUST_LIMIT`, CI-34); every other step, and the Rust group of a gate's check or obid's,
-keeps the workflow's (`rust-affected-tests` 45 minutes).
+(`FULL_RUN_RUST_LIMIT`, CI-34), and so does a `check` whose Rust plan holds the line
+`oby-check: every obid test binary: obid's source changed (docs/contracts/ci.md, CI-45)`, which the
+script prints when a change to obid's code plans every obid test binary (CI-48). Every other step, the
+Rust group of a check whose plan has no such line, and the shadow and affected runs keep the workflow's
+(`rust-affected-tests` 45 minutes). Until the owner installs the tool again
+(`cargo install --locked --path tools/oby-check-blok`), gates run the installed one and keep 45 minutes
+for that plan.
 
 The host speaks BLOK's gRPC (the pinned BLOK Rust SDK's `NodeRuntime`) to `oby-check-blok-nodes`,
 found beside it, over that child's stdin and stdout: no port and no socket, so it runs in a box

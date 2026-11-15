@@ -104,10 +104,23 @@ pub struct Step {
 
 /// The Rust group's limit in a full run (`check` with `OBY_CHECK_ALL`, CI-34): 1.5 times a measured
 /// full run's Rust group, rounded up to 15 minutes, within 45 minutes and 2 hours (PUBLISHING-29).
-/// Measured on the Mac at 9eb7d431: 2,306 s, times 1.5 is 3,459 s, so 60 minutes.
+/// Measured on the Mac at 9eb7d431: 2,306 s, times 1.5 is 3,459 s, so 60 minutes. A check whose Rust
+/// plan holds every obid test binary gets it too (CI-48), once the owner installs this tool again
+/// (`cargo install --locked --path tools/oby-check-blok`): until then gates keep 45 minutes.
 pub const FULL_RUN_RUST_LIMIT: Duration = Duration::from_secs(60 * 60);
 
-/// A step's limit: a full run's Rust group gets FULL_RUN_RUST_LIMIT, every other its own (CI-34).
+/// The line the script's Rust plan prints when it plans every obid test binary (CI-45).
+pub const EVERY_BINARY_LINE: &str =
+    "oby-check: every obid test binary: obid's source changed (docs/contracts/ci.md, CI-45)";
+
+/// Whether the Rust group gets FULL_RUN_RUST_LIMIT: in a full run (CI-34), or when its plan holds
+/// every obid test binary (CI-48).
+pub fn full_rust_limit(full_run: bool, rust_plan: &str) -> bool {
+    full_run || rust_plan.lines().any(|line| line == EVERY_BINARY_LINE)
+}
+
+/// A step's limit: with `full_run`, the Rust group gets FULL_RUN_RUST_LIMIT, every other its own
+/// (CI-34, CI-48).
 pub fn step_limit(step: &Step, full_run: bool) -> Option<Duration> {
     if full_run && step.node == "rust-affected-tests" {
         Some(FULL_RUN_RUST_LIMIT)
@@ -573,6 +586,26 @@ mod tests {
                 .contains(&FULL_RUN_RUST_LIMIT)
                 && FULL_RUN_RUST_LIMIT.as_secs().is_multiple_of(15 * 60)
         );
+    }
+
+    #[test]
+    fn ci_48_a_checks_rust_group_that_plans_every_obid_test_binary_gets_the_full_run_limit() {
+        let steps = parse_workflow(DEFAULT_WORKFLOW).unwrap();
+        let every = format!("oby-check: group rust\n==> cargo fmt\n{EVERY_BINARY_LINE}\n==> test_binaries --test a\n");
+        let some = "oby-check: group rust\n==> cargo fmt\n==> test_binaries --test a\n";
+        for step in &steps {
+            let with_line = step_limit(step, full_rust_limit(false, &every));
+            let without = step_limit(step, full_rust_limit(false, some));
+            if step.id == "rust-affected-tests" {
+                assert_eq!(with_line, Some(FULL_RUN_RUST_LIMIT));
+                assert_eq!(without, Some(Duration::from_secs(45 * 60)));
+            } else {
+                assert_eq!(with_line, step.max, "{}", step.id);
+                assert_eq!(without, step.max, "{}", step.id);
+            }
+        }
+        // The line itself, not a quote of it inside another.
+        assert!(!full_rust_limit(false, &format!("| {EVERY_BINARY_LINE}")));
     }
 
     #[test]

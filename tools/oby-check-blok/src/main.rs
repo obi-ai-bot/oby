@@ -3,8 +3,8 @@ use blok::grpc_server::proto::{
     node_runtime_client::NodeRuntimeClient, ExecuteRequest, HealthRequest, NodeRef,
 };
 use oby_check_blok::{
-    check_command, fold, parse_workflow, step_limit, text_output, CheckInput, CheckResult, Step,
-    Verdict, DEFAULT_WORKFLOW, GROUPS,
+    check_command, fold, full_rust_limit, parse_workflow, step_limit, text_output, CheckInput,
+    CheckResult, Step, Verdict, DEFAULT_WORKFLOW, GROUPS,
 };
 use serde::Serialize;
 use std::io::Read;
@@ -75,8 +75,10 @@ async fn workflow(
         }
     };
     // A full run (`check` with OBY_CHECK_ALL, as the script's `-n`) gives its Rust group the full-run
-    // limit (CI-34); the shadow and affected runs keep the workflow's.
+    // limit (CI-34), and so does a check whose Rust plan holds every obid test binary (CI-48); the
+    // shadow and affected runs keep the workflow's.
     let full_run = check && std::env::var_os("OBY_CHECK_ALL").is_some_and(|v| !v.is_empty());
+    let mut rust_plan = String::new();
     let mut needed = vec![];
     let mut has_steps = false;
     let mut has_groups = false;
@@ -105,7 +107,11 @@ async fn workflow(
         if planned_group(&text, group) {
             needed.push(name);
         }
+        if group == "rust" {
+            rust_plan = text;
+        }
     }
+    let full_rust = check && full_rust_limit(full_run, &rust_plan);
     if has_steps && !has_groups {
         bail!("the script names no groups (older than #2052)");
     }
@@ -182,7 +188,7 @@ async fn workflow(
             let mut result = CheckResult::unjudged("never ran", 0.0);
             // Retries are for a node that couldn't judge (a transport error, a timeout), never a failure.
             for _ in 0..step.attempts {
-                result = execute(&mut client, step, &token, step_limit(step, full_run)).await?;
+                result = execute(&mut client, step, &token, step_limit(step, full_rust)).await?;
                 if result.verdict != Verdict::Unjudged {
                     break;
                 }
