@@ -53,6 +53,7 @@ URL = os.environ.get("OBY_FACTORY_URL", "http://127.0.0.1:7811")
 GH_REPO = os.environ.get("OBY_FACTORY_REPO", "obi-ai-bot/oby")
 FEED = HOME / "feed"
 ACTIVE = {"running", "reviewing", "merging"}
+SAID = set()
 BUILD_FOLDERS = ("core/target", "apps/electron/node_modules", "apps/electron/out", "node_modules")
 
 
@@ -365,7 +366,9 @@ def one_pass(args):
                 continue
             oby_id, why = start(task, args.account, on_base)
             if not oby_id:
-                say(f"{task['key']}: not started: {why}")
+                if task["key"] not in SAID:  # once a run, not at every pass
+                    say(f"{task['key']}: not started: {why}")
+                    SAID.add(task["key"])
                 continue
             item = {"key": task["key"], "title": task["title"], "job": oby_id, "state": "running",
                     "files": sorted(files), "started": time.strftime("%Y-%m-%dT%H:%M:%S")}
