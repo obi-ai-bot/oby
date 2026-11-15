@@ -130,7 +130,7 @@ impl Jobs {
                 crate::memory::note_used(home, memory);
             }
         }
-        self.update(id, |job| crate::merge::note(job, &outcome, by));
+        self.note_merge(id, &outcome, by);
         outcome
             .err()
             .filter(|b| b.needs_you && !crate::merge::on_review_item(b))

@@ -528,6 +528,18 @@ fn publishing_28_a_report_always_has_a_commit() {
     );
 }
 
+/// Whether the cleanup pass a job's end wakes made its last change to it: it freed its worktree
+/// (`worktreeFreed`, CLEANUP-3), after which no pass changes it, or its build outputs
+/// (`buildFreed`). A pass that started before the job finished stamps an earlier `at`, and the next
+/// pass frees them again: only one stamped at or after `finished` is the last (same-format dates
+/// compare as text).
+fn cleaned(job: &Value) -> bool {
+    job.get("worktreeFreed").is_some()
+        || job["buildFreed"]["at"]
+            .as_str()
+            .is_some_and(|at| job["finished"].as_str().is_some_and(|end| at >= end))
+}
+
 /// Polls `GET /v1/jobs/{id}` until `ready` holds, for at most 30 seconds.
 fn until(obid: &Obid, id: &str, ready: impl Fn(&Value) -> bool) -> Value {
     let give_up_at = Instant::now() + Duration::from_secs(30);
@@ -1451,15 +1463,9 @@ fn tasks_12_nothing_committed_is_done_with_nothing_done_and_needs_nothing() {
         .to_owned();
     let research = wait(&obid, &quiet);
     assert_eq!(research["status"], "done");
-    // Its last change: the cleanup pass its end wakes frees its build outputs (`buildFreed`), a
-    // `job` event that would otherwise race the rename's below. A pass that started before the
-    // job finished stamps an earlier `at`, and the next pass frees it again: only one stamped at
-    // or after `finished` is the last (same-format dates compare as text).
-    until(&obid, &quiet, |job| {
-        job["buildFreed"]["at"]
-            .as_str()
-            .is_some_and(|at| job["finished"].as_str().is_some_and(|end| at >= end))
-    });
+    // Its last change: the cleanup pass its end wakes, a `job` event that would otherwise race the
+    // rename's below ([`cleaned`]).
+    until(&obid, &quiet, cleaned);
     assert!(research.get("nothingDone").is_none(), "{research}");
     let refused = request(&obid, "POST", &format!("/v1/jobs/{quiet}/dismiss"), None);
     assert_eq!(refused.status, 409);
@@ -1618,12 +1624,8 @@ fn home_1_a_failed_save_sends_no_event() {
         .unwrap()
         .to_owned();
     wait(&obid, &id);
-    // Its last change, as in TASKS-12: the cleanup pass that frees its builds.
-    until(&obid, &id, |job| {
-        job["buildFreed"]["at"]
-            .as_str()
-            .is_some_and(|at| job["finished"].as_str().is_some_and(|end| at >= end))
-    });
+    // Its last change, as in TASKS-12: the cleanup pass its end wakes.
+    until(&obid, &id, cleaned);
     let path = format!("/v1/jobs/{id}");
     let before = request(&obid, "GET", &path, None).body;
 
