@@ -435,6 +435,16 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual(len([c for c in self.stand.calls if c[:4] == ("run", "gh", "pr", "view")]), 1)
         self.assertEqual(started, [])
 
+    def test_feedalive_1_a_merge_github_didnt_answer_follows_and_starts_nothing_more(self):
+        started = self.two_waiting_and_one_ready()
+        self.stand.jobs[JOB]["approvals"] = approvals(OLD, "claude", "codex")
+        self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "x.py"}]}
+        self.stand.merge_code = 1
+        self.stand.merge_err = "HTTP 502: Bad Gateway (https://api.github.com/graphql)"
+        self.assertIsNone(self.one_pass())
+        self.assertEqual(len(self.stand.merges()), 1)
+        self.assertEqual(started, [])
+
     def test_feedalive_1_obid_gone_mid_pass_follows_and_starts_nothing_more(self):
         started = self.two_waiting_and_one_ready()
 
@@ -490,10 +500,11 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual(self.main(passes=passes), [300, 300, 300, 300])
         self.assertEqual(self.main("--until-idle", passes=lambda n: self.fail("--until-idle went on")), [])
 
-    # FEEDALIVE-3: a task file ready after idle passes starts at the next pass
-    def test_feedalive_3_a_task_ready_after_idle_passes_starts_at_the_next_pass(self):
-        """The task file is pushed to a real origin's <base> after the feeder's clone: each pass's `git fetch`,
-        `git ls-tree` and `git show` run for real, and the checkout is never pulled."""
+    def on_real_git(self, first_task=None):
+        """A real bare origin, a seed clone that pushes to it and the feeder's own clone, made after the first push,
+        which holds `first_task` as factory/queue/tasks/A00-98.md when given. The feeder's `git fetch`,
+        `git ls-tree` and `git show` run for real. Returns `push(text)`, which commits A00-98.md on the seed and
+        pushes it, the feeder's queue folder, and the list of keys it starts."""
         base = self.feed.job.BASE
         # GIT_DIR and the like, set when the tests run inside a worktree's hooks, would point git at that repository
         no_git_env = mock.patch.dict(os.environ, {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}, clear=True)
@@ -507,12 +518,22 @@ class ObyFeed(unittest.TestCase):
         origin, seed, repo = self.dir / "origin.git", self.dir / "seed", self.dir / "repo"
         git(self.dir, "init", "-q", "--bare", "-b", base, str(origin))
         git(self.dir, "init", "-q", "-b", base, str(seed))
+
+        def push(text):
+            (seed / "factory" / "queue" / "tasks").mkdir(parents=True, exist_ok=True)
+            (seed / "factory" / "queue" / "tasks" / "A00-98.md").write_text(text)
+            git(seed, "add", "factory")
+            git(seed, "commit", "-q", "-m", "a task")
+            git(seed, "push", "-q", str(origin), base)
+
         (seed / "README").write_text("x\n")
         git(seed, "add", "README")
-        git(seed, "commit", "-q", "-m", "first")
-        git(seed, "push", "-q", str(origin), base)
+        if first_task:
+            push(first_task)
+        else:
+            git(seed, "commit", "-q", "-m", "first")
+            git(seed, "push", "-q", str(origin), base)
         git(self.dir, "clone", "-q", "-b", base, str(origin), str(repo))
-        text = "KEY: A00-98\nTITLE: another task\nSPRINT: 0\nORDER: 1\nDEPENDS: none\n\nWhat.\n\n### Files\n- y.py\n"
 
         self.feed.oby_jobs = lambda: []
         self.feed.free_gb = lambda: 100.0
@@ -520,27 +541,48 @@ class ObyFeed(unittest.TestCase):
         self.feed.REPO = repo
         started = []
         self.feed.start = lambda task, account, on_base: (started.append(task["key"]) or "job-9", None)
+        job = self.feed.job
+        queue_dir = repo / "factory" / "queue"
+        for patch in (mock.patch.object(job, "REPO", repo), mock.patch.object(job, "TASKS", queue_dir / "tasks"),
+                      mock.patch.object(job, "DONE", queue_dir / "done"), mock.patch.object(job, "JOBS", repo / "factory" / "jobs"),
+                      mock.patch.object(job.run, "__defaults__", (repo, True)), mock.patch.object(job, "SPRINT", 0)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        return push, queue_dir, started
+
+    # FEEDALIVE-3: a task file ready after idle passes starts at the next pass
+    def test_feedalive_3_a_task_ready_after_idle_passes_starts_at_the_next_pass(self):
+        """The task file is pushed to a real origin's <base> after the feeder's clone: the checkout is never pulled."""
+        push, queue_dir, started = self.on_real_git()
+        text = "KEY: A00-98\nTITLE: another task\nSPRINT: 0\nORDER: 1\nDEPENDS: none\n\nWhat.\n\n### Files\n- y.py\n"
 
         def passes(n):
             if n == 3:
-                (seed / "factory" / "queue" / "tasks").mkdir(parents=True)
-                (seed / "factory" / "queue" / "tasks" / "A00-98.md").write_text(text)
-                git(seed, "add", "factory")
-                git(seed, "commit", "-q", "-m", "a task")
-                git(seed, "push", "-q", str(origin), base)
+                push(text)
             if n == 4:
                 raise Stop
 
-        job = self.feed.job
-        queue_dir = repo / "factory" / "queue"
-        with mock.patch.object(job, "REPO", repo), mock.patch.object(job, "TASKS", queue_dir / "tasks"), \
-                mock.patch.object(job, "DONE", queue_dir / "done"), mock.patch.object(job, "JOBS", repo / "factory" / "jobs"), \
-                mock.patch.object(job.run, "__defaults__", (repo, True)), mock.patch.object(job, "SPRINT", 0):
-            sleeps = self.main(passes=passes)
+        sleeps = self.main(passes=passes)
         self.assertEqual(started, ["A00-98"])
         self.assertFalse((queue_dir / "tasks" / "A00-98.md").exists())
         self.assertEqual(sleeps, [300, 300, 300, 60])
         self.assertEqual(self.feed.load_state()["A00-98"]["state"], "running")
+        self.assertEqual(self.feed.load_state()["A00-98"]["files"], ["y.py"])
+
+    def test_feedalive_3_a_task_dev_changed_is_read_as_dev_has_it(self):
+        """The checkout holds the task in a later sprint; dev moves it to this one: it starts with dev's files."""
+        later = "KEY: A00-98\nTITLE: another task\nSPRINT: 5\nORDER: 1\nDEPENDS: none\n\nWhat.\n\n### Files\n- x.py\n"
+        push, queue_dir, started = self.on_real_git(first_task=later)
+
+        def passes(n):
+            if n == 2:
+                push(later.replace("SPRINT: 5", "SPRINT: 0").replace("- x.py", "- y.py"))
+            if n == 3:
+                raise Stop
+
+        self.assertEqual(self.main(passes=passes), [300, 300, 60])
+        self.assertEqual(started, ["A00-98"])
+        self.assertIn("SPRINT: 5", (queue_dir / "tasks" / "A00-98.md").read_text())
         self.assertEqual(self.feed.load_state()["A00-98"]["files"], ["y.py"])
 
     # FEEDALIVE-4: a 502 from `gh pr merge` is tried again; GitHub refusing the merge holds the head

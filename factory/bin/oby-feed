@@ -366,7 +366,8 @@ def arm(item, head, tools):
                          cwd=REPO, capture_output=True, text=True)
     if res.returncode != 0:
         said = (res.stderr or res.stdout).strip()
-        if PASSING.search(said):
+        if PASSING.search(said):  # GitHub didn't answer: the pass does nothing more
+            GH_MISSED.append(said[:120])
             return tried_again(item, head, ("GitHub didn't take the merge: " + said)[:160])
         item.update(state="waiting", head=head, refused=head, note=("GitHub refused the merge: " + said)[:200])
         return
@@ -487,10 +488,10 @@ def follow(item, jobs):
 
 
 def base_tasks():
-    """Task files on origin/<base> that this checkout lacks: each pass fetches, and nothing pulls the checkout."""
-    here = {p.stem for p in job.TASKS.glob("*.md")} if job.TASKS.exists() else set()
+    """Task files as origin/<base> has them, even where this checkout has an older copy: each pass fetches, and
+    nothing pulls the checkout."""
     out = []
-    for key in sorted(job.on_base(job.TASKS) - here):
+    for key in sorted(job.on_base(job.TASKS)):
         res = subprocess.run(["git", "show", f"origin/{job.BASE}:{(job.TASKS / f'{key}.md').relative_to(REPO)}"],
                              cwd=REPO, capture_output=True, text=True)
         if res.returncode != 0:
@@ -521,7 +522,10 @@ def ready_tasks(state):
             except (SystemExit, FileNotFoundError, OSError):
                 pass
     out = []
-    for task in sorted(job.open_tasks() + base_tasks(), key=lambda t: (t["sprint"], t["order"], t["key"])):
+    on_dev = base_tasks()
+    read = {t["key"] for t in on_dev}  # dev's text wins; the checkout's only for a task dev doesn't have
+    tasks = on_dev + [t for t in job.open_tasks() if t["key"] not in read]
+    for task in sorted(tasks, key=lambda t: (t["sprint"], t["order"], t["key"])):
         key = task["key"]
         if key in done or key in factory or key in state:
             continue
