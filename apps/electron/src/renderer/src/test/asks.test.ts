@@ -176,7 +176,7 @@ describe('a task’s card is never lost: words more words followed keep what the
 
   it('the_last_words_wait_for_an_answer_on_its_way_so_the_card_never_jumps', () => {
     const forThem = { on: { c1: 'u1' } };
-    expect(cards([words('u1', 1)], { expected: { u1: 'c1' } })).toEqual({ u1: [] });
+    expect(cards([words('u1', 1)], { pending: { u1: { id: 'u1', shown: 'c1', conversation: 'c1', said: 'u1', files: [], coming: false, over: false } } })).toEqual({ u1: [] });
     expect(cards([words('u1', 1)], { ...forThem, working: { c1: 'Thinking' } })).toEqual({ u1: [] });
     expect(cards([words('u1', 1)], { ...forThem, words: { c1: 'On it' } })).toEqual({ u1: [] });
     expect(cards([words('u1', 1)], { ...forThem, pace: { c1: { to: 'On it', n: 1 } } })).toEqual({ u1: [] });
@@ -190,7 +190,7 @@ describe('a task’s card is never lost: words more words followed keep what the
   });
 
   it('what_is_under_way_for_other_words_never_hides_the_card_of_the_last_words', () => {
-    expect(cards([words('u1', 1)], { working: { c1: 'Thinking' }, on: { c1: 'next' }, expected: { next: 'c1' } })).toEqual({ u1: ['j'] });
+    expect(cards([words('u1', 1)], { working: { c1: 'Thinking' }, on: { c1: 'next' }, pending: { next: { id: 'next', shown: 'c1', conversation: 'c1', said: 'next', files: [], coming: false, over: false } } })).toEqual({ u1: ['j'] });
     expect(cards([words('u1', 1)], { working: { c1: 'Reading' }, on: { c1: 'supervisor' } })).toEqual({ u1: ['j'] });
   });
 
