@@ -12,10 +12,11 @@
   "surface_reviewers": {
     "ui": { "ux": "sonnet", "ui": "haiku" },
     "security": { "security": "opus" },
-    "proofs": { "proofs": "opus" }
+    "proofs": { "proofs": "opus" },
+    "model": { "proofs": "opus" }
   },
   "proofs": { "mode": "advisory", "timeout_s": 600 },
-  "mutants": { "budget_s": 600 },
+  "mutants": { "budget_s": 1800 },
   "protected_paths": [
     "factory/checks.sh",
     "factory/config.json"
@@ -28,5 +29,6 @@
     "claude-haiku-5-5":  { "input": 0.10, "output": 0.50, "cache_write_5m": 0.125, "cache_write_1h": 0.20, "cache_read": 0.01 }
   },
   "remote_gate": { "ssh_host": "oby-gate", "resource_group": "oby-factory", "vm": "oby-gate", "slots": 4, "builder_slots": 8 },
+  "gate_shards": { "linux": 4, "mac": 2 },
   "mac_worker": { "ssh_host": "oby-mac-pro", "builder_slots": 2 }
 }

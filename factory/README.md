@@ -1,9 +1,9 @@
 # The software factory
 
 `/factory run` in Claude Code, from the repository root, builds the roadmap's tasks one pull request each:
-intake → spec → build → gate → prove → review → approve, where only a job whose intake names the `proofs`
-surface must pass through `prove`, and every other job may still go from gate straight to review. How to run it
-and what each piece does: `.claude/skills/factory/SKILL.md`. The roadmap and its 180 tasks: `queue/README.md`.
+intake → spec → build → gate → prove → review → approve, where only a job whose intake names the `proofs` (Kani)
+or `model` (Quint) surface must pass through `prove`, and every other job may still go from gate straight to review.
+How to run it and what each piece does: `.claude/skills/factory/SKILL.md`. The roadmap and its 180 tasks: `queue/README.md`.
 
 ```
 config.json     concurrency, rounds, the active sprint, routing, protected paths, prices
@@ -11,11 +11,14 @@ checks.sh       the gate's checks: scripts/oby-check.sh on the job's worktree
 bin/job         the only writer of jobs/<id>/job.json; reads the queue; refuses illegal moves; queues approved PRs
 bin/gate        runs checks.sh in a job's worktree → round-N/checks.md; with `remote_gate` set, the Linux groups on
                 the gate VM and the macOS-only part on the Mac, falling back to the Mac; with `mac_worker` set too, that
-                macOS part on the Mac worker (the second Mac) when it is free, else on this Mac; `gate --idle`
-                deallocates the idle VM (job queue runs it)
+                macOS part on the Mac worker (the second Mac) when it is free, else on this Mac; with `gate_shards`
+                set too, obid's test binaries in shards on the VM's slots, the Mac worker and this Mac, all at
+                once, with one verdict; `gate --idle` deallocates the idle VM (job queue runs it)
 bin/prove       re-runs the Kani harnesses a job's spec.md lists under `## Proofs` on the commit its gate passed, through
                 bin/test-run, checks each can fail on its declared broken rule and that the branch adds nothing that
-                games them → round-N/proofs.md; advisory by default (docs/contracts/factory.md, PROVE)
+                games them; for a `model` job, runs `quint typecheck`, `run` and `verify` on each Quint model its
+                `## Models` lists, each invariant holding and each witness violated → round-N/proofs.md; advisory by
+                default (docs/contracts/factory.md, PROVE)
 bin/mutants     runs cargo-mutants on the core/crates/ Rust a job's gated commit changes, through bin/test-run on a gate
                 VM builder slot, within a time budget → round-N/mutants.md, the missed mutants for reviewer-code and the
                 approver; advisory only, it never moves a job (docs/contracts/factory.md, MUTANTS)
@@ -73,6 +76,13 @@ With `mac_worker` (`{"ssh_host": "oby-mac-pro"}`, or `FACTORY_MAC_WORKER` for on
 runs on that second Mac, set up by `remote/setup-mac.sh`, once the VM's part passed: in one call, `ssh
 oby-mac-pro oby-worker/bin/oby-remote-gate --mac <commit> origin/dev <group>...`. When it doesn't answer within
 60 seconds, both its slots are busy, it couldn't judge or was cut off, that part runs on this Mac as before.
+With `gate_shards` (`{"linux": 4, "mac": 2}`, or `FACTORY_GATE_SHARDS` for one run) also set, after the owner ran
+`remote/setup.sh` and `remote/setup-mac.sh` again, one gate deals obid's test binaries into shards
+(`OBY_CHECK_SHARD`, decided by `scripts/oby-check.sh` alone) and starts every part at once: `linux` calls of
+`oby-remote-gate --shard k/<linux>` on the VM, and macOS rust shards on the Mac worker (`--mac --shard`) and this
+Mac, without waiting for the VM's verdict. A shard that couldn't judge or whose host is busy or unreachable runs on
+this Mac; one that ran nowhere fails the gate. checks.md adds `Sharded: …` and `## Time`. Without the key, nothing
+changes.
 
 Builders' heavy runs go to the gate VM too once the owner has run `remote/setup.sh` again (it adds the no-sudo
 user `oby-builder` and its `/srv/oby-builder`) and set `builder_slots` in `remote_gate` (`"slots": 4,
@@ -98,6 +108,15 @@ its `DEPENDS` line names are in `queue/done`. Intake's questions and the owner's
 folder (`/factory <answer>`), and nothing reads or writes a GitHub issue or the project board. A pull request
 stays a draft until the approver says APPROVE; then GitHub merges it, and the job waits in the stage `queued`
 while GitHub's merge queue holds it.
+
+## From AGENTS.md
+
+From the root [AGENTS.md](../AGENTS.md)'s "Software factory".
+
+`/factory run` (Claude Code, from the repository root) builds the open tasks of the active sprint in `factory/queue/tasks/`, each through intake → spec → build → gate → review → approve, one pull request per task into `dev`. A task runs once the tasks its `DEPENDS` line names are in `factory/queue/done/`; its own pull request moves its file there. State is in `factory/jobs/` (gitignored); `factory/bin/job` is its only writer. The gate's checks are `factory/checks.sh`, which runs `scripts/oby-check.sh` in the job's worktree with one shared Cargo build folder (`~/Library/Caches/oby-factory/core-target`). Dashboard: `cd factory && python3 -m http.server`, then open http://localhost:8000/dashboard.html. How it runs: `.claude/skills/factory/SKILL.md`; what it is and its licence: `factory/README.md`.
+
+- A fresh checkout needs `oby-check-blok` installed once on the Mac ("Build and run") and `gitleaks`; for the Electron app, `cd apps/electron && npm install`. To see a screen on a given port: [apps/electron/AGENTS.md](../apps/electron/AGENTS.md#build-and-run).
+- Each job works in its own git worktree, a full checkout at `.worktrees/<job-id>` (gitignored), on a branch `factory/<job-id>`. A tool at the repository root that doesn't read `.gitignore` sees those copies too: exclude `.worktrees/` in its settings.
 
 ## Licence
 

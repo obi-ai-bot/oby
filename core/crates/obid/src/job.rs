@@ -614,6 +614,10 @@ pub struct Job {
     /// before a merge is weighed, never kept.
     #[serde(skip)]
     pub unfollowed: Option<String>,
+    /// A follow-up is at work on its branch, so a merge past Oby's review waits for what it pushes
+    /// (crate::merge, MERGING-49): set by obid right before a merge is weighed, never kept.
+    #[serde(skip)]
+    pub follow_up_at_work: bool,
     /// Its activity at a glance, from its transcript (`crate::activity`, #730).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<Value>,
@@ -844,6 +848,12 @@ pub struct Job {
     /// code ([`Job::foreign`]). Never in the API's job.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub vetted: bool,
+    /// It was planned in a turn of the owner's own conversation whose words an app of theirs
+    /// signed (crate::brain::actions), or started by a `POST /v1/jobs` an app of theirs signed
+    /// (crate::routes::dispatch), or follows up such a job: its pull request merges by itself on
+    /// any base (crate::merge::own_work, MERGING-44). In its file, never in the API.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub own_conversation: bool,
     /// Why obid didn't merge its pull request, when only the owner can take it on from here
     /// (crate::merge); none otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -852,6 +862,11 @@ pub struct Job {
     /// the same job tells it again. Kept in its file, never in the API.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub told: Option<i64>,
+    /// The head its conversation was told it merged at past Oby's review (crate::merge,
+    /// `merged_past`, MERGING-49): another merged head tells it again. Kept in its file, never in
+    /// the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub told_merged_past: Option<String>,
     /// The merge stopped where the owner takes over: `merge_error` says why.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub merge_needs_you: bool,
@@ -894,11 +909,12 @@ pub struct Sending {
     pub login: Option<String>,
 }
 
-/// Who had obid merge a job's pull request (crate::merge): the owner, with a tap, or the
-/// repository's workflow the owner taught it (a `workflow` memory, #854).
+/// Who had obid merge a job's pull request (crate::merge): the owner, with a tap, the
+/// repository's workflow the owner taught it (a `workflow` memory, #854), Oby by itself for the
+/// owner's own conversation work (MERGING-46), or GitHub.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MergedBy {
-    /// `owner` or `memory`.
+    /// `owner`, `memory`, `oby` or `github`.
     pub by: String,
     /// The workflow memory it followed, for `memory`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

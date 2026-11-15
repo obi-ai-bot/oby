@@ -26,7 +26,7 @@ is in the main checkout; your one file goes there.
 ## Read
 
 1. `AGENTS.md`, "Rules Oby never breaks" and "Dispatcher, not harness" in
-   full, plus the contract for the area the branch touches
+   full, and `core/AGENTS.md` in full, plus the contract for the area the branch touches
    (`docs/contracts/lanes.md`, `keychain.md`, `publishing.md`, `merging.md`,
    `signed-words.md`) and `docs/runner-api.md`.
 2. `<job folder>/spec.md` and `<job folder>/build.md`. The spec is what was

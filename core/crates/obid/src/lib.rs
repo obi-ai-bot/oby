@@ -493,8 +493,13 @@ pub async fn serve(
     jobs.use_artifacts(artifacts.clone());
     let routines = Arc::new(routines::Routines::open(&config.home, events.clone()));
     jobs.use_routines(routines.clone());
-    let github =
-        github_work::Feed::open(config.clone(), jobs.clone(), link.clone(), events.clone());
+    let github = github_work::Feed::open(
+        config.clone(),
+        jobs.clone(),
+        link.clone(),
+        events.clone(),
+        routines.clone(),
+    );
     let pushes = push::Push::open(&config.mac_home, &config.push_relay);
     // What each request key got (crate::receipts): without them obid still starts.
     let receipts = receipts::Receipts::open(&config.home)
@@ -587,6 +592,8 @@ pub async fn serve(
     }
     // A job a conversation started tells it how it ended (#351).
     conversation::report_job_ends(shared.clone());
+    // The owner's own work that merged past Oby's review says so there (MERGING-49).
+    conversation::report_merges_past_review(shared.clone());
     brain::ask::report(shared.clone());
     // What Home asks the owner about a job that's merged, closed, let go or gone settles (TASKS-13).
     settle_stale_items(shared.clone());

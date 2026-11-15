@@ -3,14 +3,15 @@
 given on the factory's second Mac, in one of two, or a builder's command on the VM, in a builder slot.
 
 Usage:
-  oby-remote-gate [--slots <n> --builder-slots <m>] <commit> <base>
-  oby-remote-gate --mac <commit> <base> <group>...
+  oby-remote-gate [--slots <n> --builder-slots <m>] [--shard <k>/<n>] <commit> <base>
+  oby-remote-gate --mac [--shard <k>/<n>] <commit> <base> <group>...
   oby-remote-gate --run --slots <n> --builder-slots <m> --wait <seconds> <base> <tree> <folder> -- <command>...
   oby-remote-gate --mac --run --slots <n> --builder-slots <m> --wait <seconds> <base> <tree> <folder> -- <command>...
 
   <commit>  the commit to check: its full 40-character SHA, which origin must have
   <base>    what the check compares it with: origin/<branch>, or a full 40-character SHA
   <group>   with --mac, one or more of rust, swift and factory, run in the order given
+  <k>/<n>   with --shard, shard k of n of obid's test binaries (1 <= k <= n <= 64, no leading zero)
 
 e.g.
   ssh oby-gate oby-remote-gate <commit> origin/dev
@@ -45,6 +46,13 @@ Mac. ~/.cargo/bin, where setup.sh's rustup puts cargo,
 comes first on PATH: a command over ssh reads no profile. The output is relayed as it
 comes, stderr in stdout.
 
+Shards (--shard, docs/contracts/remote-gate.md, REMOTE-61). After its slot line it says `shard
+<k>/<n>`, and the rust group's run alone gets OBY_CHECK_SHARD=<k>/<n>, so the check runs only shard
+k's planned obid test binaries, and the rest of the rust group only in shard 1; the plan's run never
+gets it. On the VM, shard 1 runs the planned Linux groups as without it, and any other shard only
+rust, or nothing (and passes) when rust isn't planned. With --mac, the groups given run as without
+it. Without --shard, no OBY_CHECK_SHARD reaches the check, whatever this was started with.
+
 Exit. 1 when a group failed, else 2 when one couldn't judge (or its setup failed),
 else 0; the last line names the verdict, the slot and the seconds it took. 2 too for
 bad usage, a missing clone or a plan that can't run. Every step runs in a session of
@@ -75,11 +83,14 @@ as setup.sh leaves it, a bare clone with gc.auto 0, and repo.git/info/attributes
 added afresh, `git apply --index --binary` of the payload, a check that `git write-tree` is <tree>, then
 every file under core/ and tools/ in the index gets the current time, and `cargo fetch --locked`. Every
 git call runs with core.hooksPath=/dev/null. If the command's program (and for `cargo nextest`,
-cargo-nextest) is on PATH, ~/.cargo/bin first, it says `running in builder slot <N>` and runs the
-command's words, with no shell, from <slot>/worktree/<folder> under `nice -n 15`, offline, with
-CARGO_TARGET_DIR=<slot>/target, CARGO_HOME=<slot>/cargo (the slot's own, emptied with it, and with
-`cargo fetch` too) and OBY_BUILD_JOBS, CARGO_BUILD_JOBS, RUST_TEST_THREADS and NEXTEST_TEST_THREADS at
-the cores / (slots + builder slots). Output is relayed as it comes; the last line is `ended <code> in
+cargo-nextest; for `quint`, java, which Quint's Apalache runs on) is on PATH, ~/.cargo/bin first, it
+says `running in builder slot <N>` and runs the command's words, with no shell (a `quint verify` or `compile`
+with `--server-endpoint=localhost:<8822 + N>` after its subcommand, so each slot has an Apalache server of its own;
+a `quint` run naming its own endpoint, or an option before its subcommand, exits 2 first), from
+<slot>/worktree/<folder> under `nice -n 15`, offline, with CARGO_TARGET_DIR=<slot>/target,
+CARGO_HOME=<slot>/cargo (the slot's own, emptied with it, and with `cargo fetch` too) and
+OBY_BUILD_JOBS, CARGO_BUILD_JOBS, RUST_TEST_THREADS and NEXTEST_TEST_THREADS at the cores / (slots +
+builder slots). Output is relayed as it comes; the last line is `ended <code> in
 builder slot <N> after <s>s`, and it exits with the command's code (128 + signal when stopped).
 Anything that fails before the `running in` line exits 2 with a line saying why.
 
@@ -112,6 +123,7 @@ URL = os.environ.get("OBY_REMOTE_URL") or "https://github.com/obi-ai-bot/oby.git
 SLOTS = 4
 BUILDERS = 0
 MAX_SLOTS = 64
+MAX_SHARDS = 64  # as OBY_CHECK_SHARD takes them
 LINUX_GROUPS = ("rust", "electron", "scan")
 MAC_ROOT = Path(os.environ.get("OBY_REMOTE_ROOT") or Path.home() / "oby-worker")
 MAC_SLOTS = 2
@@ -359,6 +371,16 @@ def counts(args):
     return args[4:], None
 
 
+def shard_of(args):
+    """--shard <k>/<n> at the start of args: (the rest, the shard or None, None), or (None, None, why)."""
+    if args[:1] != ["--shard"]:
+        return args, None, None
+    found = re.fullmatch(r"([1-9][0-9]?)/([1-9][0-9]?)", args[1] if len(args) > 1 else "")
+    if not found or not int(found[1]) <= int(found[2]) <= MAX_SHARDS:
+        return None, None, f"--shard takes <k>/<n>, with 1 <= k <= n <= {MAX_SHARDS} and no leading zero"
+    return args[2:], found[0], None
+
+
 def share():
     """Each slot's share of the cores, gates' and builders' alike."""
     return str(max(1, (os.cpu_count() or 1) // (SLOTS + BUILDERS)))
@@ -417,6 +439,12 @@ def start_clean(place):
     except OSError as error:
         return f"can't empty {place} for this run: {error}"
     return None
+
+
+def apalache_port(slot):
+    """Builder slot N's port for the Apalache server its quint verify and compile talk to: 8822 (Quint's default) + N,
+    so no two slots share one and none is the default (REMOTE-56)."""
+    return 8822 + slot
 
 
 def builder_run(args, mac=False):
@@ -489,11 +517,23 @@ def builder_run(args, mac=False):
     if why:
         say(why)
         return 2
-    needed = [command[0], *(["cargo-nextest"] if command[:2] == ["cargo", "nextest"] else [])]
+    needed = [command[0], *(["cargo-nextest"] if command[:2] == ["cargo", "nextest"] else []),
+              *(["java"] if command[0] == "quint" else [])]
     missing = [program for program in needed if not shutil.which(program, path=env["PATH"])]
     if missing:
         say(f"{missing[0]} isn't on the builder's PATH")
         return 2
+    if Path(command[0]).name == "quint":
+        # Quint uses the Apalache server on its endpoint, or starts one there: each slot names its own (REMOTE-56, 57).
+        named = [word for word in command if word.split("=", 1)[0] in ("--server-endpoint", "--serverEndpoint")]
+        if named:
+            say(f"a quint run in a builder slot can't name its own Apalache server: {named[0]}")
+            return 2
+        if len(command) > 2 and command[1].startswith("-"):
+            say(f"a quint run in a builder slot takes its subcommand first: {command[1]}")
+            return 2
+        if command[1:2] in (["verify"], ["compile"]):
+            command = [*command[:2], f"--server-endpoint=localhost:{apalache_port(slot)}", *command[2:]]
     cwd = worktree / folder
     if not cwd.is_dir():
         say(f"the tree has no folder {folder}")
@@ -514,14 +554,20 @@ def main(argv):
     mac = argv[1:2] == ["--mac"]
     if mac:
         ROOT, SLOTS = MAC_ROOT, MAC_SLOTS
-        if len(argv) < 5:
+        rest, shard, why = shard_of(argv[2:])
+        if why:
+            return usage(why)
+        if len(rest) < 3:
             return usage("--mac takes a commit, a base and one or more groups")
-        commit, base, given = argv[2], argv[3], argv[4:]
+        commit, base, given = rest[0], rest[1], rest[2:]
         unknown = [g for g in given if g not in MAC_GROUPS]
         if unknown:
             return usage(f"--mac runs only {', '.join(MAC_GROUPS)}, not {' '.join(unknown)}")
     else:
         rest, why = counts(argv[1:])
+        if why:
+            return usage(why)
+        rest, shard, why = shard_of(rest)
         if why:
             return usage(why)
         if len(rest) != 2:
@@ -546,6 +592,8 @@ def main(argv):
         say("both slots are busy")
         return 2
     say(f"slot {slot}")
+    if shard:
+        say(f"shard {shard}")
     folder = ROOT / f"slot-{slot}"
     worktree = folder / "worktree"
     why = check_out(commit, base, worktree)
@@ -571,8 +619,13 @@ def main(argv):
         groups = [g for g in LINUX_GROUPS if g in planned]
         if "swift" in planned:
             say("swift is the Mac's: it doesn't run here")
+    # On the VM, a shard after the first runs only rust (REMOTE-61).
+    later = not mac and shard is not None and not shard.startswith("1/")
+    if later:
+        groups = [g for g in groups if g == "rust"]
     if not groups:
-        say("no Linux group planned: nothing to run here")
+        say(f"shard {shard} runs only rust, which isn't planned: nothing to run here" if later
+            else "no Linux group planned: nothing to run here")
     else:
         say(f"groups {' '.join(groups)}")
 
@@ -584,7 +637,8 @@ def main(argv):
             results.append(2)
             continue
         say(f"group {group}")
-        code = run([check, base], worktree, dict(env, OBY_CHECK_ONLY=group, **OFFLINE))[0]
+        sharded = {"OBY_CHECK_SHARD": shard} if shard and group == "rust" else {}
+        code = run([check, base], worktree, dict(env, OBY_CHECK_ONLY=group, **OFFLINE, **sharded))[0]
         say(f"group {group} ended {code}")
         results.append(code)
 

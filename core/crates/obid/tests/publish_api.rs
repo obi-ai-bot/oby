@@ -790,6 +790,23 @@ fn calls_now(folder: &Path) -> String {
     kept(folder, "calls")
 }
 
+/// Waits until obid has run at least `passes` whole follow passes after this call, each of which
+/// settles reviews after it reads the due pull requests: it counts the stand-in `gh`'s `pr view`
+/// reads with `--repo` (the follow read's, `github::view_merging`), one a pass while the pull
+/// request stays open and unread, and waits for `passes + 1` more, the first of which may be a
+/// pass already under way.
+fn follow_passes(folder: &Path, passes: usize) {
+    let reads = || {
+        let calls = calls_now(folder);
+        let reads = calls.lines().filter(|l| l.starts_with("pr view "));
+        reads.filter(|l| l.contains(" --repo ")).count()
+    };
+    let from = reads();
+    within(60, &format!("{passes} follow passes"), || {
+        (reads() > from + passes).then_some(())
+    });
+}
+
 /// A possible secret in a commit that the fix round leaves there: nothing goes out (no push, no
 /// pull request), the job fails naming the file, the line and the rule, and never the secret.
 #[test]
@@ -3340,7 +3357,8 @@ fn merging_8_reviews_that_run_out_ask_the_owner_with_one_more_round() {
     let folder = Folder::new("publish-review-cap");
     let bin = fake_gh(&folder.0);
     let (obid, _remote, _) = obid_with(&folder, &bin);
-    let id = dispatch(
+    // Not the owner's own work (MERGING-44), which merges past its last review (MERGING-49).
+    let id = dispatch_unsigned(
         &obid,
         json!({"repo": "obi-e2e/fixture-app", "kind": "build",
                "task": "COMMIT: hello.txt WANTS: fix.txt STUBBORN", "check": "test -f hello.txt"}),
@@ -3400,7 +3418,8 @@ fn jobstate_11_one_more_round_queues_the_reviews_changes() {
     let folder = Folder::new("jobstate-11");
     let bin = fake_gh(&folder.0);
     let (obid, _remote, _) = obid_with(&folder, &bin);
-    let id = dispatch(
+    // Not the owner's own work (MERGING-44), which merges past its last review (MERGING-49).
+    let id = dispatch_unsigned(
         &obid,
         json!({"repo": "obi-e2e/fixture-app", "kind": "build",
                "task": "COMMIT: hello.txt WANTS: fix.txt STUBBORN", "check": "test -f hello.txt"}),
@@ -3443,7 +3462,8 @@ fn merging_8_a_follow_up_on_the_branch_at_round_one_leaves_it_to_the_owner() {
     let folder = Folder::new("publish-review-follow-up");
     let bin = fake_gh(&folder.0);
     let (obid, _remote, _) = obid_with(&folder, &bin);
-    let id = dispatch(
+    // Not the owner's own work (MERGING-44), which merges past its last review (MERGING-49).
+    let id = dispatch_unsigned(
         &obid,
         json!({"repo": "obi-e2e/fixture-app", "kind": "build",
                "task": "COMMIT: hello.txt WANTS: fix.txt HOLD REVIEW", "check": "test -f hello.txt"}),
@@ -3719,7 +3739,7 @@ fn recovery_15_a_second_review_with_no_verdict_tries_no_other_reviewer() {
         (items.len() == 1).then_some(items)
     });
     assert_eq!(review_of(&obid, &id, 1)["account"], "other");
-    std::thread::sleep(std::time::Duration::from_secs(5));
+    follow_passes(&folder.0, 3);
     assert_eq!(reviews_of(&obid, &id).len(), 2, "{}", obid.log());
     let open = open_items(&obid, &id);
     assert_eq!(open.len(), 1, "{open:?}");
@@ -3750,7 +3770,7 @@ fn recovery_15_a_second_review_the_owner_stopped_stays_stopped() {
         job["reviewError"],
         "Oby's review didn't finish: it was stopped"
     );
-    std::thread::sleep(std::time::Duration::from_secs(5));
+    follow_passes(&folder.0, 3);
     assert_eq!(reviews_of(&obid, &id).len(), 2, "{}", obid.log());
     let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
     assert!(job["reviewing"].is_null(), "{job}");

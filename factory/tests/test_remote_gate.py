@@ -12,6 +12,8 @@ Run from the repository root: python3 factory/tests/test_remote_gate.py
 """
 
 import fcntl
+import importlib.machinery
+import importlib.util
 import json
 import os
 import re
@@ -31,12 +33,15 @@ SETUP_MAC = FACTORY / "remote" / "setup-mac.sh"
 TIGHTEN = FACTORY / "remote" / "tighten.sh"
 CHECK = FACTORY.parent / "scripts" / "oby-check.sh"
 CI = FACTORY.parent / ".github" / "workflows" / "ci.yml"
+MODEL = FACTORY.parent / "docs" / "models" / "job_race.qnt"
+QUINT = FACTORY / "remote" / "quint"
 
 # The stand-in check: the plan prints $FAKE/groups' groups; a run records its slot, CARGO_TARGET_DIR,
 # OBY_CHECK_ONLY, its pid and a background child's (and in $FAKE/env its OBY_BUILD_JOBS, OBY_CHECK_CACHE
 # and PATH), waits for $FAKE/release or $FAKE/release-<slot>, and exits with $FAKE/exit-<group>'s code
-# (0 without one).
+# (0 without one). Each run, the plan's too, records its OBY_CHECK_SHARD (or `unset`) in $FAKE/shards.
 FAKE_CHECK = """#!/bin/sh
+echo "${OBY_CHECK_ONLY:-plan} ${OBY_CHECK_SHARD-unset}" >>"$FAKE/shards"
 if [ -n "$OBY_CHECK_PLAN" ]; then
     for group in $(cat "$FAKE/groups"); do echo "oby-check: group $group"; done
     echo "oby-check: planned, nothing run"
@@ -172,9 +177,9 @@ class RemoteGate(unittest.TestCase):
     def groups(self, *names):
         (self.fake / "groups").write_text(" ".join(names) + "\n")
 
-    def start(self, commit=None, base=None, mac=None, counts=()):
-        """oby-remote-gate, or with mac (a list of groups) oby-remote-gate --mac."""
-        args = [*counts, commit or self.commit, base or "origin/dev"]
+    def start(self, commit=None, base=None, mac=None, counts=(), shard=()):
+        """oby-remote-gate, or with mac (a list of groups) oby-remote-gate --mac; shard, its words after the counts."""
+        args = [*counts, *shard, commit or self.commit, base or "origin/dev"]
         proc = subprocess.Popen(
             [str(GATE), *(["--mac", *args, *mac] if mac is not None else args)],
             env=self.env,
@@ -409,6 +414,74 @@ class RemoteGate(unittest.TestCase):
         self.assertEqual(self.runs(), [])
         self.assertFalse((self.root / "slot-1").exists(), "a usage error took a slot")
 
+    # ---- REMOTE-61: --shard -------------------------------------------------------------------
+
+    def shards(self):
+        """Each run's group (`plan` for the plan's) and the OBY_CHECK_SHARD it got, or `unset`."""
+        path = self.fake / "shards"
+        return path.read_text().splitlines() if path.exists() else []
+
+    def test_remote_61_a_later_shard_runs_only_rust_with_its_shard(self):
+        self.groups("rust", "electron", "scan")
+        (self.fake / "release").touch()
+        gate = self.start(base=self.base, shard=("--shard", "2/3"))
+        self.assertEqual(gate.finish(), 0, gate.output())
+        self.assertEqual([run[2] for run in self.runs()], ["rust"])
+        self.assertEqual(self.shards(), ["plan unset", "rust 2/3"])
+        self.assertEqual(gate.lines[gate.lines.index(f"oby-remote-gate: slot {gate.slot()}") + 1],
+                         "oby-remote-gate: shard 2/3")
+        self.assertIn("oby-remote-gate: groups rust", gate.lines)
+        self.assertFalse((self.fake / "npm").exists(), "a later shard ran electron's npm ci")
+        self.assertRegex(gate.lines[-1], r"^oby-remote-gate: passed in slot 1 after \d+s$")
+
+    def test_remote_61_shard_1_runs_every_linux_group_and_only_rust_gets_the_shard(self):
+        self.groups("rust", "electron", "scan")
+        (self.fake / "release").touch()
+        gate = self.start(base=self.base, counts=("--slots", "4", "--builder-slots", "0"), shard=("--shard", "1/3"))
+        self.assertEqual(gate.finish(), 0, gate.output())
+        self.assertEqual([run[2] for run in self.runs()], ["rust", "electron", "scan"])
+        self.assertEqual(self.shards(), ["plan unset", "rust 1/3", "electron unset", "scan unset"])
+        self.assertIn("oby-remote-gate: shard 1/3", gate.lines)
+
+    def test_remote_61_a_later_shard_with_no_rust_planned_runs_nothing_and_passes(self):
+        self.groups("electron", "scan")
+        gate = self.start(shard=("--shard", "3/3"))
+        self.assertEqual(gate.finish(), 0, gate.output())
+        self.assertEqual(self.runs(), [])
+        self.assertIn("oby-remote-gate: shard 3/3 runs only rust, which isn't planned: nothing to run here", gate.lines)
+        self.assertRegex(gate.lines[-1], r"^oby-remote-gate: passed in slot 1 after \d+s$")
+
+    def test_remote_61_mac_gives_the_shard_to_rust_only(self):
+        (self.fake / "release").touch()
+        gate = self.start(base=self.base, mac=["rust", "factory"], shard=("--shard", "1/2"))
+        self.assertEqual(gate.finish(), 0, gate.output())
+        self.assertEqual([run[2] for run in self.runs()], ["rust", "factory"])
+        self.assertEqual(self.shards(), ["rust 1/2", "factory unset"])
+        self.assertIn("oby-remote-gate: shard 1/2", gate.lines)
+
+    def test_remote_61_an_invalid_shard_is_a_usage_error(self):
+        (self.fake / "release").touch()
+        for shard in (("--shard", "0/2"), ("--shard", "3/2"), ("--shard", "1/65"), ("--shard", "01/2"),
+                      ("--shard", "a/b"), ("--shard", "1"), ("--shard",)):
+            for mac in (None, ["rust"]):
+                gate = self.start(mac=mac, shard=shard)
+                self.assertEqual(gate.finish(), 2, gate.output())
+                if len(shard) == 2:
+                    self.assertIn("oby-remote-gate: --shard takes <k>/<n>, with 1 <= k <= n <= 64 and no leading zero",
+                                  gate.lines)
+        self.assertEqual((self.runs(), self.shards()), ([], []))
+        self.assertFalse((self.root / "slot-1").exists(), "a usage error took a slot")
+
+    def test_remote_61_without_shard_no_shard_reaches_the_check(self):
+        self.groups("rust", "scan")
+        self.env["OBY_CHECK_SHARD"] = "2/3"
+        (self.fake / "release").touch()
+        for mac in (None, ["rust"]):
+            gate = self.start(base=self.base, mac=mac)
+            self.assertEqual(gate.finish(), 0, gate.output())
+            self.assertFalse(any("shard" in line for line in gate.lines), gate.output())
+        self.assertEqual(self.shards(), ["plan unset", "rust unset", "scan unset", "rust unset"])
+
 
 # The builder's cargo for REMOTE-34. Its first run leaves what a hostile run could: an ignored file in the worktree,
 # strays in the slot and the builder root, a config.toml in its CARGO_HOME, a post-checkout hook with core.hooksPath
@@ -448,6 +521,19 @@ else:
 """
 
 
+# A builder's program for REMOTE-56 and 57: it records its name and words in $FAKE/runs, then waits while $FAKE/hold
+# exists.
+RECORDER = """#!/usr/bin/env python3
+import json, os, sys, time
+from pathlib import Path
+fake = Path(os.environ["FAKE"])
+with open(fake / "runs", "a") as kept:
+    kept.write(json.dumps([Path(sys.argv[0]).name, *sys.argv[1:]]) + "\\n")
+while (fake / "hold").exists():
+    time.sleep(0.05)
+"""
+
+
 class BuilderRun(unittest.TestCase):
     """REMOTE-34 and 45: oby-remote-gate --run against a temporary origin and builder root, with a stand-in cargo in a
     temporary home's ~/.cargo/bin."""
@@ -471,7 +557,8 @@ class BuilderRun(unittest.TestCase):
         self.root.mkdir()
         git("clone", "--quiet", "--bare", str(origin), str(self.root / "repo.git"), cwd=self.dir)
         home = self.dir / "home"
-        cargo = home / ".cargo" / "bin" / "cargo"
+        self.tools = home / ".cargo" / "bin"
+        cargo = self.tools / "cargo"
         cargo.parent.mkdir(parents=True)
         cargo.write_text(BUILDER_CARGO)
         cargo.chmod(0o755)
@@ -482,17 +569,36 @@ class BuilderRun(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.dir)
 
-    def builder_run(self):
-        proc = subprocess.Popen([str(GATE), "--run", "--slots", "4", "--builder-slots", "1", "--wait", "5", self.base,
-                                 self.tree, ".", "--", "cargo", "test"],
+    def start_run(self, *command, builders=1):
+        proc = subprocess.Popen([str(GATE), "--run", "--slots", "4", "--builder-slots", str(builders), "--wait", "5",
+                                 self.base, self.tree, ".", "--", *command],
                                 env=self.env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         proc.stdin.write(b"0\n")
         proc.stdin.flush()
+        return proc
+
+    def finish(self, proc):
         out = proc.stdout.read().decode()
         code = proc.wait(timeout=60)
         proc.stdin.close()
         proc.stdout.close()
         return code, out
+
+    def builder_run(self, *command, builders=1):
+        return self.finish(self.start_run(*(command or ("cargo", "test")), builders=builders))
+
+    def recorded(self):
+        """The words each RECORDER program ran with, its name first."""
+        path = self.fake / "runs"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def record(self, *names):
+        """RECORDER as each program named in the builder's ~/.cargo/bin, with a java that runs nothing."""
+        for name in names:
+            (self.tools / name).write_text(RECORDER)
+            (self.tools / name).chmod(0o755)
+        (self.tools / "java").write_text("#!/bin/sh\nexit 0\n")
+        (self.tools / "java").chmod(0o755)
 
     def test_remote_34_each_builder_run_starts_clean(self):
         for _ in range(2):
@@ -512,6 +618,84 @@ class BuilderRun(unittest.TestCase):
         self.assertIn("bare = true", second["config"])
         self.assertFalse(second["attributes"], "the first run's info/attributes is still there")
 
+    def test_remote_56_each_builder_slot_has_its_own_apalache_port(self):
+        loader = importlib.machinery.SourceFileLoader("oby_remote_gate", str(GATE))
+        runner = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+        loader.exec_module(runner)
+        for count in range(1, runner.MAX_SLOTS + 1):
+            ports = [runner.apalache_port(slot) for slot in range(1, count + 1)]
+            self.assertEqual(len(set(ports)), count, ports)
+            self.assertNotIn(8822, ports)
+        self.record("quint")
+        for command in (["quint", "verify", "--max-steps=12", "x.qnt"], ["quint", "compile", "x.qnt"],
+                        [str(self.tools / "quint"), "verify", "x.qnt"]):
+            code, out = self.builder_run(*command)
+            self.assertEqual(code, 0, out)
+            self.assertIn("oby-remote-gate: running in builder slot 1", out)
+        self.assertEqual(self.recorded(), [["quint", "verify", "--server-endpoint=localhost:8823", "--max-steps=12",
+                                            "x.qnt"],
+                                           ["quint", "compile", "--server-endpoint=localhost:8823", "x.qnt"],
+                                           ["quint", "verify", "--server-endpoint=localhost:8823", "x.qnt"]])
+
+    def test_remote_56_two_quint_runs_at_once_get_different_ports(self):
+        self.record("quint")
+        (self.fake / "hold").touch()
+        runs = [self.start_run("quint", "verify", "x.qnt", builders=2) for _ in range(2)]
+        try:
+            deadline = time.monotonic() + 30
+            while len(self.recorded()) < 2 and time.monotonic() < deadline:
+                time.sleep(0.05)
+            held = self.recorded()
+        finally:
+            (self.fake / "hold").unlink()
+        ended = [self.finish(run) for run in runs]
+        for code, out in ended:
+            self.assertEqual(code, 0, out)
+        self.assertEqual(sorted(held), [["quint", "verify", "--server-endpoint=localhost:8823", "x.qnt"],
+                                        ["quint", "verify", "--server-endpoint=localhost:8824", "x.qnt"]], ended)
+        self.assertEqual(sorted(re.search(r"running in builder slot (\d)", out).group(1) for _, out in ended),
+                         ["1", "2"])
+
+    def test_remote_57_a_quint_run_naming_its_own_server_is_refused(self):
+        self.record("quint")
+        for words in (["verify", "--server-endpoint=localhost:8822", "x.qnt"],
+                      ["verify", "x.qnt", "--server-endpoint", "localhost:8824"],
+                      ["compile", "--serverEndpoint=localhost:9000", "x.qnt"],
+                      ["run", "--serverEndpoint", "localhost:8825", "x.qnt"]):
+            code, out = self.builder_run("quint", *words)
+            self.assertEqual(code, 2, out)
+            named = next(word for word in words if word.startswith("--server"))
+            self.assertIn(f"oby-remote-gate: a quint run in a builder slot can't name its own Apalache server: {named}",
+                          out.splitlines())
+            self.assertNotIn("running in builder slot", out)
+        self.assertEqual(self.recorded(), [])
+
+    def test_remote_57_a_quint_option_before_its_subcommand_is_refused(self):
+        self.record("quint")
+        for words in (["--max-steps", "3", "verify", "x.qnt"], ["--verbosity=3", "verify", "x.qnt"]):
+            code, out = self.builder_run("quint", *words)
+            self.assertEqual(code, 2, out)
+            self.assertIn(f"oby-remote-gate: a quint run in a builder slot takes its subcommand first: {words[0]}",
+                          out.splitlines())
+            self.assertNotIn("running in builder slot", out)
+        self.assertEqual(self.recorded(), [])
+        # An option alone still runs.
+        for word in ("--version", "--help"):
+            code, out = self.builder_run("quint", word)
+            self.assertEqual(code, 0, out)
+        self.assertEqual(self.recorded(), [["quint", "--version"], ["quint", "--help"]])
+
+    def test_remote_57_other_commands_are_unchanged(self):
+        self.record("quint", "cargo")
+        commands = (["quint", "run", "--max-steps=5", "x.qnt"], ["quint", "typecheck", "x.qnt"],
+                    ["quint", "test", "--main=x", "x.qnt"], ["quint", "--version"], ["cargo", "test"],
+                    ["cargo", "test", "--", "--server-endpoint=localhost:8822"])
+        for command in commands:
+            code, out = self.builder_run(*command)
+            self.assertEqual(code, 0, out)
+            self.assertIn("oby-remote-gate: running in builder slot 1", out)
+        self.assertEqual(self.recorded(), [list(command) for command in commands])
+
     def test_remote_45_the_vms_builder_clone_config_is_unchanged(self):
         # git clone --bare wrote this Mac's own settings into the clone; on the VM the reset writes setup.sh's text.
         (self.fake / "first").touch()
@@ -524,7 +708,8 @@ class BuilderRun(unittest.TestCase):
 
 class SetupBuilder(unittest.TestCase):
     """REMOTE-30: setup.sh's host script sets up oby-builder with no sudo. A stand-in ssh keeps the script setup.sh
-    sends; its builder function runs against stand-in sudo, id and getent, which record and run nothing."""
+    sends; its builder function runs against stand-in sudo, id and getent, which record and run nothing, and stand-in
+    curl and sha256sum, which record their calls in the same log and download nothing."""
 
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
@@ -534,14 +719,22 @@ class SetupBuilder(unittest.TestCase):
         self.tool("ssh", f'if [ "$2 $3" = "bash -s" ]; then cat >"{self.sent}"; else cat >/dev/null; fi')
         self.log = self.dir / "sudo.log"
         # sudo: one line per call; `sudo -n -l -U` prints $dir/rights; `find ... ! -user root` prints a path when
-        # $dir/not-root exists; the builder's proof (`bash` as the builder) fails when $dir/proof-fails exists; `test`
-        # as the builder finds nothing but the `-w <path>` in $dir/writable.
+        # $dir/not-root exists; the builder's proof (`bash` as the builder) fails when $dir/proof-fails exists, its
+        # Quint proof (`bwrap` as the builder) when $dir/quint-fails does; `test` as the builder finds nothing but the
+        # `-w <path>` in $dir/writable.
         self.tool("sudo", f'printf "%s\\n" "$*" | tr "\\n" " " >>"{self.log}"; echo >>"{self.log}"\n'
                           f'if [ "$2 $3" = "-l -U" ]; then cat "{self.dir}/rights"; fi\n'
                           f'case "$*" in *"! -user root"*) if [ -e "{self.dir}/not-root" ]; then echo "$3"; fi;; esac\n'
                           f'if [ "$2 $5" = "-u bash" ] && [ -e "{self.dir}/proof-fails" ]; then exit 1; fi\n'
+                          f'if [ "$2 $5" = "-u bwrap" ] && [ -e "{self.dir}/quint-fails" ]; then exit 1; fi\n'
                           f'[ "$5" != test ] || [ "$6 $7" = "$(cat "{self.dir}/writable" 2>/dev/null)" ]')
         self.tool("id", "exit 1")
+        self.tool("java", 'echo \'openjdk version "21.0.9" 2025-10-21\' >&2')
+        # curl writes an empty file where -o says; sha256sum keeps what it is asked to check in $dir/sums and fails
+        # when $dir/bad-sum exists.
+        self.tool("curl", f'echo "curl $*" >>"{self.log}"\n: >"$2"')
+        self.tool("sha256sum", f'echo "sha256sum $*" >>"{self.log}"\ncat >>"{self.dir}/sums"\n'
+                               f'[ ! -e "{self.dir}/bad-sum" ]')
         self.tool("getent", f'echo "oby-builder:x:1001:1001::{self.dir}/builder-home:/bin/bash"')
         self.rights("User oby-builder is not allowed to run sudo on oby-gate.")
         done = subprocess.run([str(SETUP)], env=dict(os.environ, PATH=f"{self.bin}{os.pathsep}{os.environ['PATH']}"),
@@ -565,8 +758,10 @@ class SetupBuilder(unittest.TestCase):
     def rights(self, text):
         (self.dir / "rights").write_text(text + "\n")
 
-    def builder(self):
-        return subprocess.run(["bash", "-c", '. "$0"; builder', str(self.functions)], cwd=self.dir,
+    def builder(self, *quint):
+        """The host script's builder function; with a prefix and a link, Quint's in place of /usr/local's."""
+        return subprocess.run(["bash", "-c", '. "$0"; if (($#)); then QUINT_PREFIX=$1 QUINT_LINK=$2; fi; builder',
+                               str(self.functions), *map(str, quint)], cwd=self.dir,
                               env=dict(os.environ, PATH=f"{self.bin}{os.pathsep}{os.environ['PATH']}",
                                        HOME=str(self.dir)),
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
@@ -634,7 +829,7 @@ class SetupBuilder(unittest.TestCase):
         self.assertIn(f"-n install -o root -g root -m 644 {self.dir}/.ssh/authorized_keys {home}/.ssh/authorized_keys",
                       calls)
         self.assertIn(f"-n find {home} -mindepth 1 -maxdepth 1 ! -name .ssh ! -name .cargo ! -name .rustup "
-                      "! -name .kani -exec rm -rf {} +", calls)
+                      "! -name .kani ! -name .quint -exec rm -rf {} +", calls)
         self.assertFalse([c for c in calls if "-o oby-builder" in c and str(home) in c], calls)
         # As the builder: only checks, its clone in /srv/oby-builder, and the toolchain run from a scratch folder.
         for call in (c for c in calls if c.startswith("-n -u oby-builder -H ")):
@@ -643,8 +838,8 @@ class SetupBuilder(unittest.TestCase):
                 continue
             self.assertNotIn(str(home), words, call)
             self.assertFalse(re.search(r"rustup|curl|chmod|tighten|install", words), call)
-            self.assertTrue(words.startswith(("git clone ", "git -C /srv/oby-builder/repo.git ", "bash -c set -euo")),
-                            call)
+            self.assertTrue(words.startswith(("git clone ", "git -C /srv/oby-builder/repo.git ", "bash -c set -euo",
+                                              "bwrap --unshare-net ")), call)
         proof = [c for c in calls if c.startswith("-n -u oby-builder -H bash -c ") and "cargo kani --version" in c]
         self.assertEqual(len(proof), 1, calls)
         self.assertIn('export CARGO_HOME="$scratch/cargo"', proof[0])
@@ -653,7 +848,8 @@ class SetupBuilder(unittest.TestCase):
         checked = [c.removeprefix("-n -u oby-builder -H test -w ") for c in calls if " test -w " in c]
         kani = f"{home}/.kani/kani-" + re.search(r"^KANI=(\S+)$", self.sent.read_text(), re.M).group(1)
         self.assertEqual(checked, [str(home), f"{home}/.ssh", f"{home}/.ssh/authorized_keys", f"{home}/.cargo",
-                                   f"{home}/.cargo/bin", f"{home}/.rustup", f"{home}/.kani", kani, f"{kani}/bin"])
+                                   f"{home}/.cargo/bin", f"{home}/.rustup", f"{home}/.kani", kani, f"{kani}/bin",
+                                   f"{home}/.quint"])
         self.assertIn("setup.sh: oby-builder is set up", done.stdout)
 
     def test_remote_33_setup_stops_when_the_builder_can_still_write_its_logins(self):
@@ -675,16 +871,17 @@ class SetupBuilder(unittest.TestCase):
         self.assertIn("--no-modify-path", rust)
         self.assertIn("rustfmt,clippy", rust)
         self.assertFalse([c for c in calls if "-u oby-builder" in c and re.search(r"rustup |curl ", c)], calls)
-        self.assertNotIn(f"-n rm -rf {home}/.cargo {home}/.rustup {home}/.kani", calls)
+        self.assertNotIn(f"-n rm -rf {home}/.cargo {home}/.rustup {home}/.kani {home}/.quint", calls)
         # A toolchain with anything not root's in it (A00-31's, the builder's own) goes before the install.
         (self.dir / "not-root").touch()
         self.log.unlink()
         done = self.builder()
         self.assertEqual(done.returncode, 0, done.stdout)
         calls = self.calls()
-        removed = calls.index(f"-n rm -rf {home}/.cargo {home}/.rustup {home}/.kani")
+        removed = calls.index(f"-n rm -rf {home}/.cargo {home}/.rustup {home}/.kani {home}/.quint")
         self.assertLess(removed, next(i for i, c in enumerate(calls) if "rustup toolchain install" in c), calls)
-        self.assertIn(f"removing {home}/.cargo, {home}/.rustup and {home}/.kani: not all root's", done.stdout)
+        self.assertIn(f"removing {home}/.cargo, {home}/.rustup, {home}/.kani and {home}/.quint: not all root's",
+                      done.stdout)
 
     def test_remote_47_setup_installs_kani_for_the_builder_as_root(self):
         done = self.builder()
@@ -764,6 +961,303 @@ class SetupBuilder(unittest.TestCase):
         self.assertEqual(len([c for c in calls if "cargo kani --version" in c]), 1, calls)
         self.assertFalse([c for c in calls if " test -w " in c], "setup went on after the check failed")
 
+    def test_remote_49_setup_installs_quint_for_the_builder_as_root(self):
+        done = self.builder()
+        self.assertEqual(done.returncode, 0, done.stdout)
+        home = self.dir / "builder-home"
+        calls = self.calls()
+        quint = re.search(r"^QUINT=(\S+)$", self.sent.read_text(), re.M).group(1)
+        self.assertEqual(quint, "0.33.1")
+        [install] = [c for c in calls if " npm " in c]
+        self.assertTrue(install.endswith(f" npm ci --ignore-scripts --prefix /usr/local/lib/quint/{quint}"), install)
+        self.assertTrue(install.startswith("-n env npm_config_cache="), install)
+        self.assertNotIn("-u oby-builder", install)
+        cache = install.removeprefix("-n env npm_config_cache=").split()[0]
+        self.assertFalse(cache.startswith((str(home), str(self.dir / ".npm"))), install)
+        self.assertIn(f"-n rm -rf {cache}", calls)
+        self.assertIn(f"-n ln -sfn /usr/local/lib/quint/{quint}/node_modules/.bin/quint /usr/local/bin/quint", calls)
+        # Apalache and the evaluator: fetched by the ssh user, checked against setup.sh's SHA-256s, unpacked by root.
+        sent = self.sent.read_text()
+        pins = {name: re.search(rf"^{name}=(\S+)$", sent, re.M).group(1)
+                for name in ("QUINT_APALACHE", "QUINT_APALACHE_SHA", "QUINT_EVALUATOR", "QUINT_EVALUATOR_SHA")}
+        self.assertEqual((pins["QUINT_APALACHE"], pins["QUINT_EVALUATOR"]), ("0.62.4", "v0.7.1"))
+        fetched = [c for c in calls if c.startswith("curl ")]
+        self.assertEqual([c.split()[-1] for c in fetched], [
+            "https://github.com/apalache-mc/apalache/releases/download/v0.62.4/apalache.tgz",
+            "https://github.com/quint-co/quint/releases/download/evaluator%2Fv0.7.1/"
+            "quint_evaluator-x86_64-unknown-linux-gnu.tar.gz"])
+        archives = [c.split()[-2] for c in fetched]
+        self.assertEqual((self.dir / "sums").read_text().splitlines(),
+                         [f"{pins['QUINT_APALACHE_SHA']}  {archives[0]}", f"{pins['QUINT_EVALUATOR_SHA']}  {archives[1]}"])
+        for name in ("QUINT_APALACHE_SHA", "QUINT_EVALUATOR_SHA"):
+            self.assertRegex(pins[name], r"^[0-9a-f]{64}$")
+        checked_sums = calls.index("sha256sum -c -")
+        apalache, evaluator = f"{home}/.quint/apalache-dist-0.62.4", f"{home}/.quint/rust-evaluator-v0.7.1"
+        unpacked = [calls.index(f"-n tar -xzf {archives[0]} --no-same-owner -C {apalache} apalache"),
+                    calls.index(f"-n tar -xzf {archives[1]} --no-same-owner -C {evaluator} quint_evaluator")]
+        made = calls.index(f"-n install -d -o root -g root -m 755 {home}/.quint {apalache} {evaluator}")
+        self.assertLess(max(calls.index(c) for c in fetched), checked_sums, calls)
+        self.assertLess(checked_sums, calls.index(f"-n rm -rf {home}/.quint"), calls)
+        self.assertLess(calls.index(f"-n rm -rf {home}/.quint"), made, calls)
+        self.assertLess(made, min(unpacked), calls)
+        # Root only installs and unpacks: no Quint, Node or Java, and no program from .quint, runs as root.
+        root = [c for c in calls if c.startswith("-n ") and not c.startswith("-n -u oby-builder ")]
+        for call in root:
+            self.assertNotRegex(call, r"\bquint (run|verify|typecheck|test|repl|compile|docs|parse|--version)\b", call)
+            self.assertNotIn("bwrap", call)
+            self.assertNotRegex(call, rf"(^|\s)HOME={re.escape(str(home))}(\s|$)", call)
+            if " bash -c " in call:
+                self.assertNotIn("quint", call)
+            words = [w for w in call.split()[1:] if w != "env" and "=" not in w]
+            self.assertNotIn(words[0].rsplit("/", 1)[-1], ("quint", "node", "npx", "java", "apalache-mc",
+                                                            "quint_evaluator", "cli.js"), call)
+        self.assertFalse([c for c in calls if "-u oby-builder" in c and "npm" in c], calls)
+        kani = next(i for i, c in enumerate(calls) if "kani-verifier" in c)
+        installed = calls.index(install)
+        given = calls.index(f"-n chown -R -h root:root {home}/.quint")
+        closed = calls.index(f"-n chmod -R go-w {home}/.quint")
+        tightened = next(i for i, c in enumerate(calls) if "tighten_writable" in c)
+        self.assertLess(kani, installed, calls)
+        self.assertLess(installed, made, calls)
+        self.assertLess(max(unpacked), given, calls)
+        self.assertLess(given, closed, calls)
+        self.assertLess(closed, tightened, calls)
+        self.assertIn(f"-n find {home} -mindepth 1 -maxdepth 1 ! -name .ssh ! -name .cargo ! -name .rustup "
+                      "! -name .kani ! -name .quint -exec rm -rf {} +", calls)
+        # The builder's proof, Quint's one run: no network, its own process space, / read-only and a scratch /tmp.
+        [proof] = [c for c in calls if c.startswith("-n -u oby-builder -H bwrap ")]
+        self.assertLess(tightened, calls.index(proof), calls)
+        for word in ("--unshare-net", "--unshare-pid", "--die-with-parent", "--ro-bind / /", "--tmpfs /tmp",
+                     "java -version", "quint --version", "quint typecheck", "quint run --invariant=",
+                     "quint verify --max-steps=3 --invariant="):
+            self.assertIn(word, proof)
+        self.assertNotIn("--bind / /", proof.replace("--ro-bind / /", ""))
+        self.assertTrue(proof.split(" _ ", 1)[1].startswith(f"{quint} "), proof)
+        checked = [c.removeprefix("-n -u oby-builder -H test -w ") for c in calls if " test -w " in c]
+        self.assertIn(f"{home}/.quint", checked)
+        self.assertLess(calls.index(proof), calls.index(f"-n -u oby-builder -H test -w {home}"), calls)
+        lines = done.stdout.splitlines()
+        said = lines.index(f"setup.sh: oby-builder has quint {quint} and java 21.0.9")
+        self.assertTrue(lines[said + 1].startswith("setup.sh: oby-builder is set up: no sudo"), done.stdout)
+
+    def test_remote_49_setup_stops_when_a_quint_download_fails_its_checksum(self):
+        (self.dir / "bad-sum").touch()
+        done = self.builder()
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        calls = self.calls()
+        self.assertEqual(calls[-1], "sha256sum -c -", calls)
+        self.assertNotIn("setup.sh: oby-builder is set up", done.stdout)
+
+    def test_remote_49_setup_stops_when_quint_fails_for_the_builder(self):
+        (self.dir / "quint-fails").touch()
+        done = self.builder()
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        self.assertNotIn("setup.sh: oby-builder is set up", done.stdout)
+        self.assertNotIn("setup.sh: oby-builder has quint", done.stdout)
+        calls = self.calls()
+        self.assertTrue(calls[-1].startswith("-n -u oby-builder -H bwrap --unshare-net "), calls[-1])
+        self.assertIn("quint verify", calls[-1])
+        self.assertFalse([c for c in calls if " test -w " in c], "setup went on after the Quint proof failed")
+
+    def test_remote_49_setup_stops_when_the_builder_can_write_its_quint_folder(self):
+        home = self.dir / "builder-home"
+        (self.dir / "writable").write_text(f"-w {home}/.quint\n")
+        done = self.builder()
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        self.assertIn(f"setup.sh: oby-builder can still write {home}/.quint", done.stdout.splitlines())
+        self.assertNotIn("setup.sh: oby-builder is set up", done.stdout)
+
+    def test_remote_49_setup_checks_every_folder_in_the_quint_folder(self):
+        home = self.dir / "builder-home"
+        for name in ("apalache-dist-0.62.4", "rust-evaluator-v0.7.1"):
+            (home / ".quint" / name).mkdir(parents=True)
+        (home / ".quint" / "a-file").touch()
+        (self.dir / "writable").write_text(f"-w {home}/.quint/rust-evaluator-v0.7.1\n")
+        done = self.builder()
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        checked = [c.removeprefix("-n -u oby-builder -H test -w ") for c in self.calls() if " test -w " in c]
+        self.assertEqual(checked[-3:], [f"{home}/.quint", f"{home}/.quint/apalache-dist-0.62.4",
+                                        f"{home}/.quint/rust-evaluator-v0.7.1"])
+        self.assertIn(f"setup.sh: oby-builder can still write {home}/.quint/rust-evaluator-v0.7.1",
+                      done.stdout.splitlines())
+
+    def test_remote_53_setup_installs_quint_from_the_lockfile_with_npm_ci(self):
+        # The two files travel in the one host script, byte for byte as committed.
+        given = self.dir / "given"
+        given.mkdir()
+        subprocess.run(["bash", "-c", '. "$0"; printf "%s\\n" "$QUINT_PACKAGE" >"$1"; printf "%s\\n" "$QUINT_LOCK" >"$2"',
+                        str(self.functions), str(given / "package.json"), str(given / "package-lock.json")], check=True)
+        for name in ("package.json", "package-lock.json"):
+            self.assertEqual((given / name).read_bytes(), (QUINT / name).read_bytes(), name)
+        prefix = "/usr/local/lib/quint/0.33.1"
+        self.assertIn(f"\nQUINT_PREFIX={prefix}\nQUINT_LINK=/usr/local/bin/quint\n", self.sent.read_text())
+        # A sudo that keeps the files it installs into a folder, and is the stand-in above for everything else.
+        installed = self.dir / "installed"
+        installed.mkdir()
+        (self.bin / "sudo").rename(self.bin / "stand-in-sudo")
+        self.tool("sudo", f'case "$*" in "-n install -o root -g root -m 644 "*) cp "$9" "${{10}}" "{installed}";; esac\n'
+                          f'exec "{self.bin}/stand-in-sudo" "$@"')
+        done = self.builder()
+        self.assertEqual(done.returncode, 0, done.stdout)
+        calls = self.calls()
+        removed = calls.index(f"-n rm -rf {prefix}")
+        made = calls.index(f"-n install -d -o root -g root -m 755 {prefix}")
+        [written] = [c for c in calls if c.startswith("-n install -o root -g root -m 644 ") and c.endswith(f" {prefix}")]
+        self.assertEqual([Path(w).name for w in written.split()[-3:-1]], ["package.json", "package-lock.json"], written)
+        for name in ("package.json", "package-lock.json"):
+            self.assertEqual((installed / name).read_bytes(), (QUINT / name).read_bytes(), name)
+        [ci] = [c for c in calls if "npm" in c.split()]
+        cache = ci.removeprefix("-n env npm_config_cache=").split()[0]
+        self.assertEqual(ci, f"-n env npm_config_cache={cache} npm ci --ignore-scripts --prefix {prefix}")
+        given_to_root = calls.index(f"-n chown -R -h root:root {prefix}")
+        linked = calls.index(f"-n ln -sfn {prefix}/node_modules/.bin/quint /usr/local/bin/quint")
+        order = [removed, made, calls.index(written), calls.index(ci), calls.index(f"-n rm -rf {cache}"), given_to_root,
+                 linked]
+        self.assertEqual(order, sorted(order), calls)
+        self.assertFalse([c for c in calls if "npm install" in c or ("-u oby-builder" in c and "npm" in c)], calls)
+        self.assertNotIn("npm install", SETUP.read_text())
+
+    def quint_install(self, lock):
+        """Quint at its pin in a prefix of the test's, a link to it and the downloads in the builder's .quint: (the
+        prefix, the link). lock is the prefix's lockfile, or None for an install from before it (A00-40's, with
+        npm install -g into lib/node_modules)."""
+        prefix = self.dir.resolve() / "lib-quint" / "0.33.1"
+        modules = prefix / ("node_modules" if lock is not None else "lib/node_modules")
+        quint = modules / "@informalsystems" / "quint"
+        (quint / "dist" / "src").mkdir(parents=True)
+        (quint / "dist" / "src" / "cli.js").write_text("#!/usr/bin/env node\n")
+        (quint / "package.json").write_text('{\n  "name": "@informalsystems/quint",\n  "version": "0.33.1",\n'
+                                            '  "main": "dist/src/index.js"\n}\n')
+        if lock is None:
+            program = prefix / "bin" / "quint"
+            program.parent.mkdir()
+            program.symlink_to("../lib/node_modules/@informalsystems/quint/dist/src/cli.js")
+        else:
+            program = modules / ".bin" / "quint"
+            program.parent.mkdir()
+            program.symlink_to("../@informalsystems/quint/dist/src/cli.js")
+            (prefix / "package-lock.json").write_bytes(lock)
+        link = self.dir.resolve() / "bin-quint"
+        link.symlink_to(program)
+        home = self.dir / "builder-home"
+        for tool in ("apalache-dist-0.62.4/apalache/bin/apalache-mc", "rust-evaluator-v0.7.1/quint_evaluator"):
+            path = home / ".quint" / tool
+            path.parent.mkdir(parents=True)
+            path.write_text("#!/bin/sh\n")
+            path.chmod(0o755)
+        return prefix, link
+
+    def test_remote_55_an_unpinned_install_is_installed_afresh(self):
+        prefix, link = self.quint_install(None)
+        done = self.builder(prefix, link)
+        self.assertEqual(done.returncode, 0, done.stdout)
+        self.assertIn("setup.sh: installing quint 0.33.1", done.stdout.splitlines())
+        calls = self.calls()
+        [ci] = [c for c in calls if "npm" in c.split()]
+        self.assertTrue(ci.endswith(f" npm ci --ignore-scripts --prefix {prefix}"), ci)
+        self.assertLess(calls.index(f"-n rm -rf {prefix}"), calls.index(ci), calls)
+        self.assertLess(calls.index(ci), calls.index(f"-n ln -sfn {prefix}/node_modules/.bin/quint {link}"), calls)
+
+    def test_remote_55_an_install_from_this_lockfile_is_left_as_it_is(self):
+        lock = (QUINT / "package-lock.json").read_bytes()
+        prefix, link = self.quint_install(lock)
+        done = self.builder(prefix, link)
+        self.assertEqual(done.returncode, 0, done.stdout)
+        self.assertIn("setup.sh: quint 0.33.1 already installed", done.stdout.splitlines())
+        calls = self.calls()
+        self.assertFalse([c for c in calls if "npm" in c or c == f"-n rm -rf {prefix}"], calls)
+        # A lockfile one byte apart from the committed one is installed afresh.
+        (prefix / "package-lock.json").write_bytes(lock + b"\n")
+        self.log.unlink()
+        done = self.builder(prefix, link)
+        self.assertEqual(done.returncode, 0, done.stdout)
+        self.assertIn("setup.sh: installing quint 0.33.1", done.stdout.splitlines())
+        self.assertTrue([c for c in self.calls() if c.endswith(f" npm ci --ignore-scripts --prefix {prefix}")])
+
+
+class QuintLock(unittest.TestCase):
+    """REMOTE-53 and 54: Quint's committed npm tree, and setup.sh stopping before any ssh call when it isn't at
+    setup.sh's pin."""
+
+    def test_remote_53_the_committed_lockfile_pins_every_package(self):
+        package = json.loads((QUINT / "package.json").read_text())
+        self.assertEqual(package, {"name": "oby-quint", "private": True,
+                                   "dependencies": {"@informalsystems/quint": "0.33.1"}})
+        lock = json.loads((QUINT / "package-lock.json").read_text())
+        self.assertEqual(lock["lockfileVersion"], 3)
+        self.assertEqual(lock["packages"][""]["dependencies"], {"@informalsystems/quint": "0.33.1"})
+        self.assertEqual(lock["packages"]["node_modules/@informalsystems/quint"]["version"], "0.33.1")
+        packages = {name: entry for name, entry in lock["packages"].items() if name}
+        self.assertGreater(len(packages), 1)
+        for name, entry in packages.items():
+            self.assertTrue(entry.get("integrity", "").startswith("sha512-"), name)
+            self.assertTrue(entry.get("resolved", "").startswith("https://registry.npmjs.org/"), name)
+        tracked = git("ls-files", "--", "factory/remote/quint", cwd=FACTORY.parent).splitlines()
+        self.assertEqual(sorted(tracked), ["factory/remote/quint/package-lock.json", "factory/remote/quint/package.json"])
+
+    def setup_copy(self, change):
+        """setup.sh and setup.sh --pins run from a copy of factory/remote/ (ci.yml where it looks), its quint folder
+        changed by change, with a stand-in ssh that records every call: (the run, the --pins run, ssh's calls)."""
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            shutil.copytree(FACTORY / "remote", root / "factory" / "remote")
+            (root / ".github" / "workflows").mkdir(parents=True)
+            shutil.copy(CI, root / ".github" / "workflows" / "ci.yml")
+            quint = root / "factory" / "remote" / "quint"
+            change(quint)
+            ssh = root / "bin" / "ssh"
+            ssh.parent.mkdir()
+            ssh.write_text(f'#!/bin/sh\necho "ssh $1" >>"{root}/ssh.log"\ncat >/dev/null\n')
+            ssh.chmod(0o755)
+            env = dict(os.environ, PATH=f"{ssh.parent}{os.pathsep}{os.environ['PATH']}")
+            setup = root / "factory" / "remote" / "setup.sh"
+            done = subprocess.run([str(setup)], env=env, capture_output=True, text=True, timeout=60)
+            pins = subprocess.run([str(setup), "--pins"], env=env, capture_output=True, text=True, timeout=60)
+            log = root / "ssh.log"
+            return done, pins, (log.read_text().splitlines() if log.exists() else []), quint
+
+    def lock_at(self, root=None, locked=None, package=None):
+        """A change that sets the lockfile's root dependency, its locked Quint or package.json's to a version."""
+        def change(quint):
+            lock = json.loads((quint / "package-lock.json").read_text())
+            lock["packages"][""]["dependencies"]["@informalsystems/quint"] = root or "0.33.1"
+            lock["packages"]["node_modules/@informalsystems/quint"]["version"] = locked or "0.33.1"
+            (quint / "package-lock.json").write_text(json.dumps(lock, indent=2) + "\n")
+            wanted = json.loads((quint / "package.json").read_text())
+            wanted["dependencies"]["@informalsystems/quint"] = package or "0.33.1"
+            (quint / "package.json").write_text(json.dumps(wanted, indent=2) + "\n")
+        return change
+
+    def test_remote_54_a_lockfile_that_disagrees_with_the_pin_stops_setup(self):
+        pins = subprocess.run([str(SETUP), "--pins"], capture_output=True, text=True, timeout=30).stdout
+        for change, said in (
+                (self.lock_at(root="0.33.0", locked="0.33.0"), "package.json wants 0.33.1, package-lock.json wants "
+                                                               "0.33.0 and locks 0.33.0"),
+                (self.lock_at(locked="0.33.0"), "package.json wants 0.33.1, package-lock.json wants 0.33.1 and locks "
+                                                "0.33.0"),
+                (self.lock_at(root="0.33.0"), "package.json wants 0.33.1, package-lock.json wants 0.33.0 and locks "
+                                              "0.33.1"),
+                (self.lock_at(package="^0.33.1"), "package.json wants ^0.33.1, package-lock.json wants 0.33.1 and "
+                                                  "locks 0.33.1")):
+            done, listed, ssh, quint = self.setup_copy(change)
+            self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+            self.assertIn(f"setup.sh: {quint} isn't at quint's pin 0.33.1: {said}", done.stderr.splitlines())
+            self.assertEqual(ssh, [], "setup reached the host")
+            self.assertEqual((listed.returncode, listed.stdout), (0, pins), listed.stderr)
+        # The committed files, unchanged, pass it and reach ssh.
+        done, _, ssh, _ = self.setup_copy(lambda quint: None)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(ssh, ["ssh oby-gate", "ssh oby-gate"])
+
+    def test_remote_54_a_missing_lockfile_stops_setup(self):
+        for name in ("package-lock.json", "package.json"):
+            done, listed, ssh, quint = self.setup_copy(lambda folder: (folder / name).unlink())
+            self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+            self.assertIn(f"setup.sh: {quint / name} is missing: quint 0.33.1 installs only from it",
+                          done.stderr.splitlines())
+            self.assertEqual(ssh, [], "setup reached the host")
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+
 
 class Pins(unittest.TestCase):
     def pins(self, ci=None):
@@ -811,6 +1305,23 @@ class Pins(unittest.TestCase):
         self.assertEqual(len(arrays), 1, f"setup.sh needs exactly one `local packages=(...)`: {arrays}")
         missing = sorted(wanted - set(arrays[0].split()))
         self.assertEqual(missing, [], f"ci.yml installs {missing} with apt-get, and setup.sh doesn't")
+
+
+class SeedModel(unittest.TestCase):
+    """REMOTE-52: the seed design model says what code it models and what a model can't check."""
+
+    def test_remote_52_the_seed_model_names_what_it_models(self):
+        text = MODEL.read_text()
+        self.assertRegex(text, r"(?m)^module job_race_dev \{$")
+        self.assertRegex(text, r"(?m)^\s*val noLostRetry = ")
+        self.assertRegex(text, r"(?m)^\s*val noRetriedJobEverFinishes = ")
+        header = text.split("module job_race_dev", 1)[0]
+        self.assertTrue(header.strip() and all(line.startswith("//") for line in header.strip().splitlines()), header)
+        for word in ("core/crates/obid/src/jobs.rs", "work()", "_ if stopped", "core/crates/obid/src/job/lifecycle.rs",
+                     "NextRound", "end_done", "TASKS-22", "JOBSTATE-18", "12 steps", "violated",
+                     "the design, not that jobs.rs implements it"):
+            self.assertIn(word, " ".join(line.removeprefix("//").strip() for line in header.splitlines()), word)
+        self.assertNotRegex(header, r"\.rs:\d", "the header names code by line number")
 
 
 class Tighten(unittest.TestCase):

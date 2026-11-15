@@ -10,17 +10,28 @@ It reads the job's job.json (never writing it or taking its lock), round-N/check
 
   a. with <mb> the merge base of origin/<base> and the commit, a branch that changes no `.rs` file under
      core/crates/<dir>/ is SKIPPED, with nothing run;
-  b. otherwise, in one scratch worktree at the commit, core/mutants.diff holds the branch's `.rs` diff relative to
-     core/, and one `test-run -- cargo mutants --in-diff mutants.diff -p <pkg>... -j 1 --no-times --caught --unviable
-     --colors never` runs from its core/, the packages those of the touched crates, sorted;
-  c. each mutant line it prints is counted by its outcome, but those whose line, at the commit, sits in code under
-     #[cfg(kani)] or #[cfg(test)], which are EXCLUDED; a missed mutant in a function a #[kani::proof] harness of the
-     same crate calls by name is listed apart.
+  b. otherwise, in a scratch worktree at the commit, core/mutants.diff holds the branch's `.rs` diff relative to
+     core/, and `test-run -- cargo mutants --in-place --in-diff mutants.diff -p <pkg>... --no-times --caught
+     --unviable --colors never` runs from its core/ on the touched packages but obid, sorted, each with its whole
+     test set (in place, cargo-mutants refuses -j and runs one build at a time by itself);
+  c. then, for a touched obid, in a scratch worktree of its own and before its diff is written, the commit's own
+     `OBY_CHECK_PLAN=1 OBY_CHECK_ONLY=rust scripts/oby-check.sh <mb>` says which of obid's tests the change reaches,
+     and obid's call is narrowed to them: `-C --lib` for the plan's lib filters, `-C --test=<name>` for each of its
+     test binaries, and `-- -- <filter>...` when it has filters and no binaries. obid is SKIPPED when the plan can't
+     be read, runs all of obid's lib tests or none of its tests, or when its call's `Unmutated baseline` line
+     doesn't show within half the budget (BASELINE_SHARE), when that call is stopped;
+  d. each mutant line a call prints is counted by its outcome, but those whose line, at the commit, sits in code
+     under #[cfg(kani)] or #[cfg(test)], which are EXCLUDED; a missed mutant in a function a #[kani::proof] harness of
+     the same crate calls by name is listed apart.
 
-Its setting is config.json's `mutants.budget_s` (a positive integer, by default 1200): a run past it is stopped and
-written as TIMEOUT, with what it tested so far. A run with no result line, or one that ended other than 0, 2 or 3, is
-NO RESULT, never a count. The run's output is appended to round-N/mutants.log. SIGTERM or SIGINT stops the test-run
-it started, by its PID, removes the scratch copy and exits 128 + signal, with no mutants.md.
+Its setting is config.json's `mutants.budget_s` (a positive integer, by default 1200), for the whole step from the
+first call's start: a call past it is stopped and written as TIMEOUT, with what it tested so far, and obid's call
+doesn't start once the other packages' ran past it. A call with no result line, or one that ended other than 0, 2 or
+3, is NO RESULT, never a count. The first line combines the calls' and skips' results, and `## Crates` lists each.
+The plan's and each call's output are appended to round-N/mutants.log. The result is written to
+round-N/mutants.md.tmp and renamed over mutants.md, so a reader sees no mutants.md or the whole of it; both are
+deleted at the start. SIGTERM or SIGINT stops the plan or the test-run it started, by its PID, removes the scratch
+copy and exits 128 + signal, with no mutants.md.
 """
 
 import importlib.machinery
@@ -38,8 +49,12 @@ from pathlib import Path
 
 BIN = Path(__file__).resolve().parent
 BUDGET = 1200  # seconds, when config.json has no mutants.budget_s
+PLAN_TIMEOUT = 120  # seconds the check's plan may take
+BASELINE_SHARE = 0.5  # of the budget, by which obid's narrowed call must show its baseline line
 MUTANT = re.compile(r"^(MISSED|caught|unviable|TIMEOUT)\s+(\S+?):(\d+):(\d+): (.+)$")
 RESULT = re.compile(r"^\d+ mutants? tested")
+BASELINE = re.compile(r"^\S+\s+Unmutated baseline", re.M)
+PLANNED = "oby-check: planned, nothing run"
 OUTCOMES = {"caught": "caught", "MISSED": "missed", "TIMEOUT": "timeout", "unviable": "unviable"}
 CFG = ("#[cfg(kani)]", "#[cfg(test)]")
 INNER = ("#![cfg(kani)]", "#![cfg(test)]")
@@ -215,13 +230,16 @@ def called(name, bodies):
 
 
 class Run:
-    """The one test-run call: its exit code, output, seconds and whether it ran past its budget."""
+    """One test-run call: its exit code, output, seconds, the step's deadline, whether it ran past it and whether its
+    baseline line didn't show within its baseline limit (seconds from its start, or None for no limit)."""
 
     current = None  # the test-run running now, for a stop
 
-    def __init__(self, scratch, command, budget):
+    def __init__(self, scratch, command, budget, deadline=None, baseline=None):
         out = Path(tempfile.mkstemp(prefix="mutants-", suffix=".out")[1])
-        start, self.timed_out, self.code, self.error = time.monotonic(), False, None, None
+        start, self.timed_out, self.no_baseline, self.code, self.error = time.monotonic(), False, False, None, None
+        self.deadline = deadline if deadline is not None else start + budget
+        self.baseline = None if baseline is None else min(baseline, self.deadline - start)
         try:
             with out.open("w") as sink:
                 env = dict(os.environ, CARGO_TARGET_DIR=str(scratch / "core" / "target"))
@@ -233,7 +251,11 @@ class Run:
                     self.error = f"test-run couldn't start: {e}"
                 else:
                     try:
-                        self.code = Run.current.wait(timeout=budget)
+                        if self.baseline is not None and not baseline_shown(out, start + self.baseline):
+                            self.no_baseline = True
+                            self.code = end(Run.current)
+                        else:
+                            self.code = Run.current.wait(timeout=max(0, self.deadline - time.monotonic()))
                     except subprocess.TimeoutExpired:
                         self.timed_out = True
                         self.code = end(Run.current)
@@ -245,16 +267,31 @@ class Run:
         self.code = 128 - self.code if self.code is not None and self.code < 0 else self.code
 
 
-def run_in_scratch(worktree, mb, commit, command, budget):
-    """The run in one scratch worktree at the commit, removed afterwards whatever happens."""
+def baseline_shown(out, until):
+    """Whether the running call's output shows its baseline line, or the call ended, by the monotonic time `until`."""
+    while not BASELINE.search(out.read_text(errors="replace")) and Run.current.poll() is None:
+        if time.monotonic() >= until:
+            return False
+        time.sleep(min(0.2, max(0, until - time.monotonic())))
+    return True
+
+
+def run_in_scratch(worktree, mb, commit, prepare, budget, deadline=None):
+    """In one scratch worktree at the commit, removed afterwards whatever happens: prepare(scratch), before
+    core/mutants.diff is written, gives the command and its baseline limit (or None), or the WHY nothing runs. Then
+    (command, its Run), or (None, that WHY)."""
     holder = Path(tempfile.mkdtemp(prefix="mutants-")).resolve()
     scratch = holder / "scratch"
     try:
         git(worktree, "worktree", "add", "--detach", str(scratch), commit)
+        prepared = prepare(scratch)
+        if isinstance(prepared, str):
+            return None, prepared
+        command, baseline = prepared
         diff = git(scratch, "diff", "--relative=core", "--no-renames", "--no-color", "--no-ext-diff", mb, commit,
                    "--", "*.rs")
         (scratch / "core" / "mutants.diff").write_text(diff)
-        return Run(scratch, command, budget)
+        return command, Run(scratch, command, budget, deadline, baseline)
     except Stopped:
         if Run.current is not None and Run.current.poll() is None:
             end(Run.current)
@@ -263,6 +300,73 @@ def run_in_scratch(worktree, mb, commit, command, budget):
         subprocess.run(["git", "worktree", "remove", "--force", str(scratch)], cwd=worktree, capture_output=True)
         subprocess.run(["git", "worktree", "prune"], cwd=worktree, capture_output=True)
         shutil.rmtree(holder, ignore_errors=True)
+
+
+def kill_group(proc):
+    """SIGKILL to the plan's process group, which it leads."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def obid_plan(scratch, mb, log):
+    """(lib filters, test binaries) the commit's own check plans for obid, run from the scratch root, or the WHY obid
+    is SKIPPED. Its output is appended to the log; a stop kills it, its process group with it."""
+    env = {k: v for k, v in os.environ.items() if k not in ("OBY_CHECK_INNER", "OBY_CHECK_PATHS", "OBY_CHECK_ALL")}
+    env.update(OBY_CHECK_PLAN="1", OBY_CHECK_ONLY="rust")
+    out, err, code, unread = "", "", "-", None
+    try:
+        proc = subprocess.Popen(["scripts/oby-check.sh", mb], cwd=scratch, env=env, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    except OSError as e:
+        unread = f"couldn't start: {e}"
+    else:
+        try:
+            out, err = proc.communicate(timeout=PLAN_TIMEOUT)
+            code = proc.returncode
+        except subprocess.TimeoutExpired:
+            unread = f"ran past {PLAN_TIMEOUT}s"
+            kill_group(proc)
+            out, err = (text or "" for text in proc.communicate())
+        except Stopped:
+            kill_group(proc)
+            proc.wait()
+            raise
+    with log.open("a") as f:
+        f.write(f"==== OBY_CHECK_PLAN=1 OBY_CHECK_ONLY=rust scripts/oby-check.sh {mb} (exit {code}) ====\n{out}{err}\n")
+    if unread is None and code != 0:
+        unread = f"exit {code}"
+    if unread is None and PLANNED not in (line.strip() for line in out.splitlines()):
+        unread = f'no "{PLANNED.split(": ", 1)[1]}" line'
+    if unread:
+        return f"the check's plan couldn't be read ({unread}), so obid's tests can't be narrowed"
+    filters, binaries = [], []
+    for line in out.splitlines():
+        words = line.split()
+        if line.startswith("==> lib_tests "):
+            if "--" not in words:
+                return ("the check's plan runs all of obid's lib tests (--lib --bins) for this change, so obid's "
+                        "tests can't be narrowed")
+            filters = words[words.index("--") + 1:]
+        elif line.startswith("==> test_binaries "):
+            binaries += [words[i + 1] for i, word in enumerate(words[:-1]) if word == "--test"]
+    if not filters and not binaries:
+        return "the check's plan runs none of obid's tests for this change"
+    return filters, binaries
+
+
+def cargo_mutants(packages):
+    return ["cargo", "mutants", "--in-place", "--in-diff", "mutants.diff",
+            *(word for pkg in packages for word in ("-p", pkg)),
+            "--no-times", "--caught", "--unviable", "--colors", "never"]
+
+
+def narrowed(filters, binaries):
+    """obid's call on the plan's selection: with binaries too, all its lib tests, as a filter would narrow them."""
+    return [*cargo_mutants(["obid"]), *(["-C", "--lib"] if filters else []),
+            *(word for name in binaries for word in ("-C", f"--test={name}")),
+            *(["--", "--", *filters] if filters and not binaries else [])]
 
 
 def no_result_why(run, has_result):
@@ -281,8 +385,12 @@ def no_result_why(run, has_result):
     return why + (f"; test-run fell back to this Mac: {fell}" if fell else "")
 
 
+def tally(counts):
+    return ", ".join(f"{counts[k]} {k}" for k in ("caught", "missed", "timeout", "unviable"))
+
+
 def judge(worktree, commit, run, budget):
-    """(first-line value, WHY or None, excluded count, missed lines, Kani-covered missed lines)."""
+    """(value, WHY or None, excluded count, missed lines, Kani-covered missed lines, counts)."""
     counts = dict.fromkeys(OUTCOMES.values(), 0)
     excluded, missed, covered = 0, [], []
     states, bodies = {}, {}
@@ -314,13 +422,31 @@ def judge(worktree, commit, run, budget):
                            "harness)")
         else:
             missed.append(f"- {repo_path}:{n}: {change} (no test notices)")
-    tally = ", ".join(f"{counts[k]} {k}" for k in ("caught", "missed", "timeout", "unviable"))
+    if run.no_baseline:
+        return ("SKIPPED", f"its narrowed baseline didn't finish within {round(run.baseline, 1):g}s (half of "
+                "mutants.budget_s), so no obid mutant was tested", excluded, None, None, counts)
     if run.timed_out:
-        return f"TIMEOUT after {budget}s: {tally}", None, excluded, missed, covered
+        return f"TIMEOUT after {budget}s: {tally(counts)}", None, excluded, missed, covered, counts
     if run.error is None and has_result and run.code in (0, 2, 3):
-        return tally, None, excluded, missed, covered
+        return tally(counts), None, excluded, missed, covered, counts
     code = run.code if run.code is not None else "-"
-    return f"NO RESULT (exit {code})", no_result_why(run, has_result), excluded, None, None
+    return f"NO RESULT (exit {code})", no_result_why(run, has_result), excluded, None, None, counts
+
+
+def combined(parts, budget):
+    """The first line's value and WHY from the parts': SKIPPED when all are, else the first NO RESULT, else the
+    counts summed over the parts that ran, TIMEOUT when one did."""
+    skipped = [p for p in parts if p["value"] == "SKIPPED"]
+    if len(skipped) == len(parts):
+        return "SKIPPED", skipped[0]["why"]
+    failed = next((p for p in parts if p["value"].startswith("NO RESULT")), None)
+    if failed:
+        return failed["value"], failed["why"]
+    ran = [p for p in parts if p["missed"] is not None]
+    counts = {k: sum(p["counts"][k] for p in ran) for k in OUTCOMES.values()}
+    if any(p["value"].startswith("TIMEOUT") for p in ran):
+        return f"TIMEOUT after {budget}s: {tally(counts)}", None
+    return tally(counts), None
 
 
 def mutants(job_id):
@@ -337,32 +463,63 @@ def mutants(job_id):
         die(f"round-{job['round']}/checks.md doesn't say GATE: PASS: run factory/bin/gate {job_id} first")
     commit = JOB.header(checks).get("COMMIT", "")
     (rd / "mutants.md").unlink(missing_ok=True)
+    (rd / "mutants.md.tmp").unlink(missing_ok=True)
     log = rd / "mutants.log"
     log.write_text("")
 
     worktree = job["worktree"]
     mb = git(worktree, "merge-base", f"origin/{JOB.BASE}", commit).strip()
     packages = sorted(crates(worktree, mb, commit).values())
-    seconds = command_text = "-"
-    excluded, missed, covered = 0, None, None
+    others = [pkg for pkg in packages if pkg != "obid"]
+    parts, calls, deadline = [], [], None  # each part's packages and result; each call's command and Run
+
+    def call(names, prepare):
+        """One part: its call in a scratch worktree, or the WHY prepare gave for none."""
+        nonlocal deadline
+        command, run = run_in_scratch(worktree, mb, commit, prepare, budget, deadline)
+        if command is None:  # run is the WHY
+            parts.append({"packages": names, "value": "SKIPPED", "why": run, "excluded": 0, "missed": None})
+            return None
+        deadline = run.deadline
+        value, why, excluded, missed, covered, counts = judge(worktree, commit, run, budget)
+        parts.append({"packages": names, "value": value, "why": why, "excluded": excluded, "missed": missed,
+                      "covered": covered, "counts": counts})
+        calls.append((command, run))
+        with log.open("a") as f:
+            f.write(f"==== {' '.join(command)} ({value}, {run.seconds:.1f}s) ====\n{run.output}\n")
+        return run
+
+    def obid(scratch):
+        plan = obid_plan(scratch, mb, log)
+        return plan if isinstance(plan, str) else (narrowed(*plan), max(1, int(budget * BASELINE_SHARE)))
+
     if not packages:
         value, why = "SKIPPED", "no .rs file under core/crates/ changed"
     else:
-        command = ["cargo", "mutants", "--in-diff", "mutants.diff",
-                   *(word for pkg in packages for word in ("-p", pkg)),
-                   "-j", "1", "--no-times", "--caught", "--unviable", "--colors", "never"]
-        run = run_in_scratch(worktree, mb, commit, command, budget)
-        value, why, excluded, missed, covered = judge(worktree, commit, run, budget)
-        seconds, command_text = f"{run.seconds:.1f}", f"`{BIN / 'test-run'} -- {' '.join(command)}`"
-        with log.open("a") as f:
-            f.write(f"==== {' '.join(command)} ({value}, {seconds}s) ====\n{run.output}\n")
+        first = call(others, lambda _: (cargo_mutants(others), None)) if others else None
+        if "obid" in packages and first is not None and first.timed_out:
+            parts.append({"packages": ["obid"], "value": "SKIPPED", "why": "the budget was spent before obid's run",
+                          "excluded": 0, "missed": None})
+        elif "obid" in packages:
+            call(["obid"], obid)
+        value, why = combined(parts, budget)
+    seconds = f"{sum(run.seconds for _, run in calls):.1f}" if calls else "-"
+    command_text = "; ".join(f"`{BIN / 'test-run'} -- {' '.join(command)}`" for command, _ in calls) or "-"
+    excluded = sum(p["excluded"] for p in parts)
 
     text = (f"MUTANTS: {value}\nCOMMIT: {commit}\nBUDGET: {budget}s\nVM SECONDS: {seconds}\nCOMMAND: {command_text}\n"
             f"EXCLUDED: {excluded} under #[cfg(kani)] or #[cfg(test)]\n" + (f"WHY: {why}\n" if why else ""))
-    if missed is not None:
+    if parts and why is None:
+        missed = [line for p in parts if p["missed"] is not None for line in p["missed"]]
+        covered = [line for p in parts if p["missed"] is not None for line in p["covered"]]
         text += ("\n## Missed\n" + ("\n".join(missed) if missed else "None.") + "\n"
                  "\n## Missed in functions a Kani proof calls\n" + ("\n".join(covered) if covered else "None.") + "\n")
-    (rd / "mutants.md").write_text(text)
+    if parts:
+        text += "\n## Crates\n" + "".join(f"- {' '.join(p['packages'])}: {p['value']}"
+                                          + (f": {p['why']}" if p["why"] else "") + "\n" for p in parts)
+    tmp = rd / "mutants.md.tmp"
+    tmp.write_text(text)
+    tmp.replace(rd / "mutants.md")
     print(f"MUTANTS: {value} ({job_id} round {job['round']})")
     return 0
 

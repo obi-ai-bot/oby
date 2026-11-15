@@ -141,6 +141,26 @@ hold for each `### PROOF-<n>` entry:
 - The entry's `Broken old` line stays in the code exactly once: prove applies
   the broken rule to it, and the harness must turn red.
 
+## Models
+
+When spec.md has a `## Models` section, `factory/bin/prove` runs its Quint
+models after the gate (`docs/contracts/factory.md`, PROVE-13 to 20). These
+rules hold for each `### MODEL-<n>` entry:
+
+- Run Quint only through `factory/bin/test-run`, from the worktree root, with
+  the commands prove uses:
+  `cd <worktree> && CARGO_TARGET_DIR=<worktree>/core/target factory/bin/test-run -- quint verify --main=<main> --max-steps=<depth> --invariant=<name> <file>`,
+  and the same for `quint typecheck <file>` (no `--main`) and
+  `quint run --main=<main> --max-steps=<depth> <file>`.
+  Record each run's `[ok] …` or `[violation] …` line in build.md, per MODEL.
+- Every invariant must hold, and every witness must be violated.
+- Never weaken or rename an invariant or witness the spec lists, nor edit
+  spec.md, to make a run pass. A run that fails is reported as it ended.
+- A model's `//` header names the code it models, by file and function, as
+  `docs/models/job_race.qnt` does.
+- Until A00-52 lands, run one `quint verify` at a time: two at once can meet
+  on Apalache's one port.
+
 ## Commit, push, PR
 
 - Commit on the job branch with Conventional Commits messages in the style of

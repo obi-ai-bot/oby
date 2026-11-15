@@ -1,6 +1,6 @@
 //! What the follower hands to GitHub, and settles from it, about a pull request obid carries
-//! (docs/contracts/merging.md): GitHub's auto-merge, once GitHub alone holds a merge a learned
-//! workflow would make (MERGING-41), and what obid was sending when it last stopped.
+//! (docs/contracts/merging.md): the merge it makes by itself, GitHub's auto-merge once GitHub
+//! alone holds that merge (MERGING-41), and what obid was sending when it last stopped.
 
 use super::*;
 
@@ -86,13 +86,66 @@ impl Jobs {
         }
     }
 
-    /// The merge `outcome` of the job's pull request under its learned `workflow` (`seen`: the pull
+    /// The merge the job's pull request makes by itself by `workflow` (`seen`: the pull request,
+    /// what a merge needs, Oby's reviewer accounts): the learned one's, `memory` (MERGING-45), or
+    /// the proposed one for the owner's own conversation work, remembering nothing (`mergedBy`
+    /// `oby`, MERGING-46). Kept on the job ([`crate::merge::note`]); the card, where the owner
+    /// takes it from here.
+    pub(super) async fn merges(
+        self: &Arc<Self>,
+        gh: &Path,
+        job: &Job,
+        workflow: &crate::memory::Workflow,
+        seen: (
+            &crate::github::PullRequest,
+            &crate::github::Merging,
+            Option<&Reviewers>,
+        ),
+        memory: Option<&str>,
+    ) -> Option<crate::sphere::inbox::Item> {
+        let (pr, merging, reviewers) = seen;
+        let (id, head, home) = (job.id.as_str(), pr.head.as_deref()?, &self.config.home);
+        let by = crate::job::MergedBy {
+            by: if memory.is_some() { "memory" } else { "oby" }.into(),
+            memory: memory.map(str::to_owned),
+            at: obi_protocol::time::now(),
+        };
+        let outcome = match crate::merge::ready(job, Some(workflow), pr, merging, reviewers) {
+            Ok(()) => {
+                let go =
+                    |action: &str| self.about_to_send(id, head, action, Some(by.clone()), None);
+                match reviewers {
+                    Some(r) => crate::merge::merge(gh, home, job, workflow, r, None, &go).await,
+                    None => Err(crate::merge::unread_reviewers()),
+                }
+            }
+            Err(blocked) => Err(blocked),
+        };
+        let outcome = self.by_github(gh, job, workflow, seen, &by, outcome).await;
+        if let Ok(merged) = &outcome {
+            for sent in &merged.outgoing {
+                tracing::info!("job {id}: sent {} {} {}", sent.action, sent.repo, sent.id);
+            }
+            if let Some(memory) = memory {
+                crate::memory::note_used(home, memory);
+            }
+        }
+        self.update(id, |job| crate::merge::note(job, &outcome, by));
+        outcome
+            .err()
+            .filter(|b| b.needs_you && !crate::merge::on_review_item(b))
+            .filter(|b| !(b.rebase && self.round_after_pr(id, head, &b.why)))
+            .map(|b| crate::merge::blocked_card(job, head, &b, workflow, &pr.base))
+    }
+
+    /// The merge `outcome` of the job's pull request under its `workflow` (`seen`: the pull
     /// request, what a merge needs, Oby's reviewer accounts), handed to GitHub's auto-merge when
     /// GitHub alone holds it: its required checks still running ([`crate::merge::by_github`]), or a
     /// base it takes only through its merge queue ([`crate::merge::MERGE_QUEUE`]). Once per head,
     /// pinned to it (`Job::auto_merge`): armed, it waits with no card, its Merged stage saying
     /// GitHub merges it, and the pass keeps it armed ([`Jobs::follow`]). Never main, master or
-    /// trunk, never unlearned (MERGING-7). Refused by GitHub, once per head
+    /// trunk, never unlearned, but for the owner's own conversation work (MERGING-7, 46). Refused
+    /// by GitHub, once per head
     /// (`Job::auto_merge_refused`): it gets the card it had before, and a merge queue's refusal asks
     /// the owner.
     pub(super) async fn by_github(
@@ -165,6 +218,27 @@ impl Jobs {
                 outcome
             }
         }
+    }
+
+    /// Whether `job` merges past Oby's review that asks for changes once nothing more happens by
+    /// itself (MERGING-49), so no review item asks the owner: the owner's own one-review work,
+    /// but under a workflow learned for its base that a person or a teammate approves (MERGING-45).
+    pub(super) fn merges_past_review(&self, job: &Job) -> bool {
+        let base =
+            (job.pull_request.as_ref()).map_or(job.base.as_deref(), |pr| Some(pr.base.as_str()));
+        let learned = crate::memory::workflow(&self.config.home, &job.repo)
+            .and_then(|m| m.workflow)
+            .filter(|w| base == Some(w.base.as_str()))
+            .map(|w| w.review);
+        let (own, two) = (crate::merge::own_work(job), job.two_reviews_why().is_some());
+        crate::merge::flagged(true, own, two) == crate::merge::Flagged::MergesPast
+            && crate::merge::merges_past_by(learned)
+    }
+
+    /// The job `id`'s conversation was told it merged at `head` past Oby's review
+    /// (crate::merge::merged_past, MERGING-49): that head tells it nothing more.
+    pub fn mark_told_merged_past(&self, id: &str, head: &str) {
+        self.update(id, |job| job.told_merged_past = Some(head.to_owned()));
     }
 
     /// What obid was sending for the job `id` when it last stopped, settled from what GitHub
