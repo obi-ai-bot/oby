@@ -157,6 +157,11 @@ class Unreached(str):
     """check_models()'s note when ssh couldn't reach the gate VM: a passing failure, tried again at the next pass."""
 
 
+class GitHubUnreached(Unreached):
+    """check_models()'s note when `gh api` didn't fetch a model and GitHub didn't say it's gone: never read as a
+    removed model, so the head is tried again at the next pass, unverified heads never armed."""
+
+
 def check_models(files, head):
     """Verifies each Quint model the pull request touches, on the gate VM. Returns why it can't merge, or None."""
 
@@ -181,7 +186,11 @@ def check_models(files, head):
         got = subprocess.run(["gh", "api", f"repos/{GH_REPO}/contents/{path}?ref={head}", "-H", "Accept: application/vnd.github.raw"],
                              cwd=REPO, capture_output=True, text=True)
         if got.returncode != 0:
-            continue  # the pull request removes the model
+            said = (got.stderr or got.stdout).strip()
+            if re.search(r"\(HTTP 404\)|\bNot Found\b", said):
+                continue  # GitHub says the head has no such file: the pull request removes the model
+            GH_MISSED.append(said[:120])
+            return GitHubUnreached(f"GitHub didn't give {path} at {head[:12]}: {said[:120] or 'no words'}")
         runs = VERIFY.findall(got.stdout)
         if not runs:
             return f"{path} has no '// verify:' line, so nothing says what must hold"
@@ -343,7 +352,8 @@ def may_arm(j, pr, refused):
 
 
 # A failure that may not happen again: the network, GitHub's 5xx or rate limit, its own "try again".
-PASSING = re.compile(r"\b(5\d\d|429)\b|timed? ?out|timeout|connection|network|try again|temporar|rate limit|\bEOF\b", re.I)
+PASSING = re.compile(r"\b(5\d\d|429)\b|timed? ?out|timeout|connect|no such host|dial tcp|unreachable|network|try again|"
+                     r"temporar|rate limit|\bEOF\b", re.I)
 TRIES = 3
 
 
@@ -359,8 +369,9 @@ def tried_again(item, head, why):
 
 def gate_unreached(item, head, why):
     """ssh to the gate VM failed or dropped: an unanswered request, so the pass is skipped and the head is tried
-    again at the next one, never held for it."""
-    GATE_MISSED.append(why)
+    again at the next one, never held for it. A model GitHub didn't give is GitHub's miss, already in GH_MISSED."""
+    if not isinstance(why, GitHubUnreached):
+        GATE_MISSED.append(why)
     item.update(state="waiting", head=head, note=f"{why[:200]}; tried again at the next pass")
 
 

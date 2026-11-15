@@ -448,6 +448,50 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual(len(self.stand.merges()), 1)
         self.assertEqual(started, [])
 
+    def test_feedalive_1_a_merge_that_cant_reach_github_is_tried_again_never_refused(self):
+        """`gh pr merge` failing on DNS is GitHub not answering: the pass stops, the head waits unrefused."""
+        started = self.two_waiting_and_one_ready()
+        self.stand.jobs[JOB]["approvals"] = approvals(OLD, "claude", "codex")
+        self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "x.py"}]}
+        self.stand.merge_code = 1
+        self.stand.merge_err = 'Post "https://api.github.com/graphql": dial tcp: lookup api.github.com: no such host'
+        self.assertIsNone(self.one_pass())
+        self.assertEqual(len(self.stand.merges()), 1)
+        self.assertEqual(started, [])
+        self.assertFalse(any("refused" in item for item in self.feed.load_state().values()))
+        self.assertTrue(self.feed.GH_MISSED)
+
+    def test_feedalive_1_a_model_github_didnt_give_is_never_read_as_removed(self):
+        """`gh api` fetching a changed model fails without a 404: the pass stops at once, nothing merges unverified,
+        nothing starts, the head waits unrefused; a 404 is still a removed model."""
+        started = self.two_waiting_and_one_ready()
+        self.stand.jobs[JOB]["approvals"] = approvals(OLD, "claude", "codex")
+        self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": PATH}]}
+        self.feed.touches_security = lambda files: []
+        fetches, said = [], ["HTTP 502: Bad Gateway (https://api.github.com/repos/owner/repo/contents/x)"]
+
+        def run(cmd, **kwargs):
+            if cmd[:2] == ["gh", "api"] and "contents" in cmd[2]:
+                fetches.append(cmd)
+                return subprocess.CompletedProcess(cmd, 1, "", said[0])
+            if cmd[0] == "ssh":
+                raise AssertionError("a model GitHub didn't give reached the gate VM")
+            return self.stand.run(cmd, **kwargs)
+
+        self.feed.subprocess = Namespace(run=run)
+        config = dict(self.feed.job.CONFIG, remote_gate={"ssh_host": "oby-gate"})
+        with mock.patch.object(self.feed.job, "CONFIG", config):
+            self.assertIsNone(self.one_pass())
+            self.assertEqual(len(fetches), 1)
+            self.assertEqual(self.stand.merges(), [])
+            self.assertEqual(started, [])
+            items = self.feed.load_state().values()
+            self.assertFalse(any("refused" in item for item in items))
+            self.assertEqual(len([item for item in items if "502" in item.get("note", "")]), 1)
+            self.assertEqual(self.feed.GATE_MISSED, [])
+            said[0] = "gh: Not Found (HTTP 404)"
+            self.assertIsNone(self.feed.check_models([PATH], OLD))
+
     def test_feedalive_1_obid_gone_mid_pass_follows_and_starts_nothing_more(self):
         started = self.two_waiting_and_one_ready()
 
