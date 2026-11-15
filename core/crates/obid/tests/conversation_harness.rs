@@ -1604,6 +1604,8 @@ fn taskconv_27_a_negated_or_asked_merge_is_not_done() {
         "Merge #4. Don't merge #3.",
         "Should I merge #3?!",
         "Should I merge #3?, or close it",
+        "don´t merge #3",
+        "Merge #4.Never merge #3.",
     ] {
         let answered = after_a_read(
             &obid,
@@ -1624,12 +1626,13 @@ fn taskconv_27_a_negated_or_asked_merge_is_not_done() {
     assert!(github.join("merges").exists());
 }
 
-/// TASKCONV-29: after a read, "start it" in signed words starts the one offer waiting in the
-/// conversation, still marked untrusted, with no Confirm; with two waiting it starts neither, and
-/// words naming one's task start that one. Two that waited when the turn began stay two, though
-/// the turn cancels one first.
+/// TASKCONV-29: after a read, a card is answered at once only when one plain sentence of the
+/// owner's signed words says its answer and names it, the only one waiting too ("Drop it after a
+/// read", the owner's answer of 2026-11-15). "start it", "don't start it" and a no about it after
+/// another's Start start nothing; "Start Add a greeting" starts it, still marked untrusted, with
+/// no Confirm.
 #[test]
-fn taskconv_29_a_card_is_settled_when_named_or_the_only_one_waiting() {
+fn taskconv_29_a_card_is_settled_only_when_a_plain_sentence_names_it() {
     let (_folder, obid) = obid("harness-named-card", true);
     let offer = |title: &str, conversation: Option<&str>| -> (String, String) {
         let words = format!(
@@ -1658,11 +1661,19 @@ fn taskconv_29_a_card_is_settled_when_named_or_the_only_one_waiting() {
         let args = json!({"item": item, "answer": "Start"});
         after_a_read(&obid, conversation, words, true, "oby_answer", args)
     };
+    // The only card waiting: its answer alone, or a no about it, starts nothing.
     let (greeting, conversation) = offer("Add a greeting", None);
     a_second_passes();
-    let answered = start(&conversation, "don't start it", &greeting);
-    assert!(answered.contains("Not done:"), "{answered}");
-    let answered = start(&conversation, "start it", &greeting);
+    for words in [
+        "start it",
+        "don't start it",
+        "Start Add a header. Don't start Add a greeting.",
+    ] {
+        let answered = start(&conversation, words, &greeting);
+        assert!(answered.contains("Not done:"), "{words}: {answered}");
+        assert!(jobs().is_empty(), "{words}: {:?}", jobs());
+    }
+    let answered = start(&conversation, "Start Add a greeting", &greeting);
     assert!(!answered.contains("Not done"), "{answered}");
     let started = within(10, "the offer starts", || {
         jobs().into_iter().find(|j| j["title"] == "Add a greeting")
@@ -1670,46 +1681,104 @@ fn taskconv_29_a_card_is_settled_when_named_or_the_only_one_waiting() {
     assert_eq!(started["untrusted"], true, "{started}");
     assert!(!inbox(&obid).iter().any(|i| i["kind"] == "confirm"));
 
+    // Two waiting: the answer said plainly of one doesn't settle the other, named in a no.
     let (footer, _) = offer("Fix the footer", Some(&conversation));
     offer("Add a header", Some(&conversation));
     a_second_passes();
-    let answered = start(&conversation, "start it", &footer);
+    let words = "Start Add a header. Don't start Fix the footer.";
+    let answered = start(&conversation, words, &footer);
     assert!(answered.contains("Not done:"), "{answered}");
-    assert_eq!(jobs().len(), 1, "{:?}", jobs());
-    assert!(!inbox(&obid).iter().any(|i| i["kind"] == "confirm"));
     let answered = start(&conversation, "Start Fix the footer", &footer);
     assert!(!answered.contains("Not done"), "{answered}");
     within(10, "the named offer starts", || {
         jobs().into_iter().find(|j| j["title"] == "Fix the footer")
     });
     assert!(!jobs().iter().any(|j| j["title"] == "Add a header"));
+}
 
-    let header = inbox(&obid)
-        .into_iter()
-        .find(|i| i["kind"] == "start" && i["title"] == "Add a header")
-        .expect("the header's offer");
-    let (title, _) = offer("Add a title", Some(&conversation));
+/// TASKCONV-29: after a read, the one permission card waiting is allowed only by words that say
+/// Allow and name its job: "Allow me to explain." allows nothing.
+#[test]
+fn taskconv_29_the_only_permission_waiting_is_allowed_only_when_named() {
+    let (_folder, obid) = obid("harness-named-permission", true);
+    let dispatch = r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Fix login. JOB-ASKS-PERMISSION", "title": "Fix login", "kind": "build", "mode": "ask"}"#;
+    let started = said(&obid, json!({"said": dispatch, "new": true}));
+    let conversation = started.body["conversation"].as_str().unwrap().to_owned();
+    let id = started.body["jobs"][0]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{}", started.text))
+        .to_owned();
+    let job = || call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    let waiting = within(60, "the job asks", || {
+        let job = job();
+        job["permission"]["id"].as_str().map(str::to_owned)
+    });
     a_second_passes();
-    let room = obid.home.join(format!("conversations/{conversation}/room"));
-    let args = json!({"item": header["id"], "answer": "Start"});
-    std::fs::write(room.join("call.json"), args.to_string()).unwrap();
-    let cancel = format!(r#"{{"item": "{title}", "answer": "Cancel"}}"#);
-    let words = format!(
-        "start it\nREADREPO REPEAT 1 OBY oby_answer {cancel} THEN OBYFILE oby_answer call.json"
+    let allow = json!({"item": format!("{id}-permission-{waiting}"), "answer": "Allow"});
+    let answered = after_a_read(
+        &obid,
+        &conversation,
+        "Allow me to explain.",
+        true,
+        "oby_answer",
+        allow.clone(),
     );
-    let body = json!({"said": words, "conversation": conversation});
-    let answer = call_typed(&obid, "POST", "/v1/plans", &body);
-    assert_eq!(answer.status, 200, "{}", answer.text);
-    assert!(oby_said(&answer).contains("Not done:"), "{}", answer.text);
-    assert!(!jobs().iter().any(|j| j["title"] == "Add a header"));
-
-    // Two waiting: the answer said plainly of one doesn't settle the other, named in a no.
-    let (logo, _) = offer("Add a logo", Some(&conversation));
-    a_second_passes();
-    let words = "Start Add a header. Don't start Add a logo.";
-    let answered = start(&conversation, words, &logo);
     assert!(answered.contains("Not done:"), "{answered}");
-    assert!(!jobs().iter().any(|j| j["title"] == "Add a logo"));
+    assert_eq!(job()["permission"]["id"], waiting.as_str());
+    let answered = after_a_read(
+        &obid,
+        &conversation,
+        "Allow Fix login.",
+        true,
+        "oby_answer",
+        allow,
+    );
+    assert!(!answered.contains("Not done"), "{answered}");
+    within(60, "the job is allowed", || {
+        let job = job();
+        job["summary"]
+            .as_str()
+            .is_some_and(|s| s.contains("permission: allow"))
+            .then_some(())
+    });
+}
+
+/// TASKCONV-29: after a read, the one merge card waiting, for #3, isn't merged by "Merge #4.
+/// Don't merge #3.": its answer is said only of another.
+#[test]
+fn taskconv_29_the_only_merge_card_waiting_merges_only_when_named() {
+    let (folder, obid) = obid_failing_jobs("harness-named-merge-card");
+    let (id, conversation) = ended_job(&obid, None);
+    let config: Value =
+        serde_json::from_slice(&std::fs::read(folder.0.join("config.json")).unwrap()).unwrap();
+    drop(obid);
+    // Its pull request #3, and its merge card, kept while obid is stopped.
+    let file = folder.0.join(format!("home/jobs/{id}.json"));
+    let mut job: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    job["published"] = json!("https://github.com/obi-e2e/fixture-app/pull/3");
+    std::fs::write(&file, job.to_string()).unwrap();
+    let item = format!("merge-{id}-{}", "a".repeat(40));
+    let card = json!({"id": item, "kind": "merge", "job": id, "title": "Ready to merge: Add a greeting",
+        "text": "Its checks passed.", "options": ["Merge", "Merge, and remember", "Leave it open"],
+        "created": 1});
+    let inbox_dir = folder.0.join("home/inbox");
+    std::fs::create_dir_all(&inbox_dir).unwrap();
+    std::fs::write(inbox_dir.join(format!("{item}.json")), card.to_string()).unwrap();
+    let obid = start(&folder.0, &config, None);
+    let merge = json!({"item": item, "answer": "Merge"});
+    let words = "Merge #4. Don't merge #3.";
+    let answered = after_a_read(&obid, &conversation, words, true, "oby_answer", merge);
+    assert!(
+        answered.contains("Not done: Merge: Ready to merge"),
+        "{answered}"
+    );
+    assert!(
+        inbox(&obid)
+            .iter()
+            .any(|i| i["id"] == item.as_str() && i["done"].is_null()),
+        "{:?}",
+        inbox(&obid)
+    );
 }
 
 /// TASKCONV-30: after a read, words no app of the owner's signed still make the merge's Confirm,

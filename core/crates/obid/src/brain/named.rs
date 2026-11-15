@@ -31,12 +31,6 @@ pub(crate) fn act_on(signed: bool, read_outside: bool, named: bool) -> Act {
     Act::Now
 }
 
-/// Whether the owner's words settle a waiting card: they say its answer (`says_answer`), and they
-/// name its target (`by_target`) or it is the one card of its kind waiting in the conversation.
-pub(crate) fn card_named(by_target: bool, says_answer: bool, waiting_here: u32) -> bool {
-    says_answer && (by_target || waiting_here == 1)
-}
-
 /// The owner's own words in `said`: past [`super::OBY_ASKED`], the question they answer is Oby's.
 pub(crate) fn owners_words(said: &str) -> &str {
     said.split(super::OBY_ASKED).next().unwrap_or(said)
@@ -98,20 +92,38 @@ pub(crate) fn says_words(words: &str, phrase: &str) -> bool {
             .any(|run| run == phrase.as_slice())
 }
 
+/// What a sentence's marks are: one right before a capital letter ends a sentence even with no
+/// space after it ("Merge #4.Never merge #3.").
+const MARKS: &str = ".!?;。！？";
+
+/// `word` cut after each of [`MARKS`] a capital letter follows: a link's dots stay in it.
+fn cut(word: &str) -> Vec<&str> {
+    let mut pieces = vec![];
+    let mut start = 0;
+    let mut chars = word.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        if MARKS.contains(c) && chars.peek().is_some_and(|(_, next)| next.is_uppercase()) {
+            pieces.push(&word[start..at + c.len_utf8()]);
+            start = at + c.len_utf8();
+        }
+    }
+    pieces.push(&word[start..]);
+    pieces
+}
+
 /// The plain sentences of `words`: those that ask nothing (no `?` in any word) and say no "not",
-/// "never" or "don't" (any `n't`). A sentence ends at a word ending in `.`, `!`, `;` or holding a
-/// `?`, quotes and brackets aside, or at a line's end. "Should I merge #3?" and "don't merge #3"
-/// are none (the owner's answer of 2026-11-15).
+/// "never" or "don't" (any `n't`, its apostrophe typed any way, and in any piece of a word, as
+/// `#4.not`). A sentence ends at a word ending in `.`, `!`, `;` or holding a `?`, quotes and
+/// brackets aside, at one of those right before a capital letter, or at a line's end. "Should I
+/// merge #3?" and "don´t merge #3" are none (the owner's answer of 2026-11-15).
 fn plain_sentences(words: &str) -> impl Iterator<Item = String> + '_ {
     const CLOSING: &str = "'\"”’)]>";
     let asks = |word: &&str| word.contains(['?', '？']);
     let denies = |word: &&str| {
-        let word = word
-            .trim_matches(|c: char| AROUND.contains(c))
-            .to_lowercase();
-        ["not", "never", "dont"].contains(&word.as_str())
-            || word.ends_with("n't")
-            || word.ends_with("n’t")
+        let word = word.replace(['’', '´', 'ʼ', '`', '′'], "'").to_lowercase();
+        word.split(|c: char| !c.is_alphanumeric() && c != '\'')
+            .map(|piece| piece.trim_matches('\''))
+            .any(|piece| ["not", "never", "dont"].contains(&piece) || piece.ends_with("n't"))
     };
     let ends = move |word: &&str| {
         asks(word)
@@ -120,7 +132,7 @@ fn plain_sentences(words: &str) -> impl Iterator<Item = String> + '_ {
                 .ends_with(['.', '!', ';', '。', '！'])
     };
     words.lines().flat_map(move |line| {
-        let words: Vec<&str> = line.split_whitespace().collect();
+        let words: Vec<&str> = line.split_whitespace().flat_map(cut).collect();
         let plain: Vec<String> = words
             .split_inclusive(ends)
             .filter(|sentence| !sentence.iter().any(asks) && !sentence.iter().any(denies))
@@ -128,11 +140,6 @@ fn plain_sentences(words: &str) -> impl Iterator<Item = String> + '_ {
             .collect();
         plain
     })
-}
-
-/// Whether `words` say `phrase` in a plain sentence ([`plain_sentences`]).
-pub(crate) fn says_plainly(words: &str, phrase: &str) -> bool {
-    plain_sentences(words).any(|sentence| says_words(&sentence, phrase))
 }
 
 /// Whether one plain sentence of `words` says `phrase` and also holds what `about` looks for:
@@ -184,6 +191,8 @@ pub(crate) fn names_card(words: &str, item: &Item, job: Option<&Job>) -> bool {
 
 /// Whether `words` say, card answer and target in one plain sentence, `answer` to `item` named by
 /// its target ([`names_card`]): "Allow Fix login. Don't allow Fix signup." allows only Fix login's.
+/// After an outside read a card has no other way to be named, the only one waiting included ("Drop
+/// it after a read", the owner's answer of 2026-11-15): "Allow me to explain." allows nothing.
 pub(crate) fn names_card_answer(words: &str, answer: &str, item: &Item, job: Option<&Job>) -> bool {
     says_of(words, answer, |sentence| names_card(sentence, item, job))
 }
@@ -215,6 +224,11 @@ pub(crate) fn skipped(what: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Whether `words` say `phrase` in a plain sentence.
+    fn says_plainly(words: &str, phrase: &str) -> bool {
+        plain_sentences(words).any(|sentence| says_words(&sentence, phrase))
+    }
 
     #[test]
     fn taskconv_28_a_number_names_only_its_whole_self() {
@@ -283,10 +297,17 @@ mod tests {
             "should I merge #3?",
             "Not merge #3 yet",
             "we won't merge #3",
+            "don´t merge #3",
+            "donʼt merge #3",
+            "don`t merge #3",
+            "Merge #4.Not #3.",
         ] {
             assert!(!names_merge(words, "o/r", 3, None), "{words}");
         }
         assert!(!names_merge("not merging #3 yet", "o/r", 3, None));
+        assert!(!names_merge("Merge #4.Never merge #3.", "o/r", 3, None));
+        assert!(names_merge("Merge #4.Never merge #3.", "o/r", 4, None));
+        assert!(!names_merge("Merge #4!Never merge #3", "o/r", 3, None));
         assert!(names_merge("merge #3", "o/r", 3, None));
         assert!(names_merge("Should I? Yes. Merge #3.", "o/r", 3, None));
         assert!(names_merge(
@@ -343,6 +364,40 @@ mod tests {
     }
 
     #[test]
+    fn taskconv_29_a_card_is_answered_only_by_a_plain_sentence_that_names_it() {
+        let merging = Job {
+            title: Some("Fix the footer".into()),
+            repo: "o/r".into(),
+            published: Some("https://github.com/o/r/pull/3".into()),
+            ..Job::default()
+        };
+        let card = Item {
+            kind: "merge".into(),
+            title: "Ready to merge: Fix the footer".into(),
+            ..Item::default()
+        };
+        let merge = |words| names_card_answer(words, "Merge", &card, Some(&merging));
+        assert!(!merge("Merge #4. Don't merge #3."));
+        assert!(!merge("merge it"));
+        assert!(merge("merge #3"));
+        assert!(merge("Merge Fix the footer."));
+        let asking = Job {
+            title: Some("Fix login".into()),
+            repo: "o/r".into(),
+            ..Job::default()
+        };
+        let permission = Item {
+            kind: "permission".into(),
+            title: "Fix login".into(),
+            ..Item::default()
+        };
+        let allow = |words| names_card_answer(words, "Allow", &permission, Some(&asking));
+        assert!(!allow("Allow me to explain."));
+        assert!(!allow("allow it"));
+        assert!(allow("Allow Fix login."));
+    }
+
+    #[test]
     fn taskconv_33_a_job_is_continued_or_changed_only_when_the_words_say_so() {
         let job = Job {
             title: Some("Fix login".into()),
@@ -371,16 +426,6 @@ mod tests {
     }
 
     #[test]
-    fn card_named_needs_the_answer_and_the_card() {
-        assert!(card_named(false, true, 1));
-        assert!(card_named(true, true, 2));
-        assert!(card_named(true, true, 0));
-        assert!(!card_named(false, true, 2));
-        assert!(!card_named(false, true, 0));
-        assert!(!card_named(true, false, 1));
-    }
-
-    #[test]
     fn act_on_skips_only_an_unnamed_call_after_a_read() {
         assert_eq!(act_on(true, true, false), Act::Skip);
         assert_eq!(act_on(true, true, true), Act::Now);
@@ -392,7 +437,7 @@ mod tests {
 #[cfg(test)]
 mod proofs {
     #![cfg(kani)]
-    //! Kani's proofs of the rule's two decisions, every input from `kani::any()`.
+    //! Kani's proofs of the rule's decision, [`act_on`], every input from `kani::any()`.
 
     use super::*;
 
@@ -408,21 +453,5 @@ mod proofs {
     fn taskconv_30_unsigned_words_always_confirm() {
         let (read, named): (bool, bool) = (kani::any(), kani::any());
         assert_eq!(act_on(false, read, named), Act::Confirm);
-    }
-
-    #[kani::proof]
-    fn taskconv_29_a_card_is_named_by_its_target_or_as_the_only_one() {
-        let (by_target, says_answer, waiting_here): (bool, bool, u32) =
-            (kani::any(), kani::any(), kani::any());
-        let named = card_named(by_target, says_answer, waiting_here);
-        if !says_answer {
-            assert!(!named);
-        }
-        if !by_target && waiting_here != 1 {
-            assert!(!named);
-        }
-        if says_answer && (waiting_here == 1 || by_target) {
-            assert!(named);
-        }
     }
 }

@@ -867,20 +867,14 @@ pub(super) async fn answer_inbox(
     let job = shared.jobs.get(&item.job);
     // One made since the turn began is one the owner hasn't seen: never theirs to settle by words.
     let mut owner = owners_word.is_some_and(|begun| item.created < begun);
-    // After an outside read, the owner's signed words settle a card they name; one they don't
-    // name isn't done, with no Confirm (TASKCONV-29).
+    // After an outside read, the owner's signed words settle a card only when one plain sentence
+    // says its answer and names it; one they don't name isn't done, with no Confirm (TASKCONV-29).
     let mut skip = false;
     if let Some((heard, begun)) = heard.filter(|_| owners_word.is_none())
         && NAMED_KINDS.contains(&item.kind.as_str())
         && item.options.contains(&words)
     {
-        use super::named::{card_named, names_card_answer, says_plainly};
-        let here = waiting_here(shared, &item, conversation, begun);
-        let named = card_named(
-            names_card_answer(heard, &words, &item, job.as_ref()),
-            says_plainly(heard, &words),
-            here,
-        );
+        let named = super::named::names_card_answer(heard, &words, &item, job.as_ref());
         (owner, skip) = (named && item.created < begun, !named);
     }
     match owners_call(&item, &words, job.as_ref(), owner) {
@@ -957,29 +951,6 @@ const NAMED_KINDS: [&str; 7] = [
     "confirm",
     "start",
 ];
-
-/// How many of `conversation`'s cards of `item`'s kind waited when the turn began (`begun`), when
-/// `item` is one of them; else 0. Counted as they were then, so a card the turn answers first
-/// doesn't leave another as the only one.
-fn waiting_here(shared: &Shared, item: &Item, conversation: &str, begun: i64) -> u32 {
-    let ours = |i: &Item| {
-        i.conversation().as_deref() == Some(conversation)
-            || shared
-                .jobs
-                .get(&i.job)
-                .is_some_and(|j| j.conversation.as_deref() == Some(conversation))
-    };
-    let waited = shared.link.waiting_at(begun);
-    let here: Vec<&Item> = waited
-        .iter()
-        .filter(|i| i.kind == item.kind && ours(i))
-        .collect();
-    if here.iter().any(|i| i.id == item.id) {
-        u32::try_from(here.len()).unwrap_or(u32::MAX)
-    } else {
-        0
-    }
-}
 
 /// Whether these words on a merge card are the owner's own Merge (MERGING-27). "Merge, and
 /// remember" stays the card's, which keeps what it remembers.
