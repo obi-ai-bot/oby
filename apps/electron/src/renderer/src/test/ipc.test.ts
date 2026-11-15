@@ -97,7 +97,8 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'pick-folders': { args: ['/tmp'], refusal: [] },
   obid: { args: ['GET', '/v1/status'], refusal: FORBIDDEN },
   'open-login-items': { args: [], refusal: undefined },
-  'obid-follow': { args: [], refusal: undefined },
+  'obid-snapshot': { args: [], refusal: null },
+  'obid-load': { args: [{ conversation: 'c1' }], refusal: null },
   'obid-confirm': { args: ['confirm-1', true], refusal: FORBIDDEN },
   'obid-pair-invite': { args: [], refusal: FORBIDDEN },
   'obid-publish': { args: ['j1', 'Publish this', {}], refusal: FORBIDDEN },
@@ -230,6 +231,10 @@ describe('IPC-3', () => {
     expect(await call('obid-limit-answer', own(), 'd1', 1, 'move', 5)).toEqual(FORBIDDEN);
     for (const choices of [null, [], { force: false }, { to: '' }, { other: true }]) {
       expect(await call('obid-publish', own(), 'j1', 'Publish this', choices), JSON.stringify(choices)).toEqual(FORBIDDEN);
+    }
+    // what main reads for the page: exactly one of a conversation, a job or the limit decisions
+    for (const what of [{}, { job: '' }, { limits: 1 }, { conversation: 'c1', job: 'j1' }, { conversation: 7 }, null, 'c1', [{ job: 'j1' }]]) {
+      expect(await call('obid-load', own(), what), JSON.stringify(what)).toBeNull();
     }
     // the Obysphere's rules: only a version the page read
     for (const version of ['0', 1.5, null, undefined]) expect(await call('sphere-set-policy', own(), version), String(version)).toBeNull();

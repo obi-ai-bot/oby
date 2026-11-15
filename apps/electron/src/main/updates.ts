@@ -1,8 +1,9 @@
-import { type BrowserWindow } from 'electron';
+import { net, type BrowserWindow } from 'electron';
 import updater from 'electron-updater';
 import type { CancellationToken } from 'electron-updater';
 import {
-  DEADLINES, EVERY, FEED, failure, next, onFeed, settings as updaterSettings, type BusyState, type Event, type Update,
+  DEADLINES, EVERY, FEED, FEED_PUBLIC_KEY, failure, next, onFeed, settings as updaterSettings, verifyFeed, type BusyState,
+  type Event, type Update,
 } from '../shared/updates';
 import { settings, writeSettings } from './settings';
 import type { Trusted } from './obid';
@@ -13,6 +14,9 @@ import { oneOf, orUndefined } from '../shared/decode';
 // zip for this Mac's architecture and refuses it unless its sha512 is latest-mac.yml's, and
 // Squirrel.Mac installs it only if its code signature meets this app's own designated requirement
 // (Deskree's Developer ID, this bundle ID); a file anywhere but FEED's host isn't fetched (onFeed).
+// Before an update counts as found, main reads latest-mac.yml once more and takes it only if
+// Deskree's key signed it, it's what electron-updater parsed, it's no older than the last one this
+// Mac took (settings.json's updatesIssued) and its version isn't under its own floor (verifyFeed).
 // What to do when is shared/updates.ts's; this carries it out, and tells About (Settings) what it
 // shows.
 const { autoUpdater } = updater;
@@ -71,9 +75,22 @@ export function updating(trusted: Trusted, current: () => BrowserWindow | null) 
   auto = settings().updatesAuto !== false;
   autoUpdater.setFeedURL({ provider: 'generic', url: FEED });
   Object.assign(autoUpdater, updaterSettings(auto));
-  // before an update counts as found: its files on FEED's host, then electron-updater's own check
+  // before an update counts as found: its files on FEED's host, the feed Deskree's (its bytes read
+  // again: electron-updater keeps none), then electron-updater's own check. A throw is the
+  // updater's 'error'.
   const supported = autoUpdater.isUpdateSupported;
-  autoUpdater.isUpdateSupported = (info) => { onFeed(info); return supported(info); };
+  autoUpdater.isUpdateSupported = async (info) => {
+    onFeed(info);
+    const res = await net.fetch(`${FEED}/latest-mac.yml`, { cache: 'no-store' });
+    if (res.status !== 200) throw new Error(`refused the feed: couldn't read it (${res.status})`);
+    const kept = settings().updatesIssued;
+    const { issued } = verifyFeed(Buffer.from(await res.arrayBuffer()), info, kept, FEED_PUBLIC_KEY);
+    // a Mac whose settings can't be written still takes it
+    if (issued !== kept) {
+      try { writeSettings({ updatesIssued: issued }); } catch (e) { console.warn('update:', 'couldn\'t keep updatesIssued', String(e)); }
+    }
+    return supported(info);
+  };
   const date = (d: unknown) => (typeof d === 'string' ? { date: d } : {});
   autoUpdater.on('update-not-available', () => on({ kind: 'none' }));
   autoUpdater.on('update-available', (i) => on({ kind: 'found', version: i.version, ...date(i.releaseDate) }));

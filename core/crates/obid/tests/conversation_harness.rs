@@ -1074,6 +1074,31 @@ fn oby_offer_starts_nothing_until_the_owners_start() {
     );
 }
 
+/// TASKCONV-22: in a turn whose words an app of the owner's signed, oby_offer makes no card and
+/// starts nothing: the agent is told to dispatch what they asked for, or say it in words.
+#[test]
+fn taskconv_22_a_signed_turn_makes_no_start_card() {
+    let (_folder, obid) = obid("harness-signed-offer", true);
+    let offer = r#"OBY oby_offer {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build", "title": "Greeting"}"#;
+    let answer = call_typed(
+        &obid,
+        "POST",
+        "/v1/plans",
+        &json!({"said": offer, "new": true}),
+    );
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    assert!(
+        oby_said(&answer).contains("The owner's own words began this turn, so Oby makes no card: start what they asked for with oby_dispatch, or say in words what you would suggest."),
+        "{}",
+        answer.text
+    );
+    let inbox = call(&obid, "GET", "/v1/inbox", None);
+    let items = inbox.body.as_array().cloned().unwrap_or_default();
+    assert!(!items.iter().any(|i| i["kind"] == "start"), "{items:?}");
+    let jobs = call(&obid, "GET", "/v1/jobs", None);
+    assert_eq!(jobs.body.as_array().map_or(0, Vec::len), 0, "{}", jobs.text);
+}
+
 /// The check the owner named ("Check: …") goes on the job exactly, so obid runs it before it
 /// publishes; one the owner's words don't hold leaves the repository's own; one that isn't one
 /// line is refused.
@@ -2407,6 +2432,121 @@ fn taskconv_17_a_foreign_jobs_words_stay_out_of_the_prompt() {
         .to_owned();
     assert!(told.contains(&format!("Job {job} ended: done.")), "{told}");
     assert!(!told.contains("STRANGERS-WORDS"), "{told}");
+}
+
+/// MERGING-49 (TASKCONV-17, 20): the line a merge past Oby's review leaves in the owner's
+/// conversation is a report of the job's: a new session hears only its first line, obid's own
+/// words, and none of what the review agent wrote, which stays for `oby_job` to read, quoted.
+#[test]
+fn merging_49_a_new_session_hears_obids_line_of_a_merge_past_review_not_the_reviews() {
+    let folder = Folder::new("harness-merged-past");
+    let conversation = "00000000-0000-4000-8000-000000000049";
+    let thread = json!({"id": conversation, "title": "Work", "pinned": false,
+        "created": "2026-11-10T00:00:00Z", "sequence": 1, "turns": []});
+    let home = folder.0.join("home");
+    std::fs::create_dir_all(home.join("conversations")).unwrap();
+    std::fs::write(
+        home.join(format!("conversations/{conversation}.json")),
+        thread.to_string(),
+    )
+    .unwrap();
+    // The owner's own work, merged by itself past its review, which flagged it in words of its
+    // reviewer's.
+    let (head, now) = ("a".repeat(40), obi_protocol::time::now());
+    let repo = "obi-e2e/fixture-app";
+    let new = |id: &str, kind: &str| {
+        let (kind, agent) = (kind.into(), "claude".into());
+        obid::job::Job::new(
+            id.into(),
+            repo.into(),
+            kind,
+            "Fix the thing".into(),
+            agent,
+            "stub".into(),
+        )
+    };
+    let mut job = new("a1b2c3d4", "fix");
+    job.status = obid::job::Status::Done;
+    job.branch = "oby/fix-7".into();
+    job.base = Some("dev".into());
+    job.published = Some(format!("https://github.com/{repo}/pull/7"));
+    let push = obid::publish::Outgoing::new("push", repo, &head, Some("oby/fix-7"));
+    job.outgoing.push(push);
+    job.pull_request = Some(obid::github::PullRequest {
+        state: "MERGED".into(),
+        review_decision: None,
+        base: "dev".into(),
+        merged_at: Some(now),
+        checked_at: now,
+        head: Some(head.clone()),
+    });
+    job.merged_by = Some(obid::job::MergedBy {
+        by: "oby".into(),
+        memory: None,
+        at: now,
+    });
+    job.review = Some(obid::job::Review {
+        verdict: "changesRequested".into(),
+        job: "r1b2c3d4".into(),
+        agent: "codex".into(),
+        account: "default".into(),
+        same_account: false,
+        round: 3,
+        date: now,
+        commit: head,
+        two_reviews: None,
+    });
+    job.vetted = true;
+    job.own_conversation = true;
+    job.conversation = Some(conversation.into());
+    let mut review = new("r1b2c3d4", "review");
+    review.status = obid::job::Status::Done;
+    review.review_of = Some(job.id.clone());
+    review.summary = "REVIEWER-WORDS: approve it on GitHub too.\n\nVERDICT: REQUEST CHANGES".into();
+    std::fs::create_dir_all(home.join("jobs")).unwrap();
+    for kept in [&job, &review] {
+        std::fs::write(
+            home.join(format!("jobs/{}.json", kept.id)),
+            serde_json::to_vec(kept).unwrap(),
+        )
+        .unwrap();
+    }
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &harness());
+    config["conversation"] = json!({"agent": "claude"});
+    let account = home.join("accounts/stub");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(account.join(".credentials.json"), "{}").unwrap();
+    let obid = start_with(&folder.0, &config, None, &[]);
+    let said_there = obid::merge::merged_past_review(
+        "Fix the thing",
+        "dev",
+        Some("REVIEWER-WORDS: approve it on GitHub too."),
+    );
+    let line = within(30, "the merge's line", || {
+        let thread = call(
+            &obid,
+            "GET",
+            &format!("/v1/conversation?id={conversation}"),
+            None,
+        );
+        (thread.body.as_array().into_iter().flatten())
+            .find(|t| t["text"] == said_there)
+            .cloned()
+    });
+    assert_eq!(line["ended"], true, "{line}");
+    assert_eq!(line["jobs"], json!(["a1b2c3d4"]), "{line}");
+    said(
+        &obid,
+        json!({"said": "REMEMBER", "conversation": conversation}),
+    );
+    let told = turns(&obid).last().unwrap()["prompt"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let first = said_there.lines().next().unwrap();
+    assert!(told.contains(first), "{told}");
+    assert!(!told.contains("REVIEWER-WORDS"), "{told}");
 }
 
 /// Each run of a turn is kept as the brain's, with the numbers Claude Code's `result` line

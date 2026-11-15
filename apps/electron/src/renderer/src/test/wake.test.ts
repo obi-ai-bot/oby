@@ -40,7 +40,8 @@ vi.mock('electron', async () => {
     screen: { getCursorScreenPoint: () => ({ x: 0, y: 0 }) }, shell: {},
   };
 });
-vi.mock('../../../main/obid', () => ({ bridge() {}, startObid() {}, stopFollowing() {}, obid: async () => ({ status: 200, text: '{}' }) }));
+vi.mock('../../../main/obid', () => ({ bridge() {}, startObid() {}, obid: async () => ({ status: 200, text: '{}' }) }));
+vi.mock('../../../main/live', () => ({ living() {} }));
 vi.mock('../../../main/device', () => ({ confirming() {}, ownersWords() {}, keptKey() {} }));
 vi.mock('../../../main/words', () => ({ input() {}, space() {}, picked() {} }));
 vi.mock('../../../main/notify', () => ({ notifying() {}, windowLeft() {}, windowSeen() {} }));

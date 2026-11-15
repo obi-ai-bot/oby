@@ -25,7 +25,17 @@ that changes the tool is checked by the installed one until it's merged and inst
 `OBY_CHECK_WORKFLOW` or the pipelines editor's saved copy, and writes no journal. Planning stays in
 `scripts/oby-check.sh`: `OBY_CHECK_PLAN=1` with `OBY_CHECK_ONLY=rust|electron|swift|factory|scan`
 selects its groups, and a plan says `oby-check: group <group>` once per group with work, the host's
-only selection signal. Then five typed nodes, `rust-affected-tests`, `swift-tests`, `ts-checks`,
+only selection signal. `OBY_CHECK_SHARD=<k>/<n>` (k and n decimal with no leading zero, 1 ≤ k ≤ n ≤ 64)
+narrows the rust group alone to shard k of n, for the factory's gate ([remote gate](../contracts/remote-gate.md),
+REMOTE-58 to 65): the checked tree's `core/crates/obid/tests/*.rs`, ranked by `wc -l`, most lines first, ties by
+path in `LC_ALL=C` order, are dealt round-robin, the file at 0-based position i to shard (i mod n) + 1, and the
+shard runs only the planned `--test` binaries it holds (a binary a job's box leaves unjudged counts only in its
+own shard); the rest of the rust group (`oby-check-test.sh`, the limits, AGENTS.md's rules, `oby-check-blok`'s
+and obid's fmt and clippy, obid's lib tests, the other crates' tests) runs only in shard 1. The swift,
+electron, factory and scan groups ignore it, and `OBY_CHECK_PLAN=1` shows the shard's selection: a later
+shard with nothing to run has no `oby-check: group rust` line and passes. Any other non-empty value ends
+2 with `oby-check: invalid OBY_CHECK_SHARD` on stderr and nothing run, checked before the hand-off to
+`oby-check-blok`; unset or empty, the check is as without it. Then five typed nodes, `rust-affected-tests`, `swift-tests`, `ts-checks`,
 `factory-tests` and `secret-scan`, run the planned groups one at a time (to limit memory), each
 through the script with `OBY_CHECK_ONLY` and `OBY_CHECK_INNER=1`; `OBY_CHECK_PATHS` and
 `OBY_CHECK_ALL` reach them. The `factory` group runs `python3 -m unittest discover -s factory/tests`,

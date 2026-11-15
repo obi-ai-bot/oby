@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { liveBridge } from './liveBridge';
 
 // ATTACH-10, ATTACH-15, ATTACH-16 (docs/contracts/attachments.md): the message box's files reach obid. Each file is
 // uploaded first (POST /v1/attachments), then the words go with the paths obid kept, the tasks
@@ -27,9 +28,11 @@ async function load(answer: (c: Call, n: number) => { status: number; body?: unk
     const a = answer(c, calls.filter((x) => x.method === method && x.path === path).length);
     return { status: a.status, text: a.body === undefined ? '' : JSON.stringify(a.body) };
   };
-  vi.stubGlobal('window', { app: { obid: { call, confirm: async () => ({ status: 200, text: '{}' }) } } });
+  vi.stubGlobal('window', { app: { obid: { call, confirm: async () => ({ status: 200, text: '{}' }), ...liveBridge(call).obid } } });
   const live = await import('../live');
   const chats = await import('../chats');
+  // what main sends the page (a conversation's turns it read) reaches it
+  live.connect();
   return { live, chats };
 }
 const plans = () => calls.filter((c) => c.path === '/v1/plans');

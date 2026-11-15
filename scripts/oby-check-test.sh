@@ -1075,6 +1075,141 @@ wait "$flipper" 2>/dev/null || true
 }
 rm -r rel planted
 
+# The gate's shards (docs/contracts/remote-gate.md, REMOTE-58 to 60), on the commit's own copy of the
+# script (the base's copy a job's check installs may predate OBY_CHECK_SHARD), committed here as the
+# base within its limits. Seven test files, ranked by lines: a 7, b 6, c 5, d 4, e 3 and f 3 (a tie,
+# by path), g 1.
+printf '%s\n' "$committed_script" >scripts/oby-check.sh
+agents_md_at_limit
+for file in a:7 b:6 c:5 d:4 e:3 f:3 g:1; do code "core/crates/obid/tests/${file%:*}.rs" "${file#*:}"; done
+commit 'the shards'
+shard_paths=$(printf 'core/crates/obid/tests/%s.rs\n' a b c d e f g)
+shard_plan() { # shard, then OBY_CHECK_PATHS: the rust group's plan, the shard unset when empty
+    env OBY_CHECK_PATHS="${2:-$shard_paths}" OBY_CHECK_ONLY=rust ${1:+OBY_CHECK_SHARD=$1} OBY_CHECK_PLAN=1 \
+        scripts/oby-check.sh HEAD 2>&1
+}
+binaries_in() { # a plan: the --test names of its test_binaries step, one a line, sorted
+    sed -n 's/^==> test_binaries //p' <<<"$1" | tr ' ' '\n' | grep -v '^--test$' | LC_ALL=C sort || true
+}
+unsharded=$(binaries_in "$(shard_plan '')")
+[[ "$unsharded" == "$(printf '%s\n' a b c d e f g)" ]] || { ran=$unsharded; wrong 'REMOTE-58: the unsharded plan did not plan the seven binaries'; }
+# Dealt round-robin over the ranking: n = 2 and n = 3, each binary in exactly one shard, the shards
+# together the unsharded set.
+for want in '2 a,c,e,g b,d,f' '3 a,d,g b,e c,f'; do
+    n=${want%% *}
+    dealt=''
+    k=0
+    for members in ${want#* }; do
+        k=$((k + 1))
+        said=$(shard_plan "$k/$n")
+        got=$(binaries_in "$said")
+        [[ "$got" == "$(tr ',' '\n' <<<"$members")" ]] || { ran=$said; wrong "REMOTE-58: shard $k/$n planned $(tr '\n' ' ' <<<"$got")not $members"; }
+        dealt+="$got"$'\n'
+        # Only shard 1 plans fmt, clippy, the lib tests and the limits.
+        if ((k == 1)); then
+            grep -q '^==> cargo --quiet fmt ' <<<"$said" && grep -q '^==> cargo --quiet clippy ' <<<"$said" &&
+                grep -q 'production lines outside the Sphere' <<<"$said" || { ran=$said; wrong "REMOTE-58: shard 1/$n did not plan fmt, clippy and the limits"; }
+        else
+            ! grep -q '^==> cargo \|Sphere\|AGENTS.md has' <<<"$said" || { ran=$said; wrong "REMOTE-58: shard $k/$n planned fmt, clippy or the limits"; }
+        fi
+    done
+    [[ "$(LC_ALL=C sort <<<"${dealt%$'\n'}")" == "$unsharded" ]] || { ran=$dealt; wrong "REMOTE-58: the $n shards together are not the unsharded set, each binary once"; }
+done
+# The lib tests are shard 1's.
+lib_paths=$(printf '%s\ncore/crates/obid/src/facts.rs\n' "$shard_paths")
+grep -q -- '--lib -- facts::$' <<<"$(shard_plan 1/2 "$lib_paths")" || { ran=$(shard_plan 1/2 "$lib_paths"); wrong 'REMOTE-58: shard 1/2 did not plan the lib tests'; }
+! grep -q -- '--lib' <<<"$(shard_plan 2/2 "$lib_paths")" || { ran=$(shard_plan 2/2 "$lib_paths"); wrong 'REMOTE-58: shard 2/2 planned the lib tests'; }
+# A binary's shard is the same whatever else is planned.
+[[ "$(binaries_in "$(shard_plan 2/2 "$(printf 'core/crates/obid/tests/%s.rs\n' b f)")")" == "$(printf '%s\n' b f)" ]] &&
+    [[ -z "$(binaries_in "$(shard_plan 1/2 "$(printf 'core/crates/obid/tests/%s.rs\n' b f)")")" ]] ||
+    wrong 'REMOTE-58: a smaller planned subset moved a binary to another shard'
+# 1/1 plans exactly what the unset variable plans, the whole check's groups too.
+[[ "$(OBY_CHECK_PATHS=$lib_paths OBY_CHECK_SHARD=1/1 OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)" == \
+    "$(OBY_CHECK_PATHS=$lib_paths OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)" ]] ||
+    wrong 'REMOTE-58: OBY_CHECK_SHARD=1/1 planned other than the unset variable'
+# Shard 2/2 with none of its binaries planned has no rust group, and its run passes.
+said=$(shard_plan 2/2 core/crates/obid/tests/a.rs)
+! grep -qx 'oby-check: group rust' <<<"$said" || { ran=$said; wrong 'REMOTE-58: a shard with nothing to run planned the rust group'; }
+ran=$(run OBY_CHECK_ONLY=rust OBY_CHECK_SHARD=2/2 OBY_CHECK_PATHS=core/crates/obid/tests/a.rs) && grep -qx 'oby-check: passed' <<<"$ran" ||
+    wrong 'REMOTE-58: a shard with nothing to run did not pass'
+# In a job's box, a binary that can't run there is left unjudged only in its own shard: sandbox.rs, 5
+# lines, ties c.rs and ranks fourth of eight, so it is shard 2/2's.
+code core/crates/obid/tests/sandbox.rs 5
+judge="couldn't judge: tests/sandbox.rs makes a sandbox of its own and can't run in a job's; run the check on the Mac outside a job"
+said=$(OBY_CHECK_PATHS=core/crates/obid/tests/sandbox.rs OBY_CHECK_ONLY=rust OBY_CHECK_SHARD=2/2 nested)
+grep -qxF "$judge" <<<"$said" && grep -qx 'oby-check: group rust' <<<"$said" || { ran=$said; wrong 'REMOTE-58: nested, the shard holding tests/sandbox.rs did not leave it unjudged'; }
+said=$(OBY_CHECK_PATHS=core/crates/obid/tests/sandbox.rs OBY_CHECK_ONLY=rust OBY_CHECK_SHARD=1/2 nested)
+! grep -q 'sandbox' <<<"$said" || { ran=$said; wrong 'REMOTE-58: nested, a shard without tests/sandbox.rs counted it'; }
+rm core/crates/obid/tests/sandbox.rs
+
+# REMOTE-59: a failing binary turns its own shard red, and only its own. Each binary is a stand-in that
+# fails when OBY_FAKE_RED names it.
+cat >"$fake/red" <<'STANDIN'
+#!/bin/bash
+name=${0##*/}
+name=${name%-*}
+if [[ "$OBY_FAKE_RED" == "$name" ]]; then
+    printf 'test result: FAILED. 0 passed; 1 failed\n'
+    exit 101
+fi
+printf 'test result: ok. 1 passed\n'
+STANDIN
+chmod +x "$fake/red"
+for name in a b c d e f g; do cp "$fake/red" "$fake/$name-0123abcd"; done
+shard_run() { # shard, then settings: the rust group's run of the seven binaries
+    local shard=$1
+    shift
+    run OBY_CHECK_ONLY=rust OBY_CHECK_SHARD="$shard" OBY_CHECK_PATHS="$shard_paths" "$@"
+}
+for want in '2 a,c,e,g b,d,f' '3 a,d,g b,e c,f'; do
+    n=${want%% *}
+    k=0
+    for members in ${want#* }; do
+        k=$((k + 1))
+        for red in ${members//,/ }; do
+            ran=$(shard_run "$k/$n" OBY_FAKE_RED="$red") && wrong "REMOTE-59: shard $k/$n passed with tests/$red.rs failing"
+            grep -qxF "oby-check: tests/$red.rs failed" <<<"$ran" || wrong "REMOTE-59: shard $k/$n did not name tests/$red.rs"
+            for ((other = 1; other <= n; other++)); do
+                ((other == k)) && continue
+                ran=$(shard_run "$other/$n" OBY_FAKE_RED="$red") || wrong "REMOTE-59: shard $other/$n failed with tests/$red.rs, shard $k/$n's, failing"
+            done
+        done
+        ran=$(shard_run "$k/$n") && grep -qx 'oby-check: passed' <<<"$ran" || wrong "REMOTE-59: shard $k/$n failed with no binary failing"
+    done
+done
+# A listed flaky test (the flaky list's obid::flaky listed_test) that passes its retry passes in its
+# shard: flaky.rs, 8 lines, ranks first, so it is shard 1/2's.
+cp "$fake/libtest" "$fake/flaky-0123abcd"
+code core/crates/obid/tests/flaky.rs 8
+rm -f "$calls"
+ran=$(run OBY_CHECK_ONLY=rust OBY_CHECK_SHARD=1/2 OBY_CHECK_PATHS=core/crates/obid/tests/flaky.rs OBY_FAKE_CALLS="$calls" \
+    OBY_FAKE_FAILS=listed_test OBY_FAKE_ONCE=1) || wrong 'REMOTE-59: a listed flaky test that passed its retry failed its shard'
+grep -qxF 'retried flaky: obid::flaky listed_test' <<<"$ran" && [[ $(runs) == 2 ]] ||
+    wrong 'REMOTE-59: a listed flaky test that failed once was not retried in its shard'
+rm -f "$calls"
+ran=$(run OBY_CHECK_ONLY=rust OBY_CHECK_SHARD=2/2 OBY_CHECK_PATHS=core/crates/obid/tests/flaky.rs OBY_FAKE_CALLS="$calls" \
+    OBY_FAKE_FAILS=listed_test) && [[ ! -f "$calls" ]] || wrong 'REMOTE-59: the shard without tests/flaky.rs ran it'
+rm core/crates/obid/tests/flaky.rs "$fake/flaky-0123abcd"
+
+# REMOTE-60: an invalid shard ends 2 with nothing run, before oby-check-blok's hand-off too.
+for shard in 0/2 3/2 1/65 01/2 a/b 1 1/ /2 '1/2 ' 2/1; do
+    for how in inner handed; do
+        if [[ $how == inner ]]; then
+            said=$(OBY_CHECK_SHARD=$shard OBY_CHECK_ONLY=rust scripts/oby-check.sh HEAD 2>&1) && status=0 || status=$?
+        else
+            said=$(handed PATH="$blok/bin:$bare" OBY_CHECK_SHARD="$shard" ./oby-check.sh HEAD) && status=0 || status=$?
+        fi
+        [[ $status == 2 && "$said" == 'oby-check: invalid OBY_CHECK_SHARD' ]] ||
+            { ran=$said; wrong "REMOTE-60: OBY_CHECK_SHARD=$shard ($how) exited $status"; }
+    done
+done
+for shard in 1/1 64/64 1/64; do
+    OBY_CHECK_SHARD=$shard OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD >/dev/null 2>&1 || wrong "REMOTE-60: OBY_CHECK_SHARD=$shard was refused"
+done
+git rm --quiet core/crates/obid/tests/[a-g].rs
+for name in a b c d e f g; do rm "$fake/$name-0123abcd"; done
+commit 'no shards'
+
 # CI-35: OBY_CHECK_ONLY=limits, GitHub's `limits` job, judges the line limits alone on the commit,
 # whatever changed since its base: committed here, measured against HEAD, the diff is empty. On the
 # commit's own copy of the script (the base's copy a job's check installs may predate the mode).

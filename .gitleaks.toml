@@ -11,3 +11,8 @@ regexes = ['''^\w{1,3}\.anchor\.key,\w{1,3}=\w{1,3}\.focus\.key;?$''']
 description = "The push relay's published test vector (docs/remote-access.md, Pushes; test/push.test.ts): a pushSecret and pushKey made from a test-only PUSH_SECRET_KEY, exactly these two values"
 regexTarget = "secret"
 regexes = ['''^7x-XJBtltDkgComjTzh2aougWSW5C4fOPr7MutSocH4$''', '''^vx_9SyYw9p7qPCxR8xHlDF8WlTOsR_LRA67SHhzpTHM$''']
+
+[[allowlists]]
+description = "Deskree's public key for the update feed (apps/electron/src/shared/updates.ts, FEED_KEY; docs/contracts/updates.md, Signed by Deskree): a public key, exactly this value"
+regexTarget = "secret"
+regexes = ['''^MCowBQYDK2VwAyEA2PAZCZ8StseJm63/g0XJWsvq0r0iprM7HHTd3SRkihI=$''']

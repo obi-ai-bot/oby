@@ -1,5 +1,5 @@
 {
-  "concurrency": 12,
+  "concurrency": 36,
   "max_rounds": 3,
   "base_branch": "dev",
   "merge_method": "squash",
@@ -29,5 +29,6 @@
     "claude-haiku-5-5":  { "input": 0.10, "output": 0.50, "cache_write_5m": 0.125, "cache_write_1h": 0.20, "cache_read": 0.01 }
   },
   "remote_gate": { "ssh_host": "oby-gate", "resource_group": "oby-factory", "vm": "oby-gate", "slots": 4, "builder_slots": 8 },
+  "gate_shards": { "linux": 4, "mac": 2 },
   "mac_worker": { "ssh_host": "oby-mac-pro", "builder_slots": 2 }
 }
