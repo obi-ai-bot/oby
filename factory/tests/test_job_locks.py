@@ -20,9 +20,11 @@ from pathlib import Path
 
 FACTORY = Path(__file__).resolve().parents[1]
 JOB_ID = "001-a00-16-something"
+HEAD = "a" * 40
 
-# The module imported as factory/bin/oby-feed imports it; `read` calls all_jobs(), `update` holds load_for_update
-# until a line comes on stdin and then saves a field of its own. Either says `ready` and stays running.
+# The module imported as factory/bin/oby-feed imports it; `read` calls all_jobs(), `save` saves a job it read
+# without the lock and prints the refusal, `update` holds load_for_update until a line comes on stdin and then saves
+# a field of its own. Each says `ready` and stays running.
 HOLDER = """import importlib.machinery, importlib.util, sys
 loader = importlib.machinery.SourceFileLoader("factory_job", sys.argv[1])
 spec = importlib.util.spec_from_loader("factory_job", loader)
@@ -30,6 +32,11 @@ job = importlib.util.module_from_spec(spec)
 loader.exec_module(job)
 if sys.argv[2] == "read":
     job.all_jobs()
+elif sys.argv[2] == "save":
+    try:
+        job.save(job.load(sys.argv[3]))
+    except RuntimeError as e:
+        print(e, flush=True)
 else:
     with job.load_for_update(sys.argv[3]) as j:
         print("locked", flush=True)
@@ -62,8 +69,14 @@ class JobLocks(unittest.TestCase):
         (self.dir / "claude").mkdir()
         path_dir = self.dir / "path"
         path_dir.mkdir()
-        gh = path_dir / "gh"  # a stand-in that says every PR is merged
+        graphql = self.dir / "graphql.json"  # PR 7 as GitHub's merge queue holds it
+        graphql.write_text(json.dumps({"data": {"repository": {"pullRequest": {
+            "state": "OPEN", "isDraft": False, "headRefOid": HEAD, "mergeStateStatus": "BLOCKED",
+            "isInMergeQueue": True, "autoMergeRequest": {"enabledAt": "2026-01-01T00:00:00Z"},
+            "timelineItems": {"nodes": []}}}}}))
+        gh = path_dir / "gh"  # a stand-in that says every PR is merged, and PR 7 in the merge queue
         gh.write_text('#!/bin/sh\ncase "$*" in\n    "pr view 7 --json state") echo \'{"state":"MERGED"}\' ;;\n'
+                      f'    "api graphql "*) cat {graphql} ;;\n'
                       '    *) echo "stand-in gh: unexpected: $*" >&2; exit 1 ;;\nesac\n')
         gh.chmod(0o755)
         self.env = {
@@ -137,6 +150,45 @@ class JobLocks(unittest.TestCase):
         self.assertNotIn("stand-in gh: unexpected", err)
         job = self.saved()
         self.assertEqual((job["stage"], job.get("note")), ("merged", "kept"))
+
+    def test_joblock_2_job_queue_settling_a_queued_job_waits_for_a_change_and_keeps_both(self):
+        job = self.saved()
+        old = "2026-01-01T00:00:00Z"
+        job.update(stage="queued", pr=7, queue={"head": HEAD, "since": old, "read": old, "requeued": False})
+        (self.job_dir / "job.json").write_text(json.dumps(job, indent=2) + "\n")
+        first = self.holder("update", JOB_ID)
+        self.assertEqual(first.stdout.readline(), "locked\n")
+        queue = subprocess.Popen([str(self.job), "queue"], cwd=self.repo, env=self.env,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(1)
+        self.assertIsNone(queue.poll(), "job queue waits for the change holding the job")
+        first.stdin.write("\n")
+        first.stdin.flush()
+        self.assertEqual(first.stdout.readline(), "ready\n")
+        out, err = queue.communicate(timeout=30)
+        self.assertEqual(queue.returncode, 0, err)
+        self.assertNotIn("stand-in gh: unexpected", err)
+        job = self.saved()
+        self.assertEqual((job["stage"], job.get("note")), ("queued", "kept"))
+        self.assertNotEqual(job["queue"]["read"], old, "job queue saved its own read of the PR too")
+
+    def test_joblock_2_a_save_outside_load_for_update_is_refused(self):
+        before = (self.job_dir / "job.json").read_text()
+        p = self.holder("save", JOB_ID)
+        self.assertEqual(p.stdout.readline(), f"{JOB_ID}: job.json is written only inside load_for_update()\n")
+        self.assertEqual(p.stdout.readline(), "ready\n")
+        self.assertEqual((self.job_dir / "job.json").read_text(), before)
+
+    def test_joblock_2_job_create_saves_the_new_job_under_its_lock(self):
+        tasks = self.repo / "factory" / "queue" / "tasks"
+        tasks.mkdir(parents=True)
+        (tasks / "A00-17.md").write_text("KEY: A00-17\nTITLE: fix: another\nDEPENDS: none\n\nAnother task.\n")
+        res = subprocess.run([str(self.job), "create", "A00-17"], cwd=self.repo, env=self.env,
+                             capture_output=True, text=True, timeout=30)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        new = self.repo / "factory" / "jobs" / res.stdout.strip()
+        self.assertEqual(json.loads((new / "job.json").read_text())["stage"], "intake")
+        self.assertTrue((new / ".lock").exists(), "the first save took the new job's lock")
 
     def test_joblock_3_a_change_releases_its_lock_when_it_ends(self):
         with self.subTest("a process that goes on running"):

@@ -110,12 +110,14 @@ stays a draft until the approver says APPROVE; then GitHub merges it, and the jo
 while GitHub's merge queue holds it.
 
 Reading a job takes no lock (`bin/job` writes `job.json` whole, by renaming a temporary file), so `job queue`,
-the slot count and a long-running importer such as `bin/oby-feed` never hold one. Only a command that changes a
-job (`advance`, `merge`, `answer`, `feedback`, `reject`, `agents`, `sync`) holds that job's lock, while it reads,
-decides and saves, and lets it go when it ends, a refusal included. When merging `dev` into a job's branch brings
+the slot count and a long-running importer such as `bin/oby-feed` never hold one. Every write of `job.json` holds
+that job's lock: a command that changes a job (`create`, `advance`, `merge`, `answer`, `feedback`, `reject`,
+`agents`, `sync`, and `queue` for a queued or merged job) holds it while it reads, decides and saves, and lets it
+go when it ends, a refusal included; a save outside the lock is refused. When merging `dev` into a job's branch brings
 `queue/tasks/<KEY>.md` back next to its `queue/done/<KEY>.md`, `job advance <job> gate` closes the task again in a
 commit of its own, with `dev`'s text of the task. It pushes that only when origin already had the branch at
-its head, so nothing leaves but a deletion and text already on origin; an unpushed branch keeps the commit and is
+its head, and only once gitleaks, as `bin/test-run` runs it, passed the commit's diff: a finding, or a scanner
+that can't run, refuses the advance and pushes nothing. An unpushed branch keeps the commit and is
 refused as unpushed, for the builder to push. A branch with no `done/` copy, or one whose
 `tasks/` file differs from `dev`'s, is refused as before.
 

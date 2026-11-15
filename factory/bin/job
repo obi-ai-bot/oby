@@ -132,17 +132,27 @@ def load(job_id):
     return json.loads(path.read_text())
 
 
+_locked = set()  # the jobs whose lock this process holds, inside load_for_update
+
+
 @contextmanager
-def load_for_update(job_id):
+def load_for_update(job_id, new=None):
     """A job (its id or task key) read under its lock, held only until the block ends, a refusal included:
-    two changes to one job wait for each other, and a reader never waits."""
-    job_id = resolve(job_id)["id"]
+    two changes to one job wait for each other, and a reader never waits. A job being created is `new`."""
+    job_id = new["id"] if new else resolve(job_id)["id"]
     with open(job_dir(job_id) / ".lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        yield load(job_id)
+        _locked.add(job_id)
+        try:
+            yield new or load(job_id)
+        finally:
+            _locked.discard(job_id)
 
 
 def save(job):
+    """Write job.json, only inside load_for_update: every write holds the job's lock."""
+    if job["id"] not in _locked:
+        raise RuntimeError(f"{job['id']}: job.json is written only inside load_for_update()")
     path = job_dir(job["id"]) / "job.json"
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(job, indent=2) + "\n")
@@ -460,9 +470,9 @@ def check_task_closed(job):
 def reclose_task(job):
     """Merging the base brought the task's file back next to its closed copy: close it again, with the base's
     text. A branch whose tasks/ file differs from the base's is left for check_task_closed.
-    It pushes only a branch origin already has at HEAD: then what leaves is a deletion and the base's own text,
-    both on origin already, so nothing the secret scan hasn't passed goes out. Otherwise the commit stays here
-    and the gate refuses the unpushed branch, for the builder to push as it pushes everything else."""
+    It pushes only a branch origin already has at HEAD, and only once the secret scan passed what leaves: a scan
+    that finds a secret or can't run refuses the advance. Otherwise the commit stays here and the gate refuses
+    the unpushed branch, for the builder to push as it pushes everything else."""
     key = job["issue"]
     done, todo = f"factory/queue/done/{key}.md", f"factory/queue/tasks/{key}.md"
     if not (in_head(job, done) and in_head(job, todo)):
@@ -478,7 +488,21 @@ def reclose_task(job):
     git(job, "add", done)
     git(job, "commit", "-q", "-m", f"chore(factory): close {key} again after merging {BASE}")
     if pushed:
+        secret_scan(git(job, "diff", "--binary", "--full-index", remote, "HEAD").stdout)
         git(job, "push", "origin", job["branch"])
+
+
+def secret_scan(diff):
+    """factory/bin/test-run's scan of what leaves: `gitleaks stdin` with the main checkout's .gitleaks.toml.
+    A finding, or a scanner that can't run, refuses."""
+    try:
+        found = subprocess.run(["gitleaks", "stdin", "--config", str(REPO / ".gitleaks.toml"), "--no-banner",
+                                "--redact"], input=diff, capture_output=True, text=True)
+    except OSError as e:
+        raise Refused(f"the secret scan couldn't run, so nothing was pushed: {e}")
+    require(found.returncode == 0, "the secret scan found a secret in the changes, or couldn't run "
+                                   f"(gitleaks exit {found.returncode}), so nothing was pushed: "
+                                   + (found.stdout + found.stderr).strip())
 
 
 def check_reviews_done(job):
@@ -733,7 +757,8 @@ def cmd_create(key):
         "cost_usd": 0.0, "started": now(), "ended": None,
     }
     write_issue_md(job, task)
-    save(job)
+    with load_for_update(job_id, new=job) as job:
+        save(job)
     print(job_id)
 
 

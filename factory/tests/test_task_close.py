@@ -3,14 +3,17 @@
 
 Run from the repository root: python3 factory/tests/test_task_close.py
 Each test builds a throwaway bare `origin` and a job worktree cloned from it, beside a copy of factory/bin/job and
-the real factory/config.json. The job is in `build` with a PR already, so the advance calls no `gh`. dev adds
-factory/queue/tasks/A00-16.md after the branch began, and the branch merges dev, as a builder does.
+the real factory/config.json and .gitleaks.toml. The job is in `build` with a PR already, so the advance calls no
+`gh`; a push runs the real gitleaks. dev adds factory/queue/tasks/A00-16.md after the branch began, and the branch
+merges dev, as a builder does.
 """
 
+import hashlib
 import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -32,6 +35,7 @@ class TaskClose(unittest.TestCase):
         self.job = self.repo / "factory" / "bin" / "job"
         shutil.copy2(FACTORY / "bin" / "job", self.job)
         shutil.copy2(FACTORY / "config.json", self.repo / "factory" / "config.json")
+        shutil.copy2(FACTORY.parent / ".gitleaks.toml", self.repo / ".gitleaks.toml")
         self.wt = self.dir / "worktree"
         self.branch = f"factory/{JOB_ID}"
         self.job_dir = self.repo / "factory" / "jobs" / JOB_ID
@@ -76,11 +80,11 @@ class TaskClose(unittest.TestCase):
         self.git(self.wt, "add", "-A")
         self.git(self.wt, "commit", "-q", "-m", subject)
 
-    def dev_queues_the_task_and_the_branch_merges_it(self):
+    def dev_queues_the_task_and_the_branch_merges_it(self, task=TASK):
         """dev adds tasks/<KEY>.md after the branch began; the branch merges dev and pushes."""
         self.git(self.wt, "push", "-q", "origin", self.branch)
         self.git(self.wt, "checkout", "-q", "dev")
-        self.write(TODO, TASK)
+        self.write(TODO, task)
         self.commit(f"chore(factory): queue {KEY}")
         self.git(self.wt, "push", "-q", "origin", "dev")
         self.git(self.wt, "checkout", "-q", self.branch)
@@ -90,8 +94,8 @@ class TaskClose(unittest.TestCase):
     def push(self):
         self.git(self.wt, "push", "-q", "origin", self.branch)
 
-    def advance(self):
-        return subprocess.run([str(self.job), "advance", JOB_ID, "gate"], cwd=self.repo, env=self.env,
+    def advance(self, env=None):
+        return subprocess.run([str(self.job), "advance", JOB_ID, "gate"], cwd=self.repo, env=env or self.env,
                               capture_output=True, text=True, timeout=60)
 
     def in_head(self, path):
@@ -138,6 +142,41 @@ class TaskClose(unittest.TestCase):
         self.assertEqual(self.git(self.wt, "log", "-1", "--format=%s").strip(),
                          f"chore(factory): close {KEY} again after merging dev")
         self.assertFalse(self.in_head(TODO))
+
+    def assert_scan_refused_the_push(self, env, why):
+        on_origin = self.git(self.wt, "ls-remote", "origin", self.branch).split()[0]
+
+        res = self.advance(env)
+
+        self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+        self.assertIn(why, res.stderr)
+        self.assertIn("nothing was pushed", res.stderr)
+        self.assertEqual(self.stage(), "build")
+        self.assertEqual(self.git(self.wt, "ls-remote", "origin", self.branch).split()[0], on_origin)
+        self.assertEqual(self.git(self.wt, "log", "-1", "--format=%s").strip(),
+                         f"chore(factory): close {KEY} again after merging dev")
+
+    def test_taskclose_1_a_secret_in_what_the_re_close_pushes_refuses_the_push(self):
+        # A GitHub token made here, so this file holds none: the scan must find it in the re-closed task's text.
+        token = "ghp_" + hashlib.sha256(b"taskclose").hexdigest()[:36]
+        self.write("code.txt", "the change\n")
+        self.write(DONE, EARLIER)
+        self.commit("fix: something")
+        self.dev_queues_the_task_and_the_branch_merges_it(TASK + f"token = {token}\n")
+        self.push()
+        self.assert_scan_refused_the_push(self.env, "the secret scan found a secret")
+
+    def test_taskclose_1_a_secret_scan_that_cant_run_refuses_the_push(self):
+        self.write("code.txt", "the change\n")
+        self.write(DONE, EARLIER)
+        self.commit("fix: something")
+        self.dev_queues_the_task_and_the_branch_merges_it()
+        self.push()
+        tools = self.dir / "no-gitleaks"  # git and python3 only
+        tools.mkdir()
+        (tools / "git").symlink_to(shutil.which("git"))
+        (tools / "python3").symlink_to(sys.executable)
+        self.assert_scan_refused_the_push({**self.env, "PATH": str(tools)}, "the secret scan couldn't run")
 
     def assert_refused_as_today(self):
         self.push()
