@@ -1624,6 +1624,16 @@ pub(super) fn source(session: &Session) -> crate::jobs::Source {
     }
 }
 
+/// [`source`] for the words `oby_tell_job` relays to a job: a turn no app of the owner's
+/// `signed` relays the API's, as unsigned words to `POST /v1/jobs/{id}/messages` are, so they
+/// never carry the owner's own work past its safety limit (RECOVERY-18).
+fn relayed(source: crate::jobs::Source, signed: bool) -> crate::jobs::Source {
+    match source {
+        crate::jobs::Source::Owner if !signed => crate::jobs::Source::Api,
+        source => source,
+    }
+}
+
 /// A tool's answer for an action's outcome: a job it started (a follow-up) goes on the turn, and
 /// its card on the answer, as `oby_dispatch`'s do.
 fn outcome_answer(session: &Session, outcome: Outcome) -> Result<String, String> {
@@ -1756,7 +1766,7 @@ async fn tell(
                 shared,
                 &plan,
                 &words,
-                source(session),
+                relayed(source(session), session.control.signed()),
                 &session.conversation,
                 &session.control.turn,
             )
@@ -1776,7 +1786,7 @@ async fn tell(
                 &job,
                 &next,
                 &words,
-                source(session),
+                relayed(source(session), session.control.signed()),
                 &session.conversation,
             ),
         );
@@ -2588,6 +2598,25 @@ fn glob_regex(glob: &str) -> Result<regex::Regex, String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// RECOVERY-18: words `oby_tell_job` relays from a turn no app of the owner's signed are the
+    /// API's, never the owner's own; a signed turn's, and an untrusted one's, keep their source.
+    #[test]
+    fn recovery_18_an_unsigned_turn_relays_the_apis_words() {
+        use crate::jobs::Source;
+        for (source, signed, relays) in [
+            (Source::Owner, true, Source::Owner),
+            (Source::Owner, false, Source::Api),
+            (Source::Untrusted, true, Source::Untrusted),
+            (Source::Untrusted, false, Source::Untrusted),
+        ] {
+            assert_eq!(
+                super::relayed(source, signed),
+                relays,
+                "{source:?} {signed}"
+            );
+        }
+    }
 
     /// The inbox taints the turn unless all it holds is GitHub offers for the owner's own words
     /// (the owner's decision of 2026-10-24): an outsider's, or anything else, still does.

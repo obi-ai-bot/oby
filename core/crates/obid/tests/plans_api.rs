@@ -1569,6 +1569,58 @@ fn recovery_18_a_signed_turn_carries_own_work_past_its_safety_limit() {
     );
 }
 
+/// RECOVERY-18: the words a turn no app of the owner's signed relays to their own work are the
+/// API's (kept apart for its review, MERGING-33), never the owner's own, so they can't carry it
+/// past its safety limit with no Confirm; a signed turn's stay the owner's.
+#[test]
+fn recovery_18_an_unsigned_turn_relays_the_apis_words_to_own_work() {
+    let folder = Folder::new("brain-own-unsigned-tell");
+    let obid = started_harness_jobs(&folder);
+    let started = call_typed(
+        &obid,
+        "POST",
+        "/v1/plans",
+        &json!({"said": r#"OBY oby_dispatch {"repo":"obi-e2e/fixture-app","kind":"research","title":"Own work","task":"SLEEP"}"#, "new": true}),
+    );
+    assert_eq!(started.status, 200, "{}", started.text);
+    let conversation = started.body["conversation"].as_str().unwrap().to_owned();
+    let id = started.body["jobs"][0]["id"].as_str().unwrap().to_owned();
+    within(30, "the job runs", || {
+        (get_job(&obid, &id)["status"] == "running").then_some(())
+    });
+    let tell = |words: &str| {
+        json!({"said": format!(r#"OBY oby_tell_job {{"id":"{id}","words":"{words}"}}"#),
+               "conversation": conversation})
+    };
+    let signed = call_typed(&obid, "POST", "/v1/plans", &tell("use a period"));
+    assert_eq!(signed.status, 200, "{}", signed.text);
+    let unsigned = call(&obid, "POST", "/v1/plans", Some(&tell("use a comma")));
+    assert_eq!(unsigned.status, 200, "{}", unsigned.text);
+    assert!(
+        unsigned.body["text"].as_str().unwrap().contains("Told"),
+        "{}",
+        unsigned.text
+    );
+    let file = obid.home.join("jobs").join(format!("{id}.json"));
+    let kept: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+    let api_said = kept["apiSaid"].as_array().cloned().unwrap_or_default();
+    assert_eq!(api_said.len(), 1, "{kept}");
+    assert!(
+        api_said[0].as_str().unwrap().contains("use a comma"),
+        "{kept}"
+    );
+    // Kept as the API's too, so words it never heard ask before they start anything
+    // (TASKCONV-21).
+    let sources: Vec<&str> = kept["owners"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["source"].as_str().unwrap())
+        .collect();
+    assert_eq!(sources, ["owner", "api"], "{kept}");
+}
+
 /// What a job can't do says why, and fails.
 #[test]
 fn what_a_job_can_t_do_says_why() {
