@@ -220,6 +220,27 @@ impl Jobs {
         }
     }
 
+    /// Whether `job` merges past Oby's review that asks for changes once nothing more happens by
+    /// itself (MERGING-49), so no review item asks the owner: the owner's own one-review work,
+    /// but under a workflow learned for its base that a person or a teammate approves (MERGING-45).
+    pub(super) fn merges_past_review(&self, job: &Job) -> bool {
+        let base =
+            (job.pull_request.as_ref()).map_or(job.base.as_deref(), |pr| Some(pr.base.as_str()));
+        let learned = crate::memory::workflow(&self.config.home, &job.repo)
+            .and_then(|m| m.workflow)
+            .filter(|w| base == Some(w.base.as_str()))
+            .map(|w| w.review);
+        let (own, two) = (crate::merge::own_work(job), job.two_reviews_why().is_some());
+        crate::merge::flagged(true, own, two) == crate::merge::Flagged::MergesPast
+            && crate::merge::merges_past_by(learned)
+    }
+
+    /// The job `id`'s conversation was told it merged at `head` past Oby's review
+    /// (crate::merge::merged_past, MERGING-49): that head tells it nothing more.
+    pub fn mark_told_merged_past(&self, id: &str, head: &str) {
+        self.update(id, |job| job.told_merged_past = Some(head.to_owned()));
+    }
+
     /// What obid was sending for the job `id` when it last stopped, settled from what GitHub
     /// says now (the pull request is open): an approval it finds there is listed; a merge (and its
     /// branch's deletion) didn't land, and is tried again as anything is, unless a merge is under
