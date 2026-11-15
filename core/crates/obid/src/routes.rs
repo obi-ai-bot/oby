@@ -889,6 +889,8 @@ fn new_job(job: &Map<String, Value>) -> Result<NewJob, String> {
         untrusted: false,
         // Set by `dispatch` only for words an app of the owner's signed (crate::secretspec).
         vetted: false,
+        // Only a conversation's plan marks it (MERGING-44), never the API.
+        own_conversation: false,
         foreign: None,
         adding: None,
         heard: Vec::new(),
