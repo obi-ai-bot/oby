@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { BACKGROUND_YES, DECISIONS, TRY_AGAIN, TRY_AGAIN_LABEL, WITHIN_MS, owners, wordsOf } from '../../../shared/words';
+import { BACKGROUND_YES, DECISIONS, TRY_AGAIN, TRY_AGAIN_LABEL, VAULT_ADD, VAULT_REMOVE, WITHIN_MS, owners, wordsOf } from '../../../shared/words';
 import { input, mayConfirm, picked, space, takeInput, wordsHeader } from '../../../main/words';
 
 // What main signs as the owner's words, and what it refuses (docs/contracts/signed-words.md)
@@ -192,6 +192,31 @@ describe('signed words', () => {
     // one the page adds, or the home folder, isn't
     expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', plan(['/Users/me/app', '/Users/me']))).toBeNull();
     expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', { said: 'Fix the login', new: true })).not.toBeNull();
+  });
+
+  it('words_17_the_vault_signs_a_put_by_add_secret_and_a_bodiless_delete_by_remove_secret', () => {
+    const path = '/v1/obid/vault/staging-key';
+    expect([VAULT_ADD, VAULT_REMOVE]).toEqual(['Add Secret', 'Remove Secret']);
+    expect(wordsOf('PUT', path, { value: 'tok/secret+value' })).toEqual([VAULT_ADD]);
+    expect(owners('PUT', path, { value: 'tok/secret+value' }, ['Add Secret'], [])).toEqual([0]);
+    expect(owners('PUT', path, { value: 'tok/secret+value' }, ['tok/secret+value'], [])).toBeNull();
+    for (const body of [undefined, {}, { value: 1 }, { value: 'x', name: 'y' }, ['x']]) expect(wordsOf('PUT', path, body)).toBeNull();
+    expect(wordsOf('DELETE', path, undefined)).toEqual([VAULT_REMOVE]);
+    expect(owners('DELETE', path, undefined, ['Remove Secret'], [])).toEqual([0]);
+    // a click on any other Remove (an account's, a rule's) can't stand for it
+    expect(owners('DELETE', path, undefined, ['Remove'], [])).toBeNull();
+    for (const body of [{}, { value: 'x' }, null, '']) expect(wordsOf('DELETE', path, body)).toBeNull();
+    // no other route signs without a body, nor the vault's list or another verb
+    expect(wordsOf('DELETE', '/v1/jobs/j1', undefined)).toBeNull();
+    expect(wordsOf('POST', '/v1/jobs/j1/messages', undefined)).toBeNull();
+    expect(wordsOf('GET', '/v1/obid/vault', undefined)).toBeNull();
+    expect(wordsOf('POST', path, { value: 'x' })).toBeNull();
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const [, signedAt, signature] = wordsHeader(privateKey, 'd1', 'DELETE', path, undefined)!.split(' ');
+    const empty = createHash('sha256').update('').digest('hex');
+    const sentence = `oby-words\nDELETE\n${path}\n${empty}\n${signedAt}`;
+    expect(verify('sha256', Buffer.from(sentence), createPublicKey(privateKey), Buffer.from(signature, 'base64'))).toBe(true);
+    expect(wordsHeader(privateKey, 'd1', 'DELETE', path, {})).toBeNull();
   });
 
   it('WORDS-7: main signs once per real keystroke or click it saw, and only right after it', () => {

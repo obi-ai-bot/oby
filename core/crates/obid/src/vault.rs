@@ -11,7 +11,8 @@
 //! - **How values come in.** `obid vault --config <path> add NAME` with the value on stdin (typed
 //!   without echo at a terminal), never as an argument or in an environment variable, where other
 //!   processes of the same user read it (docs/ARCHITECTURE.md 5.3, "What the sandbox can't hide").
-//!   A common word or a weak pattern is refused. No API takes or returns a value.
+//!   Or `PUT /v1/obid/vault/{name}` ([`router`]), loopback only and signed by the owner's app.
+//!   A common word or a weak pattern is refused. No API returns a value.
 //! - **Where values go.** They join `crate::secrets::known()` as `vault <name>`, read again
 //!   whenever the store changed (`obid vault add` while obid runs), so the log's writer
 //!   (`crate::secrets::Redacting`), the publish gate (`crate::scan`, `crate::publish`) and every
@@ -1057,6 +1058,118 @@ fn unreadable(why: &str) -> Response {
         format!("The vault can't be read, so obid answers nothing until it's fixed: {why}"),
     )
     .into_response()
+}
+
+// ---------------------------------------------------------------------------------------------
+// `/v1/obid/vault`, loopback only (docs/contracts/vault.md)
+
+/// The vault's names, a value put in, a secret removed. The gateway keeps `/v1/obid/…` off, so
+/// only this Mac reaches them; the writes need the owner's signed words. No answer holds a value.
+pub fn router() -> axum::Router<Arc<crate::api::Shared>> {
+    use axum::routing::{get, put};
+    axum::Router::new()
+        .route("/v1/obid/vault", get(list))
+        .route(
+            "/v1/obid/vault/{name}",
+            put(put_value)
+                .layer(axum::extract::DefaultBodyLimit::max(LONGEST + 4096))
+                .delete(remove_value),
+        )
+}
+
+type Answer = Result<Response, crate::api::ApiError>;
+
+/// The vault as [`answers`] finds it: a test's own, else obid's.
+fn found(
+    extension: Option<axum::Extension<Arc<Vault>>>,
+) -> Result<Arc<Vault>, crate::api::ApiError> {
+    extension.map(|e| e.0).or_else(shared).ok_or_else(|| {
+        crate::api::ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "obid has no vault.")
+    })
+}
+
+fn unprocessable(words: impl Into<String>) -> crate::api::ApiError {
+    crate::api::ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, words)
+}
+
+fn unavailable(why: String) -> crate::api::ApiError {
+    crate::api::ApiError::new(StatusCode::SERVICE_UNAVAILABLE, why)
+}
+
+/// Why `name` can't be written or removed over the API: a bad name, or one of obid's own.
+fn api_name_problem(name: &str) -> Option<&'static str> {
+    name_problem(name).or_else(|| {
+        name.starts_with("oby.")
+            .then_some("Names starting oby. are Oby's own: choose another name.")
+    })
+}
+
+/// `GET /v1/obid/vault`: `{"names": [...]}`, sorted, without obid's own `oby.` names.
+async fn list(vault: Option<axum::Extension<Arc<Vault>>>) -> Answer {
+    let names: Vec<String> = found(vault)?
+        .names()
+        .map_err(unavailable)?
+        .into_iter()
+        .filter(|name| !name.starts_with("oby."))
+        .collect();
+    Ok(axum::Json(serde_json::json!({ "names": names })).into_response())
+}
+
+/// `PUT /v1/obid/vault/{name}` with `{"value": "…"}`, signed by the owner's app.
+async fn put_value(
+    axum::extract::State(state): axum::extract::State<Arc<crate::api::Shared>>,
+    vault: Option<axum::Extension<Arc<Vault>>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Answer {
+    if !crate::routes::typed_by_owner(&state, "PUT", &uri, &headers, &body) {
+        return Err(crate::routes::needs_the_owners_app());
+    }
+    // A serde error can quote the body, so it never reaches the answer.
+    let value = serde_json::from_slice::<Value>(&body)
+        .ok()
+        .and_then(|body| match body.as_object() {
+            Some(object) if object.len() == 1 => object
+                .get("value")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            _ => None,
+        })
+        .ok_or_else(|| unprocessable("The body is {\"value\": \"…\"}."))?;
+    if let Some(problem) = api_name_problem(&name) {
+        return Err(unprocessable(problem));
+    }
+    if let Some(problem) = value_problem(trimmed(&value)) {
+        return Err(unprocessable(problem));
+    }
+    found(vault)?.add(&value, &name).map_err(unavailable)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// `DELETE /v1/obid/vault/{name}`, with no body, signed by the owner's app.
+async fn remove_value(
+    axum::extract::State(state): axum::extract::State<Arc<crate::api::Shared>>,
+    vault: Option<axum::Extension<Arc<Vault>>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Answer {
+    if !crate::routes::typed_by_owner(&state, "DELETE", &uri, &headers, &body) {
+        return Err(crate::routes::needs_the_owners_app());
+    }
+    if let Some(problem) = api_name_problem(&name) {
+        return Err(unprocessable(problem));
+    }
+    match found(vault)?.remove(&name).map_err(unavailable)? {
+        true => Ok(StatusCode::NO_CONTENT.into_response()),
+        false => Err(crate::api::ApiError::new(
+            StatusCode::NOT_FOUND,
+            format!("The vault has no secret named {name}."),
+        )),
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
