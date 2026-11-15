@@ -3,11 +3,12 @@ import { constants, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { writeOwn } from './device';
 import { ipc, type Trusted } from './ipc';
-import type { Decoder } from '../shared/decode';
+import { boolean, orUndefined, type Decoder } from '../shared/decode';
 
 // Oby's own settings in the app's own folder, one file main owns: Settings › Notifications' alerts
-// (notify.ts), About's Update automatically (updates.ts), and under `local` the page's Settings
-// rows obid has no setting for yet (docs/contracts/live-state.md, LIVE-25 and 26)
+// (notify.ts), About's Update automatically (updates.ts), whether Open at login's default was
+// applied (`loginApplied`, below), and under `local` the page's Settings rows obid has no setting
+// for yet (docs/contracts/live-state.md, LIVE-25 to 29)
 export const SETTINGS = () => join(app.getPath('userData'), 'settings.json');
 export const settings = (): Record<string, unknown> => { try { return JSON.parse(readFileSync(SETTINGS(), 'utf8')); } catch { return {}; } };
 // settings.json with patch's top-level keys set, every other key kept
@@ -46,4 +47,32 @@ export function localSettings(trusted: Trusted) {
       return false;
     }
   }, null);
+  // Open at login: macOS's state of the app's login item, and with a value, turned to it (null:
+  // this copy registers nothing). The row itself stays `local.login`, kept through local-setting.
+  channels.handle('login-item', [orUndefined(boolean)], (_e, on) => {
+    if (!mayLogin()) return null;
+    if (on !== undefined) {
+      try { app.setLoginItemSettings({ openAtLogin: on }); } catch (e) { console.error(`Oby: couldn’t turn Open at login: ${e}`); }
+      try { writeSettings({ loginApplied: true }); } catch (e) { console.error(`Oby: couldn’t keep a setting: ${e}`); }
+    }
+    return app.getLoginItemSettings().openAtLogin;
+  }, null);
+}
+
+// The app's own login item (docs/contracts/live-state.md, LIVE-27 to 29), never obid's
+// launch agent entry (obid.ts). Only a packaged copy in Applications touches it: a disk-image or
+// translocated copy would register a path that goes away.
+const mayLogin = () => app.isPackaged && app.isInApplicationsFolder();
+
+// Open at login's default (on), applied once per install as the app starts: never again after it,
+// nor after the owner's own turn (`loginApplied`), so removing Oby in System Settings sticks. A
+// set that fails writes nothing and is tried again at the next start.
+export function loginDefault() {
+  try {
+    if (!mayLogin() || settings().loginApplied === true) return;
+    if (local().login !== false) app.setLoginItemSettings({ openAtLogin: true });
+    writeSettings({ loginApplied: true });
+  } catch (e) {
+    console.error(`Oby: couldn’t apply Open at login: ${e}`);
+  }
 }

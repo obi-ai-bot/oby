@@ -7,6 +7,8 @@
 //   SNEAK: <file>    writes the file and commits it without asking (Plan mode or not)
 //   ASK: <command>   asks to run the command and says what obid answered, and what it heard after;
 //                    every answer goes to .obi/answers.log, one per line
+//   RUN: <command>   runs the command with /bin/sh in its worktree, asking nothing, and says its
+//                    exit status and output
 //   obid's word that it paused it  (a call of its waited for the owner past parkAfter, and its
 //                    thread is resumed with the answer): allowed, the turn goes on with the task
 //                    (and its call again); otherwise says what it heard
@@ -62,7 +64,7 @@
 // the policy and profile it was asked for. A thread keeps the `-c` settings it was started with
 // (`settings`).
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -196,6 +198,11 @@ async function runTurn(turnId, prompt) {
     if (task.includes("STALL")) return;
     const read = existsSync("work.md") ? ` It read work.md: ${readFileSync("work.md", "utf8").split("\n")[0]}` : "";
     return complete(turnId, `The plan: {"action":"reply_only","reply":"From Codex.${read}","dispatches":[],"question":null}`);
+  }
+  const run = task.match(/RUN: (.+)$/m);
+  if (run) {
+    const ran = spawnSync("/bin/sh", ["-c", run[1]], { encoding: "utf8" });
+    return complete(turnId, `ran: ${ran.status}\n${ran.stdout}${ran.stderr}`);
   }
   const commit = task.match(/COMMIT: (\S+)/);
   const command = task.match(/ASK: (.+)$/m);

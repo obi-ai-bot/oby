@@ -3235,7 +3235,7 @@ pub(crate) fn dead_confirm(item: &Item, jobs: &[crate::job::Job]) -> Option<&'st
                     j.repo == asked.repo
                         && j.published
                             .as_deref()
-                            .and_then(|url| crate::github::pull_request_number(url, &j.repo))
+                            .and_then(|url| j.pull_request_number(url))
                             == Some(asked.pr)
                 })
                 .filter_map(|j| j.pull_request.as_ref())
