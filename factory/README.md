@@ -109,6 +109,14 @@ folder (`/factory <answer>`), and nothing reads or writes a GitHub issue or the 
 stays a draft until the approver says APPROVE; then GitHub merges it, and the job waits in the stage `queued`
 while GitHub's merge queue holds it.
 
+Reading a job takes no lock (`bin/job` writes `job.json` whole, by renaming a temporary file), so `job queue`,
+the slot count and a long-running importer such as `bin/oby-feed` never hold one. Only a command that changes a
+job (`advance`, `merge`, `answer`, `feedback`, `reject`, `agents`, `sync`) holds that job's lock, while it reads,
+decides and saves, and lets it go when it ends, a refusal included. When merging `dev` into a job's branch brings
+`queue/tasks/<KEY>.md` back next to its `queue/done/<KEY>.md`, `job advance <job> gate` closes the task again in a
+commit of its own, with `dev`'s text of the task, and pushes it; a branch with no `done/` copy, or one whose
+`tasks/` file differs from `dev`'s, is refused as before.
+
 ## From AGENTS.md
 
 From the root [AGENTS.md](../AGENTS.md)'s "Software factory".
