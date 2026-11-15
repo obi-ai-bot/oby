@@ -24,6 +24,7 @@ declare global {
       onUpdate?(fn: (update: Update) => void): () => void;
       // Settings rows obid has no setting for yet, kept by main (preload, main/settings.ts)
       settings?: { local(): Promise<Record<string, unknown> | null>; keep(key: string, value: unknown): Promise<boolean | null> };
+      loginItem?(on?: boolean): Promise<boolean | null>;  // Open at login's login item, as macOS has it (preload, main/settings.ts)
       setupWindow?(on: boolean): number | null;  // the width the window's growing to (null: already there)
       // an Obysphere joined by its invite link, and Leave (preload, main/sphere.ts)
       onSphere?(fn: (joined: { sphere: string; name: string }) => void): () => void;
