@@ -874,8 +874,11 @@ pub(super) async fn answer_inbox(
         && NAMED_KINDS.contains(&item.kind.as_str())
         && item.options.contains(&words)
     {
-        let named = super::named::names_card_answer(heard, &words, &item, job.as_ref());
-        (owner, skip) = (named && item.created < begun, !named);
+        use super::named::{Act, act_on, names_card_answer};
+        // `heard` is given only on a signed turn after an outside read.
+        let named = names_card_answer(heard, &words, &item, job.as_ref());
+        let act = act_on(true, true, named);
+        (owner, skip) = (act == Act::Now && item.created < begun, act == Act::Skip);
     }
     match owners_call(&item, &words, job.as_ref(), owner) {
         Owners::No => {}

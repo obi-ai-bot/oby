@@ -112,7 +112,7 @@ fn cut(word: &str) -> Vec<&str> {
 }
 
 /// The plain sentences of `words`: those that ask nothing (no `?` in any word) and say no "not",
-/// "never" or "don't" (any `n't`, its apostrophe typed any way, and in any piece of a word, as
+/// "cannot", "never" or "don't" (any `n't`, its apostrophe typed any way, and in any piece of a word, as
 /// `#4.not`). A sentence ends at a word ending in `.`, `!`, `;` or holding a `?`, quotes and
 /// brackets aside, at one of those right before a capital letter, or at a line's end. "Should I
 /// merge #3?" and "don´t merge #3" are none (the owner's answer of 2026-11-15).
@@ -120,10 +120,14 @@ fn plain_sentences(words: &str) -> impl Iterator<Item = String> + '_ {
     const CLOSING: &str = "'\"”’)]>";
     let asks = |word: &&str| word.contains(['?', '？']);
     let denies = |word: &&str| {
-        let word = word.replace(['’', '´', 'ʼ', '`', '′'], "'").to_lowercase();
+        let word = word
+            .replace(['’', '‘', '´', 'ʼ', '`', '′'], "'")
+            .to_lowercase();
         word.split(|c: char| !c.is_alphanumeric() && c != '\'')
             .map(|piece| piece.trim_matches('\''))
-            .any(|piece| ["not", "never", "dont"].contains(&piece) || piece.ends_with("n't"))
+            .any(|piece| {
+                ["not", "never", "dont", "cannot"].contains(&piece) || piece.ends_with("n't")
+            })
     };
     let ends = move |word: &&str| {
         asks(word)
@@ -301,12 +305,17 @@ mod tests {
             "donʼt merge #3",
             "don`t merge #3",
             "Merge #4.Not #3.",
+            "don‘t merge #3",
+            "We cannot merge #3 yet.",
+            "Merge #4. I cannot merge #3.",
         ] {
             assert!(!names_merge(words, "o/r", 3, None), "{words}");
         }
         assert!(!names_merge("not merging #3 yet", "o/r", 3, None));
         assert!(!names_merge("Merge #4.Never merge #3.", "o/r", 3, None));
         assert!(names_merge("Merge #4.Never merge #3.", "o/r", 4, None));
+        assert!(names_merge("Merge #4. I cannot merge #3.", "o/r", 4, None));
+        assert!(names_merge("Untie the knot and merge #3.", "o/r", 3, None));
         assert!(!names_merge("Merge #4!Never merge #3", "o/r", 3, None));
         assert!(names_merge("merge #3", "o/r", 3, None));
         assert!(names_merge("Should I? Yes. Merge #3.", "o/r", 3, None));

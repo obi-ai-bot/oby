@@ -1606,6 +1606,9 @@ fn taskconv_27_a_negated_or_asked_merge_is_not_done() {
         "Should I merge #3?, or close it",
         "don´t merge #3",
         "Merge #4.Never merge #3.",
+        "don‘t merge #3",
+        "We cannot merge #3 yet.",
+        "Merge #4. I cannot merge #3.",
     ] {
         let answered = after_a_read(
             &obid,
