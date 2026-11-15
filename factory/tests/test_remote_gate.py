@@ -12,6 +12,8 @@ Run from the repository root: python3 factory/tests/test_remote_gate.py
 """
 
 import fcntl
+import importlib.machinery
+import importlib.util
 import json
 import os
 import re
@@ -450,6 +452,19 @@ else:
 """
 
 
+# A builder's program for REMOTE-56 and 57: it records its name and words in $FAKE/runs, then waits while $FAKE/hold
+# exists.
+RECORDER = """#!/usr/bin/env python3
+import json, os, sys, time
+from pathlib import Path
+fake = Path(os.environ["FAKE"])
+with open(fake / "runs", "a") as kept:
+    kept.write(json.dumps([Path(sys.argv[0]).name, *sys.argv[1:]]) + "\\n")
+while (fake / "hold").exists():
+    time.sleep(0.05)
+"""
+
+
 class BuilderRun(unittest.TestCase):
     """REMOTE-34 and 45: oby-remote-gate --run against a temporary origin and builder root, with a stand-in cargo in a
     temporary home's ~/.cargo/bin."""
@@ -473,7 +488,8 @@ class BuilderRun(unittest.TestCase):
         self.root.mkdir()
         git("clone", "--quiet", "--bare", str(origin), str(self.root / "repo.git"), cwd=self.dir)
         home = self.dir / "home"
-        cargo = home / ".cargo" / "bin" / "cargo"
+        self.tools = home / ".cargo" / "bin"
+        cargo = self.tools / "cargo"
         cargo.parent.mkdir(parents=True)
         cargo.write_text(BUILDER_CARGO)
         cargo.chmod(0o755)
@@ -484,17 +500,36 @@ class BuilderRun(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.dir)
 
-    def builder_run(self):
-        proc = subprocess.Popen([str(GATE), "--run", "--slots", "4", "--builder-slots", "1", "--wait", "5", self.base,
-                                 self.tree, ".", "--", "cargo", "test"],
+    def start_run(self, *command, builders=1):
+        proc = subprocess.Popen([str(GATE), "--run", "--slots", "4", "--builder-slots", str(builders), "--wait", "5",
+                                 self.base, self.tree, ".", "--", *command],
                                 env=self.env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         proc.stdin.write(b"0\n")
         proc.stdin.flush()
+        return proc
+
+    def finish(self, proc):
         out = proc.stdout.read().decode()
         code = proc.wait(timeout=60)
         proc.stdin.close()
         proc.stdout.close()
         return code, out
+
+    def builder_run(self, *command, builders=1):
+        return self.finish(self.start_run(*(command or ("cargo", "test")), builders=builders))
+
+    def recorded(self):
+        """The words each RECORDER program ran with, its name first."""
+        path = self.fake / "runs"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def record(self, *names):
+        """RECORDER as each program named in the builder's ~/.cargo/bin, with a java that runs nothing."""
+        for name in names:
+            (self.tools / name).write_text(RECORDER)
+            (self.tools / name).chmod(0o755)
+        (self.tools / "java").write_text("#!/bin/sh\nexit 0\n")
+        (self.tools / "java").chmod(0o755)
 
     def test_remote_34_each_builder_run_starts_clean(self):
         for _ in range(2):
@@ -513,6 +548,84 @@ class BuilderRun(unittest.TestCase):
         self.assertNotIn("hooksPath", second["config"])
         self.assertIn("bare = true", second["config"])
         self.assertFalse(second["attributes"], "the first run's info/attributes is still there")
+
+    def test_remote_56_each_builder_slot_has_its_own_apalache_port(self):
+        loader = importlib.machinery.SourceFileLoader("oby_remote_gate", str(GATE))
+        runner = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+        loader.exec_module(runner)
+        for count in range(1, runner.MAX_SLOTS + 1):
+            ports = [runner.apalache_port(slot) for slot in range(1, count + 1)]
+            self.assertEqual(len(set(ports)), count, ports)
+            self.assertNotIn(8822, ports)
+        self.record("quint")
+        for command in (["quint", "verify", "--max-steps=12", "x.qnt"], ["quint", "compile", "x.qnt"],
+                        [str(self.tools / "quint"), "verify", "x.qnt"]):
+            code, out = self.builder_run(*command)
+            self.assertEqual(code, 0, out)
+            self.assertIn("oby-remote-gate: running in builder slot 1", out)
+        self.assertEqual(self.recorded(), [["quint", "verify", "--server-endpoint=localhost:8823", "--max-steps=12",
+                                            "x.qnt"],
+                                           ["quint", "compile", "--server-endpoint=localhost:8823", "x.qnt"],
+                                           ["quint", "verify", "--server-endpoint=localhost:8823", "x.qnt"]])
+
+    def test_remote_56_two_quint_runs_at_once_get_different_ports(self):
+        self.record("quint")
+        (self.fake / "hold").touch()
+        runs = [self.start_run("quint", "verify", "x.qnt", builders=2) for _ in range(2)]
+        try:
+            deadline = time.monotonic() + 30
+            while len(self.recorded()) < 2 and time.monotonic() < deadline:
+                time.sleep(0.05)
+            held = self.recorded()
+        finally:
+            (self.fake / "hold").unlink()
+        ended = [self.finish(run) for run in runs]
+        for code, out in ended:
+            self.assertEqual(code, 0, out)
+        self.assertEqual(sorted(held), [["quint", "verify", "--server-endpoint=localhost:8823", "x.qnt"],
+                                        ["quint", "verify", "--server-endpoint=localhost:8824", "x.qnt"]], ended)
+        self.assertEqual(sorted(re.search(r"running in builder slot (\d)", out).group(1) for _, out in ended),
+                         ["1", "2"])
+
+    def test_remote_57_a_quint_run_naming_its_own_server_is_refused(self):
+        self.record("quint")
+        for words in (["verify", "--server-endpoint=localhost:8822", "x.qnt"],
+                      ["verify", "x.qnt", "--server-endpoint", "localhost:8824"],
+                      ["compile", "--serverEndpoint=localhost:9000", "x.qnt"],
+                      ["run", "--serverEndpoint", "localhost:8825", "x.qnt"]):
+            code, out = self.builder_run("quint", *words)
+            self.assertEqual(code, 2, out)
+            named = next(word for word in words if word.startswith("--server"))
+            self.assertIn(f"oby-remote-gate: a quint run in a builder slot can't name its own Apalache server: {named}",
+                          out.splitlines())
+            self.assertNotIn("running in builder slot", out)
+        self.assertEqual(self.recorded(), [])
+
+    def test_remote_57_a_quint_option_before_its_subcommand_is_refused(self):
+        self.record("quint")
+        for words in (["--max-steps", "3", "verify", "x.qnt"], ["--verbosity=3", "verify", "x.qnt"]):
+            code, out = self.builder_run("quint", *words)
+            self.assertEqual(code, 2, out)
+            self.assertIn(f"oby-remote-gate: a quint run in a builder slot takes its subcommand first: {words[0]}",
+                          out.splitlines())
+            self.assertNotIn("running in builder slot", out)
+        self.assertEqual(self.recorded(), [])
+        # An option alone still runs.
+        for word in ("--version", "--help"):
+            code, out = self.builder_run("quint", word)
+            self.assertEqual(code, 0, out)
+        self.assertEqual(self.recorded(), [["quint", "--version"], ["quint", "--help"]])
+
+    def test_remote_57_other_commands_are_unchanged(self):
+        self.record("quint", "cargo")
+        commands = (["quint", "run", "--max-steps=5", "x.qnt"], ["quint", "typecheck", "x.qnt"],
+                    ["quint", "test", "--main=x", "x.qnt"], ["quint", "--version"], ["cargo", "test"],
+                    ["cargo", "test", "--", "--server-endpoint=localhost:8822"])
+        for command in commands:
+            code, out = self.builder_run(*command)
+            self.assertEqual(code, 0, out)
+            self.assertIn("oby-remote-gate: running in builder slot 1", out)
+        self.assertEqual(self.recorded(), [list(command) for command in commands])
 
     def test_remote_45_the_vms_builder_clone_config_is_unchanged(self):
         # git clone --bare wrote this Mac's own settings into the clone; on the VM the reset writes setup.sh's text.
