@@ -14,6 +14,7 @@ starting with it; an empty one stands for a run that printed nothing at all (a t
 Run from the repository root: python3 -m unittest discover -s factory/tests -p 'test_oby_feed.py' -v
 """
 
+import http.client
 import importlib.machinery
 import importlib.util
 import json
@@ -109,6 +110,7 @@ class ObyFeed(unittest.TestCase):
         self.feed.HOME = self.dir
         self.feed.FEED = self.dir / "feed"
         self.feed.GH_REPO = REPO
+        self.real_api = self.feed.api
         self.feed.api = self.stand.api
         self.feed.subprocess = Namespace(run=self.stand.run)
         self.feed.say = lambda msg: None
@@ -340,6 +342,72 @@ class ObyFeed(unittest.TestCase):
         feed.ready_tasks = lambda state: self.fail("a pass with obid down went on")
         self.assertIsNone(feed.one_pass(Namespace(max=3, min_free_gb=0, dry_run=False, account="acct")))
         self.assertEqual(said, ["obid didn't answer: this pass is skipped, the next one tries again"])
+
+    def obid(self, answer):
+        """The real api() against a stand-in urlopen: `answer(method, url)` returns the body's bytes, or raises."""
+
+        class Res:
+            status = 200
+
+            def __init__(self, req):
+                self.req = req
+
+            def read(self):
+                return answer(self.req.get_method(), self.req.full_url)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+        (self.dir / "home").mkdir(exist_ok=True)
+        (self.dir / "home" / "api-token").write_text("token\n")
+        self.feed.api = self.real_api
+        return mock.patch.object(self.feed.urllib.request, "urlopen", lambda req, timeout: Res(req))
+
+    def test_feedalive_1_obid_gone_mid_answer_is_no_answer(self):
+        def answer(method, url):
+            raise http.client.IncompleteRead(b"[{", 40)
+
+        with self.obid(answer):
+            self.assertEqual(self.feed.api("GET", "/v1/jobs"), (None, None))
+
+    def test_feedalive_1_obid_gone_mid_pass_skips_the_pass(self):
+        said = []
+        self.feed.say = said.append
+        self.task("running")
+
+        def answer(method, url):
+            if url.endswith("/v1/jobs?limit=200"):
+                return b"[]"
+            raise self.feed.urllib.error.URLError("Connection refused")
+
+        ready = {"key": "A00-98", "title": "another task", "body": ""}
+        self.feed.ready_tasks = lambda state: [(ready, True, {"y.py"})]
+        self.feed.free_gb = lambda: 100.0
+        with self.obid(answer):
+            self.assertIsNone(self.one_pass())
+        self.assertEqual(said[-1], "obid stopped answering mid-pass (/v1/jobs/job-1): the next pass tries again")
+        self.assertEqual(self.task_now()["state"], "running")
+        self.assertNotIn("A00-98", self.feed.load_state())
+        self.assertFalse([line for line in said if "not started" in line], said)
+
+    def test_feedalive_1_a_merge_seen_while_obid_goes_away_is_recorded_later(self):
+        self.task("waiting", head=OLD)
+        self.stand.view = {"headRefOid": OLD, "state": "MERGED", "files": []}
+        self.no_ready()
+
+        def answer(method, url):
+            if url.endswith("/v1/jobs?limit=200"):
+                return json.dumps([{"id": JOB}]).encode()
+            if method == "GET" and url.endswith(f"/v1/jobs/{JOB}"):
+                return json.dumps({"id": JOB, "status": "done"}).encode()
+            raise self.feed.urllib.error.URLError("Connection refused")
+
+        with self.obid(answer):
+            self.assertIsNone(self.one_pass())
+        self.assertEqual(self.task_now()["state"], "waiting")
 
     def test_feedalive_1_backoff_doubles_to_ten_minutes_and_resets(self):
         got = iter([None] * 5 + [(1, 0)])

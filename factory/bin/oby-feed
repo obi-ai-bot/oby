@@ -40,6 +40,7 @@ State is one file per task in ~/.oby-factory/feed/. obid is the factory's own (O
 default ~/.oby-factory; OBY_FACTORY_URL, default http://127.0.0.1:7811), never the This Mac one.
 """
 import argparse
+import http.client
 import importlib.machinery
 import importlib.util
 import json
@@ -73,6 +74,7 @@ FEED = HOME / "feed"
 ACTIVE = {"running", "reviewing", "merging"}
 SAID = set()
 GH_MISSED = []  # this pass's `gh` calls that exited non-zero
+OBID_MISSED = []  # this pass's obid requests that got no answer
 BACKOFF_MAX = 600
 BUILD_FOLDERS = ("core/target", "apps/electron/node_modules", "apps/electron/out", "node_modules")
 
@@ -91,12 +93,17 @@ def api(method, path, body=None, timeout=30):
             text = res.read().decode().strip()
             return res.status, (json.loads(text) if text else None)
     except urllib.error.HTTPError as e:
-        text = e.read().decode().strip()
+        try:
+            text = e.read().decode().strip()
+        except (OSError, http.client.HTTPException):
+            OBID_MISSED.append(path)
+            return None, None
         try:
             return e.code, json.loads(text)
         except ValueError:
             return e.code, {"error": text[:300]}
-    except OSError:  # obid unreachable (a restart, an update): URLError, a timeout
+    except (OSError, http.client.HTTPException):  # obid unreachable or gone mid-answer: URLError, a timeout, IncompleteRead
+        OBID_MISSED.append(path)
         return None, None
 
 
@@ -242,7 +249,7 @@ def delete_jobs(ids):
         code, body = api("DELETE", f"/v1/jobs/{i}")
         if code in (200, 204):
             gone += 1
-        elif code != 404:
+        elif code not in (404, None):
             say(f"  obid kept job {i}: {(body or {}).get('error', code)}")
     return gone
 
@@ -353,7 +360,10 @@ def arm(item, head, tools):
 
 
 def merged(item, jobs):
+    missed = len(OBID_MISSED)
     gone = delete_jobs(family(item["job"], jobs))
+    if len(OBID_MISSED) > missed:  # obid went away: recorded at a pass that can delete its jobs
+        return
     item.update(state="merged", note=f"merged; {gone} Oby jobs and their worktrees removed")
 
 
@@ -519,6 +529,7 @@ def one_pass(args):
         say("obid didn't answer: this pass is skipped, the next one tries again")
         return None
     GH_MISSED.clear()
+    OBID_MISSED.clear()
     for item in state.values():
         if (item["state"] in ACTIVE or item["state"] == "waiting") and follow(item, jobs):
             save(item)
@@ -543,6 +554,8 @@ def one_pass(args):
                 continue
             oby_id, why = start(task, args.account, on_base)
             if not oby_id:
+                if OBID_MISSED:  # obid went away mid-pass: the rest waits for the next pass
+                    break
                 if task["key"] not in SAID:  # once a run, not at every pass
                     say(f"{task['key']}: not started: {why}")
                     SAID.add(task["key"])
@@ -554,6 +567,9 @@ def one_pass(args):
             say(f"{task['key']}: started as Oby job {oby_id} on {args.account}")
             started += 1
             taken |= files
+    if OBID_MISSED:
+        say(f"obid stopped answering mid-pass ({OBID_MISSED[0]}): the next pass tries again")
+        return None
     if GH_MISSED:
         say(f"GitHub didn't answer ({GH_MISSED[0] or 'no words'}): the next pass tries again")
         return None
