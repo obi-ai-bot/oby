@@ -9,6 +9,12 @@
 #                                  committed or not; with OBY_CHECK_PLAN=1, only says what it'd run;
 #                                  with OBY_CHECK_ALL=1, runs everything, whatever changed;
 #                                  with OBY_CHECK_ONLY=rust|electron|swift|factory|scan, runs only that group;
+#                                  with OBY_CHECK_SHARD=<k>/<n> (1 <= k <= n <= 64, no leading zero), the
+#                                  rust group runs only shard k's planned obid test binaries, and the rest
+#                                  of the rust group only when k is 1: the tree's tests/*.rs ranked by lines,
+#                                  most first (ties by path), are dealt round-robin over the n shards (the
+#                                  gate's, docs/contracts/remote-gate.md, REMOTE-58 to 60); any other value
+#                                  ends 2 with nothing run;
 #                                  with OBY_CHECK_ONLY=limits, only the line limits below and
 #                                  AGENTS.md's bytes, whatever changed (GitHub's `limits` job,
 #                                  docs/contracts/ci.md, CI-35);
@@ -116,6 +122,17 @@ refused() { # a resolved binary: why it isn't one the Mac installed, or nothing
         [[ "$1" != "${unsafe%/}"/* ]] || { echo "$1 is inside $unsafe, which the checked code can write"; return; }
     done
 }
+# OBY_CHECK_SHARD (above), refused before anything runs, oby-check-blok's hand-off included.
+shard_k='' shard_n=''
+if [[ -n "${OBY_CHECK_SHARD:-}" ]]; then
+    if [[ "$OBY_CHECK_SHARD" =~ ^([1-9][0-9]?)/([1-9][0-9]?)$ ]] &&
+        ((BASH_REMATCH[1] <= BASH_REMATCH[2] && BASH_REMATCH[2] <= 64)); then
+        shard_k=${BASH_REMATCH[1]} shard_n=${BASH_REMATCH[2]}
+    else
+        echo 'oby-check: invalid OBY_CHECK_SHARD' >&2
+        exit 2
+    fi
+fi
 if [[ -z "${OBY_CHECK_INNER:-}${OBY_CHECK_PLAN:-}${OBY_CHECK_ONLY:-}" ]]; then
     found=$(command -v oby-check-blok || true)
     if [[ "$found" != /* ]]; then
@@ -520,12 +537,24 @@ fi
 # The distinct lines of a list, each after `$2` when given.
 each() { printf '%s\n' "$1" | sed '/^$/d' | sort -u | sed "s|^|$2|"; }
 
+# With OBY_CHECK_SHARD, shard k's share of obid's test binaries: the tree's tests/*.rs ranked by lines,
+# most first, ties by path, the one at 0-based position i shard (i mod n) + 1's. The rest of the rust
+# group is shard 1's.
+first_shard() { [[ -z "$shard_n" || "$shard_k" == 1 ]]; }
+shard_tests=''
+if [[ -n "$shard_n" ]]; then
+    shard_tests=$(for test in core/crates/obid/tests/*.rs; do
+        [[ ! -f "$test" ]] || printf '%s\t%s\n' "$(wc -l <"$test" | tr -d ' ')" "$test"
+    done | LC_ALL=C sort -t $'\t' -k1,1nr -k2,2 |
+        awk -F '\t' -v k="$shard_k" -v n="$shard_n" '(NR - 1) % n == k - 1 { print $2 }')
+fi
+
 group=rust
-if [[ -n "$check_script" ]]; then step bash scripts/oby-check-test.sh; fi
+if [[ -n "$check_script" ]] && first_shard; then step bash scripts/oby-check-test.sh; fi
 
 # OBY_CHECK_ONLY=limits runs this block alone, whatever changed (CI-35); a change to AGENTS.md alone
 # runs it too, with no cargo step (CI-38).
-if { selected && [[ -n "$rust$check_script$agents_md" ]]; } || [[ "${OBY_CHECK_ONLY:-}" == limits ]]; then
+if { selected && first_shard && [[ -n "$rust$check_script$agents_md" ]]; } || [[ "${OBY_CHECK_ONLY:-}" == limits ]]; then
     plan_group
     if ! git cat-file -e HEAD:scripts/oby-check.sh 2>/dev/null; then
         echo "oby-check: this commit has no scripts/oby-check.sh, this repository's check and its line limits: put it back" >&2
@@ -623,7 +652,7 @@ fi
 # AGENTS.md's rules (docs/contracts/ci.md, CI-42 to 44): each line the manifest lists is in the file
 # its entry names, AGENTS.md, core/AGENTS.md or one the root AGENTS.md links, both compared with
 # each link's target and each run of whitespace taken out. In the checked tree, committed or not.
-if selected && [[ -n "$agents_rules" ]]; then
+if selected && first_shard && [[ -n "$agents_rules" ]]; then
     plan_group
     if [[ ! -f "$rules_manifest" ]]; then
         echo "oby-check: this commit has no $rules_manifest, which lists AGENTS.md's rules: put it back" >&2
@@ -680,7 +709,7 @@ if selected && [[ -n "$agents_rules" ]]; then
     fi
 fi
 
-if selected && [[ -n "$blok" ]]; then
+if selected && first_shard && [[ -n "$blok" ]]; then
     step env CARGO_NET_OFFLINE=true CARGO_TARGET_DIR="$cache/oby-check-blok" cargo fmt --manifest-path tools/oby-check-blok/Cargo.toml --all -- --check
     step env CARGO_NET_OFFLINE=true CARGO_TARGET_DIR="$cache/oby-check-blok" cargo clippy --manifest-path tools/oby-check-blok/Cargo.toml --all-targets -- -D warnings
     step env CARGO_NET_OFFLINE=true CARGO_TARGET_DIR="$cache/oby-check-blok" cargo test --manifest-path tools/oby-check-blok/Cargo.toml
@@ -692,16 +721,16 @@ if selected && [[ -n "$rust" ]]; then
     export CARGO_NET_OFFLINE=true
     cargo=(cargo --quiet)
     manifest=(--manifest-path core/Cargo.toml)
-    step "${cargo[@]}" fmt "${manifest[@]}" --all -- --check
+    if first_shard; then step "${cargo[@]}" fmt "${manifest[@]}" --all -- --check; fi
     packages=()
     if [[ -n "$lib$lib_all$tests" ]]; then crates=$(add "$crates" obid); fi
     while IFS= read -r crate; do packages+=(-p "$crate"); done < <(each "$crates")
-    if [[ ${#packages[@]} -gt 0 ]]; then
+    if [[ ${#packages[@]} -gt 0 ]] && first_shard; then
         step "${cargo[@]}" clippy "${manifest[@]}" "${packages[@]}" --all-targets -- -D warnings
     fi
-    if [[ -n "$lib_all" ]]; then
+    if [[ -n "$lib_all" ]] && first_shard; then
         step lib_tests "${cargo[@]}" test "${manifest[@]}" --no-fail-fast -p obid --lib --bins
-    elif [[ -n "$lib" ]]; then
+    elif [[ -n "$lib" ]] && first_shard; then
         filters=()
         while IFS= read -r filter; do filters+=("$filter"); done < <(each "$lib")
         step lib_tests "${cargo[@]}" test "${manifest[@]}" --no-fail-fast -p obid --lib -- "${filters[@]}"
@@ -711,9 +740,12 @@ if selected && [[ -n "$rust" ]]; then
         name=${test##*/}
         name=${name%.rs}
         [[ -f "$test" ]] || continue
+        # Another shard's binary is that shard's to run, or to leave unjudged.
+        [[ -z "$shard_n" ]] || grep -qxF -- "$test" <<<"$shard_tests" || continue
         # They make a sandbox of their own, which can't nest in a job's on a Mac. On Linux, where
         # nested is always set (no sandbox-exec), they still run: they test bubblewrap there.
         if [[ -n "$nested" && "$OSTYPE" == darwin* && "$name" =~ ^(sandbox|plugins_api|jobs_setup)$ ]]; then
+            plan_group
             unjudged+=("tests/$name.rs")
             failed+=("tests/$name.rs, which can't run in a job's sandbox")
             continue
@@ -724,7 +756,7 @@ if selected && [[ -n "$rust" ]]; then
         step test_binaries "${binaries[@]}"
     fi
     while IFS= read -r crate; do
-        [[ "$crate" == obid ]] || step "${cargo[@]}" test "${manifest[@]}" -p "$crate"
+        [[ "$crate" == obid ]] || ! first_shard || step "${cargo[@]}" test "${manifest[@]}" -p "$crate"
     done < <(each "$crates")
 fi
 
