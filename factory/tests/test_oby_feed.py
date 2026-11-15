@@ -642,6 +642,7 @@ class ObyFeed(unittest.TestCase):
             git(seed, "commit", "-q", "-m", "first")
             git(seed, "push", "-q", str(origin), base)
         git(self.dir, "clone", "-q", "-b", base, str(origin), str(repo))
+        self.seed_git = lambda *args: git(seed, *args)
 
         self.feed.oby_jobs = lambda: []
         self.feed.free_gb = lambda: 100.0
@@ -692,6 +693,33 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual(started, ["A00-98"])
         self.assertIn("SPRINT: 5", (queue_dir / "tasks" / "A00-98.md").read_text())
         self.assertEqual(self.feed.load_state()["A00-98"]["files"], ["y.py"])
+
+    def test_feedalive_3_a_task_dev_has_never_falls_back_to_the_checkouts_stale_copy(self):
+        """Dev's copy of a task the checkout holds ready turns unreadable: it waits, the stale copy never starts;
+        once dev's text reads again, it starts with dev's files."""
+        text = "KEY: A00-98\nTITLE: another task\nSPRINT: 0\nORDER: 1\nDEPENDS: none\n\nWhat.\n\n### Files\n- x.py\n"
+        push, queue_dir, started = self.on_real_git(first_task=text)
+        push(text.replace("KEY: A00-98", "KEY: A00-9X"))
+        self.assertEqual(self.one_pass(), (0, 0))
+        self.assertEqual(started, [])
+        self.assertIn("KEY: A00-98", (queue_dir / "tasks" / "A00-98.md").read_text())
+        push(text.replace("- x.py", "- y.py"))
+        self.assertEqual(self.one_pass(), (1, 1))
+        self.assertEqual(started, ["A00-98"])
+        self.assertEqual(self.feed.load_state()["A00-98"]["files"], ["y.py"])
+
+    def test_feedalive_3_a_task_dev_took_away_never_starts_from_the_checkout(self):
+        """Dev deletes a task the checkout still holds ready: it never starts; a task file only the checkout ever had
+        (written here, not yet committed) still does."""
+        text = "KEY: A00-98\nTITLE: another task\nSPRINT: 0\nORDER: 1\nDEPENDS: none\n\nWhat.\n\n### Files\n- x.py\n"
+        push, queue_dir, started = self.on_real_git(first_task=text)
+        self.seed_git("rm", "-q", "factory/queue/tasks/A00-98.md")
+        self.seed_git("commit", "-q", "-m", "drop A00-98")
+        self.seed_git("push", "-q", str(self.dir / "origin.git"), self.feed.job.BASE)
+        (queue_dir / "tasks" / "A00-97.md").write_text(text.replace("A00-98", "A00-97").replace("x.py", "z.py"))
+        self.assertEqual(self.one_pass(), (1, 1))
+        self.assertTrue((queue_dir / "tasks" / "A00-98.md").exists())
+        self.assertEqual(started, ["A00-97"])
 
     # FEEDALIVE-4: a 502 from `gh pr merge` is tried again; GitHub refusing the merge holds the head
     def test_feedalive_4_a_502_is_tried_again_and_a_refusal_holds_the_head(self):

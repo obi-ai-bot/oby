@@ -528,6 +528,27 @@ def base_tasks():
     return out
 
 
+def local_tasks(on_base):
+    """Task files only this checkout has: never a key origin/<base> has (its text wins, even unreadable), nor one it
+    had where this checkout forked from it and has since moved or deleted (a stale copy, not a new task)."""
+    rel = str(job.TASKS.relative_to(REPO)) + "/"
+    fork = subprocess.run(["git", "merge-base", "HEAD", f"origin/{job.BASE}"], cwd=REPO, capture_output=True, text=True)
+    gone = set()
+    if fork.returncode == 0:
+        had = subprocess.run(["git", "ls-tree", "-r", "--name-only", fork.stdout.strip(), "--", rel],
+                             cwd=REPO, capture_output=True, text=True)
+        gone = {Path(line).stem for line in had.stdout.splitlines() if line.endswith(".md")}
+    out = []
+    for path in sorted(job.TASKS.glob("*.md")) if job.TASKS.exists() else []:
+        if path.stem in on_base or path.stem in gone:
+            continue
+        try:
+            out.append(job.read_task(path))
+        except (SystemExit, ValueError):
+            continue
+    return out
+
+
 def ready_tasks(state):
     """Open task files that may start now, in the queue's order, with why each other one waits."""
     done = job.done_keys()
@@ -544,9 +565,7 @@ def ready_tasks(state):
             except (SystemExit, FileNotFoundError, OSError):
                 pass
     out = []
-    on_dev = base_tasks()
-    read = {t["key"] for t in on_dev}  # dev's text wins; the checkout's only for a task dev doesn't have
-    tasks = on_dev + [t for t in job.open_tasks() if t["key"] not in read]
+    tasks = base_tasks() + local_tasks(on_base)  # dev's text wins; the checkout's only for a task dev never had
     for task in sorted(tasks, key=lambda t: (t["sprint"], t["order"], t["key"])):
         key = task["key"]
         if key in done or key in factory or key in state:
