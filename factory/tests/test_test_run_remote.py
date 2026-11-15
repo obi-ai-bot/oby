@@ -476,7 +476,8 @@ class TestRunRemote(RemoteHarness, unittest.TestCase):
         self.assertEqual(shlex.split(call["argv"][-1])[-5:],
                          ["--", "quint", "verify", "--max-steps=12", "docs/models/job_race.qnt"])
         [run] = self.vm_runs()
-        self.assertEqual(run["args"], ["verify", "--max-steps=12", "docs/models/job_race.qnt"])
+        self.assertEqual(run["args"], ["verify", "--server-endpoint=localhost:8823", "--max-steps=12",
+                                       "docs/models/job_race.qnt"])
         self.assertEqual(run["cwd"], str(self.root / "builder-1" / "worktree" / "core"))
         self.assertIn("oby-remote-gate: running in builder slot 1", out)
         self.assertNotIn("on this Mac:", err)
@@ -519,6 +520,19 @@ class TestRunRemote(RemoteHarness, unittest.TestCase):
         self.assertEqual(code, 0, out + err)
         self.assertIn("oby-remote-gate: running in builder slot 1", out)
         self.assertEqual(self.lines("mac-runs"), [])
+
+    # ---- REMOTE-57 -------------------------------------------------------------------------------
+
+    def test_remote_57_a_refused_quint_run_falls_back_to_this_mac(self):
+        self.quint_on_the_vm()
+        self.tool(self.bin / "quint", MAC_TOOL)
+        result = self.run_test_run("quint", "verify", "--server-endpoint=localhost:8822", "docs/models/job_race.qnt")
+        self.assert_on_this_mac(result, "fell back to this Mac: ssh oby-builder@oby-gate ended 2 before the run "
+                                        "started: oby-remote-gate: a quint run in a builder slot can't name its own "
+                                        "Apalache server: --server-endpoint=localhost:8822", tool="quint", tried=1)
+        [run] = self.lines("mac-runs")
+        self.assertEqual(run.split(" | ", 1)[0],
+                         "quint verify --server-endpoint=localhost:8822 docs/models/job_race.qnt")
 
     # ---- REMOTE-25 -------------------------------------------------------------------------------
 
