@@ -354,6 +354,33 @@ def retry(item, j, case):
     return True
 
 
+def recheck(item, jobs):
+    """One look at a `retrying` task before its attempt starts, as things may have moved while it waited: a pull request
+    merged or closed by hand ends it, and a follow-up whose job obid lost becomes a new build, or waits for the owner
+    when its pull request touches a security path. Returns True when it changed."""
+    pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", VIEW) if item.get("pr") else None
+    if pr and pr["state"] == "MERGED":
+        merged(item, jobs)
+        return True
+    if pr and pr["state"] == "CLOSED":
+        for k in ("retry", "words"):
+            item.pop(k, None)
+        item.update(state="failed", note="its pull request was closed")
+        return True
+    if item.get("retry") != "message" or api("GET", f"/v1/jobs/{item['job']}")[0] != 404:
+        return False
+    if item.get("pr") and not pr:
+        return False  # unread: looked at again at the next pass (obid refuses the follow-up meanwhile)
+    hit = touches_security([f["path"] for f in (pr or {}).get("files", [])])
+    if hit:
+        for k in ("retry", "words"):
+            item.pop(k, None)
+        item.update(state="waiting", note=f"{SECURITY_HOLD} ({hit[0]}) and obid no longer has its job: merge it yourself")
+    else:
+        item.update(retry="build", words=retry_words(None), note=retry_words(None))
+    return True
+
+
 def carry(item, account):
     """Starts the attempt a `retrying` task waits for. Returns True when it started."""
     attempt = item.get("attempt", 1) + 1
@@ -595,7 +622,10 @@ def one_pass(args):
         if (item["state"] in ACTIVE or item["state"] == "waiting") and follow(item, jobs):
             save(item)
             say(f"{item['key']}: {item['state']}" + (f" (#{item['pr']})" if item.get("pr") else "") + (f": {item['note']}" if item.get("note") else ""))
-    active = [i for i in state.values() if i["state"] in ACTIVE]
+        elif item["state"] == "retrying" and recheck(item, jobs):
+            save(item)
+            say(f"{item['key']}: {item['state']}" + (f": {item['note']}" if item.get("note") else ""))
+    active =[i for i in state.values() if i["state"] in ACTIVE]
     slots = args.max - len(active)
     started = 0
     taken = set()

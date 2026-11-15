@@ -621,6 +621,41 @@ class ObyFeed(unittest.TestCase):
                     self.assertNotIn("nothing under way and nothing ready: stopping", self.said)
         self.assertEqual(self.builds(), [])
 
+    # FEEDLOOP-11: a held retry is looked at again before it starts: what changed while it waited decides
+    def test_feedloop_11_a_held_retry_is_rechecked_before_it_starts(self):
+        self.no_ready()
+        disk = {"gb": 5.0}
+        self.feed.free_gb = lambda: disk["gb"]
+        for case in ("lost", "merged", "closed", "lost on a security path"):
+            with self.subTest(case=case):
+                self.stand.sent.clear()
+                disk["gb"] = 5.0
+                self.stand.jobs[JOB] = {"id": JOB, "kind": "build", "status": "done", "approvals": []}
+                self.task("merging", head=OLD, attempt=1, armedAt="2026-11-15T10:00:00Z")
+                self.stand.graphql = queue(removed={"createdAt": "2026-11-15T10:05:00Z", "reason": GITHUB})
+                self.stand.view = None
+                self.one_pass(min_free_gb=10)  # the refused head's follow-up waits for disk
+                self.assertEqual((self.task_now()["state"], self.task_now()["retry"]), ("retrying", "message"))
+                del self.stand.jobs[JOB]  # obid loses the job meanwhile
+                files = [{"path": "AGENTS.md"}] if case == "lost on a security path" else [{"path": "x.py"}]
+                state = {"merged": "MERGED", "closed": "CLOSED"}.get(case, "OPEN")
+                self.stand.view = {"headRefOid": OLD, "state": state, "files": files}
+                disk["gb"] = 100.0
+                self.one_pass(min_free_gb=10)
+                item = self.task_now()
+                self.assertEqual(self.messages(), [])
+                if case == "lost":
+                    self.assertEqual(len(self.builds()), 1)
+                    self.assertIn("Attempt 2 of 3: the last one ended with lost: obid no longer has its job",
+                                  self.builds()[0]["task"])
+                    self.assertEqual((item["state"], item["attempt"]), ("running", 2))
+                else:
+                    self.assertEqual(self.builds(), [])
+                    want = {"merged": "merged", "closed": "failed"}.get(case, "waiting")
+                    self.assertEqual(item["state"], want)
+                    if want == "waiting":
+                        self.assertTrue(item["note"].startswith(self.feed.SECURITY_HOLD + " (AGENTS.md)"), item["note"])
+
 
 class CheckModels(unittest.TestCase):
     def check(self, line, runs):
