@@ -719,6 +719,10 @@ pub struct Job {
     /// (crate::jobs, `free_build_outputs`); none before that.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_freed: Option<BuildFreed>,
+    /// When the cleanup pass removed its worktree (crate::jobs, `free_worktrees`: CLEANUP-6); none
+    /// before that, and again once its worktree is made again ([`Job::made_worktree`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_freed: Option<i64>,
     /// Claude Code's session and its counts at its last result, which the next turn's resumed
     /// counts include (crate::jobs). Never in the API's job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1536,6 +1540,11 @@ impl Job {
             .filter(|f| self.pushed_head() == Some(f.commit.as_str()))
     }
 
+    /// Its worktree, made at `path`: no longer freed (CLEANUP-6).
+    pub fn made_worktree(&mut self, path: String) {
+        (self.worktree, self.worktree_freed) = (Some(path), None);
+    }
+
     /// Whether its worktree's build outputs may still be there: none deleted since it last ended.
     pub fn builds_left(&self) -> bool {
         self.build_freed
@@ -1757,6 +1766,9 @@ impl Job {
         }
         if let Some(freed) = &self.build_freed {
             value["buildFreed"] = json!({"bytes": freed.bytes, "at": date(Some(freed.at))});
+        }
+        if let Some(at) = self.worktree_freed {
+            value["worktreeFreed"] = json!(date(Some(at)));
         }
         if let Some(share) = self.window_share.as_ref().and_then(|s| s.to_json()) {
             value["windowShare"] = share;
