@@ -85,10 +85,12 @@ impl Jobs {
     }
 
     /// A review with no check to run (TEAMREVIEW-4): it can't vouch that the tests pass, so no
-    /// agent runs and the result is `failed`, saying so, through the exchange's publish gate.
+    /// agent runs and the result is `failed`, saying so, through the exchange's publish gate. It
+    /// ends done in its round `ours` (`end_done`).
     pub(super) async fn review_without_a_check(
         self: &Arc<Self>,
         id: &str,
+        ours: u32,
         request: &ReviewRequest,
     ) {
         let body = review::no_check_result(request);
@@ -98,10 +100,7 @@ impl Jobs {
             job.step = "Scanning the result for secrets and sending it".into();
         });
         self.review_ended(id, true).await;
-        self.update(id, |job| {
-            job.status = Status::Done;
-            job.step = String::new();
-            job.commits = Some(0);
+        self.end_done(id, ours, 0, None, |job| {
             job.summary = format!(
                 "Review for {}: failed, 0 finding(s), no check to run.",
                 job.obi
@@ -110,7 +109,6 @@ impl Jobs {
                     .unwrap_or("another Oby")
             );
             job.review_result = Some(body);
-            job.finished = Some(obi_protocol::time::now());
         });
     }
 }

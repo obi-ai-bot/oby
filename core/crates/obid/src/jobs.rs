@@ -9164,7 +9164,8 @@ impl Jobs {
             .map_err(|e| format!("the request isn't a review_request: {e}"))?;
         // With no check to run it can't vouch that the tests pass (TEAMREVIEW-4): no agent either.
         if job.check.is_none() {
-            self.review_without_a_check(id, &request).await;
+            self.review_without_a_check(id, job.current_round(), &request)
+                .await;
             return Ok(());
         }
         if let Err(why) = &self.sandbox {
