@@ -7,7 +7,7 @@
 
 use super::*;
 
-use crate::github::{Merging, Review, comments, pull_request_number};
+use crate::github::{Merging, Review, comments};
 
 /// Where the failed runs' logs, and the change requests, are quoted in the job's `.obi/inputs/`.
 const CHECKS_FILE: &str = "checks.md";
@@ -160,7 +160,7 @@ impl Jobs {
 async fn change_requests(job: &Job, gh: &Path, head: &str, merging: &Merging) -> Option<String> {
     let owner = crate::github_work::owner(merging.author.as_deref()?).await?;
     let trusts = |r: &Review| owner.trusts(&job.repo, Some(&r.login), Some(&r.association));
-    let pr = (job.published.as_deref()).and_then(|u| pull_request_number(u, &job.repo))?;
+    let pr = (job.published.as_deref()).and_then(|u| job.pull_request_number(u))?;
     let (mut quoted, mut by) = (vec![], vec![]);
     for review in crate::merge::trusted_changes(merging, head, trusts) {
         let lines = comments(gh, &job.repo, pr, review.id).await.ok()?;

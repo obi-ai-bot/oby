@@ -123,6 +123,8 @@ contextBridge.exposeInMainWorld('app', {
     local: () => ipcRenderer.invoke('local-settings') as Promise<Record<string, unknown> | null>,
     keep: (key: string, value: unknown) => ipcRenderer.invoke('local-setting', key, value) as Promise<boolean | null>,
   },
+  // Open at login: the app's login item as macOS has it; with a value, turned to it (main/settings.ts; null: none here)
+  loginItem: (on?: boolean) => ipcRenderer.invoke('login-item', on) as Promise<boolean | null>,
   // an Obysphere joined by its invite link (main/sphere.ts), and Leave from its settings: main
   // holds the owner key; Leave answers why the Obysphere wasn't told, or null
   onSphere(fn: (joined: { sphere: string; name: string }) => void) {

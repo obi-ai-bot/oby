@@ -15,9 +15,16 @@ frees the disk afterwards:
   touches no security path. It merges through GitHub's merge queue, pinned to that head
   (`gh pr merge --auto --match-head-commit`), so GitHub's Check on the combined code is the gate.
   One that touches a security path waits for the owner (AGENTS.md, "Carrying and merging").
+- A `waiting` task is looked at again at every pass, without holding a slot: Oby's follow-up takes it back to
+  `running`, a merge by anyone to `merged`, and two approvals of a new head arm it again.
+- A merge GitHub's queue refused (the pull request open, out of the queue, auto-merge off) goes back to
+  `waiting`, remembering the refused head: that head is never armed again, a new one can be.
 - A Quint model the pull request adds or changes (docs/models/*.qnt) is verified first, on the gate VM, as its
-  own `// verify:` lines say: every invariant must hold and every witness must be violated. A model with no
-  such line, or one that fails, keeps the pull request waiting.
+  own `// verify:` lines say, each check on an Apalache port of its own. Each run is read with factory/bin/prove's
+  rule, imported: an invariant passes only when Quint says it holds, and a witness only when Quint reports a
+  violation. A model with no such line, or one that fails, keeps the pull request waiting, its head held the same
+  way; so does a run with no verdict (a name error, a crash, a timeout, nothing printed), with a note saying which
+  check gave none.
 - A build's own build folders (core/target, node_modules) are removed as soon as its pull request is open:
   reviews and follow-ups have worktrees of their own.
 - When the pull request is merged, the task's Oby jobs (the build, its follow-ups, its reviews) are
@@ -39,6 +46,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -46,6 +54,10 @@ _loader = importlib.machinery.SourceFileLoader("factory_job", str(HERE / "job"))
 _spec = importlib.util.spec_from_loader("factory_job", _loader)
 job = importlib.util.module_from_spec(_spec)
 _loader.exec_module(job)
+_loader = importlib.machinery.SourceFileLoader("factory_prove", str(HERE / "prove"))
+_spec = importlib.util.spec_from_loader("factory_prove", _loader)
+prove = importlib.util.module_from_spec(_spec)
+_loader.exec_module(prove)
 
 REPO = job.REPO
 HOME = Path(os.environ.get("OBY_FACTORY_HOME", Path.home() / ".oby-factory"))
@@ -113,16 +125,29 @@ def touches_security(files):
 
 
 VERIFY = re.compile(r"^// verify: (.+)$", re.M)
+# The feeder's first Apalache port on the gate VM: above Quint's default 8822 and the builder slots' 8823 to 8886
+# (apalache_port in factory/remote/oby-remote-gate, 8822 + N for N up to MAX_SLOTS 64).
+APALACHE_PORT = 8900
 
 
 def check_models(files, head):
     """Verifies each Quint model the pull request touches, on the gate VM. Returns why it can't merge, or None."""
+
+    class Verified:
+        """One `quint verify` over ssh, as prove's verify_result reads a run: `timeout` exits 124 when it kills it."""
+        says = prove.Run.says
+
+        def __init__(self, ran):
+            self.code, self.timed_out, self.error = ran.returncode, ran.returncode == 124, None
+            self.lines = [line.strip() for line in ran.stdout.splitlines()]
+
     models = [f for f in files if f.startswith("docs/models/") and f.endswith(".qnt")]
     if not models:
         return None
     host = job.CONFIG.get("remote_gate", {}).get("ssh_host")
     if not host:
         return "it changes a Quint model and no gate VM is configured to verify it"
+    port = APALACHE_PORT
     for path in models:
         got = subprocess.run(["gh", "api", f"repos/{GH_REPO}/contents/{path}?ref={head}", "-H", "Accept: application/vnd.github.raw"],
                              cwd=REPO, capture_output=True, text=True)
@@ -137,18 +162,29 @@ def check_models(files, head):
             return f"the gate VM didn't take {path}: {put.stderr.strip()[:120]}"
         for line in runs:
             opts = dict(part.split("=", 1) for part in line.split() if "=" in part)
-            base = f"quint verify --main={opts.get('main', '')} --max-steps={opts.get('steps', '12')}"
+            base = f"--main={opts.get('main', '')} --max-steps={opts.get('steps', '12')}"
             for kind in ("invariants", "witnesses"):
                 for inv in filter(None, opts.get(kind, "").split(",")):
                     if not re.fullmatch(r"[A-Za-z0-9_]+", inv) or not re.fullmatch(r"[A-Za-z0-9_]*", opts.get("main", "")) or not opts.get("steps", "12").isdigit():
                         return f"{path}: a '// verify:' line isn't names and numbers only"
-                    out = subprocess.run(["ssh", "-o", "BatchMode=yes", host, f"timeout 900 {base} --invariant={inv} {name} 2>&1"],
-                                         capture_output=True, text=True).stdout
-                    holds = "[ok] No violation found" in out
-                    if kind == "invariants" and not holds:
+                    run = Verified(subprocess.run(["ssh", "-o", "BatchMode=yes", host,
+                                                   f"timeout 900 quint verify --server-endpoint=localhost:{port} {base} --invariant={inv} {name} 2>&1"],
+                                                  capture_output=True, text=True))
+                    port += 1
+                    result = prove.verify_result(run)
+                    if result == ("HOLDS" if kind == "invariants" else "VIOLATED"):
+                        continue
+                    if result == "VIOLATED":
                         return f"{path}: the invariant {inv} does not hold"
-                    if kind == "witnesses" and (holds or "violation" not in out.lower() and "error" not in out.lower()):
+                    if result == "HOLDS":
                         return f"{path}: the witness {inv} was not violated, so the model may prove nothing"
+                    said = [line for line in run.lines if line]
+                    first = next((said_line for said_line in said if said_line.lower().startswith("error")),
+                                 said[-1] if said else None)
+                    detail = ("it timed out after 900s" if result == "TIMEOUT"
+                              else first[:100] if first else f"it printed nothing (exit {run.code})")
+                    check = "invariant" if kind == "invariants" else "witness"
+                    return f"{path}: the {check} {inv} (main={opts.get('main', '')}) gave no verdict: {detail}"
         subprocess.run(["ssh", "-o", "BatchMode=yes", host, f"rm -f {name}"], capture_output=True)
     return None
 
@@ -233,8 +269,48 @@ def pr_number(url):
     return int(m.group(1)) if m else None
 
 
+HELD = "approved twice, but "
+
+
+def may_arm(j, pr, refused):
+    """The one rule for arming a pull request's head: ("arm", its tools), ("pending", None) or ("wait", why).
+    The cheap checks come first, so the models are verified only for a head that passed every other one."""
+    head = pr["headRefOid"]
+    if head == refused:
+        return "wait", f"{head} was refused once: push a new head or merge it yourself"
+    mine = [a for a in (j.get("approvals") or []) if a.get("commit") == head]
+    if any(a.get("verdict") != "approved" for a in mine) or j.get("reviewNeedsYou"):
+        return "wait", "a review asked for changes or needs you: open it in Oby"
+    tools = {a.get("agent") for a in mine if a.get("verdict") == "approved"}
+    if len(tools) < 2:
+        return "pending", None
+    files = [f["path"] for f in pr.get("files", [])]
+    hit = touches_security(files)
+    if hit:
+        return "wait", f"{HELD}it touches a security path ({hit[0]}): merge it yourself"
+    why = check_models(files, head)
+    if why:
+        return "wait", (HELD + why)[:240]
+    return "arm", sorted(tools)
+
+
+def arm(item, head, tools):
+    """Hands the pull request to GitHub's merge queue, pinned to the head may_arm() approved."""
+    res = subprocess.run(["gh", "pr", "merge", str(item["pr"]), "--repo", GH_REPO, "--auto", "--match-head-commit", head],
+                         cwd=REPO, capture_output=True, text=True)
+    if res.returncode != 0:
+        item.update(state="waiting", head=head, refused=head, note=("GitHub refused the merge: " + (res.stderr or res.stdout).strip())[:200])
+        return
+    item.update(state="merging", head=head, approved=tools, armedAt=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+
+
+def merged(item, jobs):
+    gone = delete_jobs(family(item["job"], jobs))
+    item.update(state="merged", note=f"merged; {gone} Oby jobs and their worktrees removed")
+
+
 def follow(item, jobs):
-    """One look at a task that is under way. Returns True when it changed."""
+    """One look at a task that is under way or waiting. Returns True when it changed."""
     key = item["key"]
     code, j = api("GET", f"/v1/jobs/{item['job']}")
     if code == 404:
@@ -275,36 +351,59 @@ def follow(item, jobs):
             item.update(state="failed", note="its pull request was closed")
             return True
         head = pr["headRefOid"]
-        mine = [a for a in (j.get("approvals") or []) if a.get("commit") == head]
-        if any(a.get("verdict") != "approved" for a in mine) or j.get("reviewNeedsYou"):
-            item.update(state="waiting", note="a review asked for changes or needs you: open it in Oby")
-            return True
-        tools = {a.get("agent") for a in mine if a.get("verdict") == "approved"}
-        if len(tools) < 2:
+        verdict, said = may_arm(j, pr, item.get("refused"))
+        if verdict == "pending":
             return False
-        hit = touches_security([f["path"] for f in pr.get("files", [])])
-        if hit:
-            item.update(state="waiting", head=head, note=f"approved twice, but it touches a security path ({hit[0]}): merge it yourself")
+        if verdict == "wait":
+            item.update(state="waiting", head=head, note=said)
+            if said.startswith(HELD):  # a head held after two approvals isn't judged again
+                item["refused"] = head
             return True
-        why = check_models([f["path"] for f in pr.get("files", [])], head)
-        if why:
-            item.update(state="waiting", head=head, note=("approved twice, but " + why)[:240])
-            return True
-        res = subprocess.run(["gh", "pr", "merge", str(item["pr"]), "--repo", GH_REPO, "--auto", "--match-head-commit", head],
-                             cwd=REPO, capture_output=True, text=True)
-        if res.returncode != 0:
-            item.update(state="waiting", head=head, note=("GitHub refused the merge: " + (res.stderr or res.stdout).strip())[:200])
-            return True
-        item.update(state="merging", head=head, approved=sorted(tools))
+        arm(item, head, said)
         return True
     if item["state"] == "merging":
-        pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", "state")
-        if pr and pr["state"] == "MERGED":
-            gone = delete_jobs(family(item["job"], jobs))
-            item.update(state="merged", note=f"merged; {gone} Oby jobs and their worktrees removed")
+        owner, name = GH_REPO.split("/", 1)
+        got = gh_json("api", "graphql", "-f", f"owner={owner}", "-f", f"name={name}", "-F", f"number={item['pr']}",
+                      "-f", f"query={job.QUEUE_READ}")
+        try:
+            pr = got["data"]["repository"]["pullRequest"]
+        except (TypeError, KeyError):
+            return False
+        if pr["state"] == "MERGED":
+            merged(item, jobs)
             return True
-        if pr and pr["state"] == "CLOSED":
+        if pr["state"] == "CLOSED":
             item.update(state="failed", note="its pull request was closed")
+            return True
+        if job.in_queue(pr):
+            return False
+        # out of the queue with auto-merge off: GitHub's queue refused the armed head
+        nodes = pr["timelineItems"]["nodes"]
+        removed = nodes[-1] if nodes else None
+        armed = item.get("armedAt")
+        if removed and armed and job.when(removed["createdAt"]) > job.when(armed):
+            why = removed.get("reason") or "no reason given"
+        else:
+            why = "its reason couldn't be read"
+        item.update(state="waiting", refused=item.get("head"), note=f"GitHub's queue didn't merge {item.get('head')}: {why}"[:240])
+        return True
+    if item["state"] == "waiting":
+        pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", "headRefOid,state,files")
+        if not pr:
+            return False
+        if pr["state"] == "MERGED":
+            merged(item, jobs)
+            return True
+        if pr["state"] == "CLOSED":
+            item.update(state="failed", note="its pull request was closed")
+            return True
+        head = pr["headRefOid"]
+        verdict, said = may_arm(j, pr, item.get("refused"))
+        if verdict == "arm":
+            arm(item, head, said)
+            return True
+        if verdict == "wait" and said.startswith(HELD):  # a new head held: judged once, not at every pass
+            item.update(head=head, refused=head, note=said)
             return True
     return False
 
@@ -343,7 +442,7 @@ def one_pass(args):
     state = load_state()
     jobs = oby_jobs()
     for item in state.values():
-        if item["state"] in ACTIVE and follow(item, jobs):
+        if (item["state"] in ACTIVE or item["state"] == "waiting") and follow(item, jobs):
             save(item)
             say(f"{item['key']}: {item['state']}" + (f" (#{item['pr']})" if item.get("pr") else "") + (f": {item['note']}" if item.get("note") else ""))
     active = [i for i in state.values() if i["state"] in ACTIVE]

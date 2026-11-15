@@ -8,7 +8,7 @@ import { confirming, ownersWords } from './device';
 import { input, space, picked } from './words';
 import { notifying, windowLeft, windowSeen } from './notify';
 import { updating } from './updates';
-import { localSettings } from './settings';
+import { localSettings, loginDefault } from './settings';
 import { menu } from '../shared/menu';
 import { sphering } from './sphere';
 import { ipc } from './ipc';
@@ -216,6 +216,8 @@ app.whenReady().then(() => {
   updating(trusted, () => win);
   // Settings rows obid has no setting for yet, kept in settings.json (settings.ts)
   localSettings(trusted);
+  // Open at login's default, once per install (settings.ts)
+  loginDefault();
   // The window opens only while Oby is the active app (ALERTS-3). obid's `open -g -j … --background`
   // starts it with none, and a running Oby that `open` reaches gets activate (a reopen) without
   // becoming active: neither opens it. The owner's Dock click or app switch makes Oby active, which
