@@ -104,7 +104,7 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
       {j.ask && (task.status === 'needs' || task.answer) && <AskBlock task={task} />}
 
       {/* done: what it left behind, one line; on its page, Result has it. Failed or interrupted, why first */}
-      {(stopped || result) && <div className="tc-done"><div>{stopped && <p className="tc-result">{stopped}</p>}{result}</div></div>}
+      {(stopped || result) && <div className="tc-done"><div>{stopped && <p className="tc-result is-stopped">{stopped}</p>}{result}</div></div>}
 
       {/* done, the stages are in the details only */}
       {!done && <Progress stages={j.stages} />}

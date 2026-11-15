@@ -47,7 +47,7 @@ describe('TASKS-25: a failed task shows its reason as a plain line, Try again in
   it('tasks_25_its_card_and_page_show_the_reason_and_no_card_to_answer', () => {
     const task = taskFor(job());
     for (const card of [read(renderToStaticMarkup(<ui.TaskCard task={task} />)), read(renderToStaticMarkup(<ui.TaskCard task={task} alone />))]) {
-      expect(card).toContain('<p class="tc-result">Not logged in</p>');
+      expect(card).toContain('<p class="tc-result is-stopped">Not logged in</p>');
       // its first line only
       expect(card).not.toMatch(/Not logged in\s*more/);
       for (const word of ['Give it another round', 'Stop here', 'Later']) expect(card).not.toContain(word);
@@ -93,7 +93,7 @@ describe('TASKS-25 on the mock (?everything): Codex keeps its sandbox roots on r
     expect(s2.status).toBe('done');
     expect(tasks.tasksWith('needs').map((t) => t.id)).not.toContain(s2.id);
     const card = read(renderToStaticMarkup(<TaskCard task={s2} />));
-    expect(card).toContain('<p class="tc-result">Two sandbox tests still fail after 2 rounds</p>');
+    expect(card).toContain('<p class="tc-result is-stopped">Two sandbox tests still fail after 2 rounds</p>');
     expect(card).not.toContain('tc-ask');
     expect(read(renderToStaticMarkup(<StatusDot task={s2} live />))).toContain('aria-label="Failed"><span class="status-dot is-failed"');
     const html = read(renderToStaticMarkup(<TaskMenu task={s2} at={rect} onClose={() => {}} onOpenChat={() => {}} onRename={() => {}} />));

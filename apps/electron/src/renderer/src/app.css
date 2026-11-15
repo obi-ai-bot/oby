@@ -486,8 +486,11 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .tc-done { margin-top: 12px; display: grid; grid-template-rows: 1fr; transition: grid-template-rows 360ms var(--warm), opacity var(--fade), margin-top 360ms var(--warm); }
 .tc-done > div { min-height: 0; overflow: hidden; }
 .tc-done .tc-result { margin: 0; }
+.tc-done .tc-result + .tc-result { margin-top: 4px; }
 .task-card.is-open .tc-done { grid-template-rows: 0fr; opacity: 0; margin-top: 0; }
 .tc-result { margin: 8px 0 0; color: var(--muted); font-size: var(--text-sm); }
+/* failed or interrupted: why, the line the owner reads, so in --text (TASKS-25) */
+.tc-result.is-stopped { color: var(--text); }
 .tc-result a { color: var(--text); text-decoration: none; }
 .tc-result a:hover { color: var(--ink); text-decoration: underline; }
 
