@@ -920,6 +920,16 @@ for command in 'cargo fmt --manifest-path tools/oby-check-blok/Cargo.toml --all 
     'cargo test --manifest-path tools/oby-check-blok/Cargo.toml' 'oby-check: group rust'; do
     grep -qF "$command" <<<"$said" || { echo "oby-check-test: missing pilot step $command: $said" >&2; exit 1; }
 done
+# The `oby` command's crate plans its own three steps, in group rust, and not oby-check-blok's.
+said=$(OBY_CHECK_PATHS=tools/oby/src/main.rs OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
+for command in 'cargo fmt --manifest-path tools/oby/Cargo.toml --all -- --check' \
+    'cargo clippy --manifest-path tools/oby/Cargo.toml --all-targets -- -D warnings' \
+    'cargo test --manifest-path tools/oby/Cargo.toml' 'oby-check: group rust'; do
+    grep -qF "$command" <<<"$said" || { echo "oby-check-test: missing oby step $command: $said" >&2; exit 1; }
+done
+! grep -qF 'tools/oby-check-blok' <<<"$said" || {
+    echo "oby-check-test: tools/oby planned oby-check-blok's steps: $said" >&2; exit 1;
+}
 said=$(OBY_CHECK_PATHS=README.md OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
 ! grep -qE '^oby-check: group (rust|electron|swift|factory)$' <<<"$said" || {
     echo "oby-check-test: unchanged groups were planned: $said" >&2; exit 1;

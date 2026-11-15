@@ -41,6 +41,7 @@
 #                         the Rust group above with tests/routes_guard.rs (docs/contracts/ci.md)
 #   apps/ios/, apps/watch/, apps/shared/, apps/Oby.xcodeproj, character/
 #                         the touched iOSTests suites on a Simulator, else a build-for-testing
+#   tools/oby/            cargo fmt --check, clippy -D warnings and cargo test of the `oby` command
 #   apps/electron/        npm run typecheck, npm test and npm run build there (its node_modules from npm install)
 #   scripts/oby-check*    scripts/oby-check-test.sh and the line limit below
 #   AGENTS.md             the limits below, AGENTS.md's bytes among them (the root's only; CI-36 to 38)
@@ -444,13 +445,14 @@ suites() {
 }
 
 # What each part needs, one per line.
-rust='' blok='' electron='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' check_script='' factory='' agents_md='' agents_rules=''
+rust='' blok='' oby_cli='' electron='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' check_script='' factory='' agents_md='' agents_rules=''
 add() { printf '%s\n%s' "$1" "$2"; }
 while IFS= read -r file; do
     case "$file" in
         core/AGENTS.md | core/CLAUDE.md) ;;
         core/*) rust=1 ;;
         tools/oby-check-blok/*) blok=1 ;;
+        tools/oby/*) oby_cli=1 ;;
     esac
     case "$file" in
         core/crates/obid/tests/support/*)
@@ -529,7 +531,7 @@ fi
 # Electron app and the Apple apps' build (no suites named: build-for-testing). The secret scan still
 # covers what changed against the base, which on the base itself is nothing.
 if [[ -n "${OBY_CHECK_ALL:-}" ]]; then
-    rust=1 blok=1 lib_all=1 check_script=1 electron=1 ios=1 factory=1 agents_rules=1
+    rust=1 blok=1 oby_cli=1 lib_all=1 check_script=1 electron=1 ios=1 factory=1 agents_rules=1
     tests=$(ls core/crates/obid/tests/*.rs 2>/dev/null || true)
     crates=$(ls core/crates 2>/dev/null || true)
 fi
@@ -713,6 +715,13 @@ if selected && first_shard && [[ -n "$blok" ]]; then
     step env CARGO_NET_OFFLINE=true CARGO_TARGET_DIR="$cache/oby-check-blok" cargo fmt --manifest-path tools/oby-check-blok/Cargo.toml --all -- --check
     step env CARGO_NET_OFFLINE=true CARGO_TARGET_DIR="$cache/oby-check-blok" cargo clippy --manifest-path tools/oby-check-blok/Cargo.toml --all-targets -- -D warnings
     step env CARGO_NET_OFFLINE=true CARGO_TARGET_DIR="$cache/oby-check-blok" cargo test --manifest-path tools/oby-check-blok/Cargo.toml
+fi
+
+# The `oby` command (docs/contracts/cli.md): a crate of its own, outside obid's workspace.
+if selected && first_shard && [[ -n "$oby_cli" ]]; then
+    step env CARGO_NET_OFFLINE=true CARGO_TARGET_DIR="$cache/oby" cargo fmt --manifest-path tools/oby/Cargo.toml --all -- --check
+    step env CARGO_NET_OFFLINE=true CARGO_TARGET_DIR="$cache/oby" cargo clippy --manifest-path tools/oby/Cargo.toml --all-targets -- -D warnings
+    step env CARGO_NET_OFFLINE=true CARGO_TARGET_DIR="$cache/oby" cargo test --manifest-path tools/oby/Cargo.toml
 fi
 
 if selected && [[ -n "$rust" ]]; then
