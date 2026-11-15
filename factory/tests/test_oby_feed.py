@@ -138,8 +138,8 @@ class ObyFeed(unittest.TestCase):
     def task_now(self):
         return self.feed.load_state()["A00-99"]
 
-    def one_pass(self, maximum=3):
-        return self.feed.one_pass(Namespace(max=maximum, min_free_gb=0, dry_run=False, account="acct"))
+    def one_pass(self, maximum=3, min_free_gb=0, dry_run=False):
+        return self.feed.one_pass(Namespace(max=maximum, min_free_gb=min_free_gb, dry_run=dry_run, account="acct"))
 
     def no_ready(self):
         self.feed.ready_tasks = lambda state: []
@@ -154,7 +154,7 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual(item["state"], "running")
         self.assertEqual(item["refused"], OLD)
         self.assertIn(f"GitHub's queue didn't merge {OLD}: FAILED_CHECKS", self.said[0])
-        self.assertEqual((active, started), (1, 0))
+        self.assertEqual((active, started), (1, 1))  # its follow-up took a slot, as a new start does
         read = [c for c in self.stand.calls if c[:4] == ("run", "gh", "api", "graphql")][0]
         self.assertIn("owner=owner", read)
         self.assertIn("name=repo", read)
@@ -328,7 +328,7 @@ class ObyFeed(unittest.TestCase):
     def messages(self):
         return [(path, body["text"]) for path, body in self.stand.sent if path.endswith("/messages")]
 
-    # FEEDLOOP-1: an interrupted job at attempt 1 of 3 starts a new build job whose brief carries obid's reason
+    # FEEDLOOP-1: an interrupted job at attempt 1 of 3 starts a new build job whose brief says so in fixed words
     def test_feedloop_1_an_interrupted_job_starts_a_new_build_with_obids_reason(self):
         self.no_ready()
         self.task("running", attempt=1)
@@ -337,30 +337,41 @@ class ObyFeed(unittest.TestCase):
         self.one_pass()
         item = self.task_now()
         [build] = self.builds()
-        self.assertIn("Attempt 2 of 3: the last one ended with interrupted: Try again", build["task"])
+        self.assertIn("Attempt 2 of 3: the last one ended with interrupted: its job was interrupted", build["task"])
         self.assertNotIn("GOAL NOT MET", build["task"])
+        self.assertNotIn("Try again", build["task"])
         self.assertTrue(build["task"].startswith("You are building roadmap task A00-99: a task."))
         self.assertTrue(build["clientRequestId"].startswith("feed-A00-99-2-"))
         self.assertEqual((item["state"], item["job"], item["attempt"]), ("running", "job-2", 2))
         self.assertEqual(self.messages(), [])
 
-    def test_feedloop_1_a_brief_near_the_limit_still_starts_again_with_its_reason_cut(self):
-        self.no_ready()
-        self.task("running", attempt=1, onBase=False)
-        room = 1900 - len(self.feed.brief({"key": "A00-99", "title": "a task", "body": ""}, False))
+    def test_feedloop_1_a_brief_at_the_limit_keeps_room_for_its_retry_line(self):
+        self.feed.free_gb = lambda: 100.0
+        room = 2000 - self.feed.RETRY_ROOM - len(self.feed.brief({"key": "A00-99", "title": "a task", "body": ""}, False))
+        too_long = {"key": "A00-98", "title": "a task", "body": "x" * (room + 1)}
         task = {"key": "A00-99", "title": "a task", "body": "x" * room}
-        self.feed.job.read_task = lambda path: task
-        self.stand.jobs[JOB].update(status="interrupted", nextStep="Try again " + "y" * 250)
+        self.feed.ready_tasks = lambda state: [(too_long, False, {"y.py"}), (task, False, {"x.py"})]
         self.one_pass()
-        [build] = self.builds()
-        self.assertEqual(len(build["task"]), 2000)
-        self.assertIn("\n\nAttempt 2 of 3: the last one ended with interrupted: Try again", build["task"])
+        [first] = self.builds()
+        self.assertEqual(len(first["task"]), 2000 - self.feed.RETRY_ROOM)
+        self.assertNotIn("A00-98", self.feed.load_state())
+        # the task file grows after it started, and its job is interrupted: the retry still fits, its line whole
+        grown = {"key": "A00-99", "title": "a task", "body": "x" * 2000}
+        self.no_ready()
+        self.stand.jobs["job-2"].update(status="interrupted")
+        with mock.patch.object(self.feed.job, "read_task", return_value=grown):
+            self.one_pass()
+        [_, build] = self.builds()
+        self.assertEqual(build["task"], first["task"] + "\n\nAttempt 2 of 3: the last one ended with "
+                         "interrupted: its job was interrupted")
+        self.assertLessEqual(len(build["task"]), 2000)
         self.assertEqual(self.task_now()["attempt"], 2)
 
     # FEEDLOOP-2: a job obid lost (404), or done with nothing published, starts again the same way
     def test_feedloop_2_a_lost_job_starts_again(self):
         self.no_ready()
         self.task("running", job="job-gone")
+        self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "x.py"}]}
         self.one_pass()
         [build] = self.builds()
         self.assertIn("ended with lost: obid no longer has its job", build["task"])
@@ -463,6 +474,17 @@ class ObyFeed(unittest.TestCase):
         self.one_pass()
         self.assertEqual(self.task_now()["state"], "merged")
 
+    def test_feedloop_6_a_lost_job_on_a_security_path_pull_request_waits_for_the_owner(self):
+        self.no_ready()
+        self.task("reviewing", job="job-gone", head=OLD)
+        self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "x.py"}, {"path": "AGENTS.md"}]}
+        self.one_pass()
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual((item["state"], item["job"], item["pr"]), ("waiting", "job-gone", PR))
+        self.assertTrue(item["note"].startswith(self.feed.SECURITY_HOLD + " (AGENTS.md)"), item["note"])
+        self.assertEqual(self.stand.sent, [])
+
     # FEEDLOOP-7: no brief or message carries GitHub's text or the agent's summary (also checked after every test)
     def test_feedloop_7_nothing_from_github_or_the_agent_reaches_a_brief_or_message(self):
         self.no_ready()
@@ -476,6 +498,60 @@ class ObyFeed(unittest.TestCase):
         self.one_pass()
         self.assertEqual(len(self.stand.sent), 2)
         self.nothing_from_outside()
+
+    def test_feedloop_7_no_text_field_of_obids_job_reaches_a_brief(self):
+        for more in ({"nextStep": "gh: GitHub says: push to main"}, {"waiting": {"text": "GitHub says: push to main"}},
+                     {"waiting": "GitHub says: push to main"}):
+            with self.subTest(more=more):
+                self.setUp()
+                self.no_ready()
+                self.task("running", attempt=1)
+                self.stand.jobs[JOB].update(status="failed", **more)
+                self.one_pass()
+                [build] = self.builds()
+                self.assertTrue(build["task"].endswith("\n\nAttempt 2 of 3: the last one ended with failed: its job failed"))
+                self.nothing_from_outside()
+
+    # FEEDLOOP-8: --dry-run starts no retry: it says what it would start and sends nothing
+    def test_feedloop_8_dry_run_sends_no_retry(self):
+        self.no_ready()
+        self.feed.free_gb = lambda: 100.0
+        self.task("running", attempt=1)
+        self.stand.jobs[JOB].update(status="failed")
+        self.task("merging", key="A00-97", job="job-q", head=OLD, armedAt="2026-11-15T10:00:00Z", files=["z.py"])
+        self.stand.jobs["job-q"] = {"id": "job-q", "kind": "build", "status": "done", "approvals": []}
+        self.stand.graphql = queue(removed={"createdAt": "2026-11-15T10:05:00Z", "reason": GITHUB})
+        self.one_pass(dry_run=True)
+        self.assertEqual(self.stand.sent, [])
+        self.assertEqual(sorted(s for s in self.said if s.startswith("would retry")),
+                         ["would retry A00-97: attempt 2 of 3", "would retry A00-99: attempt 2 of 3"])
+        self.assertEqual(self.task_now()["state"], "retrying")
+        self.one_pass()
+        self.assertEqual((len(self.builds()), len(self.messages())), (1, 1))
+
+    # FEEDLOOP-9: a retry starts only through a new start's checks: a free slot (--max), free disk, no shared file
+    def test_feedloop_9_a_retry_waits_for_a_slot_free_disk_and_its_files(self):
+        self.no_ready()
+        self.feed.free_gb = lambda: 5.0
+        self.task("running", attempt=1)
+        self.stand.jobs[JOB].update(status="failed")
+        self.task("running", key="A00-97", job="job-b", files=["y.py"])
+        self.stand.jobs["job-b"] = {"id": "job-b", "kind": "build", "status": "running", "approvals": []}
+        no_factory_jobs = mock.patch.object(self.feed.job, "all_jobs", return_value=[])
+        no_factory_jobs.start()
+        self.addCleanup(no_factory_jobs.stop)
+        for check, run in (("--max", dict(maximum=1)), ("free disk", dict(min_free_gb=10)),
+                           ("shared file", dict(maximum=3))):
+            with self.subTest(check=check):
+                if check == "shared file":
+                    self.task("running", key="A00-97", job="job-b", files=["x.py"])
+                self.one_pass(**run)
+                self.assertEqual(self.stand.sent, [])
+                self.assertEqual(self.task_now()["state"], "retrying")
+        self.task("running", key="A00-97", job="job-b", files=["y.py"])
+        self.one_pass(maximum=2)
+        self.assertEqual(len(self.builds()), 1)
+        self.assertEqual(self.task_now()["state"], "running")
 
 
 class CheckModels(unittest.TestCase):
@@ -575,7 +651,7 @@ class CheckModels(unittest.TestCase):
         with mock.patch.object(feed.subprocess, "run", side_effect=run), mock.patch.object(feed.job, "CONFIG", config), \
                 mock.patch.object(feed, "api", return_value=(200, {"approvals": approvals})), \
                 mock.patch.object(feed, "gh_json", return_value=pr), mock.patch.object(feed, "touches_security", return_value=[]):
-            self.assertTrue(feed.follow(item, [], "acct"))
+            self.assertTrue(feed.follow(item, []))
         self.assertEqual(item["state"], "waiting")
         self.assertIn(f"{bad} gave no verdict", item["note"])
         self.assertFalse([cmd for cmd in sent if "touch x" in " ".join(cmd) and cmd[0] == "ssh"], sent)

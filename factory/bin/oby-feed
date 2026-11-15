@@ -21,10 +21,12 @@ frees the disk afterwards:
   head: that head is never armed again, a new one can be.
 - A task gets at most MAX_ATTEMPTS (3) jobs from the feeder, and next_attempt() is the one rule for an attempt that
   ended: a job that failed, was interrupted or lost, or ended done with nothing published, starts a new build job
-  whose brief adds obid's own reason; a head the queue refused, a pull request that conflicts with dev or is behind
-  it, or a review that ran out of rounds gets a follow-up on the same pull request (POST /v1/jobs/{id}/messages) in
-  fixed words. STATUS: BLOCKED, a stopped job and a security-path hold are never retried; out of attempts the task
-  ends `failed` with the last reason.
+  whose brief adds fixed words picked by obid's status; a head the queue refused, a pull request that conflicts with
+  dev or is behind it, or a review that ran out of rounds gets a follow-up on the same pull request
+  (POST /v1/jobs/{id}/messages) in fixed words. The task waits `retrying` until its attempt passes a new start's
+  checks (--max, free disk, shared files; --dry-run starts none). STATUS: BLOCKED, a stopped job and a pull request
+  that touches a security path, its job lost or not, are never retried; out of attempts the task ends `failed` with
+  the last reason.
 - A Quint model the pull request adds or changes (docs/models/*.qnt) is verified first, on the gate VM, as its
   own `// verify:` lines say, each check on an Apalache port of its own. Each run is read with factory/bin/prove's
   rule, imported: an invariant passes only when Quint says it holds, and a witness only when Quint reports a
@@ -263,13 +265,16 @@ def brief(task, on_base):
     return text
 
 
+RETRY_ROOM = 200  # what a retry's line may add: a first brief leaves it free, so a task that started can always retry
+
+
 def start(task, account, on_base, why=None, attempt=1):
     key = task["key"]
-    text = brief(task, on_base)
-    if len(text) > 2000:
+    text = task.get("brief") or brief(task, on_base)
+    if len(text) > 2000 - (0 if why else RETRY_ROOM):
         return None, f"its file isn't on origin/{job.BASE} and its text is too long to send ({len(text)} characters): commit the task file first"
-    if why:  # obid's own words for the attempt before, never the agent's or GitHub's, cut to fit obid's 2,000
-        text += f"\n\nAttempt {attempt} of {MAX_ATTEMPTS}: the last one ended with {why}"[:2000 - len(text)]
+    if why:  # fixed words for the attempt before, never obid's, the agent's or GitHub's text (FEEDLOOP-7)
+        text += f"\n\nAttempt {attempt} of {MAX_ATTEMPTS}: the last one ended with {why}"[:min(RETRY_ROOM, 2000 - len(text))]
     code, body = api("POST", "/v1/jobs", {"job": {
         "repo": GH_REPO, "kind": "build", "account": account, "base": job.BASE, "rounds": 3,
         "title": f"{key} {task['title']}"[:60].strip(), "task": text,
@@ -306,6 +311,20 @@ def obid_reason(j):
     return (f"{j.get('status')}: {said}" if said else str(j.get("status")))[:300]
 
 
+ENDED = {"failed": "failed: its job failed", "interrupted": "interrupted: its job was interrupted",
+         "done": "done: it ended with nothing published"}
+
+
+def retry_words(j):
+    """A new build's fixed words for why the attempt before ended, picked by obid's status alone: no text field of a
+    job (nextStep, waiting, publishError) reaches a brief, as any of them can carry GitHub's (AGENTS.md, "From outside")."""
+    if j is None:
+        return "lost: obid no longer has its job"
+    if j.get("publishError"):
+        return "publish: obid couldn't publish it"
+    return ENDED.get(j.get("status"), "its job ended without a pull request")
+
+
 def next_attempt(item, j, case=None):
     """The one rule for a task whose attempt ended (docs/contracts/factory.md, FEEDLOOP-1 to 7): ("build", why) starts
     a new build job, ("message", words) a follow-up on its pull request, ("end", why) ends it for good. `j` is obid's
@@ -320,30 +339,39 @@ def next_attempt(item, j, case=None):
     why = AGAIN[case].format(head=head if re.fullmatch(r"[0-9a-f]{40}", head) else "its head") if case else obid_reason(j)
     if item.get("attempt", 1) >= MAX_ATTEMPTS:
         return "end", f"attempt {item.get('attempt', 1)} of {MAX_ATTEMPTS} ended: {why}"
-    return ("message" if case else "build"), why
+    return ("message", why) if case else ("build", retry_words(j))
 
 
-def retry(item, j, case, account):
-    """Carries the task on as next_attempt() says. Returns True when it changed."""
+def retry(item, j, case):
+    """Decides how the task carries on, as next_attempt() says: it ends now, or waits `retrying` for one_pass() to
+    start its attempt through a new start's checks (--max, free disk, files, --dry-run). Returns True."""
     verdict, why = next_attempt(item, j, case)
     strip_build_folders(item["job"])
     if verdict == "end":
         item.update(state="failed", note=why[:240])
-        return True
+    else:
+        item.update(state="retrying", retry=verdict, words=why, note=why[:240])
+    return True
+
+
+def carry(item, account):
+    """Starts the attempt a `retrying` task waits for. Returns True when it started."""
     attempt = item.get("attempt", 1) + 1
-    if verdict == "build":
+    if item["retry"] == "build":
         on_base = item.get("onBase", True)
-        task = item if on_base else job.read_task(job.TASKS / f"{item['key']}.md")
-        oby_id, err = start(task, account, on_base, why, attempt)
+        task = item if on_base or item.get("brief") else job.read_task(job.TASKS / f"{item['key']}.md")
+        oby_id, err = start(task, account, on_base, item["words"], attempt)
         for k in ("pr", "head", "refused", "armedAt", "approved") if oby_id else ():
             item.pop(k, None)
     else:
-        code, body = api("POST", f"/v1/jobs/{item['job']}/messages", {"text": why})
+        code, body = api("POST", f"/v1/jobs/{item['job']}/messages", {"text": item["words"]})
         oby_id, err = (body["id"], None) if code in (200, 201) and (body or {}).get("id") else (None, (body or {}).get("error", code))
     if not oby_id:  # tried again at the next pass
         say(f"{item['key']}: attempt {attempt} not started: {err}")
         return False
-    item.update(job=oby_id, state="running", attempt=attempt, note=why[:240])
+    for k in ("retry", "words"):
+        item.pop(k, None)
+    item.update(job=oby_id, state="running", attempt=attempt)
     return True
 
 
@@ -403,14 +431,22 @@ def merged(item, jobs):
     item.update(state="merged", note=f"merged; {gone} Oby jobs and their worktrees removed")
 
 
-def follow(item, jobs, account):
+def follow(item, jobs):
     """One look at a task that is under way or waiting. Returns True when it changed."""
     key = item["key"]
     code, j = api("GET", f"/v1/jobs/{item['job']}")
     if code == 404:
-        if item["state"] != "waiting" or not (item.get("note") or "").startswith(SECURITY_HOLD):
-            return retry(item, None, None, account)
-        j = {}  # a security-path hold stays the owner's: its pull request is still followed, never rebuilt
+        # a pull request that touches a security path stays the owner's: still followed, never rebuilt
+        pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", VIEW) if item.get("pr") else None
+        if item.get("pr") and not pr:
+            return False  # its files unread: looked at again at the next pass
+        hit =touches_security([f["path"] for f in (pr or {}).get("files", [])])
+        if not hit and not (item["state"] == "waiting" and (item.get("note") or "").startswith(SECURITY_HOLD)):
+            return retry(item, None, None)
+        if item["state"] != "waiting":
+            item.update(state="waiting", note=f"{SECURITY_HOLD} ({hit[0]}) and obid no longer has its job: merge it yourself")
+            return True
+        j = {}
     elif code != 200:
         return False
     # a follow-up carries the work on: follow the newest job of the chain
@@ -425,7 +461,7 @@ def follow(item, jobs, account):
         first = (j.get("summary") or "").strip().splitlines()[0:1]
         pr = pr_number(j.get("published")) if j["status"] == "done" else None
         if not pr or (first and first[0].startswith("STATUS: BLOCKED")):
-            return retry(item, j, None, account)
+            return retry(item, j, None)
         strip_build_folders(item["job"])
         item.update(state="reviewing", pr=pr)
         return True
@@ -440,7 +476,7 @@ def follow(item, jobs, account):
             item.update(state="failed", note="its pull request was closed")
             return True
         if stuck(pr, j):
-            return retry(item, j, stuck(pr, j), account)
+            return retry(item, j, stuck(pr, j))
         head = pr["headRefOid"]
         verdict, said = may_arm(j, pr, item.get("refused"))
         if verdict == "pending":
@@ -478,7 +514,7 @@ def follow(item, jobs, account):
             why = "its reason couldn't be read"
         say(f"{key}: GitHub's queue didn't merge {item.get('head')}: {why}")
         item.update(refused=item.get("head"), note=f"GitHub's queue didn't merge {item.get('head')}: {why}"[:240])
-        retry(item, j, "queue", account)
+        retry(item, j, "queue")
         return True
     if item["state"] == "waiting":
         pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", VIEW)
@@ -491,7 +527,7 @@ def follow(item, jobs, account):
             item.update(state="failed", note="its pull request was closed")
             return True
         if stuck(pr, j):
-            return retry(item, j, stuck(pr, j), account)
+            return retry(item, j, stuck(pr, j))
         head = pr["headRefOid"]
         verdict, said = may_arm(j, pr, item.get("refused"))
         if verdict == "arm":
@@ -503,21 +539,27 @@ def follow(item, jobs, account):
     return False
 
 
+def busy(state, states):
+    """The files of the feeder's tasks in `states` and of the factory's own jobs under way: a start shares none."""
+    files = set()
+    for item in state.values():
+        if item["state"] in states:
+            files |= set(item.get("files", []))
+    for j in job.all_jobs():
+        if j["stage"] not in job.TERMINAL:
+            try:
+                files |= job.code_files(job.read_task(job.TASKS / f"{j['issue']}.md"))
+            except (SystemExit, FileNotFoundError, OSError):
+                pass
+    return files
+
+
 def ready_tasks(state):
     """Open task files that may start now, in the queue's order, with why each other one waits."""
     done = job.done_keys()
     on_base = job.on_base(job.TASKS)
     factory = {j["issue"] for j in job.all_jobs()}
-    busy_files = set()
-    for item in state.values():
-        if item["state"] in ACTIVE:
-            busy_files |= set(item.get("files", []))
-    for j in job.all_jobs():
-        if j["stage"] not in job.TERMINAL:
-            try:
-                busy_files |= job.code_files(job.read_task(job.TASKS / f"{j['issue']}.md"))
-            except (SystemExit, FileNotFoundError, OSError):
-                pass
+    busy_files = busy(state, ACTIVE | {"retrying"})
     out = []
     for task in job.open_tasks():
         key = task["key"]
@@ -537,14 +579,35 @@ def one_pass(args):
     state = load_state()
     jobs = oby_jobs()
     for item in state.values():
-        if (item["state"] in ACTIVE or item["state"] == "waiting") and follow(item, jobs, args.account):
+        if (item["state"] in ACTIVE or item["state"] == "waiting") and follow(item, jobs):
             save(item)
             say(f"{item['key']}: {item['state']}" + (f" (#{item['pr']})" if item.get("pr") else "") + (f": {item['note']}" if item.get("note") else ""))
     active = [i for i in state.values() if i["state"] in ACTIVE]
     slots = args.max - len(active)
     started = 0
+    taken = set()
+    # a retry starts first, through the same checks as a new start: --max, the files, free disk and --dry-run
+    retrying = sorted((i for i in state.values() if i["state"] == "retrying"), key=lambda i: i.get("started", ""))
+    held = busy(state, ACTIVE) if retrying and slots > 0 else set()
+    for item in retrying if slots > 0 else ():
+        files = set(item.get("files", []))
+        if started >= slots:
+            break
+        if files & (held | taken):
+            continue
+        if free_gb() < args.min_free_gb:
+            say(f"waiting to retry {item['key']}: {free_gb():.0f} GB free, under {args.min_free_gb} GB")
+            break
+        if args.dry_run:
+            say(f"would retry {item['key']}: attempt {item.get('attempt', 1) + 1} of {MAX_ATTEMPTS}")
+        elif carry(item, args.account):
+            save(item)
+            say(f"{item['key']}: attempt {item['attempt']} started as Oby job {item['job']}")
+        else:
+            continue
+        started += 1
+        taken |= files
     if slots > 0:
-        taken = set()
         for task, on_base, files in ready_tasks(state):
             if started >= slots:
                 break
@@ -565,7 +628,8 @@ def one_pass(args):
                     SAID.add(task["key"])
                 continue
             item = {"key": task["key"], "title": task["title"], "job": oby_id, "state": "running",
-                    "files": sorted(files), "started": time.strftime("%Y-%m-%dT%H:%M:%S"), "attempt": 1, "onBase": on_base}
+                    "files": sorted(files), "started": time.strftime("%Y-%m-%dT%H:%M:%S"), "attempt": 1, "onBase": on_base,
+                    "brief": brief(task, on_base)}
             state[task["key"]] = item
             save(item)
             say(f"{task['key']}: started as Oby job {oby_id} on {args.account}")
@@ -593,7 +657,7 @@ def clean():
     jobs = oby_jobs()
     keep = set()
     for item in state.values():
-        if item["state"] in ACTIVE or item["state"] == "waiting":
+        if item["state"] in ACTIVE or item["state"] in ("waiting", "retrying"):
             keep |= family(item["job"], jobs)
     before = free_gb()
     # a job whose pull request is still open stays, with its follow-ups and reviews; so does anything running
