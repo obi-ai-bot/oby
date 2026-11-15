@@ -440,7 +440,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
               // obid's list again as it opens
               onClick={(e) => { if (!profileMenu) void loadProfiles(); setProfileMenu(profileMenu ? null : e.currentTarget.getBoundingClientRect()); }}
             >
-              {shownProfile.name}
+              <span className="sidebar-title-name">{shownProfile.name}</span>
               <ChevronDown size={16} strokeWidth={1.8} />
             </button>
           ) : TITLES[section]}{inSphere && sphere.sample && <span className="sidebar-sample">Sample</span>}</h2>

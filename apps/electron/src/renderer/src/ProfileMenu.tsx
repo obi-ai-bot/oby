@@ -16,8 +16,9 @@ export default function ProfileMenu({ list, kept, at, onClose, onNew }: {
   onNew: () => void;  // New profile…: its form (NewProfileModal)
 }) {
   const open = openProfile(list, kept);
+  // its height: a 34px row and 2px gap each, then the rule, New profile… and the menu's padding
   return (
-    <Menu at={at} onClose={onClose} align="left" width={220} height={list.length * 30 + 50}>
+    <Menu at={at} onClose={onClose} align="left" width={220} height={list.length * 36 + 60}>
       {list.map((p) => (
         <button key={p.id} role="menuitemradio" aria-checked={p.id === open.id} className="profile-choice" onClick={() => { chooseProfile(p.id); onClose(); }}>
           <OwnerAvatar name={p.name} size={18} badge={false} color={p.color} />
