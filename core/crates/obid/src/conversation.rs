@@ -1726,6 +1726,71 @@ fn summary_foreign(job: Option<&crate::job::Job>, id: &str) -> Option<String> {
     }
 }
 
+/// Follows obid's job events (MERGING-49): the owner's own work that merged by itself past Oby's
+/// review still asking for changes tells its conversation so, with the job's card, once per merged
+/// head ([`crate::merge::merged_past`]). Every job obid has is looked at once at start, and again
+/// when events were missed, so a merge made meanwhile is told too.
+pub fn report_merges_past_review(shared: std::sync::Arc<Shared>) {
+    use tokio::sync::broadcast::error::RecvError;
+    let mut bus = shared.events.subscribe();
+    let mut stopping = shared.stopping.clone();
+    let sweep = |shared: &Shared| {
+        for job in shared.jobs.list(usize::MAX) {
+            tell_merged_past(shared, &job);
+        }
+    };
+    tokio::spawn(async move {
+        sweep(&shared);
+        loop {
+            let event = tokio::select! {
+                got = bus.recv() => match got {
+                    Ok(event) => event,
+                    Err(RecvError::Lagged(_)) => {
+                        sweep(&shared);
+                        continue;
+                    }
+                    Err(RecvError::Closed) => return,
+                },
+                _ = stopping.changed() => return,
+            };
+            let merged = event.data["pullRequest"]["state"] == "MERGED";
+            if let Some(job) = (event.data["id"].as_str())
+                .filter(|_| event.name == "job" && merged)
+                .and_then(|id| shared.jobs.get(id))
+            {
+                tell_merged_past(&shared, &job);
+            }
+        }
+    });
+}
+
+/// Tells `job`'s conversation it merged past Oby's review, with what that review still flagged
+/// (crate::merge::merged_past_review), once for that head: the mark goes on with the turn. A turn
+/// that couldn't be written is tried again; a conversation that's gone never will be.
+fn tell_merged_past(shared: &Shared, job: &crate::job::Job) {
+    let Some((conversation, head)) = crate::merge::merged_past(job) else {
+        return;
+    };
+    let flagged = (job.review.as_ref())
+        .and_then(|r| shared.jobs.get(&r.job))
+        .and_then(|review| crate::review::verdict(&review.summary))
+        .and_then(|(_, text)| whole_report(&crate::secrets::known().redact(&text)));
+    let title = crate::brain::briefing::line(&job.short_title(), 80);
+    let base = job.pull_request.as_ref().map_or("", |pr| pr.base.as_str());
+    let text = crate::merge::merged_past_review(&title, base, flagged.as_deref());
+    let (id, foreign) = (job.id.as_str(), summary_foreign(Some(job), &job.id));
+    let card = vec![id.to_owned()];
+    match (shared.conversations).append(conversation, "oby", text, card, foreign) {
+        Err(Error::Io(e)) => {
+            tracing::warn!("job {id} merged; conversation {conversation} couldn't be told: {e}");
+            return;
+        }
+        Err(e) => tracing::info!("job {id} merged; conversation {conversation} wasn't told: {e:?}"),
+        Ok(_) => {}
+    }
+    shared.jobs.mark_told_merged_past(id, head);
+}
+
 /// The conversations as the list orders them, after `after` (or from the first): the pinned
 /// ones, then the rest, each newest first.
 fn ordered(threads: &[Thread], after: Option<Cursor>) -> Vec<&Thread> {

@@ -220,6 +220,12 @@ impl Jobs {
         }
     }
 
+    /// The job `id`'s conversation was told it merged at `head` past Oby's review
+    /// (crate::merge::merged_past, MERGING-49): that head tells it nothing more.
+    pub fn mark_told_merged_past(&self, id: &str, head: &str) {
+        self.update(id, |job| job.told_merged_past = Some(head.to_owned()));
+    }
+
     /// What obid was sending for the job `id` when it last stopped, settled from what GitHub
     /// says now (the pull request is open): an approval it finds there is listed; a merge (and its
     /// branch's deletion) didn't land, and is tried again as anything is, unless a merge is under

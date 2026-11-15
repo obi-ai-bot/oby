@@ -588,6 +588,8 @@ pub async fn serve(
     }
     // A job a conversation started tells it how it ended (#351).
     conversation::report_job_ends(shared.clone());
+    // The owner's own work that merged past Oby's review says so there (MERGING-49).
+    conversation::report_merges_past_review(shared.clone());
     brain::ask::report(shared.clone());
     // What Home asks the owner about a job that's merged, closed, let go or gone settles (TASKS-13).
     settle_stale_items(shared.clone());
