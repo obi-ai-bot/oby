@@ -82,8 +82,10 @@ folder. That is
   requires it.
 - **Tests**: new behaviour has tests where the repo has a test runner, and no
   existing test was weakened, skipped or special-cased to pass.
-- **Missed mutants**: read `<job folder>/round-<N>/mutants.md` when it is
-  there. A mutant under `## Missed` in shipping code the branch changed may be
+- **Missed mutants**: read `<job folder>/round-<N>/mutants.md` if it is there
+  when you look; it runs beside you, so never wait, poll or re-check for it.
+  When it is absent, write "mutants still running" under `## Notes` and raise
+  no mutant finding. A mutant under `## Missed` in shipping code the branch changed may be
   raised as a finding: name the test to add, one that would notice that change.
   Never raise one on its own from `## Missed in functions a Kani proof calls`,
   from code only macOS compiles, or from a `SKIPPED`, `TIMEOUT` or `NO RESULT`

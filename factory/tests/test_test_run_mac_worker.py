@@ -240,6 +240,21 @@ class TestRunMacWorker(RemoteHarness, unittest.TestCase):
         self.assertEqual(run["args"], ["mutants", "--in-diff", "mutants.diff", "-p", "obid"])
         self.assertFalse(list(self.builders.glob("builder-*")))
 
+    # ---- REMOTE-50 -------------------------------------------------------------------------------
+
+    def test_remote_50_a_quint_run_goes_to_the_vm_not_the_mac_worker(self):
+        self.quint_on_the_vm()
+        self.write(SANDBOX, "// changed\n")
+        code, out, err, _ = self.run_test_run("quint", "verify", "--max-steps=12", "docs/models/job_race.qnt")
+        self.assertEqual(code, 0, out + err)
+        [call] = self.run_calls()
+        self.assertEqual(call["argv"][-4:-1], ["-l", "oby-builder", "oby-gate"])
+        self.assertNotIn("oby-mac-pro", json.dumps(self.ssh_calls()))
+        self.assertNotIn("Mac worker", err)
+        [run] = self.vm_runs()
+        self.assertEqual(run["args"], ["verify", "--max-steps=12", "docs/models/job_race.qnt"])
+        self.assertFalse(list(self.builders.glob("builder-*")))
+
     # ---- REMOTE-36 -------------------------------------------------------------------------------
 
     def test_remote_36_two_builders_run_at_once_on_the_mac_worker_and_a_gate_still_gets_a_slot(self):
