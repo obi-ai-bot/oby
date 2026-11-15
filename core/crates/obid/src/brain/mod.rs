@@ -21,6 +21,7 @@ pub mod find;
 pub mod harness;
 pub mod harness_codex;
 pub mod harness_cursor;
+pub mod named;
 pub mod owners_word;
 pub mod plan;
 pub mod read;

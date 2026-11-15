@@ -127,10 +127,7 @@ fn named_branch(d: &super::plan::Dispatch, researched: bool, asked: &Asked<'_>) 
 /// asked, joined after an answer's words ([`super::OBY_ASKED`]), isn't the owner's. Past that a
 /// negated mention still counts ("not the deploy branch").
 fn says_branch(said: &str, branch: &str) -> bool {
-    let words: Vec<&str> = said
-        .split(super::OBY_ASKED)
-        .next()
-        .unwrap_or(said)
+    let words: Vec<&str> = super::named::owners_words(said)
         .split_whitespace()
         .map(|word| word.trim_matches(|c: char| "`'\"“”‘’,;:.!?()[]<>".contains(c)))
         .collect();
@@ -545,7 +542,7 @@ pub async fn act(
     match plan.action {
         Action::StopAgent => stop(shared, plan),
         Action::RetryJob => on_jobs(shared, plan, source, conversation).await,
-        Action::AnswerInbox => answer_inbox(shared, plan, conversation, None).await,
+        Action::AnswerInbox => answer_inbox(shared, plan, conversation, None, None).await,
         Action::MessageJob => message_job(shared, plan, said, source, conversation, turn),
         Action::Dispatch => {
             Outcome::Failed("Couldn't do that: dispatch starts jobs, it changes nothing.".into())
@@ -793,12 +790,15 @@ pub(super) fn already_on_it(
 /// answer_inbox: an item of the inbox, with one of its options or the user's own words
 /// (`Desk.answerInbox`). `owners_word`: when the turn began, if its words are the owner's own,
 /// signed, and it read nothing untrusted (TASKCONV-9): an item made before then is answered as they
-/// say, the decisions only they make included; anything else waits for their Confirm.
+/// say, the decisions only they make included; anything else waits for their Confirm. `heard`: on a
+/// signed turn after an outside read, the owner's own words and when the turn began, which settle
+/// a card they name and skip one they don't (TASKCONV-29).
 pub(super) async fn answer_inbox(
     shared: &Arc<Shared>,
     plan: &Plan,
     conversation: &str,
     owners_word: Option<i64>,
+    heard: Option<(&str, i64)>,
 ) -> Outcome {
     let Some(id) = plan.item.as_deref() else {
         return Outcome::NeedsWhich("Say which inbox item to answer.".into());
@@ -855,7 +855,23 @@ pub(super) async fn answer_inbox(
     };
     let job = shared.jobs.get(&item.job);
     // One made since the turn began is one the owner hasn't seen: never theirs to settle by words.
-    let owner = owners_word.is_some_and(|begun| item.created < begun);
+    let mut owner = owners_word.is_some_and(|begun| item.created < begun);
+    // After an outside read, the owner's signed words settle a card they name; one they don't
+    // name isn't done, with no Confirm (TASKCONV-29).
+    let mut skip = false;
+    if let Some((heard, begun)) = heard.filter(|_| owners_word.is_none())
+        && NAMED_KINDS.contains(&item.kind.as_str())
+        && item.options.contains(&words)
+    {
+        use super::named::{card_named, names_card, says_words};
+        let here = waiting_here(shared, &item, conversation, begun);
+        let named = card_named(
+            names_card(heard, &item, job.as_ref()),
+            says_words(heard, &words),
+            here,
+        );
+        (owner, skip) = (named && item.created < begun, !named);
+    }
     match owners_call(&item, &words, job.as_ref(), owner) {
         Owners::No => {}
         Owners::Word => {
@@ -874,6 +890,7 @@ pub(super) async fn answer_inbox(
         Owners::Refuse(why) => {
             return Outcome::Failed(format!("Couldn't answer {}: {why}", item.title));
         }
+        Owners::Confirm(title, ..) if skip => return Outcome::Done(super::named::skipped(&title)),
         Owners::Confirm(title, text, confirmed) => {
             let confirmed = confirmed.in_conversation(conversation);
             confirm(shared, &item.job, title.clone(), text, confirmed);
@@ -916,6 +933,39 @@ pub(super) async fn answer_inbox(
             "Couldn't answer {}'s item: {}",
             item.title, e.message
         )),
+    }
+}
+
+/// The kinds of card the owner's signed words settle after an outside read, when they name it.
+const NAMED_KINDS: [&str; 7] = [
+    "merge",
+    "failed",
+    "permission",
+    "plan",
+    crate::sphere::inbox::QUESTION_KIND,
+    "confirm",
+    "start",
+];
+
+/// How many of `conversation`'s cards of `item`'s kind wait, made before `begun`, when `item` is
+/// one of them; else 0.
+fn waiting_here(shared: &Shared, item: &Item, conversation: &str, begun: i64) -> u32 {
+    let ours = |i: &Item| {
+        i.conversation().as_deref() == Some(conversation)
+            || shared
+                .jobs
+                .get(&i.job)
+                .is_some_and(|j| j.conversation.as_deref() == Some(conversation))
+    };
+    let waiting = shared.link.waiting_items(obi_protocol::time::now());
+    let here: Vec<&Item> = waiting
+        .iter()
+        .filter(|i| i.kind == item.kind && i.created < begun && ours(i))
+        .collect();
+    if here.iter().any(|i| i.id == item.id) {
+        u32::try_from(here.len()).unwrap_or(u32::MAX)
+    } else {
+        0
     }
 }
 

@@ -9,6 +9,8 @@
 //   HELLO          streams "Hello there." in three deltas, reads notes.md in its room, says it
 //   REMEMBER       says "resume=<the session it resumed or goes on with, or none>"
 //   OBY <tool> <json>  calls the oby tool with the json and says "oby: <what it answered>"
+//   OBYFILE <tool> <file>  calls the oby tool with the json in <file> of its room, and says what
+//                  it answered as OBY does: the call's arguments aren't in the owner's words
 //   REPEAT <n> OBY <tool> <json>  calls it n times and says what the last call answered; with
 //                  " THEN <words>" after the json, does <words> next instead of saying it
 //   TOOLS          says "tools: <the oby tools, by name>"
@@ -312,6 +314,13 @@ async function act(words, prompt = "", before = resumed) {
     used("r1", "{}");
     use("t1", `mcp__oby__${tool}`, args);
     const answer = await answering;
+    used("t1", answer.result?.content?.[0]?.text ?? "", answer.result?.isError);
+    say(`oby: ${answer.result?.isError ? "refused: " : ""}${answer.result?.content?.[0]?.text ?? JSON.stringify(answer)}`);
+  } else if (words.startsWith("OBYFILE ")) {
+    const [, tool, file] = words.split(" ");
+    const args = JSON.parse(readFileSync(join(room, file), "utf8"));
+    use("t1", `mcp__oby__${tool}`, args);
+    const answer = await oby(tool, args);
     used("t1", answer.result?.content?.[0]?.text ?? "", answer.result?.isError);
     say(`oby: ${answer.result?.isError ? "refused: " : ""}${answer.result?.content?.[0]?.text ?? JSON.stringify(answer)}`);
   } else if (words.startsWith("OBY ")) {

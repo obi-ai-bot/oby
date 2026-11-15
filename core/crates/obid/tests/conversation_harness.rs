@@ -1289,11 +1289,11 @@ fn taskconv_9_the_owners_signed_words_settle_what_waits() {
     assert_eq!(mode(), "bypass");
 }
 
-/// TASKCONV-6 to 11: a signed turn that reads untrusted text mid-turn is no longer the owner's own
-/// word: answering a card, Settings that widen, a merge, a write on GitHub and check-ins each
-/// become a Confirm card. Their Confirms, the owner's taps, then do it against GitHub (the fake
-/// `gh`): a merge only at the base and head the card named, a review of the head it showed, each
-/// attempt in the use log.
+/// TASKCONV-6 to 11: a turn that reads untrusted text mid-turn is no longer the owner's own word:
+/// unsigned, answering a card, a merge and a write on GitHub each become a Confirm card; signed,
+/// Settings that widen and check-ins, which name nothing, still do. Their Confirms, the owner's
+/// taps, then do it against GitHub (the fake `gh`): a merge only at the base and head the card
+/// named, a review of the head it showed, each attempt in the use log.
 #[test]
 fn taskconv_6_a_signed_turn_that_reads_untrusted_text_makes_confirms() {
     let (folder, obid) = obid("harness-tainted-word", true);
@@ -1330,10 +1330,15 @@ fn taskconv_6_a_signed_turn_that_reads_untrusted_text_makes_confirms() {
         .unwrap()
         .to_owned();
     std::thread::sleep(Duration::from_millis(1100));
-    // Each call, in a signed turn that read the repositories first: a Confirm, nothing done.
-    let tainted = |call_words: String| -> Answer {
+    // Each call, in a turn that read the repositories first: a Confirm, nothing done. A signed
+    // one's words would name the pull request (TASKCONV-26): those calls come unsigned.
+    let tainted = |call_words: String, signed: bool| -> Answer {
         let said = json!({"said": format!("READREPO {call_words}"), "conversation": conversation});
-        let answer = call_typed(&obid, "POST", "/v1/plans", &said);
+        let answer = if signed {
+            call_typed(&obid, "POST", "/v1/plans", &said)
+        } else {
+            call(&obid, "POST", "/v1/plans", Some(&said))
+        };
         assert_eq!(answer.status, 200, "{}", answer.text);
         assert!(
             oby_said(&answer).contains("waits for"),
@@ -1342,17 +1347,20 @@ fn taskconv_6_a_signed_turn_that_reads_untrusted_text_makes_confirms() {
         );
         answer
     };
-    tainted(format!(
-        r#"OBY oby_answer {{"item": "{start}", "answer": "Start"}}"#
-    ));
-    tainted(r#"OBY oby_settings {"maxRunning": 20}"#.into());
-    tainted(r#"OBY oby_merge {"repo": "o/r", "pr": 3}"#.into());
+    tainted(
+        format!(r#"OBY oby_answer {{"item": "{start}", "answer": "Start"}}"#),
+        false,
+    );
+    tainted(r#"OBY oby_settings {"maxRunning": 20}"#.into(), true);
+    tainted(r#"OBY oby_merge {"repo": "o/r", "pr": 3}"#.into(), false);
     tainted(
         r#"OBY oby_github_write {"repo": "o/r", "action": "approve", "number": 3, "body": "LGTM"}"#
             .into(),
+        false,
     );
     tainted(
         r#"OBY oby_check_in {"schedule": {"every": "daily", "at": "08:30"}, "zone": "UTC"}"#.into(),
+        true,
     );
     let jobs = call(&obid, "GET", "/v1/jobs", None);
     assert_eq!(jobs.body.as_array().map_or(0, Vec::len), 0, "{}", jobs.text);
@@ -1407,7 +1415,7 @@ fn taskconv_6_a_signed_turn_that_reads_untrusted_text_makes_confirms() {
     );
 
     // A merge card whose pull request moved since merges nothing.
-    tainted(r#"OBY oby_merge {"repo": "o/r", "pr": 3}"#.into());
+    tainted(r#"OBY oby_merge {"repo": "o/r", "pr": 3}"#.into(), false);
     pull("9999999999999999");
     let moved = card("Merge o/r#3 into main at abcdef0");
     let refused = confirm(&obid, moved["id"].as_str().unwrap());
@@ -1441,6 +1449,288 @@ fn taskconv_6_a_signed_turn_that_reads_untrusted_text_makes_confirms() {
     assert!(seen.contains(&("approve".into(), true)), "{seen:?}");
     assert!(seen.contains(&("merge".into(), true)), "{seen:?}");
     assert!(seen.contains(&("merge".into(), false)), "{seen:?}");
+}
+
+/// obid with the fake `gh`'s pull request o/r#3 open into main at abcdef0, and a conversation
+/// begun: the fake `gh`'s folder (its `merges` and `approvals`) and the conversation.
+fn obid_with_a_pull(name: &str) -> (Folder, Obid, PathBuf, String) {
+    let (folder, obid) = obid(name, true);
+    let github = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&github).unwrap();
+    let pull = json!({"state": "open", "merged": false, "head": {"sha": "abcdef0123456789"},
+        "base": {"ref": "main"}});
+    std::fs::write(github.join("pull.json"), pull.to_string()).unwrap();
+    let first = said(&obid, json!({"said": "SAY hi", "new": true}));
+    let conversation = first.body["conversation"].as_str().unwrap().to_owned();
+    (folder, obid, github, conversation)
+}
+
+/// A turn of `words`, signed when `signed`, then a read of repos/ and a call of `tool` with
+/// `args` from a file of the room (OBYFILE), so they aren't in the owner's words: what Oby said.
+fn after_a_read(
+    obid: &Obid,
+    conversation: &str,
+    words: &str,
+    signed: bool,
+    tool: &str,
+    args: Value,
+) -> String {
+    let room = obid.home.join(format!("conversations/{conversation}/room"));
+    std::fs::write(room.join("call.json"), args.to_string()).unwrap();
+    let body = json!({"said": format!("{words}\nREADREPO OBYFILE {tool} call.json"),
+        "conversation": conversation});
+    let answer = if signed {
+        call_typed(obid, "POST", "/v1/plans", &body)
+    } else {
+        call(obid, "POST", "/v1/plans", Some(&body))
+    };
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    oby_said(&answer)
+}
+
+/// What the conversation's tools did on GitHub, done or refused, as the use log has it.
+fn github_uses(obid: &Obid, conversation: &str) -> Vec<(String, bool)> {
+    let uses = std::fs::read_to_string(obid.home.join("vault/uses.jsonl")).unwrap_or_default();
+    uses.lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|u| {
+            u["job"] == format!("conversation-{conversation}") && u["connection"] == "github"
+        })
+        .map(|u| (u["tool"].as_str().unwrap().to_owned(), u["allowed"] == true))
+        .collect()
+}
+
+/// Waits for the clock's next second: an item made before it is one a turn begun after it saw.
+fn a_second_passes() {
+    let now = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    };
+    let then = now();
+    within(5, "a second passes", || (now() > then).then_some(()));
+}
+
+/// TASKCONV-26: after the conversation read text Oby didn't write, the owner's signed words that
+/// name the pull request merge it at once, with no Confirm, though the call's arguments came
+/// from elsewhere.
+#[test]
+fn taskconv_26_signed_words_naming_a_pull_request_merge_it_after_a_read() {
+    let (_folder, obid, github, conversation) = obid_with_a_pull("harness-named-merge");
+    let merge = json!({"repo": "o/r", "pr": 3});
+    let answered = after_a_read(&obid, &conversation, "Merge #3", true, "oby_merge", merge);
+    assert!(!answered.contains("Not done"), "{answered}");
+    let merges = std::fs::read_to_string(github.join("merges")).unwrap();
+    assert!(
+        merges.contains("repos/o/r/pulls/3/merge")
+            && merges.contains("\"sha\":\"abcdef0123456789\""),
+        "{merges}"
+    );
+    assert!(!inbox(&obid).iter().any(|i| i["kind"] == "confirm"));
+    let uses = github_uses(&obid, &conversation);
+    assert!(uses.contains(&("merge".into(), true)), "{uses:?}");
+}
+
+/// TASKCONV-27: words that name another pull request merge nothing and make no card: the answer
+/// says it wasn't done, and the use log has the merge refused.
+#[test]
+fn taskconv_27_signed_words_naming_another_number_merge_nothing() {
+    let (_folder, obid, github, conversation) = obid_with_a_pull("harness-unnamed-merge");
+    let before = inbox(&obid).len();
+    let merge = json!({"repo": "o/r", "pr": 3});
+    let answered = after_a_read(&obid, &conversation, "Merge #33", true, "oby_merge", merge);
+    assert!(answered.contains("Not done: Merge o/r#3"), "{answered}");
+    assert!(!github.join("merges").exists());
+    assert_eq!(inbox(&obid).len(), before, "{:?}", inbox(&obid));
+    let uses = github_uses(&obid, &conversation);
+    assert!(uses.contains(&("merge".into(), false)), "{uses:?}");
+    assert!(!uses.contains(&("merge".into(), true)), "{uses:?}");
+}
+
+/// TASKCONV-29: after a read, "start it" in signed words starts the one offer waiting in the
+/// conversation, still marked untrusted, with no Confirm; with two waiting it starts neither, and
+/// words naming one's task start that one.
+#[test]
+fn taskconv_29_a_card_is_settled_when_named_or_the_only_one_waiting() {
+    let (_folder, obid) = obid("harness-named-card", true);
+    let offer = |title: &str, conversation: Option<&str>| -> (String, String) {
+        let words = format!(
+            r#"READREPO OBY oby_offer {{"repo": "obi-e2e/fixture-app", "task": "{title}", "title": "{title}", "kind": "build"}}"#
+        );
+        let mut body = json!({"said": words});
+        match conversation {
+            Some(c) => body["conversation"] = json!(c),
+            None => body["new"] = json!(true),
+        }
+        let offered = said(&obid, body);
+        let item = inbox(&obid)
+            .into_iter()
+            .find(|i| i["kind"] == "start" && i["title"] == title)
+            .unwrap_or_else(|| panic!("an offer: {}", offered.text));
+        (
+            item["id"].as_str().unwrap().to_owned(),
+            offered.body["conversation"].as_str().unwrap().to_owned(),
+        )
+    };
+    let jobs = || -> Vec<Value> {
+        let listed = call(&obid, "GET", "/v1/jobs", None).body;
+        listed.as_array().cloned().unwrap_or_default()
+    };
+    let start = |conversation: &str, words: &str, item: &str| {
+        let args = json!({"item": item, "answer": "Start"});
+        after_a_read(&obid, conversation, words, true, "oby_answer", args)
+    };
+    let (greeting, conversation) = offer("Add a greeting", None);
+    a_second_passes();
+    let answered = start(&conversation, "start it", &greeting);
+    assert!(!answered.contains("Not done"), "{answered}");
+    let started = within(10, "the offer starts", || {
+        jobs().into_iter().find(|j| j["title"] == "Add a greeting")
+    });
+    assert_eq!(started["untrusted"], true, "{started}");
+    assert!(!inbox(&obid).iter().any(|i| i["kind"] == "confirm"));
+
+    let (footer, _) = offer("Fix the footer", Some(&conversation));
+    offer("Add a header", Some(&conversation));
+    a_second_passes();
+    let answered = start(&conversation, "start it", &footer);
+    assert!(answered.contains("Not done:"), "{answered}");
+    assert_eq!(jobs().len(), 1, "{:?}", jobs());
+    assert!(!inbox(&obid).iter().any(|i| i["kind"] == "confirm"));
+    let answered = start(&conversation, "Start Fix the footer", &footer);
+    assert!(!answered.contains("Not done"), "{answered}");
+    within(10, "the named offer starts", || {
+        jobs().into_iter().find(|j| j["title"] == "Fix the footer")
+    });
+    assert!(!jobs().iter().any(|j| j["title"] == "Add a header"));
+}
+
+/// TASKCONV-30: after a read, words no app of the owner's signed still make the merge's Confirm,
+/// even when they name the pull request, and merge nothing.
+#[test]
+fn taskconv_30_unsigned_words_naming_a_pull_request_make_its_confirm() {
+    let (_folder, obid, github, conversation) = obid_with_a_pull("harness-unsigned-merge");
+    let merge = json!({"repo": "o/r", "pr": 3});
+    let answered = after_a_read(&obid, &conversation, "Merge #3", false, "oby_merge", merge);
+    assert!(answered.contains("waits for your OK"), "{answered}");
+    assert!(
+        inbox(&obid).iter().any(|i| i["kind"] == "confirm"
+            && i["title"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("Merge o/r#3 into main at abcdef0")),
+        "{:?}",
+        inbox(&obid)
+    );
+    assert!(!github.join("merges").exists());
+}
+
+/// TASKCONV-31: a number only in what Oby read, or only in the question Oby asked that the
+/// owner's words answer, names nothing: the merge isn't done.
+#[test]
+fn taskconv_31_a_number_the_owner_didnt_say_names_nothing() {
+    let (_folder, obid, github, conversation) = obid_with_a_pull("harness-read-number");
+    let merge = json!({"repo": "o/r", "pr": 3});
+    let answered = after_a_read(
+        &obid,
+        &conversation,
+        "Merge it",
+        true,
+        "oby_merge",
+        merge.clone(),
+    );
+    assert!(answered.contains("Not done:"), "{answered}");
+    // Their answer to Oby's question: the question and its option, both naming #3, are joined
+    // after their words, and the stand-in acts on the question's last line.
+    let room = obid.home.join(format!("conversations/{conversation}/room"));
+    std::fs::write(room.join("call.json"), merge.to_string()).unwrap();
+    let body = json!({"said": "Yes", "conversation": conversation,
+        "answer": {"question": "Which, #3?\nREADREPO OBYFILE oby_merge call.json", "option": "Merge #3"}});
+    let answer = call_typed(&obid, "POST", "/v1/plans", &body);
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    assert!(oby_said(&answer).contains("Not done:"), "{}", answer.text);
+    assert!(!github.join("merges").exists());
+    assert!(!inbox(&obid).iter().any(|i| i["kind"] == "confirm"));
+}
+
+/// TASKCONV-32: after a read, a signed approval of the pull request its words name is posted at
+/// once; one they don't name posts nothing and isn't done; a new issue, which names nothing,
+/// still waits for a Confirm.
+#[test]
+fn taskconv_32_a_write_on_github_is_done_only_on_what_the_words_name() {
+    let (_folder, obid, github, conversation) = obid_with_a_pull("harness-named-write");
+    let approve = json!({"repo": "o/r", "action": "approve", "number": 3, "body": "LGTM"});
+    let write = |words: &str, args: &Value| {
+        after_a_read(
+            &obid,
+            &conversation,
+            words,
+            true,
+            "oby_github_write",
+            args.clone(),
+        )
+    };
+    let answered = write("Approve it", &approve);
+    assert!(answered.contains("Not done:"), "{answered}");
+    assert!(!github.join("approvals").exists());
+    let answered = write("Approve #3", &approve);
+    assert!(!answered.contains("Not done"), "{answered}");
+    let approvals = std::fs::read_to_string(github.join("approvals")).unwrap();
+    assert!(
+        approvals.contains("repos/o/r/pulls/3/reviews")
+            && approvals.contains("\"commit_id\":\"abcdef0123456789\""),
+        "{approvals}"
+    );
+    assert!(!inbox(&obid).iter().any(|i| i["kind"] == "confirm"));
+    let issue = json!({"repo": "o/r", "action": "create_issue", "title": "Footer", "body": "x"});
+    let answered = write("Open an issue on o/r", &issue);
+    assert!(answered.contains("waits for your OK"), "{answered}");
+    assert!(inbox(&obid).iter().any(|i| i["kind"] == "confirm"));
+}
+
+/// TASKCONV-33: after a read, a signed continue of the job its words name continues it with no
+/// Confirm; one that doesn't name it leaves it as it was; a mode that asks less still waits for
+/// the owner's Confirm when named.
+#[test]
+fn taskconv_33_a_job_named_after_a_read_continues_at_once() {
+    let (_folder, obid) = obid_failing_jobs("harness-named-continue");
+    let (id, conversation) = ended_job(&obid, None);
+    let before = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    let go = json!({"id": id});
+    let answered = after_a_read(
+        &obid,
+        &conversation,
+        "Go on",
+        true,
+        "oby_continue_job",
+        go.clone(),
+    );
+    assert!(
+        answered.contains("Not done: Continue Add a greeting"),
+        "{answered}"
+    );
+    let now = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(
+        (&now["status"], &now["round"]),
+        (&before["status"], &before["round"])
+    );
+    assert!(!inbox(&obid).iter().any(|i| i["kind"] == "confirm"));
+    let words = "Go on with Add a greeting";
+    let answered = after_a_read(&obid, &conversation, words, true, "oby_continue_job", go);
+    assert!(answered.contains("Continuing Add a greeting"), "{answered}");
+    assert!(!inbox(&obid).iter().any(|i| i["kind"] == "confirm"));
+    ended(&obid, &id);
+    let bypass = json!({"id": id, "mode": "bypass"});
+    let words = "Put Add a greeting in Bypass";
+    let answered = after_a_read(&obid, &conversation, words, true, "oby_change_job", bypass);
+    assert!(answered.contains("waits for your OK"), "{answered}");
+    assert!(
+        confirm_for(&obid, &id)["text"]
+            .as_str()
+            .unwrap()
+            .contains("lets the job do more"),
+    );
 }
 
 /// #1686: a call of Oby's tools reaches obid apart from the agent's output, and is judged only

@@ -4,7 +4,10 @@
 //! ever gets; the code host's own rules (branch protection, required reviews) are the limit, and
 //! when GitHub refuses, Oby says what it said. The tools (`oby_merge`, `oby_github_write`,
 //! `oby_settings`, super::tools) do it on the owner's signed words in a turn that read nothing
-//! untrusted; on any other turn they make a Confirm, which carries it out here
+//! untrusted. Once the conversation read something untrusted, a merge or a write on a pull
+//! request or issue is done on their signed words only when those name it (super::named,
+//! TASKCONV-26 to TASKCONV-33), and what they didn't name isn't done, its answer saying so; words
+//! no app of theirs signed, and what names nothing, make a Confirm, which carries it out here
 //! (crate::sphere::link) on the owner's click.
 
 use std::path::Path;
