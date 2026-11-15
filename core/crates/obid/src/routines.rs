@@ -236,9 +236,10 @@ impl OnGithub {
             Err("on.github.repo is the routine's repo.")
         } else if (self.event == Event::Labeled) != label.is_some() {
             Err("label is given with the labeled event, and only with it.")
-        } else if label
-            .is_some_and(|l| l.trim().is_empty() || l.chars().count() > 50 || l.contains('\n'))
-        {
+        } else if label.is_some_and(|l| {
+            let control = |c: char| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}');
+            l.trim().is_empty() || l.chars().count() > 50 || l.chars().any(control)
+        }) {
             Err("label is one line of 1 to 50 characters.")
         } else if self.list(kind).is_none() {
             Err(
@@ -835,10 +836,11 @@ impl Routines {
     /// After a read of the GitHub work feed that offers work (`before` the lists it read last,
     /// `jobs` the jobs as it began), each enabled routine on GitHub events decides its events new
     /// to this read and its held ones still in it, one at a time ([`trigger::decide`]). A start's
-    /// receipt is kept before its job is asked for, on the feed's Start's path (ROUTINES-9 to 14).
+    /// receipt is kept before its job is asked for, on the feed's Start's path (ROUTINES-9 to 17).
     pub async fn on_github(&self, before: &Lists, lists: &Lists, jobs: &[Job], feed: &Feed) {
         use trigger::{Decision, Facts, Outcome};
         let now = obi_protocol::time::now();
+        let today = |c: &&Receipt| c.outcome == Outcome::Started && now - c.at <= 86_400;
         for routine in self.list().into_iter().filter(|r| r.enabled) {
             let (id, kind) = (&routine.id, &routine.kind);
             let Some(On { github: on }) = &routine.on else {
@@ -855,6 +857,7 @@ impl Routines {
             if routine.receipts.iter().any(old) {
                 self.update(id, |r| r.receipts.retain(|c| !old(c)));
             }
+            let mut starts_this_read = 0;
             for (item, key) in events {
                 let receipts = self.get(id).map(|r| r.receipts).unwrap_or_default();
                 let receipt = receipts.iter().find(|c| c.key == key);
@@ -878,9 +881,9 @@ impl Routines {
                     marker: item.head.is_some()
                         || matches!(on.event, Event::Assigned | Event::Labeled),
                     open_job: on_it().any(|c| open(c).is_some_and(|j| j.status.is_active())),
-                    starts_today: on_it()
-                        .filter(|c| c.outcome == Outcome::Started && now - c.at <= 86_400)
-                        .count() as u32,
+                    starts_today: on_it().filter(today).count() as u32,
+                    routine_starts_today: receipts.iter().filter(today).count() as u32,
+                    starts_this_read,
                 };
                 let (outcome, reason) = match trigger::decide(facts) {
                     Decision::Done => continue,
@@ -920,6 +923,7 @@ impl Routines {
                         (receipt.outcome, receipt.reason) = (Outcome::Failed, Some(e.message))
                     }
                 }
+                starts_this_read += u32::from(receipt.outcome == Outcome::Started);
                 self.receipt(id, receipt);
             }
         }

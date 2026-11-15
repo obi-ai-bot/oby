@@ -722,6 +722,7 @@ pub async fn dispatch(
         let mut new =
             new_job(job).map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
         new.vetted = typed;
+        new.own_conversation = typed;
         // Only an app of the owner's signs: anything else with the token, nobody's said to watch.
         new.unattended = !new.vetted;
         if job.get("runsOn").is_some_and(|place| !place.is_null()) {
@@ -889,6 +890,8 @@ fn new_job(job: &Map<String, Value>) -> Result<NewJob, String> {
         untrusted: false,
         // Set by `dispatch` only for words an app of the owner's signed (crate::secretspec).
         vetted: false,
+        // `dispatch` sets it for signed words only (MERGING-44), never the body.
+        own_conversation: false,
         foreign: None,
         adding: None,
         heard: Vec::new(),

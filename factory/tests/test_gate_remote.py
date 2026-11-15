@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""factory/bin/gate's remote path (REMOTE-1, 3, 4, 5, 6, 10, 13 to 16, 19 to 21, 28, 43, 44), with a fake `az`,
+"""factory/bin/gate's remote path (REMOTE-1, 3, 4, 5, 6, 10, 13 to 16, 19 to 21, 28, 43, 44, 62 to 65), with a fake `az`,
 `ssh` and IP lookup, never the VM, its network rule, the Mac worker or the network.
 
 Run from the repository root: python3 factory/tests/test_gate_remote.py
@@ -25,6 +25,7 @@ from pathlib import Path
 FACTORY = Path(__file__).resolve().parents[1]
 REMOTE = json.dumps({"ssh_host": "oby-gate", "resource_group": "oby-factory", "vm": "oby-gate"})
 PRO = json.dumps({"ssh_host": "oby-mac-pro"})
+SHARDS = json.dumps({"linux": 3, "mac": 2})
 CHECK = "/usr/bin/shasum -a 256 oby-worker/bin/oby-remote-gate"  # the gate's check of the Mac worker's runner
 JOB_ID = "001-a00-01-something"
 OLD_IP, NEW_IP = "8.8.4.4", "1.1.1.1"  # this Mac's IP before and after it changes: global, but no one's home
@@ -38,12 +39,16 @@ fi
 exit 0
 """
 
-# The stand-in factory/checks.sh: records $OBY_CHECK_ONLY (or `all`) and exits with $FAKE/mac-exit-<it>'s code.
+# The stand-in factory/checks.sh: records $OBY_CHECK_ONLY (or `all`) and its $OBY_CHECK_SHARD when set, prints
+# $FAKE/mac-says-<it>[-<k>-<n>] (with $FAKE/mac-garbles-<it>[-<k>-<n>], a byte that isn't UTF-8) and exits with $FAKE/mac-exit-<it>-<k>-<n>'s code, else $FAKE/mac-exit-<it>'s.
 STAND_IN = """#!/usr/bin/env bash
 part="${OBY_CHECK_ONLY:-all}"
-echo "$part" >>"$FAKE/mac-runs"
+shard="${OBY_CHECK_SHARD:+-${OBY_CHECK_SHARD/\\//-}}"
+echo "$part${OBY_CHECK_SHARD:+ $OBY_CHECK_SHARD}" >>"$FAKE/mac-runs"
 echo "the Mac's $part output"
-exit $(cat "$FAKE/mac-exit-$part" 2>/dev/null || echo 0)
+cat "$FAKE/mac-says-$part$shard" 2>/dev/null
+[[ ! -e "$FAKE/mac-garbles-$part$shard" ]] || printf '\\377\\n'
+exit $(cat "$FAKE/mac-exit-$part$shard" 2>/dev/null || cat "$FAKE/mac-exit-$part" 2>/dev/null || echo 0)
 """
 
 # get-instance-view prints $FAKE/states' first line and drops it while more follow; start and deallocate exit
@@ -82,43 +87,68 @@ sys.exit(int(code.read_text()) if code.exists() else 0)
 # $FAKE/remote-exit's. oby-mac-pro: `true` exits with $FAKE/pro-reach's code; a command starting /usr/bin/shasum
 # runs through sh in $FAKE/pro-home (its cwd and HOME), its output and exit code passed through; with
 # $FAKE/pro-busy its gate says both slots are busy and exits 2, else it prints slot 1 and exits with
-# $FAKE/pro-exit's code.
+# $FAKE/pro-exit's code. A call with `--shard <k>/<n>` reads <name>-<k>-<n> before each such file (remote-exit,
+# pro-exit, pro-busy), prints slot k, its shard and $FAKE/<remote|pro>-says-<k>-<n>, and with
+# $FAKE/<remote|pro>-silent-<k>-<n> leaves out its verdict line. A VM shard with $FAKE/vm-waits-<k>-<n> (seconds)
+# waits until the Mac worker's call has started, and fails if it hasn't by then. Each gate call writes `start` and
+# `end` with its host and shard to $FAKE/events.
 FAKE_SSH = """#!/usr/bin/env python3
-import json, os, shutil, stat, subprocess, sys
+import json, os, shutil, stat, subprocess, sys, time
 from pathlib import Path
 fake = Path(os.environ["FAKE"])
 with open(fake / "ssh.log", "a") as log:
     log.write(json.dumps({"argv": sys.argv[1:], "stdin_pipe": stat.S_ISFIFO(os.fstat(0).st_mode)}) + "\\n")
+words = sys.argv[-1].split()
+shard = words[words.index("--shard") + 1] if "--shard" in words else None
+def own(name):
+    mine = f"{name}-{shard.replace('/', '-')}" if shard else name
+    return mine if (fake / mine).exists() else name
 def read(name, default):
-    return int((fake / name).read_text()) if (fake / name).exists() else default
+    return int((fake / own(name)).read_text()) if (fake / own(name)).exists() else default
+def event(what, host):
+    with open(fake / "events", "a") as events:
+        events.write(f"{what} {host} {shard or '-'}\\n")
+def run(host, slot, code):
+    event("start", host)
+    print(f"oby-remote-gate: slot {shard.split('/')[0] if shard else slot}")
+    if shard:
+        print(f"oby-remote-gate: shard {shard}")
+    print("the Pro's output" if host == "pro" else "the VM's output")
+    if shard and (fake / f"{host}-says-{shard.replace('/', '-')}").exists():
+        print((fake / f"{host}-says-{shard.replace('/', '-')}").read_text().rstrip())
+    if code in (0, 1, 2) and not (shard and (fake / f"{host}-silent-{shard.replace('/', '-')}").exists()):
+        verdict = ["passed", "failed", "couldn't judge"][code]
+        print(f"oby-remote-gate: {verdict} in slot {shard.split('/')[0] if shard else slot} after 1s")
+    sys.stdout.flush()
+    event("end", host)
+    sys.exit(code)
 if sys.argv[-2] == "oby-mac-pro":
     if sys.argv[-1] == "true":
         sys.exit(read("pro-reach", 0))
     if sys.argv[-1].startswith("/usr/bin/shasum"):
         home = fake / "pro-home"
         sys.exit(subprocess.run(["sh", "-c", sys.argv[-1]], cwd=home, env=dict(os.environ, HOME=str(home))).returncode)
-    if (fake / "pro-busy").exists():
+    if (fake / own("pro-busy")).exists():
         print("oby-remote-gate: both slots are busy")
         sys.exit(2)
-    code = read("pro-exit", 0)
-    print("oby-remote-gate: slot 1")
-    print("the Pro's output")
-    if code in (0, 1, 2):
-        verdict = ["passed", "failed", "couldn't judge"][code]
-        print(f"oby-remote-gate: {verdict} in slot 1 after 1s")
-    sys.exit(code)
+    run("pro", 1, read("pro-exit", 0))
 if sys.argv[-1] == "true":
     ip = (fake / "ip").read_text().strip() if (fake / "ip").exists() else None
     if (fake / "rule-source").read_text().strip().removesuffix("/32") != ip:
         sys.exit(255)
     sys.exit(read("ssh-reach", 0))
 shutil.copy(os.environ["FAKE_STATE"], fake / "state-during-run")
-code = read("remote-exit", 0)
-print("oby-remote-gate: slot 2")
-print("the VM's output")
-verdict = ["passed", "failed", "couldn't judge"][code]
-print(f"oby-remote-gate: {verdict} in slot 2 after 1s")
-sys.exit(code)
+waits = fake / f"vm-waits-{shard.replace('/', '-')}" if shard else None
+if waits and waits.exists():
+    deadline = time.monotonic() + float(waits.read_text())
+    while not any(line.startswith("start pro") for line in
+                  ((fake / "events").read_text().splitlines() if (fake / "events").exists() else [])):
+        if time.monotonic() > deadline:
+            print(f"the VM's shard {shard} waited for the Mac worker's call, which never came")
+            print(f"oby-remote-gate: failed in slot 1 after 1s")
+            sys.exit(1)
+        time.sleep(0.05)
+run("remote", 2, read("remote-exit", 0))
 """
 
 
@@ -137,7 +167,8 @@ class GateRemote(unittest.TestCase):
             (bin_dir / name).write_text(text)
             (bin_dir / name).chmod(0o755)
         self.env = {k: v for k, v in os.environ.items()
-                    if not k.startswith(("OBY_", "FACTORY_REMOTE_")) and k != "FACTORY_MAC_WORKER"}
+                    if not k.startswith(("OBY_", "FACTORY_REMOTE_")) and k not in ("FACTORY_MAC_WORKER",
+                                                                                  "FACTORY_GATE_SHARDS")}
         self.env.update(
             GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1",
             GIT_AUTHOR_NAME="test", GIT_AUTHOR_EMAIL="test@example.com",
@@ -222,8 +253,10 @@ class GateRemote(unittest.TestCase):
 
     def run_bin(self, name, *args, remote=True, **env):
         # Off is FACTORY_REMOTE_GATE=null, so the test doesn't depend on config.json's own remote_gate; the Mac
-        # worker is off (FACTORY_MAC_WORKER=null) unless a test gives it, or None to leave it unset.
-        env = {**self.env, "FACTORY_REMOTE_GATE": REMOTE if remote else "null", "FACTORY_MAC_WORKER": "null", **env}
+        # worker and the shards are off (FACTORY_MAC_WORKER=null, FACTORY_GATE_SHARDS=null) unless a test gives them,
+        # or None to leave them unset.
+        env = {**self.env, "FACTORY_REMOTE_GATE": REMOTE if remote else "null", "FACTORY_MAC_WORKER": "null",
+               "FACTORY_GATE_SHARDS": "null", **env}
         env = {k: v for k, v in env.items() if v is not None}
         res = subprocess.run([str(self.repo / "factory" / "bin" / name), *args], cwd=self.repo, env=env,
                              capture_output=True, text=True, timeout=120)
@@ -259,7 +292,7 @@ class GateRemote(unittest.TestCase):
 
     def forget(self):
         """A fresh start for the fakes' logs, between gates in one test."""
-        for name in ("az.log", "ssh.log", "mac-runs"):
+        for name in ("az.log", "ssh.log", "mac-runs", "events"):
             (self.fake / name).unlink(missing_ok=True)
 
     def assert_fell_back(self, code, out, err):
@@ -948,6 +981,354 @@ class GateRemote(unittest.TestCase):
         self.write_job("review")
         self.assertEqual(self.run_bin("gate", "--idle", remote=False), (0, "", ""))
         self.assertEqual(self.az_calls(), [])
+
+    # ---- REMOTE-62 to 65: shards ---------------------------------------------------------------
+
+    SANDBOX_ONLY = "(the diff touches macOS-only code: core/crates/obid/src/sandbox.rs)"
+
+    def sharded(self, **env):
+        """A gate whose diff touches macOS-only code, with the Mac worker and three Linux and two macOS shards."""
+        commit = self.change("core/crates/obid/src/sandbox.rs", push=True)
+        return commit, self.gate(**{"FACTORY_MAC_WORKER": PRO, "FACTORY_GATE_SHARDS": SHARDS, **env})
+
+    def where(self):
+        return self.checks().split("## Where it ran\n", 1)[1].split("\n\n", 1)[0].splitlines()
+
+    def section(self, heading):
+        """The log's section under `==== <heading> ====`, up to the next heading."""
+        log = (self.job_dir / "round-1" / "checks.log").read_text()
+        self.assertIn(f"==== {heading} ====\n", log)
+        return log.split(f"==== {heading} ====\n", 1)[1].split("\n==== ", 1)[0]
+
+    def events(self):
+        return self.lines("events")
+
+    def test_remote_62_the_shards_spread_over_the_three_hosts_and_start_at_once(self):
+        # Each VM shard waits for the Mac worker's call to start, and fails if it doesn't within 30 seconds.
+        for k in (1, 2, 3):
+            (self.fake / f"vm-waits-{k}-3").write_text("30\n")
+        commit, (code, out, err) = self.sharded()
+        self.assertEqual(code, 0, out + err + self.checks())
+        vm = [call["argv"][-1] for call in self.remote_calls() if call["argv"][-2] == "oby-gate"]
+        self.assertEqual(sorted(vm), [f"oby-remote-gate --shard {k}/3 {commit} origin/dev" for k in (1, 2, 3)])
+        self.assertTrue(all(call["stdin_pipe"] for call in self.remote_calls() if call["argv"][-2] == "oby-gate"))
+        self.assertEqual([call["argv"][-1] for call in self.pro_gate_calls()],
+                         [f"oby-worker/bin/oby-remote-gate --mac --shard 1/2 {commit} origin/dev rust"])
+        self.assertEqual(self.lines("mac-runs"), ["rust 2/2"])
+        # The Mac worker's call started before any VM shard ended.
+        events = self.events()
+        self.assertLess(events.index("start pro 1/2"), min(events.index(f"end remote {k}/3") for k in (1, 2, 3)), events)
+        h = self.header()
+        self.assertEqual((h["GATE"], h["HOST"]), ("PASS", "oby-gate, oby-mac-pro, mac"))
+        where = self.where()
+        for i, line in enumerate((
+                "oby-gate: rust shard 1/3, scan in slot 1: passed with exit 0 in",
+                "oby-gate: rust shard 2/3 in slot 2: passed with exit 0 in",
+                "oby-gate: rust shard 3/3 in slot 3: passed with exit 0 in",
+                f"oby-mac-pro: rust shard 1/2 {self.SANDBOX_ONLY} in slot 1: passed with exit 0 in",
+                f"mac: rust shard 2/2 {self.SANDBOX_ONLY}: passed with exit 0 in")):
+            self.assertTrue(where[i].startswith(f"- {line}"), where)
+        self.assertEqual(len(where), 5, where)
+        self.assertIn("\n- Sharded: obid's test binaries in 3 shards on Linux and 2 on macOS\n", self.checks())
+        self.assertRegex(self.checks(), r"\n## Time\n- Wall clock: (\d+)s\n- oby-gate: \d+s over 3 calls\n"
+                                        r"- oby-mac-pro: \d+s\n- mac: \d+s\n\n## Protected paths\n")
+        wall = re.search(r"- Wall clock: (\d+)s", self.checks()).group(1)
+        self.assertIn(f"\n## checks.sh\nExit 0 in {wall}s.", self.checks())
+        self.assertTrue(out.startswith(f"GATE: PASS ({JOB_ID} round 1, on oby-gate, oby-mac-pro, mac, exit 0 in {wall}s"),
+                        out)
+        # The log keeps the expected order, each part under its own heading.
+        log = (self.job_dir / "round-1" / "checks.log").read_text()
+        headings = re.findall(r"^==== (.*) ====$", log, re.M)
+        self.assertEqual(headings, ["oby-gate: rust shard 1/3, scan", "oby-gate: rust shard 2/3",
+                                    "oby-gate: rust shard 3/3", f"oby-mac-pro: rust shard 1/2 {self.SANDBOX_ONLY}",
+                                    f"mac: rust shard 2/2 {self.SANDBOX_ONLY}"])
+        self.assertIn("oby-remote-gate: shard 2/3", self.section("oby-gate: rust shard 2/3"))
+        # One use of the VM, open during the calls and closed after the last.
+        [use] = json.loads((self.fake / "state-during-run").read_text())["open"].values()
+        self.assertEqual(json.loads(self.state.read_text())["open"], {})
+
+    def test_remote_62_a_vm_shard_that_waits_for_the_mac_worker_in_vain_fails(self):
+        # The wait above can fail: with no Mac worker call at all, the waiting shard gives up and fails the gate.
+        (self.fake / "vm-waits-2-3").write_text("2\n")
+        _, (code, out, err) = self.sharded(FACTORY_MAC_WORKER="null")
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("- oby-gate: rust shard 2/3: failed with exit 1 in", self.checks())
+        self.assertIn("waited for the Mac worker's call, which never came", self.section("oby-gate: rust shard 2/3"))
+
+    def test_remote_62_without_a_mac_worker_every_macos_shard_runs_here(self):
+        self.groups("rust", "scan", "swift", "factory")
+        commit, (code, out, err) = self.sharded(FACTORY_MAC_WORKER="null")
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(self.pro_calls(), [])
+        self.assertEqual(self.lines("mac-runs"), ["rust 1/2", "swift", "factory", "rust 2/2"])
+        self.assertEqual(self.header()["HOST"], "oby-gate, mac")
+        self.assertEqual([line.removeprefix("- mac: ").rsplit(": passed", 1)[0] for line in self.where()[3:]],
+                         [f"rust shard 1/2 {self.SANDBOX_ONLY}", "swift", "factory", f"rust shard 2/2 {self.SANDBOX_ONLY}"])
+        self.assertRegex(self.checks(), r"\n## Time\n- Wall clock: \d+s\n- oby-gate: \d+s over 3 calls\n- mac: \d+s\n")
+
+    def test_remote_62_swift_and_factory_go_with_the_mac_workers_first_shard(self):
+        # From config.json's own gate_shards, with FACTORY_GATE_SHARDS unset.
+        self.config(gate_shards={"linux": 2, "mac": 3})
+        self.groups("rust", "electron", "scan", "swift", "factory")
+        commit, (code, out, err) = self.sharded(FACTORY_GATE_SHARDS=None)
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(sorted(call["argv"][-1] for call in self.pro_gate_calls()),
+                         [f"oby-worker/bin/oby-remote-gate --mac --shard 1/3 {commit} origin/dev rust swift factory",
+                          f"oby-worker/bin/oby-remote-gate --mac --shard 2/3 {commit} origin/dev rust"])
+        self.assertEqual(self.lines("mac-runs"), ["rust 3/3"])
+        self.assertIn("- oby-gate: rust shard 1/2, electron, scan in slot 1: passed", self.checks())
+        self.assertIn(f"- oby-mac-pro: rust shard 1/3 {self.SANDBOX_ONLY}, swift, factory in slot 1: passed",
+                      self.checks())
+        self.assertIn("\n- Sharded: obid's test binaries in 2 shards on Linux and 3 on macOS\n", self.checks())
+
+    def test_remote_62_one_macos_shard_or_no_macos_rust_is_todays_single_macos_part(self):
+        self.groups("rust", "scan", "factory")
+        commit, (code, out, err) = self.sharded(FACTORY_GATE_SHARDS=json.dumps({"linux": 2, "mac": 1}))
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual([call["argv"][-1] for call in self.pro_gate_calls()],
+                         [f"oby-worker/bin/oby-remote-gate --mac {commit} origin/dev rust factory"])
+        self.forget()
+        self.git(self.worktree, "reset", "-q", "--hard", "HEAD~1")
+        self.git(self.worktree, "push", "-q", "--force", "origin", "factory/x")
+        code, out, err = self.gate(FACTORY_MAC_WORKER="null", FACTORY_GATE_SHARDS=SHARDS)
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(self.lines("mac-runs"), ["factory"])
+        self.assertIn("\n- mac: factory: passed with exit 0 in", self.checks())
+
+    def test_remote_62_no_rust_planned_on_linux_is_one_vm_call(self):
+        self.groups("electron", "scan")
+        commit, (code, out, err) = self.sharded()
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual([call["argv"][-1] for call in self.remote_calls()],
+                         [f"oby-remote-gate {commit} origin/dev"])
+        self.assertIn("- oby-gate: electron, scan in slot 2: passed", self.checks())
+        self.assertRegex(self.checks(), r"- oby-gate: \d+s over 1 call\n")
+
+    def test_remote_63_one_shard_failing_fails_the_gate_and_names_the_test(self):
+        commit = self.change("core/crates/obid/src/sandbox.rs", push=True)
+        cases = [(f"remote-exit-{k}-3", f"remote-says-{k}-3", f"oby-gate: rust shard {k}/3" + (", scan" if k == 1 else ""),
+                  f" in slot {k}: failed with exit 1") for k in (1, 2, 3)]
+        cases += [("pro-exit-1-2", "pro-says-1-2", f"oby-mac-pro: rust shard 1/2 {self.SANDBOX_ONLY}",
+                   " in slot 1: failed with exit 1"),
+                  ("mac-exit-rust-2-2", "mac-says-rust-2-2", f"mac: rust shard 2/2 {self.SANDBOX_ONLY}",
+                   ": failed with exit 1")]
+        for exit_file, says, heading, line in cases:
+            self.forget()
+            test = f"tests/{exit_file.replace('-', '_')}.rs"
+            (self.fake / exit_file).write_text("1\n")
+            (self.fake / says).write_text(f"oby-check: {test} failed\n")
+            code, out, err = self.gate(FACTORY_MAC_WORKER=PRO, FACTORY_GATE_SHARDS=SHARDS)
+            self.assertEqual(code, 1, heading + out + err)
+            self.assertEqual(self.header()["GATE"], "FAIL", heading)
+            self.assertIn(f"\n- {heading}{line} in", self.checks())
+            self.assertIn(f"oby-check: {test} failed", self.section(heading))
+            # Every other part still ran to its end and passed.
+            self.assertEqual(sum(": passed with exit 0 in" in where for where in self.where()), 4, self.where())
+            (self.fake / exit_file).unlink()
+            (self.fake / says).unlink()
+        self.forget()
+        code, out, err = self.gate(FACTORY_MAC_WORKER=PRO, FACTORY_GATE_SHARDS=SHARDS)
+        self.assertEqual((code, self.header()["GATE"]), (0, "PASS"), out + err)
+        self.assertEqual(len(self.remote_calls()), 3 + 2, self.remote_calls())  # three VM calls, the check and the call
+        self.assertIn(commit, self.header()["COMMIT"])
+
+    def test_remote_64_a_vm_shard_that_ends_without_its_verdict_line_didnt_report(self):
+        for code_text in ("0", "1"):
+            self.forget()
+            (self.fake / "remote-silent-2-3").touch()
+            (self.fake / "remote-exit-2-3").write_text(code_text + "\n")
+            _, (code, out, err) = self.sharded()
+            self.assertEqual(code, 1, out + err)
+            self.assertEqual(self.header()["GATE"], "FAIL")
+            self.assertIn(f"\n- oby-gate: rust shard 2/3: didn't report: it ended {code_text} without its verdict "
+                          "line\n", self.checks())
+            self.assertNotIn("rust 2/3", self.lines("mac-runs"), "a shard that didn't report ran again here")
+
+    def test_remote_64_a_vm_shard_that_couldnt_judge_runs_on_this_mac(self):
+        (self.fake / "remote-exit-3-3").write_text("2\n")
+        _, (code, out, err) = self.sharded()
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(sorted(self.lines("mac-runs")), ["rust 2/2", "rust 3/3"])
+        self.assertIn("\n- Fell back from oby-gate to this Mac for rust shard 3/3: oby-remote-gate couldn't judge "
+                      "(exit 2)\n", self.checks())
+        self.assertIn("\n- mac: rust shard 3/3: passed with exit 0 in", self.checks())
+        self.assertEqual(self.header()["HOST"], "oby-gate, oby-mac-pro, mac")
+        log = (self.job_dir / "round-1" / "checks.log").read_text()
+        self.assertIn("==== oby-gate: its output before the fallback, not part of the verdict ====\n"
+                      "oby-remote-gate: slot 3\noby-remote-gate: shard 3/3", log)
+        self.assertRegex(self.checks(), r"- oby-gate: \d+s over 2 calls\n")
+        # Its run here is the verdict.
+        self.forget()
+        (self.fake / "mac-exit-rust-3-3").write_text("1\n")
+        code, out, err = self.gate(FACTORY_MAC_WORKER=PRO, FACTORY_GATE_SHARDS=SHARDS)
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("\n- mac: rust shard 3/3: failed with exit 1 in", self.checks())
+
+    def test_remote_64_a_vm_shard_that_was_cut_off_runs_on_this_mac(self):
+        (self.fake / "remote-exit-1-3").write_text("255\n")
+        _, (code, out, err) = self.sharded()
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(self.lines("mac-runs"), ["rust 1/3", "scan", "rust 2/2"] if self.lines("mac-runs")[0] == "rust 1/3"
+                         else ["rust 2/2", "rust 1/3", "scan"])
+        self.assertIn("Fell back from oby-gate to this Mac for rust shard 1/3: oby-remote-gate was cut off (exit 255)",
+                      self.checks())
+        self.assertIn("\n- mac: rust shard 1/3, scan: passed with exit 0 in", self.checks())
+
+    def test_remote_64_a_busy_mac_worker_sends_its_shard_here(self):
+        (self.fake / "pro-busy").touch()
+        _, (code, out, err) = self.sharded()
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(sorted(self.lines("mac-runs")), ["rust 1/2", "rust 2/2"])
+        line = "Fell back from oby-mac-pro to this Mac for rust shard 1/2: both of its slots are busy"
+        self.assertIn(f"\n- {line}\n", self.checks())
+        self.assertIn(f"\n\n{line}\n", self.checks())
+        self.assertIn(f"\n- mac: rust shard 1/2 {self.SANDBOX_ONLY}: passed with exit 0 in", self.checks())
+        self.assertEqual(self.header()["HOST"], "oby-gate, mac")
+
+    def test_remote_64_invalid_mac_worker_settings_send_its_shard_here(self):
+        _, (code, out, err) = self.sharded(FACTORY_MAC_WORKER="{oby-mac-pro")
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(self.pro_calls(), [])
+        self.assertEqual(sorted(self.lines("mac-runs")), ["rust 1/2", "rust 2/2"])
+        self.assertIn("\n- Fell back from the Mac worker to this Mac for rust shard 1/2: FACTORY_MAC_WORKER isn't JSON\n",
+                      self.checks())
+
+    def test_remote_64_an_unreachable_vm_sends_every_vm_shard_here(self):
+        (self.fake / "ssh-reach").write_text("255\n")
+        _, (code, out, err) = self.sharded(FACTORY_REMOTE_REACH_SECONDS="1")
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual([call for call in self.remote_calls() if call["argv"][-2] == "oby-gate"], [])
+        runs = self.lines("mac-runs")
+        self.assertEqual([run for run in runs if run != "rust 2/2"], ["rust 1/3", "scan", "rust 2/3", "rust 3/3"])
+        why = (f"ssh oby-gate didn't answer within 1s, and this Mac's IP {OLD_IP} is already "
+               "oby-gateNSG/ssh-from-owner's source")
+        self.assertEqual(self.checks().count(f"- Fell back from oby-gate to this Mac: {why}\n"), 1)
+        self.assertNotIn("for rust shard", self.checks())
+        self.assertEqual(self.header()["HOST"], "oby-mac-pro, mac")
+        self.assertEqual(json.loads(self.state.read_text())["open"], {})
+
+    def test_remote_64_a_part_whose_run_raised_is_a_fail(self):
+        # A run here whose output isn't UTF-8 raises in its part's thread: that part didn't report.
+        (self.fake / "mac-garbles-rust-2-3").touch()
+        (self.fake / "mac-garbles-rust-2-2").touch()
+        (self.fake / "remote-exit-2-3").write_text("2\n")
+        _, (code, out, err) = self.sharded()
+        self.assertEqual(code, 1, out + err)
+        self.assertRegex(self.checks(), r"\n- mac: rust shard 2/3: didn't report: its run raised \w+")
+        self.assertRegex(self.checks(), r"\n- mac: rust shard 2/2 \(.*\): didn't report: its run raised \w+")
+
+    def test_remote_65_without_the_key_nothing_changes(self):
+        self.config(gate_shards=None)
+        for value in (None, "null"):
+            self.forget()
+            commit, (code, out, err) = self.sharded(FACTORY_GATE_SHARDS=value)
+            self.assertEqual(code, 0, out + err)
+            self.assertFalse([call for call in self.ssh_calls() if "--shard" in call["argv"][-1]], self.ssh_calls())
+            self.assertEqual([call["argv"][-1] for call in self.remote_calls() if call["argv"][-2] == "oby-gate"],
+                             [f"oby-remote-gate {commit} origin/dev"])
+            # The Mac worker's call starts only after the VM's ended.
+            events = self.events()
+            self.assertLess(events.index("end remote -"), events.index("start pro -"), events)
+            for absent in ("## Time", "Sharded:", "Ran unsharded:"):
+                self.assertNotIn(absent, self.checks())
+            self.assertEqual(self.header()["HOST"], "oby-gate, oby-mac-pro")
+        # The key with remote_gate off: one checks.sh run, as before.
+        self.forget()
+        code, out, err = self.gate(remote=False, FACTORY_GATE_SHARDS=SHARDS)
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual((self.ssh_calls(), self.lines("mac-runs")), ([], ["all"]))
+        self.assertEqual(list(self.header()), ["GATE", "COMMIT", "CHECKS"])
+        self.assertNotIn("Sharded", self.checks())
+
+    def test_remote_65_invalid_shards_run_unsharded_and_say_why(self):
+        needs = "needs linux, a whole number from 1 to 64, and mac, a whole number from 1 to 3"
+        for value, why in (("{linux", "FACTORY_GATE_SHARDS isn't JSON"),
+                           (json.dumps({"linux": 0, "mac": 2}), f"FACTORY_GATE_SHARDS {needs}"),
+                           (json.dumps({"linux": 2, "mac": 4}), f"FACTORY_GATE_SHARDS {needs}"),
+                           (json.dumps({"linux": 65, "mac": 1}), f"FACTORY_GATE_SHARDS {needs}"),
+                           (json.dumps({"linux": True, "mac": 1}), f"FACTORY_GATE_SHARDS {needs}"),
+                           (json.dumps({"linux": 2.0, "mac": 1}), f"FACTORY_GATE_SHARDS {needs}"),
+                           (json.dumps({"linux": 2}), f"FACTORY_GATE_SHARDS {needs}"),
+                           (json.dumps([2, 2]), f"FACTORY_GATE_SHARDS {needs}")):
+            self.forget()
+            _, (code, out, err) = self.sharded(FACTORY_GATE_SHARDS=value)
+            self.assertEqual(code, 0, out + err)
+            self.assertFalse([call for call in self.ssh_calls() if "--shard" in call["argv"][-1]], value)
+            self.assertIn(f"\n- Ran unsharded: {why}\n", self.checks())
+            self.assertIn(f"\n\nRan unsharded: {why}\n", self.checks().split("## Protected paths", 1)[0])
+            self.assertNotIn("## Time", self.checks())
+            self.assertEqual(self.header()["HOST"], "oby-gate, oby-mac-pro")
+        # config.json's own key, invalid, names it.
+        self.forget()
+        self.config(gate_shards={"linux": 2, "mac": "2"})
+        _, (code, out, err) = self.sharded(FACTORY_GATE_SHARDS=None)
+        self.assertIn(f"\n- Ran unsharded: gate_shards {needs}\n", self.checks())
+
+    def test_remote_65_the_whole_check_cases_stay_the_same_with_the_key(self):
+        # A commit not on origin, and a change to the check's own files: the whole check here, no Mac worker call.
+        self.change("core/crates/obid/src/sandbox.rs")  # not pushed
+        code, out, err = self.gate(FACTORY_MAC_WORKER=PRO, FACTORY_GATE_SHARDS=SHARDS)
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual((self.ssh_calls(), self.lines("mac-runs")), ([], ["all"]))
+        self.assertIn("Fell back to the Mac: not on origin", self.checks())
+        self.assertNotIn("## Time", self.checks())
+        self.forget()
+        self.change("scripts/oby-check-test.sh", push=True)
+        code, out, err = self.gate(FACTORY_MAC_WORKER=PRO, FACTORY_GATE_SHARDS=SHARDS)
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual((self.az_calls(), self.ssh_calls(), self.lines("mac-runs")), ([], [], ["all"]))
+        self.assertNotIn("Sharded", self.checks())
+
+    def test_remote_65_a_worktree_that_isnt_its_commit_runs_unsharded(self):
+        # This Mac's shards would deal the worktree's test files, the VM's and the Mac worker's the commit's: a
+        # binary could run nowhere. So a worktree with a file its commit hasn't runs unsharded, saying why.
+        commit = self.change("core/crates/obid/src/sandbox.rs", push=True)
+        self.change(".gitignore", push=True, text="core/crates/obid/tests/ignored.rs\n")
+        tests = self.worktree / "core" / "crates" / "obid" / "tests"
+        tests.mkdir(parents=True)
+        tracked = tests / "tracked.rs"
+        tracked.write_text("1\n")
+        self.git(self.worktree, "add", str(tracked))
+        self.git(self.worktree, "commit", "-q", "-m", "a test file")
+        self.git(self.worktree, "push", "-q", "origin", "factory/x")
+        why = "the worktree has changes its commit doesn't"
+        for path, text in (("core/crates/obid/tests/untracked.rs", "1\n2\n3\n"), ("core/crates/obid/tests/tracked.rs", "1\n2\n"),
+                           ("core/crates/obid/tests/ignored.rs", "1\n")):
+            self.forget()
+            (self.worktree / path).write_text(text)
+            code, out, err = self.gate(FACTORY_MAC_WORKER=PRO, FACTORY_GATE_SHARDS=SHARDS)
+            self.assertEqual(code, 0, out + err)
+            self.assertFalse([call for call in self.ssh_calls() if "--shard" in call["argv"][-1]], path)
+            self.assertEqual(self.lines("mac-runs"), [], path)
+            self.assertIn(f"\n- Ran unsharded: {why}: {path}\n", self.checks())
+            self.assertIn(f"\n\nRan unsharded: {why}: {path}\n", self.checks().split("## Protected paths", 1)[0])
+            self.assertNotIn("## Time", self.checks())
+            self.assertEqual(self.header()["HOST"], "oby-gate, oby-mac-pro")
+            if path == "core/crates/obid/tests/tracked.rs":
+                self.git(self.worktree, "checkout", "-q", "--", path)
+            else:
+                (self.worktree / path).unlink()
+        # Clean again: sharded.
+        self.forget()
+        code, out, err = self.gate(FACTORY_MAC_WORKER=PRO, FACTORY_GATE_SHARDS=SHARDS)
+        self.assertEqual(code, 0, out + err)
+        self.assertIn(f"oby-remote-gate --shard 2/3 {self.git(self.worktree, 'rev-parse', 'HEAD')} origin/dev",
+                      [call["argv"][-1] for call in self.remote_calls()])
+        self.assertNotIn("Ran unsharded", self.checks())
+        self.assertNotEqual(commit, self.git(self.worktree, "rev-parse", "HEAD"))
+
+    def test_remote_65_an_inherited_oby_check_shard_reaches_no_run(self):
+        # A shell with OBY_CHECK_SHARD exported doesn't narrow the gate's runs: the whole check here, unsharded,
+        # and the macOS rust part, get none.
+        self.change("core/crates/obid/src/sandbox.rs", push=True)
+        code, out, err = self.gate(OBY_CHECK_SHARD="2/4")
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(self.lines("mac-runs"), ["rust"])
+        self.forget()
+        self.change("scripts/oby-check-test.sh", push=True)
+        code, out, err = self.gate(OBY_CHECK_SHARD="2/4", FACTORY_GATE_SHARDS=SHARDS)
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(self.lines("mac-runs"), ["all"])
 
 
 if __name__ == "__main__":
