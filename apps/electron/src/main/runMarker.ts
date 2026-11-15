@@ -95,11 +95,12 @@ export function rendererGone(details: Gone, page: { reload(): void; isDestroyed(
 
 // A render error the page's root boundary caught (renderer's RenderError.tsx), each field the
 // page's own text, untrusted: its name and message cut, and of its component stack only the
-// components' names (no URL or path). The window is reloaded after the first one of this run
-// only: a page load doesn't clear that, so a page that fails on every load can't loop.
+// components' names (no URL or path: a frame without a name, its place for one a URL or path,
+// is dropped). The window is reloaded after the first one of this run only: a page load doesn't
+// clear that, so a page that fails on every load can't loop.
 let renderReloaded = false;
 const names = (stack: string) => stack.split('\n').map((l) => l.trim().replace(/^(?:at|in) /, '').split(/[ (]/)[0])
-  .filter(Boolean).join('\n').slice(0, 4000);
+  .filter((name) => /^[A-Za-z_$][\w$.-]*$/.test(name)).join('\n').slice(0, 4000);
 export function renderFailed(error: { name: string; message: string; componentStack: string }, page: { reload(): void; isDestroyed(): boolean } | null) {
   crashed({ kind: 'render', reason: error.name.slice(0, 100), message: error.message.slice(0, 1000), componentStack: names(error.componentStack), time: now() });
   if (!page || page.isDestroyed() || renderReloaded) return;

@@ -73,15 +73,18 @@ describe('ENGINE-20', () => {
       expect(cut.reason).toHaveLength(100);
       expect(cut.message).toHaveLength(1000);
       expect(cut.componentStack).toBe('Pane\nSide');
+      // a frame with no name (an anonymous component): its URL or path is dropped, not kept as one
+      records.renderFailed({ name: 'Error', message: 'm', componentStack: '\n    at file:///Users/someone/oby/out/renderer/index.js:3:4\n    at http://localhost:5173/src/Home.tsx:1:2\n    at /Users/someone/x.js:1:1\n    at C:\\x.js\n    at Home' }, null);
+      expect(lines()[3].componentStack).toBe('Home');
       records.renderFailed({ name: 'Error', message: 'm', componentStack: 'at XY\n'.repeat(2000) }, null);
-      expect(lines()[3].componentStack).toHaveLength(4000);
+      expect(lines()[4].componentStack).toHaveLength(4000);
       // a fresh run: a closed window, or none, is recorded and not reloaded
       vi.resetModules();
       const fresh = await import('../../../main/runMarker');
       const closed = { ...page(), isDestroyed: () => true };
       fresh.renderFailed({ name: 'TypeError', message: 'm', componentStack: '' }, null);
       fresh.renderFailed({ name: 'TypeError', message: 'm', componentStack: '' }, closed);
-      expect(lines()).toHaveLength(6);
+      expect(lines()).toHaveLength(7);
       expect(closed.reloads).toBe(0);
     } finally {
       rmSync(the.userData, { recursive: true, force: true });
