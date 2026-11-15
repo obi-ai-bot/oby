@@ -56,6 +56,10 @@ The owner's answer in the factory session of 2026-11-15.
 
 The owner's answer in the factory session of 2026-11-15.
 
+> "Drop it after a read (Recommended)" to: "after an outside read, you chose that a plain "merge it" or "allow it" answers a card when it's the only card of its kind waiting. Security found this keeps a hole open: with one merge card for #3 waiting, "Merge #4. Don't merge #3." lets injected text merge #3, and even "Allow me to explain." allows the one permission card. Keep the shortcut?"
+
+The owner's answer in the factory session of 2026-11-15.
+
 > no force-pushing, nor merging into `main` but the owner's own work, on its own
 
 AGENTS.md's wording, not a quote.
