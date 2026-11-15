@@ -1515,6 +1515,112 @@ fn research_cant_carry_a_job_past_its_safety_limit() {
     );
 }
 
+/// RECOVERY-18: a turn whose words an app of the owner's signed carries their own conversation
+/// work past its safety limit at once: its follow-up starts, and no Confirm waits.
+#[test]
+fn recovery_18_a_signed_turn_carries_own_work_past_its_safety_limit() {
+    let folder = Folder::new("brain-own-safety");
+    let mut spent = ended(
+        "b0d6e7a2",
+        "Spent it all",
+        obid::job::Status::Interrupted,
+        0,
+        None,
+    );
+    spent.stalled = Some(obid::job::Stalled {
+        why: "budget".into(),
+        text: "the task used 1000 tokens".into(),
+        at: obi_protocol::time::now(),
+        round: 1,
+        branch: spent.branch.clone(),
+        commit: None,
+        commits: 0,
+        session: true,
+        note: String::new(),
+        note_by: "obid".into(),
+    });
+    spent.limit = Some("the task used 1000 tokens".into());
+    spent.own_conversation = true;
+    let obid = started_with(&folder, &[spent]);
+    let answer = call_typed(
+        &obid,
+        "POST",
+        "/v1/plans",
+        &json!({"said": r#"OBY oby_tell_job {"id":"b0d6e7a2","words":"go on"}"#}),
+    );
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    assert!(
+        answer.body["text"]
+            .as_str()
+            .unwrap()
+            .contains("started a follow-up"),
+        "{}",
+        answer.text
+    );
+    assert!(items_of(&obid, "confirm").is_empty());
+    assert_eq!(
+        call(&obid, "GET", "/v1/jobs", None)
+            .body
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "its follow-up started"
+    );
+}
+
+/// RECOVERY-18: the words a turn no app of the owner's signed relays to their own work are the
+/// API's (kept apart for its review, MERGING-33), never the owner's own, so they can't carry it
+/// past its safety limit with no Confirm; a signed turn's stay the owner's.
+#[test]
+fn recovery_18_an_unsigned_turn_relays_the_apis_words_to_own_work() {
+    let folder = Folder::new("brain-own-unsigned-tell");
+    let obid = started_harness_jobs(&folder);
+    let started = call_typed(
+        &obid,
+        "POST",
+        "/v1/plans",
+        &json!({"said": r#"OBY oby_dispatch {"repo":"obi-e2e/fixture-app","kind":"research","title":"Own work","task":"SLEEP"}"#, "new": true}),
+    );
+    assert_eq!(started.status, 200, "{}", started.text);
+    let conversation = started.body["conversation"].as_str().unwrap().to_owned();
+    let id = started.body["jobs"][0]["id"].as_str().unwrap().to_owned();
+    within(30, "the job runs", || {
+        (get_job(&obid, &id)["status"] == "running").then_some(())
+    });
+    let tell = |words: &str| {
+        json!({"said": format!(r#"OBY oby_tell_job {{"id":"{id}","words":"{words}"}}"#),
+               "conversation": conversation})
+    };
+    let signed = call_typed(&obid, "POST", "/v1/plans", &tell("use a period"));
+    assert_eq!(signed.status, 200, "{}", signed.text);
+    let unsigned = call(&obid, "POST", "/v1/plans", Some(&tell("use a comma")));
+    assert_eq!(unsigned.status, 200, "{}", unsigned.text);
+    assert!(
+        unsigned.body["text"].as_str().unwrap().contains("Told"),
+        "{}",
+        unsigned.text
+    );
+    let file = obid.home.join("jobs").join(format!("{id}.json"));
+    let kept: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+    let api_said = kept["apiSaid"].as_array().cloned().unwrap_or_default();
+    assert_eq!(api_said.len(), 1, "{kept}");
+    assert!(
+        api_said[0].as_str().unwrap().contains("use a comma"),
+        "{kept}"
+    );
+    // Kept as the API's too, so words it never heard ask before they start anything
+    // (TASKCONV-21).
+    let sources: Vec<&str> = kept["owners"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["source"].as_str().unwrap())
+        .collect();
+    assert_eq!(sources, ["owner", "api"], "{kept}");
+}
+
 /// What a job can't do says why, and fails.
 #[test]
 fn what_a_job_can_t_do_says_why() {
