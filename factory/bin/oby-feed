@@ -205,8 +205,8 @@ def check_models(files, head):
                               else first[:100] if first else f"it printed nothing (exit {run.code})")
                     check = "invariant" if kind == "invariants" else "witness"
                     note = f"{path}: the {check} {inv} (main={opts.get('main', '')}) gave no verdict: {detail}"
-                    # ssh exits 255 on its own failure, and its own words go to stderr, never captured as the output
-                    return Unreached(note) if run.code == 255 and not said else note
+                    # ssh exits 255 on its own failure (a connection refused or dropped mid-run, whatever was printed)
+                    return Unreached(note) if run.code == 255 else note
         subprocess.run(["ssh", "-o", "BatchMode=yes", host, f"rm -f {name}"], capture_output=True)
     return None
 
@@ -462,6 +462,25 @@ def follow(item, jobs):
     return False
 
 
+def base_tasks():
+    """Task files on origin/<base> that this checkout lacks: each pass fetches, and nothing pulls the checkout."""
+    here = {p.stem for p in job.TASKS.glob("*.md")} if job.TASKS.exists() else set()
+    out = []
+    for key in sorted(job.on_base(job.TASKS) - here):
+        res = subprocess.run(["git", "show", f"origin/{job.BASE}:{(job.TASKS / f'{key}.md').relative_to(REPO)}"],
+                             cwd=REPO, capture_output=True, text=True)
+        if res.returncode != 0:
+            continue
+        copy = FEED / "on-base" / f"{key}.md"
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        copy.write_text(res.stdout)
+        try:
+            out.append(job.read_task(copy))
+        except (SystemExit, ValueError):  # a KEY that isn't the file's name
+            continue
+    return out
+
+
 def ready_tasks(state):
     """Open task files that may start now, in the queue's order, with why each other one waits."""
     done = job.done_keys()
@@ -478,7 +497,7 @@ def ready_tasks(state):
             except (SystemExit, FileNotFoundError, OSError):
                 pass
     out = []
-    for task in job.open_tasks():
+    for task in sorted(job.open_tasks() + base_tasks(), key=lambda t: (t["sprint"], t["order"], t["key"])):
         key = task["key"]
         if key in done or key in factory or key in state:
             continue

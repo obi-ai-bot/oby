@@ -367,23 +367,42 @@ class ObyFeed(unittest.TestCase):
 
     # FEEDALIVE-3: a task file ready after idle passes starts at the next pass
     def test_feedalive_3_a_task_ready_after_idle_passes_starts_at_the_next_pass(self):
+        """The task file lands on origin/<base> only: the feeder's checkout is fetched, never pulled."""
         self.feed.oby_jobs = lambda: []
         self.feed.free_gb = lambda: 100.0
-        ready = []
-        self.feed.ready_tasks = lambda state: [] if not ready or "A00-98" in state else ready
+        tasks = self.dir / "repo" / "factory" / "queue" / "tasks"
+        tasks.mkdir(parents=True)
+        on_base = set()
+        text = "KEY: A00-98\nTITLE: another task\nSPRINT: 0\nORDER: 1\nDEPENDS: none\n\nWhat.\n\n### Files\n- y.py\n"
+        shown = []
+
+        def run(cmd, **kwargs):
+            if cmd[:2] == ["git", "show"]:
+                shown.append(cmd[2])
+                return subprocess.CompletedProcess(cmd, 0, text, "")
+            return self.stand.run(cmd, **kwargs)
+
+        self.feed.subprocess = Namespace(run=run)
+        self.feed.REPO = self.dir / "repo"
         started = []
         self.feed.start = lambda task, account, on_base: (started.append(task["key"]) or "job-9", None)
 
         def passes(n):
             if n == 3:
-                ready.append(({"key": "A00-98", "title": "another task"}, True, {"y.py"}))
+                on_base.add("A00-98")
             if n == 4:
                 raise Stop
 
-        sleeps = self.main(passes=passes)
+        with mock.patch.object(self.feed.job, "TASKS", tasks), mock.patch.object(self.feed.job, "SPRINT", 0), \
+                mock.patch.object(self.feed.job, "on_base", lambda path: set(on_base)), \
+                mock.patch.object(self.feed.job, "done_keys", lambda: set()), \
+                mock.patch.object(self.feed.job, "all_jobs", lambda: []):
+            sleeps = self.main(passes=passes)
         self.assertEqual(started, ["A00-98"])
+        self.assertEqual(shown[0], f"origin/{self.feed.job.BASE}:factory/queue/tasks/A00-98.md")
         self.assertEqual(sleeps, [300, 300, 300, 60])
         self.assertEqual(self.feed.load_state()["A00-98"]["state"], "running")
+        self.assertEqual(self.feed.load_state()["A00-98"]["files"], ["y.py"])
 
     # FEEDALIVE-4: a 502 from `gh pr merge` is tried again; GitHub refusing the merge holds the head
     def test_feedalive_4_a_502_is_tried_again_and_a_refusal_holds_the_head(self):
@@ -457,6 +476,21 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual(self.feed.may_arm(j, pr, None)[0], "retry")
         self.feed.check_models = lambda files, head: f"{PATH}: the invariant safe does not hold"
         self.assertEqual(self.feed.may_arm(j, pr, None)[0], "wait")
+
+    def test_feedalive_5_a_connection_dropped_after_some_output_is_unreached(self):
+        def run(cmd, **_):
+            if cmd[0] == "gh":
+                return subprocess.CompletedProcess(cmd, 0, "// verify: main=m invariants=safe\n", "")
+            if VERIFY.search(cmd[-1]):
+                return subprocess.CompletedProcess(cmd, 255, "Compiling the model...\n", "Connection to oby-gate closed by remote host.")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        config = dict(self.feed.job.CONFIG, remote_gate={"ssh_host": "oby-gate"})
+        with mock.patch.object(self.feed.job, "CONFIG", config):
+            self.feed.subprocess = Namespace(run=run)
+            got = self.feed.check_models([PATH], HEAD)
+        self.assertIsInstance(got, self.feed.Unreached)
+        self.assertIn("gave no verdict", got)
 
     # FEEDALIVE-6: --account any names no account; the default names deskree-team
     def test_feedalive_6_account_any_sends_no_account_and_the_default_sends_deskree_team(self):
