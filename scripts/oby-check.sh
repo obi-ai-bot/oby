@@ -162,7 +162,7 @@ cache="${OBY_CHECK_CACHE:-$HOME/Library/Caches/oby-check}"
 # payback: R12-05 routines started from GitHub feed events need ~420 lines (owner, 2026-11-14)
 obid_lines_limit=100500
 # jobs.rs alone may only shrink: past this it fails (the owner's decision of 2026-11-06, "1.3 Both").
-jobs_rs_limit=14967
+jobs_rs_limit=6341
 # obid's tests may only lose sleeps: a test waits for state with support::within (docs/contracts/ci.md, CI-12, CI-13).
 tests_sleep_limit=205
 # AGENTS.md may only shrink: a cut lowers this, and raising it is the owner's word (docs/contracts/ci.md, CI-36 to 38).
