@@ -98,11 +98,13 @@ pub(crate) fn says_words(words: &str, phrase: &str) -> bool {
             .any(|run| run == phrase.as_slice())
 }
 
-/// Whether `words` say `phrase` plainly: in a sentence that asks nothing (no `?`) and says no
-/// "not", "never" or "don't" (any `n't`). "Should I merge #3?" and "don't merge #3" say no
-/// merge (the owner's answer of 2026-11-15).
-pub(crate) fn says_plainly(words: &str, phrase: &str) -> bool {
+/// The plain sentences of `words`: those that ask nothing (no `?` in any word) and say no "not",
+/// "never" or "don't" (any `n't`). A sentence ends at a word ending in `.`, `!`, `;` or holding a
+/// `?`, quotes and brackets aside, or at a line's end. "Should I merge #3?" and "don't merge #3"
+/// are none (the owner's answer of 2026-11-15).
+fn plain_sentences(words: &str) -> impl Iterator<Item = String> + '_ {
     const CLOSING: &str = "'\"”’)]>";
+    let asks = |word: &&str| word.contains(['?', '？']);
     let denies = |word: &&str| {
         let word = word
             .trim_matches(|c: char| AROUND.contains(c))
@@ -111,31 +113,44 @@ pub(crate) fn says_plainly(words: &str, phrase: &str) -> bool {
             || word.ends_with("n't")
             || word.ends_with("n’t")
     };
-    let ends = |word: &&str| {
-        word.trim_end_matches(|c: char| CLOSING.contains(c))
-            .ends_with(['.', '!', '?', ';'])
+    let ends = move |word: &&str| {
+        asks(word)
+            || word
+                .trim_end_matches(|c: char| CLOSING.contains(c))
+                .ends_with(['.', '!', ';', '。', '！'])
     };
-    let plain = |sentence: &[&str]| {
-        let asked = sentence.last().is_some_and(|w| {
-            w.trim_end_matches(|c: char| CLOSING.contains(c))
-                .ends_with('?')
-        });
-        !asked && !sentence.iter().any(denies) && says_words(&sentence.join(" "), phrase)
-    };
-    words.lines().any(|line| {
+    words.lines().flat_map(move |line| {
         let words: Vec<&str> = line.split_whitespace().collect();
-        words.split_inclusive(ends).any(plain)
+        let plain: Vec<String> = words
+            .split_inclusive(ends)
+            .filter(|sentence| !sentence.iter().any(asks) && !sentence.iter().any(denies))
+            .map(|sentence| sentence.join(" "))
+            .collect();
+        plain
     })
+}
+
+/// Whether `words` say `phrase` in a plain sentence ([`plain_sentences`]).
+pub(crate) fn says_plainly(words: &str, phrase: &str) -> bool {
+    plain_sentences(words).any(|sentence| says_words(&sentence, phrase))
+}
+
+/// Whether one plain sentence of `words` says `phrase` and also holds what `about` looks for:
+/// "Merge #4. Don't merge #3." says the merge of #4 only.
+fn says_of(words: &str, phrase: &str, about: impl Fn(&str) -> bool) -> bool {
+    plain_sentences(words).any(|sentence| says_words(&sentence, phrase) && about(&sentence))
 }
 
 /// What an owner says to continue a job, and to change one (`oby_continue_job`, `oby_change_job`).
 pub(crate) const CONTINUE: [&str; 4] = ["continue", "try again", "resume", "go on"];
 pub(crate) const CHANGE: [&str; 4] = ["change", "move", "put", "switch"];
 
-/// Whether `words` name `job` and say plainly one of `verbs` to do to it ([`CONTINUE`],
-/// [`CHANGE`]): "how is Fix login going?" names Fix login, but no continuing of it.
+/// Whether one plain sentence of `words` says one of `verbs` ([`CONTINUE`], [`CHANGE`]) and names
+/// `job`: "how is Fix login going?" names Fix login, but no continuing of it.
 pub(crate) fn names_job_to(words: &str, verbs: &[&str], job: &Job) -> bool {
-    verbs.iter().any(|verb| says_plainly(words, verb)) && names_job(words, job)
+    verbs
+        .iter()
+        .any(|verb| says_of(words, verb, |sentence| names_job(sentence, job)))
 }
 
 /// Whether `words` name `job`: its task name, its own pull request, or the pull request or issue
@@ -167,18 +182,27 @@ pub(crate) fn names_card(words: &str, item: &Item, job: Option<&Job>) -> bool {
         || about.is_some_and(|(repo, number)| names_number(words, repo, number))
 }
 
-/// Whether `words` name a merge of `repo`'s pull request `pr`: they say "merge" plainly, and its
-/// number or link or its job's task name (`job`). "Summarize #3" names #3 but no merge of it.
+/// Whether `words` say, card answer and target in one plain sentence, `answer` to `item` named by
+/// its target ([`names_card`]): "Allow Fix login. Don't allow Fix signup." allows only Fix login's.
+pub(crate) fn names_card_answer(words: &str, answer: &str, item: &Item, job: Option<&Job>) -> bool {
+    says_of(words, answer, |sentence| names_card(sentence, item, job))
+}
+
+/// Whether one plain sentence of `words` says "merge" and names `repo`'s pull request `pr`, by
+/// its number or link or its job's task name (`job`). "Summarize #3" names #3 but no merge of it.
 pub(crate) fn names_merge(words: &str, repo: &str, pr: u64, job: Option<&str>) -> bool {
-    says_plainly(words, "merge")
-        && (names_number(words, repo, pr) || job.is_some_and(|title| says_words(words, title)))
+    says_of(words, "merge", |sentence| {
+        names_number(sentence, repo, pr) || job.is_some_and(|title| says_words(sentence, title))
+    })
 }
 
 /// Whether `words` name `action` (`comment`, `approve`, `request_changes`, `close`, `label`) on
-/// `repo`'s issue or pull request `number`: they say the action plainly and its number or link.
-/// "Comment on #3" names no approval of it.
+/// `repo`'s issue or pull request `number`: one plain sentence says the action and its number or
+/// link. "Comment on #3" names no approval of it.
 pub(crate) fn names_write(words: &str, action: &str, repo: &str, number: u64) -> bool {
-    says_plainly(words, &action.replace('_', " ")) && names_number(words, repo, number)
+    says_of(words, &action.replace('_', " "), |sentence| {
+        names_number(sentence, repo, number)
+    })
 }
 
 /// The answer when a call is [`Act::Skip`]: `what` isn't done, and how to have it done.
@@ -281,6 +305,41 @@ mod tests {
         assert!(!says_plainly("don't allow it", "Allow"));
         assert!(!says_plainly("allow it?", "Allow"));
         assert!(says_plainly("allow it", "Allow"));
+    }
+
+    #[test]
+    fn taskconv_27_the_action_and_its_target_share_one_plain_sentence() {
+        assert!(!names_merge("Merge #4. Don't merge #3.", "o/r", 3, None));
+        assert!(names_merge("Merge #4. Don't merge #3.", "o/r", 4, None));
+        assert!(!names_merge("Merge it. It's #3?", "o/r", 3, None));
+        for asked in [
+            "Should I merge #3?!",
+            "Should I merge #3?, or close it",
+            "merge #3?.",
+            "merge #3？",
+        ] {
+            assert!(!names_merge(asked, "o/r", 3, None), "{asked}");
+        }
+        assert!(!names_write(
+            "Approve #4. Don't approve #3.",
+            "approve",
+            "o/r",
+            3
+        ));
+        let job = Job {
+            title: Some("Fix login".into()),
+            repo: "o/r".into(),
+            ..Job::default()
+        };
+        let other = "Continue Fix signup. Don't continue Fix login.";
+        assert!(!names_job_to(other, &CONTINUE, &job));
+        let card = Item {
+            title: "Fix login".into(),
+            ..Item::default()
+        };
+        let both = "Allow Fix signup. Don't allow Fix login.";
+        assert!(!names_card_answer(both, "Allow", &card, None));
+        assert!(names_card_answer("Allow Fix login.", "Allow", &card, None));
     }
 
     #[test]

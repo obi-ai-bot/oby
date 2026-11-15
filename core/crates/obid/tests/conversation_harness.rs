@@ -1576,6 +1576,9 @@ fn taskconv_27_a_negated_or_asked_merge_is_not_done() {
         "should I merge #3?",
         "not merging #3 yet",
         "Not merge #3 yet",
+        "Merge #4. Don't merge #3.",
+        "Should I merge #3?!",
+        "Should I merge #3?, or close it",
     ] {
         let answered = after_a_read(
             &obid,
@@ -1674,6 +1677,14 @@ fn taskconv_29_a_card_is_settled_when_named_or_the_only_one_waiting() {
     assert_eq!(answer.status, 200, "{}", answer.text);
     assert!(oby_said(&answer).contains("Not done:"), "{}", answer.text);
     assert!(!jobs().iter().any(|j| j["title"] == "Add a header"));
+
+    // Two waiting: the answer said plainly of one doesn't settle the other, named in a no.
+    let (logo, _) = offer("Add a logo", Some(&conversation));
+    a_second_passes();
+    let words = "Start Add a header. Don't start Add a logo.";
+    let answered = start(&conversation, words, &logo);
+    assert!(answered.contains("Not done:"), "{answered}");
+    assert!(!jobs().iter().any(|j| j["title"] == "Add a logo"));
 }
 
 /// TASKCONV-30: after a read, words no app of the owner's signed still make the merge's Confirm,
@@ -1741,7 +1752,11 @@ fn taskconv_32_a_write_on_github_is_done_only_on_what_the_words_name() {
             args.clone(),
         )
     };
-    for words in ["Approve it", "Comment on #3"] {
+    for words in [
+        "Approve it",
+        "Comment on #3",
+        "Approve #4. Don't approve #3.",
+    ] {
         let answered = write(words, &approve);
         assert!(answered.contains("Not done:"), "{words}: {answered}");
     }
@@ -1775,6 +1790,8 @@ fn taskconv_33_a_job_named_after_a_read_continues_at_once() {
         "Go on",
         "How is Add a greeting going?",
         "Don't continue Add a greeting",
+        "Continue the other job. Don't continue Add a greeting.",
+        "Should I continue Add a greeting?!",
     ] {
         let answered = after_a_read(
             &obid,

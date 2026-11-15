@@ -863,10 +863,10 @@ pub(super) async fn answer_inbox(
         && NAMED_KINDS.contains(&item.kind.as_str())
         && item.options.contains(&words)
     {
-        use super::named::{card_named, names_card, says_plainly};
+        use super::named::{card_named, names_card_answer, says_plainly};
         let here = waiting_here(shared, &item, conversation, begun);
         let named = card_named(
-            names_card(heard, &item, job.as_ref()),
+            names_card_answer(heard, &words, &item, job.as_ref()),
             says_plainly(heard, &words),
             here,
         );
