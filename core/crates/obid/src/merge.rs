@@ -4123,6 +4123,40 @@ mod tests {
         }
     }
 
+    /// MERGING-49, 50: own work merges past Oby's review only by [`own_proposed`], on Oby's own
+    /// review: a member's approval on GitHub never merges it past a review that asks for changes
+    /// while a round may still come, of an older head, or of a head that needs two reviews.
+    #[test]
+    fn merging_49_a_members_approval_never_merges_own_work_past_a_flagging_review() {
+        let (pr, merging) = read(
+            &view(|_| {}),
+            &pages(vec![rest(3, "ana", "User", "APPROVED", &head(), "MEMBER")]),
+        );
+        let ready_by_itself = |job: &Job| {
+            let workflow = own_proposed(job, &pr, &merging, &signed_in()).unwrap();
+            assert_eq!(workflow.review, Approval::Oby);
+            ready(job, Some(&workflow), &pr, &merging, Some(&signed_in()))
+        };
+        let mut round = flagged_own();
+        round.reviewing = Some("r2".into());
+        let mut older = own();
+        older.review = reviewed("changesRequested", &"c".repeat(40)).review;
+        let mut security = flagged_own();
+        security.review.as_mut().unwrap().two_reviews = Some("it changes AGENTS.md".into());
+        for job in [round, older] {
+            let blocked = ready_by_itself(&job).unwrap_err();
+            assert!(
+                blocked
+                    .why
+                    .contains("Oby's review hasn't approved its head"),
+                "{blocked:?}"
+            );
+        }
+        assert_eq!(ready_by_itself(&security), Err(yours(REVIEW_ASKS)));
+        // Past its last round, one-review own work merges past it: on Oby's review, not ana's.
+        assert_eq!(ready_by_itself(&flagged_own()), Ok(()));
+    }
+
     /// MERGING-21: a Ready to merge card says what it asks once, in Sangam's words ("Merge
     /// tetrix-ee #497 into dev?"), then each hold on a line of its own, with no "Not merged yet: "
     /// or "so it's yours to merge" again (the drive of 2026-10-31), and the owner's signed answer to

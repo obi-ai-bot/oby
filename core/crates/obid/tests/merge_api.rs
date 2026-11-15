@@ -4019,7 +4019,7 @@ fn merging_49_the_line_is_told_once_per_merged_head() {
 /// MERGING-50: the owner's own conversation work whose head needs two approving reviews (it read
 /// something untrusted, it changes a security path, or Oby couldn't read what it changes) never
 /// merges past a review that still asks for changes: it keeps MERGING-8's item, and the owner's
-/// Merge on it merges with their own login.
+/// Merge on it merges with their own login. A member's approval on GitHub doesn't merge it.
 #[test]
 fn merging_50_untrusted_or_security_path_own_work_flagged_keeps_the_owners_item() {
     for (name, two_reviews) in [
@@ -4034,7 +4034,8 @@ fn merging_50_untrusted_or_security_path_own_work_flagged_keeps_the_owners_item(
             None => mine.untrusted = true,
             Some(why) => mine.review.as_mut().unwrap().two_reviews = Some(why.into()),
         }
-        let obid = started_with(&folder, false, None, mine, &[]);
+        // A member's approval on GitHub counts for neither review (MERGING-46, 48).
+        let obid = started_with(&folder, false, None, mine, &["person"]);
         let item = within(30, "the review's item", || {
             review_items(&obid).into_iter().next()
         });
