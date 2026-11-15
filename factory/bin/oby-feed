@@ -299,8 +299,9 @@ def start(task, account, on_base):
     text = brief(task, on_base)
     if len(text) > 2000:
         return None, f"its file isn't on origin/{job.BASE} and its text is too long to send ({len(text)} characters): commit the task file first"
-    # The request key outlives a start obid didn't answer: if obid made the job and its answer was lost, the next
-    # pass's retry with the same key gets that job back instead of making a second one (POST /v1/jobs's receipts).
+    # One request key per task attempt, saved before the POST: if obid made the job and its answer was lost or was a
+    # 5xx, the next pass's retry with the same key gets that job back instead of making a second one (POST /v1/jobs's
+    # receipts). Only a refusal (4xx) ends the attempt here; a job obid answered ends it once one_pass saved it.
     pending = FEED / f"{key}.start"
     FEED.mkdir(parents=True, exist_ok=True)
     request_id = pending.read_text().strip() if pending.exists() else f"feed-{key}-{int(time.time())}"
@@ -312,10 +313,11 @@ def start(task, account, on_base):
     code, body = api("POST", "/v1/jobs", {"job": sent})
     if code is None:
         return None, "obid didn't answer"
-    pending.unlink()
-    if code not in (200, 201) or not (body or {}).get("id"):
-        return None, f"obid refused it: {(body or {}).get('error', code)}"
-    return body["id"], None
+    if code in (200, 201) and (body or {}).get("id"):
+        return body["id"], None
+    if code < 500:
+        pending.unlink()
+    return None, f"obid refused it: {(body or {}).get('error', code)}"
 
 
 def pr_number(url):
@@ -605,6 +607,7 @@ def one_pass(args):
                     "files": sorted(files), "started": time.strftime("%Y-%m-%dT%H:%M:%S")}
             state[task["key"]] = item
             save(item)
+            (FEED / f"{task['key']}.start").unlink(missing_ok=True)  # the attempt is recorded: its key is done
             say(f"{task['key']}: started as Oby job {oby_id} on {args.account}")
             started += 1
             taken |= files

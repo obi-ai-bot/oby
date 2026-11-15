@@ -531,6 +531,42 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual(self.feed.load_state()["A00-98"]["job"], "job-9")
         self.assertFalse((self.feed.FEED / "A00-98.start").exists())
 
+    def test_feedalive_1_one_request_key_per_task_attempt_through_a_5xx_until_the_job_is_saved(self):
+        """obid answers a start with a 503 while it restarts, then with the job: both posts carry the one key, which
+        is still on disk when the job is saved and dropped only after; a 4xx refusal ends the attempt."""
+        ready = {"key": "A00-98", "title": "another task", "body": ""}
+        self.feed.ready_tasks = lambda state: [] if "A00-98" in state else [(ready, True, {"y.py"})]
+        self.feed.free_gb = lambda: 100.0
+        self.feed.oby_jobs = lambda: []
+        pending = self.feed.FEED / "A00-98.start"
+        keys, answers = [], [(503, {"error": "obid is restarting"}), (201, {"id": "job-9"}), (None, None)]
+
+        def api(method, path, body=None, timeout=30):
+            keys.append(body["job"]["clientRequestId"])
+            return answers[len(keys) - 1]
+
+        saved, real_save = [], self.feed.save
+
+        def save(item):
+            saved.append(pending.exists())
+            real_save(item)
+
+        self.feed.api, self.feed.save = api, save
+        clock = iter(range(1000, 2000, 60))
+        with mock.patch.object(self.feed.time, "time", lambda: next(clock)):
+            self.assertEqual(self.one_pass(), (0, 0))
+            self.assertTrue(pending.exists())
+            self.assertEqual(self.one_pass(), (1, 1))
+            self.assertEqual(len(keys), 2)
+            self.assertEqual(keys[0], keys[1])
+        self.assertEqual(saved, [True])
+        self.assertFalse(pending.exists())
+        self.assertEqual(self.feed.start({"key": "A00-96", "title": "t", "body": ""}, "acct", True)[0], None)
+        self.assertTrue((self.feed.FEED / "A00-96.start").exists())  # no answer: kept
+        self.feed.api = lambda method, path, body=None, timeout=30: (409, {"error": "that key carried another task"})
+        self.assertEqual(self.feed.start({"key": "A00-96", "title": "t", "body": ""}, "acct", True)[0], None)
+        self.assertFalse((self.feed.FEED / "A00-96.start").exists())
+
     def test_feedalive_1_an_interrupted_answer_never_ends_the_feeder(self):
         """A body cut off with no error, IncompleteRead and a reset mid-read: three skipped passes, never a crash."""
         cuts = iter([b'[{"id": "jo', http.client.IncompleteRead(b"[", 40), ConnectionResetError("reset by peer")])
