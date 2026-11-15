@@ -3063,11 +3063,11 @@ fn tasks_24_a_diff_over_a_mebibyte_is_cut_at_the_cap_and_says_so() {
     assert_eq!(answer["truncated"], true);
 }
 
-/// TASKS-25: a vault secret and obid's API token written into a changed file are taken out of
+/// TASKS-27: a vault secret and obid's API token written into a changed file are taken out of
 /// the diff, each marked by name.
 #[test]
-fn tasks_25_a_secret_in_a_changed_file_is_redacted_in_the_diff() {
-    let folder = Folder::new("tasks-25");
+fn tasks_27_a_secret_in_a_changed_file_is_redacted_in_the_diff() {
+    let folder = Folder::new("tasks-27");
     let (obid, _) = obid(&folder);
     let (id, worktree) = changed_job(&obid);
     let value = format!("key/{}+R8n3=c0dZ", std::process::id() % 1_000_000 + 100_000);

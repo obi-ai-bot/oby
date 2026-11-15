@@ -279,7 +279,7 @@ pub struct ChangesQuery {
 }
 
 /// `GET /v1/jobs/{id}/changes?path=<path>`: the files and the diff the job's branch makes against
-/// its base (docs/contracts/tasks.md, TASKS-23 to 26).
+/// its base (docs/contracts/tasks.md, TASKS-23, 24, 26 and 27).
 pub async fn changes(
     State(shared): State<Arc<Shared>>,
     Path(id): Path<String>,

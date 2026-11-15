@@ -1,6 +1,6 @@
-//! What a job's branch changed against its base (docs/contracts/tasks.md, TASKS-23 to 26): its
-//! files and its diff, read in its worktree inside its sandbox, at one HEAD. It owns no state, and
-//! never writes a job, a worktree or a branch.
+//! What a job's branch changed against its base (docs/contracts/tasks.md, TASKS-23, 24, 26 and
+//! 27): its files and its diff, read in its worktree inside its sandbox, at one HEAD. It owns no
+//! state, and never writes a job, a worktree or a branch.
 
 use super::*;
 
