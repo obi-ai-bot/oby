@@ -76,6 +76,7 @@ pub(crate) use own_refs::OWN_COMMON;
 mod research;
 mod retry;
 mod review_reads;
+mod review_start;
 mod secrets;
 mod setup;
 mod slots;
@@ -964,6 +965,18 @@ struct State {
     awake: crate::power::Awake,
     /// Why each job's last save failed, until one succeeds ([`Jobs::keep`]).
     unkept: HashMap<String, String>,
+}
+
+/// Its stages' times, and its estimate again when a stage started or ended (#733), from the jobs
+/// `state` holds, before `job` is kept under the same lock.
+fn stamp(state: &State, job: &mut Job) {
+    // ponytail: reads every job kept; an index by repository if that ever shows.
+    if job.stamp(obi_protocol::time::now()) && job.status.is_active() {
+        let estimate = crate::facts::estimate(job, state.jobs.values(), job.estimate.as_ref());
+        if estimate.is_some() {
+            job.estimate = estimate;
+        }
+    }
 }
 
 /// An account being signed in or removed ([`Jobs::begin_change`]), until this is dropped.
@@ -2814,15 +2827,7 @@ impl Jobs {
             let mut job = state.jobs.get(id)?.clone();
             let before = job.status;
             change(&mut job, seen);
-            // Its stages' times, and its estimate again when a stage started or ended (#733).
-            // ponytail: reads every job kept; an index by repository if that ever shows.
-            if job.stamp(obi_protocol::time::now()) && job.status.is_active() {
-                let estimate =
-                    crate::facts::estimate(&job, state.jobs.values(), job.estimate.as_ref());
-                if estimate.is_some() {
-                    job.estimate = estimate;
-                }
-            }
+            stamp(&state, &mut job);
             (self.keep(&mut state, id, job.revised()).ok()?, before)
         };
         crate::failures::observe(&self.config.home, &job);
@@ -11706,7 +11711,12 @@ impl Jobs {
             Ok(found) => found,
             Err(why) => {
                 if author.no_reviewer.as_ref() != Some(&why) {
-                    self.update(id, |job| job.no_reviewer = Some(why));
+                    // Not over a review another caller started meanwhile (MERGING-55).
+                    self.update(id, |job| {
+                        if job.review_due() == Some(head.as_str()) {
+                            job.no_reviewer = Some(why);
+                        }
+                    });
                 }
                 return;
             }
@@ -11727,7 +11737,7 @@ impl Jobs {
         ));
         review.branch = format!("oby/review-{review_id}");
         review.base = author.base.clone();
-        review.start_commit = Some(head);
+        review.start_commit = Some(head.clone());
         review.mode = Some(Mode::Plan.as_str().to_owned());
         review.round = Some(1);
         review.review_of = Some(id.to_owned());
@@ -11736,18 +11746,9 @@ impl Jobs {
         review.clone_root = author.clone_root.clone();
         review.phase = Some(Phase::Prepare);
         review.step = format!("Getting {} ready", author.repo_name());
-        // The review first: cut off between the two, it still runs, and its verdict still lands.
-        let Ok(_) = self.insert(review) else { return };
-        self.update(id, |job| {
-            // Its summary of the round it worked on the last review is its reply (MERGING-33).
-            if let Some((_, reply)) = job.replies.last_mut().filter(|(_, r)| r.is_empty()) {
-                *reply = crate::secrets::known().redact(&job.summary);
-            }
-            job.reviewing = Some(review_id.clone());
-            job.review_error = None;
-            job.no_reviewer = None;
-        });
-        self.review_items(id, None);
+        if self.claim_review(id, &head, review) {
+            self.review_items(id, None);
+        }
     }
 
     /// The owner's Try again on Oby's review that no reviewer could give (its `failed` inbox item,
@@ -18970,7 +18971,7 @@ mod tests {
     }
 
     /// A Jobs over `home` with `jobs` kept there before it opens, for the crash and claim tests.
-    fn jobs_with_kept(home: &Path, jobs: &[&Job]) -> Arc<Jobs> {
+    pub(super) fn jobs_with_kept(home: &Path, jobs: &[&Job]) -> Arc<Jobs> {
         std::fs::create_dir_all(home.join("jobs")).unwrap();
         for job in jobs {
             std::fs::write(
