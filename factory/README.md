@@ -118,6 +118,15 @@ From the root [AGENTS.md](../AGENTS.md)'s "Software factory".
 - A fresh checkout needs `oby-check-blok` installed once on the Mac ("Build and run") and `gitleaks`; for the Electron app, `cd apps/electron && npm install`. To see a screen on a given port: [apps/electron/AGENTS.md](../apps/electron/AGENTS.md#build-and-run).
 - Each job works in its own git worktree, a full checkout at `.worktrees/<job-id>` (gitignored), on a branch `factory/<job-id>`. A tool at the repository root that doesn't read `.gitignore` sees those copies too: exclude `.worktrees/` in its settings.
 
+## Builds through Oby
+
+The build step can run as a job of a factory-only obid (`obid serve --config <file>` with its own `home` and
+`listen`, never the This Mac obid), started by `factory/bin/oby-build <job-id> <round> [account]`. An Oby job
+reads only its worktree, so the job's files reach the agent on the branch `factory-spec/<job-id>`
+(`factory/oby-builder.md` is its brief). obid publishes the pull request; the factory still gates, reviews and
+merges it. obid's own reviews of that pull request run too and can't be switched off. Boxed tools (Codex on a
+ChatGPT login, Cursor) can't build Rust until obi-ai-bot/oby#2337 is fixed.
+
 ## Licence
 
 The factory is adapted from ZazenCodes' Software Factory for Claude Code v2

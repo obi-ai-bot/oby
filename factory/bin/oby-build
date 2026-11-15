@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# factory/bin/oby-build <job-id> <round> [account]
+#
+# The factory's build step, run as an Oby job on the factory's own obid (not the This Mac one).
+# The job's files go to the agent on a branch of their own, `factory-spec/<job-id>`, because an
+# Oby job reads only its own worktree. Round 1 starts a `build` job on the job's branch; later
+# rounds send a message to the last Oby job, which starts its follow-up on the same branch.
+# obid publishes (push, pull request); this script then brings the factory's worktree to the
+# pushed head and writes build.md from the agent's last message. It never merges anything.
+#
+# Settings: OBY_FACTORY_HOME (default ~/.oby-factory: config.json, home/api-token),
+#           OBY_FACTORY_URL (default http://127.0.0.1:7811).
+set -euo pipefail
+
+[ $# -ge 2 ] || { echo "usage: factory/bin/oby-build <job-id> <round> [account]" >&2; exit 2; }
+ID=$1 ROUND=$2 ACCOUNT=${3:-deskree-team}
+ROOT=$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)
+J=$ROOT/factory/jobs/$ID
+OBY=${OBY_FACTORY_HOME:-$HOME/.oby-factory}
+URL=${OBY_FACTORY_URL:-http://127.0.0.1:7811}
+TOKEN=$(cat "$OBY/home/api-token")
+STATE=$J/oby.json
+
+api() { curl -sS -m "${WAIT:-60}" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' "$@"; }
+die() { echo "oby-build $ID: $*" >&2; exit 1; }
+
+[ -f "$J/job.json" ] || die "no job folder $J"
+KEY=$(jq -r .issue "$J/job.json")
+BRANCH=$(jq -r .branch "$J/job.json")
+WT=$(jq -r .worktree "$J/job.json")
+BASE=$(jq -r '.base // empty' "$J/job.json"); BASE=${BASE:-$(jq -r '.base // "dev"' "$ROOT/factory/config.json")}
+TITLE=$(head -1 "$J/issue.md" | sed -E 's/^# Task [A-Z0-9-]+: //')
+SPEC_REF=factory-spec/$ID
+
+# 1. The job's files, as one parentless commit on factory-spec/<job-id>.
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+sed -e "s|{{BRANCH}}|$BRANCH|g" -e "s|{{BASE}}|$BASE|g" -e "s|{{SPEC_REF}}|$SPEC_REF|g" \
+    -e "s|{{KEY}}|$KEY|g" -e "s|{{TITLE}}|${TITLE//|/\\|}|g" "$ROOT/factory/oby-builder.md" > "$tmp/BRIEF.md"
+cp "$J/spec.md" "$tmp/SPEC.md"
+task=$ROOT/factory/queue/tasks/$KEY.md; [ -f "$task" ] || task=$ROOT/factory/queue/done/$KEY.md
+cp "$task" "$tmp/TASK.md"
+if [ "$ROUND" -gt 1 ]; then
+  prev=$J/round-$((ROUND - 1))
+  {
+    echo "# Round $ROUND: why you build again"
+    for f in "$J"/feedback-*.md; do [ -f "$f" ] && { echo; echo "## The owner's feedback ($(basename "$f"))"; cat "$f"; }; done
+    if [ -f "$prev/checks.md" ] && ! head -1 "$prev/checks.md" | grep -q 'GATE: PASS'; then
+      echo; echo "## The gate failed"; cat "$prev/checks.md"
+      [ -f "$prev/checks.log" ] && { echo; echo '```'; tail -n 200 "$prev/checks.log"; echo '```'; }
+    fi
+    for f in "$prev"/review-*.md "$prev"/queue-failure.md; do
+      [ -f "$f" ] || continue
+      head -1 "$f" | grep -q 'VERDICT: PASS' && continue
+      echo; echo "## $(basename "$f" .md)"; cat "$f"
+    done
+  } > "$tmp/ROUND.md"
+fi
+entries=""
+for f in "$tmp"/*.md; do
+  entries+="100644 blob $(git -C "$ROOT" hash-object -w "$f")	$(basename "$f")"$'\n'
+done
+tree=$(printf '%s' "$entries" | git -C "$ROOT" mktree)
+commit=$(git -C "$ROOT" commit-tree "$tree" -m "factory: $ID round $ROUND (the build's files, not code)")
+git -C "$ROOT" push -q -f origin "$commit:refs/heads/$SPEC_REF"
+
+# 2. Start the build (round 1) or its follow-up (later rounds).
+ASK="You are the factory's builder for task $KEY, round $ROUND. Run: git fetch origin $SPEC_REF && git show FETCH_HEAD:BRIEF.md . Follow BRIEF.md exactly: it says what to read (SPEC.md, TASK.md, and ROUND.md from round 2 on), how to build, test and commit, and how your last message must start (STATUS: READY or STATUS: BLOCKED). Never push and never open a pull request: Oby publishes."
+if [ "$ROUND" -eq 1 ] || [ ! -f "$STATE" ]; then
+  body=$(jq -n --arg repo deskree-inc/oby --arg acct "$ACCOUNT" --arg br "$BRANCH" --arg base "$BASE" \
+    --arg title "$KEY ${TITLE:0:50}" --arg task "$ASK" --arg key "factory-$ID-r$ROUND" \
+    '{job: {repo: $repo, kind: "build", account: $acct, branch: $br, base: $base, title: $title[0:60], rounds: 1, task: $task, clientRequestId: $key}}')
+  out=$(api -X POST "$URL/v1/jobs" -d "$body")
+else
+  last=$(jq -r .last "$STATE")
+  out=$(api -X POST "$URL/v1/jobs/$last/messages" -d "$(jq -n --arg t "$ASK" '{text: $t}')")
+fi
+oid=$(echo "$out" | jq -r '.id // .job.id // empty')
+[ -n "$oid" ] || die "obid refused the job: $(echo "$out" | jq -r '.error // .' | head -c 400)"
+jq -n --arg last "$oid" --argjson round "$ROUND" --arg acct "$ACCOUNT" \
+  --slurpfile old <( [ -f "$STATE" ] && cat "$STATE" || echo '{}' ) \
+  '($old[0] // {}) + {last: $last, account: $acct, round: $round} | .jobs += [{round: $round, id: $last}]' > "$STATE.new"
+mv "$STATE.new" "$STATE"
+echo "oby-build $ID: round $ROUND is Oby job $oid on $ACCOUNT"
+
+# 3. Wait for it, bring the factory's worktree to what it pushed, and write build.md.
+res=$(WAIT=43200 api "$URL/v1/jobs/$oid/wait" | tr -d '\n' | sed 's/^ *//')
+status=$(echo "$res" | jq -r .status)
+summary=$(echo "$res" | jq -r '.summary // ""')
+pr=$(echo "$res" | jq -r '.published // .pr // "" | tostring')
+perr=$(echo "$res" | jq -r '.publishError // "" | tostring')
+agent=$(echo "$res" | jq -r '.agent // ""')
+first=$(printf '%s\n' "$summary" | sed -n '/^STATUS:/{p;q;}')
+if [ "$status" = "done" ] && [ -z "$perr" ] && git -C "$WT" fetch -q origin "$BRANCH" 2>/dev/null; then
+  git -C "$WT" reset -q --hard FETCH_HEAD
+  [ -n "$first" ] || first="STATUS: BLOCKED: the agent's last message had no STATUS line"
+else
+  first="STATUS: BLOCKED: Oby job $oid ended $status${perr:+, publishing failed: $perr}"
+fi
+{
+  echo "$first"
+  echo
+  echo "# Build: $TITLE"
+  echo
+  echo "Built by Oby job $oid ($agent, account $ACCOUNT), round $ROUND. Pull request: ${pr:-none}."
+  echo
+  printf '%s\n' "$summary" | awk '!f && /^STATUS:/ {f=1; next} {print}'
+  if [ -f "$J/build.md" ]; then echo; echo "## Earlier rounds"; sed -n '/^# Build/,$p' "$J/build.md" | sed '1d'; fi
+} > "$J/build.md.new"
+mv "$J/build.md.new" "$J/build.md"
+echo "oby-build $ID: $first"
