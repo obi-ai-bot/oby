@@ -512,6 +512,18 @@ class ObyFeed(unittest.TestCase):
         self.assertTrue(item["note"].startswith(self.feed.SECURITY_HOLD + " (AGENTS.md)"), item["note"])
         self.assertEqual(self.stand.sent, [])
 
+    def test_feedloop_6_a_lost_job_in_the_queue_on_a_security_path_waits_for_the_owner_once_refused(self):
+        self.no_ready()
+        self.task("merging", job="job-gone", head=OLD, armedAt="2026-11-15T10:00:00Z")
+        self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "AGENTS.md"}]}
+        self.stand.graphql = queue(removed={"createdAt": "2026-11-15T10:05:00Z", "reason": GITHUB})
+        self.one_pass()
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual((item["state"], item["job"], item["pr"]), ("waiting", "job-gone", PR))
+        self.assertTrue(item["note"].startswith(self.feed.SECURITY_HOLD + " (AGENTS.md)"), item["note"])
+        self.assertEqual(self.stand.sent, [])
+
     # FEEDLOOP-7: no brief or message carries GitHub's text or the agent's summary (also checked after every test)
     def test_feedloop_7_nothing_from_github_or_the_agent_reaches_a_brief_or_message(self):
         self.no_ready()

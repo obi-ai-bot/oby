@@ -436,6 +436,7 @@ def follow(item, jobs):
     key = item["key"]
     code, j = api("GET", f"/v1/jobs/{item['job']}")
     lost = code == 404
+    hit = None
     if lost:
         # a lost job's pull request decides: merged or closed ends the task, one in GitHub's queue is still followed,
         # and one that touches a security path stays the owner's; only the rest is rebuilt
@@ -523,7 +524,10 @@ def follow(item, jobs):
             why = "its reason couldn't be read"
         say(f"{key}: GitHub's queue didn't merge {item.get('head')}: {why}")
         item.update(refused=item.get("head"), note=f"GitHub's queue didn't merge {item.get('head')}: {why}"[:240])
-        retry(item, None, None) if lost else retry(item, j, "queue")  # a lost job takes no follow-up
+        if hit:  # a lost job's security-path pull request stays the owner's, refused or not
+            item.update(state="waiting", note=f"{SECURITY_HOLD} ({hit[0]}) and obid no longer has its job: merge it yourself")
+        else:
+            retry(item, None, None) if lost else retry(item, j, "queue")  # a lost job takes no follow-up
         return True
     if item["state"] == "waiting":
         pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", VIEW)
