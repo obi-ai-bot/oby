@@ -1538,7 +1538,8 @@ exec sleep 30
     /// the profile it was saved with unless its permissions are named), sets no sandbox, and goes
     /// on only in a thread that comes back with both; a boxed run's is obid's box, every approval
     /// obid's, as before, and asks Codex nothing first. Settings that aren't obid's, or a thread
-    /// that comes back in another profile, start no turn.
+    /// that comes back in another profile, start no turn. Every thread, own or boxed, new or
+    /// resumed, starts in the job's worktree root (docs/agent-clis.md, "What a Codex job reads").
     #[tokio::test]
     async fn lanes_18_an_own_thread_is_held_to_obids_profile() {
         use std::os::unix::fs::PermissionsExt;
@@ -1611,6 +1612,7 @@ done
             assert_eq!(methods, ["config/read", thread, "turn/start"]);
             assert_eq!(asked[0]["params"]["cwd"], cwd);
             let params = &asked[1]["params"];
+            assert_eq!(params["cwd"], cwd, "{thread} starts in the worktree root");
             assert_eq!(params["approvalPolicy"], "never");
             assert_eq!(params["config"]["default_permissions"], OWN_PROFILE);
             assert!(params.get("sandbox").is_none(), "{params}");
@@ -1618,6 +1620,7 @@ done
         let (turn, asked) = run(false, None, Value::Null, json!({"thread": {"id": "t1"}})).await;
         assert_eq!(turn.text(), "Done.");
         assert_eq!(asked[0]["method"], "thread/start");
+        assert_eq!(asked[0]["params"]["cwd"], cwd);
         assert_eq!(asked[0]["params"]["approvalPolicy"], "untrusted");
         assert_eq!(asked[0]["params"]["sandbox"], "danger-full-access");
         // Its `notify` back from a managed layer: no thread. A resumed thread in the profile it was
