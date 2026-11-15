@@ -1,13 +1,14 @@
 #!/bin/zsh
-# Packages the Mac app, one DMG per architecture, on this Mac (no CI), as scripts/release.sh does
-# the Swift app's (docs/release.md):
+# Packages the Mac app, one DMG per architecture, on a Mac: the owner's, or in CI the runner
+# .github/workflows/release.yml starts for a v* tag on main (docs/contracts/release.md):
 #   0. Continue with ChatGPT's gate (src/renderer/src/chatgptGate.ts, docs/contracts/chatgpt-sign-in.md,
 #      "The gate"): left empty, the app is built without the button; set, it must be the link of a
 #      comment on #1879 that GitHub says exists, or nothing is built;
 #   1. obid, gh and gitleaks, staged and signed by helpers.sh when what goes in changed since;
 #   2. main, preload and the renderer (electron-vite);
 #   3. per architecture: window-style built for it, the app signed with Developer ID and the
-#      hardened runtime (electron-builder), checked, scanned for secrets before it leaves this Mac,
+#      hardened runtime (electron-builder), checked, scanned for secrets before it leaves this Mac
+#      (scripts/scan-app.sh),
 #      notarized and stapled; then dist/<name>-<version>-<arch>.dmg (the app and an
 #      Applications link), signed, notarized and stapled too, and checked; and
 #      dist/<name>-<version>-<arch>-mac.zip, the stapled app for the updater (main/updates.ts);
@@ -16,10 +17,13 @@
 #      scripts/sign-feed.mjs with Deskree's feed key, which the app checks (shared/updates.ts).
 # The feed key is the file OBY_FEED_KEY_FILE names, outside the repository: it's checked against the
 # app's before anything is built, so without it nothing is.
-# Uploading is the owner's step: the zips, then latest-mac.yml, to https://downloads.oby.dev/electron
-# (docs/contracts/updates.md, "Publishing a release").
-# Usage: scripts/package.sh [arm64] [x64] (both by default). Notarization uses the keychain
-# profile oby-notary (or OBY_NOTARY_PROFILE): docs/release.md, "Store the notarization credentials".
+# Uploading is scripts/upload-release.sh's: the zips, then latest-mac.yml, to
+# https://downloads.oby.dev/electron (docs/contracts/updates.md, "Publishing a release").
+# Usage: scripts/package.sh [arm64] [x64] (both by default). Notarization uses the App Store Connect
+# API key when OBY_NOTARY_KEY_FILE names its .p8 (with OBY_NOTARY_KEY_ID and OBY_NOTARY_ISSUER_ID,
+# as release.yml sets them from the release environment's secrets, docs/release-in-ci.md), else the
+# keychain profile oby-notary (or OBY_NOTARY_PROFILE), made once with `xcrun notarytool
+# store-credentials`.
 set -euo pipefail
 
 app_dir=${0:A:h:h}
@@ -45,7 +49,12 @@ fi
 minimum_version=0.2.23
 node scripts/sign-feed.mjs || die "the feed key can't sign latest-mac.yml: nothing is built"
 
-profile=${OBY_NOTARY_PROFILE:-oby-notary}
+if [[ -n "${OBY_NOTARY_KEY_FILE:-}" ]]; then
+  [[ -n "${OBY_NOTARY_KEY_ID:-}" && -n "${OBY_NOTARY_ISSUER_ID:-}" ]] || die "OBY_NOTARY_KEY_FILE needs OBY_NOTARY_KEY_ID and OBY_NOTARY_ISSUER_ID"
+  notary=(--key "$OBY_NOTARY_KEY_FILE" --key-id "$OBY_NOTARY_KEY_ID" --issuer "$OBY_NOTARY_ISSUER_ID")
+else
+  notary=(--keychain-profile "${OBY_NOTARY_PROFILE:-oby-notary}")
+fi
 team=${OBY_TEAM_ID:-3UV9W5SV7W}
 # the identity electron-builder signs with (CSC_NAME: electron-builder.yml names none): another
 # team's Developer ID sets both
@@ -63,7 +72,7 @@ identity=$(security find-identity -v -p codesigning | grep "Developer ID Applica
 
 notarize() {
   local item=$1 submit=$2 log=dist/notary-${1:t}.log
-  xcrun notarytool submit "$submit" --keychain-profile "$profile" --wait > "$log" 2>&1 || { cat "$log"; die "notarization failed: $log"; }
+  xcrun notarytool submit "$submit" "${notary[@]}" --wait > "$log" 2>&1 || { cat "$log"; die "notarization failed: $log"; }
   grep -q 'status: Accepted' "$log" || { cat "$log"; die "Apple didn't accept ${item:t}: $log"; }
   xcrun stapler staple "$item" > /dev/null || die "no ticket to staple on ${item:t}"
   xcrun stapler validate "$item" > /dev/null || die "the ticket on ${item:t} doesn't validate"
@@ -90,17 +99,9 @@ for arch in $archs; do
   # without it the updater never downloads (electron-updater reads its cache folder's name there)
   cmp -s build/app-update.yml "$app/Contents/Resources/app-update.yml" || die "$name.app has no app-update.yml: it could never update"
 
-  # The app's files scanned before they leave this Mac, for Apple's notary service too. gitleaks
-  # reads text: a secret inside a Mach-O binary goes unseen, as in scripts/release.sh.
+  # The app's files scanned before they leave this Mac, for Apple's notary service too.
   say "Secret scan"
-  scan=0
-  "$gitleaks" dir "$app" --config "$root/.gitleaks.toml" --no-banner --redact --exit-code=99 \
-    --report-format=json --report-path=dist/gitleaks-$arch.json > dist/gitleaks-$arch.log 2>&1 || scan=$?
-  case $scan in
-    0) ;;
-    99) die "possible secret in $name.app: dist/gitleaks-$arch.json says where (redacted)" ;;
-    *) tail -n 20 dist/gitleaks-$arch.log; die "gitleaks couldn't scan $name.app: nothing is notarized unscanned" ;;
-  esac
+  zsh scripts/scan-app.sh "$gitleaks" "$app" "$root/.gitleaks.toml" dist/gitleaks-$arch || die "the scan isn't clean: nothing is notarized or uploaded"
 
   # The app carries its own ticket, so a copy taken out of the DMG opens offline too.
   say "Notarizing the app"

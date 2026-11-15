@@ -1,0 +1,131 @@
+# Release: a v* tag on main cuts the Mac release (docs/contracts/release.md, RELEASE-1 to 3). The
+# release environment, its required reviewer and its secrets are docs/release-in-ci.md's.
+#
+#   on-main   whether the tag's commit is on main (apps/electron/scripts/on-main.sh). No secret.
+#             When it fails, mac never starts: a tag off main publishes nothing (RELEASE-2).
+#   mac       in the release environment, so it waits for the owner's approval before any secret
+#             is read, and the environment's rule admits only v* tags. A keychain of this run's
+#             holds the Developer ID; the notary's API key and the feed key go to files in
+#             RUNNER_TEMP, outside the checkout. package.sh builds both architectures, signs, scans
+#             (a finding notarizes and uploads nothing, RELEASE-3), notarizes and staples, and
+#             writes and signs latest-mac.yml; upload-release.sh puts the zips and DMGs in
+#             oby-downloads, then latest-mac.yml last (RELEASE-1). The keychain and the key files
+#             are deleted in an always() step.
+#
+# No secret is printed: each reaches a step through env:, and nothing that decodes one echoes it.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+# One release at a time, each to its end.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  # The same Rust as ci.yml.
+  RUSTUP_TOOLCHAIN: "1.97"
+
+jobs:
+  on-main:
+    name: on-main
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      # every branch and tag, main's head among them
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: The tag is on main
+        env:
+          TAG: ${{ github.ref_name }}
+        run: bash apps/electron/scripts/on-main.sh "$TAG" origin/main
+
+  mac:
+    name: mac
+    needs: on-main
+    runs-on: macos-latest
+    timeout-minutes: 150
+    environment: release
+    permissions:
+      contents: read
+      # the ChatGPT gate's gh api call reads a comment on an issue here
+      issues: read
+    defaults:
+      run:
+        working-directory: apps/electron
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/electron/package-lock.json
+
+      # bundle-obid.sh runs cargo with a clean environment, so the toolchain is the default one
+      - name: Rust for both architectures
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target aarch64-apple-darwin,x86_64-apple-darwin
+          rustup default "$RUSTUP_TOOLCHAIN"
+
+      - name: npm ci
+        run: npm ci
+
+      - name: The Developer ID in a keychain of this run's
+        env:
+          P12: ${{ secrets.OBY_DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.OBY_DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          keychain=$RUNNER_TEMP/release.keychain-db
+          pw=$(openssl rand -base64 32)
+          security create-keychain -p "$pw" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$pw" "$keychain"
+          (umask 077 && printenv P12 | base64 --decode > "$RUNNER_TEMP/release.p12")
+          security import "$RUNNER_TEMP/release.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign > /dev/null
+          rm -f "$RUNNER_TEMP/release.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$pw" "$keychain" > /dev/null
+          # first in the search list, the ones listed already after it (xargs unquotes them)
+          security list-keychains -d user | xargs security list-keychains -d user -s "$keychain"
+          echo "CSC_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+
+      - name: The notary's key and the feed key in files of this run's
+        env:
+          NOTARY_KEY: ${{ secrets.OBY_NOTARY_KEY_P8 }}
+          FEED_KEY: ${{ secrets.OBY_FEED_KEY }}
+        run: |
+          (umask 077 && printenv NOTARY_KEY > "$RUNNER_TEMP/notary.p8" && printenv FEED_KEY > "$RUNNER_TEMP/feed.pem")
+          echo "OBY_NOTARY_KEY_FILE=$RUNNER_TEMP/notary.p8" >> "$GITHUB_ENV"
+          echo "OBY_FEED_KEY_FILE=$RUNNER_TEMP/feed.pem" >> "$GITHUB_ENV"
+
+      - name: Package, sign, scan, notarize and sign the feed
+        env:
+          OBY_NOTARY_KEY_ID: ${{ secrets.OBY_NOTARY_KEY_ID }}
+          OBY_NOTARY_ISSUER_ID: ${{ secrets.OBY_NOTARY_ISSUER_ID }}
+          GH_TOKEN: ${{ github.token }}
+        run: zsh scripts/package.sh arm64 x64
+
+      - name: Upload the zips and DMGs, then latest-mac.yml
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.OBY_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.OBY_R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          OBY_R2_ENDPOINT: ${{ secrets.OBY_R2_ENDPOINT }}
+        run: zsh scripts/upload-release.sh dist
+
+      - name: Delete the keychain and the key files
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/release.keychain-db" 2> /dev/null || true
+          rm -f "$RUNNER_TEMP/release.p12" "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/feed.pem"
