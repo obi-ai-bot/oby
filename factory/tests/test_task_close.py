@@ -126,6 +126,27 @@ class TaskClose(unittest.TestCase):
                          self.git(self.wt, "rev-parse", "HEAD").strip())
         self.assertEqual(self.git(self.wt, "status", "--porcelain"), "")
 
+    def test_taskclose_1_a_done_copy_the_branch_made_a_symlink_is_replaced_and_its_target_left_alone(self):
+        target = self.dir / "outside.txt"
+        target.write_text("not the factory's\n")
+        self.write("code.txt", "the change\n")
+        (self.wt / DONE).parent.mkdir(parents=True)
+        (self.wt / DONE).symlink_to(target)
+        self.commit("fix: something")
+        self.dev_queues_the_task_and_the_branch_merges_it()
+        self.push()
+
+        res = self.advance()
+
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertEqual(target.read_text(), "not the factory's\n")
+        self.assertFalse((self.wt / DONE).is_symlink())
+        self.assertEqual(self.git(self.wt, "ls-tree", "HEAD", DONE).split()[0], "100644")
+        self.assertEqual(self.git(self.wt, "show", f"HEAD:{DONE}"), TASK)
+        self.assertEqual((self.wt / DONE).read_text(), TASK)
+        self.assertFalse(self.in_head(TODO))
+        self.assertEqual(self.git(self.wt, "status", "--porcelain"), "")
+
     def test_taskclose_1_an_unpushed_branch_is_closed_again_here_and_nothing_is_pushed(self):
         self.write("code.txt", "the change\n")
         self.write(DONE, EARLIER)

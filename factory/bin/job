@@ -469,7 +469,8 @@ def check_task_closed(job):
 
 def reclose_task(job):
     """Merging the base brought the task's file back next to its closed copy: close it again, with the base's
-    text. A branch whose tasks/ file differs from the base's is left for check_task_closed.
+    text, as a regular file even where the branch's done/ copy is a symlink, whose target is never written.
+    A branch whose tasks/ file differs from the base's is left for check_task_closed.
     It pushes only a branch origin already has at HEAD, and only once the secret scan passed what leaves: a scan
     that finds a secret or can't run refuses the advance. Otherwise the commit stays here and the gate refuses
     the unpushed branch, for the builder to push as it pushes everything else."""
@@ -484,8 +485,11 @@ def reclose_task(job):
     remote = git(job, "rev-parse", f"origin/{job['branch']}", check=False).stdout.strip()
     pushed = remote == git(job, "rev-parse", "HEAD").stdout.strip()
     git(job, "rm", "-q", todo)
-    (Path(job["worktree"]) / done).write_text(base.stdout)
-    git(job, "add", done)
+    # The base's blob goes into the index as a regular file, and checkout writes it after unlinking the path:
+    # nothing writes through a done/ file the branch made a symlink.
+    blob = git(job, "rev-parse", f"origin/{BASE}:{todo}").stdout.strip()
+    git(job, "update-index", "--cacheinfo", f"100644,{blob},{done}")
+    git(job, "checkout", "--", done)
     git(job, "commit", "-q", "-m", f"chore(factory): close {key} again after merging {BASE}")
     if pushed:
         secret_scan(git(job, "diff", "--binary", "--full-index", remote, "HEAD").stdout)
