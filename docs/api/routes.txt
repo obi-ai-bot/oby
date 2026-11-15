@@ -71,6 +71,7 @@ GET /v1/jobs/{id}/wait
 GET /v1/limit-decisions
 POST /v1/limit-decisions/{id}/answer
 GET /v1/memory
+DELETE /v1/memory/declined
 POST /v1/memory/find
 POST /v1/memory/suggestions/{id}/dismiss
 POST /v1/memory/suggestions/{id}/remember

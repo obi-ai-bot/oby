@@ -328,6 +328,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
         )
         .route("/v1/memory", get(crate::memory::get))
         .route(
+            "/v1/memory/declined",
+            axum::routing::delete(crate::memory::clear_declined),
+        )
+        .route(
             "/v1/memory/{id}",
             axum::routing::delete(crate::memory::remove),
         )

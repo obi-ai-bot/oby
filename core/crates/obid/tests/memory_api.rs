@@ -259,3 +259,209 @@ fn merging_22_a_workflow_memory_keeps_its_typed_merge_and_main_only_on_the_owner
     assert_eq!(listed.body["memories"][0]["workflow"], workflow("dev"));
     assert_eq!(listed.body["suggestions"], json!([]));
 }
+
+/// Starts obid on a home whose suggestions are `suggestions`, and the memory folder.
+fn with_suggestions(name: &str, suggestions: Value) -> (Folder, Obid, std::path::PathBuf) {
+    let folder = Folder::new(name);
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &stub_agent());
+    let memory = folder.0.join("home/memory");
+    std::fs::create_dir_all(&memory).unwrap();
+    std::fs::write(memory.join("suggestions.json"), suggestions.to_string()).unwrap();
+    let obid = start(&folder.0, &config, None);
+    (folder, obid, memory)
+}
+
+const DECLINED_TEXT: &str = "Rebase first, then run the tests.";
+
+/// The MEMORY-1 candidate: the declined text in other case and accents, quoted word for word
+/// from two of the owner's conversations, as `POST /v1/memory/find` checks the brain's answer.
+fn asked_again(declined: &[obid::memory::Declined]) -> Vec<obid::memory::Suggestion> {
+    use obid::memory::{Place, Said};
+    let said = |id: &str| Said {
+        place: Place::Conversation(id.into()),
+        label: format!("You, in “{id}”"),
+        link: None,
+        who: None,
+        text: "Please rebase first, then run the tests, as always.".into(),
+    };
+    let answer = json!({"candidates": [{
+        "title": "Rebase first", "text": "RÉBASE first, then run the TESTS.", "scope": "user",
+        "repo": null, "kind": "preference",
+        "quotes": [{"source": "S1", "quote": "rebase first, then run the tests"},
+                   {"source": "S2", "quote": "rebase first, then run the tests"}]}]});
+    obid::memory::verify(&answer, &[said("c1"), said("c2")], &[], &[], declined)
+}
+
+#[test]
+fn memory_1_a_declined_text_is_not_asked_again() {
+    let (_folder, obid, _) = with_suggestions(
+        "memory-api-declined",
+        json!([suggestion("s0000000a", "Rebase first", DECLINED_TEXT)]),
+    );
+    let dismissed = call(
+        &obid,
+        "POST",
+        "/v1/memory/suggestions/s0000000a/dismiss",
+        None,
+    );
+    assert_eq!(dismissed.status, 204, "{}", dismissed.text);
+    let declined = obid::memory::declined(&obid.home);
+    assert_eq!(declined.len(), 1);
+    assert_eq!(declined[0].scope, "user");
+    assert_eq!(declined[0].repo, None);
+    assert!(asked_again(&declined).is_empty());
+    // Only the declined list drops it.
+    assert_eq!(asked_again(&[]).len(), 1);
+    // Another repository's decline doesn't silence the owner's.
+    let elsewhere = obid::memory::Declined {
+        repo: Some("obi-e2e/fixture-app".into()),
+        scope: "project".into(),
+        ..declined[0].clone()
+    };
+    assert_eq!(asked_again(&[elsewhere]).len(), 1);
+}
+
+#[test]
+fn memory_2_the_declined_list_keeps_the_newest_200() {
+    let (_folder, obid, memory) = with_suggestions(
+        "memory-api-declined-200",
+        json!([suggestion("s0000000a", "Rebase first", DECLINED_TEXT)]),
+    );
+    let file = memory.join("declined.jsonl");
+    let kept: String = (0..200)
+        .map(|n| {
+            format!(
+                "{}\n",
+                json!({"text": format!("old {n}"), "scope": "user", "repo": null})
+            )
+        })
+        .collect();
+    std::fs::write(&file, kept).unwrap();
+    let dismissed = call(
+        &obid,
+        "POST",
+        "/v1/memory/suggestions/s0000000a/dismiss",
+        None,
+    );
+    assert_eq!(dismissed.status, 204, "{}", dismissed.text);
+    let lines: Vec<Value> = std::fs::read_to_string(&file)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 200);
+    assert_eq!(lines[0]["text"], "old 1");
+    assert_eq!(
+        lines[199],
+        json!({"text": "rebase first, then run the tests.", "scope": "user", "repo": null})
+    );
+    assert_eq!(
+        std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
+#[test]
+fn memory_3_clearing_the_declined_list_lets_a_text_be_asked_again() {
+    let (_folder, obid, _) = with_suggestions(
+        "memory-api-declined-clear",
+        json!([suggestion("s0000000a", "Rebase first", DECLINED_TEXT)]),
+    );
+    let dismissed = call(
+        &obid,
+        "POST",
+        "/v1/memory/suggestions/s0000000a/dismiss",
+        None,
+    );
+    assert_eq!(dismissed.status, 204, "{}", dismissed.text);
+    assert!(asked_again(&obid::memory::declined(&obid.home)).is_empty());
+    let cleared = call(&obid, "DELETE", "/v1/memory/declined", None);
+    assert_eq!(cleared.status, 204, "{}", cleared.text);
+    assert!(obid::memory::declined(&obid.home).is_empty());
+    assert_eq!(asked_again(&obid::memory::declined(&obid.home)).len(), 1);
+    let missing = call(&obid, "DELETE", "/v1/memory/m0000000z", None);
+    assert_eq!(missing.status, 404, "{}", missing.text);
+}
+
+#[test]
+fn memory_4_each_memory_change_is_one_event_after_its_save() {
+    let (_folder, obid, _) = with_suggestions(
+        "memory-api-events",
+        json!([
+            suggestion(
+                "s0000000a",
+                "Tests with every fix",
+                "Write tests with every fix."
+            ),
+            suggestion("s0000000b", "Rebase first", DECLINED_TEXT),
+        ]),
+    );
+    let events = follow_events(&obid);
+    // Each change is made on a thread of its own, its event read here as it comes, and the
+    // memory read then: what the event says is already saved.
+    let next = |method: &'static str, target: String, status: u16| -> (Value, Value) {
+        std::thread::scope(|scope| {
+            let answer = scope.spawn(|| call(&obid, method, &target, None));
+            let event = events_named(&events, "memory", 30, |got| !got.is_empty()).remove(0);
+            let listed = call(&obid, "GET", "/v1/memory", None).body;
+            let answer = answer.join().unwrap();
+            assert_eq!(answer.status, status, "{}", answer.text);
+            (event, listed)
+        })
+    };
+    let (added, listed) = next(
+        "POST",
+        "/v1/memory/suggestions/s0000000a/remember".into(),
+        201,
+    );
+    let id = listed["memories"][0]["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        added,
+        json!({"change": "added", "id": id, "suggestion": "s0000000a"})
+    );
+    let (removed, listed) = next("DELETE", format!("/v1/memory/{id}"), 204);
+    assert_eq!(removed, json!({"change": "removed", "id": id}));
+    assert_eq!(listed["memories"], json!([]));
+    let (declined, listed) = next(
+        "POST",
+        "/v1/memory/suggestions/s0000000b/dismiss".into(),
+        204,
+    );
+    assert_eq!(declined, json!({"change": "declined", "id": "s0000000b"}));
+    assert_eq!(listed["suggestions"], json!([]));
+    // Three changes, three events: nothing more, and no words.
+    let more: Vec<Value> =
+        std::iter::from_fn(|| events.recv_timeout(std::time::Duration::from_secs(1)).ok())
+            .filter(|(name, _)| name == "memory")
+            .map(|(_, data)| data)
+            .collect();
+    assert!(more.is_empty(), "{more:?}");
+    for event in [&added, &removed, &declined] {
+        let data = event.to_string();
+        assert!(!data.contains("tests"), "{data}");
+        assert!(!data.contains("Tests"), "{data}");
+    }
+}
+
+#[test]
+fn memory_5_the_gateway_allows_memory_reads() {
+    use axum::http::Method;
+    for (method, path) in [
+        (Method::GET, "/v1/memory"),
+        (Method::DELETE, "/v1/memory/m1a2b3c4d"),
+        // A paired device may clear the declined list too (MEMORY-5).
+        (Method::DELETE, "/v1/memory/declined"),
+        (Method::POST, "/v1/memory/suggestions/s1a2b3c4d/remember"),
+        (Method::POST, "/v1/memory/suggestions/s1a2b3c4d/dismiss"),
+    ] {
+        assert!(obid::gateway::allows(&method, path), "{method} {path}");
+    }
+    for (method, path) in [
+        (Method::PUT, "/v1/memory"),
+        (Method::PUT, "/v1/memory/m1a2b3c4d"),
+        (Method::POST, "/v1/memory/find"),
+    ] {
+        assert!(!obid::gateway::allows(&method, path), "{method} {path}");
+    }
+}

@@ -30,7 +30,7 @@ use crate::permissions::{self, Call, Decision, Mode, Permission, Rule};
 use crate::process::{self, Signal};
 use crate::sandbox::{self, Sandbox, Spec};
 use crate::store::{self, Store};
-use crate::{acp, codex, git, policy, review};
+use crate::{acp, codex, git, memory::remember_review, policy, review};
 
 /// How long the decision check may wait on Tetrix before a job publishes (crate::decisions).
 const DECISIONS_WITHIN: Duration = Duration::from_secs(30);
@@ -13129,11 +13129,12 @@ impl Jobs {
                     &from,
                     &self.repo_branches(),
                     signed,
+                    &self.events,
                 )
                 .await
             }
             None => {
-                crate::memory::remember_review(&home, &job.repo, &from, &self.repo_branches()).await
+                remember_review(&home, &job.repo, &from, &self.repo_branches(), &self.events).await
             }
         };
         remembered.map_err(|why| {
@@ -13270,6 +13271,7 @@ impl Jobs {
                 &from,
                 &self.repo_branches(),
                 signed,
+                &self.events,
             )
             .await
             {

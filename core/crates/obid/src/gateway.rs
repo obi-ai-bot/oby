@@ -142,6 +142,11 @@ const ROUTES: &[(&str, &str)] = &[
     ("GET", "/v1/devices/*/pairing"),
     ("POST", "/v1/devices/*/pairing"),
     ("POST", "/v1/notifications"),
+    // Memory from a paired phone (docs/contracts/memory.md, MEMORY-5); finding stays on the Mac.
+    ("GET", "/v1/memory"),
+    ("DELETE", "/v1/memory/*"),
+    ("POST", "/v1/memory/suggestions/*/remember"),
+    ("POST", "/v1/memory/suggestions/*/dismiss"),
 ];
 
 /// Whether a phone may `method` `path` through the gateway: `*` is one path segment.
@@ -1040,6 +1045,22 @@ mod tests {
         assert!(allows(&Method::POST, "/v1/github/work/abc/start"));
         assert!(!allows(&Method::POST, "/v1/github/work"));
         assert!(!allows(&Method::GET, "/v1/github/work/abc"));
+        // Memory (docs/contracts/memory.md, MEMORY-5): read, delete one or clear the declined
+        // list, Remember and Not this; never find, never a PUT.
+        assert!(allows(&Method::GET, "/v1/memory"));
+        assert!(allows(&Method::DELETE, "/v1/memory/m1a2b3c4d"));
+        assert!(allows(&Method::DELETE, "/v1/memory/declined"));
+        assert!(allows(
+            &Method::POST,
+            "/v1/memory/suggestions/s1a2b3c4d/remember"
+        ));
+        assert!(allows(
+            &Method::POST,
+            "/v1/memory/suggestions/s1a2b3c4d/dismiss"
+        ));
+        assert!(!allows(&Method::POST, "/v1/memory/find"));
+        assert!(!allows(&Method::PUT, "/v1/memory"));
+        assert!(!allows(&Method::PUT, "/v1/memory/m1a2b3c4d"));
         // Tetrix's login and the watcher are the Mac's alone, their events too.
         let scrubber = Scrubber { homes: vec![] };
         let stream = "event: job\ndata: {\"id\":\"j1\"}\n\nevent: watch\ndata: {\"rules\":{}}\n\nevent: tetrix\ndata: {}\n\nevent: inbox\ndata: {\"id\":\"i1\"}\n\n";

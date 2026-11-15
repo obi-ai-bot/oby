@@ -127,7 +127,7 @@ impl Jobs {
                 tracing::info!("job {id}: sent {} {} {}", sent.action, sent.repo, sent.id);
             }
             if let Some(memory) = memory {
-                crate::memory::note_used(home, memory);
+                crate::memory::note_used(home, memory, &self.events);
             }
         }
         self.update(id, |job| crate::merge::note(job, &outcome, by));

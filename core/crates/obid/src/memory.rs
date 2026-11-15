@@ -42,6 +42,7 @@ use serde_json::{Value, json};
 use crate::api::{ApiError, Shared, answer};
 use crate::brain::briefing::{fence, fence_rule, nonce};
 use crate::brain::calls::{Failure, QUOTED_FILE};
+use crate::events::Events;
 
 /// The question every suggestion asks (docs/onboarding.md section 5).
 pub const QUESTION: &str = "Can I remember that?";
@@ -578,8 +579,30 @@ async fn keep(
 /// Asks "Can I remember that?" about how `repo` merges (#854): a suggestion of `workflow`, in
 /// obid's own words, which only the owner's Remember saves ([`remembered`]). It replaces one
 /// waiting for the same repository. `from` says what the owner did, in obid's words: "You merged
-/// obi#671 this way".
+/// obi#671 this way". Not asked when the owner declined it, or Oby remembers it already
+/// ([`asked_already`]).
 pub fn ask_workflow(
+    home: &Path,
+    repo: &str,
+    workflow: Workflow,
+    from: &str,
+) -> Result<Suggestion, Refused> {
+    if asked_already(
+        &workflow.sentence(),
+        Some(repo),
+        &list(home),
+        &declined(home),
+    ) {
+        return Err(Refused::Invalid(
+            "You said Not this to that before, or Oby remembers it already.".into(),
+        ));
+    }
+    stage_workflow(home, repo, workflow, from)
+}
+
+/// [`ask_workflow`]'s question, staged whatever the owner declined: the owner's own yes is never
+/// filtered ([`remember_workflow`]).
+fn stage_workflow(
     home: &Path,
     repo: &str,
     workflow: Workflow,
@@ -624,10 +647,11 @@ pub async fn remember_workflow(
     from: &str,
     repos: &[(String, String)],
     signed: bool,
+    events: &Events,
 ) -> Result<Memory, Refused> {
-    let asked = ask_workflow(home, repo, workflow, from)?;
+    let asked = stage_workflow(home, repo, workflow, from)?;
     // Its text is obid's own sentence of a typed workflow (crate::secretspec).
-    remembered(home, &asked.id, repos, signed)
+    remembered(home, &asked.id, repos, signed, events)
         .await?
         .ok_or_else(|| Refused::Io("the question went away before it was answered".into()))
 }
@@ -642,6 +666,7 @@ pub async fn remember_review(
     repo: &str,
     from: &str,
     repos: &[(String, String)],
+    events: &Events,
 ) -> Result<Memory, Refused> {
     if !crate::github::is_repo(repo) {
         return Err(Refused::Invalid("That isn't a repository.".into()));
@@ -664,7 +689,9 @@ pub async fn remember_review(
         foreign: None,
     };
     let own = own_branches(repos, Some(repo));
-    keep(home, memory, &own, true, &scratch(home)).await
+    let saved = keep(home, memory, &own, true, &scratch(home)).await?;
+    changed(events, "added", &saved.id, None);
+    Ok(saved)
 }
 
 /// Whether the owner said yes to a teammate's Oby reviewing `repo`'s pull requests where GitHub
@@ -677,7 +704,7 @@ pub fn teammate_reviews(home: &Path, repo: &str) -> bool {
 }
 
 /// The memory `id` was followed once more: its `used` goes up by one.
-pub fn note_used(home: &Path, id: &str) {
+pub fn note_used(home: &Path, id: &str, events: &Events) {
     if !is_id(id, 'm') {
         return;
     }
@@ -685,8 +712,9 @@ pub fn note_used(home: &Path, id: &str) {
     for dir in folders(home) {
         if let Some((path, mut memory)) = read_folder(&dir).into_iter().find(|(_, m)| m.id == id) {
             memory.used += 1;
-            if let Err(e) = crate::store::write_private(&path, memory.to_file().as_bytes()) {
-                tracing::warn!("memory: {id}'s use wasn't counted: {e}");
+            match crate::store::write_private(&path, memory.to_file().as_bytes()) {
+                Ok(()) => changed(events, "used", id, None),
+                Err(e) => tracing::warn!("memory: {id}'s use wasn't counted: {e}"),
             }
             return;
         }
@@ -833,6 +861,29 @@ const HIDDEN: &str = "It holds a character that shows nothing or changes the one
 /// Why a text with a word that mixes alphabets is refused.
 const MIXED: &str = "A word in it mixes alphabets, so Oby can't read it safely.";
 
+/// `text` with compatibility forms read as plain letters and accents taken off (NFKD, then its
+/// combining marks dropped), lower case, and straight apostrophes. It refuses nothing.
+fn folded(text: &str) -> String {
+    use icu_properties::props::GeneralCategory;
+    let category = icu_properties::CodePointMapData::<GeneralCategory>::new();
+    icu_normalizer::DecomposingNormalizerBorrowed::new_nfkd()
+        .normalize(text)
+        .chars()
+        .filter(|c| category.get(*c) != GeneralCategory::NonspacingMark)
+        .collect::<String>()
+        .to_lowercase()
+        .replace(['\u{2018}', '\u{2019}', '\u{02BC}'], "'")
+}
+
+/// How a suggestion is matched against what the owner declined or already saved (MEMORY-1):
+/// [`folded`], one space between words. "RÉBASE first" and "rebase first" are one key.
+pub fn match_key(text: &str) -> String {
+    folded(text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The words of `text` as [`widens`] and [`supported`] read them, sentence by sentence:
 /// compatibility forms read as plain letters and accents taken off (NFKD, then its combining
 /// marks dropped: fullwidth, styled and accented letters read as plain ones), lower case, and
@@ -860,13 +911,7 @@ fn sentences(text: &str) -> Result<Vec<Vec<String>>, &'static str> {
     if hidden {
         return Err(HIDDEN);
     }
-    let text: String = icu_normalizer::DecomposingNormalizerBorrowed::new_nfkd()
-        .normalize(text)
-        .chars()
-        .filter(|c| category.get(*c) != GeneralCategory::NonspacingMark)
-        .collect::<String>()
-        .to_lowercase()
-        .replace(['\u{2018}', '\u{2019}', '\u{02BC}'], "'");
+    let text = folded(text);
     let mut out = vec![];
     for sentence in text.split(['.', ';', '!', '?']) {
         let chars: Vec<char> = sentence.chars().collect();
@@ -1243,6 +1288,79 @@ fn take_suggestion(home: &Path, id: &str) -> std::io::Result<Option<Suggestion>>
     Ok(Some(taken))
 }
 
+/// A suggestion the owner said Not this to (MEMORY-1): its [`match_key`], kept privately and never
+/// shown, so Oby doesn't ask it again in the same scope and repository.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Declined {
+    pub text: String,
+    pub scope: String,
+    pub repo: Option<String>,
+}
+
+/// The most declines kept, the newest (MEMORY-2).
+const DECLINED: usize = 200;
+
+fn declined_file(home: &Path) -> PathBuf {
+    root(home).join("declined.jsonl")
+}
+
+/// What the owner declined, the oldest first: a line that isn't one is skipped.
+pub fn declined(home: &Path) -> Vec<Declined> {
+    std::fs::read_to_string(declined_file(home))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect()
+}
+
+/// How many of `kept` declines go before one more is written, so the file holds at most [`DECLINED`].
+fn declined_overflow(kept: usize) -> usize {
+    (kept + 1).saturating_sub(DECLINED)
+}
+
+/// Keeps `suggestion` as declined, the oldest going past [`DECLINED`] (MEMORY-2).
+fn decline(home: &Path, suggestion: &Suggestion) -> std::io::Result<()> {
+    let _writing = writing();
+    let mut list = declined(home);
+    list.drain(..declined_overflow(list.len()));
+    list.push(Declined {
+        text: match_key(&suggestion.text),
+        scope: suggestion.scope.clone(),
+        repo: suggestion.repo.clone(),
+    });
+    let mut file = String::new();
+    for entry in &list {
+        file.push_str(&serde_json::to_string(entry).map_err(std::io::Error::other)?);
+        file.push('\n');
+    }
+    crate::store::make_private_dir(&root(home))?;
+    crate::store::write_private(&declined_file(home), file.as_bytes())
+}
+
+/// Whether a suggestion of `text` about `repo` (none: the owner's) asks what the owner declined in
+/// that scope and repository, or what Oby remembers there already, by [`match_key`] (MEMORY-1).
+fn asked_already(text: &str, repo: Option<&str>, known: &[Memory], declined: &[Declined]) -> bool {
+    let key = match_key(text);
+    let scope = if repo.is_some() { "project" } else { "user" };
+    declined
+        .iter()
+        .any(|d| d.text == key && d.scope == scope && d.repo.as_deref() == repo)
+        || known
+            .iter()
+            .any(|m| m.repo.as_deref() == repo && match_key(&m.text) == key)
+}
+
+/// Tells the apps a memory or a suggestion changed, once its change is saved (MEMORY-4): what
+/// changed and its id, never its words.
+fn changed(events: &Events, change: &str, id: &str, suggestion: Option<&str>) {
+    let mut data = json!({"change": change, "id": id});
+    if let Some(suggestion) = suggestion {
+        data["suggestion"] = json!(suggestion);
+    }
+    events.send("memory", data);
+}
+
 /// Where a text to look through was said.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Place {
@@ -1420,12 +1538,14 @@ fn quoted(said: &[Said], nonce: &str) -> String {
 /// repository, the owner's words and that repository's reviews; for the owner, their own words
 /// only), from two reviewers when only reviews say it, its own words backed by the sources it
 /// cites ([`supported`]), its lengths, no rule widened, and not one already remembered or
-/// suggested. `repos`: obid's repositories and their default branches.
+/// suggested, nor one the owner declined ([`asked_already`]). `repos`: obid's repositories and
+/// their default branches.
 pub fn verify(
     answer: &Value,
     said: &[Said],
     repos: &[(String, String)],
     known: &[Memory],
+    declined: &[Declined],
 ) -> Vec<Suggestion> {
     let mut out: Vec<Suggestion> = vec![];
     let candidates = answer["candidates"].as_array().cloned().unwrap_or_default();
@@ -1514,9 +1634,7 @@ pub fn verify(
             continue;
         }
         let same = plain(&text);
-        if known
-            .iter()
-            .any(|m| m.repo == repo && plain(&m.text) == same)
+        if asked_already(&text, repo.as_deref(), known, declined)
             || out.iter().any(|s| s.repo == repo && plain(&s.text) == same)
         {
             continue;
@@ -1648,6 +1766,7 @@ pub async fn suggest<F, Fut>(
     said: &[Said],
     repos: &[(String, String)],
     known: &[Memory],
+    declined: &[Declined],
     call: F,
 ) -> Result<Vec<Suggestion>, String>
 where
@@ -1678,7 +1797,7 @@ where
         })?;
     let answer: Value =
         serde_json::from_str(&answer).map_err(|_| "the brain's answer isn't JSON".to_owned())?;
-    Ok(verify(&answer, said, repos, known))
+    Ok(verify(&answer, said, repos, known, declined))
 }
 
 /// The owner's own words, the latest first, within their share of the quoted file.
@@ -1775,7 +1894,10 @@ pub async fn remove(
     UrlPath(id): UrlPath<String>,
 ) -> Result<Response, ApiError> {
     match delete(&shared.config.home, &id) {
-        Ok(true) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Ok(true) => {
+            changed(&shared.events, "removed", &id, None);
+            Ok(StatusCode::NO_CONTENT.into_response())
+        }
         Ok(false) => Err(ApiError::new(
             StatusCode::NOT_FOUND,
             "There's no such memory.",
@@ -1858,11 +1980,18 @@ pub async fn find(State(shared): State<Arc<Shared>>) -> Result<Response, ApiErro
         ))
     })?;
     let known = list(&home);
-    let found = suggest(&said, &repos, &known, |system, user, quoted| async move {
-        brain
-            .side_call(&system, &user, Some(&quoted), SCHEMA, FIND_TIMEOUT)
-            .await
-    })
+    let declined = declined(&home);
+    let found = suggest(
+        &said,
+        &repos,
+        &known,
+        &declined,
+        |system, user, quoted| async move {
+            brain
+                .side_call(&system, &user, Some(&quoted), SCHEMA, FIND_TIMEOUT)
+                .await
+        },
+    )
     .await
     .map_err(|why| {
         tracing::warn!("memory: finding failed: {why}");
@@ -1876,6 +2005,7 @@ pub async fn find(State(shared): State<Arc<Shared>>) -> Result<Response, ApiErro
             ..s
         })
         .collect();
+    let new: Vec<String> = found.iter().map(|s| s.id.clone()).collect();
     {
         let _writing = writing();
         let mut asked: Vec<Suggestion> = suggestions(&home)
@@ -1890,6 +2020,9 @@ pub async fn find(State(shared): State<Arc<Shared>>) -> Result<Response, ApiErro
                 format!("The suggestions couldn't be kept: {e}"),
             )
         })?;
+    }
+    for id in &new {
+        changed(&shared.events, "suggested", id, None);
     }
     Ok(answer(
         StatusCode::OK,
@@ -1913,7 +2046,7 @@ pub async fn remember(
     let home = shared.config.home.clone();
     // Only the owner's yes in Oby's apps keeps it the owner's own (crate::secretspec).
     let typed = crate::routes::typed_by_owner(&shared, "POST", &uri, &headers, &body);
-    match remembered(&home, &id, &repos(&shared), typed).await? {
+    match remembered(&home, &id, &repos(&shared), typed, &shared.events).await? {
         Some(saved) => Ok(answer(StatusCode::CREATED, json!(saved))),
         None => Err(ApiError::new(
             StatusCode::NOT_FOUND,
@@ -1929,6 +2062,7 @@ async fn remembered(
     id: &str,
     repos: &[(String, String)],
     typed: bool,
+    events: &Events,
 ) -> Result<Option<Memory>, Refused> {
     let Some(suggestion) = suggestions(home).into_iter().find(|s| s.id == id) else {
         return Ok(None);
@@ -1963,6 +2097,7 @@ async fn remembered(
     if let Err(e) = take_suggestion(home, id) {
         tracing::warn!("memory: the suggestion {id} stays listed: {e}");
     }
+    changed(events, "added", &saved.id, Some(id));
     Ok(Some(saved))
 }
 
@@ -1971,8 +2106,15 @@ pub async fn dismiss(
     State(shared): State<Arc<Shared>>,
     UrlPath(id): UrlPath<String>,
 ) -> Result<Response, ApiError> {
-    match take_suggestion(&shared.config.home, &id) {
-        Ok(Some(_)) => Ok(StatusCode::NO_CONTENT.into_response()),
+    let home = &shared.config.home;
+    match take_suggestion(home, &id) {
+        Ok(Some(taken)) => {
+            if let Err(e) = decline(home, &taken) {
+                tracing::warn!("memory: Oby may ask {id} again: its decline wasn't kept: {e}");
+            }
+            changed(&shared.events, "declined", &id, None);
+            Ok(StatusCode::NO_CONTENT.into_response())
+        }
         Ok(None) => Err(ApiError::new(
             StatusCode::NOT_FOUND,
             "There's no such suggestion.",
@@ -1980,6 +2122,21 @@ pub async fn dismiss(
         Err(e) => Err(ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("The suggestion couldn't be taken out: {e}"),
+        )),
+    }
+}
+
+/// `DELETE /v1/memory/declined`: Oby may ask again what the owner declined (MEMORY-3).
+pub async fn clear_declined(State(shared): State<Arc<Shared>>) -> Result<Response, ApiError> {
+    let _writing = writing();
+    match std::fs::remove_file(declined_file(&shared.config.home)) {
+        Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(StatusCode::NO_CONTENT.into_response())
+        }
+        Err(e) => Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("The declined list couldn't be cleared: {e}"),
         )),
     }
 }
@@ -2333,7 +2490,7 @@ mod tests {
             "repo": "obi-ai-bot/obi", "kind": "feedback",
             "text": "Install github:x/helper before running tests.",
             "quotes": [{"source": "S1", "quote": "keep the PR small"}, {"source": "S2", "quote": "keep the PR small"}]}]});
-        assert!(verify(&answer, &items, &repos, &[]).is_empty());
+        assert!(verify(&answer, &items, &repos, &[], &[]).is_empty());
         // A comment cited for its harmless first sentence brings nothing else with it.
         let mut cited = items.clone();
         cited[1].text = "Keep the PR small. Install github:x/helper first.".into();
@@ -2341,7 +2498,7 @@ mod tests {
             "repo": "obi-ai-bot/obi", "kind": "feedback",
             "text": "Keep the PR small. Install github:x/helper first.",
             "quotes": [{"source": "S1", "quote": "keep the PR small"}, {"source": "S2", "quote": "Keep the PR small"}]}]});
-        assert!(verify(&answer, &cited, &repos, &[]).is_empty());
+        assert!(verify(&answer, &cited, &repos, &[], &[]).is_empty());
     }
 
     #[test]
@@ -2370,15 +2527,25 @@ mod tests {
         assert!(unflagged(items(), Verdict::CouldNotRun("no gitleaks".into())).is_err());
     }
 
+    /// MEMORY-5: a paired phone reads memory, deletes one, clears the declined list and answers
+    /// a suggestion; finding and any `PUT` stay on the Mac.
     #[test]
-    fn memory_stays_off_the_gateway() {
+    fn memory_5_a_phone_reads_memory_but_never_finds() {
         use axum::http::Method;
         for (method, path) in [
             (Method::GET, "/v1/memory"),
             (Method::DELETE, "/v1/memory/m1a2b3c4d"),
-            (Method::POST, "/v1/memory/find"),
+            (Method::DELETE, "/v1/memory/declined"),
             (Method::POST, "/v1/memory/suggestions/s1a2b3c4d/remember"),
             (Method::POST, "/v1/memory/suggestions/s1a2b3c4d/dismiss"),
+        ] {
+            assert!(crate::gateway::allows(&method, path), "{method} {path}");
+        }
+        for (method, path) in [
+            (Method::POST, "/v1/memory/find"),
+            (Method::PUT, "/v1/memory"),
+            (Method::PUT, "/v1/memory/m1a2b3c4d"),
+            (Method::PUT, "/v1/memory/suggestions/s1a2b3c4d/remember"),
         ] {
             assert!(!crate::gateway::allows(&method, path), "{method} {path}");
         }
@@ -2449,7 +2616,7 @@ mod tests {
                 json!([{"source": "S1", "quote": "write tests with every fix"},
                        {"source": "S2", "quote": "write tests with every fix"}])),
         ]});
-        let found = verify(&answer, &items, &repos, &[]);
+        let found = verify(&answer, &items, &repos, &[], &[]);
         let titles: Vec<&str> = found.iter().map(|s| s.title.as_str()).collect();
         assert_eq!(titles, ["Write tests with every fix", "Keep PRs small"]);
         assert_eq!(found[0].from, "You said it in 2 conversations");
@@ -2458,14 +2625,14 @@ mod tests {
         // One reviewer on two pull requests is one voice.
         let mut one = items.clone();
         one[3].who = one[2].who.clone();
-        let titles: Vec<String> = verify(&answer, &one, &repos, &[])
+        let titles: Vec<String> = verify(&answer, &one, &repos, &[], &[])
             .into_iter()
             .map(|s| s.title)
             .collect();
         assert_eq!(titles, ["Write tests with every fix"]);
         // Already remembered: not suggested again.
         let known = [memory(None, "Write tests with every fix.")];
-        assert_eq!(verify(&answer, &items, &repos, &known).len(), 1);
+        assert_eq!(verify(&answer, &items, &repos, &known, &[]).len(), 1);
     }
 
     #[test]
@@ -2516,7 +2683,7 @@ mod tests {
             Place::Conversation("c1".into()),
             "write tests with every fix",
         )];
-        let found = suggest(&items, &[], &[], |_, _, _| async {
+        let found = suggest(&items, &[], &[], &[], |_, _, _| async {
             Err::<String, _>(Failure::Failed("the brain was asked".into()))
         })
         .await;
@@ -2666,13 +2833,13 @@ mod tests {
             ],
         )
         .unwrap();
-        let signed = remembered(&home, "s00000002", &repos, true)
+        let signed = remembered(&home, "s00000002", &repos, true, &Events::new())
             .await
             .unwrap()
             .unwrap();
         assert_eq!(signed.foreign, None);
         assert_eq!(foreign_among(&home, &["obi-ai-bot/oby"]), None);
-        let unsigned = remembered(&home, "s00000003", &repos, false)
+        let unsigned = remembered(&home, "s00000003", &repos, false, &Events::new())
             .await
             .unwrap()
             .unwrap();
@@ -2680,7 +2847,7 @@ mod tests {
             unsigned.foreign.as_deref(),
             Some("a Remember no app of the owner's signed")
         );
-        let marked = remembered(&home, "s00000004", &repos, true)
+        let marked = remembered(&home, "s00000004", &repos, true, &Events::new())
             .await
             .unwrap()
             .unwrap();
@@ -2690,7 +2857,7 @@ mod tests {
         );
         assert!(foreign_among(&home, &["obi-ai-bot/oby"]).is_some());
         // obid's own sentence of who reviews where is the owner's.
-        let review = remember_review(&home, "obi-ai-bot/oby", "You asked", &repos)
+        let review = remember_review(&home, "obi-ai-bot/oby", "You asked", &repos, &Events::new())
             .await
             .unwrap();
         assert_eq!(review.foreign, None);
@@ -2710,10 +2877,10 @@ mod tests {
             main.base = base.into();
             let asked = ask_workflow(&home, repo, main.clone(), "You merged it").unwrap();
             assert!(matches!(
-                remembered(&home, &asked.id, &repos, false).await,
+                remembered(&home, &asked.id, &repos, false, &Events::new()).await,
                 Err(Refused::Invalid(_))
             ));
-            let saved = remembered(&home, &asked.id, &repos, true)
+            let saved = remembered(&home, &asked.id, &repos, true, &Events::new())
                 .await
                 .unwrap()
                 .unwrap();
@@ -2756,7 +2923,7 @@ mod tests {
         ));
         assert_eq!(list(&home), vec![]);
         // The owner's yes.
-        let saved = remembered(&home, &asked.id, &repos, true)
+        let saved = remembered(&home, &asked.id, &repos, true, &Events::new())
             .await
             .unwrap()
             .unwrap();
@@ -2766,7 +2933,9 @@ mod tests {
         assert_eq!(workflow(&home, repo), Some(saved.clone()));
         assert_eq!(suggestions(&home), vec![]);
         assert_eq!(
-            remembered(&home, &asked.id, &repos, true).await.unwrap(),
+            remembered(&home, &asked.id, &repos, true, &Events::new())
+                .await
+                .unwrap(),
             None
         );
         // A second one replaces it.
@@ -2775,7 +2944,7 @@ mod tests {
         merge.checks = Checks::Github;
         let again =
             ask_workflow(&home, repo, merge.clone(), "You merged oby#672 this way").unwrap();
-        let replaced = remembered(&home, &again.id, &repos, true)
+        let replaced = remembered(&home, &again.id, &repos, true, &Events::new())
             .await
             .unwrap()
             .unwrap();
@@ -2803,7 +2972,7 @@ mod tests {
             Err(Refused::Invalid(_))
         ));
         assert!(
-            remember_review(&home, "../x", "You asked", &repos)
+            remember_review(&home, "../x", "You asked", &repos, &Events::new())
                 .await
                 .is_err()
         );
@@ -2812,6 +2981,7 @@ mod tests {
             repo,
             "You asked a teammate's Oby to review oby#7",
             &repos,
+            &Events::new(),
         )
         .await
         .unwrap();
@@ -2828,12 +2998,95 @@ mod tests {
         assert!(!teammate_reviews(&home, "obi-ai-bot/other"));
         assert_eq!(workflow(&home, repo), None);
         // A second yes replaces it; read back as written.
-        let again = remember_review(&home, repo, "You asked again", &repos)
+        let again = remember_review(&home, repo, "You asked again", &repos, &Events::new())
             .await
             .unwrap();
         assert_eq!(list(&home), vec![again.clone()]);
         assert!(delete(&home, &again.id).unwrap());
         assert!(!teammate_reviews(&home, repo));
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// MEMORY-4: a memory followed once more is counted, then told, once, with no words.
+    #[test]
+    fn memory_4_a_use_is_one_event_after_its_count() {
+        let home = home();
+        let kept = memory(None, "Write tests with every fix.");
+        let dir = folder(&home, None);
+        crate::store::make_private_dir(&dir).unwrap();
+        crate::store::write_private(
+            &dir.join(format!("{}.md", kept.id)),
+            kept.to_file().as_bytes(),
+        )
+        .unwrap();
+        let events = Events::new();
+        let mut seen = events.subscribe();
+        note_used(&home, &kept.id, &events);
+        let event = seen.try_recv().unwrap();
+        assert_eq!(event.name, "memory");
+        assert_eq!(event.data, json!({"change": "used", "id": kept.id}));
+        assert_eq!(list(&home)[0].used, 1);
+        assert!(seen.try_recv().is_err());
+        // No such memory: nothing counted, nothing told.
+        note_used(&home, "m0000000z", &events);
+        assert!(seen.try_recv().is_err());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// MEMORY-1 and MEMORY-3: Oby doesn't ask again about a workflow the owner declined, in that
+    /// repository, but the owner's own yes on a merge card still saves it.
+    #[tokio::test]
+    async fn memory_1_the_owners_yes_saves_a_declined_workflow() {
+        let home = home();
+        let repo = "obi-ai-bot/oby";
+        let repos = vec![(repo.to_owned(), "dev".to_owned())];
+        let asked = ask_workflow(&home, repo, obis(), "You merged oby#671 this way").unwrap();
+        let taken = take_suggestion(&home, &asked.id).unwrap().unwrap();
+        decline(&home, &taken).unwrap();
+        assert_eq!(declined(&home)[0].text, match_key(&obis().sentence()));
+        assert!(matches!(
+            ask_workflow(&home, repo, obis(), "You merged oby#672 this way"),
+            Err(Refused::Invalid(_))
+        ));
+        assert_eq!(suggestions(&home), vec![]);
+        // Another repository's question is still asked.
+        let other = ask_workflow(&home, "obi-ai-bot/other", obis(), "You merged it").unwrap();
+        assert!(take_suggestion(&home, &other.id).unwrap().is_some());
+        let events = Events::new();
+        let mut seen = events.subscribe();
+        let saved = remember_workflow(
+            &home,
+            repo,
+            obis(),
+            "You merged oby#673 this way",
+            &repos,
+            true,
+            &events,
+        )
+        .await
+        .unwrap();
+        assert_eq!(workflow(&home, repo), Some(saved.clone()));
+        let event = seen.try_recv().unwrap();
+        assert_eq!(event.data["change"], "added");
+        assert_eq!(event.data["id"], saved.id.as_str());
+        assert!(seen.try_recv().is_err());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+}
+
+#[cfg(test)]
+mod proofs {
+    #![cfg(kani)]
+    use super::*;
+
+    /// MEMORY-2: one more decline after any number kept leaves at most [`DECLINED`], dropping no
+    /// more than were kept.
+    #[kani::proof]
+    fn memory_2_the_declined_list_holds_at_most_200() {
+        let kept: usize = kani::any();
+        kani::assume(kept < usize::MAX);
+        let dropped = declined_overflow(kept);
+        assert!(dropped <= kept);
+        assert_eq!(kept - dropped + 1, (kept + 1).min(DECLINED));
     }
 }
