@@ -30,6 +30,7 @@ The menu takes options from `GET /v1/settings/models/options` and saves through 
 3. The chosen account first; else the one its session is on while that has room, so it keeps its session; then the rest as above, those of the first's tool first within each. At most three in one turn, at most two of a tool, so a full tool can't keep another from its turn.
 4. An account whose turn hit its limit, or that couldn't run at all (its login, its box, its session failing twice), hands the turn to the next. One whose turn failed for what it was asked (too long for the model, a security rule that ended it) doesn't. Neither does one whose turn already did anything but read: started a job, merged, wrote on GitHub, ran a command, changed a setting, made a card. Given the same words, another agent would do it again. Reading is `oby_jobs`, `oby_job`, `oby_conversations`, `oby_inbox`, `oby_github`, `oby_read`, `oby_search`, `oby_list`, `oby_tasks` and `oby_routines`.
 5. `accountFailover` off: one account only. A chosen account that can't run is said, and nothing else is tried.
+6. A helper's conversation talks only through accounts of its helper's tool ([helpers.md](helpers.md)).
 
 ### When a try fails
 
