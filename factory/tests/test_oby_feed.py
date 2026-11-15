@@ -701,6 +701,44 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual(self.feed.load_state()["A00-98"]["job"], "job-9")
         self.assertFalse((self.feed.FEED / "A00-98.start").exists())
 
+    def test_feedalive_1_a_lost_start_is_recorded_even_once_the_disk_is_full_or_the_task_left_the_sprint(self):
+        """obid makes the job but its answer is lost; before the next pass its build fills the disk under the minimum
+        and dev moves the task to a later sprint (it is no longer ready). The next pass still sends the saved start,
+        records obid's job with its files and counts it under way."""
+        for change in ("disk full", "left the sprint", "no slot", "all three"):
+            with self.subTest(change=change):
+                self.feed.FEED = self.dir / f"feed-{change}"
+                task = {"key": "A00-98", "title": "another task", "body": "### Files\n- factory/bin/y.py\n"}
+                ready = [(task, True, {"factory/bin/y.py"})]
+                self.feed.ready_tasks = lambda state: [] if "A00-98" in state else list(ready)
+                disk = [100.0]
+                self.feed.free_gb = lambda: disk[0]
+                self.feed.oby_jobs = lambda: []
+                bodies = []
+
+                def api(method, path, body=None, timeout=30):
+                    bodies.append(body["job"])
+                    if len(bodies) == 1:
+                        self.feed.OBID_MISSED.append(path)
+                        return None, None
+                    return 200, {"id": "job-9"}
+
+                self.feed.api = api
+                args = Namespace(max=3, min_free_gb=15, dry_run=False, account="acct")
+                self.assertIsNone(self.feed.one_pass(args))
+                if change in ("disk full", "all three"):
+                    disk[0] = 5.0
+                if change in ("left the sprint", "all three"):
+                    ready[:] = []
+                if change in ("no slot", "all three"):
+                    args.max = 0
+                self.assertEqual(self.feed.one_pass(args), (1, 1))
+                self.assertEqual(len(bodies), 2)
+                self.assertEqual(bodies[0], bodies[1])
+                item = self.feed.load_state()["A00-98"]
+                self.assertEqual((item["job"], item["state"], item["files"]), ("job-9", "running", ["factory/bin/y.py"]))
+                self.assertFalse((self.feed.FEED / "A00-98.start").exists())
+
     def test_feedalive_1_one_request_key_per_task_attempt_through_a_5xx_until_the_job_is_saved(self):
         """obid answers a start with a 503 while it restarts, then with the job: both posts carry the one key, which
         is still on disk when the job is saved and dropped only after; a 4xx refusal ends the attempt."""

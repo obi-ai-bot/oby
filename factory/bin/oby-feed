@@ -298,29 +298,46 @@ def brief(task, on_base):
 
 
 def pending_start(pending):
-    """The request body a task attempt saved before its POST, or None. A key saved alone (an older feeder's) is
-    sent again under a body built anew."""
+    """What a task attempt saved before its POST: ({"job": body, "title", "files"}, its key), (None, a key saved
+    alone by an older feeder, sent again under a body built anew) or (None, None)."""
     if not pending.exists():
         return None, None
     saved = pending.read_text().strip()
     try:
-        body = json.loads(saved)
+        got = json.loads(saved)
     except ValueError:
         return None, saved
-    return (body, body.get("clientRequestId")) if isinstance(body, dict) else (None, saved)
+    if not isinstance(got, dict):
+        return None, saved
+    if "job" not in got:  # a body saved alone
+        got = {"job": got}
+    return got, got["job"].get("clientRequestId")
+
+
+def post_start(pending, saved):
+    """Sends a task attempt's saved body: (job id, None) once obid answers with its job, else (None, why). Only a
+    refusal (4xx) ends the attempt; no answer or a 5xx keeps it for the next pass."""
+    code, body = api("POST", "/v1/jobs", {"job": saved["job"]})
+    if code is None:
+        return None, "obid didn't answer"
+    if code in (200, 201) and (body or {}).get("id"):
+        return body["id"], None
+    if code < 500:
+        pending.unlink()
+    return None, f"obid refused it: {(body or {}).get('error', code)}"
 
 
 def start(task, account, on_base):
     key = task["key"]
     # One request per task attempt, its body and key saved before the POST: if obid made the job and its answer was
-    # lost or was a 5xx, the next pass sends that same body again, so obid gives that job back instead of making a
-    # second one (POST /v1/jobs's receipts), even when the task's text or the account changed since: a changed body
-    # under the same key would be a 409. Only a refusal (4xx) ends the attempt here; a job obid answered ends it
-    # once one_pass saved it.
+    # lost or was a 5xx, the next pass sends that same body again (resume_starts), so obid gives that job back
+    # instead of making a second one (POST /v1/jobs's receipts), even when the task's text or the account changed
+    # since: a changed body under the same key would be a 409. A job obid answered ends the attempt once one_pass
+    # saved it.
     pending = FEED / f"{key}.start"
     FEED.mkdir(parents=True, exist_ok=True)
-    sent, request_id = pending_start(pending)
-    if sent is None:
+    saved, request_id = pending_start(pending)
+    if saved is None:
         text = brief(task, on_base)
         if len(text) > 2000:
             return None, f"its file isn't on origin/{job.BASE} and its text is too long to send ({len(text)} characters): commit the task file first"
@@ -329,15 +346,40 @@ def start(task, account, on_base):
                 "clientRequestId": request_id or f"feed-{key}-{int(time.time())}"}
         if account == "any":  # no account named: obid picks the one with the most room and moves the job at a limit
             del sent["account"]
-        pending.write_text(json.dumps(sent))
-    code, body = api("POST", "/v1/jobs", {"job": sent})
-    if code is None:
-        return None, "obid didn't answer"
-    if code in (200, 201) and (body or {}).get("id"):
-        return body["id"], None
-    if code < 500:
-        pending.unlink()
-    return None, f"obid refused it: {(body or {}).get('error', code)}"
+        saved = {"job": sent, "title": task["title"], "files": sorted(job.code_files(task))}
+        pending.write_text(json.dumps(saved))
+    return post_start(pending, saved)
+
+
+def resume_starts(state):
+    """Settles every task attempt whose start obid left unanswered, before anything decides whether new work may
+    start: a job obid made is recorded and followed even when the disk has since filled, dev moved its task to a later
+    sprint or its slot is gone. Returns how many were recorded."""
+    recorded = 0
+    for pending in sorted(FEED.glob("*.start")):
+        key = pending.stem
+        if key in state:  # its job is saved already: the attempt is done
+            pending.unlink()
+            continue
+        saved, _ = pending_start(pending)
+        if saved is None:  # a key saved alone: its body is built again when the task is ready
+            continue
+        oby_id, why = post_start(pending, saved)
+        if OBID_MISSED:
+            break
+        if not oby_id:
+            if key not in SAID:  # once a run, not at every pass
+                say(f"{key}: not started: {why}")
+                SAID.add(key)
+            continue
+        item = {"key": key, "title": saved.get("title", key), "job": oby_id, "state": "running",
+                "files": saved.get("files", []), "started": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        state[key] = item
+        save(item)
+        pending.unlink()  # the attempt is recorded: its key is done
+        say(f"{key}: started as Oby job {oby_id}, a start obid hadn't answered")
+        recorded += 1
+    return recorded
 
 
 def pr_number(url):
@@ -648,6 +690,7 @@ def one_pass(args):
         if (item["state"] in ACTIVE or item["state"] == "waiting") and follow(item, jobs):
             save(item)
             say(f"{item['key']}: {item['state']}" + (f" (#{item['pr']})" if item.get("pr") else "") + (f": {item['note']}" if item.get("note") else ""))
+    resumed = 0 if missed() or args.dry_run else resume_starts(state)
     active = [i for i in state.values() if i["state"] in ACTIVE]
     slots = args.max - len(active)
     started = 0
@@ -658,6 +701,8 @@ def one_pass(args):
                 break
             if files & taken:
                 continue
+            if not args.dry_run and pending_start(FEED / f"{task['key']}.start")[0]:
+                continue  # resume_starts sent its saved start this pass: obid answered it with a 5xx
             if free_gb() < args.min_free_gb:
                 say(f"waiting to start {task['key']}: {free_gb():.0f} GB free, under {args.min_free_gb} GB")
                 break
@@ -691,7 +736,7 @@ def one_pass(args):
     if GATE_MISSED:
         say(f"the gate VM didn't answer ({GATE_MISSED[0][:120]}): the next pass tries again")
         return None
-    return len([i for i in state.values() if i["state"] in ACTIVE]), started
+    return len([i for i in state.values() if i["state"] in ACTIVE]), started + resumed
 
 
 def status():
