@@ -451,6 +451,111 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual(alive, set())
         self.assertNotIn(("GET", f"/v1/jobs/{JOB}"), calls)
 
+    def merged_family(self, alive, refuse=()):
+        """A stand-in obid holding the jobs in `alive`: a DELETE of one it has removes it, of one it hasn't is a 404,
+        of one in `refuse` is a 409. Returns the DELETE calls it saw."""
+        deletes = []
+
+        def api(method, path, body=None, timeout=30):
+            jid = path.rsplit("/", 1)[1]
+            if method == "GET":
+                return (200, {"id": jid, "status": "done"}) if jid in alive else (404, {"error": "no such job"})
+            if method == "DELETE":
+                deletes.append(jid)
+                if jid in refuse:
+                    return 409, {"error": "it is still running"}
+                if jid not in alive:
+                    return 404, {"error": "no such job"}
+                alive.discard(jid)
+                return 204, None
+            return 500, {"error": "unexpected"}
+
+        self.feed.api = api
+        return deletes
+
+    def test_feedalive_1_a_merge_and_its_job_list_are_saved_before_any_job_is_deleted(self):
+        """The feeder stops right after obid deleted the build job: the next pass, with the build job gone, still
+        knows the merge and every job of the task, deletes the rest and records it merged, never failed."""
+        self.no_ready()
+        self.task("waiting", head=OLD)
+        self.stand.view = {"headRefOid": OLD, "state": "MERGED", "files": []}
+        alive = {JOB, "rev-1"}
+        listed = lambda: [{"id": JOB, "kind": "build"}, {"id": "rev-1", "reviewOf": JOB}]
+        self.feed.oby_jobs = lambda: [j for j in listed() if j["id"] in alive]
+        deletes = self.merged_family(alive)
+        api, on_disk = self.feed.api, []
+
+        def stops_after_the_first_delete(method, path, body=None, timeout=30):
+            if method == "DELETE":
+                on_disk.append(self.task_now())
+                if len(deletes) == 1:
+                    raise Stop()
+            return api(method, path, body, timeout)
+
+        self.feed.api = stops_after_the_first_delete
+        with self.assertRaises(Stop):
+            self.one_pass()
+        self.assertTrue(on_disk[0].get("mergeSeen"))
+        self.assertEqual(on_disk[0]["cleanup"], sorted([JOB, "rev-1"]))
+        self.assertEqual(alive, {"rev-1"})
+        self.feed.api = api
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual(item["state"], "merged")
+        self.assertIn("2 Oby jobs", item["note"])
+        self.assertEqual(alive, set())
+
+    def test_feedalive_1_a_404_on_a_job_already_deleted_is_success(self):
+        self.no_ready()
+        self.task("waiting", head=OLD, mergeSeen=True, cleanup=[JOB, "rev-1"], left=[JOB, "rev-1"])
+        self.feed.oby_jobs = lambda: [{"id": "rev-1", "reviewOf": JOB}]
+        deletes = self.merged_family({"rev-1"})
+        self.assertIsNotNone(self.one_pass())
+        self.assertEqual(deletes, [JOB, "rev-1"])
+        item = self.task_now()
+        self.assertEqual(item["state"], "merged")
+        self.assertIn("2 Oby jobs", item["note"])
+
+    def test_feedalive_1_a_merged_task_deletes_from_its_saved_list_until_every_job_is_gone(self):
+        """obid keeps a review it won't delete yet: the task stays merging with that job left, and later passes
+        delete only what is left until it is gone, never recording it merged with a job behind."""
+        self.no_ready()
+        self.task("merging", head=OLD)
+        self.stand.graphql = queue("MERGED")
+        alive = {JOB, "rev-1"}
+        self.feed.oby_jobs = lambda: [j for j in ({"id": JOB}, {"id": "rev-1", "reviewOf": JOB}) if j["id"] in alive]
+        refuse = {"rev-1"}
+        deletes = self.merged_family(alive, refuse)
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual(item["state"], "merging")
+        self.assertEqual(item["left"], ["rev-1"])
+        self.assertEqual(alive, {"rev-1"})
+        self.one_pass()
+        self.assertEqual(self.task_now()["left"], ["rev-1"])
+        refuse.clear()
+        deletes.clear()
+        self.one_pass()
+        self.assertEqual(deletes, ["rev-1"])
+        item = self.task_now()
+        self.assertEqual(item["state"], "merged")
+        self.assertIn("2 Oby jobs", item["note"])
+        self.assertEqual(alive, set())
+
+    def test_feedalive_1_a_merged_task_after_a_follow_up_deletes_its_first_build_job_too(self):
+        self.no_ready()
+        self.task("waiting", head=OLD, job="job-2")
+        self.stand.view = {"headRefOid": OLD, "state": "MERGED", "files": []}
+        alive = {JOB, "rev-1", "job-2", "rev-2"}
+        self.feed.oby_jobs = lambda: [{"id": JOB, "kind": "build"}, {"id": "rev-1", "reviewOf": JOB},
+                                      {"id": "job-2", "kind": "build", "followUpOf": JOB}, {"id": "rev-2", "reviewOf": "job-2"},
+                                      {"id": "other", "kind": "build"}]
+        deletes = self.merged_family(alive)
+        self.one_pass()
+        self.assertEqual(alive, set())
+        self.assertNotIn("other", deletes)
+        self.assertEqual(self.task_now()["state"], "merged")
+
     def two_waiting_and_one_ready(self):
         """Two waiting tasks and a ready one: what a pass looks at once a request went unanswered."""
         self.task("waiting", head=OLD)
@@ -897,6 +1002,38 @@ class ObyFeed(unittest.TestCase):
             self.assertIn("gave no verdict: ssh dropped (exit 255)", got)
             self.assertNotIn("does not hold", got)
             self.assertNotIn("was not violated", got)
+
+    def test_feedalive_5_a_violation_printed_before_ssh_dropped_skips_the_pass_and_never_holds_the_head(self):
+        """A whole pass: Quint's violation of an invariant printed, then ssh exits 255. The pass is skipped and the
+        head stays unrefused; the next pass, whose run holds, arms it."""
+        self.task("waiting", head=OLD)
+        self.stand.jobs[JOB]["approvals"] = approvals(OLD, "claude", "codex")
+        self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": PATH}]}
+        self.feed.touches_security = lambda files: []
+        self.no_ready()
+        verdict = [(VIOLATED[0], 255)]
+
+        def run(cmd, **kwargs):
+            if cmd[:2] == ["gh", "api"] and "contents" in cmd[2]:
+                return subprocess.CompletedProcess(cmd, 0, "// verify: main=m invariants=safe\n", "")
+            if cmd[0] == "ssh":
+                out, code = verdict[0] if VERIFY.search(cmd[-1]) else ("", 0)
+                return subprocess.CompletedProcess(cmd, code, out, "Connection to oby-gate closed by remote host." if code else "")
+            return self.stand.run(cmd, **kwargs)
+
+        self.feed.subprocess = Namespace(run=run)
+        config = dict(self.feed.job.CONFIG, remote_gate={"ssh_host": "oby-gate"})
+        with mock.patch.object(self.feed.job, "CONFIG", config):
+            self.assertIsNone(self.one_pass())
+            item = self.task_now()
+            self.assertEqual(item["state"], "waiting")
+            self.assertNotIn("refused", item)
+            self.assertNotIn("does not hold", item["note"])
+            self.assertEqual(self.stand.merges(), [])
+            verdict[0] = HOLDS
+            self.assertIsNotNone(self.one_pass())
+        self.assertEqual(self.task_now()["state"], "merging")
+        self.assertEqual(len(self.stand.merges()), 1)
 
     # FEEDALIVE-6: --account any names no account; the default names deskree-team
     def test_feedalive_6_account_any_sends_no_account_and_the_default_sends_deskree_team(self):

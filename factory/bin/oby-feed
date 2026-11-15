@@ -399,18 +399,40 @@ def arm(item, head, tools):
     item.update(state="merging", head=head, approved=tools, armedAt=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
 
 
+def task_jobs(item, jobs):
+    """Every Oby job of the task: its first build job, each follow-up and every review of any of them."""
+    by_id, root = {j["id"]: j for j in jobs}, item["job"]
+    while by_id.get(root, {}).get("followUpOf"):
+        root = by_id[root]["followUpOf"]
+    return family(root, jobs) | {item["job"]}
+
+
 def merged(item, jobs):
-    """GitHub merged the pull request: its jobs are deleted. The merge is kept on the task at once, so a cleanup
-    obid stopped answering partway through (the build job gone, a review left) is finished at a later pass, never
-    read as a task whose job obid lost."""
-    item["mergeSeen"] = True
-    missed = len(OBID_MISSED)
-    gone = item.get("removed", 0) + delete_jobs(family(item["job"], jobs))
-    if len(OBID_MISSED) > missed:  # obid went away: the rest is deleted at a pass that gets through
-        item.update(removed=gone, note="merged; removing its Oby jobs, tried again at the next pass")
+    """GitHub merged the pull request: its jobs are deleted. The merge and the full list of the task's jobs are saved
+    before any is deleted, and each later pass deletes from that list until every one is gone: a 404 is a job already
+    gone, so a cleanup cut short is finished, never read as a task whose job obid lost."""
+    if "cleanup" not in item:
+        item.update(mergeSeen=True, cleanup=sorted(task_jobs(item, jobs)))
+        item["left"] = list(item["cleanup"])
+        item.pop("removed", None)
+        save(item)
+    left = []
+    for i in item["left"]:
+        if OBID_MISSED:  # obid went away: the rest is deleted at a pass that gets through
+            left.append(i)
+            continue
+        code, body = api("DELETE", f"/v1/jobs/{i}")
+        if code not in (200, 204, 404):
+            left.append(i)
+            if code is not None:
+                say(f"  obid kept job {i}: {(body or {}).get('error', code)}")
+    item["left"] = left
+    if left:
+        item.update(note=f"merged; {len(left)} of its {len(item['cleanup'])} Oby jobs left to remove, tried again at the next pass")
         return
-    item.pop("mergeSeen")
-    item.pop("removed", None)
+    gone = len(item["cleanup"])
+    for field in ("mergeSeen", "cleanup", "left"):
+        item.pop(field)
     item.update(state="merged", note=f"merged; {gone} Oby jobs and their worktrees removed")
 
 
