@@ -19,6 +19,7 @@ A proposal the owner approved on 2026-11-15, drawn with Oby's design system (San
 
 - The mini sidebar is Sangam's: Home first, a line, then the Obyspheres, Settings at the foot. Its divider starts under the title bar, clear of the window's buttons.
 - The side panel's title is the profile's name. Under it, one switch: Projects (development work) and Agents (general work). Each profile has its own of both.
+- In the side panel, a conversation's agents nest under it, one row each: the logo of the tool its account runs on (Claude Code, Codex, Cursor), what it works on and what it is doing, and its own mark (working, needs you). The account's name shows on hover. A small toggle beside the conversation shows or hides them (screens 01 to 07).
 - Chats and tasks are one thing: a task's card opens in place into its agent's own words and steps. The message box at the foot talks to Oby; the small box in an opened card talks to that agent.
 - The message box shows who it talks through, as the app's pill does: "Auto" until the owner chooses.
 - The factory belongs to a project. Its stages are a job's own: Prepare, Work, Check, Publish, Review, Merge.
