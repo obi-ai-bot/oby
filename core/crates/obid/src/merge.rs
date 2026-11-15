@@ -1946,6 +1946,21 @@ pub fn proposed(
     crate::git::is_branch_name(&workflow.base).then_some(workflow)
 }
 
+/// The workflow the owner's own conversation work merges by itself with none learned for its base:
+/// [`proposed`]'s, always on Oby's own review of the exact head (two by different tools where
+/// MERGING-14 or 15 asks), never on one person's approval on GitHub (MERGING-46, 48).
+pub fn own_proposed(
+    job: &Job,
+    pr: &PullRequest,
+    merging: &Merging,
+    reviewers: &Reviewers,
+) -> Option<Workflow> {
+    proposed(job, pr, merging, reviewers).map(|w| Workflow {
+        review: Approval::Oby,
+        ..w
+    })
+}
+
 /// The job's pull request was merged or closed (`pr`): nothing waits on the owner about merging it
 /// any more. What obid was sending before a restart is settled: an approval it finds in `reviews`
 /// is listed (when they didn't read, its mark stays, and the follower reads it again); a merge is listed and keeps who had it merged, as does
@@ -3770,7 +3785,60 @@ mod tests {
         );
     }
 
-    /// [`settled`], as the owner's own conversation work (MERGING-44).
+    /// MERGING-46, 48: with nothing learned, the owner's own conversation work merges only on Oby's
+    /// own review of the head: a person's approval on GitHub, which the workflow proposed to the
+    /// owner takes, doesn't merge it by itself, nor stand in for a second review.
+    #[test]
+    fn merging_46_own_work_merges_only_on_obys_own_review() {
+        let (pr, merging) = read(
+            &view(|_| {}),
+            &pages(vec![rest(3, "ana", "User", "APPROVED", &head(), "MEMBER")]),
+        );
+        let mut mine = own();
+        let theirs = proposed(&mine, &pr, &merging, &signed_in()).unwrap();
+        assert_eq!(theirs.review, Approval::Person);
+        assert_eq!(
+            ready(&mine, Some(&theirs), &pr, &merging, Some(&signed_in())),
+            Ok(())
+        );
+        let workflow = own_proposed(&mine, &pr, &merging, &signed_in()).unwrap();
+        assert_eq!(
+            workflow,
+            Workflow {
+                review: Approval::Oby,
+                ..theirs
+            }
+        );
+        let held = ready(&mine, Some(&workflow), &pr, &merging, Some(&signed_in())).unwrap_err();
+        assert!(!held.needs_you, "{}", held.why);
+        assert!(
+            held.why.contains("Oby's review hasn't approved its head"),
+            "{}",
+            held.why
+        );
+        // Approved by Oby's review, it merges; needing two, it waits for the second tool's.
+        mine.review = Some(crate::job::Review {
+            verdict: "approved".into(),
+            job: "r1".into(),
+            agent: "codex".into(),
+            account: "default".into(),
+            same_account: false,
+            round: 1,
+            date: 0,
+            commit: head(),
+            two_reviews: None,
+        });
+        assert_eq!(
+            ready(&mine, Some(&workflow), &pr, &merging, Some(&signed_in())),
+            Ok(())
+        );
+        mine.untrusted = true;
+        mine.approvals = vec![mine.review.clone().unwrap()];
+        let waits = ready(&mine, Some(&workflow), &pr, &merging, Some(&signed_in())).unwrap_err();
+        assert!(waits.why.contains(SECOND_REVIEW_WAITS), "{}", waits.why);
+    }
+
+    /// [`settled`], as the owner's own conversation work (MERGING-44).    /// [`settled`], as the owner's own conversation work (MERGING-44).
     fn own() -> Job {
         let mut job = settled();
         job.own_conversation = true;
