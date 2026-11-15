@@ -85,6 +85,8 @@ contextBridge.exposeInMainWorld('app', {
   },
   // a sign-in page in the person's browser (https only)
   openExternal: (url: string) => ipcRenderer.send('open-external', url),
+  // a render error the page's root boundary caught (RenderError.tsx): kept by main, which reloads once
+  renderError: (name: string, message: string, componentStack: string) => ipcRenderer.send('render-error', name, message, componentStack),
   // the Mac's folder picker, several folders at once, opening in from: their paths (none: cancelled)
   pickFolders: (from?: string) => ipcRenderer.invoke('pick-folders', from) as Promise<string[]>,
   // setting up (the page's FirstRun.tsx): the window narrower and held at its size, or its own
