@@ -30,11 +30,12 @@ impl Jobs {
     /// with a copy of its login. `claudeOwnSandbox` doesn't change it. A Codex job is own only in
     /// Bypass (the owner's CODEX-1, "Yes, Bypass only", LANES-18), where Codex never asks to leave
     /// its sandbox ([`own_codex_settings`]), and on macOS, whose sandbox is the one measured; in
-    /// Ask, Accept edits, Plan or Sandbox it stays boxed, and on a ChatGPT login ([`launches_own`]).
+    /// Ask, Accept edits, Plan or Sandbox it stays boxed, and on a ChatGPT login ([`launches_own`]),
+    /// and so does the rest of a run its plan card's answer resumed ([`codex_plan::resumes_plan`]).
     pub(crate) fn own_lane(job: &Job, tool: Tool) -> bool {
         let lane = match tool {
             Tool::Claude => true,
-            Tool::Codex => Self::codex_own(Self::mode_of(job)),
+            Tool::Codex => Self::codex_own(Self::mode_of(job)) && !codex_plan::resumes_plan(job),
             Tool::Cursor => false,
         };
         lane && job.obi.is_none()
@@ -962,6 +963,32 @@ mod tests {
                 request_id: "r".into(),
             })
         }));
+    }
+
+    /// LANES-18 (PERMISSIONS-18): the run a Codex plan card's answer resumes stays in Oby's box,
+    /// where its thread is, in Bypass too; once that run ended (`parked` cleared), the job's next
+    /// run on macOS leaves the box as any Bypass Codex job's does.
+    #[test]
+    fn lanes_18_the_run_a_codex_plan_resumes_stays_boxed() {
+        let mut job = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "codex".into(),
+            "a".into(),
+        );
+        job.mode = Some("bypass".into());
+        job.parked = Some(permissions::Parked {
+            tool: "ExitPlanMode".into(),
+            input: json!({"plan": "Plan: add plan.txt"}),
+            answered: true,
+            allowed: true,
+            ended_turn: true,
+        });
+        assert!(!Jobs::own_lane(&job, Tool::Codex));
+        job.parked = None;
+        assert_eq!(Jobs::own_lane(&job, Tool::Codex), cfg!(target_os = "macos"));
     }
 
     /// LANES-18: of the owner's login shell's environment, an own Codex run gets everything Claude

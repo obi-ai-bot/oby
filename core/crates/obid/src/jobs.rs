@@ -64,6 +64,8 @@ pub(crate) mod asks;
 mod authors;
 mod budget;
 mod by_github;
+mod codex_plan;
+use codex_plan::Asked;
 mod keep;
 pub use keep::NotMade;
 mod lanes;
@@ -506,9 +508,9 @@ enum End {
     },
     /// Its account is full; the owner decides what happens to the affected jobs.
     AccountLimit { reason: String, reset: Option<i64> },
-    /// Its agent asked the owner with `oby_ask_owner` and ended its turn: the job waits for the
-    /// answer with no agent ([`Jobs::wait_for_answer`]).
-    Asked(permissions::QuestionCall),
+    /// Its agent asked the owner with `oby_ask_owner`, or a Codex turn in Plan ended with its plan,
+    /// and its turn ended: the job waits for the answer with no agent ([`Jobs::wait_for_answer`]).
+    Asked(Asked),
 }
 
 impl End {
@@ -5087,7 +5089,7 @@ impl Jobs {
             return Ruling::Now(Answer::Deny(why));
         }
         // A plan in Plan mode waits for the owner's own answer (#609): Claude Code's ExitPlanMode
-        // and Cursor's create_plan alike (#1008). Codex ends its turn with its plan.
+        // and Cursor's create_plan alike (#1008); Codex's is its Plan turn's end (jobs::codex_plan).
         let plan = call.tool == "ExitPlanMode" && mode == Mode::Plan;
         // The agent's question waits for the owner's own answer in every mode, Bypass too (#858):
         // no mode or rule can answer it for them.
@@ -5369,7 +5371,7 @@ impl Jobs {
             job.permission = first.clone();
             job.question_call = call;
             if first.as_ref().is_some_and(Permission::is_plan) {
-                job.step = "Waiting for your OK on the plan".into();
+                job.step = codex_plan::PLAN_WAITS.into();
             } else if first.as_ref().is_some_and(Permission::is_question) {
                 job.step = "Waiting for your answer".into();
             } else if first.is_some() {
@@ -5678,6 +5680,7 @@ impl Jobs {
                     input,
                     answered: false,
                     allowed: false,
+                    ended_turn: false,
                 });
             }
             job.permission = Some(card.clone());
@@ -5912,23 +5915,6 @@ impl Jobs {
         Ok(
             "Asked the owner. End your turn now with a one-line summary; Oby will resume this session with the answer.",
         )
-    }
-
-    /// The job waits for the owner's answer to what its agent asked with `oby_ask_owner`, as a
-    /// question a restart kept does (#858): `running` with its question and no agent, in the
-    /// inbox, until the answer picks its session up ([`Jobs::answer_kept_question`]).
-    fn wait_for_answer(&self, id: &str, call: permissions::QuestionCall) {
-        let Some(job) = self.get(id).filter(|j| j.status == Status::Running) else {
-            return;
-        };
-        let permission = permissions::question_card(&call.questions, &permissions::new_id(), 0);
-        // The inbox has it before the job shows it, as [`Jobs::show`] does.
-        self.note(PermissionNote::Waiting(Box::new(job), permission.clone()));
-        self.update(id, |job| {
-            job.permission = Some(permission);
-            job.question_call = Some(call);
-            job.step = "Waiting for your answer".into();
-        });
     }
 
     /// Changes how much the job asks, from now on: the prompts waiting now that the new mode
@@ -7173,7 +7159,7 @@ impl Jobs {
             }
             Ok(()) => {}
             // Last, once nothing of its run can take the question down again.
-            Err(End::Asked(call)) => self.wait_for_answer(id, call),
+            Err(End::Asked(waits)) => self.wait_for_answer(id, waits),
             Err(end) => {
                 let review = self.get(id).and_then(|j| {
                     let body: ReviewRequest =
@@ -10839,7 +10825,10 @@ impl Jobs {
                 // It asked the owner (`oby_ask_owner`) and ended its turn: it waits for the answer,
                 // which starts its next turn, the owner's words that came meanwhile with it.
                 if let Some(call) = self.lock().asked.remove(id) {
-                    return Err(End::Asked(call));
+                    return Err(End::Asked(Asked::Question(call)));
+                }
+                if self.ends_on_plan(id, round, &said) {
+                    return Err(End::Asked(Asked::Plan(said)));
                 }
                 // Words the owner sent while it worked: the agent hears them now, in another turn of
                 // this round, before the check.
@@ -20418,7 +20407,7 @@ mod tests {
             Err(PermissionRefused::NotWaiting(_))
         ));
 
-        jobs.wait_for_answer("eeee0004", call);
+        jobs.wait_for_answer("eeee0004", Asked::Question(call));
         let asked = jobs.get("eeee0004").unwrap().permission.unwrap();
         let job = jobs
             .answer_question("eeee0004", &asked.id, "Postgres")
@@ -23153,9 +23142,9 @@ mod tests {
             ("needs you with no session and tries left", at_work(None), needs_you(), failed_end()),
             ("needs you with no session and its tries spent", spent(at_work(None)), needs_you(),
                 interrupted("Did half of it.", Some(crate::job::ONE_MORE_ROUND), Some(42))),
-            ("asked", at_work(Some("s")), End::Asked(Default::default()),
+            ("asked", at_work(Some("s")), End::Asked(Asked::Question(Default::default())),
                 (Status::Failed, asked.to_owned(), None, None)),
-            ("asked while handing over", handing(at_work(None)), End::Asked(Default::default()),
+            ("asked while handing over", handing(at_work(None)), End::Asked(Asked::Question(Default::default())),
                 interrupted("Did half of it.", Some(crate::job::TRY_AGAIN), None)),
             ("failed with no session while handing over", handing(at_work(None)), failed(),
                 interrupted("Did half of it.", Some(crate::job::TRY_AGAIN), None)),
