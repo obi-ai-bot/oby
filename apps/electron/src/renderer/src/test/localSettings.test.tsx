@@ -112,6 +112,17 @@ describe('LIVE-26', () => {
   });
 });
 
+describe('WORDS-17', () => {
+  it('words_17: Settings › Vault removes a secret by its own Remove Secret button, never a bare Remove', async () => {
+    const { view, answer } = await start();
+    await act(async () => root!.render(<view.default page="vault" leaving={false} onClose={() => {}} onGone={() => {}} />));
+    await answer({ vault: ['staging-key'] });
+    const labels = Array.from(host.querySelectorAll('button')).map((b) => b.textContent);
+    expect(labels).toContain('Remove Secret');
+    expect(labels).not.toContain('Remove');
+  });
+});
+
 describe('no bridge', () => {
   it('live_25: in a browser, rows stay in memory as before', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);

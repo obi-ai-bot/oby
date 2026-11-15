@@ -192,15 +192,17 @@ describe('signed words', () => {
     expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', { said: 'Fix the login', new: true })).not.toBeNull();
   });
 
-  it('words_17_the_vault_signs_a_put_by_add_secret_and_a_bodiless_delete_by_remove', () => {
+  it('words_17_the_vault_signs_a_put_by_add_secret_and_a_bodiless_delete_by_remove_secret', () => {
     const path = '/v1/obid/vault/staging-key';
-    expect([VAULT_ADD, VAULT_REMOVE]).toEqual(['Add Secret', 'Remove']);
+    expect([VAULT_ADD, VAULT_REMOVE]).toEqual(['Add Secret', 'Remove Secret']);
     expect(wordsOf('PUT', path, { value: 'tok/secret+value' })).toEqual([VAULT_ADD]);
     expect(owners('PUT', path, { value: 'tok/secret+value' }, ['Add Secret'], [])).toEqual([0]);
     expect(owners('PUT', path, { value: 'tok/secret+value' }, ['tok/secret+value'], [])).toBeNull();
     for (const body of [undefined, {}, { value: 1 }, { value: 'x', name: 'y' }, ['x']]) expect(wordsOf('PUT', path, body)).toBeNull();
     expect(wordsOf('DELETE', path, undefined)).toEqual([VAULT_REMOVE]);
-    expect(owners('DELETE', path, undefined, ['Remove'], [])).toEqual([0]);
+    expect(owners('DELETE', path, undefined, ['Remove Secret'], [])).toEqual([0]);
+    // a click on any other Remove (an account's, a rule's) can't stand for it
+    expect(owners('DELETE', path, undefined, ['Remove'], [])).toBeNull();
     for (const body of [{}, { value: 'x' }, null, '']) expect(wordsOf('DELETE', path, body)).toBeNull();
     // no other route signs without a body, nor the vault's list or another verb
     expect(wordsOf('DELETE', '/v1/jobs/j1', undefined)).toBeNull();

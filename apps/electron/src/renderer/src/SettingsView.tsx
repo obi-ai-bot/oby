@@ -1093,7 +1093,7 @@ function Vault() {
       {names.length
         ? names.map((n) => (
           <Row key={n} label={<span className="tok tok-code">{n}</span>}>
-            <button className="set-button is-danger" onClick={() => setNames(names.filter((x) => x !== n))}>Remove</button>
+            <button className="set-button is-danger" onClick={() => setNames(names.filter((x) => x !== n))}>Remove Secret</button>
           </Row>
         ))
         : <Row label={<span className="set-none">No secrets yet</span>} />}

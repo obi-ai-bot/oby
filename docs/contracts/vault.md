@@ -13,7 +13,7 @@ The business behavior contract for listing, putting in and removing the owner's 
 ### Actors and ownership
 
 - **obid** checks every write, saves it in the vault (`home/vault/secrets.json`) and takes the value out of everything from the moment it is written, as `obid vault add` does (`Vault::add`, `Vault::remove`). It decides what the routes answer.
-- **The Electron app** signs the two writes in main with its device key (docs/contracts/signed-words.md, WORDS-17): a PUT of exactly `{value}` by the label of the page's `Add Secret` button, a DELETE with no body by its `Remove` button's. The value sits in a password box the preload never reads, so the label, not the value, is what the click held; the signature still covers the exact body, the value included.
+- **The Electron app** signs the two writes in main with its device key (docs/contracts/signed-words.md, WORDS-17): a PUT of exactly `{value}` by the label of the page's `Add Secret` button, a DELETE with no body by its `Remove Secret` button's, its own so a click on any other Remove can't stand for it. The value sits in a password box the preload never reads, so the label, not the value, is what the click held; the signature still covers the exact body, the value included.
 - **A paired phone** never reaches these routes: the gateway and the phone relay keep `/v1/obid/…` off.
 
 ### Rules

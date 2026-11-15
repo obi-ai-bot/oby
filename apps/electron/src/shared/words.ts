@@ -28,9 +28,10 @@ export const BACKGROUND_YES = 'Yes, it can';
 
 // A secret put in or removed on Settings › Vault (docs/contracts/vault.md): its buttons' labels,
 // never the value, which sits in a password box the preload never reads. The signature still
-// covers the exact body, the value included; a removal has no body.
+// covers the exact body, the value included; a removal has no body. Remove Secret is its own, so a
+// click on any other Remove can't stand for it.
 export const VAULT_ADD = 'Add Secret';
-export const VAULT_REMOVE = 'Remove';
+export const VAULT_REMOVE = 'Remove Secret';
 
 const MESSAGES = /^\/v1\/jobs\/[^/]+\/messages$/;
 const ROOM = /^\/v1\/spheres\/[^/]+\/room$/;
