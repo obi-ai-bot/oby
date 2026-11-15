@@ -29,6 +29,11 @@
 #                         sandbox.rs, egress.rs, process.rs or secretspec.rs, and, outside a job's
 #                         box, wherever tests/jobs_api.rs runs; tests/released_files.rs for
 #                         src/job.rs, config.rs or store.rs; every test of another touched crate;
+#                         every obid test binary for a change to obid's crate outside tests/ (src/,
+#                         Cargo.toml, build.rs, cli-versions.json, prompt-budget.txt), the workspace's
+#                         Cargo.toml or Cargo.lock, or a crate obid names by path (obi-protocol) outside
+#                         its tests/, but in a job's box on a Mac tests/sandbox.rs, jobs_setup.rs and
+#                         plugins_api.rs, which only the rules before it plan there (CI-45 to 47);
 #                         an obid run whose failed tests are all on the flaky list
 #                         (core/.config/nextest.toml, which may only shrink) runs them once more
 #   docs/api/, obid's src/ files with a `.route(`, apps/electron/src (not its tests or mock), apps/shared
@@ -303,6 +308,9 @@ selected() { [[ -z "${OBY_CHECK_ONLY:-}" || "$OBY_CHECK_ONLY" == "$group" ]]; }
 # Inside a job's sandbox, where Seatbelt can't make another.
 nested=''
 /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null || nested=1
+# A test binary that makes a sandbox of its own, which can't nest in a job's on a Mac. On Linux,
+# where nested is always set (no sandbox-exec), they still run: they test bubblewrap there.
+boxed_binary() { [[ -n "$nested" && "$OSTYPE" == darwin* && "$1" =~ ^(sandbox|plugins_api|jobs_setup)$ ]]; }
 step() {
     selected || return 0
     plan_group
@@ -428,7 +436,10 @@ suites() {
 
 # What each part needs, one per line.
 rust='' blok='' electron='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' check_script='' factory='' agents_md='' agents_rules=''
+every_binary=''
 add() { printf '%s\n%s' "$1" "$2"; }
+# The workspace crates obid names by path (obi-protocol): their code is obid's too (CI-45).
+obid_paths=$(sed -n 's|.*path = "\.\./\([^"/]*\)".*|\1|p' core/crates/obid/Cargo.toml 2>/dev/null || true)
 while IFS= read -r file; do
     case "$file" in
         core/AGENTS.md | core/CLAUDE.md) ;;
@@ -471,6 +482,16 @@ while IFS= read -r file; do
         core/crates/obid/src/job.rs | core/crates/obid/src/config.rs | core/crates/obid/src/store.rs)
             tests=$(add "$tests" core/crates/obid/tests/released_files.rs) ;;
     esac
+    case "$file" in
+        # obid's crate outside its tests (its source, build files and the data files it compiles
+        # in), the workspace's dependencies and the crates obid names by path: any of its test
+        # binaries reads them (docs/contracts/ci.md, CI-45, CI-46).
+        core/crates/obid/tests/*) ;;
+        core/crates/obid/* | core/Cargo.toml | core/Cargo.lock) every_binary=1 ;;
+        core/crates/*/*)
+            crate=${file#core/crates/}
+            [[ "${crate#*/}" == tests/* ]] || ! grep -qxF "${crate%%/*}" <<<"$obid_paths" || every_binary=1 ;;
+    esac
     # The routes obid serves and the clients that call them (docs/contracts/ci.md, CI-9 to 11).
     routes=''
     case "$file" in
@@ -506,6 +527,15 @@ fi
 # job's box they stay unplanned, and the job isn't sunk.
 if [[ -z "$nested" && "$tests" == *core/crates/obid/tests/jobs_api.rs* ]]; then
     tests=$(add "$tests" core/crates/obid/tests/jobs_setup.rs)
+fi
+# A change to obid's code plans every test binary (CI-45), but in a job's box on a Mac those that
+# make a sandbox of their own: only the rules above plan them there, so an ordinary change isn't
+# left unjudged (CI-47).
+if [[ -n "$every_binary" ]]; then
+    for test in core/crates/obid/tests/*.rs; do
+        name=${test##*/}
+        [[ ! -f "$test" ]] || boxed_binary "${name%.rs}" || tests=$(add "$tests" "$test")
+    done
 fi
 
 # OBY_CHECK_ALL=1: everything, as if every part had changed (a full check of a branch): obid, the
@@ -706,14 +736,17 @@ if selected && [[ -n "$rust" ]]; then
         while IFS= read -r filter; do filters+=("$filter"); done < <(each "$lib")
         step lib_tests "${cargo[@]}" test "${manifest[@]}" --no-fail-fast -p obid --lib -- "${filters[@]}"
     fi
+    # oby-check-blok reads this line: the Rust group gets the full run's limit (CI-48).
+    if [[ -n "$every_binary" ]]; then
+        plan_group
+        echo "oby-check: every obid test binary: obid's source changed (docs/contracts/ci.md, CI-45)"
+    fi
     binaries=()
     while IFS= read -r test; do
         name=${test##*/}
         name=${name%.rs}
         [[ -f "$test" ]] || continue
-        # They make a sandbox of their own, which can't nest in a job's on a Mac. On Linux, where
-        # nested is always set (no sandbox-exec), they still run: they test bubblewrap there.
-        if [[ -n "$nested" && "$OSTYPE" == darwin* && "$name" =~ ^(sandbox|plugins_api|jobs_setup)$ ]]; then
+        if boxed_binary "$name"; then
             unjudged+=("tests/$name.rs")
             failed+=("tests/$name.rs, which can't run in a job's sandbox")
             continue

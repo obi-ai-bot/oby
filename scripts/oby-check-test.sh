@@ -1154,4 +1154,74 @@ said=$(env -u OBY_CHECK_PLAN OBY_CHECK_ONLY=nolimits scripts/oby-check.sh HEAD 2
 [[ $status == 2 ]] && grep -qx 'oby-check: invalid OBY_CHECK_ONLY' <<<"$said" ||
     { ran=$said; wrong "CI-35: an unknown OBY_CHECK_ONLY exited $status"; }
 
+# A change to obid's code plans every obid test binary (docs/contracts/ci.md, CI-45 to 47), on the
+# commit's own copy of the script (the base's copy a job's check installs may predate the rule),
+# committed here as the base within every limit, with an obid Cargo.toml naming obi-protocol by path.
+printf '%s\n' "$committed_script" >scripts/oby-check.sh
+agents_md_at_limit
+code "$main" "$(($(sed -n 's/^obid_lines_limit=//p' scripts/oby-check.sh) - 500))"
+printf '[dependencies]\nobi-protocol = { path = "../obi-protocol" }\n' >core/crates/obid/Cargo.toml
+limits_commit 'every binary'
+for name in runner_api state_owner jobs_api zz_other sandbox jobs_setup plugins_api; do code "core/crates/obid/tests/$name.rs" 1; done
+every_line="oby-check: every obid test binary: obid's source changed (docs/contracts/ci.md, CI-45)"
+r04_10=$(printf '%s\n' core/crates/obid/src/job.rs core/crates/obid/src/jobs.rs core/crates/obid/src/jobs/account_limits.rs \
+    core/crates/obid/src/push.rs core/crates/obid/tests/jobs_api.rs)
+outside=''
+/usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null && outside=1
+planned_binaries() { grep '^==> test_binaries' <<<"$1" | grep -o -- '--test [a-z_]*' | sed 's/^--test //' | sort || true; }
+all_binaries() { # the fixture's binaries, but in a job's box on a Mac (this test's own run in one) the three that make a sandbox
+    local test name
+    for test in core/crates/obid/tests/*.rs; do
+        name=${test##*/}
+        name=${name%.rs}
+        [[ -n "$outside" || "$OSTYPE" != darwin* || ! "$name" =~ ^(sandbox|plugins_api|jobs_setup)$ ]] || continue
+        echo "$name"
+    done | sort
+}
+# CI-45: R04-10's changed files plan the two binaries the old plan missed, one named after no module,
+# and say why, once.
+said=$(OBY_CHECK_PATHS=$r04_10 planned)
+for name in runner_api state_owner zz_other; do
+    grep -qx "$name" <<<"$(planned_binaries "$said")" || { ran=$said; wrong "CI-45: R04-10's changed files didn't plan tests/$name.rs"; }
+done
+[[ $(grep -cxF "$every_line" <<<"$said") == 1 ]] || { ran=$said; wrong "CI-45: R04-10's changed files didn't say once that they plan every binary"; }
+# CI-46: obid's build files, the workspace's dependencies, a file under src/ that isn't Rust, the data
+# files obid compiles in, the lib's root and a crate obid names by path each plan every binary.
+for path in core/crates/obid/Cargo.toml core/crates/obid/build.rs core/Cargo.toml core/Cargo.lock \
+    core/crates/obid/src/prompts/brief.md core/crates/obid/prompt-budget.txt core/crates/obid/cli-versions.json \
+    core/crates/obi-protocol/src/lib.rs core/crates/obid/src/lib.rs; do
+    said=$(OBY_CHECK_PATHS=$path planned)
+    [[ "$(planned_binaries "$said")" == "$(all_binaries)" ]] && grep -qxF "$every_line" <<<"$said" ||
+        { ran=$said; wrong "CI-46: a change to $path didn't plan every obid test binary, saying so"; }
+done
+# CI-46: a test binary alone plans only itself, and another crate's tests, or a file outside core/, none.
+said=$(OBY_CHECK_PATHS=core/crates/obid/tests/zz_other.rs planned)
+[[ "$(planned_binaries "$said")" == zz_other ]] && ! grep -qF 'every obid test binary' <<<"$said" ||
+    { ran=$said; wrong 'CI-46: a change to tests/zz_other.rs alone planned more than it'; }
+for path in core/crates/obi-protocol/tests/x.rs README.md; do
+    said=$(OBY_CHECK_PATHS=$path planned)
+    ! grep -q '^==> test_binaries\|every obid test binary' <<<"$said" ||
+        { ran=$said; wrong "CI-46: a change to $path alone planned obid's test binaries"; }
+done
+# CI-47: in a job's box, R04-10's files plan every binary but the three that make a sandbox, and the
+# check isn't left unjudged; a change to the box itself still is.
+said=$(OBY_CHECK_PATHS=$r04_10 nested)
+binaries=$(planned_binaries "$said")
+grep -qx runner_api <<<"$binaries" && grep -qx state_owner <<<"$binaries" &&
+    ! grep -qxE 'sandbox|jobs_setup|plugins_api' <<<"$binaries" && ! grep -q "^couldn't judge:" <<<"$said" ||
+    { ran=$said; wrong "CI-47: in a job's box, R04-10's files didn't plan every binary but the box's, judged"; }
+said=$(OBY_CHECK_PATHS=core/crates/obid/src/sandbox.rs nested)
+for name in sandbox jobs_setup; do
+    grep -qxF "couldn't judge: tests/$name.rs makes a sandbox of its own and can't run in a job's; run the check on the Mac outside a job" <<<"$said" ||
+        { ran=$said; wrong "CI-47: in a job's box, a change to src/sandbox.rs didn't leave tests/$name.rs unjudged"; }
+done
+# CI-47: outside a box, R04-10's files plan the three too.
+if [[ -n "$outside" ]]; then
+    said=$(OBY_CHECK_PATHS=$r04_10 planned)
+    binaries=$(planned_binaries "$said")
+    for name in sandbox jobs_setup plugins_api; do
+        grep -qx "$name" <<<"$binaries" || { ran=$said; wrong "CI-47: outside a box, R04-10's files didn't plan tests/$name.rs"; }
+    done
+fi
+
 echo 'oby-check-test: passed'
