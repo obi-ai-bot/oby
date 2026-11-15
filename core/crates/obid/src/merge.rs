@@ -454,6 +454,77 @@ pub fn handed() -> Blocked {
     wait(GITHUB_MERGES)
 }
 
+/// Where a pull request obid handed to GitHub's auto-merge stands (MERGING-55, 58).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Queued {
+    InQueue,
+    Merged,
+    /// GitHub's merge queue let go of the head obid armed: open, with neither an auto-merge
+    /// request nor a queue entry.
+    Dropped,
+    NotArmed,
+}
+
+/// [`queued`] for the head obid `armed` and the pull request as `pr` reads.
+pub fn queued_at(armed: Option<&str>, pr: &PullRequest) -> Queued {
+    let at_head = armed.is_some() && armed == pr.head.as_deref();
+    let (open, merged) = (pr.is_open(), pr.state == "MERGED");
+    let (request, entry) = (pr.auto_merge_request, pr.in_merge_queue);
+    queued(armed.is_some(), at_head, open, merged, request, entry)
+}
+
+/// Where it stands: `armed` (obid armed a head), `at_head` (that head is the pull request's),
+/// `open`, `merged`, and what gh said of its auto-merge `request` and queue `entry` (none: it
+/// didn't say). Dropped only at the head obid armed, open, with gh saying neither is there.
+pub fn queued(
+    armed: bool,
+    at_head: bool,
+    open: bool,
+    merged: bool,
+    request: Option<bool>,
+    entry: Option<bool>,
+) -> Queued {
+    if !armed {
+        Queued::NotArmed
+    } else if merged {
+        Queued::Merged
+    } else if !at_head || !open {
+        Queued::NotArmed
+    } else if request == Some(false) && entry == Some(false) {
+        Queued::Dropped
+    } else {
+        Queued::InQueue
+    }
+}
+
+/// Why the job's pull request stopped once GitHub's merge queue dropped it and nothing more
+/// happens by itself (MERGING-57): `drops` the heads it dropped, into `base`.
+pub fn queue_dropped(drops: usize, base: &str) -> String {
+    let twice = if drops > 1 { " twice" } else { "" };
+    format!(
+        "Not merged: GitHub's merge queue dropped it{twice}. Ask Oby to rebase it onto {base}, or look at its merge queue's checks on GitHub."
+    )
+}
+
+/// The stop at a head GitHub's merge queue dropped (MERGING-57): the owner's own work with a
+/// conversation hears it there, with no card ([`queue_line`]); any other gets the card.
+pub fn queue_stop(job: &Job, base: &str) -> Blocked {
+    let why = queue_dropped(job.queue_drops.len(), base);
+    if own_work(job) && job.conversation.is_some() {
+        wait(why)
+    } else {
+        needs_you(why)
+    }
+}
+
+/// The owner's own work stopped at a head GitHub's merge queue dropped, its conversation not yet
+/// told (MERGING-57): the conversation and the head.
+pub fn queue_line(job: &Job) -> Option<(&str, &str)> {
+    let drop = job.queue_drops.last().filter(|d| d.stopped && !d.told)?;
+    let conversation = job.conversation.as_deref().filter(|_| own_work(job))?;
+    Some((conversation, drop.head.as_str()))
+}
+
 /// What GitHub alone still holds of the job's pull request under the learned `workflow`, as the
 /// view its merge goes by once GitHub lets go; none when anything else holds it (MERGING-41). Its
 /// checks still running, within the hour after obid pushed its head (MERGING-5 asks after that),
@@ -4829,6 +4900,39 @@ mod tests {
         assert!(taken(vec![approves]).is_empty());
     }
 
+    /// MERGING-58: a head still requested or queued, merged, a new head, or one gh said nothing
+    /// of, is never taken for dropped; only the armed open head with neither is.
+    #[test]
+    fn merging_58_a_head_in_the_queue_or_merged_is_never_dropped() {
+        let pr = |state: &str, head: &str, request: Option<bool>, entry: Option<bool>| {
+            let text = json!({"state": state, "baseRefName": "dev", "headRefOid": head,
+                "mergedAt": (state == "MERGED").then_some("2026-11-15T00:00:00Z")});
+            let mut pr = crate::github::decode(&text.to_string(), 0).unwrap();
+            (pr.auto_merge_request, pr.in_merge_queue) = (request, entry);
+            pr
+        };
+        let (armed, new) = ("a".repeat(40), "b".repeat(40));
+        let at = |pr: &PullRequest| queued_at(Some(&armed), pr);
+        let (no, yes) = (Some(false), Some(true));
+        assert_eq!(at(&pr("OPEN", &armed, no, no)), Queued::Dropped);
+        assert_eq!(at(&pr("OPEN", &armed, yes, no)), Queued::InQueue);
+        assert_eq!(at(&pr("OPEN", &armed, no, yes)), Queued::InQueue);
+        assert_eq!(at(&pr("OPEN", &armed, None, None)), Queued::InQueue);
+        assert_eq!(at(&pr("MERGED", &armed, no, no)), Queued::Merged);
+        assert_eq!(at(&pr("OPEN", &new, no, no)), Queued::NotArmed);
+        assert_eq!(at(&pr("CLOSED", &armed, no, no)), Queued::NotArmed);
+        assert_eq!(
+            queued_at(None, &pr("OPEN", &armed, no, no)),
+            Queued::NotArmed
+        );
+        let said = r#"{"state":"OPEN","baseRefName":"dev","autoMergeRequest":null,"isInMergeQueue":false}"#;
+        let read = crate::github::decode(said, 0).unwrap();
+        assert_eq!((read.auto_merge_request, read.in_merge_queue), (no, no));
+        let on = said.replace("null", r#"{"enabledAt":"2026-11-15T00:00:00Z"}"#);
+        let read = crate::github::decode(&on, 0).unwrap();
+        assert_eq!(read.auto_merge_request, yes);
+    }
+
     /// MERGING-41: what GitHub alone holds under a learned workflow (its checks still running,
     /// `BLOCKED` by required ones) is handed to GitHub's auto-merge; nothing else is: only optional
     /// checks running (`UNSTABLE`, which gh's `--auto` merges at once), red checks, a head nobody
@@ -5895,5 +5999,35 @@ mod proofs {
         let fit = any_fit();
         assert_eq!(fits(Anchor::Name, fit), fit.name);
         assert_eq!(fits(Anchor::Folder, fit), fit.folder);
+    }
+
+    /// What gh said of a field: there, not there, or nothing.
+    fn any_said() -> Option<bool> {
+        match kani::any::<u8>() {
+            0 => None,
+            1 => Some(false),
+            _ => Some(true),
+        }
+    }
+
+    /// MERGING-55, 58: a head is dropped only where obid armed it, at the pull request's head,
+    /// open, with gh saying neither an auto-merge request nor a queue entry is there; never a new
+    /// head, a merged one, or one still requested or queued.
+    #[kani::proof]
+    fn merging_55_dropped_only_at_the_armed_open_head_with_nothing_queued() {
+        let (armed, at_head, open, merged) = (kani::any(), kani::any(), kani::any(), kani::any());
+        let (request, entry) = (any_said(), any_said());
+        let said = queued(armed, at_head, open, merged, request, entry);
+        let dropped = armed && at_head && open && !merged;
+        let dropped = dropped && request == Some(false) && entry == Some(false);
+        assert_eq!(said == Queued::Dropped, dropped);
+        if !armed {
+            assert_eq!(said, Queued::NotArmed);
+        } else if merged {
+            assert_eq!(said, Queued::Merged);
+        }
+        if !at_head || request == Some(true) || entry == Some(true) {
+            assert_ne!(said, Queued::Dropped);
+        }
     }
 }

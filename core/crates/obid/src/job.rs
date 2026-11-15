@@ -897,9 +897,28 @@ pub struct Job {
     /// that head. Never in the API.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_merge_refused: Option<(String, String)>,
+    /// The heads obid armed that GitHub's merge queue dropped, oldest first (MERGING-55 to 59):
+    /// the first gets one round, and none is armed again. Never in the API.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queue_drops: Vec<QueueDrop>,
     /// Keys this obid doesn't know (a newer one's), kept as they were when it saves, never shown.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// A head GitHub's merge queue dropped (`Job::queue_drops`): its `mergeStateStatus` then, one of
+/// GitHub's own values or none; whether it stopped there, nothing more by itself, and whether its
+/// conversation was told so.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueDrop {
+    pub head: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stopped: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub told: bool,
 }
 
 /// Something obid sends for a job's merge, kept until it knows how it went (`Job::sending`).
@@ -2655,6 +2674,8 @@ mod tests {
             merged_at: (state == "MERGED").then_some(t0),
             checked_at: t0,
             head: None,
+            auto_merge_request: None,
+            in_merge_queue: None,
         };
         job.pull_request = Some(pr("OPEN", Some("APPROVED")));
         assert!(job.stamp(t0 + 10_810));
@@ -2859,6 +2880,8 @@ mod tests {
             merged_at: (state == "MERGED").then_some(job.created),
             checked_at: job.created,
             head: None,
+            auto_merge_request: None,
+            in_merge_queue: None,
         };
         job.pull_request = Some(pr("OPEN", Some("APPROVED")));
         assert_eq!(state(&job, "review"), ("done".into(), "Approved".into()));
@@ -3007,6 +3030,8 @@ mod tests {
             merged_at: None,
             checked_at: 0,
             head: None,
+            auto_merge_request: None,
+            in_merge_queue: None,
         };
         let ended = |state: &str| {
             let mut job = Job::new(

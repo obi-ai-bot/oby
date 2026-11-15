@@ -1415,6 +1415,8 @@ fn publishing_21_an_unused_marked_clone_is_swept() {
             merged_at: Some(1),
             checked_at: 1,
             head: None,
+            auto_merge_request: None,
+            in_merge_queue: None,
         });
         std::fs::create_dir_all(merged_clone.join(".git/worktrees")).unwrap();
         std::fs::write(merged_clone.join(".git/worktrees/.DS_Store"), "").unwrap();

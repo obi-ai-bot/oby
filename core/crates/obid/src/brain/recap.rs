@@ -830,6 +830,8 @@ mod tests {
             merged_at: Some(T0 + 3 * MIN),
             checked_at: T0 + 3 * MIN,
             head: None,
+            auto_merge_request: None,
+            in_merge_queue: None,
         });
         let mut limited = job("l1", "Port the parser", Status::Interrupted, T0 + 4 * MIN);
         limited.summary = "Codex hit an error: You've hit your usage limit.".into();

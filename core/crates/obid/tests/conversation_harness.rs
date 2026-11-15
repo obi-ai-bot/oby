@@ -2479,6 +2479,8 @@ fn merging_49_a_new_session_hears_obids_line_of_a_merge_past_review_not_the_revi
         merged_at: Some(now),
         checked_at: now,
         head: Some(head.clone()),
+        auto_merge_request: None,
+        in_merge_queue: None,
     });
     job.merged_by = Some(obid::job::MergedBy {
         by: "oby".into(),

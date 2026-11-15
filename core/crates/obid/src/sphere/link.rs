@@ -4359,6 +4359,8 @@ mod tests {
                 merged_at: None,
                 checked_at: 0,
                 head: None,
+                auto_merge_request: None,
+                in_merge_queue: None,
             });
             job
         };
@@ -4484,6 +4486,8 @@ mod tests {
                 merged_at: None,
                 checked_at: at,
                 head: Some(now.into()),
+                auto_merge_request: None,
+                in_merge_queue: None,
             });
             job
         };

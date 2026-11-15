@@ -1737,6 +1737,7 @@ pub fn report_merges_past_review(shared: std::sync::Arc<Shared>) {
     let sweep = |shared: &Shared| {
         for job in shared.jobs.list(usize::MAX) {
             tell_merged_past(shared, &job);
+            tell_queue_dropped(shared, &job);
         }
     };
     tokio::spawn(async move {
@@ -1753,12 +1754,13 @@ pub fn report_merges_past_review(shared: std::sync::Arc<Shared>) {
                 },
                 _ = stopping.changed() => return,
             };
-            let merged = event.data["pullRequest"]["state"] == "MERGED";
+            let state = &event.data["pullRequest"]["state"];
             if let Some(job) = (event.data["id"].as_str())
-                .filter(|_| event.name == "job" && merged)
+                .filter(|_| event.name == "job" && (*state == "MERGED" || *state == "OPEN"))
                 .and_then(|id| shared.jobs.get(id))
             {
                 tell_merged_past(&shared, &job);
+                tell_queue_dropped(&shared, &job);
             }
         }
     });
@@ -1792,6 +1794,27 @@ fn tell_merged_past(shared: &Shared, job: &crate::job::Job) {
         Ok(_) => {}
     }
     shared.jobs.mark_told_merged_past(id, head);
+}
+
+/// Tells `job`'s conversation, once, that GitHub's merge queue dropped its pull request and
+/// nothing more happens by itself (crate::merge::queue_line, MERGING-57): obid's own words, a
+/// report of the job's, with no card.
+fn tell_queue_dropped(shared: &Shared, job: &crate::job::Job) {
+    let Some((conversation, head)) = crate::merge::queue_line(job) else {
+        return;
+    };
+    let title = crate::brain::briefing::line(&job.short_title(), 80);
+    let base = job.pull_request.as_ref().map_or("", |pr| pr.base.as_str());
+    let why = crate::merge::queue_dropped(job.queue_drops.len(), base);
+    let (id, foreign) = (job.id.as_str(), summary_foreign(Some(job), &job.id));
+    let text = format!("{title}: {why}");
+    if let Err(e) = (shared.conversations).job_ended(conversation, text, id.to_owned(), foreign) {
+        tracing::info!("job {id}: conversation {conversation} wasn't told of the drop: {e:?}");
+        if matches!(e, Error::Io(_)) {
+            return;
+        }
+    }
+    shared.jobs.mark_told_queue_dropped(id, head);
 }
 
 /// The conversations as the list orders them, after `after` (or from the first): the pinned

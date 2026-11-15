@@ -26,12 +26,37 @@ impl Jobs {
         pr: &crate::github::PullRequest,
         merging: crate::github::Merging,
     ) {
+        self.dropped(id, pr, merging.merge_state.as_deref());
         self.lock().handed.remove(id);
         self.carry(id, gh, pr, merging).await;
         let kept = self.lock().handed.remove(id);
         if !kept {
             self.disarm(gh, id).await;
         }
+    }
+
+    /// GitHub's merge queue dropped the head obid armed on the job `id`'s pull request (`pr`, its
+    /// `mergeStateStatus` then `state`): GitHub turned its auto-merge off, so obid forgets it,
+    /// notes the drop (MERGING-55), and the first drop of the job gets one round
+    /// ([`Jobs::queue_round`], MERGING-56).
+    fn dropped(self: &Arc<Self>, id: &str, pr: &crate::github::PullRequest, state: Option<&str>) {
+        let armed = self.get(id).and_then(|j| j.auto_merge.map(|a| a.head));
+        if crate::merge::queued_at(armed.as_deref(), pr) != crate::merge::Queued::Dropped {
+            return;
+        }
+        let Some(head) = armed else { return };
+        tracing::info!("job {id}: GitHub's merge queue dropped {head}");
+        self.update(id, |job| {
+            job.auto_merge = None;
+            if !job.queue_drops.iter().any(|d| d.head == head) {
+                job.queue_drops.push(crate::job::QueueDrop {
+                    head: head.clone(),
+                    reason: state.map(str::to_owned),
+                    ..Default::default()
+                });
+            }
+        });
+        self.queue_round(id, &head);
     }
 
     /// A push obid just made (`sent`): GitHub's auto-merge armed at another head of that branch is
@@ -176,6 +201,18 @@ impl Jobs {
             self.lock().handed.insert(id.to_owned());
             return Err(crate::merge::handed());
         }
+        // A head GitHub's merge queue dropped is never armed again (MERGING-57).
+        if let Some(drop) = job.queue_drops.iter().find(|d| d.head == head) {
+            if !drop.stopped {
+                self.update(id, |job| {
+                    let drops = job.queue_drops.iter_mut();
+                    drops
+                        .filter(|d| d.head == head)
+                        .for_each(|d| d.stopped = true)
+                });
+            }
+            return Err(crate::merge::queue_stop(job, &pr.base));
+        }
         if let Some((at, why)) = &job.auto_merge_refused
             && at == head
         {
@@ -239,6 +276,15 @@ impl Jobs {
     /// (crate::merge::merged_past, MERGING-49): that head tells it nothing more.
     pub fn mark_told_merged_past(&self, id: &str, head: &str) {
         self.update(id, |job| job.told_merged_past = Some(head.to_owned()));
+    }
+
+    /// The job `id`'s conversation was told GitHub's merge queue dropped `head`
+    /// (crate::merge::queue_line, MERGING-57): never again for it.
+    pub fn mark_told_queue_dropped(&self, id: &str, head: &str) {
+        self.update(id, |job| {
+            let drops = job.queue_drops.iter_mut();
+            drops.filter(|d| d.head == head).for_each(|d| d.told = true)
+        });
     }
 
     /// What obid was sending for the job `id` when it last stopped, settled from what GitHub

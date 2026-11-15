@@ -42,6 +42,13 @@ pub struct PullRequest {
     pub checked_at: i64,
     /// The pull request's head commit as GitHub has it.
     pub head: Option<String>,
+    /// Whether GitHub's auto-merge is on (`autoMergeRequest`), and whether it's in its merge queue
+    /// (`isInMergeQueue`); none when gh didn't say (crate::merge::queued, MERGING-55). Never in
+    /// the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_merge_request: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_merge_queue: Option<bool>,
 }
 
 impl PullRequest {
@@ -466,7 +473,7 @@ pub async fn issue_body(gh: &Path, repo: &str, number: u64) -> Option<String> {
 /// What the follower asks of a pull request: its status, and what a merge needs (crate::merge).
 /// Its reviews aren't among them: `latestReviews` has no commit for an approval (cli/cli#14805),
 /// so [`reviews`] reads them from the REST API.
-const FIELDS: &str = "state,reviewDecision,mergedAt,baseRefName,headRefOid,statusCheckRollup,mergeable,mergeStateStatus,author";
+const FIELDS: &str = "state,reviewDecision,mergedAt,baseRefName,headRefOid,statusCheckRollup,mergeable,mergeStateStatus,author,autoMergeRequest,isInMergeQueue";
 
 /// Why a read of the pull request failed: a fixed line, since what `gh` printed could hold a
 /// credential or someone's words.
@@ -892,6 +899,7 @@ pub fn decode(text: &str, now: i64) -> Option<PullRequest> {
         .as_str()
         .filter(|h| crate::git::is_sha(h))
         .map(str::to_owned);
+    let request = value.get("autoMergeRequest").map(|r| !r.is_null());
     Some(PullRequest {
         state: state.to_owned(),
         review_decision,
@@ -899,6 +907,8 @@ pub fn decode(text: &str, now: i64) -> Option<PullRequest> {
         merged_at,
         checked_at: now,
         head,
+        auto_merge_request: request,
+        in_merge_queue: value["isInMergeQueue"].as_bool(),
     })
 }
 

@@ -16096,6 +16096,8 @@ mod tests {
             merged_at: Some(1),
             checked_at: 1,
             head: None,
+            auto_merge_request: None,
+            in_merge_queue: None,
         });
         assert_eq!(undeletable_in(&map(&[published]), false, "a"), None);
         let mut follow = job_on("b", "acme/app", "oby/fix-a");
@@ -17508,6 +17510,8 @@ mod tests {
             merged_at: None,
             checked_at: 0,
             head: None,
+            auto_merge_request: None,
+            in_merge_queue: None,
         });
         let next = follow_up(&job, "and the docs");
         assert!(!next.made_branch);
@@ -21646,6 +21650,8 @@ mod tests {
             merged_at: (state == "MERGED").then_some(now - 60),
             checked_at: now,
             head: None,
+            auto_merge_request: None,
+            in_merge_queue: None,
         });
         job.finished = Some(now - 60 * 60);
         job
@@ -21987,6 +21993,8 @@ mod tests {
             merged_at: None,
             checked_at: 0,
             head: None,
+            auto_merge_request: None,
+            in_merge_queue: None,
         });
         jobs.lock().jobs.insert("p".into(), parent);
         assert_eq!(jobs.counted(&follow, &repo, &folders, &first).await, 2);
