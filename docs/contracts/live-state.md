@@ -141,14 +141,14 @@ The business behavior contract for the owner's answers to cards and actions on a
 ### Feature and status
 
 - **Outcome:** A card the owner answered, or a task they stopped, shows as before until obid's state confirms it, and then shows exactly what obid says. The task card is obid's state plus one overlay.
-- **Status:** **Implemented** in the Electron app: `apps/electron/src/renderer/src/pending.ts` (`Action`), used by `live.ts` (`answerJob`, `answerOffer`, a limit card's answer, `stopJob`, `archiveJob`, `deleteJob`, `renameJob`).
-- **Scope:** from the click until obid's state answers for it. **Out of scope:** a spinner or any other new look (it needs Sangam's design); main's signing of Confirms and limit answers (`device.ts`, kept as it is); obid and its API. An answer to another Oby's question (`answerQuestion`) keeps no entry: its card keeps the owner's words itself, and its answer comes back as the item.
+- **Status:** **Implemented** in the Electron app: `apps/electron/src/renderer/src/pending.ts` (`Action`), used by `live.ts` (`answerJob`, `answerOffer`, `answerQuestion`, a limit card's answer, `stopJob`, `archiveJob`, `deleteJob`, `renameJob`).
+- **Scope:** from the click until obid's state answers for it. **Out of scope:** a spinner or any other new look (it needs Sangam's design); main's signing of Confirms and limit answers (`device.ts`, kept as it is); obid and its API.
 
 ### Actors and ownership
 
 - **obid** owns the jobs, the inbox items and the limit decisions, and their revisions.
-- **The page** keeps one entry per click, keyed by what it is (an answer, Stop, Archive, Delete, Rename) and the id of what it acts on: an inbox item's, else the job's, or a limit card's. The entry holds obid's copy as it was clicked, so its revision, and, for an answer, the option and the card as it was asked; for a rename, the new name.
-- **What shows:** while an answer's entry is there, the task card shows the pick on the card as it was asked (Later: put off), and Home's stack and the conversation leave its item out; while a rename's is, the task shows the new name. Stop, Archive and Delete change nothing shown.
+- **The page** keeps one entry per click, keyed by what it is (an answer, a reply to another Oby's question or review request, Stop, Archive, Delete, Rename) and the id of what it acts on: an inbox item's, else the job's, or a limit card's. The entry holds obid's copy as it was clicked, so its revision, and, for an answer, the option and the card as it was asked; for a rename, the new name.
+- **What shows:** while an answer's entry is there, the task card shows the pick on the card as it was asked (Later: put off), and Home's stack and the conversation leave its item out; while a rename's is, the task shows the new name. A reply, Stop, Archive and Delete change nothing shown: a reply's card stays on Home's stack until obid's newer copy settles it, since the card keeps the owner's words and says a refusal over them (QuestionCard.tsx). Tests: `an answer to another Oby's question keeps its card while on its way, and leaves with obid's newer copy`, `an answer to another Oby's question obid refuses: its entry goes, the card stays, and the refusal is the caller's`.
 
 ### When an entry leaves
 

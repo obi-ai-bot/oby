@@ -88,7 +88,8 @@ export function adopted(alias: Readonly<Record<string, string>>, e: Pending | un
 // by what it acts on, until obid's state holds that object at a newer revision, or the call fails.
 // What a card shows is obid's reduced state plus these.
 export type Action = {
-  what: 'answer' | 'stop' | 'archive' | 'delete' | 'rename';
+  // reply: to another Oby's question or review request, whose card stays shown (it keeps the words)
+  what: 'answer' | 'reply' | 'stop' | 'archive' | 'delete' | 'rename';
   in: 'jobs' | 'inbox' | 'limits';  // where obid's state keeps what it acts on
   on: string;                       // its id there: a job's, an inbox item's, or a limit card's
   of: { revision?: number };        // obid's copy it acts on, and so its revision (none from an older obid)

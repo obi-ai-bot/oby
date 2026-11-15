@@ -1137,9 +1137,10 @@ export async function changeCheck(repo: string, check: string | null) {
 
 // The owner's answer to another Oby's question, or their Decline (or a review request's answer,
 // AskStack.tsx): signed by main, or obid refuses it, and that refusal is the caller's to say, over
-// the words it keeps (QuestionCard.tsx).
+// the words it keeps (QuestionCard.tsx). On its way as a reply (pending.ts), its card shown meanwhile.
 export async function answerQuestion(id: string, words: string) {
-  take({ kind: 'inbox', item: await keyed((key) => api.answer(id, { answer: words }, key)) });
+  const a = act('reply', 'inbox', id, { option: words });
+  try { take({ kind: 'inbox', item: await keyed((key) => api.answer(id, { answer: words }, key)) }); } catch (e) { drop(a); throw e; }
 }
 
 // An offer answered (OfferCard.tsx), for each of its jobs still waiting: Dispatch is the owner's own

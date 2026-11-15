@@ -126,7 +126,7 @@ async function load(conversations: Conversation[] = [], listed: Omit<Listed, 'co
   const row = (id: string) => rows().find((c) => c.id === id);
   const sentAs = () => vi.waitFor(() => { expect(plans().length).toBeGreaterThan(0); return (plans()[0].body as { id: string }).id; }, { timeout: 5000 });
   const task = (id: string) => tasks.dev!.get().find((t) => t.id === id)!;
-  return { live, rows, row, sentAs, task };
+  return { live, rows, row, sentAs, task, asks: () => tasks.asksWaiting().map((a) => a.id) };
 }
 
 describe('words to Oby as a pending overlay', { timeout: 15_000 }, () => {
@@ -296,11 +296,41 @@ describe('answers to cards and task actions as pending entries', { timeout: 15_0
     await flush();
     bridge.event('inbox', permission({ state: 'done', revision: 2 }));
     bridge.event('job', job({ permission: null, status: 'done', step: 'Done', finished: now, revision: 3 }));
-    const card = JSON.stringify(task('j1'));
+    // the card as shown, but for its minutes ago, which move with the clock
+    const shown = () => { const t = task('j1'); return JSON.stringify({ ...t, job: { ...t.job, created: 0, finished: 0 } }); };
+    const card = shown();
     expect(task('j1')).toMatchObject({ answer: undefined, job: { status: 'done', step: 'Done' } });
     go();
     await answering;
-    expect(JSON.stringify(task('j1'))).toBe(card);
+    expect(shown()).toBe(card);
     expect(live.liveState().actions).toEqual({});
+  });
+
+  // another Oby's question, answered from Home's stack (QuestionCard.tsx)
+  const question = (more: Record<string, unknown> = {}) => ({
+    id: 'q1', kind: 'obiRequest', job: '', title: 'A question', text: 'dana asks', options: [], details: null, created: now, state: 'open',
+    later: null, headline: null, recommended: null, obi: { type: 'question', fromOwner: 'dana', quoted: { text: 'Billing retries?' } }, revision: 1, ...more,
+  });
+
+  it('an answer to another Oby\'s question keeps its card while on its way, and leaves with obid\'s newer copy', async () => {
+    const { hold, go } = held();
+    routes['POST /v1/inbox/q1/answer'] = { status: 200, body: question({ state: 'done', revision: 2 }), hold };
+    const { live, asks } = await load([], { inbox: [question()] });
+    const answering = live.answerQuestion('q1', 'Yes, weekly.');
+    await flush();
+    expect(Object.keys(live.liveState().actions)).toEqual(['reply:q1']);
+    expect(asks()).toEqual(['q1']);
+    go();
+    await answering;
+    expect(live.liveState().actions).toEqual({});
+    expect(asks()).toEqual([]);
+  });
+
+  it('an answer to another Oby\'s question obid refuses: its entry goes, the card stays, and the refusal is the caller\'s', async () => {
+    routes['POST /v1/inbox/q1/answer'] = { status: 422, body: { error: 'It was called off.' } };
+    const { live, asks } = await load([], { inbox: [question()] });
+    await expect(live.answerQuestion('q1', 'Yes, weekly.')).rejects.toThrow('It was called off.');
+    expect(live.liveState().actions).toEqual({});
+    expect(asks()).toEqual(['q1']);
   });
 });
