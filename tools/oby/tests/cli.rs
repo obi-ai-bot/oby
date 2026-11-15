@@ -312,8 +312,7 @@ fn cli_1_a_done_job_exits_0() {
     let last = stub
         .requests()
         .into_iter()
-        .filter(|r| r.method == "POST")
-        .next_back()
+        .rfind(|r| r.method == "POST")
         .unwrap();
     assert_eq!(
         last.json()["job"],
