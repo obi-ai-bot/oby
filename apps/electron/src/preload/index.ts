@@ -96,7 +96,7 @@ contextBridge.exposeInMainWorld('app', {
   // Home), so nothing alerts for it; where a clicked alert opens, asked of main whenever it says
   // one was (and once now, for the click that opened the window); and Settings › Notifications
   showing: (place: { job?: string; conversation?: string } | null) => ipcRenderer.send('showing', place),
-  onOpen(fn: (place: { job?: string; conversation?: string }) => void) {
+  onOpen(fn: (place: { job?: string; conversation?: string; settings?: string }) => void) {
     const pull = () => void ipcRenderer.invoke('opened').then((place) => { if (place) fn(place); });
     ipcRenderer.on('open', pull);
     pull();
@@ -105,6 +105,9 @@ contextBridge.exposeInMainWorld('app', {
   notifications: {
     // on or off; with a value, turned to it
     alerts: (on?: boolean) => ipcRenderer.invoke('notifications', on) as Promise<boolean | null>,
+    // the news that needs nothing, each kind on or off; with a change, turned to it (ALERTS-15)
+    kinds: (change?: { finished?: boolean; merged?: boolean; limit?: boolean }) =>
+      ipcRenderer.invoke('notification-kinds', change) as Promise<{ finished: boolean; merged: boolean; limit: boolean } | null>,
     openSystemSettings: () => ipcRenderer.send('open-notification-settings'),
   },
   // Oby's own updates (main/updates.ts): what About shows and Update automatically, after the

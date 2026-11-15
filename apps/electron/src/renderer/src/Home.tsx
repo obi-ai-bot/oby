@@ -217,18 +217,19 @@ export default function Home() {
   }, [fresh]);
 
   // Oby's alerts (main/notify.ts): main hears what's on top (a task's page, a conversation, or Home),
-  // so nothing alerts for it; a clicked alert opens its task, its conversation, or Home, once
-  // that's here (a closed window opens again first)
+  // so nothing alerts for it; a clicked alert opens its task, its conversation, a Settings page,
+  // or Home, once that's here (a closed window opens again first)
   useEffect(() => {
     window.app?.showing?.(!top ? {} : top.kind === 'task' || top.kind === 'thread' ? { job: top.id } : top.kind === 'talk' ? { conversation: realId(top.id) } : null);
   }, [top?.kind, top?.id]);
-  const [opening, setOpening] = useState<{ job?: string; conversation?: string } | null>(null);
+  const [opening, setOpening] = useState<{ job?: string; conversation?: string; settings?: string } | null>(null);
   useEffect(() => window.app?.onOpen?.(setOpening), []);
   useEffect(() => {
     if (!opening) return;
     const talk = opening.conversation && shownId(opening.conversation);
     if (opening.job) { if (!tasks.some((t) => t.id === opening.job)) return; start({ kind: 'task', id: opening.job }); }
     else if (talk) { if (!chats.some((c) => c.id === talk)) return; start({ kind: 'talk', id: talk }); }
+    else if (opening.settings) start({ kind: 'settings', id: opening.settings });
     else home();
     setOpening(null);
   }, [opening, tasks, chats]);

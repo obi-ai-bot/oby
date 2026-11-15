@@ -125,3 +125,30 @@ describe('no bridge', () => {
     expect(login().getAttribute('aria-checked')).toBe('false');
   });
 });
+
+describe('ALERTS-18', () => {
+  it('alerts_18_settings_notifications_shows_the_three_switches_under_alerts', async () => {
+    // on obid, main's bridge for the alerts and their kinds (main/notify.ts)
+    const kinds = vi.fn(async (change?: object) => ({ finished: true, merged: true, limit: true, ...change }));
+    (window as { app?: unknown }).app = {
+      obid: async () => ({ status: 503, text: '{}' }),
+      settings: { local: async () => ({}), keep: async () => true },
+      notifications: { alerts: async () => true, kinds, openSystemSettings: () => {} },
+    };
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    vi.stubGlobal('location', { search: '' });
+    const view = await import('../SettingsView');
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    await general(view);
+    const group = [...host.querySelectorAll('.set-label')].map((l) => l.textContent);
+    const from = group.indexOf('Alerts');
+    expect(group.slice(from, from + 5)).toEqual(['Alerts', 'Finished tasks', 'Merged pull requests', 'Accounts at their limit', 'Banners, sounds and Focus']);
+    const merged = host.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Merged pull requests"]')!;
+    expect(merged.getAttribute('aria-checked')).toBe('true');
+    await act(async () => merged.click());
+    expect(kinds).toHaveBeenLastCalledWith({ merged: false });
+    expect(merged.getAttribute('aria-checked')).toBe('false');
+  });
+});
