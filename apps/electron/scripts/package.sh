@@ -11,7 +11,11 @@
 #      notarized and stapled; then dist/<name>-<version>-<arch>.dmg (the app and an
 #      Applications link), signed, notarized and stapled too, and checked; and
 #      dist/<name>-<version>-<arch>-mac.zip, the stapled app for the updater (main/updates.ts);
-#   4. dist/latest-mac.yml: the version and each zip's sha512, which the updater checks.
+#   4. dist/latest-mac.yml: the version and each zip's sha512, which the updater checks, when it was
+#      issued and the lowest version a Mac may take from it (minimum_version), signed by
+#      scripts/sign-feed.mjs with Deskree's feed key, which the app checks (shared/updates.ts).
+# The feed key is the file OBY_FEED_KEY_FILE names, outside the repository: it's checked against the
+# app's before anything is built, so without it nothing is.
 # Uploading is the owner's step: the zips, then latest-mac.yml, to https://downloads.oby.dev/electron
 # (docs/contracts/updates.md, "Publishing a release").
 # Usage: scripts/package.sh [arm64] [x64] (both by default). Notarization uses the keychain
@@ -36,6 +40,11 @@ else
   say "Continue with ChatGPT shows in this build: $report"
 fi
 
+# The feed's floor: no Mac takes a latest-mac.yml whose version is under it. A bad release is
+# withdrawn by raising it with the last good code under a higher version (docs/contracts/updates.md).
+minimum_version=0.2.23
+node scripts/sign-feed.mjs || die "the feed key can't sign latest-mac.yml: nothing is built"
+
 profile=${OBY_NOTARY_PROFILE:-oby-notary}
 team=${OBY_TEAM_ID:-3UV9W5SV7W}
 # the identity electron-builder signs with (CSC_NAME: electron-builder.yml names none): another
@@ -45,6 +54,8 @@ export CSC_NAME=$OBY_SIGN_IDENTITY
 archs=("$@")
 (( ${#archs} )) || archs=(arm64 x64)
 version=$(node -p "require('./package.json').version")
+autoload -Uz is-at-least
+is-at-least "$minimum_version" "$version" || die "Oby $version is under the feed's minimum version $minimum_version"
 name=$(sed -n 's/^productName: //p' electron-builder.yml)
 electron=$(node -p "require('electron/package.json').version")
 identity=$(security find-identity -v -p codesigning | grep "Developer ID Application" | grep "($team)" | head -n 1 | awk '{print $2}')
@@ -121,8 +132,11 @@ for arch in $archs; do
 done
 
 # What the updater reads: this version, each zip with its sha512 (base64, as electron-updater
-# checks it) and size. Upload it after the zips, so no Mac is sent to a zip that isn’t there yet.
+# checks it) and size, when it was issued and its floor, written apart and signed into dist. Upload
+# it after the zips, so no Mac is sent to a zip that isn’t there yet.
 say "dist/latest-mac.yml"
+rm -f dist/latest-mac.yml
+unsigned=$(mktemp)
 {
   echo "version: $version"
   echo "files:"
@@ -134,6 +148,12 @@ say "dist/latest-mac.yml"
   echo "path: ${zips[1]:t}"
   echo "sha512: $(openssl dgst -sha512 -binary "${zips[1]}" | base64)"
   echo "releaseDate: '$(date -u +%Y-%m-%dT%H:%M:%S.000Z)'"
-} > dist/latest-mac.yml
+  echo "issued: '$(date -u +%Y-%m-%dT%H:%M:%SZ)'"
+  echo "minimumVersion: '$minimum_version'"
+} > "$unsigned"
+signed=0
+node scripts/sign-feed.mjs "$unsigned" dist/latest-mac.yml || signed=$?
+rm -f "$unsigned"
+(( signed == 0 )) || die "latest-mac.yml isn't signed: nothing to upload"
 # window-style back to this Mac's architecture, for npm run dev
 npm run build:native --silent > /dev/null
