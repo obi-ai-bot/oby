@@ -208,16 +208,10 @@ pub(super) async fn ask(
 /// the Sphere wrote, only its code, when it is one.
 pub fn refusal(name: &str, error: &ApiError) -> String {
     let message = &error.message;
-    let is_code = |code: &&str| {
-        (1..=40).contains(&code.len())
-            && code
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-    };
     let refused = message.strip_prefix("The Sphere refused it: ");
     let code = refused
         .and_then(|rest| rest.split(':').next())
-        .filter(is_code);
+        .filter(|code| crate::sphere::refusal::is_code(code.as_bytes()));
     match code {
         Some("policy_denied") => format!(
             "I can't ask {name}'s Oby. This Obysphere's rules don't allow questions yet. An admin can change that."
