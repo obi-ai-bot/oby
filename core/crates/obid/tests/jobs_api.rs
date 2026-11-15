@@ -2378,6 +2378,30 @@ fn tasks_20_try_again_reruns_a_task_that_never_started() {
     assert_eq!(follow_ups(&obid, &id), Vec::<Value>::new());
 }
 
+/// TASKS-25: a job no app signed that ends before its agent starts ends `failed` with its reason,
+/// and asks the owner nothing: no inbox item, open or in an event.
+#[test]
+fn tasks_25_an_unsigned_job_that_never_started_ends_failed_with_its_reason_and_no_inbox_item() {
+    let folder = Folder::new("tasks-25");
+    let obid = start_with_gone(&folder.0);
+    let events = support::follow_events(&obid);
+    let posted = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/gone", "kind": "investigate", "task": "Look around"}),
+    );
+    assert_eq!(posted.status, 201, "{}", posted.text);
+    let id = posted.body["id"].as_str().unwrap().to_owned();
+    let failed = wait(&obid, &id);
+    assert_eq!(failed["status"], "failed", "{failed}");
+    assert!(
+        !failed["reason"].as_str().unwrap_or_default().is_empty(),
+        "{failed}"
+    );
+    support::no_inbox_item_for(&events, &id, "failed", || {
+        request(&obid, "GET", "/v1/inbox", None).body
+    });
+}
+
 /// TASKS-21 (#1851): a review that never starts, tried again three times after three failures,
 /// stays one job in its fourth round, with no follow-up.
 #[test]

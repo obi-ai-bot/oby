@@ -273,12 +273,8 @@ export const JOBS: Job[] = [
       publish: { state: 'skipped', detail: 'Nothing went out · the secret scan didn’t run, since checks come first' },
       review: { state: 'skipped', detail: 'No pull request to review' },
     }),
-    ask: {
-      kind: 'failed', headline: 'Two sandbox tests still fail after 2 rounds',
-      text: 'They expect a resumed thread to start with no writable roots, the old behaviour this task changes. Codex rewrote one test in round 2, but not these two.',
-      options: ['Give it another round', 'Open the session', 'Stop here'], recommended: 0,
-      detail: 'codex::resume_keeps_writable_roots\n  expected ["/w/.git"], got []\ncodex::resume_after_reset\n  left: 0  right: 1',
-    },
+    // ended with its reason, no card (TASKS-25): Try again and Stop here are in its menu
+    reason: 'Two sandbox tests still fail after 2 rounds', canTryAgain: true,
     page: {
       mode: 'Accept edits',
       time: { aside: 'Ran 22m · jobs like this: 12–20m', basis: 'It ran past the usual range because round 1 failed its checks and round 2 ran them again.' },
