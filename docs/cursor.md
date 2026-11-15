@@ -176,8 +176,10 @@ assumes they do:
   Cursor may load at once; the next run asks about it), and Cursor's enterprise and team hooks
   (`/Library/Application Support/Cursor/hooks.json`, the dashboard), which are the machine's and the
   team's, not the repository's.
-- On Linux the box binds `.local/share/cursor-agent` (`Agents.tools`) and Cursor's own sandbox
-  stays disabled (bubblewrap can't nest); Oby answers every command.
+- On Linux the box shows the folder Cursor's binary is installed in
+  (`~/.local/share/cursor-agent/versions/<v>`, `sandbox::install_root`) and the link to it in
+  `~/.local/bin`, never bound onto; Cursor's own sandbox stays disabled (bubblewrap can't nest), and
+  Oby answers every command.
 - Sign-in is the tool's own command in Terminal: `cursor-agent login` with the three variables
   (`NO_OPEN_BROWSER=1` on the runner).
 
