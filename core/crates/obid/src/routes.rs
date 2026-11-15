@@ -273,6 +273,26 @@ pub async fn report(
     Ok(json(StatusCode::OK, report))
 }
 
+#[derive(serde::Deserialize)]
+pub struct ChangesQuery {
+    path: Option<String>,
+}
+
+/// `GET /v1/jobs/{id}/changes?path=<path>`: the files and the diff the job's branch makes against
+/// its base (docs/contracts/tasks.md, TASKS-23 to 26).
+pub async fn changes(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+    Query(query): Query<ChangesQuery>,
+) -> Result<Response, ApiError> {
+    let changes = shared
+        .jobs
+        .changes(&id, query.path.as_deref())
+        .await
+        .ok_or_else(|| no_job(&shared, &id))?;
+    Ok(json(StatusCode::OK, changes))
+}
+
 /// `GET /v1/jobs/{id}/transcript?after=<n>&limit=<k>`: the entries that came or changed after
 /// entry `n`, at most `k`, and the `n` to ask after next when there's more.
 pub async fn transcript(
