@@ -313,7 +313,7 @@ fn cli_1_a_done_job_exits_0() {
         .requests()
         .into_iter()
         .filter(|r| r.method == "POST")
-        .last()
+        .next_back()
         .unwrap();
     assert_eq!(
         last.json()["job"],
@@ -573,7 +573,7 @@ fn cli_7_one_key_sent_twice_makes_one_job() {
 fn cli_8_a_rotated_token_is_read_again() {
     let home = home(TOKEN, 0o600);
     let (path, rotated) = (home.path().to_path_buf(), Mutex::new(false));
-    let stub = stub(move |r| {
+    let rotating = stub(move |r| {
         if r.header("authorization") != Some(format!("Bearer {ROTATED}").as_str()) {
             // obid rotated its token: the file holds the new one before the old one is refused.
             let mut rotated = rotated.lock().unwrap();
@@ -589,10 +589,10 @@ fn cli_8_a_rotated_token_is_read_again() {
             _ => Reply::Json(200, json!([])),
         }
     });
-    let ran = oby(home.path(), &stub.url, &["wait", "j1"], "");
+    let ran = oby(home.path(), &rotating.url, &["wait", "j1"], "");
     assert_eq!(ran.code, 0, "{}", ran.stderr);
     assert_eq!(ran.stdout, "job=j1\nstatus=done\n");
-    let waits: Vec<Request> = stub
+    let waits: Vec<Request> = rotating
         .requests()
         .into_iter()
         .filter(|r| r.path == "/v1/jobs/j1/wait")
