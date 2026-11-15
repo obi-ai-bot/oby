@@ -24,7 +24,7 @@ pub fn log_path(home: &Path) -> PathBuf {
     home.join("Library/Logs/obid.log")
 }
 
-/// A tool Oby.app carries beside obid, signed with it (gh, gitleaks: apps/mac/app/Tools/bundle-*.sh):
+/// A tool Oby.app carries beside obid, signed with it (gh, gitleaks: apps/electron/scripts/bundle-*.sh):
 /// `Contents/MacOS/<name>` of the app obid runs from (`Contents/Helpers/obid` or
 /// `Contents/MacOS/obid`); none for an obid anywhere else.
 pub fn bundled(name: &str) -> Option<PathBuf> {

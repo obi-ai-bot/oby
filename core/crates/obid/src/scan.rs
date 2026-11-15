@@ -879,7 +879,7 @@ pub const NO_GITLEAKS: &str =
     "gitleaks isn't installed: Oby.app carries its own; elsewhere, put gitleaks on obid's PATH";
 
 /// The gitleaks obid scans with: the one Oby.app carries (pinned and checked when the app is
-/// built, apps/mac/app/Tools/bundle-gitleaks.sh), else the login shell's.
+/// built, apps/electron/scripts/bundle-gitleaks.sh), else the login shell's.
 pub fn gitleaks_bin() -> Option<PathBuf> {
     crate::app::bundled("gitleaks").or_else(|| crate::process::resolve_bin("gitleaks"))
 }

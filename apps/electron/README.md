@@ -2,7 +2,7 @@
 
 Oby's desktop app: Electron, with a React renderer built by Vite. It starts
 as a copy of Sangam's design (`design/app`, 2026-10-26) and replaces the Swift
-Mac app (`apps/mac`). In the app it shows what obid, Oby's engine, has (its API,
+Mac app. In the app it shows what obid, Oby's engine, has (its API,
 `docs/runner-api.md`): the obid already answering on `127.0.0.1:7777`, with the
 token main reads from `~/Library/Application Support/Oby/Runner/api-token`
 (the page never sees it). When obid doesn't answer, the window says why: obid's
@@ -94,15 +94,15 @@ when secure storage is unavailable. Electron retains the Mac's real `HOME` so ma
 can reach the login Keychain; only its `userData` and obid's home are temporary. No real agent
 login or installed job is used. `OBY_TEST_OBID` can select a separately built obid binary.
 
-`scripts/package.sh` packages the Mac app on this Mac, as `scripts/release.sh`
-does the Swift app's (`docs/release.md`, no CI): `scripts/helpers.sh` builds obid
-universal from `core/` and stages it with gh and gitleaks through the Swift
-app's own `apps/mac/app/Tools/bundle-*.sh`, each signed with the team's
+`scripts/package.sh` packages the Mac app, on a Mac or in CI (a `v*` tag on
+`main` runs it in `.github/workflows/release.yml`, `docs/contracts/release.md`):
+`scripts/helpers.sh` builds obid universal from `core/` and stages it with gh and
+gitleaks through `scripts/bundle-*.sh`, each signed with the team's
 Developer ID; then, per architecture, window-style is built for it,
 electron-builder signs the app (`electron-builder.yml`: hardened runtime, V8's
 JIT as the only entitlement, Electron's fuses closed), and the script checks it,
 scans it with gitleaks, notarizes and staples it (keychain profile
-`oby-notary`), and makes `dist/Oby-<version>-<arch>.dmg`, signed, notarized and
+`oby-notary`, or in CI the App Store Connect API key), and makes `dist/Oby-<version>-<arch>.dmg`, signed, notarized and
 stapled too. It needs the Developer ID Application identity of team
 `3UV9W5SV7W` (another team's: set `OBY_TEAM_ID` and `OBY_SIGN_IDENTITY`, its
 name as in `"Name (TEAMID)"`) and both Rust targets (`rustup target add aarch64-apple-darwin

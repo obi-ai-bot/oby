@@ -1,6 +1,6 @@
 # Working on the Electron app
 
-This file adds to the root [AGENTS.md](../../AGENTS.md) and never overrides it. Paths are relative to `apps/electron/`; `design/oby`, `tools/brain` and `apps/mac/` are from the repository root.
+This file adds to the root [AGENTS.md](../../AGENTS.md) and never overrides it. Paths are relative to `apps/electron/`; `design/oby` and `tools/brain` are from the repository root.
 
 ## Design
 
@@ -20,7 +20,7 @@ The view types (`Job`, `Message`, ...), constants (`AGENTS`, `TELL`, ...) and pu
 
 ## Packaging
 
-The app isn't sandboxed (it runs the user's CLIs) and ships with Developer ID, not the App Store. Its packaging (`scripts/helpers.sh`) still calls `apps/mac/app/Tools/bundle-{obid,gh,gitleaks}.sh`, the only files left under `apps/mac`.
+The app isn't sandboxed (it runs the user's CLIs) and ships with Developer ID, not the App Store. Its packaging (`scripts/helpers.sh`) calls `scripts/bundle-{obid,gh,gitleaks}.sh`, and a `v*` tag on `main` cuts the release in CI (`.github/workflows/release.yml`, `docs/contracts/release.md`).
 
 ## The character in the window
 

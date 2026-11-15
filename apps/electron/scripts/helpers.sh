@@ -1,18 +1,18 @@
 #!/bin/zsh
-# Stages what the app carries beside Electron into build/helpers, with the Swift app's own build
-# phases (apps/mac/app/Tools/bundle-*.sh): obid, universal, at Contents/Helpers/obid with its
+# Stages what the app carries beside Electron into build/helpers, with the build phases the Swift
+# app had (scripts/bundle-*.sh): obid, universal, at Contents/Helpers/obid with its
 # plug-ins at Contents/Resources/obid, and gh and gitleaks at Contents/MacOS, where obid looks for
 # them (core/crates/obid/src/app.rs). Each is signed with the team's Developer ID and the hardened
 # runtime; electron-builder copies them in and leaves their signatures alone (electron-builder.yml:
 # extraFiles, signIgnore), so gitleaks keeps the one entitlement it needs. OBY_CARGO_TARGET_DIR
-# reuses a cargo target directory, as for scripts/release.sh. With --if-stale it stages only when
+# reuses a cargo target directory between releases. With --if-stale it stages only when
 # build/helpers/stamp isn't the last commit of what goes in, or that has changes not committed.
 set -euo pipefail
 
 app=${0:A:h:h}
 root=${app:h:h}
 out=$app/build/helpers
-sources=(core plugins apps/mac/app/Tools apps/electron/scripts/helpers.sh)
+sources=(core plugins apps/electron/scripts/bundle-{obid,gh,gitleaks}.sh apps/electron/scripts/helpers.sh)
 stamp=$(git -C "$root" log -1 --format=%H -- "${sources[@]}")
 if [[ "${1:-}" == --if-stale && "$(cat "$out/stamp" 2> /dev/null)" == "$stamp" \
   && -z "$(git -C "$root" status --porcelain -- "${sources[@]}")" ]]; then
@@ -27,7 +27,7 @@ mkdir -p "$out"
 export SRCROOT=$root/apps TARGET_BUILD_DIR=$out CONTENTS_FOLDER_PATH=Contents \
   EXECUTABLE_FOLDER_PATH=Contents/MacOS UNLOCALIZED_RESOURCES_FOLDER_PATH=Contents/Resources \
   EXPANDED_CODE_SIGN_IDENTITY=$identity CONFIGURATION=Release
-for tool in obid gh gitleaks; do zsh "$root/apps/mac/app/Tools/bundle-$tool.sh"; done
+for tool in obid gh gitleaks; do zsh "$app/scripts/bundle-$tool.sh"; done
 # The Swift app's launch agents: this app has its own (build/com.deskree.oby.electron.obid.plist).
 rm -rf "$out/Contents/Library"
 echo "$stamp" > "$out/stamp"
