@@ -75,6 +75,7 @@ ACTIVE = {"running", "reviewing", "merging"}
 SAID = set()
 GH_MISSED = []  # this pass's `gh` calls that exited non-zero
 OBID_MISSED = []  # this pass's obid requests that got no answer
+GATE_MISSED = []  # this pass's model checks whose ssh to the gate VM failed or dropped
 BACKOFF_MAX = 600
 BUILD_FOLDERS = ("core/target", "apps/electron/node_modules", "apps/electron/out", "node_modules")
 
@@ -102,7 +103,8 @@ def api(method, path, body=None, timeout=30):
             return e.code, json.loads(text)
         except ValueError:
             return e.code, {"error": text[:300]}
-    except (OSError, http.client.HTTPException):  # obid unreachable or gone mid-answer: URLError, a timeout, IncompleteRead
+    # obid unreachable or gone mid-answer: URLError, a timeout, IncompleteRead, a body cut off with no error
+    except (OSError, http.client.HTTPException, ValueError):
         OBID_MISSED.append(path)
         return None, None
 
@@ -346,6 +348,18 @@ def tried_again(item, head, why):
         item.update(note=f"{why[:200]}; tried again at the next pass ({tries} of {TRIES})")
 
 
+def gate_unreached(item, head, why):
+    """ssh to the gate VM failed or dropped: an unanswered request, so the pass is skipped and the head is tried
+    again at the next one, never held for it."""
+    GATE_MISSED.append(why)
+    item.update(state="waiting", head=head, note=f"{why[:200]}; tried again at the next pass")
+
+
+def missed():
+    """obid, GitHub or the gate VM left a request of this pass unanswered: the pass does nothing more."""
+    return OBID_MISSED or GH_MISSED or GATE_MISSED
+
+
 def arm(item, head, tools):
     """Hands the pull request to GitHub's merge queue, pinned to the head may_arm() approved."""
     res = subprocess.run(["gh", "pr", "merge", str(item["pr"]), "--repo", GH_REPO, "--auto", "--match-head-commit", head],
@@ -413,7 +427,7 @@ def follow(item, jobs):
         if verdict == "pending":
             return False
         if verdict == "retry":
-            tried_again(item, head, said)
+            gate_unreached(item, head, said)
             return True
         if verdict == "wait":
             item.update(state="waiting", head=head, note=said)
@@ -464,7 +478,7 @@ def follow(item, jobs):
             arm(item, head, said)
             return True
         if verdict == "retry":
-            tried_again(item, head, said)
+            gate_unreached(item, head, said)
             return True
         if verdict == "wait" and said.startswith(HELD):  # a new head held: judged once, not at every pass
             item.update(head=head, refused=head, note=said)
@@ -530,14 +544,17 @@ def one_pass(args):
         return None
     GH_MISSED.clear()
     OBID_MISSED.clear()
+    GATE_MISSED.clear()
     for item in state.values():
+        if missed():  # something stopped answering: no further follow, merge or start this pass
+            break
         if (item["state"] in ACTIVE or item["state"] == "waiting") and follow(item, jobs):
             save(item)
             say(f"{item['key']}: {item['state']}" + (f" (#{item['pr']})" if item.get("pr") else "") + (f": {item['note']}" if item.get("note") else ""))
     active = [i for i in state.values() if i["state"] in ACTIVE]
     slots = args.max - len(active)
     started = 0
-    if slots > 0:
+    if slots > 0 and not missed():
         taken = set()
         for task, on_base, files in ready_tasks(state):
             if started >= slots:
@@ -572,6 +589,9 @@ def one_pass(args):
         return None
     if GH_MISSED:
         say(f"GitHub didn't answer ({GH_MISSED[0] or 'no words'}): the next pass tries again")
+        return None
+    if GATE_MISSED:
+        say(f"the gate VM didn't answer ({GATE_MISSED[0][:120]}): the next pass tries again")
         return None
     return len([i for i in state.values() if i["state"] in ACTIVE]), started
 

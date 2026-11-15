@@ -18,6 +18,7 @@ import http.client
 import importlib.machinery
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -409,6 +410,62 @@ class ObyFeed(unittest.TestCase):
             self.assertIsNone(self.one_pass())
         self.assertEqual(self.task_now()["state"], "waiting")
 
+    def two_waiting_and_one_ready(self):
+        """Two waiting tasks and a ready one: what a pass looks at once a request went unanswered."""
+        self.task("waiting", head=OLD)
+        self.feed.save({"key": "A00-97", "title": "a third task", "job": JOB, "state": "waiting", "pr": PR, "head": OLD})
+        ready = {"key": "A00-98", "title": "another task", "body": ""}
+        self.feed.ready_tasks = lambda state: [(ready, True, {"y.py"})]
+        self.feed.free_gb = lambda: 100.0
+        started = []
+        self.feed.start = lambda task, account, on_base: (started.append(task["key"]) or "job-9", None)
+        return started
+
+    def test_feedalive_1_github_gone_mid_pass_follows_and_starts_nothing_more(self):
+        started = self.two_waiting_and_one_ready()
+
+        def run(cmd, **kwargs):
+            if cmd[:3] == ["gh", "pr", "view"]:
+                self.stand.calls.append(("run", *cmd))
+                return subprocess.CompletedProcess(cmd, 1, "", "HTTP 502: Bad Gateway")
+            return self.stand.run(cmd, **kwargs)
+
+        self.feed.subprocess = Namespace(run=run)
+        self.assertIsNone(self.one_pass())
+        self.assertEqual(len([c for c in self.stand.calls if c[:4] == ("run", "gh", "pr", "view")]), 1)
+        self.assertEqual(started, [])
+
+    def test_feedalive_1_obid_gone_mid_pass_follows_and_starts_nothing_more(self):
+        started = self.two_waiting_and_one_ready()
+
+        def api(method, path, body=None, timeout=30):
+            self.stand.calls.append(("api", method, path))
+            self.feed.OBID_MISSED.append(path)
+            return None, None
+
+        self.feed.api = api
+        self.feed.oby_jobs = lambda: []
+        self.assertIsNone(self.one_pass())
+        self.assertEqual(len([c for c in self.stand.calls if c[:2] == ("api", "GET")]), 1)
+        self.assertEqual(started, [])
+
+    def test_feedalive_1_an_interrupted_answer_never_ends_the_feeder(self):
+        """A body cut off with no error, IncompleteRead and a reset mid-read: three skipped passes, never a crash."""
+        cuts = iter([b'[{"id": "jo', http.client.IncompleteRead(b"[", 40), ConnectionResetError("reset by peer")])
+
+        def answer(method, url):
+            cut = next(cuts)
+            if isinstance(cut, Exception):
+                raise cut
+            return cut
+
+        def passes(n):
+            if n == 3:
+                raise Stop
+
+        with self.obid(answer):
+            self.assertEqual(self.main(passes=passes), [120, 240, 480])
+
     def test_feedalive_1_backoff_doubles_to_ten_minutes_and_resets(self):
         got = iter([None] * 5 + [(1, 0)])
 
@@ -435,39 +492,53 @@ class ObyFeed(unittest.TestCase):
 
     # FEEDALIVE-3: a task file ready after idle passes starts at the next pass
     def test_feedalive_3_a_task_ready_after_idle_passes_starts_at_the_next_pass(self):
-        """The task file lands on origin/<base> only: the feeder's checkout is fetched, never pulled."""
+        """The task file is pushed to a real origin's <base> after the feeder's clone: each pass's `git fetch`,
+        `git ls-tree` and `git show` run for real, and the checkout is never pulled."""
+        base = self.feed.job.BASE
+        # GIT_DIR and the like, set when the tests run inside a worktree's hooks, would point git at that repository
+        no_git_env = mock.patch.dict(os.environ, {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}, clear=True)
+        no_git_env.start()
+        self.addCleanup(no_git_env.stop)
+
+        def git(cwd, *args):
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *args],
+                           cwd=cwd, check=True, capture_output=True)
+
+        origin, seed, repo = self.dir / "origin.git", self.dir / "seed", self.dir / "repo"
+        git(self.dir, "init", "-q", "--bare", "-b", base, str(origin))
+        git(self.dir, "init", "-q", "-b", base, str(seed))
+        (seed / "README").write_text("x\n")
+        git(seed, "add", "README")
+        git(seed, "commit", "-q", "-m", "first")
+        git(seed, "push", "-q", str(origin), base)
+        git(self.dir, "clone", "-q", "-b", base, str(origin), str(repo))
+        text = "KEY: A00-98\nTITLE: another task\nSPRINT: 0\nORDER: 1\nDEPENDS: none\n\nWhat.\n\n### Files\n- y.py\n"
+
         self.feed.oby_jobs = lambda: []
         self.feed.free_gb = lambda: 100.0
-        tasks = self.dir / "repo" / "factory" / "queue" / "tasks"
-        tasks.mkdir(parents=True)
-        on_base = set()
-        text = "KEY: A00-98\nTITLE: another task\nSPRINT: 0\nORDER: 1\nDEPENDS: none\n\nWhat.\n\n### Files\n- y.py\n"
-        shown = []
-
-        def run(cmd, **kwargs):
-            if cmd[:2] == ["git", "show"]:
-                shown.append(cmd[2])
-                return subprocess.CompletedProcess(cmd, 0, text, "")
-            return self.stand.run(cmd, **kwargs)
-
-        self.feed.subprocess = Namespace(run=run)
-        self.feed.REPO = self.dir / "repo"
+        self.feed.subprocess = subprocess
+        self.feed.REPO = repo
         started = []
         self.feed.start = lambda task, account, on_base: (started.append(task["key"]) or "job-9", None)
 
         def passes(n):
             if n == 3:
-                on_base.add("A00-98")
+                (seed / "factory" / "queue" / "tasks").mkdir(parents=True)
+                (seed / "factory" / "queue" / "tasks" / "A00-98.md").write_text(text)
+                git(seed, "add", "factory")
+                git(seed, "commit", "-q", "-m", "a task")
+                git(seed, "push", "-q", str(origin), base)
             if n == 4:
                 raise Stop
 
-        with mock.patch.object(self.feed.job, "TASKS", tasks), mock.patch.object(self.feed.job, "SPRINT", 0), \
-                mock.patch.object(self.feed.job, "on_base", lambda path: set(on_base)), \
-                mock.patch.object(self.feed.job, "done_keys", lambda: set()), \
-                mock.patch.object(self.feed.job, "all_jobs", lambda: []):
+        job = self.feed.job
+        queue_dir = repo / "factory" / "queue"
+        with mock.patch.object(job, "REPO", repo), mock.patch.object(job, "TASKS", queue_dir / "tasks"), \
+                mock.patch.object(job, "DONE", queue_dir / "done"), mock.patch.object(job, "JOBS", repo / "factory" / "jobs"), \
+                mock.patch.object(job.run, "__defaults__", (repo, True)), mock.patch.object(job, "SPRINT", 0):
             sleeps = self.main(passes=passes)
         self.assertEqual(started, ["A00-98"])
-        self.assertEqual(shown[0], f"origin/{self.feed.job.BASE}:factory/queue/tasks/A00-98.md")
+        self.assertFalse((queue_dir / "tasks" / "A00-98.md").exists())
         self.assertEqual(sleeps, [300, 300, 300, 60])
         self.assertEqual(self.feed.load_state()["A00-98"]["state"], "running")
         self.assertEqual(self.feed.load_state()["A00-98"]["files"], ["y.py"])
@@ -534,6 +605,36 @@ class ObyFeed(unittest.TestCase):
             self.one_pass()
         self.assertEqual(len(puts), 2)
         self.assertNotIn("refused", self.task_now())
+        self.assertEqual(self.stand.merges(), [])
+
+    def test_feedalive_5_a_dropped_gate_vm_is_a_skipped_pass_and_never_holds_the_head(self):
+        """ssh drops at every pass: each pass is skipped, starts nothing, and the head is never held for it."""
+        self.task("waiting", head=OLD)
+        self.stand.jobs[JOB]["approvals"] = approvals(OLD, "claude", "codex")
+        self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": PATH}]}
+        self.feed.touches_security = lambda files: []
+        ready = {"key": "A00-98", "title": "another task", "body": ""}
+        self.feed.ready_tasks = lambda state: [(ready, True, {"y.py"})]
+        self.feed.free_gb = lambda: 100.0
+        started = []
+        self.feed.start = lambda task, account, on_base: (started.append(task["key"]) or "job-9", None)
+
+        def run(cmd, **kwargs):
+            if cmd[:2] == ["gh", "api"] and "contents" in cmd[2]:
+                return subprocess.CompletedProcess(cmd, 0, "// verify: main=m invariants=safe\n", "")
+            if cmd[0] == "ssh":
+                return subprocess.CompletedProcess(cmd, 255, "", "Connection to oby-gate closed by remote host.")
+            return self.stand.run(cmd, **kwargs)
+
+        self.feed.subprocess = Namespace(run=run)
+        config = dict(self.feed.job.CONFIG, remote_gate={"ssh_host": "oby-gate"})
+        with mock.patch.object(self.feed.job, "CONFIG", config):
+            for _ in range(5):
+                self.assertIsNone(self.one_pass())
+        item = self.task_now()
+        self.assertEqual(item["state"], "waiting")
+        self.assertNotIn("refused", item)
+        self.assertEqual(started, [])
         self.assertEqual(self.stand.merges(), [])
 
     def test_feedalive_5_a_dropped_verify_run_is_unreached_and_a_failing_invariant_holds(self):
