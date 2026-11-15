@@ -609,8 +609,8 @@ fn from_client(error: &ClientError) -> ApiError {
 }
 
 /// Why a request didn't go ([`Link::request_sent`]): the API's error, and the Sphere's code when it
-/// refused the request itself, by any status but `401` (the token's): TEAMREVIEW-8 reads that
-/// code, never the error's message.
+/// refused the request itself, by a `4xx` but `401` (the token's; a `5xx` is a Sphere that can't
+/// take it now): TEAMREVIEW-8 reads that code, never the error's message.
 pub(crate) struct NotSent {
     pub error: ApiError,
     pub refused: Option<String>,

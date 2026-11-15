@@ -1712,6 +1712,38 @@ async fn teamreview_8_the_card_goes_when_it_merges() {
     });
 }
 
+/// TEAMREVIEW-8: the Sphere's own 5xx answer is a Sphere that can't be reached, not a refusal:
+/// no card, nothing kept, and the same teammate asked again on the next looks. A 403 still is one.
+#[tokio::test(flavor = "multi_thread")]
+async fn teamreview_8_a_sphere_that_cant_be_reached_is_a_quiet_wait() {
+    for status in [502, 503] {
+        let folder = Folder::new(&format!("merge-teammate-sphere-{status}"));
+        let (sphere, obid, _teammates) =
+            refused_in_a_sphere(&folder, (status, "unavailable", "down for a deploy"), false).await;
+        tokio::task::block_in_place(|| {
+            within(30, "ernesto's Oby asked again, with no card", || {
+                (requests_to(&sphere, "obi-ernesto") >= 3 && merge_cards(&obid).is_empty())
+                    .then_some(())
+            })
+        });
+        more_reads(&folder, 3);
+        let quiet = tokio::task::block_in_place(|| (merge_cards(&obid), job(&obid)));
+        assert!(quiet.0.is_empty(), "{status}: {:?}", quiet.0);
+        assert_eq!(quiet.1["mergeNeedsYou"], false, "{status}");
+        assert!(
+            !folder.0.join("home/sphere/teammate-refusals.json").exists(),
+            "{status}"
+        );
+        drop(obid);
+    }
+    let folder = Folder::new("merge-teammate-sphere-403");
+    let (sphere, obid, _teammates) =
+        refused_in_a_sphere(&folder, (403, "policy_denied", "no rule allows it"), false).await;
+    card_saying(&obid, POLICY_DENIED);
+    assert_eq!(requests_to(&sphere, "obi-ernesto"), 1);
+    assert!(folder.0.join("home/sphere/teammate-refusals.json").exists());
+}
+
 /// TEAMREVIEW-8: a refused teammate isn't asked again for that head after obid restarts.
 #[tokio::test(flavor = "multi_thread")]
 async fn teamreview_8_a_refusal_holds_across_a_restart() {

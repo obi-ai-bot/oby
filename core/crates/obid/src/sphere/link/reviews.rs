@@ -1086,8 +1086,11 @@ impl Link {
                         continue;
                     }
                     self.refused_token(&e);
+                    // A 5xx is a Sphere that can't take it now, asked again next time.
                     let refused = match &e {
-                        ClientError::Refused { status, code, .. } if answered && *status != 401 => {
+                        ClientError::Refused { status, code, .. }
+                            if answered && *status != 401 && *status < 500 =>
+                        {
                             Some(code.clone())
                         }
                         _ => None,
