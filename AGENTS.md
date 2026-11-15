@@ -4,7 +4,7 @@ Oby is a Mac app in a window that hands coding work to the user's own Claude Cod
 
 Each rule here is stated once; its "why" links the decision that holds its history ([docs/decisions/](docs/decisions/README.md)). Don't argue by citing this file: say what a rule protects and link its decision.
 
-Every rule sentence this file held at `3ff84b79` is listed, with the file that now holds it, in [docs/agents-rules-manifest.md](docs/agents-rules-manifest.md); the check fails when one goes missing (`docs/contracts/ci.md`, CI-42 to 44), and changing a rule changes its entry in the same change.
+[docs/agents-rules-manifest.md](docs/agents-rules-manifest.md) lists where each rule of this file at `3ff84b79` lives now; the check fails if one goes (CI-42 to 44), and changing a rule changes its entry too.
 
 ## Non-negotiable
 
@@ -209,8 +209,9 @@ A folder's own `AGENTS.md` adds to this file and never overrides it.
 
 | Folder | Its rules | Claude Code loads them with |
 |---|---|---|
-| `apps/electron/` | [apps/electron/AGENTS.md](apps/electron/AGENTS.md) | |
-| `core/` | [core/AGENTS.md](core/AGENTS.md) | [core/CLAUDE.md](core/CLAUDE.md) |
+| `apps/electron/` | [AGENTS.md](apps/electron/AGENTS.md) | |
+| `core/` | [AGENTS.md](core/AGENTS.md) | [CLAUDE.md](core/CLAUDE.md) |
+| `core/crates/obid/` | [AGENTS.md](core/crates/obid/AGENTS.md) | [CLAUDE.md](core/crates/obid/CLAUDE.md) |
 
 ## Build and run
 

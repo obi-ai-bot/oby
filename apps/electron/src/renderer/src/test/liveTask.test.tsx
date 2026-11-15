@@ -1,5 +1,4 @@
-import { readFileSync } from 'node:fs';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { Job as JobView } from '../view';
 import type { Entry } from '../session';
@@ -7,37 +6,87 @@ import { around, knownUpTo, lastSteps, thoughtWords, withEntries, withLine } fro
 import { parseEvent } from '../../../shared/obid-wire';
 import { detailOf, sessionOf } from '../jobPage';
 import type { TranscriptEntry } from '../obid';
+import type { Chat } from '../chats';
+import type { Task } from '../tasks';
 
-// A task's live card and its agent's own conversation (docs/contracts/live-task.md)
-vi.mock('../Composer', () => ({ default: ({ placeholder }: { placeholder: string }) => <input placeholder={placeholder} />, typingIn: () => false }));
+// A task's live card and its agent's own conversation, opened in place under it (docs/contracts/live-task.md).
+// Each box (Composer) is a marker that keeps what it's given, by its label; what the boxes send to is spied on,
+// and onObid is read when a box sends, so the same render sends on obid or off it.
+type Props = { placeholder: string; label: string; onSend: (text: string, att: object) => void; onStop?: () => void };
+const page = vi.hoisted(() => ({ boxes: {} as Record<string, Props>, chats: [] as unknown[], obid: false }));
+// (a store without a server snapshot, peers' conversations, reads as it is)
+vi.mock('react', async (original) => {
+  const real = await original<typeof import('react')>();
+  return { ...real, useSyncExternalStore: (_: unknown, get: () => unknown) => get() };
+});
+vi.mock('../Composer', () => ({
+  default: (props: Props) => { page.boxes[props.label] = props; return <input placeholder={props.placeholder} data-stop={props.onStop ? 'yes' : undefined} />; },
+  typingIn: () => false,
+}));
+vi.mock('../Menu', async (original) => ({ ...await original<typeof import('../Menu')>(), Menu: ({ children }: { children: React.ReactNode }) => <div role="menu">{children}</div> }));
+vi.mock('../chats', async (original) => ({ ...await original<typeof import('../chats')>(), useChats: () => page.chats, tellChat: vi.fn() }));
+vi.mock('../live', async (original) => ({ ...await original<typeof import('../live')>(), tellAgent: vi.fn(async () => undefined) }));
+vi.mock('../tasks', async (original) => ({ ...await original<typeof import('../tasks')>(), tell: vi.fn() }));
+vi.mock('../lean', async (original) => ({ ...await original<typeof import('../lean')>(), get onObid() { return page.obid; } }));
 const read = (html: string) => html.replaceAll('<!-- -->', '');
-async function views(entries: Entry[], more: Partial<JobView> = {}, status: 'running' | 'needs' | 'done' = 'running') {
+function stub() {
   vi.stubGlobal('location', { search: '' });
   vi.stubGlobal('window', {});
   vi.stubGlobal('document', { createElement: () => ({}) });
   vi.stubGlobal('performance', { now: () => 0 });
-  const { ThreadTask } = await import('../ChatView');
-  const { default: AgentPane } = await import('../AgentPane');
-  const { SESSIONS } = await import('../session');
-  const { replaceTasks } = await import('../tasks');
+  vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {}, removeItem: () => {} });
+  vi.stubGlobal('addEventListener', () => {});
+  vi.stubGlobal('removeEventListener', () => {});
+  vi.stubGlobal('matchMedia', () => ({ matches: true, addEventListener: () => {}, removeEventListener: () => {} }));
+  vi.stubGlobal('requestAnimationFrame', () => 0);
+  vi.stubGlobal('innerWidth', 1000);
+  vi.stubGlobal('DOMRect', class { constructor(public x: number, public y: number, public width: number, public height: number) {} });
+}
+async function taskOf(id: string, more: Partial<JobView> = {}, status: 'running' | 'needs' | 'done' = 'running') {
   const { AGENTS } = await import('../view');
-  SESSIONS.j1 = entries;
   const job = {
-    id: 'j1', type: 'issues', title: 'Fix the login test', request: 'Fix it', agent: 'claude', account: 'Personal', model: 'Opus',
+    id, type: 'issues', title: 'Fix the login test', request: 'Fix it', agent: 'claude', account: 'Personal', model: 'Opus',
     repo: 'deskree/obi', branch: 'oby/fix-1', base: 'dev', status: status === 'done' ? 'done' : 'running', step: 'Working', stages: [], created: 12, ...more,
   } as JobView;
-  const task = { id: 'j1', type: 'issues', title: job.title, brand: AGENTS.claude.brand, status, job } as never;
+  return { id, type: 'issues', title: job.title, brand: AGENTS.claude.brand, status, job } as Task;
+}
+// the card folded, and the same card opened in place
+async function views(entries: Entry[], more: Partial<JobView> = {}, status: 'running' | 'needs' | 'done' = 'running') {
+  stub();
+  const { ThreadTask } = await import('../ChatView');
+  const { SESSIONS } = await import('../session');
+  const { replaceTasks } = await import('../tasks');
+  SESSIONS.j1 = entries;
+  const task = await taskOf('j1', more, status);
   replaceTasks([task]);
   return {
     card: read(renderToStaticMarkup(<ThreadTask task={task} current={false} onOpen={() => {}} />)),
-    pane: read(renderToStaticMarkup(<AgentPane id="j1" onClose={() => {}} onDetails={() => {}} onFollowUp={() => {}} />)),
+    opened: read(renderToStaticMarkup(<ThreadTask task={task} current={false} opened onOpen={() => {}} />)),
   };
 }
+// a conversation with Oby (c1) whose answer started two tasks: j1 at work, j2 needing the owner
+const ask = { kind: 'permission' as const, headline: 'Run npm test?', text: 'It wants to run the tests.', options: ['Allow', 'Deny'] };
+async function conversation(tasks?: string[]) {
+  stub();
+  const { default: ChatView } = await import('../ChatView');
+  const { replaceTasks } = await import('../tasks');
+  const { SESSIONS } = await import('../session');
+  SESSIONS.j1 = [tool('Read', 'a.ts')];
+  SESSIONS.j2 = [{ kind: 'said', text: 'It needs the tests run.', at: '1:50 PM' }];
+  const all = [await taskOf('j1'), { ...await taskOf('j2', { ask }, 'needs'), title: 'Run the tests' }];
+  replaceTasks(all.filter((t) => !tasks || tasks.includes(t.id)));
+  page.chats = [{ id: 'c1', title: 'Two fixes', said: [{ who: 'you', text: 'fix both', ago: 5 }, { who: 'oby', text: 'On it.', ago: 4, jobs: ['j1', 'j2'] }] } satisfies Chat];
+  const none = () => {};
+  return read(renderToStaticMarkup(<ChatView kind="oby" id="c1" leaving={false} onBack={none} onGone={none} onOpenTask={none} />));
+}
+// one card's own part of a conversation's markup, up to the next card or the message's time
+const cardOf = (html: string, title: string) => html.slice(html.indexOf(`aria-label="Open ${title}"`)).split(/class="msg-task-work|class="msg-time"/)[0];
 const tool = (verb: string, target: string, state: 'running' | 'done' | 'failed' = 'done'): Entry => ({ kind: 'tool', tool: 'Read', verb, target, state, seconds: 1 });
 const plan: Entry = { kind: 'plan', todos: [{ text: 'Read the test', state: 'done' }, { text: 'Replace the timer', state: 'running' }, { text: 'Run the check', state: 'pending' }] };
 const wire = (n: number, more: Partial<TranscriptEntry> = {}): TranscriptEntry => ({ n, at: '2026-11-02T10:00:00Z', kind: 'tool', summary: 'Reading a.ts', state: 'running', ...more });
 
 describe('a task at work', () => {
+  beforeEach(() => { page.boxes = {}; page.obid = false; vi.clearAllMocks(); });
   afterEach(() => { vi.unstubAllGlobals(); });
 
   it('LIVETASK-1: the card shows its to-dos with the one it is on lit, and the last things it did', async () => {
@@ -63,9 +112,9 @@ describe('a task at work', () => {
   });
 
   it('LIVETASK-2: with no list from the agent it shows only its steps, and invents no to-do', async () => {
-    const { card, pane } = await views([tool('Read', 'a.ts'), tool('Running', 'npm test', 'running')]);
+    const { card, opened } = await views([tool('Read', 'a.ts'), tool('Running', 'npm test', 'running')]);
     expect(card).not.toContain('What it’s doing');
-    expect(pane).not.toContain('agent-pane-todos');
+    expect(opened).not.toContain('lt-thread-todos');
     expect(card).toContain('npm test');
     // and before it has done anything, what obid says it's on
     expect((await views([], { step: 'Waiting for a free slot' })).card).toContain('Waiting for a free slot');
@@ -115,28 +164,53 @@ describe('a task at work', () => {
     expect((await views([plan], { status: 'failed' }, 'done')).card).toContain('>Failed · Claude Code');
   });
 
-  it('LIVETASK-5: its own conversation has its words, steps, thinking and to-dos, and a box to tell it', async () => {
-    const { pane } = await views([
+  it('LIVETASK-5: opened in place, the card holds its words, steps, thinking and to-dos, and a box with Stop in it', async () => {
+    const { card, opened } = await views([
       { kind: 'start', text: 'Started on Claude Code', at: '1:50 PM' }, { kind: 'you', text: 'Fix the login test', at: '1:50 PM' }, tool('Read', 'a.ts'),
       { kind: 'said', text: 'It races a timer.', at: '1:53 PM' }, plan, { kind: 'thought', text: '', seconds: 8 }, tool('Editing', 'session.ts', 'running'),
     ]);
-    expect(pane).toContain('aria-label="Conversation with Claude Code"');
-    expect(pane).toContain('Fix the login test');
-    expect(pane.replace(/<[^>]+>/g, '')).toContain('It races a timer.');
-    expect(pane).toContain('1:53 PM');
-    expect(pane).toContain('Thought for 8s');
-    expect(pane).toContain('session.ts');
-    expect(pane).toMatch(/agent-pane-todos.*Replace the timer/);
-    // the list is on top, not a line of the conversation as well
-    expect(pane).not.toContain('ss-plan');
-    expect(pane).toContain('placeholder="Tell Claude Code…"');
-    expect(pane).toContain('>Stop<');
-    expect(pane).toContain('aria-label="Close this conversation"');
-    expect(pane).toContain('aria-label="Open the task’s page"');
+    // under its head, inside the card
+    expect(opened).toMatch(/^<div class="msg-task-work is-live is-on"><button class="msg-task is-link"[^>]*aria-expanded="true">.*<div class="lt-thread" role="group" aria-label="Conversation with Claude Code">/);
+    expect(opened).toContain('Fix the login test');
+    expect(opened.replace(/<[^>]+>/g, '')).toContain('It races a timer.');
+    expect(opened).toContain('1:53 PM');
+    expect(opened).toContain('Thought for 8s');
+    expect(opened).toContain('session.ts');
+    expect(opened).toMatch(/lt-thread-todos.*Replace the timer/);
+    // the list is on top once: not a line of the conversation, nor the card's live part as well
+    expect(opened.split('Replace the timer')).toHaveLength(2);
+    expect(opened).not.toContain('ss-plan');
+    expect(opened).not.toContain('lt-now');
+    expect(opened).toContain('placeholder="Tell Claude Code…"');
+    expect(page.boxes['Tell the agent about Fix the login test'].onStop).toBeTypeOf('function');
+    // no title bar, close or Stop button of its own: Stop is the box's
+    expect(opened).not.toContain('>Stop<');
+    expect(opened).not.toContain('Close this conversation');
+    // folded: none of it, its live part instead
+    expect(card).toContain('aria-expanded="false"');
+    expect(card).not.toContain('lt-thread');
+    expect(card).not.toContain('ss-entries');
+    expect(card).not.toContain('1:53 PM');
+    expect(card).not.toContain('placeholder=');
     // finished: no Stop, and what the box does then
-    const done = (await views([tool('Read', 'a.ts')], {}, 'done')).pane;
-    expect(done).not.toContain('>Stop<');
+    page.boxes = {};
+    const done = (await views([tool('Read', 'a.ts')], {}, 'done')).opened;
+    expect(done).not.toContain('data-stop');
+    expect(page.boxes['Tell the agent about Fix the login test'].onStop).toBeUndefined();
     expect(done).toContain('placeholder="Ask for a follow-up…"');
+  });
+
+  it('LIVETASK-7: told something once finished, the follow-up it started is opened where it is listed', async () => {
+    const { ThreadTask } = await import('../ChatView');
+    const live = await import('../live');
+    await views([tool('Read', 'a.ts')], {}, 'done');
+    const followed = vi.fn();
+    renderToStaticMarkup(<ThreadTask task={await taskOf('j1', {}, 'done')} current={false} opened onOpen={() => {}} onFollowUp={followed} />);
+    vi.mocked(live.tellAgent).mockResolvedValueOnce('j9');
+    page.obid = true;
+    page.boxes['Tell the agent about Fix the login test'].onSend('one more thing', {});
+    await vi.waitFor(() => expect(followed).toHaveBeenCalledWith('j9'));
+    expect(live.tellAgent).toHaveBeenCalledWith('j1', 'one more thing', undefined);
   });
 
   it('LIVETASK-6: thinking shows only what its tool gave', async () => {
@@ -148,11 +222,11 @@ describe('a task at work', () => {
     // Codex or Cursor: their words, and never a made-up time
     expect(thoughtWords(thought({ state: 'done', text: 'Only the project file sets this.' }))).toBe('Only the project file sets this.');
     expect(thoughtWords(thought({ state: 'done' }))).toBe('Thought');
-    const { pane } = await views([thought({ state: 'running' }), thought({ state: 'done', seconds: 8 }), thought({ state: 'done', text: 'Only the project file.' })]);
-    expect(pane).toContain('sheen">Thinking');
-    expect(pane).toContain('<span>Thought for 8s</span>');
-    expect(pane).toContain('<p>Only the project file.</p>');
-    expect(pane).not.toContain('Thought for 0');
+    const { opened } = await views([thought({ state: 'running' }), thought({ state: 'done', seconds: 8 }), thought({ state: 'done', text: 'Only the project file.' })]);
+    expect(opened).toContain('sheen">Thinking');
+    expect(opened).toContain('<span>Thought for 8s</span>');
+    expect(opened).toContain('<p>Only the project file.</p>');
+    expect(opened).not.toContain('Thought for 0');
   });
 
   it('LIVETASK-11: a line opens to what it ran and gave back, from obid\'s own detail', () => {
@@ -199,26 +273,97 @@ describe('a task at work', () => {
   it('LIVETASK-5: the mock\'s running card has a conversation to review', async () => {
     const { SESSIONS } = await import('../session');
     // t1: a running job the mock's first conversation has a card for
-    const { pane, card } = await views(SESSIONS.t1);
+    const { opened, card } = await views(SESSIONS.t1);
     expect(card).toContain('Fix the flags route');
-    expect(pane).toContain('Thought for 6s');
+    expect(opened).toContain('Thought for 6s');
+    // s1, at work, in the conversation that has a card needing you too (screen 03)
+    const s1 = (await views(SESSIONS.s1)).opened;
+    expect(s1).toContain('core/crates/obid/src/publish.rs');
+    expect(s1).toContain('data-stop="yes"');
   });
 
-  it('LIVETASK-8: in a narrow window it lies over the chat, beside it otherwise', () => {
-    const css = readFileSync(new URL('../liveTask.css', import.meta.url), 'utf8');
-    expect(css).toMatch(/\.has-agent-pane > \.chat-scroll[^{]*\{ margin-right: var\(--agent-pane\); \}/);
-    expect(css).toMatch(/@container \(max-width: 760px\) \{\s*\.agent-pane \{ width: 100%;/);
-  });
-
-  it('LIVETASK-9: waiting on you, the card says for what and the conversation carries the decision', async () => {
-    const ask = { kind: 'permission' as const, headline: 'Run npm test?', text: 'It wants to run the tests.', options: ['Allow', 'Deny'] };
-    const { card, pane } = await views([plan], { ask }, 'needs');
+  it('LIVETASK-9: waiting on you, the card says for what, and opened it carries the decision with its options', async () => {
+    const { card, opened } = await views([plan], { ask }, 'needs');
     expect(card).toContain('>Needs you · Claude Code');
     expect(card).toContain('Run npm test?');
     expect(card).toMatch(/is-on is-needs.*status-dot is-needs|status-dot is-needs.*Replace the timer/);
     expect(card).not.toMatch(/sheen">Replace the timer/);
-    expect(pane).toContain('Allow');
-    expect(pane).not.toContain('>Stop<');
+    // inside the card, under its head: the decision's options, then a box with send and no Stop
+    expect(opened).toMatch(/^<div class="msg-task-work is-live is-on">.*lt-thread-ask.*>Allow<.*>Deny<.*placeholder="Tell Claude Code…"/);
+    expect(opened).not.toContain('data-stop');
+    expect(page.boxes['Tell the agent about Fix the login test'].onStop).toBeUndefined();
+  });
+
+  it('LIVETASK-15: an opened card goes with its job', async () => {
+    expect(await conversation()).toContain('aria-label="Conversation with Claude Code"');
+    const gone = await conversation(['j1']);
+    expect(gone).not.toContain('Run the tests');
+    expect(gone).not.toContain('lt-thread');
+  });
+
+  it('LIVETASK-16: a card that needs you opens by itself, folds nothing you opened, and stays folded for that need once you fold it', async () => {
+    const { openCards } = await import('../AgentThread');
+    const set = (...ids: string[]) => new Set(ids);
+    expect(openCards(set(), set(), ['a'])).toEqual(set('a'));
+    expect(openCards(set('b'), set(), ['a'])).toEqual(set('a', 'b'));
+    expect(openCards(set(), set('a'), ['a'])).toEqual(set());
+    expect(openCards(set('a'), set(), [])).toEqual(set('a'));
+    // in a conversation with Oby: the needing card opened, with its decision; the one at work folded
+    const html = await conversation();
+    expect(cardOf(html, 'Run the tests')).toMatch(/aria-expanded="true">.*lt-thread-ask.*>Allow</);
+    expect(cardOf(html, 'Fix the login test')).toContain('aria-expanded="false"');
+    expect(cardOf(html, 'Fix the login test')).not.toContain('lt-thread');
+  });
+
+  it('LIVETASK-17: words in a card\'s box reach that job alone; the foot box\'s reach Oby, whatever card is open', async () => {
+    const { replyTarget } = await import('../replyTarget');
+    expect(replyTarget({ foot: { kind: 'oby', id: 'c1' } })).toStrictEqual({ oby: 'c1' });
+    expect(replyTarget({ foot: { kind: 'oby', id: 'c1' } })).not.toHaveProperty('job');
+    expect(replyTarget({ card: 'a' })).toStrictEqual({ job: 'a' });
+    expect(replyTarget({ card: 'b' })).toStrictEqual({ job: 'b' });
+    expect(replyTarget({ foot: { kind: 'task', id: 't1' } })).toStrictEqual({ job: 't1' });
+    expect(replyTarget({ foot: { kind: 'peer', id: 'p1' } })).toStrictEqual({ peer: 'p1' });
+  });
+
+  it('LIVETASK-17: with a needing card opened by itself, the foot box still talks to Oby and the card\'s to its job', async () => {
+    const chats = await import('../chats'), live = await import('../live'), tasks = await import('../tasks');
+    await conversation();
+    expect(page.boxes['Reply to Oby'].placeholder).toBe('Reply to Oby…');
+    page.boxes['Reply to Oby'].onSend('hi', {});
+    expect(chats.tellChat).toHaveBeenCalledTimes(1);
+    expect(chats.tellChat).toHaveBeenCalledWith('c1', 'hi', {});
+    expect(live.tellAgent).not.toHaveBeenCalled();
+    expect(tasks.tell).not.toHaveBeenCalled();
+    // the opened card's box: its job and nothing else, on obid and off it
+    page.obid = true;
+    page.boxes['Tell the agent about Run the tests'].onSend('go on', {});
+    expect(live.tellAgent).toHaveBeenCalledTimes(1);
+    expect(live.tellAgent).toHaveBeenCalledWith('j2', 'go on', undefined);
+    page.obid = false;
+    page.boxes['Tell the agent about Run the tests'].onSend('go on', {});
+    expect(tasks.tell).toHaveBeenCalledTimes(1);
+    expect(tasks.tell).toHaveBeenCalledWith('j2', 'go on', {});
+    expect(chats.tellChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('LIVETASK-18: the task\'s page opens from the card\'s menu, View details', async () => {
+    stub();
+    const { default: TaskMenu } = await import('../TaskMenu');
+    const { ThreadTask } = await import('../ChatView');
+    const task = await taskOf('j1');
+    const menu = renderToStaticMarkup(<TaskMenu task={task} at={new DOMRect(0, 0, 0, 0)} onClose={() => {}} onViewDetails={() => {}} />);
+    expect(menu).toContain('>View details<');
+    expect(menu).toContain('>Stop task<');
+    expect(menu).toContain('>Delete task<');
+    expect(menu).not.toContain('Open conversation');
+    expect(menu).not.toContain('Rename');
+    // a right-click on the card: its menu, at the pointer
+    const onMenu = vi.fn();
+    const card = ThreadTask({ task, current: false, onOpen: () => {}, onMenu }) as React.ReactElement<{ children: React.ReactElement<{ onContextMenu: (e: object) => void }>[] }>;
+    const preventDefault = vi.fn();
+    card.props.children[0].props.onContextMenu({ preventDefault, clientX: 40, clientY: 60 });
+    expect(preventDefault).toHaveBeenCalled();
+    expect(onMenu).toHaveBeenCalledWith(expect.objectContaining({ x: 40, y: 60 }));
   });
 
   it('LIVETASK-10: a step reads as what it is doing, then as what it did', () => {

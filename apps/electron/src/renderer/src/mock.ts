@@ -447,6 +447,9 @@ export const TURNS: Turn[] = [
   { id: 'b5', who: 'oby', text: 'On it. Claude Code has a plan for the 0.9 notes and needs your OK on it.', at: 70, jobs: ['t5'] },
   { id: 'u5', who: 'user', text: 'what breaks if we split Engine/Jobs.swift in three?', at: 15 },
   { id: 'b6', who: 'oby', text: 'Codex is asking Tetrix for everything that calls into Jobs.swift. I’ll tell you what it finds.', at: 15, jobs: ['t3'] },
+  // two cards under one answer: one at work, one that needs you (screens 03 and 04, docs/design/oby-home/)
+  { id: 'u8', who: 'user', text: 'give the scan’s first block a fix round, and the side panel stutters past 200 tasks', at: 14 },
+  { id: 'b9', who: 'oby', text: 'On it. Two tasks, two agents, both started. Open one to read along or tell it something.', at: 14, jobs: ['s1', 's3'] },
   { id: 'u6', who: 'user', text: 'run the security inspection for Avenga before Thursday', at: 12 },
   { id: 'b7', who: 'oby', text: 'Deskree’s Claude is at 82% of the week and this one is big. Want it on Personal instead?', at: 12, jobs: ['t4'] },
   { id: 'u7', who: 'user', text: 'CI on oberon is red since this morning, fix it', at: 6 },
@@ -532,7 +535,7 @@ export const followUpsOf = (id: string) => FOLLOW_UPS[id] ?? [];
 // opening message (not the task's title, which comes later). One for every
 // mock task; a new one is named after your words.
 const CONVO_TITLES: Record<string, string> = {
-  s5: 'Invite links dying after an hour', s3: 'Side panel stutter past 200 tasks',
+  s1: 'Two fixes for today', s5: 'Invite links dying after an hour', s3: 'Side panel stutter past 200 tasks',
   r1: 'Review of Ernesto’s retry jitter PR', r2: 'Review of Dima’s graph tests PR',
   r3: 'Review of Wellington’s settings PR', r4: 'Review of Daniel’s usage meters PR',
   r5: 'Review of Ernesto’s webhook fix',
