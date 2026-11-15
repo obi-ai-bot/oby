@@ -3594,7 +3594,8 @@ fn merging_8_reviews_that_run_out_ask_the_owner_with_one_more_round() {
     let folder = Folder::new("publish-review-cap");
     let bin = fake_gh(&folder.0);
     let (obid, _remote, _) = obid_with(&folder, &bin);
-    let id = dispatch(
+    // Not the owner's own work (MERGING-44), which merges past its last review (MERGING-49).
+    let id = dispatch_unsigned(
         &obid,
         json!({"repo": "obi-e2e/fixture-app", "kind": "build",
                "task": "COMMIT: hello.txt WANTS: fix.txt STUBBORN", "check": "test -f hello.txt"}),
@@ -3654,7 +3655,8 @@ fn jobstate_11_one_more_round_queues_the_reviews_changes() {
     let folder = Folder::new("jobstate-11");
     let bin = fake_gh(&folder.0);
     let (obid, _remote, _) = obid_with(&folder, &bin);
-    let id = dispatch(
+    // Not the owner's own work (MERGING-44), which merges past its last review (MERGING-49).
+    let id = dispatch_unsigned(
         &obid,
         json!({"repo": "obi-e2e/fixture-app", "kind": "build",
                "task": "COMMIT: hello.txt WANTS: fix.txt STUBBORN", "check": "test -f hello.txt"}),
@@ -3697,7 +3699,8 @@ fn merging_8_a_follow_up_on_the_branch_at_round_one_leaves_it_to_the_owner() {
     let folder = Folder::new("publish-review-follow-up");
     let bin = fake_gh(&folder.0);
     let (obid, _remote, _) = obid_with(&folder, &bin);
-    let id = dispatch(
+    // Not the owner's own work (MERGING-44), which merges past its last review (MERGING-49).
+    let id = dispatch_unsigned(
         &obid,
         json!({"repo": "obi-e2e/fixture-app", "kind": "build",
                "task": "COMMIT: hello.txt WANTS: fix.txt HOLD REVIEW", "check": "test -f hello.txt"}),

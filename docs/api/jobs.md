@@ -243,7 +243,7 @@ Every app following `GET /v1/events` gets a `clear` event with the same body, an
 
 ### `POST /v1/jobs`
 
-Starts a job described whole, for clients that know the work already (oby-mcp, scripts); what the user says starts through `POST /v1/plans`. On obid, a job with no `conversation` that follows nothing up starts in a conversation of its own, named after it: its `task` as the owner's words (marked as no app of the owner's signed them when unsigned), its card under them, and Oby's line saying it started (`On it. Claude Code is investigating …`); the answer's `conversation` names it (docs/contracts/task-conversations.md, TASKCONV-1). A follow-up is in its job's conversation. The body is the job as the brain would have planned it:
+Starts a job described whole, for clients that know the work already (oby-mcp, scripts); what the user says starts through `POST /v1/plans`. On obid, a job with no `conversation` that follows nothing up starts in a conversation of its own, named after it: its `task` as the owner's words (marked as no app of the owner's signed them when unsigned), its card under them, and Oby's line saying it started (`On it. Claude Code is investigating …`); the answer's `conversation` names it (docs/contracts/task-conversations.md, TASKCONV-1). A follow-up is in its job's conversation. On obid, a request an app of the owner's signed (`X-Oby-Words`) starts the owner's own work, whose pull request merges by itself on any base with no card (docs/contracts/merging.md MERGING-44, 52); one with only the token doesn't. The body is the job as the brain would have planned it:
 
 ```json
 {"job": {"repo": "deskree-inc/oby", "kind": "fix", "task": "Fix the login screen's empty state (#12).", "issue": 12,
