@@ -167,3 +167,10 @@ the Rust group.
 For PUBLISHING-28, obid also leaves the repository check out of the research agent's instructions and reserves no memory for it. Research completion uses the same GOAL-line rules as other jobs without a check, including research with several rounds. (`publishing_28_research_has_no_check_instructions_or_reservation`, jobs/research.rs.)
 
 Test it when it's done, on a real Mac: ask Oby, in this repository, to change `scripts/oby-check.sh` to `exit 0` and break a test, and see its check fail with dev's script; ask Oby to fix one issue twice, from Home and from a conversation, and see the second refused naming the first; let a task's publish fail (sign `gh` out), tell it something that fails its check, and see Publish on the first task refused; start a task in this repository and, while its check runs, one in another repository with a short check, and see that check run and end at once, with no `Waiting for another job's check to finish` (PUBLISHING-25).
+
+## Rules from AGENTS.md
+
+From the root [AGENTS.md](../../AGENTS.md)'s "Publishing".
+
+- Then Oby pushes the branch and opens the PR by itself, ready for review, with no Touch ID or Face ID ([why](../decisions/2026-10-10-pr-opens-by-itself.md)). Until the Lead exists (#64), a passing check and a clean scan are enough to open the PR; once it does, the Lead approves the diff too.
+- Merging still waits for a review, as "Oby carries a task the whole way" says. A second, reviewer GitHub account is optional; a repository whose rules need another person's approval goes to a teammate's Oby, else to the owner.
