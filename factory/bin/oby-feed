@@ -721,11 +721,14 @@ def one_pass(args):
                                  args.min_free_gb)
     active = [i for i in state.values() if i["state"] in ACTIVE]
     slots = args.max - len(active) - len([p for p, _ in waiting if p.exists()])
-    started = 0
+    started = held = 0
     if slots > 0 and not missed():
-        taken = set()
+        taken = set()  # the files of every task started, and of every saved start still waiting, this pass
+        for pending, saved in waiting:
+            if pending.exists():
+                taken |= set(saved.get("files", []))
         for task, on_base, files in ready_tasks(state):
-            if started >= slots:
+            if started + held >= slots:
                 break
             if files & taken:
                 continue
@@ -746,6 +749,9 @@ def one_pass(args):
                 if task["key"] not in SAID:  # once a run, not at every pass
                     say(f"{task['key']}: not started: {why}")
                     SAID.add(task["key"])
+                if (FEED / f"{task['key']}.start").exists():  # a 5xx or no answer: obid may have made it, so it
+                    held += 1  # holds its slot and its files from here on, as a saved start does
+                    taken |= files
                 continue
             item = {"key": task["key"], "title": task["title"], "job": oby_id, "state": "running",
                     "files": sorted(files), "started": time.strftime("%Y-%m-%dT%H:%M:%S")}

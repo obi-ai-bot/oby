@@ -775,6 +775,38 @@ class ObyFeed(unittest.TestCase):
                 self.assertEqual(self.feed.load_state()["A00-98"]["job"], "job-7" if made else "job-9")
                 self.assertFalse((self.feed.FEED / "A00-98.start").exists())
 
+    def test_feedalive_1_a_start_left_unanswered_this_pass_holds_its_slot_and_files_at_once(self):
+        """obid may have made a job it answered with a 503. With --max 1 and two ready tasks, the first start's 503
+        holds the one slot, so the second isn't sent; and a saved start still waiting holds its files, so a ready task
+        on the same file isn't sent while one on another file is."""
+        for case in ("slot", "files"):
+            with self.subTest(case=case):
+                self.feed.FEED = self.dir / f"feed-{case}"
+                if case == "files":
+                    self.saved_start("A00-96")  # its files: A00-96.py
+                tasks = [({"key": "A00-97", "title": "first", "body": ""}, True, {"A00-96.py" if case == "files" else "a.py"}),
+                         ({"key": "A00-98", "title": "second", "body": ""}, True, {"b.py"})]
+                self.feed.ready_tasks = lambda state: [t for t in tasks if t[0]["key"] not in state]
+                self.feed.free_gb = lambda: 100.0
+                self.feed.oby_jobs = lambda: []
+                sent = []
+
+                def api(method, path, body=None, timeout=30):
+                    sent.append(body["job"]["clientRequestId"].rsplit("-", 1)[0])
+                    if case == "slot" or sent[-1] == "feed-A00-96":
+                        return 503, {"error": "restarting"}
+                    return 201, {"id": f"job-{len(sent)}"}
+
+                self.feed.api = api
+                self.feed.one_pass(Namespace(max=1 if case == "slot" else 3, min_free_gb=0, dry_run=False,
+                                             account="acct"))
+                if case == "slot":
+                    self.assertEqual(sent, ["feed-A00-97"])
+                    self.assertTrue((self.feed.FEED / "A00-97.start").exists())
+                else:
+                    self.assertEqual(sent, ["feed-A00-96", "feed-A00-98"])
+                self.assertNotIn("A00-97", self.feed.load_state())
+
     def test_feedalive_1_saved_starts_hold_slots_and_are_sent_again_only_into_free_ones(self):
         """Saved starts obid never made count against --max and the disk check: with one task under way and --max 2,
         only the first of two saved starts is sent again, exactly as saved; with no slot or the disk under the minimum,
