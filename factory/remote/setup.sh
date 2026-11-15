@@ -28,8 +28,10 @@
 # builder owned any part of is installed afresh), and Kani at its pin (cargo-kani in .cargo, its bundle in
 # .kani, its nightly in .rustup) and cargo-mutants at its own pin (in .cargo), installed by root and given
 # to root, tightened with tighten.sh's rule and proven to run for the builder, Kani offline on a scratch
-# harness, cargo-mutants by its version; Quint at its pin, installed by root with npm (--ignore-scripts) into
-# /usr/local/lib/quint/<pin> and linked from /usr/local/bin, its evaluator and Apalache checked against their
+# harness, cargo-mutants by its version; Quint at its pin, installed by root with `npm ci --ignore-scripts` from
+# factory/remote/quint's committed lockfile (whose Quint must be the pin, or setup stops before it touches the
+# host) into /usr/local/lib/quint/<pin>, installed afresh unless that copy of the lockfile is there, and linked
+# from /usr/local/bin, its evaluator and Apalache checked against their
 # SHA-256s and unpacked into .quint by root, which runs none of it, .quint given to root, then proven for the
 # builder, its only run, with no network and a read-only home (typecheck, run and verify on a scratch model,
 # Java 17 or newer); setup stops naming any of its home, keys or toolchain the builder can still write, and
@@ -86,6 +88,33 @@ if [[ -n "$pins" ]]; then
     printf 'rust %s\nnode %s\ngitleaks %s %s\n' "$rust" "$node" "$gitleaks" "$gitleaks_sha"
     exit 0
 fi
+# Quint's npm tree is the committed lockfile's, and its Quint is the pin, or nothing reaches the host (REMOTE-54).
+quint_package="$here/quint/package.json"
+quint_lock="$here/quint/package-lock.json"
+for file in "$quint_package" "$quint_lock"; do
+    if [[ ! -f "$file" ]]; then
+        echo "setup.sh: $file is missing: quint $quint installs only from it" >&2
+        exit 1
+    fi
+done
+quint_found=$(python3 -I -c 'import json, sys
+def at(path, *keys):
+    try:
+        value = json.load(open(path))
+    except (OSError, ValueError):
+        return "unreadable"
+    for key in keys:
+        value = value.get(key) if isinstance(value, dict) else None
+    return value if isinstance(value, str) and value.split() == [value] else "none"
+print(at(sys.argv[1], "dependencies", "@informalsystems/quint"),
+      at(sys.argv[2], "packages", "", "dependencies", "@informalsystems/quint"),
+      at(sys.argv[2], "packages", "node_modules/@informalsystems/quint", "version"))' "$quint_package" "$quint_lock")
+if [[ "$quint_found" != "$quint $quint $quint" ]]; then
+    read -r found_package found_wants found_locked <<<"$quint_found"
+    echo "setup.sh: $here/quint isn't at quint's pin $quint: package.json wants $found_package, package-lock.json" \
+        "wants $found_wants and locks $found_locked" >&2
+    exit 1
+fi
 
 echo "setup.sh: setting up $host with rust $rust, node $node, gitleaks $gitleaks"
 
@@ -108,6 +137,8 @@ fi' <"$here/oby-remote-gate"
     printf '%s=%q\n' MUTANTS "$mutants"
     printf '%s=%q\n' QUINT "$quint" QUINT_APALACHE "$quint_apalache" QUINT_APALACHE_SHA "$quint_apalache_sha" \
         QUINT_EVALUATOR "$quint_evaluator" QUINT_EVALUATOR_SHA "$quint_evaluator_sha"
+    printf '%s=%q\n' QUINT_PREFIX "/usr/local/lib/quint/$quint" QUINT_LINK /usr/local/bin/quint \
+        QUINT_PACKAGE "$(<"$quint_package")" QUINT_LOCK "$(<"$quint_lock")"
     cat "$here/tighten.sh"
     cat <<'REMOTE'
 # The gates' root (REMOTE-32): the ssh user's alone, 0700 even when it already exists, so no builder run can open
@@ -187,27 +218,34 @@ echo "setup.sh: installing cargo-mutants $1"
 cargo install --locked cargo-mutants --version "$1"' _ "$MUTANTS"
     # tar, run as root, keeps the owners the bundle's archive names: all of it is root's.
     sudo -n chown -R -h root:root "$home/.kani"
-    # Quint for builders' design models (A00-40), installed by root as Kani is: the npm package in a prefix of its pin,
-    # with none of its dependencies' install scripts, linked from /usr/local/bin; its Rust evaluator and Apalache
-    # fetched here and checked against their SHA-256s into .quint, where Quint looks, so a builder run, offline,
-    # downloads nothing. Root only installs and unpacks: no code from the npm tree or the downloads runs as root, and
-    # the builder's proof below is Quint's first run. Left as it is at its pin.
-    local package="/usr/local/lib/quint/$QUINT/lib/node_modules/@informalsystems/quint/package.json"
+    # Quint for builders' design models (A00-40), installed by root as Kani is: the committed lockfile's npm tree in a
+    # prefix of its pin (REMOTE-53), with none of its install scripts, linked from /usr/local/bin; its Rust evaluator
+    # and Apalache fetched here and checked against their SHA-256s into .quint, where Quint looks, so a builder run,
+    # offline, downloads nothing. Root only installs and unpacks: no code from the npm tree or the downloads runs as
+    # root, and the builder's proof below is Quint's first run. Left as it is only when the prefix holds this lockfile
+    # (REMOTE-55): an install from before it is installed afresh.
+    local package="$QUINT_PREFIX/node_modules/@informalsystems/quint/package.json"
     local apalache="$home/.quint/apalache-dist-$QUINT_APALACHE" evaluator="$home/.quint/rust-evaluator-$QUINT_EVALUATOR"
-    if [[ "$(readlink -f /usr/local/bin/quint 2>/dev/null)" == "/usr/local/lib/quint/$QUINT/"* ]] &&
+    if [[ "$(readlink -f "$QUINT_LINK" 2>/dev/null)" == "$QUINT_PREFIX/node_modules/"* ]] &&
+        cmp -s "$QUINT_PREFIX/package-lock.json" <(printf '%s\n' "$QUINT_LOCK") &&
         [[ "$(sed -nE 's/^  "version": "([^"]+)",$/\1/p' "$package" 2>/dev/null)" == "$QUINT" ]] &&
         [[ -x "$apalache/apalache/bin/apalache-mc" && -x "$evaluator/quint_evaluator" ]]; then
         printf 'setup.sh: %s\n' "quint $QUINT already installed"
     else
         printf 'setup.sh: %s\n' "installing quint $QUINT"
-        local cache
+        local cache sent
         cache=$(mktemp -d)
-        sudo -n rm -rf "/usr/local/lib/quint/$QUINT"
-        sudo -n env npm_config_cache="$cache" \
-            npm install -g --prefix "/usr/local/lib/quint/$QUINT" "@informalsystems/quint@$QUINT" --ignore-scripts
+        sent=$(mktemp -d)
+        printf '%s\n' "$QUINT_PACKAGE" >"$sent/package.json"
+        printf '%s\n' "$QUINT_LOCK" >"$sent/package-lock.json"
+        sudo -n rm -rf "$QUINT_PREFIX"
+        sudo -n install -d -o root -g root -m 755 "$QUINT_PREFIX"
+        sudo -n install -o root -g root -m 644 "$sent/package.json" "$sent/package-lock.json" "$QUINT_PREFIX"
+        rm -rf "$sent"
+        sudo -n env npm_config_cache="$cache" npm ci --ignore-scripts --prefix "$QUINT_PREFIX"
         sudo -n rm -rf "$cache"
-        sudo -n chown -R -h root:root "/usr/local/lib/quint/$QUINT"
-        sudo -n ln -sfn "/usr/local/lib/quint/$QUINT/bin/quint" /usr/local/bin/quint
+        sudo -n chown -R -h root:root "$QUINT_PREFIX"
+        sudo -n ln -sfn "$QUINT_PREFIX/node_modules/.bin/quint" "$QUINT_LINK"
         local download asset=quint_evaluator-x86_64-unknown-linux-gnu.tar.gz
         download=$(mktemp -d)
         curl -fsSLo "$download/apalache.tgz" \

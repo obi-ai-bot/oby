@@ -32,6 +32,7 @@ TIGHTEN = FACTORY / "remote" / "tighten.sh"
 CHECK = FACTORY.parent / "scripts" / "oby-check.sh"
 CI = FACTORY.parent / ".github" / "workflows" / "ci.yml"
 MODEL = FACTORY.parent / "docs" / "models" / "job_race.qnt"
+QUINT = FACTORY / "remote" / "quint"
 
 # The stand-in check: the plan prints $FAKE/groups' groups; a run records its slot, CARGO_TARGET_DIR,
 # OBY_CHECK_ONLY, its pid and a background child's (and in $FAKE/env its OBY_BUILD_JOBS, OBY_CHECK_CACHE
@@ -575,8 +576,10 @@ class SetupBuilder(unittest.TestCase):
     def rights(self, text):
         (self.dir / "rights").write_text(text + "\n")
 
-    def builder(self):
-        return subprocess.run(["bash", "-c", '. "$0"; builder', str(self.functions)], cwd=self.dir,
+    def builder(self, *quint):
+        """The host script's builder function; with a prefix and a link, Quint's in place of /usr/local's."""
+        return subprocess.run(["bash", "-c", '. "$0"; if (($#)); then QUINT_PREFIX=$1 QUINT_LINK=$2; fi; builder',
+                               str(self.functions), *map(str, quint)], cwd=self.dir,
                               env=dict(os.environ, PATH=f"{self.bin}{os.pathsep}{os.environ['PATH']}",
                                        HOME=str(self.dir)),
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
@@ -783,15 +786,14 @@ class SetupBuilder(unittest.TestCase):
         calls = self.calls()
         quint = re.search(r"^QUINT=(\S+)$", self.sent.read_text(), re.M).group(1)
         self.assertEqual(quint, "0.33.1")
-        [install] = [c for c in calls if "npm install" in c]
-        self.assertIn(f"npm install -g --prefix /usr/local/lib/quint/{quint} @informalsystems/quint@{quint}", install)
-        self.assertTrue(install.endswith(" --ignore-scripts"), install)
+        [install] = [c for c in calls if " npm " in c]
+        self.assertTrue(install.endswith(f" npm ci --ignore-scripts --prefix /usr/local/lib/quint/{quint}"), install)
         self.assertTrue(install.startswith("-n env npm_config_cache="), install)
         self.assertNotIn("-u oby-builder", install)
         cache = install.removeprefix("-n env npm_config_cache=").split()[0]
         self.assertFalse(cache.startswith((str(home), str(self.dir / ".npm"))), install)
         self.assertIn(f"-n rm -rf {cache}", calls)
-        self.assertIn(f"-n ln -sfn /usr/local/lib/quint/{quint}/bin/quint /usr/local/bin/quint", calls)
+        self.assertIn(f"-n ln -sfn /usr/local/lib/quint/{quint}/node_modules/.bin/quint /usr/local/bin/quint", calls)
         # Apalache and the evaluator: fetched by the ssh user, checked against setup.sh's SHA-256s, unpacked by root.
         sent = self.sent.read_text()
         pins = {name: re.search(rf"^{name}=(\S+)$", sent, re.M).group(1)
@@ -896,6 +898,183 @@ class SetupBuilder(unittest.TestCase):
                                         f"{home}/.quint/rust-evaluator-v0.7.1"])
         self.assertIn(f"setup.sh: oby-builder can still write {home}/.quint/rust-evaluator-v0.7.1",
                       done.stdout.splitlines())
+
+    def test_remote_53_setup_installs_quint_from_the_lockfile_with_npm_ci(self):
+        # The two files travel in the one host script, byte for byte as committed.
+        given = self.dir / "given"
+        given.mkdir()
+        subprocess.run(["bash", "-c", '. "$0"; printf "%s\\n" "$QUINT_PACKAGE" >"$1"; printf "%s\\n" "$QUINT_LOCK" >"$2"',
+                        str(self.functions), str(given / "package.json"), str(given / "package-lock.json")], check=True)
+        for name in ("package.json", "package-lock.json"):
+            self.assertEqual((given / name).read_bytes(), (QUINT / name).read_bytes(), name)
+        prefix = "/usr/local/lib/quint/0.33.1"
+        self.assertIn(f"\nQUINT_PREFIX={prefix}\nQUINT_LINK=/usr/local/bin/quint\n", self.sent.read_text())
+        # A sudo that keeps the files it installs into a folder, and is the stand-in above for everything else.
+        installed = self.dir / "installed"
+        installed.mkdir()
+        (self.bin / "sudo").rename(self.bin / "stand-in-sudo")
+        self.tool("sudo", f'case "$*" in "-n install -o root -g root -m 644 "*) cp "$9" "${{10}}" "{installed}";; esac\n'
+                          f'exec "{self.bin}/stand-in-sudo" "$@"')
+        done = self.builder()
+        self.assertEqual(done.returncode, 0, done.stdout)
+        calls = self.calls()
+        removed = calls.index(f"-n rm -rf {prefix}")
+        made = calls.index(f"-n install -d -o root -g root -m 755 {prefix}")
+        [written] = [c for c in calls if c.startswith("-n install -o root -g root -m 644 ") and c.endswith(f" {prefix}")]
+        self.assertEqual([Path(w).name for w in written.split()[-3:-1]], ["package.json", "package-lock.json"], written)
+        for name in ("package.json", "package-lock.json"):
+            self.assertEqual((installed / name).read_bytes(), (QUINT / name).read_bytes(), name)
+        [ci] = [c for c in calls if "npm" in c.split()]
+        cache = ci.removeprefix("-n env npm_config_cache=").split()[0]
+        self.assertEqual(ci, f"-n env npm_config_cache={cache} npm ci --ignore-scripts --prefix {prefix}")
+        given_to_root = calls.index(f"-n chown -R -h root:root {prefix}")
+        linked = calls.index(f"-n ln -sfn {prefix}/node_modules/.bin/quint /usr/local/bin/quint")
+        order = [removed, made, calls.index(written), calls.index(ci), calls.index(f"-n rm -rf {cache}"), given_to_root,
+                 linked]
+        self.assertEqual(order, sorted(order), calls)
+        self.assertFalse([c for c in calls if "npm install" in c or ("-u oby-builder" in c and "npm" in c)], calls)
+        self.assertNotIn("npm install", SETUP.read_text())
+
+    def quint_install(self, lock):
+        """Quint at its pin in a prefix of the test's, a link to it and the downloads in the builder's .quint: (the
+        prefix, the link). lock is the prefix's lockfile, or None for an install from before it (A00-40's, with
+        npm install -g into lib/node_modules)."""
+        prefix = self.dir.resolve() / "lib-quint" / "0.33.1"
+        modules = prefix / ("node_modules" if lock is not None else "lib/node_modules")
+        quint = modules / "@informalsystems" / "quint"
+        (quint / "dist" / "src").mkdir(parents=True)
+        (quint / "dist" / "src" / "cli.js").write_text("#!/usr/bin/env node\n")
+        (quint / "package.json").write_text('{\n  "name": "@informalsystems/quint",\n  "version": "0.33.1",\n'
+                                            '  "main": "dist/src/index.js"\n}\n')
+        if lock is None:
+            program = prefix / "bin" / "quint"
+            program.parent.mkdir()
+            program.symlink_to("../lib/node_modules/@informalsystems/quint/dist/src/cli.js")
+        else:
+            program = modules / ".bin" / "quint"
+            program.parent.mkdir()
+            program.symlink_to("../@informalsystems/quint/dist/src/cli.js")
+            (prefix / "package-lock.json").write_bytes(lock)
+        link = self.dir.resolve() / "bin-quint"
+        link.symlink_to(program)
+        home = self.dir / "builder-home"
+        for tool in ("apalache-dist-0.62.4/apalache/bin/apalache-mc", "rust-evaluator-v0.7.1/quint_evaluator"):
+            path = home / ".quint" / tool
+            path.parent.mkdir(parents=True)
+            path.write_text("#!/bin/sh\n")
+            path.chmod(0o755)
+        return prefix, link
+
+    def test_remote_55_an_unpinned_install_is_installed_afresh(self):
+        prefix, link = self.quint_install(None)
+        done = self.builder(prefix, link)
+        self.assertEqual(done.returncode, 0, done.stdout)
+        self.assertIn("setup.sh: installing quint 0.33.1", done.stdout.splitlines())
+        calls = self.calls()
+        [ci] = [c for c in calls if "npm" in c.split()]
+        self.assertTrue(ci.endswith(f" npm ci --ignore-scripts --prefix {prefix}"), ci)
+        self.assertLess(calls.index(f"-n rm -rf {prefix}"), calls.index(ci), calls)
+        self.assertLess(calls.index(ci), calls.index(f"-n ln -sfn {prefix}/node_modules/.bin/quint {link}"), calls)
+
+    def test_remote_55_an_install_from_this_lockfile_is_left_as_it_is(self):
+        lock = (QUINT / "package-lock.json").read_bytes()
+        prefix, link = self.quint_install(lock)
+        done = self.builder(prefix, link)
+        self.assertEqual(done.returncode, 0, done.stdout)
+        self.assertIn("setup.sh: quint 0.33.1 already installed", done.stdout.splitlines())
+        calls = self.calls()
+        self.assertFalse([c for c in calls if "npm" in c or c == f"-n rm -rf {prefix}"], calls)
+        # A lockfile one byte apart from the committed one is installed afresh.
+        (prefix / "package-lock.json").write_bytes(lock + b"\n")
+        self.log.unlink()
+        done = self.builder(prefix, link)
+        self.assertEqual(done.returncode, 0, done.stdout)
+        self.assertIn("setup.sh: installing quint 0.33.1", done.stdout.splitlines())
+        self.assertTrue([c for c in self.calls() if c.endswith(f" npm ci --ignore-scripts --prefix {prefix}")])
+
+
+class QuintLock(unittest.TestCase):
+    """REMOTE-53 and 54: Quint's committed npm tree, and setup.sh stopping before any ssh call when it isn't at
+    setup.sh's pin."""
+
+    def test_remote_53_the_committed_lockfile_pins_every_package(self):
+        package = json.loads((QUINT / "package.json").read_text())
+        self.assertEqual(package, {"name": "oby-quint", "private": True,
+                                   "dependencies": {"@informalsystems/quint": "0.33.1"}})
+        lock = json.loads((QUINT / "package-lock.json").read_text())
+        self.assertEqual(lock["lockfileVersion"], 3)
+        self.assertEqual(lock["packages"][""]["dependencies"], {"@informalsystems/quint": "0.33.1"})
+        self.assertEqual(lock["packages"]["node_modules/@informalsystems/quint"]["version"], "0.33.1")
+        packages = {name: entry for name, entry in lock["packages"].items() if name}
+        self.assertGreater(len(packages), 1)
+        for name, entry in packages.items():
+            self.assertTrue(entry.get("integrity", "").startswith("sha512-"), name)
+            self.assertTrue(entry.get("resolved", "").startswith("https://registry.npmjs.org/"), name)
+        tracked = git("ls-files", "--", "factory/remote/quint", cwd=FACTORY.parent).splitlines()
+        self.assertEqual(sorted(tracked), ["factory/remote/quint/package-lock.json", "factory/remote/quint/package.json"])
+
+    def setup_copy(self, change):
+        """setup.sh and setup.sh --pins run from a copy of factory/remote/ (ci.yml where it looks), its quint folder
+        changed by change, with a stand-in ssh that records every call: (the run, the --pins run, ssh's calls)."""
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            shutil.copytree(FACTORY / "remote", root / "factory" / "remote")
+            (root / ".github" / "workflows").mkdir(parents=True)
+            shutil.copy(CI, root / ".github" / "workflows" / "ci.yml")
+            quint = root / "factory" / "remote" / "quint"
+            change(quint)
+            ssh = root / "bin" / "ssh"
+            ssh.parent.mkdir()
+            ssh.write_text(f'#!/bin/sh\necho "ssh $1" >>"{root}/ssh.log"\ncat >/dev/null\n')
+            ssh.chmod(0o755)
+            env = dict(os.environ, PATH=f"{ssh.parent}{os.pathsep}{os.environ['PATH']}")
+            setup = root / "factory" / "remote" / "setup.sh"
+            done = subprocess.run([str(setup)], env=env, capture_output=True, text=True, timeout=60)
+            pins = subprocess.run([str(setup), "--pins"], env=env, capture_output=True, text=True, timeout=60)
+            log = root / "ssh.log"
+            return done, pins, (log.read_text().splitlines() if log.exists() else []), quint
+
+    def lock_at(self, root=None, locked=None, package=None):
+        """A change that sets the lockfile's root dependency, its locked Quint or package.json's to a version."""
+        def change(quint):
+            lock = json.loads((quint / "package-lock.json").read_text())
+            lock["packages"][""]["dependencies"]["@informalsystems/quint"] = root or "0.33.1"
+            lock["packages"]["node_modules/@informalsystems/quint"]["version"] = locked or "0.33.1"
+            (quint / "package-lock.json").write_text(json.dumps(lock, indent=2) + "\n")
+            wanted = json.loads((quint / "package.json").read_text())
+            wanted["dependencies"]["@informalsystems/quint"] = package or "0.33.1"
+            (quint / "package.json").write_text(json.dumps(wanted, indent=2) + "\n")
+        return change
+
+    def test_remote_54_a_lockfile_that_disagrees_with_the_pin_stops_setup(self):
+        pins = subprocess.run([str(SETUP), "--pins"], capture_output=True, text=True, timeout=30).stdout
+        for change, said in (
+                (self.lock_at(root="0.33.0", locked="0.33.0"), "package.json wants 0.33.1, package-lock.json wants "
+                                                               "0.33.0 and locks 0.33.0"),
+                (self.lock_at(locked="0.33.0"), "package.json wants 0.33.1, package-lock.json wants 0.33.1 and locks "
+                                                "0.33.0"),
+                (self.lock_at(root="0.33.0"), "package.json wants 0.33.1, package-lock.json wants 0.33.0 and locks "
+                                              "0.33.1"),
+                (self.lock_at(package="^0.33.1"), "package.json wants ^0.33.1, package-lock.json wants 0.33.1 and "
+                                                  "locks 0.33.1")):
+            done, listed, ssh, quint = self.setup_copy(change)
+            self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+            self.assertIn(f"setup.sh: {quint} isn't at quint's pin 0.33.1: {said}", done.stderr.splitlines())
+            self.assertEqual(ssh, [], "setup reached the host")
+            self.assertEqual((listed.returncode, listed.stdout), (0, pins), listed.stderr)
+        # The committed files, unchanged, pass it and reach ssh.
+        done, _, ssh, _ = self.setup_copy(lambda quint: None)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(ssh, ["ssh oby-gate", "ssh oby-gate"])
+
+    def test_remote_54_a_missing_lockfile_stops_setup(self):
+        for name in ("package-lock.json", "package.json"):
+            done, listed, ssh, quint = self.setup_copy(lambda folder: (folder / name).unlink())
+            self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+            self.assertIn(f"setup.sh: {quint / name} is missing: quint 0.33.1 installs only from it",
+                          done.stderr.splitlines())
+            self.assertEqual(ssh, [], "setup reached the host")
+            self.assertEqual(listed.returncode, 0, listed.stderr)
 
 
 class Pins(unittest.TestCase):
