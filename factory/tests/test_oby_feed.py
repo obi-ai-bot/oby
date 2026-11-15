@@ -759,22 +759,29 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual(self.stand.sent, [])
         self.assertEqual((item["state"], item["note"]), ("failed", "attempt 3 of 3 ended: lost: obid no longer has its job"))
 
-    # FEEDLOOP-14: the last attempt's pull request is read before it ends, the one its rebuilt job published included
+    # FEEDLOOP-14: the pull request a rebuilt job published is read before it ends or retries, at any attempt
     def test_feedloop_14_a_last_attempt_reads_the_pull_request_its_job_published(self):
-        for case, state, files, want in (("merged by hand", "MERGED", "x.py", "merged"),
-                                         ("on a security path", "OPEN", "AGENTS.md", "waiting")):
-            with self.subTest(case=case):
-                self.setUp()
-                self.no_ready()
-                self.task("running", attempt=3, pr=None)  # a rebuilt job: its pull request isn't saved yet
-                self.stand.jobs[JOB].update(status="failed", published=f"https://github.com/{REPO}/pull/{PR}")
-                self.stand.view = {"headRefOid": OLD, "state": state, "files": [{"path": files}]}
-                self.one_pass()
-                item = self.task_now()
-                self.assertEqual(self.stand.sent, [])
-                self.assertEqual((item["state"], item["pr"]), (want, PR))
-                if want == "waiting":
-                    self.assertEqual(item["note"], f"{self.feed.SECURITY_HOLD} (AGENTS.md): merge it yourself")
+        cases = (("merged by hand", "MERGED", "x.py", "merged"), ("on a security path", "OPEN", "AGENTS.md", "waiting"))
+        for attempt in (1, 2, 3):
+            for case, state, files, want in cases:
+                with self.subTest(case=case, attempt=attempt):
+                    self.published_pull_request_decides(attempt, state, files, want)
+
+    def published_pull_request_decides(self, attempt, state, files, want):
+        """A failed job at `attempt` that published a pull request the task hasn't saved: one pass sends nothing,
+        and that pull request decides, merged by hand or touching a security path."""
+        self.setUp()
+        self.no_ready()
+        self.feed.free_gb = lambda: 100.0
+        self.task("running", attempt=attempt, pr=None)  # a rebuilt job: its pull request isn't saved yet
+        self.stand.jobs[JOB].update(status="failed", published=f"https://github.com/{REPO}/pull/{PR}")
+        self.stand.view = {"headRefOid": OLD, "state": state, "files": [{"path": files}]}
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual(self.stand.sent, [])
+        self.assertEqual((item["state"], item["pr"], item["attempt"]), (want, PR, attempt))
+        if want == "waiting":
+            self.assertEqual(item["note"], f"{self.feed.SECURITY_HOLD} (AGENTS.md): merge it yourself")
 
     # FEEDLOOP-15: a lost job that obid has a follow-up of is followed there, never rebuilt
     def test_feedloop_15_a_lost_job_with_a_follow_up_is_followed_not_rebuilt(self):

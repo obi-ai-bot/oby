@@ -347,16 +347,18 @@ def next_attempt(item, j, case=None):
 def retry(item, j, case, jobs):
     """Decides how the task carries on, as next_attempt() says: it ends now, or waits `retrying` for one_pass() to
     start its attempt through a new start's checks (--max, free disk, files, --dry-run). An attempt that ends it reads
-    its pull request first (the task's, or else the one its job published): one merged by hand ends it `merged`, one that touches a security path waits for the owner
+    its pull request first (the task's, or else the one its job published, saved on the task for any attempt, so
+    recheck() reads it before a retry is sent): one merged by hand ends it `merged`, one that touches a security path waits for the owner
     instead, and one that can't be read leaves the task as it was, judged again at the next pass. Returns True when it
     changed."""
     verdict, why = next_attempt(item, j, case)
     number = item.get("pr") or pr_number((j or {}).get("published"))  # a rebuilt job's own, not saved yet
+    if number:  # saved before any retry too, so recheck() reads it before anything is sent
+        item["pr"] = number
     if verdict == "end" and number:
         pr = gh_json("pr", "view", str(number), "--repo", GH_REPO, "--json", VIEW)
         if not pr:
             return False
-        item["pr"] = number
         if pr["state"] == "MERGED":
             merged(item, jobs)
             return True
