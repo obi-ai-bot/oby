@@ -203,9 +203,20 @@ fn planned_job(
     // Work planned after the turn read something untrusted starts now, marked untrusted, in the
     // owner's mode (the owner's decision of 2026-10-27, replacing 2026-10-23's Sandbox at most),
     // and publishes by itself as any job does (the owner's decision of 2026-10-24).
+    marked(
+        super::written_in(shared, asked.conversation, new),
+        asked,
+        researched,
+    )
+}
+
+/// The marks a job planned on `asked` gets: untrusted after research, and the owner's own
+/// conversation work on words an app of theirs signed, which merges by itself (MERGING-44).
+fn marked(new: NewJob, asked: &Asked<'_>, researched: bool) -> NewJob {
     NewJob {
         untrusted: researched,
-        ..super::written_in(shared, asked.conversation, new)
+        own_conversation: asked.signed,
+        ..new
     }
 }
 
@@ -1299,6 +1310,25 @@ mod tests {
         }
         // A name with a `/` reads as a branch by itself.
         assert!(says_branch("fix it on codex/7-x.", "codex/7-x"));
+    }
+
+    /// MERGING-44: a planned job is the owner's own conversation work exactly when an app of
+    /// theirs signed the turn's words, read or not.
+    #[test]
+    fn merging_44_signed_conversation_words_mark_the_jobs_they_plan() {
+        for (signed, researched) in [(true, false), (true, true), (false, false), (false, true)] {
+            let asked = Asked {
+                said: "Fix the docs",
+                attachments: &[],
+                jobs: &[],
+                conversation: "c",
+                turn: "t",
+                signed,
+            };
+            let new = marked(NewJob::default(), &asked, researched);
+            assert_eq!(new.own_conversation, signed, "{signed} {researched}");
+            assert_eq!(new.untrusted, researched, "{signed} {researched}");
+        }
     }
 
     #[test]
