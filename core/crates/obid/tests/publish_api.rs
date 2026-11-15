@@ -790,6 +790,23 @@ fn calls_now(folder: &Path) -> String {
     kept(folder, "calls")
 }
 
+/// Waits until obid has run at least `passes` whole follow passes after this call, each of which
+/// settles reviews after it reads the due pull requests: it counts the stand-in `gh`'s `pr view`
+/// reads with `--repo` (the follow read's, `github::view_merging`), one a pass while the pull
+/// request stays open and unread, and waits for `passes + 1` more, the first of which may be a
+/// pass already under way.
+fn follow_passes(folder: &Path, passes: usize) {
+    let reads = || {
+        let calls = calls_now(folder);
+        let reads = calls.lines().filter(|l| l.starts_with("pr view "));
+        reads.filter(|l| l.contains(" --repo ")).count()
+    };
+    let from = reads();
+    within(60, &format!("{passes} follow passes"), || {
+        (reads() > from + passes).then_some(())
+    });
+}
+
 /// A possible secret in a commit that the fix round leaves there: nothing goes out (no push, no
 /// pull request), the job fails naming the file, the line and the rule, and never the secret.
 #[test]
@@ -3719,7 +3736,7 @@ fn recovery_15_a_second_review_with_no_verdict_tries_no_other_reviewer() {
         (items.len() == 1).then_some(items)
     });
     assert_eq!(review_of(&obid, &id, 1)["account"], "other");
-    std::thread::sleep(std::time::Duration::from_secs(5));
+    follow_passes(&folder.0, 3);
     assert_eq!(reviews_of(&obid, &id).len(), 2, "{}", obid.log());
     let open = open_items(&obid, &id);
     assert_eq!(open.len(), 1, "{open:?}");
@@ -3750,7 +3767,7 @@ fn recovery_15_a_second_review_the_owner_stopped_stays_stopped() {
         job["reviewError"],
         "Oby's review didn't finish: it was stopped"
     );
-    std::thread::sleep(std::time::Duration::from_secs(5));
+    follow_passes(&folder.0, 3);
     assert_eq!(reviews_of(&obid, &id).len(), 2, "{}", obid.log());
     let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
     assert!(job["reviewing"].is_null(), "{job}");
