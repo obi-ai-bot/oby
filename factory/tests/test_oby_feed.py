@@ -786,17 +786,19 @@ class ObyFeed(unittest.TestCase):
     # FEEDLOOP-15: a lost job that obid has a follow-up of is followed there, never rebuilt
     def test_feedloop_15_a_lost_job_with_a_follow_up_is_followed_not_rebuilt(self):
         words = self.feed.AGAIN["queue"].format(head=OLD)
-        for case in ("reviewing", "retrying a follow-up", "retrying a build"):
+        for case in ("reviewing", "retrying a follow-up", "retrying a build",
+                     "retrying a follow-up, its job still there", "retrying a build, its job still there"):
             with self.subTest(case=case):
                 self.setUp()
                 self.no_ready()
                 self.feed.free_gb = lambda: 100.0
+                old = JOB if case.endswith("still there") else "job-gone"  # JOB is in obid; job-gone is lost (404)
                 if case == "reviewing":
-                    self.task("reviewing", job="job-gone", head=OLD, attempt=1)
+                    self.task("reviewing", job=old, head=OLD, attempt=1)
                 else:
-                    kind = "message" if case.endswith("follow-up") else "build"
-                    self.task("retrying", job="job-gone", head=OLD, attempt=1, retry=kind, words=words, note=words)
-                follow_up = {"id": "job-9", "kind": "build", "status": "running", "followUpOf": "job-gone"}
+                    kind = "message" if "follow-up" in case else "build"
+                    self.task("retrying", job=old, head=OLD, attempt=1, retry=kind, words=words, note=words)
+                follow_up = {"id": "job-9", "kind": "build", "status": "running", "followUpOf": old}
                 self.stand.jobs["job-9"] = follow_up
                 self.feed.oby_jobs = lambda: [follow_up]
                 self.one_pass()

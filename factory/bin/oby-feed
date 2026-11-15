@@ -379,8 +379,8 @@ def retry(item, j, case, jobs):
 def recheck(item, jobs):
     """One look at a `retrying` task in the pass that may send its attempt, as things may have moved while it waited.
     Its pull request's current state and files are read first: merged or closed by hand ends it, and one that touches
-    a security path waits for the owner, its pull request kept, whichever attempt it waited for. A lost job that obid
-    has a follow-up of is followed there, nothing rebuilt. Then a follow-up whose job obid lost takes the new-build path, or ends at the attempt cap (next_attempt()). Returns (changed, clear):
+    a security path waits for the owner, its pull request kept, whichever attempt it waited for. A job that obid has a
+    follow-up of, lost or not, is followed there, nothing sent. Then a follow-up whose job obid lost takes the new-build path, or ends at the attempt cap (next_attempt()). Returns (changed, clear):
     clear says its attempt may be sent in this pass; a pull request that can't be read sends nothing until one can."""
     lost = api("GET", f"/v1/jobs/{item['job']}")[0] == 404
     if item.get("pr"):
@@ -400,7 +400,7 @@ def recheck(item, jobs):
                 gone = " and obid no longer has its job" if lost else ""
                 item.update(state="waiting", note=f"{SECURITY_HOLD} ({hit[0]}){gone}: merge it yourself")
             return True, False
-    if lost and follow_up(item, jobs):  # a follow-up of the lost job carries it on: nothing is rebuilt
+    if follow_up(item, jobs):  # a follow-up obid started while it waited, its job lost or not, carries it on: nothing is sent
         return True, False
     if item.get("retry") == "message" and lost:
         verdict, why = next_attempt(item, None, None)
