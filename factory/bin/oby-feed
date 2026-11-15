@@ -400,16 +400,26 @@ def arm(item, head, tools):
 
 
 def merged(item, jobs):
+    """GitHub merged the pull request: its jobs are deleted. The merge is kept on the task at once, so a cleanup
+    obid stopped answering partway through (the build job gone, a review left) is finished at a later pass, never
+    read as a task whose job obid lost."""
+    item["mergeSeen"] = True
     missed = len(OBID_MISSED)
-    gone = delete_jobs(family(item["job"], jobs))
-    if len(OBID_MISSED) > missed:  # obid went away: recorded at a pass that can delete its jobs
+    gone = item.get("removed", 0) + delete_jobs(family(item["job"], jobs))
+    if len(OBID_MISSED) > missed:  # obid went away: the rest is deleted at a pass that gets through
+        item.update(removed=gone, note="merged; removing its Oby jobs, tried again at the next pass")
         return
+    item.pop("mergeSeen")
+    item.pop("removed", None)
     item.update(state="merged", note=f"merged; {gone} Oby jobs and their worktrees removed")
 
 
 def follow(item, jobs):
     """One look at a task that is under way or waiting. Returns True when it changed."""
     key = item["key"]
+    if item.get("mergeSeen"):  # merged, its cleanup cut short: finish it, whether or not the build job is left
+        merged(item, jobs)
+        return True
     code, j = api("GET", f"/v1/jobs/{item['job']}")
     if code == 404:
         item.update(state="failed", note="obid no longer has its job")

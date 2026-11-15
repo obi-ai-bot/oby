@@ -16,6 +16,7 @@ Run from the repository root: python3 -m unittest discover -s factory/tests -p '
 
 import http.client
 import importlib.machinery
+import io
 import importlib.util
 import json
 import os
@@ -412,6 +413,43 @@ class ObyFeed(unittest.TestCase):
         with self.obid(answer):
             self.assertIsNone(self.one_pass())
         self.assertEqual(self.task_now()["state"], "waiting")
+
+    def test_feedalive_1_a_merge_whose_cleanup_obid_cut_short_is_finished_never_failed(self):
+        """GitHub merged it; obid deletes the build job, then drops the review's delete. The next pass, with the build
+        job gone (404), finishes deleting the review and records the merge: never `failed` for the missing job."""
+        self.task("waiting", head=OLD)
+        self.stand.view = {"headRefOid": OLD, "state": "MERGED", "files": []}
+        self.no_ready()
+        review = {"id": "rev-1", "kind": "review", "reviewOf": JOB}
+        alive, calls, cut = {JOB, "rev-1"}, [], [True]
+
+        def answer(method, url):
+            path = url.split("127.0.0.1:7811", 1)[-1] if "7811" in url else url
+            calls.append((method, path))
+            if path.endswith("/v1/jobs?limit=200"):
+                return json.dumps([j for j in ({"id": JOB, "kind": "build"}, review) if j["id"] in alive]).encode()
+            jid = path.rsplit("/", 1)[1]
+            if jid not in alive:
+                raise self.feed.urllib.error.HTTPError(url, 404, "Not Found", {}, io.BytesIO(b'{"error": "no such job"}'))
+            if method == "GET":
+                return json.dumps({"id": jid, "status": "done"}).encode()
+            if jid == "rev-1" and cut[0]:
+                raise self.feed.urllib.error.URLError("Connection refused")
+            alive.discard(jid)
+            return b""
+
+        with self.obid(answer):
+            self.assertIsNone(self.one_pass())
+            self.assertEqual(alive, {"rev-1"})
+            self.assertNotEqual(self.task_now()["state"], "failed")
+            cut[0] = False
+            calls.clear()
+            self.one_pass()
+        item = self.task_now()
+        self.assertEqual(item["state"], "merged")
+        self.assertIn("2 Oby jobs", item["note"])
+        self.assertEqual(alive, set())
+        self.assertNotIn(("GET", f"/v1/jobs/{JOB}"), calls)
 
     def two_waiting_and_one_ready(self):
         """Two waiting tasks and a ready one: what a pass looks at once a request went unanswered."""
