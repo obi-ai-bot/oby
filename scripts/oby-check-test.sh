@@ -336,9 +336,10 @@ git reset --quiet --hard HEAD~2
 unset OBY_CHECK_PATHS
 
 # A raise of a line limit names its payback and comes alone (docs/contracts/ci.md, CI-39 to 41), on
-# the commit's own copy of the script, committed here as the base within every limit, with a stand-in
-# for this test, which the check runs when the script changes. Each case is a commit on it.
-printf '%s\n' "$committed_script" >scripts/oby-check.sh
+# the commit's own copy of the script, committed here as the base within every limit and with none of
+# its payback lines, with a stand-in for this test, which the check runs when the script changes. Each
+# case is a commit on it.
+grep -v '^# payback: ' <<<"$committed_script" >scripts/oby-check.sh
 agents_md_at_limit
 raise_limit=$(sed -n 's/^obid_lines_limit=//p' scripts/oby-check.sh)
 raise_jobs=$(sed -n 's/^jobs_rs_limit=//p' scripts/oby-check.sh)
