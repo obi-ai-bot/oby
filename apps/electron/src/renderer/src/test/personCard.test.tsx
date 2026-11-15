@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { wordsOf } from '../../../shared/words';
 import type { InboxItem } from '../obid';
 import { fresh, launch, mac, served } from './macAlerts';
+import { liveBridge } from './liveBridge';
 
 // The person's side of a member's thread (docs/contracts/peer-thread.md, PEER-30 to PEER-36), as it
 // really renders on Home's stack and in the thread, on an obid that answers from here. Clicks are the
@@ -14,7 +15,6 @@ const page = vi.hoisted(() => {
     routes: {} as Record<string, () => { status: number; text: string }>,
     clicks: {} as Record<string, () => void>,
     typed: null as null | ((words: string | null) => void),
-    chunk: (() => {}) as (text: string) => void,
   };
   g.location = { search: '' };
   const kept = new Map<string, string>();
@@ -30,11 +30,13 @@ const page = vi.hoisted(() => {
         the.calls.push({ method, path, body });
         return the.routes[`${method} ${path}`]?.() ?? { status: 404, text: '{}' };
       },
-      follow: (chunk: typeof the.chunk) => { the.chunk = chunk; return () => {}; },
     },
   } };
   return the;
 });
+// main's one follower of obid's events, as the page meets it
+const bridge = liveBridge();
+Object.assign((globalThis as unknown as { window: { app: { obid: object } } }).window.app.obid, bridge.obid);
 vi.mock('react', async (original) => ({
   ...await original<typeof import('react')>(),
   useSyncExternalStore: (_: unknown, get: () => unknown) => get(),
@@ -82,9 +84,9 @@ let m: Mods;
 let clock = 0;
 const stack = () => renderToStaticMarkup(<m.Stack active onOpen={none} onOpenTalk={none} />).replaceAll('<!-- -->', '');
 const thread = (owner = 'alex') => renderToStaticMarkup(<m.View owner={owner} leaving={false} onClose={none} onGone={none} />).replaceAll('<!-- -->', '');
-// obid's own event, through the stream, as every device hears it
+// obid's own event, through main, as every device hears it
 const event = async (i: InboxItem) => {
-  page.chunk(`event: inbox\ndata: ${JSON.stringify(i)}\n\n`);
+  bridge.event('inbox', i);
   await vi.waitFor(() => expect(m.live.liveState().inbox.some((x) => x.id === i.id)).toBe(i.state !== 'done'));
 };
 // the buttons of what's on screen, past the first half second that answers nothing
@@ -92,10 +94,10 @@ const shown = (render: () => string) => { const html = render(); clock += 1000; 
 
 beforeAll(async () => {
   vi.spyOn(performance, 'now').mockImplementation(() => clock);
-  for (const [path, value] of Object.entries({ '/v1/status': { accounts: [] }, '/v1/jobs?limit=100': [], '/v1/conversations?limit=200': [], '/v1/inbox': [] })) page.routes[`GET ${path}`] = ok(value);
+  page.routes['GET /v1/status'] = ok({ accounts: [] });
   m = { live: await import('../live'), Stack: (await import('../AskStack')).default, View: (await import('../PeerThread')).default };
   m.live.connect();
-  page.chunk(': hello\n\n');
+  bridge.sync({ status: { accounts: [] } });
   await vi.waitFor(() => expect(m.live.liveState().connection).toBe('live'));
 });
 beforeEach(() => { page.calls = []; });

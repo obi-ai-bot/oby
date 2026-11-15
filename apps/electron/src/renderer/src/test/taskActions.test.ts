@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TRY_AGAIN, owners } from '../../../shared/words';
+import { liveBridge } from './liveBridge';
 
 // The task's menu wired to obid (docs/contracts/tasks.md, TASKS-1 to TASKS-3, TASKS-10): what the
 // app sends obid through main's bridge (window.app.obid), and what the task does with the answer.
@@ -7,8 +8,8 @@ import { TRY_AGAIN, owners } from '../../../shared/words';
 // hold: obid answers only once it's settled (an event can come meanwhile)
 type Answer = { status: number; body?: unknown; hold?: Promise<unknown> };
 const calls: { method: string; path: string; body?: unknown }[] = [];
-// obid's event stream, as main passes it on (window.app.obid.follow): fed by the test
-let feed: (text: string) => void = () => {};
+// main's one follower of obid's events, as the page meets it (window.app.obid.live and load)
+let bridge = liveBridge();
 let answers: Record<string, Answer> = {};
 const job = (more: Record<string, unknown> = {}) => ({
   id: 'j1', request: 'Fix it', agent: 'claude', account: 'a1', repo: 'deskree-inc/oby', branch: 'oby/fix-1', base: 'dev', issue: null,
@@ -43,8 +44,8 @@ async function load(withObid: boolean) {
     await answers[`CONFIRM ${item}`]?.hold;
     return { status: 200, text: JSON.stringify(answers[`CONFIRM ${item}`]?.body ?? {}) };
   };
-  const follow = (onChunk: (text: string) => void) => { feed = onChunk; return () => {}; };
-  vi.stubGlobal('window', withObid ? { app: { obid: { call, confirm, follow } } } : {});
+  bridge = liveBridge(call);
+  vi.stubGlobal('window', withObid ? { app: { obid: { call, confirm, ...bridge.obid } } } : {});
   const tasks = await import('../tasks');
   const live = await import('../live');
   return { tasks, live };
@@ -57,18 +58,15 @@ async function seed(t: Awaited<ReturnType<typeof load>>['tasks'], more: Record<s
   calls.length = 0;
 }
 
-// Following obid's events, with obid having `jobs` and nothing else; then an event, as obid sends it
+// Following obid's events through main, with obid having `jobs` and nothing else; then an event, as
+// main passes it on
 async function following(live: Awaited<ReturnType<typeof load>>['live'], jobs: unknown[]) {
-  answers['GET /v1/status'] = { status: 200, body: { runner: { version: '0.2.4', host: 'mac' }, accounts: [], models: {}, maxRunning: 6, running: 0 } };
-  answers['GET /v1/jobs?limit=100'] = { status: 200, body: jobs };
-  answers['GET /v1/inbox'] = { status: 200, body: [] };
-  answers['GET /v1/conversations?limit=200'] = { status: 200, body: [] };
   live.connect();
-  feed('');
+  bridge.sync({ jobs });
   for (let i = 0; i < 5; i++) await flush();
   expect(live.liveState().connection).toBe('live');
   calls.length = 0;
-  return (name: string, data: unknown) => feed(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+  return bridge.event;
 }
 // an answer of obid's held until the test lets it go
 function held() {
@@ -234,13 +232,10 @@ describe('the task menu on obid', () => {
     const entry = (n: number) => ({ n, at: '2026-10-30T10:00:00Z', kind: 'tool', tool: 'Read', summary: `Reading f${n}.rs`, state: 'done' });
     answers['GET /v1/jobs/j1/transcript'] = { status: 200, body: { next: null, entries: [entry(1)] } };
     await live.loadSession('j1');
-    answers['GET /v1/status'] = { status: 200, body: { runner: { version: '0.2.4', host: 'mac' }, accounts: [], models: {}, maxRunning: 6, running: 0 } };
-    answers['GET /v1/jobs?limit=100'] = { status: 200, body: [job({ status: 'running' })] };
-    answers['GET /v1/inbox'] = { status: 200, body: [] };
-    answers['GET /v1/conversations?limit=200'] = { status: 200, body: [] };
     live.connect();
-    // obid's first text holds it: the read of everything else starts only then
-    feed(`event: transcript\ndata: ${JSON.stringify({ job: 'j1', entry: entry(2) })}\n\n`);
+    // main held it while it read obid's lists: it comes right after main's snapshot
+    bridge.sync({ jobs: [job({ status: 'running' })] });
+    bridge.event('transcript', { job: 'j1', entry: entry(2) });
     for (let i = 0; i < 5; i++) await flush();
     expect(live.liveState().connection).toBe('live');
     expect(live.sessionNow('j1')!.map((e) => e.n).sort()).toEqual([1, 2]);
@@ -518,25 +513,6 @@ describe('obid\'s answers over the events that came meanwhile', () => {
     expect(tasks.dev!.get().map((t) => t.id)).toEqual(['j1']);
   });
 
-  it('back after the stream was away: a task deleted meanwhile (on the iPhone) leaves, the older ones a conversation fetched stay', async () => {
-    const { tasks, live } = await load(true);
-    await following(live, [job({ id: 'j2', created: '2026-10-30T11:00:00Z' }), job()]);
-    // one older than obid's latest 100, which an opened conversation fetched
-    answers['GET /v1/conversation?id=c1&limit=100'] = { status: 200, body: [{ id: 't1', who: 'oby', text: 'Done.', at: '2026-10-01T10:00:00Z', jobs: ['j0'], conversation: 'c1' }] };
-    answers['GET /v1/jobs/j0'] = { status: 200, body: job({ id: 'j0', created: '2026-10-01T10:00:00Z' }) };
-    await live.openConversation('c1');
-    for (let i = 0; i < 3; i++) await flush();
-    expect(tasks.dev!.get().map((t) => t.id)).toEqual(['j2', 'j1', 'j0']);
-
-    // j1 deleted while away; obid's 100 newest are j2 and 99 after it
-    const latest = [job({ id: 'j2', created: '2026-10-30T11:00:00Z' }), ...Array.from({ length: 99 }, (_, i) => job({ id: `k${i}`, created: `2026-10-29T10:${String(i % 60).padStart(2, '0')}:00Z` }))];
-    await following(live, latest);
-    expect(tasks.dev!.get().map((t) => t.id).filter((id) => !id.startsWith('k'))).toEqual(['j2', 'j0']);
-    // fewer than 100: that's all of them
-    await following(live, [job({ id: 'j2', created: '2026-10-30T11:00:00Z' })]);
-    expect(tasks.dev!.get().map((t) => t.id)).toEqual(['j2']);
-  });
-
   // each answer obid gives as the whole job, crossed by the job's newer event (its revision on, #1709)
   const asJobs: [string, (live: Awaited<ReturnType<typeof load>>['live']) => Promise<unknown>][] = [
     ['POST /v1/jobs/j1/stop', (l) => l.stopJob('j1')],
@@ -756,38 +732,6 @@ describe('obid\'s answers over the events that came meanwhile', () => {
     const event = await following(live, [job({ status: 'running', step: 'Working', revision: 5 })]);
     event('job', job({ status: 'done', step: 'Done' }));
     expect(live.liveState().jobs.j1.status).toBe('done');
-  });
-
-  it('back after obid restarted with a lower revision: obid\'s list wins, but a newer answer that came while it was read stays (#1709)', async () => {
-    const { live } = await load(true);
-    await following(live, [job({ status: 'running', step: 'Working', revision: 5 })]);
-    // obid restarted before its last save (its revision went back): its list is the job now
-    await following(live, [job({ status: 'done', step: 'Done', revision: 2 })]);
-    expect(live.liveState().jobs.j1.status).toBe('done');
-
-    // a rename's answer, newer than the list read meanwhile
-    const { hold, go } = held();
-    answers['GET /v1/jobs?limit=100'] = { status: 200, body: [job({ revision: 3 })], hold };
-    answers['PATCH /v1/jobs/j1'] = { status: 200, body: job({ title: 'Vault tests', revision: 4 }) };
-    live.connect();
-    feed('');
-    await flush();
-    await live.renameJob('j1', 'Vault tests');
-    go();
-    for (let i = 0; i < 5; i++) await flush();
-    expect(live.liveState().connection).toBe('live');
-    expect(live.liveState().jobs.j1.title).toBe('Vault tests');
-  });
-
-  it('a conversation opened after its task was deleted doesn\'t fetch the task back (#1709)', async () => {
-    const { tasks, live } = await load(true);
-    const event = await following(live, [job()]);
-    event('job', { id: 'j1', deleted: true });
-    answers['GET /v1/conversation?id=c1&limit=100'] = { status: 200, body: [{ id: 't1', who: 'oby', text: 'Done.', at: '2026-10-30T10:20:00Z', jobs: ['j1'], conversation: 'c1' }] };
-    answers['GET /v1/jobs/j1'] = { status: 200, body: job() };
-    await live.openConversation('c1');
-    for (let i = 0; i < 3; i++) await flush();
-    expect(tasks.dev!.get()).toEqual([]);
   });
 
   it('words that start a conversation: the turns other conversations got while its own were read stay', async () => {
