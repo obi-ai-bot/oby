@@ -125,7 +125,7 @@ pub struct Lists {
 }
 
 impl Lists {
-    fn all(&self) -> impl Iterator<Item = &Item> {
+    pub(crate) fn all(&self) -> impl Iterator<Item = &Item> {
         self.reviews.iter().chain(&self.assigned).chain(&self.mine)
     }
 
@@ -655,7 +655,7 @@ pub fn backoff(waits: u32) -> i64 {
 }
 
 /// Whether a pull request's head checks failed.
-fn red(item: &Item) -> bool {
+pub(crate) fn red(item: &Item) -> bool {
     matches!(item.checks.as_deref(), Some("FAILURE" | "ERROR"))
 }
 
@@ -746,7 +746,7 @@ pub fn mark(lists: &mut Lists, owner: Option<&Owner>, jobs: &[Job]) {
 }
 
 /// The obid job that opened the pull request at `url`, if one did.
-fn opened_by<'a>(jobs: &'a [Job], url: &str) -> Option<&'a Job> {
+pub(crate) fn opened_by<'a>(jobs: &'a [Job], url: &str) -> Option<&'a Job> {
     jobs.iter().find(|j| {
         j.published
             .as_deref()
@@ -852,6 +852,7 @@ pub struct Feed {
     pub(crate) jobs: Arc<Jobs>,
     pub(crate) link: Arc<crate::sphere::Link>,
     events: Events,
+    routines: Arc<crate::routines::Routines>,
     state: Mutex<Seen>,
     /// One read at a time.
     reading: tokio::sync::Mutex<()>,
@@ -865,6 +866,7 @@ impl Feed {
         jobs: Arc<Jobs>,
         link: Arc<crate::sphere::Link>,
         events: Events,
+        routines: Arc<crate::routines::Routines>,
     ) -> Arc<Feed> {
         let kept = std::fs::read(config.home.join("github-work.json"))
             .ok()
@@ -875,6 +877,7 @@ impl Feed {
             jobs,
             link,
             events,
+            routines,
             state: Mutex::new(Seen {
                 kept,
                 ..Seen::default()
@@ -943,6 +946,7 @@ impl Feed {
         let mut offered = Vec::new();
         let mut live = None;
         let mut read = false;
+        let mut before_lists = None;
         {
             let mut state = self.lock();
             let now = time::now();
@@ -989,6 +993,7 @@ impl Feed {
                     if state.kept.checked_at.is_some()
                         && state.kept.login.as_deref() == Some(login.as_str())
                     {
+                        before_lists = Some(state.kept.lists.clone());
                         (offered, waiting) = offers(
                             &state.kept.lists,
                             &lists,
@@ -1044,6 +1049,11 @@ impl Feed {
         // Kept only once the inbox has this read's offers: a stop in between loses none of them.
         if read {
             self.keep(&self.lock().kept);
+        }
+        // Routines on GitHub events, once the lists are kept, under this read's lock.
+        if let Some(before) = before_lists {
+            let lists = self.lock().kept.lists.clone();
+            self.routines.on_github(&before, &lists, &jobs, self).await;
         }
         let shown = self.to_json();
         let first = !std::mem::replace(&mut self.lock().read, true);
@@ -1201,11 +1211,23 @@ pub async fn start_work(
     repo: &str,
     number: u64,
 ) -> Result<(Job, bool), ApiError> {
-    begin(jobs, config, list, repo, number, None).await
+    begin(jobs, config, list, repo, number, None, None).await
+}
+
+/// [`start_work`] for a routine on GitHub events (ROUTINES-13): `item`'s job from `list`, as
+/// `routine`, the job its run starts, says.
+pub(crate) async fn start_routine(
+    feed: &Feed,
+    list: &str,
+    item: &Item,
+    routine: NewJob,
+) -> Result<(Job, bool), ApiError> {
+    let (jobs, config, repo) = (&feed.jobs, &feed.config, &item.repo);
+    begin(jobs, config, list, repo, item.number, None, Some(routine)).await
 }
 
 /// [`start_work`], the job adding `adding` (obid's own entry for `repo`) when obid doesn't work in
-/// `repo` yet.
+/// `repo` yet, or as a `routine`'s.
 async fn begin(
     jobs: &Arc<Jobs>,
     config: &Config,
@@ -1213,6 +1235,7 @@ async fn begin(
     repo: &str,
     number: u64,
     adding: Option<crate::config::Repo>,
+    routine: Option<NewJob>,
 ) -> Result<(Job, bool), ApiError> {
     let (kind, verb) = match list {
         "reviews" => ("review", "Review"),
@@ -1312,6 +1335,13 @@ async fn begin(
         }
         None => task,
     };
+    // A routine's job: its agent, account, mode, check, rounds, mark and request, and its task
+    // after obid's own words. Its conversation is the feed's.
+    let routine = routine.unwrap_or_default();
+    let task = match routine.routine {
+        Some(_) => cut(&format!("{task}\n\n{}", routine.task), 2000),
+        None => task,
+    };
     let new = NewJob {
         repo: repo.into(),
         kind: kind.into(),
@@ -1322,7 +1352,8 @@ async fn begin(
         base,
         attachments,
         adding,
-        ..NewJob::default()
+        conversation: None,
+        ..routine
     };
     let job = jobs.create(new)?;
     Ok((job, true))
@@ -1386,7 +1417,7 @@ pub async fn start_adding(
         check_keep: Vec::new(),
         pull_requests: None,
     };
-    let started = begin(jobs, config, "reviews", repo, number, Some(adding)).await?;
+    let started = begin(jobs, config, "reviews", repo, number, Some(adding), None).await?;
     tracing::info!("{repo} added to the repositories obid works in, on the owner's Confirm");
     Ok(started)
 }

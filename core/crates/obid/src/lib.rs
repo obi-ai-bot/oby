@@ -494,8 +494,13 @@ pub async fn serve(
     jobs.use_artifacts(artifacts.clone());
     let routines = Arc::new(routines::Routines::open(&config.home, events.clone()));
     jobs.use_routines(routines.clone());
-    let github =
-        github_work::Feed::open(config.clone(), jobs.clone(), link.clone(), events.clone());
+    let github = github_work::Feed::open(
+        config.clone(),
+        jobs.clone(),
+        link.clone(),
+        events.clone(),
+        routines.clone(),
+    );
     let pushes = push::Push::open(&config.mac_home, &config.push_relay);
     // What each request key got (crate::receipts): without them obid still starts.
     let receipts = receipts::Receipts::open(&config.home)
