@@ -1677,6 +1677,19 @@ pub fn merging_now(home: &Path, id: &str) -> bool {
         .contains(&home.join("tmp").join(format!("merge-{id}")))
 }
 
+/// The jobs of `home` being merged now (crate::restart, ENGINE-13).
+pub fn merging_jobs(home: &Path) -> Vec<String> {
+    let tmp = home.join("tmp");
+    let merging = MERGING.lock().unwrap_or_else(|e| e.into_inner());
+    let ours = merging
+        .iter()
+        .filter(|folder| folder.parent() == Some(tmp.as_path()));
+    let names = ours.filter_map(|folder| folder.file_name()?.to_str());
+    names
+        .filter_map(|name| Some(name.strip_prefix("merge-")?.to_owned()))
+        .collect()
+}
+
 async fn merging(
     gh: &Path,
     job: &Job,

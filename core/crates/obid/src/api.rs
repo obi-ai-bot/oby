@@ -674,6 +674,9 @@ pub struct Status {
     pub unreadable: Vec<serde_json::Value>,
     /// [`CAPABILITIES`], sent even when empty (CAPS-1). Older obids don't send it.
     pub capabilities: Vec<&'static str>,
+    /// What a restart would cut now, and whether it cuts nothing (crate::restart, ENGINE-13).
+    /// Older obids don't send it.
+    pub restart: crate::restart::RestartJson,
 }
 
 /// `status.tools[]`: the binary's absolute path and what its `--version` said, each null when
@@ -1057,6 +1060,7 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
             }),
         folders: true,
         capabilities: CAPABILITIES.to_vec(),
+        restart: crate::restart::status(&shared, obi_protocol::time::now()),
         receipts: shared.receipts.is_some(),
         scanner: ScannerJson {
             gitleaks: tokio::task::spawn_blocking(crate::scan::gitleaks_runs)

@@ -100,6 +100,14 @@ impl Turns {
         self.waiting.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// The user's turns under way, and those of the owner's words no turn has taken yet
+    /// (crate::restart, ENGINE-13).
+    pub fn in_flight(&self) -> (Vec<String>, Vec<String>) {
+        let underway = self.lock().iter().map(|c| c.turn.clone()).collect();
+        let waiting = self.waiting().iter().map(|(_, w)| w.turn.clone()).collect();
+        (underway, waiting)
+    }
+
     /// Waits for the owner's turn under way in `conversation` to end, then takes every word said
     /// there that no turn took yet, `words` last: the next turn answers them all at once. None
     /// when later words came meanwhile (their turn answers these with theirs) or a cancel dropped

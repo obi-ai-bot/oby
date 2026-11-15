@@ -607,6 +607,33 @@ fn nothing_waits_after_a_stop_or_the_budget() {
     assert_ne!(id(4), id(3));
 }
 
+/// ENGINE-13: with no job, a conversation turn under way holds a restart, and nothing does once it
+/// ends.
+#[test]
+fn engine_13_a_running_turn_holds_the_restart() {
+    let (_folder, obid) = obid("harness-restart", true);
+    let restart = || call(&obid, "GET", "/v1/status", None).body["restart"].clone();
+    std::thread::scope(|scope| {
+        let slow = scope.spawn(|| said(&obid, json!({"said": "LINGER 8000", "new": true})));
+        let held = within(30, "the turn holds the restart", || {
+            let restart = restart();
+            let waiting = restart["waitingFor"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            (waiting.len() == 1 && waiting[0]["kind"] == "turn").then_some(restart)
+        });
+        assert_eq!(held["ready"], json!(false), "{held}");
+        assert!(held["waitingFor"][0]["id"].is_string(), "{held}");
+        slow.join().unwrap();
+    });
+    let after = within(30, "nothing holds the restart", || {
+        let restart = restart();
+        (restart["ready"] == json!(true)).then_some(restart)
+    });
+    assert_eq!(after, json!({"ready": true, "waitingFor": []}));
+}
+
 /// obid's stop ends every waiting Claude Code.
 #[test]
 fn obids_stop_ends_the_waiting_claude_code() {

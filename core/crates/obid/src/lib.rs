@@ -60,6 +60,7 @@ pub mod push;
 pub mod receipts;
 pub mod relay;
 pub mod repos;
+pub mod restart;
 pub mod review;
 pub mod routes;
 pub mod routines;
