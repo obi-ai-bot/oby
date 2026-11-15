@@ -209,7 +209,10 @@ def check_models(files, head):
                                                    f"timeout 900 quint verify --server-endpoint=localhost:{port} {base} --invariant={inv} {name} 2>&1"],
                                                   capture_output=True, text=True))
                     port += 1
-                    result = prove.verify_result(run)
+                    # ssh exits 255 on its own failure (a connection refused or dropped mid-run): whatever it printed
+                    # before is no verdict, so a dropped run never passes a witness nor holds an invariant
+                    dropped = run.code == 255
+                    result = "NO VERDICT" if dropped else prove.verify_result(run)
                     if result == ("HOLDS" if kind == "invariants" else "VIOLATED"):
                         continue
                     if result == "VIOLATED":
@@ -220,11 +223,11 @@ def check_models(files, head):
                     first = next((said_line for said_line in said if said_line.lower().startswith("error")),
                                  said[-1] if said else None)
                     detail = ("it timed out after 900s" if result == "TIMEOUT"
+                              else f"ssh dropped (exit 255) after: {said[-1][:100]}" if dropped and said
                               else first[:100] if first else f"it printed nothing (exit {run.code})")
                     check = "invariant" if kind == "invariants" else "witness"
                     note = f"{path}: the {check} {inv} (main={opts.get('main', '')}) gave no verdict: {detail}"
-                    # ssh exits 255 on its own failure (a connection refused or dropped mid-run, whatever was printed)
-                    return Unreached(note) if run.code == 255 else note
+                    return Unreached(note) if dropped else note
         subprocess.run(["ssh", "-o", "BatchMode=yes", host, f"rm -f {name}"], capture_output=True)
     return None
 

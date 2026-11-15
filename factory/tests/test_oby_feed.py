@@ -839,6 +839,27 @@ class ObyFeed(unittest.TestCase):
         self.assertIsInstance(got, self.feed.Unreached)
         self.assertIn("gave no verdict", got)
 
+    def test_feedalive_5_a_verdict_printed_before_ssh_dropped_is_no_verdict_for_both_kinds(self):
+        """ssh prints Quint's verdict lines, then exits 255: neither a witness passes nor an invariant is held; both
+        are the gate VM unreached, tried again at the next pass."""
+        for kind, out in (("witnesses", VIOLATED[0]), ("invariants", VIOLATED[0]), ("witnesses", HOLDS[0]),
+                          ("invariants", HOLDS[0])):
+            def run(cmd, **_):
+                if cmd[0] == "gh":
+                    return subprocess.CompletedProcess(cmd, 0, f"// verify: main=m {kind}=safe\n", "")
+                if VERIFY.search(cmd[-1]):
+                    return subprocess.CompletedProcess(cmd, 255, out, "Connection to oby-gate closed by remote host.")
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            config = dict(self.feed.job.CONFIG, remote_gate={"ssh_host": "oby-gate"})
+            with mock.patch.object(self.feed.job, "CONFIG", config):
+                self.feed.subprocess = Namespace(run=run)
+                got = self.feed.check_models([PATH], HEAD)
+            self.assertIsInstance(got, self.feed.Unreached, (kind, out))
+            self.assertIn("gave no verdict: ssh dropped (exit 255)", got)
+            self.assertNotIn("does not hold", got)
+            self.assertNotIn("was not violated", got)
+
     # FEEDALIVE-6: --account any names no account; the default names deskree-team
     def test_feedalive_6_account_any_sends_no_account_and_the_default_sends_deskree_team(self):
         self.feed.oby_jobs = lambda: []
