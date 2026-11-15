@@ -16,17 +16,21 @@ The owner's answer in the factory session of 2026-11-14.
 
 The owner's answer in the factory session of 2026-11-14.
 
-> "I don't want this fucking thing to keep asking me if I want to merge something or not"
+> "Yes, all my own work (Recommended)" to: "Should a task you type in the Tasks view (not in a conversation) also merge by itself with no cards, like your conversation work?"
 
-The owner's words, relayed from his formal-verification session.
+The owner's answer in the factory session of 2026-11-14.
 
-> "I only want to see cards asking for permissions when it's 100% needed, only, like the same way Claude Code, Codex, and others behave"
+> He doesn't want Oby to keep asking him whether to merge something or not.
 
-The owner's words, relayed from his formal-verification session.
+The owner's words, relayed from his formal-verification session, paraphrased at his request.
 
-> "I'm talking about myself talking to Obi through a conversation, asking for something to be done. I want that something done and I want that something merged and that's it"
+> He wants to see cards asking for permissions only when they are truly needed, the way Claude Code, Codex and other agents behave.
 
-The owner's words, relayed from his formal-verification session.
+The owner's words, relayed from his formal-verification session, paraphrased at his request.
+
+> When he asks Oby in his own conversation for something to be done, he wants it done and merged, and that's it.
+
+The owner's words, relayed from his formal-verification session, paraphrased at his request.
 
 > On Oby's own review still asking for changes after its rounds: "Merge, and say what it flagged"
 
@@ -36,7 +40,7 @@ The owner's words, relayed from his formal-verification session.
 
 AGENTS.md's wording, not a quote.
 
-> and, but for the owner's own work, a review asking for changes it can't settle or a repository whose workflow it hasn't learned yet. What the owner asks for in their own conversation merges by itself on any base, `main` too, with no card; past its review's last round Oby merges, saying what the review flagged
+> and, but for the owner's own work, a review asking for changes it can't settle or a repository whose workflow it hasn't learned yet. What the owner asks for in their own conversation or Tasks view merges by itself on any base, `main` too, with no card; past its review's last round Oby merges, saying what the review flagged
 
 AGENTS.md's wording, not a quote.
 
@@ -60,7 +64,7 @@ AGENTS.md's wording, not a quote.
 
 ## Notes
 
-It covers the work the owner asked for in his own conversation in his own app: the own lane, any agent. Oby merges that work by itself, into any base, `main` included, and shows no merge, check-offer, review, read-marker, safety-limit or Start card for it. When Oby's review still asks for changes after its last round, Oby merges and says what the review flagged.
+It covers the work the owner starts from his own app, in his own conversation or in the Tasks view: the own lane, any agent. Oby merges that work by itself, into any base, `main` included, and shows no merge, check-offer, review, read-marker, safety-limit or Start card for it. When Oby's review still asks for changes after its last round, Oby merges and says what the review flagged.
 
 The cards that stay are the agent CLI's own questions, plan approval in Plan mode, and permission cards in Ask and Accept edits. After the conversation read something from outside, the jobs it starts still need a second approving review of the exact head by a different tool, run with no card.
 
