@@ -4,7 +4,7 @@
 - **Status:** In force
 - **Replaced:** Nothing AGENTS.md names
 - **Changed by:** Nothing
-- **Contracts and scenarios:** [merging.md](../contracts/merging.md) (MERGING-7, MERGING-8, MERGING-17, MERGING-22), [task-conversations.md](../contracts/task-conversations.md) (TASKCONV-6)
+- **Contracts and scenarios:** [merging.md](../contracts/merging.md) (MERGING-7, MERGING-8, MERGING-17, MERGING-22), [task-conversations.md](../contracts/task-conversations.md) (TASKCONV-6, TASKCONV-26 to TASKCONV-33)
 
 ## The owner's words
 
@@ -44,6 +44,14 @@ The owner's answer in the factory session of 2026-11-14.
 
 The owner's answer in the factory session of 2026-11-14.
 
+> After an outside read, an action my signed words did not name: "Skip it, say so in a line" (it is not done, Oby says so in one line in the conversation with no card, and I say it again naming it).
+
+The owner's answer in the factory session of 2026-11-15.
+
+> What counts as named: "Number, link or task name" (my words of that same turn contain the pull request's or issue's number or link, or the task's name; for a waiting card, "merge it" or "allow it" counts when it is the only such card waiting in that conversation).
+
+The owner's answer in the factory session of 2026-11-15.
+
 > no force-pushing, nor merging into `main` but the owner's own work, on its own
 
 AGENTS.md's wording, not a quote.
@@ -78,6 +86,6 @@ The cards that stay are the agent CLI's own questions, plan approval in Plan mod
 
 Unchanged: another Oby's requests, teammates, the Obysphere, and reviews another Oby asked for; the five non-negotiables; the force-push default; the security-path rule; this repository's own remembered workflow (`dev` through the merge queue, `dev` into `main` after the "Test it when it's done" list); and the code host's own limits, which Oby tells the owner plainly ("Oby forbids nothing"). These are defaults the owner's word overrides ([2026-10-31-oby-forbids-nothing.md](2026-10-31-oby-forbids-nothing.md)).
 
-obid doesn't do this yet: the code is A00-46, A00-47, A00-48 and A00-51.
+The conversation's own direct actions after an outside read are done (A00-48). obid doesn't do the rest yet: the code is A00-46, A00-47 and A00-51, and the merge of an untrusted job of the owner's own after its silent second review.
 
 Amends [2026-10-18-merge-workflow-is-learned.md](2026-10-18-merge-workflow-is-learned.md) (the safe default), [2026-10-24-oby-carries-a-task-the-whole-way.md](2026-10-24-oby-carries-a-task-the-whole-way.md) (when Oby asks its owner), [2026-10-30-two-reviews-for-untrusted-or-security-paths.md](2026-10-30-two-reviews-for-untrusted-or-security-paths.md) (the second review after an outside read, now with no card), [2026-10-23-core-audit.md](2026-10-23-core-audit.md) (the untrusted-read bullets), [2026-10-24-approvals-are-a-click.md](2026-10-24-approvals-are-a-click.md) (the cards that wait on the owner) and [2026-10-31-oby-forbids-nothing.md](2026-10-31-oby-forbids-nothing.md) (its list of defaults).
