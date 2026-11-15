@@ -24,7 +24,9 @@ frees the disk afterwards:
   whose brief adds fixed words picked by obid's status; a head the queue refused, a pull request that conflicts with
   dev or is behind it, or a review that ran out of rounds gets a follow-up on the same pull request
   (POST /v1/jobs/{id}/messages) in fixed words. The task waits `retrying` until its attempt passes a new start's
-  checks (--max, free disk, shared files; --dry-run starts none). STATUS: BLOCKED, a stopped job and a pull request
+  checks (--max, free disk, shared files; --dry-run starts none), rechecked in the pass that may send it: its pull
+  request read first (merged, closed or touching a security path ends or holds it), and a follow-up whose job obid lost
+  takes the new-build path. STATUS: BLOCKED, a stopped job and a pull request
   that touches a security path, its job lost or not, are never retried; out of attempts the task ends `failed` with
   the last reason.
 - A Quint model the pull request adds or changes (docs/models/*.qnt) is verified first, on the gate VM, as its
@@ -355,30 +357,39 @@ def retry(item, j, case):
 
 
 def recheck(item, jobs):
-    """One look at a `retrying` task before its attempt starts, as things may have moved while it waited: a pull request
-    merged or closed by hand ends it, and a follow-up whose job obid lost becomes a new build, or waits for the owner
-    when its pull request touches a security path. Returns True when it changed."""
-    pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", VIEW) if item.get("pr") else None
-    if pr and pr["state"] == "MERGED":
-        merged(item, jobs)
-        return True
-    if pr and pr["state"] == "CLOSED":
-        for k in ("retry", "words"):
-            item.pop(k, None)
-        item.update(state="failed", note="its pull request was closed")
-        return True
-    if item.get("retry") != "message" or api("GET", f"/v1/jobs/{item['job']}")[0] != 404:
-        return False
-    if item.get("pr") and not pr:
-        return False  # unread: looked at again at the next pass (obid refuses the follow-up meanwhile)
-    hit = touches_security([f["path"] for f in (pr or {}).get("files", [])])
-    if hit:
-        for k in ("retry", "words"):
-            item.pop(k, None)
-        item.update(state="waiting", note=f"{SECURITY_HOLD} ({hit[0]}) and obid no longer has its job: merge it yourself")
-    else:
-        item.update(retry="build", words=retry_words(None), note=retry_words(None))
-    return True
+    """One look at a `retrying` task in the pass that may send its attempt, as things may have moved while it waited.
+    Its pull request's current state and files are read first: merged or closed by hand ends it, and one that touches
+    a security path waits for the owner, its pull request kept, whichever attempt it waited for. Then a follow-up whose
+    job obid lost takes the new-build path, or ends at the attempt cap (next_attempt()). Returns (changed, clear):
+    clear says its attempt may be sent in this pass; a pull request that can't be read sends nothing until one can."""
+    lost = api("GET", f"/v1/jobs/{item['job']}")[0] == 404
+    if item.get("pr"):
+        pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", VIEW)
+        if not pr:
+            return False, False  # unread: looked at again at the next pass, nothing sent meanwhile
+        if pr["state"] == "MERGED":
+            merged(item, jobs)
+            return True, False
+        hit = touches_security([f["path"] for f in pr.get("files", [])])
+        if pr["state"] == "CLOSED" or hit:
+            for k in ("retry", "words"):
+                item.pop(k, None)
+            if pr["state"] == "CLOSED":
+                item.update(state="failed", note="its pull request was closed")
+            else:
+                gone = " and obid no longer has its job" if lost else ""
+                item.update(state="waiting", note=f"{SECURITY_HOLD} ({hit[0]}){gone}: merge it yourself")
+            return True, False
+    if item.get("retry") == "message" and lost:
+        verdict, why = next_attempt(item, None, None)
+        if verdict == "end":
+            for k in ("retry", "words"):
+                item.pop(k, None)
+            item.update(state="failed", note=why[:240])
+            return True, False
+        item.update(retry="build", words=why, note=why[:240])
+        return True, True
+    return False, True
 
 
 def carry(item, account):
@@ -618,13 +629,17 @@ def one_pass(args):
     subprocess.run(["git", "fetch", "-q", "origin", job.BASE], cwd=REPO)
     state = load_state()
     jobs = oby_jobs()
+    clear = set()  # the `retrying` tasks recheck() let send their attempt in this pass
     for item in state.values():
-        if (item["state"] in ACTIVE or item["state"] == "waiting") and follow(item, jobs):
+        changed = (item["state"] in ACTIVE or item["state"] == "waiting") and follow(item, jobs)
+        if item["state"] == "retrying":  # one that follow() just made `retrying` too: nothing is sent unrechecked
+            again, ok = recheck(item, jobs)
+            changed = changed or again
+            if ok:
+                clear.add(item["key"])
+        if changed:
             save(item)
             say(f"{item['key']}: {item['state']}" + (f" (#{item['pr']})" if item.get("pr") else "") + (f": {item['note']}" if item.get("note") else ""))
-        elif item["state"] == "retrying" and recheck(item, jobs):
-            save(item)
-            say(f"{item['key']}: {item['state']}" + (f": {item['note']}" if item.get("note") else ""))
     active =[i for i in state.values() if i["state"] in ACTIVE]
     slots = args.max - len(active)
     started = 0
@@ -636,7 +651,7 @@ def one_pass(args):
         files = set(item.get("files", []))
         if started >= slots:
             break
-        if files & (held | taken):
+        if item["key"] not in clear or files & (held | taken):
             continue
         if free_gb() < args.min_free_gb:
             say(f"waiting to retry {item['key']}: {free_gb():.0f} GB free, under {args.min_free_gb} GB")

@@ -71,7 +71,9 @@ class StandIns:
     def __init__(self):
         self.calls = []
         self.jobs = {JOB: {"id": JOB, "kind": "build", "status": "done", "approvals": [], "summary": AGENT}}
-        self.view = None  # `gh pr view ... --json headRefOid,state,files,mergeable,mergeStateStatus`
+        # `gh pr view ... --json headRefOid,state,files,mergeable,mergeStateStatus`: an open pull request on x.py unless a
+        # test sets another (None: it can't be read); a list answers its views in turn, its last one from then on
+        self.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "x.py"}]}
         self.graphql = None  # `gh api graphql` with job.QUEUE_READ
         self.merge_code = 0
         self.sent = []  # the body of every POST to obid: briefs and messages
@@ -94,7 +96,9 @@ class StandIns:
         self.calls.append(("run", *cmd))
         out, code = "", 0
         if cmd[:3] == ["gh", "pr", "view"]:
-            out = json.dumps(self.view) if self.view else ""
+            view = self.view.pop(0) if isinstance(self.view, list) and len(self.view) > 1 else self.view
+            view = view[0] if isinstance(view, list) else view
+            out = json.dumps(view) if view else ""
         elif cmd[:3] == ["gh", "api", "graphql"]:
             out = json.dumps(self.graphql) if self.graphql else ""
         elif cmd[:3] == ["gh", "pr", "merge"]:
@@ -655,6 +659,67 @@ class ObyFeed(unittest.TestCase):
                     self.assertEqual(item["state"], want)
                     if want == "waiting":
                         self.assertTrue(item["note"].startswith(self.feed.SECURITY_HOLD + " (AGENTS.md)"), item["note"])
+
+    # FEEDLOOP-12: a security-path hold wins before any retry is sent, a new build or a follow-up, its pull request kept
+    def test_feedloop_12_a_security_path_holds_every_retry_before_it_is_sent(self):
+        open_on = lambda path: {"headRefOid": OLD, "state": "OPEN", "files": [{"path": path}]}  # noqa: E731
+        refused = queue(removed={"createdAt": "2026-11-15T10:05:00Z", "reason": GITHUB})
+        for case in ("lost job, refused, same pass", "lost job, refused, held for disk", "follow-up held for disk"):
+            with self.subTest(case=case):
+                self.setUp()
+                self.no_ready()
+                disk = {"gb": 100.0}
+                self.feed.free_gb = lambda: disk["gb"]
+                lost = case.startswith("lost")
+                self.task("merging", job="job-gone" if lost else JOB, head=OLD, attempt=1, armedAt="2026-11-15T10:00:00Z")
+                self.stand.graphql = refused
+                if case.endswith("same pass"):  # AGENTS.md lands between the lost job's read and its rebuild
+                    self.stand.view = [open_on("x.py"), open_on("AGENTS.md")]
+                else:
+                    disk["gb"] = 5.0
+                    self.one_pass(min_free_gb=10)
+                    self.assertEqual((self.task_now()["state"], self.task_now()["retry"]),
+                                     ("retrying", "build" if lost else "message"))
+                    self.stand.view = open_on("AGENTS.md")  # pushed while the retry waited
+                    disk["gb"] = 100.0
+                self.one_pass(min_free_gb=10)
+                self.one_pass(min_free_gb=10)
+                item = self.task_now()
+                self.assertEqual(self.stand.sent, [])
+                self.assertEqual((item["state"], item["pr"], item["attempt"]), ("waiting", PR, 1))
+                gone = " and obid no longer has its job" if lost else ""
+                self.assertEqual(item["note"], f"{self.feed.SECURITY_HOLD} (AGENTS.md){gone}: merge it yourself")
+                self.assertNotIn("retry", item)
+                self.stand.view = {**open_on("AGENTS.md"), "state": "MERGED"}
+                self.one_pass()
+                self.assertEqual(self.task_now()["state"], "merged")
+
+    # FEEDLOOP-13: a held follow-up whose job obid lost is never posted to it: a new build, or the end at the cap
+    def test_feedloop_13_a_held_follow_up_whose_job_was_lost_takes_the_new_build_path(self):
+        self.no_ready()
+        self.feed.free_gb = lambda: 100.0
+        words = self.feed.AGAIN["queue"].format(head=OLD)
+        self.task("retrying", job="job-gone", head=OLD, attempt=1, retry="message", words=words, note=words)
+        self.stand.view = None  # its pull request can't be read: nothing goes out, to the lost job or anywhere
+        self.one_pass()
+        self.one_pass()
+        self.assertEqual(self.stand.sent, [])
+        self.assertEqual((self.task_now()["state"], self.task_now()["retry"]), ("retrying", "message"))
+        self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "x.py"}]}
+        self.one_pass()
+        self.assertEqual(self.messages(), [])
+        [build] = self.builds()
+        self.assertIn("Attempt 2 of 3: the last one ended with lost: obid no longer has its job", build["task"])
+        self.assertEqual((self.task_now()["state"], self.task_now()["attempt"]), ("running", 2))
+        # at the attempt cap the task ends instead, sending nothing
+        self.setUp()
+        self.no_ready()
+        self.feed.free_gb = lambda: 100.0
+        self.task("retrying", job="job-gone", head=OLD, attempt=3, retry="message", words=words, note=words)
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual(self.stand.sent, [])
+        self.assertEqual((item["state"], item["note"]), ("failed", "attempt 3 of 3 ended: lost: obid no longer has its job"))
 
 
 class CheckModels(unittest.TestCase):
