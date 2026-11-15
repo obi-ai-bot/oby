@@ -3,7 +3,7 @@
 - **Date:** 2026-10-18
 - **Status:** In force
 - **Replaced:** Nothing AGENTS.md names
-- **Changed by:** [2026-10-31-oby-forbids-nothing.md](2026-10-31-oby-forbids-nothing.md), [2026-11-13-drop-the-mac-merge-gate.md](2026-11-13-drop-the-mac-merge-gate.md)
+- **Changed by:** [2026-10-31-oby-forbids-nothing.md](2026-10-31-oby-forbids-nothing.md), [2026-11-13-drop-the-mac-merge-gate.md](2026-11-13-drop-the-mac-merge-gate.md), [2026-11-14-own-work-merges-itself.md](2026-11-14-own-work-merges-itself.md)
 - **Contracts and scenarios:** None named in AGENTS.md
 
 ## The owner's words

@@ -31,8 +31,9 @@ worktree           → factory/<job-id> from origin/<base>
 spec-writer (opus) → spec.md
 builder (opus)     → commits; moves the task file to factory/queue/done; the first push opens a draft PR
 gate (script)      → checks.sh (scripts/oby-check.sh); FAIL → builder gets the log, no reviewers spawned
-prove (script)     → factory/bin/prove, for jobs with the proofs surface; PASS | ADVISORY-FAIL | SKIPPED → reviewers; FAIL | TIMEOUT → builder
-mutants (script)   → factory/bin/mutants, every job after a passing gate; advisory: round-N/mutants.md for reviewer-code and the approver
+prove (script)     → factory/bin/prove, for jobs with the proofs or model surface; PASS | ADVISORY-FAIL | SKIPPED → reviewers; FAIL | TIMEOUT → builder
+mutants (script)   → factory/bin/mutants, in the background with the round's reviewers; nothing waits for it; advisory:
+                     reviewer-code and the approver read round-N/mutants.md if it is there when they look
 reviewers (routed) → parallel, WAIT FOR ALL; CHANGES → builder → gate → reviewers
 approver (opus)    → APPROVE: PR ready, gh pr merge --squash --auto --match-head-commit <gated head>
                      ESCALATE: decision as PR comment, the PR stays a draft, the job waits for the owner
@@ -58,7 +59,7 @@ through the scripts. `factory/jobs/` is gitignored runtime state.
 <repo>/factory/bin/job                         the only writer of job.json
 <repo>/factory/bin/gate                        runs checks.sh in a worktree → round-N/checks.md
 <repo>/factory/bin/route                       risk + surfaces → the job's agents
-<repo>/factory/bin/prove                       re-runs a proofs job's Kani harnesses on the gated commit → round-N/proofs.md
+<repo>/factory/bin/prove                       re-runs a proofs job's Kani harnesses and a model job's Quint models on the gated commit → round-N/proofs.md
 <repo>/factory/bin/mutants                     cargo-mutants on the gated commit's core/crates/ Rust diff → round-N/mutants.md; advisory
 <repo>/factory/bin/test-run                    runs a builder's or approver's own test, clippy or build run: one at a time, below the gates; refuses the shared Cargo folder
 <repo>/factory/bin/check-lock                  the gate's lock holder for a check that builds Rust: stops its leftovers, passes its code
@@ -78,7 +79,7 @@ through the scripts. `factory/jobs/` is gitignored runtime state.
 <repo>/factory/jobs/<job-id>/build.md
 <repo>/factory/jobs/<job-id>/round-<N>/checks.md        the gate's verdict for round N
 <repo>/factory/jobs/<job-id>/round-<N>/proofs.md        prove's verdict for round N
-<repo>/factory/jobs/<job-id>/round-<N>/proofs.log       prove's Kani runs for round N
+<repo>/factory/jobs/<job-id>/round-<N>/proofs.log       prove's Kani and Quint runs for round N
 <repo>/factory/jobs/<job-id>/round-<N>/mutants.md       mutants' advisory result for round N: the missed mutants
 <repo>/factory/jobs/<job-id>/round-<N>/mutants.log      mutants' cargo-mutants run for round N
 <repo>/factory/jobs/<job-id>/round-<N>/review-<r>.md    one per routed reviewer
@@ -133,7 +134,9 @@ short line per transition, e.g. `004-r01-02-path-lanes R01-02: gate PASS → rev
 decision:
 
 - `ACCEPT`: run `factory/bin/route <id>`, then `factory/bin/job advance <id> spec`
-  (it creates the worktree). Go to **spec**.
+  (it creates the worktree). Go to **spec**. Until `config.json`'s
+  `surface_reviewers` has a `model` entry (the orchestrator adds it by hand,
+  on the owner's word), `route` refuses a `model` job: tell the user so.
 - `NEEDS-INFO`: `factory/bin/job advance <id> needs-info`. The job parks until
   the owner answers. Tell the user the job has questions; they are under
   `## Questions` in its `intake.md`.
@@ -156,22 +159,18 @@ gate's `round-<N-1>/checks.md`, the reviews in `round-<N-1>/`, or
 **gate.** Run `factory/bin/gate <id>` in the background: Oby's check builds and
 tests Rust, and can take many minutes. It prints `GATE: PASS` or `GATE: FAIL`.
 
-- PASS: a job whose `job.json` `intake.surfaces` holds `proofs` goes
+- PASS: a job whose `job.json` `intake.surfaces` holds `proofs` or `model` goes
   `factory/bin/job advance <id> prove`, then to **prove**. Every other job goes
   `factory/bin/job advance <id> review`, then to **review**.
-- PASS, for every job, with no intake surface: run `factory/bin/mutants <id>`
-  in the background at once, beside prove for a `proofs` job. The job's moves
-  stay as they are, but spawn the reviewers only once mutants has ended. It
-  prints `MUTANTS: <value> (<id> round <N>)`, and that line never moves the
-  job. On exit 2, tell the user what it said and go on without it.
 - FAIL: `factory/bin/job advance <id> build`. If it refuses because this was the
   last round, `factory/bin/job advance <id> needs-human` instead. Otherwise
   resume the builder for the next round with
   `The gate failed: read round-<N-1>/checks.md and checks.log, fix it, push, and update build.md.`
   No reviewer runs on a failing build.
 
-**prove.** Run `factory/bin/prove <id>` in the background, like the gate: its
-harnesses run on the gate VM through test-run. It prints
+**prove.** Run `factory/bin/prove <id>` in the background, like the gate, for
+a job with `proofs` or `model`: its Kani harnesses and its Quint models run on
+the gate VM through test-run, and `proofs.log` holds both. It prints
 `PROOFS: <verdict> (<id> round <N>)`.
 
 - `PASS`, `ADVISORY-FAIL` or `SKIPPED`: `factory/bin/job advance <id> review`
@@ -187,17 +186,36 @@ message**, so they run in parallel: `subagent_type` `reviewer-<r>`, model from
 the same map, prompt `<header> Review round <N>.` plus the port for `ux` and
 `ui`. Spawn a lens only when `.claude/agents/reviewer-<r>.md` exists; when
 one doesn't, spawn no reviewer for that job and tell the user which file is
-missing. **WAIT FOR ALL.** Each time one finishes, run
+missing. In the same message, start mutants in one background Bash call,
+`factory/bin/mutants <id> & echo "mutants pid $!"; wait $!`, so the call
+exits with mutants' own code, and note the PID it prints for the job and
+round. The reviewers, the approver and `factory/bin/job merge` never wait for
+it. When it ends, report its `MUTANTS: <value> (<id> round <N>)` line, which
+never moves the job. On exit 2, tell the user what it said and go on without
+it; exit 143 after you stopped it (**Stopping mutants**, below) is expected.
+**WAIT FOR ALL** the reviewers. Each time one finishes, run
 `factory/bin/job sync <id>` so the dashboard fills in. When every reviewer has
 finished:
 
 - all PASS: `factory/bin/job advance <id> approve`, then spawn `approver` with
   `<header> PR: #<pr>. Final round: <N>.`
-- any CHANGES: `factory/bin/job advance <id> build` (or `needs-human` when it
+- any CHANGES: stop the round's mutants (**Stopping mutants**), then
+  `factory/bin/job advance <id> build` (or `needs-human` when it
   refuses because this was the last round), then resume the builder:
   `Round <N-1> reviews are in round-<N-1>/. Address every VERDICT: CHANGES, push, and update build.md for round <N>.`
 
-**approve.** When the approver returns, read `decision.md`'s first line:
+**Stopping mutants.** When a job leaves its round, stop that round's mutants
+first if it hasn't ended: `kill -TERM <pid>` on the PID you noted, never by
+name or pattern. A job leaves its round when its reviewers have finished and
+any said CHANGES (before `advance <id> build` or `needs-human`), when the
+approver returns (before `factory/bin/job merge <id>` or `advance <id>
+needs-human`), and wherever you stop a job's agents, as for a PR merged by
+hand. mutants' SIGTERM path removes its scratch copy (MUTANTS-6); a run left
+going could outlive the job's worktree and pile up on the VM's builder slots
+with the next round's run.
+
+**approve.** When the approver returns, stop the round's mutants (**Stopping
+mutants**), then read `decision.md`'s first line:
 
 - `APPROVE`: `factory/bin/job merge <id>`. It checks that the PR's head is the
   gated head (`COMMIT` in the round's `checks.md`), takes the PR out of
@@ -266,7 +284,8 @@ and never delete `.worktrees/nightly` yourself: the run removes it, and the next
 leftover.
 
 A person can merge a job's PR by hand at any stage. `factory/bin/job queue`
-then moves the job to `merged`; stop any agents still running for it.
+then moves the job to `merged`; stop any agents still running for it, and its
+mutants (**Stopping mutants**).
 
 ## /factory run
 
@@ -300,8 +319,9 @@ then moves the job to `merged`; stop any agents still running for it.
 stopped. For a `resume` job, run its stage's step again: `intake` and `spec`
 respawn their agent; `build` spawns a new builder told it is resuming (it reads
 `build.md` and `git log` to see how far the last one got); `gate` runs the
-gate; `prove` runs `factory/bin/prove` again; `review` runs `factory/bin/mutants` first when the round has no `mutants.md`, then spawns only the reviewers whose `review-<r>.md` is missing in
-the current round; `approve` respawns the approver; `merging` runs
+gate; `prove` runs `factory/bin/prove` again; `review` spawns only the reviewers whose `review-<r>.md` is missing in
+the current round, and, when the round has no `mutants.md`, starts `factory/bin/mutants` in the background alongside them, as
+**review** does; `approve` respawns the approver and starts no mutants; `merging` runs
 `factory/bin/job merge <id>`. A `queued` job needs no agent: `factory/bin/job
 queue` settles it.
 

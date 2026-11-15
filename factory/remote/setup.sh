@@ -6,12 +6,13 @@
 #
 # The pins are .github/workflows/ci.yml's, read from this checkout and never copied here:
 # RUSTUP_TOOLCHAIN, GITLEAKS_VERSION with GITLEAKS_SHA256, node-version, and its bwrap line. A pin
-# that's missing, or whose copies in ci.yml disagree, stops it before it touches the host. The Kani pin is
-# setup.sh's own, not ci.yml's: Kani is for builders' runs only (A00-35), and --pins leaves it out.
+# that's missing, or whose copies in ci.yml disagree, stops it before it touches the host. The Kani and Quint
+# pins are setup.sh's own, not ci.yml's: Kani and Quint are for builders' runs only (A00-35, A00-40), and --pins
+# leaves them out.
 #
 # On the host, with sudo where it needs it: git, curl and the build tools; rustup with the pinned
-# toolchain as the default, rustfmt and clippy; the newest Node of the pinned major; gitleaks at its
-# pin, checked against its SHA-256; bubblewrap and slirp4netns, with unprivileged user namespaces
+# toolchain as the default, rustfmt and clippy; the newest Node of the pinned major; OpenJDK 21's runtime;
+# gitleaks at its pin, checked against its SHA-256; bubblewrap and slirp4netns, with unprivileged user namespaces
 # allowed now and after a reboot (/etc/sysctl.d), proven with ci.yml's bwrap line; zsh, as ci.yml's
 # electron lane installs it for the ChatGPT gate's test, which runs scripts/package.sh with /bin/zsh
 # (every package ci.yml installs with apt-get is in the packages list, REMOTE-12); oby-check-blok,
@@ -21,13 +22,19 @@
 # asks); and, for builders' factory/bin/test-run runs, the user oby-builder, with /bin/bash, in no sudo
 # or admin group and with no sudoers entry (setup stops when `sudo -n -l -U oby-builder` shows it may
 # run anything), its own /srv/oby-builder with a bare clone (gc.auto 0; oby-remote-gate --run makes its
-# builder-N slots), and a home that is root's (0755) and holds only .ssh, .cargo, .rustup and .kani: .ssh
+# builder-N slots), and a home that is root's (0755) and holds only .ssh, .cargo, .rustup, .kani and .quint: .ssh
 # made afresh by root (0755) with a root-owned copy of the ssh user's authorized_keys (0644), rustup
 # with the pinned toolchain, rustfmt and clippy installed by root (--no-modify-path; a toolchain the
 # builder owned any part of is installed afresh), and Kani at its pin (cargo-kani in .cargo, its bundle in
 # .kani, its nightly in .rustup) and cargo-mutants at its own pin (in .cargo), installed by root and given
 # to root, tightened with tighten.sh's rule and proven to run for the builder, Kani offline on a scratch
-# harness, cargo-mutants by its version; setup stops naming any of its home, keys or toolchain the builder can still write, and
+# harness, cargo-mutants by its version; Quint at its pin, installed by root with `npm ci --ignore-scripts` from
+# factory/remote/quint's committed lockfile (whose Quint must be the pin, or setup stops before it touches the
+# host) into /usr/local/lib/quint/<pin>, installed afresh unless that copy of the lockfile is there, and linked
+# from /usr/local/bin, its evaluator and Apalache checked against their
+# SHA-256s and unpacked into .quint by root, which runs none of it, .quint given to root, then proven for the
+# builder, its only run, with no network and a read-only home (typecheck, run and verify on a scratch model,
+# Java 17 or newer); setup stops naming any of its home, keys or toolchain the builder can still write, and
 # it can't write /srv/oby. Run it again whenever: what is already at its pin is left as it is. It
 # writes no secret, token, key or login to the host, and changes no sshd setting, firewall or network
 # rule (the builder's authorized_keys holds public keys only). The host part runs under umask 022, and
@@ -66,6 +73,12 @@ gitleaks=$(pin GITLEAKS_VERSION)
 gitleaks_sha=$(pin GITLEAKS_SHA256)
 kani=0.68.0
 mutants=27.1.0
+quint=0.33.1
+# What Quint 0.33.1 would fetch by itself, unchecked (apalache.js, rust/binaryManager.js), at their SHA-256s.
+quint_apalache=0.62.4
+quint_apalache_sha=8ac8488422c30d552735bae11b92a2d014d8e02e8608702acc08f9a2d8a9abb2
+quint_evaluator=v0.7.1
+quint_evaluator_sha=ce0502bdef65dc26c242a9e56379a9bb26de6f3db38f0e3989339d46a542f5eb
 bwrap=$(sed -nE 's/^[[:space:]]*(bwrap .*[^[:space:]])[[:space:]]*$/\1/p' "$ci" | sort -u)
 if [[ -z "$bwrap" || "$bwrap" == *$'\n'* ]]; then
     echo "setup.sh: $ci needs exactly one bwrap line, the proof bubblewrap works" >&2
@@ -74,6 +87,33 @@ fi
 if [[ -n "$pins" ]]; then
     printf 'rust %s\nnode %s\ngitleaks %s %s\n' "$rust" "$node" "$gitleaks" "$gitleaks_sha"
     exit 0
+fi
+# Quint's npm tree is the committed lockfile's, and its Quint is the pin, or nothing reaches the host (REMOTE-54).
+quint_package="$here/quint/package.json"
+quint_lock="$here/quint/package-lock.json"
+for file in "$quint_package" "$quint_lock"; do
+    if [[ ! -f "$file" ]]; then
+        echo "setup.sh: $file is missing: quint $quint installs only from it" >&2
+        exit 1
+    fi
+done
+quint_found=$(python3 -I -c 'import json, sys
+def at(path, *keys):
+    try:
+        value = json.load(open(path))
+    except (OSError, ValueError):
+        return "unreadable"
+    for key in keys:
+        value = value.get(key) if isinstance(value, dict) else None
+    return value if isinstance(value, str) and value.split() == [value] else "none"
+print(at(sys.argv[1], "dependencies", "@informalsystems/quint"),
+      at(sys.argv[2], "packages", "", "dependencies", "@informalsystems/quint"),
+      at(sys.argv[2], "packages", "node_modules/@informalsystems/quint", "version"))' "$quint_package" "$quint_lock")
+if [[ "$quint_found" != "$quint $quint $quint" ]]; then
+    read -r found_package found_wants found_locked <<<"$quint_found"
+    echo "setup.sh: $here/quint isn't at quint's pin $quint: package.json wants $found_package, package-lock.json" \
+        "wants $found_wants and locks $found_locked" >&2
+    exit 1
 fi
 
 echo "setup.sh: setting up $host with rust $rust, node $node, gitleaks $gitleaks"
@@ -95,6 +135,10 @@ fi' <"$here/oby-remote-gate"
 {
     printf '%s=%q\n' RUST "$rust" NODE "$node" GITLEAKS "$gitleaks" GITLEAKS_SHA "$gitleaks_sha" BWRAP "$bwrap" KANI "$kani"
     printf '%s=%q\n' MUTANTS "$mutants"
+    printf '%s=%q\n' QUINT "$quint" QUINT_APALACHE "$quint_apalache" QUINT_APALACHE_SHA "$quint_apalache_sha" \
+        QUINT_EVALUATOR "$quint_evaluator" QUINT_EVALUATOR_SHA "$quint_evaluator_sha"
+    printf '%s=%q\n' QUINT_PREFIX "/usr/local/lib/quint/$quint" QUINT_LINK /usr/local/bin/quint \
+        QUINT_PACKAGE "$(<"$quint_package")" QUINT_LOCK "$(<"$quint_lock")"
     cat "$here/tighten.sh"
     cat <<'REMOTE'
 # The gates' root (REMOTE-32): the ssh user's alone, 0700 even when it already exists, so no builder run can open
@@ -129,11 +173,11 @@ builder() {
     sudo -n rm -rf "$home/.ssh"
     sudo -n install -d -o root -g root -m 755 "$home/.ssh"
     sudo -n install -o root -g root -m 644 "$HOME/.ssh/authorized_keys" "$home/.ssh/authorized_keys"
-    sudo -n find "$home" -mindepth 1 -maxdepth 1 ! -name .ssh ! -name .cargo ! -name .rustup ! -name .kani -exec rm -rf {} +
+    sudo -n find "$home" -mindepth 1 -maxdepth 1 ! -name .ssh ! -name .cargo ! -name .rustup ! -name .kani ! -name .quint -exec rm -rf {} +
     # A toolchain the builder owned any part of (A00-31 installed it as the builder) is installed afresh.
     if [[ -n "$(sudo -n find "$home" ! -user root -print -quit)" ]]; then
-        printf 'setup.sh: %s\n' "removing $home/.cargo, $home/.rustup and $home/.kani: not all root's"
-        sudo -n rm -rf "$home/.cargo" "$home/.rustup" "$home/.kani"
+        printf 'setup.sh: %s\n' "removing $home/.cargo, $home/.rustup, $home/.kani and $home/.quint: not all root's"
+        sudo -n rm -rf "$home/.cargo" "$home/.rustup" "$home/.kani" "$home/.quint"
     fi
     sudo -n install -d -o "$name" -g "$name" -m 755 "$root"
     if ! as_builder test -d "$root/repo.git"; then
@@ -174,6 +218,51 @@ echo "setup.sh: installing cargo-mutants $1"
 cargo install --locked cargo-mutants --version "$1"' _ "$MUTANTS"
     # tar, run as root, keeps the owners the bundle's archive names: all of it is root's.
     sudo -n chown -R -h root:root "$home/.kani"
+    # Quint for builders' design models (A00-40), installed by root as Kani is: the committed lockfile's npm tree in a
+    # prefix of its pin (REMOTE-53), with none of its install scripts, linked from /usr/local/bin; its Rust evaluator
+    # and Apalache fetched here and checked against their SHA-256s into .quint, where Quint looks, so a builder run,
+    # offline, downloads nothing. Root only installs and unpacks: no code from the npm tree or the downloads runs as
+    # root, and the builder's proof below is Quint's first run. Left as it is only when the prefix holds this lockfile
+    # (REMOTE-55): an install from before it is installed afresh.
+    local package="$QUINT_PREFIX/node_modules/@informalsystems/quint/package.json"
+    local apalache="$home/.quint/apalache-dist-$QUINT_APALACHE" evaluator="$home/.quint/rust-evaluator-$QUINT_EVALUATOR"
+    if [[ "$(readlink -f "$QUINT_LINK" 2>/dev/null)" == "$QUINT_PREFIX/node_modules/"* ]] &&
+        cmp -s "$QUINT_PREFIX/package-lock.json" <(printf '%s\n' "$QUINT_LOCK") &&
+        [[ "$(sed -nE 's/^  "version": "([^"]+)",$/\1/p' "$package" 2>/dev/null)" == "$QUINT" ]] &&
+        [[ -x "$apalache/apalache/bin/apalache-mc" && -x "$evaluator/quint_evaluator" ]]; then
+        printf 'setup.sh: %s\n' "quint $QUINT already installed"
+    else
+        printf 'setup.sh: %s\n' "installing quint $QUINT"
+        local cache sent
+        cache=$(mktemp -d)
+        sent=$(mktemp -d)
+        printf '%s\n' "$QUINT_PACKAGE" >"$sent/package.json"
+        printf '%s\n' "$QUINT_LOCK" >"$sent/package-lock.json"
+        sudo -n rm -rf "$QUINT_PREFIX"
+        sudo -n install -d -o root -g root -m 755 "$QUINT_PREFIX"
+        sudo -n install -o root -g root -m 644 "$sent/package.json" "$sent/package-lock.json" "$QUINT_PREFIX"
+        rm -rf "$sent"
+        sudo -n env npm_config_cache="$cache" npm ci --ignore-scripts --prefix "$QUINT_PREFIX"
+        sudo -n rm -rf "$cache"
+        sudo -n chown -R -h root:root "$QUINT_PREFIX"
+        sudo -n ln -sfn "$QUINT_PREFIX/node_modules/.bin/quint" "$QUINT_LINK"
+        local download asset=quint_evaluator-x86_64-unknown-linux-gnu.tar.gz
+        download=$(mktemp -d)
+        curl -fsSLo "$download/apalache.tgz" \
+            "https://github.com/apalache-mc/apalache/releases/download/v$QUINT_APALACHE/apalache.tgz"
+        curl -fsSLo "$download/evaluator.tar.gz" \
+            "https://github.com/quint-co/quint/releases/download/evaluator%2F$QUINT_EVALUATOR/$asset"
+        printf '%s  %s\n' "$QUINT_APALACHE_SHA" "$download/apalache.tgz" "$QUINT_EVALUATOR_SHA" "$download/evaluator.tar.gz" |
+            sha256sum -c -
+        sudo -n rm -rf "$home/.quint"
+        sudo -n install -d -o root -g root -m 755 "$home/.quint" "$apalache" "$evaluator"
+        sudo -n tar -xzf "$download/apalache.tgz" --no-same-owner -C "$apalache" apalache
+        sudo -n tar -xzf "$download/evaluator.tar.gz" --no-same-owner -C "$evaluator" quint_evaluator
+        rm -rf "$download"
+    fi
+    # tar, run as root, keeps the archives' modes: none of it is writable by group or others.
+    sudo -n chown -R -h root:root "$home/.quint"
+    sudo -n chmod -R go-w "$home/.quint"
     # tighten.sh's own rule for what group or others may write, on its home's toolchain and its root.
     sudo -n bash -c "$(declare -f tighten_writable)"'
 tighten_writable "$1" "$2" | xargs -0 -r chmod go-w
@@ -220,14 +309,43 @@ export CARGO_HOME="$scratch/cargo" PATH="$HOME/.cargo/bin:$PATH"
 mutants=$(cargo mutants --version)
 printf "%s\n" "$mutants"
 [[ "$mutants" == "cargo-mutants $1" ]] || { echo "setup.sh: cargo mutants is not at $1"; exit 1; }' _ "$MUTANTS"
+    # Quint and Java work for the builder with no network, its home read-only and only a scratch folder to write: a
+    # builder run downloads nothing and writes nothing into its home. This is the one run of Quint setup makes.
+    local tiny
+    tiny=$(cat <<'EOF'
+module tiny {
+  var x: int
+  action init = x' = 0
+  action step = x' = (x + 1) % 3
+  val small = x < 3
+}
+EOF
+)
+    as_builder bwrap --unshare-net --unshare-pid --die-with-parent --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp \
+        bash -c 'set -euo pipefail
+scratch=$(mktemp -d)
+cd "$scratch"
+java=$(java -version 2>&1)
+printf "%s\n" "$java"
+[[ "$java" =~ version\ \"([0-9]+) && ${BASH_REMATCH[1]} -ge 17 ]] || { echo "setup.sh: java is not 17 or newer"; exit 1; }
+[[ "$(quint --version)" == "$1" ]] || { echo "setup.sh: quint is not at $1"; exit 1; }
+printf "%s\n" "$2" >tiny.qnt
+quint typecheck tiny.qnt
+quint run --invariant=small tiny.qnt
+quint verify --max-steps=3 --invariant=small tiny.qnt' _ "$QUINT" "$tiny"
+    local quint=("$home/.quint")
+    for path in "$home/.quint"/*; do
+        if [[ -d "$path" ]]; then quint+=("$path"); fi
+    done
     for path in "$home" "$home/.ssh" "$home/.ssh/authorized_keys" "$home/.cargo" "$home/.cargo/bin" "$home/.rustup" \
-        "$home/.kani" "$home/.kani/kani-$KANI" "$home/.kani/kani-$KANI/bin"; do
+        "$home/.kani" "$home/.kani/kani-$KANI" "$home/.kani/kani-$KANI/bin" "${quint[@]}"; do
         if as_builder test -w "$path"; then writable+=("$path"); fi
     done
     if ((${#writable[@]})); then
         for path in "${writable[@]}"; do printf 'setup.sh: %s\n' "$name can still write $path"; done
         return 1
     fi
+    printf 'setup.sh: %s\n' "$name has quint $QUINT and java $(java -version 2>&1 | sed -nE '1s/.*version "([^"]+)".*/\1/p')"
     printf 'setup.sh: %s\n' "$name is set up: no sudo, $root, rust $RUST, kani $KANI, its home, keys and toolchain root's"
 }
 
@@ -241,7 +359,8 @@ setup() {
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' EXIT
 
-    local packages=(git curl ca-certificates build-essential pkg-config libssl-dev cmake xz-utils bubblewrap slirp4netns zsh)
+    local packages=(git curl ca-certificates build-essential pkg-config libssl-dev cmake xz-utils bubblewrap slirp4netns zsh
+        openjdk-21-jre-headless)
     local missing=() package
     for package in "${packages[@]}"; do
         dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed' || missing+=("$package")

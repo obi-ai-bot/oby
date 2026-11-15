@@ -41,7 +41,8 @@ AWKWARD = ["foo\\", "a\\b", "it's", "a b", ""]
 
 # `ssh ... true` exits with $FAKE/ssh-reach's code (0 without it). With $FAKE/no-user, a call with -l is refused as
 # sshd refuses an unknown user. Any other command runs through sh in a session of its own, its standard input
-# relayed and kept in $FAKE/stdin-<pid>; SIGUSR1 drops the connection (exit 255, the relay gone).
+# relayed and kept in $FAKE/stdin-<pid>, with $FAKE/vm-path's PATH when that file exists (the host's own programs);
+# SIGUSR1 drops the connection (exit 255, the relay gone).
 FAKE_SSH = """#!/usr/bin/env python3
 import json, os, signal, subprocess, sys, threading
 from pathlib import Path
@@ -54,6 +55,8 @@ if argv[-1] == "true":
 if "-l" in argv and (fake / "no-user").exists():
     print(f"{argv[argv.index('-l') + 1]}@{argv[-2]}: Permission denied (publickey).", file=sys.stderr)
     sys.exit(255)
+if (fake / "vm-path").exists():
+    os.environ["PATH"] = (fake / "vm-path").read_text().strip()
 signal.signal(signal.SIGUSR1, lambda *_: os._exit(255))
 remote = subprocess.Popen(["sh", "-c", argv[-1]], stdin=subprocess.PIPE, start_new_session=True)
 def relay():
@@ -95,7 +98,10 @@ child.kill()
 sys.exit(int((fake / "cargo-exit").read_text()) if (fake / "cargo-exit").exists() else 0)
 """
 
-# This Mac's cargo and swift: each records its words and the lock's holder line, and says so.
+# The VM's java, for its quint (whose stand-in is VM_CARGO): it runs nothing.
+VM_JAVA = "#!/bin/sh\nexit 0\n"
+
+# This Mac's cargo, swift and quint: each records its words and the lock's holder line, and says so.
 MAC_TOOL = """#!/bin/sh
 echo "$(basename "$0") $* | $(cat "$OBY_TEST_RUN_LOCK")" >>"$FAKE/mac-runs"
 echo "this Mac's $(basename "$0") ran"
@@ -284,6 +290,28 @@ class RemoteHarness:
         finally:
             os.close(fd)
 
+    def quint_on_the_vm(self):
+        """A stand-in quint and java in the VM's ~/.cargo/bin, quint recording its run as the VM's cargo does."""
+        self.tool(self.home / ".cargo" / "bin" / "quint", VM_CARGO)
+        self.tool(self.home / ".cargo" / "bin" / "java", VM_JAVA)
+
+    def vm_path_without(self, *names):
+        """The VM's own programs: this Mac's PATH but the programs named, as links in a folder of their own."""
+        folder = self.dir / "vm-bin"
+        folder.mkdir()
+        for place in self.env["PATH"].split(os.pathsep):
+            try:
+                entries = sorted(Path(place).iterdir())
+            except OSError:
+                continue
+            for entry in entries:
+                link = folder / entry.name
+                runs = os.path.isfile(entry) and os.access(entry, os.X_OK)
+                if entry.name in names or os.path.lexists(link) or not runs:
+                    continue
+                link.symlink_to(entry)
+        (self.fake / "vm-path").write_text(f"{folder}\n")
+
     def write(self, path, text, worktree=None):
         self.put((worktree or self.worktree) / path, text)
 
@@ -435,6 +463,76 @@ class TestRunRemote(RemoteHarness, unittest.TestCase):
         self.assertEqual([run.split(" | ", 1)[0] for run in self.lines("mac-runs")], ["cargo mutants"])
         self.assertEqual(self.run_calls(), [])
         self.assertEqual(self.vm_runs(), [])
+
+    # ---- REMOTE-50 -------------------------------------------------------------------------------
+
+    def test_remote_50_a_quint_run_with_macos_only_changes_goes_to_the_vm(self):
+        self.quint_on_the_vm()
+        self.write("core/crates/obid/src/sandbox.rs", "// changed\n")
+        code, out, err, _ = self.run_test_run("quint", "verify", "--max-steps=12", "docs/models/job_race.qnt")
+        self.assertEqual(code, 0, out + err)
+        [call] = self.run_calls()
+        self.assertEqual(call["argv"][-4:-1], ["-l", "oby-builder", "oby-gate"])
+        self.assertEqual(shlex.split(call["argv"][-1])[-5:],
+                         ["--", "quint", "verify", "--max-steps=12", "docs/models/job_race.qnt"])
+        [run] = self.vm_runs()
+        self.assertEqual(run["args"], ["verify", "--server-endpoint=localhost:8823", "--max-steps=12",
+                                       "docs/models/job_race.qnt"])
+        self.assertEqual(run["cwd"], str(self.root / "builder-1" / "worktree" / "core"))
+        self.assertIn("oby-remote-gate: running in builder slot 1", out)
+        self.assertNotIn("on this Mac:", err)
+        self.assertEqual(self.lines("mac-runs"), [])
+
+    def test_remote_50_a_quint_run_after_another_command_stays_on_this_mac(self):
+        self.quint_on_the_vm()
+        self.tool(self.bin / "quint", MAC_TOOL)
+        self.write("core/crates/obid/src/sandbox.rs", "// changed\n")
+        code, out, err, _ = self.run_test_run("sh", "-c", "quint verify x.qnt && cargo test")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("factory/bin/test-run: on this Mac: the worktree's changes touch macOS-only code: "
+                      "core/crates/obid/src/sandbox.rs", err.splitlines())
+        self.assertEqual([run.split(" | ", 1)[0] for run in self.lines("mac-runs")],
+                         ["quint verify x.qnt", "cargo test"])
+        self.assertEqual(self.run_calls(), [])
+        self.assertEqual(self.vm_runs(), [])
+
+    # ---- REMOTE-51 -------------------------------------------------------------------------------
+
+    def test_remote_51_a_quint_run_without_quint_on_the_builders_path_falls_back(self):
+        self.tool(self.bin / "quint", MAC_TOOL)
+        self.vm_path_without("quint")
+        result = self.run_test_run("quint", "verify", "docs/models/job_race.qnt")
+        self.assert_on_this_mac(result, "fell back to this Mac: ssh oby-builder@oby-gate ended 2 before the run "
+                                        "started: oby-remote-gate: quint isn't on the builder's PATH",
+                                tool="quint", tried=1)
+
+    def test_remote_51_a_quint_run_without_java_on_the_builders_path_falls_back(self):
+        self.tool(self.home / ".cargo" / "bin" / "quint", VM_CARGO)
+        self.tool(self.bin / "quint", MAC_TOOL)
+        self.vm_path_without("java")
+        result = self.run_test_run("quint", "verify", "docs/models/job_race.qnt")
+        self.assert_on_this_mac(result, "fell back to this Mac: ssh oby-builder@oby-gate ended 2 before the run "
+                                        "started: oby-remote-gate: java isn't on the builder's PATH",
+                                tool="quint", tried=1)
+        # A cargo run needs no java there.
+        (self.fake / "mac-runs").unlink()
+        code, out, err, _ = self.run_test_run("cargo", "test", "--test", "one")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("oby-remote-gate: running in builder slot 1", out)
+        self.assertEqual(self.lines("mac-runs"), [])
+
+    # ---- REMOTE-57 -------------------------------------------------------------------------------
+
+    def test_remote_57_a_refused_quint_run_falls_back_to_this_mac(self):
+        self.quint_on_the_vm()
+        self.tool(self.bin / "quint", MAC_TOOL)
+        result = self.run_test_run("quint", "verify", "--server-endpoint=localhost:8822", "docs/models/job_race.qnt")
+        self.assert_on_this_mac(result, "fell back to this Mac: ssh oby-builder@oby-gate ended 2 before the run "
+                                        "started: oby-remote-gate: a quint run in a builder slot can't name its own "
+                                        "Apalache server: --server-endpoint=localhost:8822", tool="quint", tried=1)
+        [run] = self.lines("mac-runs")
+        self.assertEqual(run.split(" | ", 1)[0],
+                         "quint verify --server-endpoint=localhost:8822 docs/models/job_race.qnt")
 
     # ---- REMOTE-25 -------------------------------------------------------------------------------
 

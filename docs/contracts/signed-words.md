@@ -66,3 +66,9 @@ The business behavior contract for the Electron app signing what the owner types
 1. Type a task in Home's box: it starts, and `home/jobs/<id>.json` says `"vetted": true`.
 2. On its page, tell it something: the follow-up is vetted, and in Bypass when the task was.
 3. Answer an agent's question with an option, and with Tell it something; Allow a command: the task stays vetted.
+
+## Rules from AGENTS.md
+
+From the root [AGENTS.md](../../AGENTS.md)'s "Approvals".
+
+- Approvals, and Publishing by hand, Confirm and Disconnect, are a click in the owner's own app, as in Claude Code: no Touch ID, Face ID or password ([why](../decisions/2026-10-24-approvals-are-a-click.md)).

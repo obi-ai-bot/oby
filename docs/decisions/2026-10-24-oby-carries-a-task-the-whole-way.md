@@ -3,7 +3,7 @@
 - **Date:** 2026-10-24
 - **Status:** In force
 - **Replaced:** Nothing AGENTS.md names
-- **Changed by:** Nothing
+- **Changed by:** [2026-11-14-own-work-merges-itself.md](2026-11-14-own-work-merges-itself.md)
 - **Contracts and scenarios:** None named in AGENTS.md
 
 ## The owner's words
