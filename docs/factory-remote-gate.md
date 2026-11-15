@@ -224,7 +224,8 @@ Steps 1 to 4 were done before A00-03 was built. After A00-10 merges:
    this key to `factory/config.json` beside `remote_gate`, for example
    `"gate_shards": {"linux": 4, "mac": 2}`: four Linux shards in the VM's slots, and two macOS shards, one
    on the Mac worker and one here. `linux` is 1 to 64, `mac` 1 to 3; removing the key, or setting it to
-   `null`, turns shards off again. An invalid value runs unsharded, and checks.md says why.
+   `null`, turns shards off again. An invalid value runs unsharded, and checks.md says why; so does a job
+   whose worktree isn't exactly its commit, as this Mac's shards would then deal other test files.
 
 ## Risks
 

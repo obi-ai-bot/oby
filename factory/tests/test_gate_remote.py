@@ -1279,6 +1279,57 @@ class GateRemote(unittest.TestCase):
         self.assertEqual((self.az_calls(), self.ssh_calls(), self.lines("mac-runs")), ([], [], ["all"]))
         self.assertNotIn("Sharded", self.checks())
 
+    def test_remote_65_a_worktree_that_isnt_its_commit_runs_unsharded(self):
+        # This Mac's shards would deal the worktree's test files, the VM's and the Mac worker's the commit's: a
+        # binary could run nowhere. So a worktree with a file its commit hasn't runs unsharded, saying why.
+        commit = self.change("core/crates/obid/src/sandbox.rs", push=True)
+        self.change(".gitignore", push=True, text="core/crates/obid/tests/ignored.rs\n")
+        tests = self.worktree / "core" / "crates" / "obid" / "tests"
+        tests.mkdir(parents=True)
+        tracked = tests / "tracked.rs"
+        tracked.write_text("1\n")
+        self.git(self.worktree, "add", str(tracked))
+        self.git(self.worktree, "commit", "-q", "-m", "a test file")
+        self.git(self.worktree, "push", "-q", "origin", "factory/x")
+        why = "the worktree has changes its commit doesn't"
+        for path, text in (("core/crates/obid/tests/untracked.rs", "1\n2\n3\n"), ("core/crates/obid/tests/tracked.rs", "1\n2\n"),
+                           ("core/crates/obid/tests/ignored.rs", "1\n")):
+            self.forget()
+            (self.worktree / path).write_text(text)
+            code, out, err = self.gate(FACTORY_MAC_WORKER=PRO, FACTORY_GATE_SHARDS=SHARDS)
+            self.assertEqual(code, 0, out + err)
+            self.assertFalse([call for call in self.ssh_calls() if "--shard" in call["argv"][-1]], path)
+            self.assertEqual(self.lines("mac-runs"), [], path)
+            self.assertIn(f"\n- Ran unsharded: {why}: {path}\n", self.checks())
+            self.assertIn(f"\n\nRan unsharded: {why}: {path}\n", self.checks().split("## Protected paths", 1)[0])
+            self.assertNotIn("## Time", self.checks())
+            self.assertEqual(self.header()["HOST"], "oby-gate, oby-mac-pro")
+            if path == "core/crates/obid/tests/tracked.rs":
+                self.git(self.worktree, "checkout", "-q", "--", path)
+            else:
+                (self.worktree / path).unlink()
+        # Clean again: sharded.
+        self.forget()
+        code, out, err = self.gate(FACTORY_MAC_WORKER=PRO, FACTORY_GATE_SHARDS=SHARDS)
+        self.assertEqual(code, 0, out + err)
+        self.assertIn(f"oby-remote-gate --shard 2/3 {self.git(self.worktree, 'rev-parse', 'HEAD')} origin/dev",
+                      [call["argv"][-1] for call in self.remote_calls()])
+        self.assertNotIn("Ran unsharded", self.checks())
+        self.assertNotEqual(commit, self.git(self.worktree, "rev-parse", "HEAD"))
+
+    def test_remote_65_an_inherited_oby_check_shard_reaches_no_run(self):
+        # A shell with OBY_CHECK_SHARD exported doesn't narrow the gate's runs: the whole check here, unsharded,
+        # and the macOS rust part, get none.
+        self.change("core/crates/obid/src/sandbox.rs", push=True)
+        code, out, err = self.gate(OBY_CHECK_SHARD="2/4")
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(self.lines("mac-runs"), ["rust"])
+        self.forget()
+        self.change("scripts/oby-check-test.sh", push=True)
+        code, out, err = self.gate(OBY_CHECK_SHARD="2/4", FACTORY_GATE_SHARDS=SHARDS)
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(self.lines("mac-runs"), ["all"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

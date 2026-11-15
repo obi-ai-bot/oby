@@ -70,7 +70,9 @@ judge or was cut off, and a Mac worker shard that would fall back above, runs he
 FAIL when any part's code isn't 0, a remote call ended 0 or 1 without its verdict line, a part's thread raised or a
 part has no result; each of the last three says `didn't report: <why>`. checks.md adds `Sharded: ...` to its
 summary and a `## Time` section (the wall clock, then each host's seconds), and its seconds are the wall clock's.
-An invalid `gate_shards` runs as without it, saying `Ran unsharded: <why>`; without it nothing here changes.
+An invalid `gate_shards` runs as without it, saying `Ran unsharded: <why>`, and so does a worktree that isn't its
+commit (a changed, staged or untracked file, or an ignored one under obid's tests): this Mac's shards would deal its
+test files, the other hosts' the commit's, and a binary could run nowhere. Without the key nothing here changes.
 """
 
 import fcntl
@@ -844,6 +846,14 @@ def sharded_parts(remote, shards, worktree, commit, base, planned, touched, linu
     return parts, [line for lines in notes for line in lines], "\n".join(s for sections in logs for s in sections)
 
 
+def uncommitted(worktree):
+    """The worktree's paths that aren't its commit's: changed, staged or untracked, and ignored ones under obid's
+    tests, which the check would deal into shards too."""
+    out = git(worktree, "status", "--porcelain", "--untracked-files=all") + git(
+        worktree, "status", "--porcelain", "--untracked-files=all", "--ignored", "--", "core/crates/obid/tests")
+    return list(dict.fromkeys(line[3:] for line in out.splitlines() if line.strip()))
+
+
 def describe(part):
     """One line for checks.md: host, groups, slot, seconds and exit code, or why it didn't run or report."""
     where = f"{part['host']}: {', '.join(part['groups'])}"
@@ -878,6 +888,10 @@ def gate(job_id, merge):
     sharded = False
     if remote or invalid:
         shards, unsharded = shards_config() if remote else (None, None)
+        changed = uncommitted(worktree) if shards else []
+        if changed:
+            # This Mac's shards deal the worktree's test files, the other hosts' the commit's (REMOTE-65).
+            shards, unsharded = None, f"the worktree has changes its commit doesn't: {named(changed)}"
         started = time.monotonic()
         parts, fell_back, moves, log, sharded = remote_parts(remote, invalid, job, worktree, commit, shards)
         if unsharded:
@@ -968,6 +982,8 @@ def idle():
 
 
 def main(argv):
+    # A shard is only ever set for the one checks.sh run it is meant for, never inherited by every run.
+    os.environ.pop("OBY_CHECK_SHARD", None)
     if argv == ["--idle"]:
         sys.exit(idle())
     elif len(argv) == 1 and not argv[0].startswith("-"):
