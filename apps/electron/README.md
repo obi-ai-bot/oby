@@ -58,7 +58,7 @@ folder). macOS delivers no notification from the unsigned development build.
 
 It opens on your own conversation with Oby, a chat, not on Home
 (`docs/contracts/chat-first.md`, the owner's decision of 2026-11-02): the side panel lists Oby,
-New conversation and every conversation; each Obysphere has its tile. A task is a card in its
+New conversation and every conversation; each Obysphere has its tile. The panel's title is the open profile with its menu (`docs/contracts/profiles.md`). A task is a card in its
 conversation; the Tasks list, Review PR and Issues are hidden, not deleted. Sangam's Home stays to compare: `?home`, or `oby.home` = `1` in the window's local
 storage; `?everything&chat` shows this on his demo data, with the Tasks icon. A Sphere's tile opens its room when obid has one
 (`docs/contracts/room-app.md`); on the mock, Deskree's, with `&room=empty`, `waiting`, `refused` or `unavailable`.

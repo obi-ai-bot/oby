@@ -22,6 +22,8 @@ import { askCardLine, memberOpens, mockConvosWith, plainId, useConvos } from './
 import { roomOpens, useRoom } from './room';
 import { chatOfTask, lastAgo, latestChat, renameChat, useChats, type Chat } from './chats';
 import { chatFirst, everything } from './lean';
+import { loadProfiles, openProfile, profileChats, useProfiles } from './profiles';
+import ProfileMenu, { NewProfileModal } from './ProfileMenu';
 import { WELCOME, sampleDid, sampleOut, useSetup } from './onboarding';
 import { SAMPLE_TALK } from './Welcome';
 import { plain } from './Said';
@@ -41,8 +43,9 @@ const SECTIONS: { id: Section; label: string; icon: StripIcon }[] = chatFirst ? 
 ];
 // each section's name over it (an Obysphere's is its own)
 const TITLES: Record<Exclude<Section, 'obysphere'>, string> = {
-  // (Chats: proposed, the canvas's word; Sangam's to change)
-  oby: 'Chats', home: chatFirst ? 'Tasks' : 'Home', conversations: 'Conversations', settings: 'Settings',
+  // the chats: the open profile's name, with its menu (screen 07); Default until obid lists them, or
+  // on an obid without
+  oby: 'Default', home: chatFirst ? 'Tasks' : 'Home', conversations: 'Conversations', settings: 'Settings',
 };
 
 // What each tab can start, first thing under its title; and which tabs can be searched.
@@ -114,7 +117,13 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   };
   const tasks = useTasks();
   const convos = useConvos();
-  const chats = useChats();
+  // the open profile's (profiles.ts): on the mock its own conversations, on obid all of them
+  const profiles = useProfiles();
+  const chats = profileChats(useChats(), profiles.list, profiles.kept);
+  const shownProfile = profiles.list?.length ? openProfile(profiles.list, profiles.kept) : undefined;
+  // the title's menu (ProfileMenu), and New profile…'s form
+  const [profileMenu, setProfileMenu] = useState<DOMRect | null>(null);
+  const [newProfile, setNewProfile] = useState(false);
   // Home's dot turns orange while any task needs you
   const needsYou = countOf('needs') + asksWaiting().length > 0;
   // and chat first, with Home's chips gone from sight: GitHub's work waiting on you too (a review
@@ -423,7 +432,18 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
 
         <div className="sidebar-content">
         <div className="sidebar-title-row">
-          <h2 className="sidebar-title">{inSphere ? sphere.name : TITLES[section]}{inSphere && sphere.sample && <span className="sidebar-sample">Sample</span>}</h2>
+          <h2 className="sidebar-title">{inSphere ? sphere.name : section === 'oby' && shownProfile ? (
+            <button
+              className={`sidebar-title-button${profileMenu ? ' is-on' : ''}`}
+              aria-haspopup="menu"
+              aria-expanded={!!profileMenu}
+              // obid's list again as it opens
+              onClick={(e) => { if (!profileMenu) void loadProfiles(); setProfileMenu(profileMenu ? null : e.currentTarget.getBoundingClientRect()); }}
+            >
+              <span className="sidebar-title-name">{shownProfile.name}</span>
+              <ChevronDown size={16} strokeWidth={1.8} />
+            </button>
+          ) : TITLES[section]}{inSphere && sphere.sample && <span className="sidebar-sample">Sample</span>}</h2>
           {section === 'home' && (
             <button
               className={`icon-button${archiveMenu ? ' is-on' : ''}`}
@@ -745,6 +765,10 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
           <button role="menuitem" onClick={() => setAccountMenu(null)}>Log out</button>
         </Menu>
       )}
+      {profileMenu && !!profiles.list?.length && (
+        <ProfileMenu list={profiles.list} kept={profiles.kept} at={profileMenu} onClose={() => setProfileMenu(null)} onNew={() => setNewProfile(true)} />
+      )}
+      {newProfile && <NewProfileModal taken={(profiles.list ?? []).map((p) => p.color.toLowerCase())} onClose={() => setNewProfile(false)} />}
       {inviting && <InviteModal sphere={{ name: sphere.name, url: urlOf(sphere) }} domain={sphere.domain} onSent={(emails) => invite(sphere.id, emails)} onClose={() => setInviting(false)} />}
       {creating && <CreateSphereModal email={ME.email} onCreated={(id) => { setCreating(false); setSphereId(id); pick('obysphere'); }} onClose={() => setCreating(false)} />}
       {sphereMenu && (
