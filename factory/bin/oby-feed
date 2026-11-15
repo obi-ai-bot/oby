@@ -266,10 +266,10 @@ def brief(task, on_base):
 def start(task, account, on_base, why=None, attempt=1):
     key = task["key"]
     text = brief(task, on_base)
-    if why:  # obid's own words for the attempt before, never the agent's or GitHub's
-        text += f"\n\nAttempt {attempt} of {MAX_ATTEMPTS}: the last one ended with {why}"
     if len(text) > 2000:
         return None, f"its file isn't on origin/{job.BASE} and its text is too long to send ({len(text)} characters): commit the task file first"
+    if why:  # obid's own words for the attempt before, never the agent's or GitHub's, cut to fit obid's 2,000
+        text += f"\n\nAttempt {attempt} of {MAX_ATTEMPTS}: the last one ended with {why}"[:2000 - len(text)]
     code, body = api("POST", "/v1/jobs", {"job": {
         "repo": GH_REPO, "kind": "build", "account": account, "base": job.BASE, "rounds": 3,
         "title": f"{key} {task['title']}"[:60].strip(), "task": text,

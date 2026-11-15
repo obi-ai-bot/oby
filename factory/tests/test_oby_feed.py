@@ -344,6 +344,19 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual((item["state"], item["job"], item["attempt"]), ("running", "job-2", 2))
         self.assertEqual(self.messages(), [])
 
+    def test_feedloop_1_a_brief_near_the_limit_still_starts_again_with_its_reason_cut(self):
+        self.no_ready()
+        self.task("running", attempt=1, onBase=False)
+        room = 1900 - len(self.feed.brief({"key": "A00-99", "title": "a task", "body": ""}, False))
+        task = {"key": "A00-99", "title": "a task", "body": "x" * room}
+        self.feed.job.read_task = lambda path: task
+        self.stand.jobs[JOB].update(status="interrupted", nextStep="Try again " + "y" * 250)
+        self.one_pass()
+        [build] = self.builds()
+        self.assertEqual(len(build["task"]), 2000)
+        self.assertIn("\n\nAttempt 2 of 3: the last one ended with interrupted: Try again", build["task"])
+        self.assertEqual(self.task_now()["attempt"], 2)
+
     # FEEDLOOP-2: a job obid lost (404), or done with nothing published, starts again the same way
     def test_feedloop_2_a_lost_job_starts_again(self):
         self.no_ready()
@@ -548,7 +561,7 @@ class CheckModels(unittest.TestCase):
         with mock.patch.object(feed.subprocess, "run", side_effect=run), mock.patch.object(feed.job, "CONFIG", config), \
                 mock.patch.object(feed, "api", return_value=(200, {"approvals": approvals})), \
                 mock.patch.object(feed, "gh_json", return_value=pr), mock.patch.object(feed, "touches_security", return_value=[]):
-            self.assertTrue(feed.follow(item, []))
+            self.assertTrue(feed.follow(item, [], "acct"))
         self.assertEqual(item["state"], "waiting")
         self.assertIn(f"{bad} gave no verdict", item["note"])
         self.assertFalse([cmd for cmd in sent if "touch x" in " ".join(cmd) and cmd[0] == "ssh"], sent)
