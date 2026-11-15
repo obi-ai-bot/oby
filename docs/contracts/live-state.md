@@ -148,7 +148,7 @@ The business behavior contract for Settings rows whose choice obid doesn't keep 
 
 - **The owner** turns a row in Settings.
 - **The page** shows each row: the value set in this launch, else the kept one when it has the type of the row's default (the same `typeof`, an array only for an array default, `null` only for a `null` default), else the default. It reads what main kept once, as it starts, and sends each change to main. Until main's answer comes the row shows its default, and a change made before then isn't replaced by it.
-- **Main** owns `settings.json` in the app's own folder (`src/main/settings.ts`): its `local` section holds the rows, an object of row key to JSON value, beside main's own keys (`notifications`, `updatesAuto`). Every write reads the file, sets its keys and writes it whole, owner-only (0600) and never through a link (`writeOwn`), so a row keeps main's keys and main's keys keep `local`.
+- **Main** owns `settings.json` in the app's own folder (`src/main/settings.ts`): its `local` section holds the rows, an object of row key to JSON value, beside main's own keys (`notifications`, `notifyFinished`, `notifyMerged`, `notifyLimit`, `updatesAuto`). Every write reads the file, sets its keys and writes it whole, owner-only (0600) and never through a link (`writeOwn`), so a row keeps main's keys and main's keys keep `local`.
 - **obid** owns nothing here.
 
 ### The channels
