@@ -52,6 +52,10 @@ The owner's answer in the factory session of 2026-11-15.
 
 The owner's answer in the factory session of 2026-11-15.
 
+> "No, skip them (Recommended)" to: "after your conversation reads something from outside, your words have to name the action and its number ("merge #3"). The rule matches words, so "don't merge #3" or "should I merge #3?" also count as naming the merge. Text injected into #3 could then get it merged. Should negations and questions count?"
+
+The owner's answer in the factory session of 2026-11-15.
+
 > no force-pushing, nor merging into `main` but the owner's own work, on its own
 
 AGENTS.md's wording, not a quote.
