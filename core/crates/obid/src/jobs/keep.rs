@@ -72,6 +72,19 @@ impl Jobs {
     }
 }
 
+/// Task chains, once at start (PUBLISHING-37), and each job's `carried`: a file that doesn't save is
+/// built again next start.
+pub(super) fn settle_chains(store: &Store, jobs: &mut HashMap<String, Job>) {
+    for id in chain::settle(jobs) {
+        if let Err(e) = store.save(&jobs[&id]) {
+            tracing::warn!("job {id}: can't keep its task chain: {e}");
+        }
+    }
+    for id in jobs.keys().cloned().collect::<Vec<_>>() {
+        chain::mark_carried(jobs, &id);
+    }
+}
+
 /// The marks that only restrict a job, from unsaved `next` onto `job`, the newest `check_withheld`
 /// reason winning: a job is never treated as less marked than it was, and its next save keeps them.
 fn carry_marks(job: &mut Job, next: &Job) {

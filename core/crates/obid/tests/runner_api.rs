@@ -195,6 +195,7 @@ fn jobs_have_iso_dates_and_every_key() {
                 "artifacts",
                 "canPublish",
                 "canPublishAnyway",
+                "chain",
                 "changes",
                 "conversation",
                 "followUpOf",
@@ -216,7 +217,7 @@ fn jobs_have_iso_dates_and_every_key() {
             "{body}"
         );
         let known = keys.keys().filter(|k| page.contains(&k.as_str())).count();
-        assert_eq!(keys.len(), 93 + known);
+        assert_eq!(keys.len(), 94 + known);
         // POST /v1/jobs: its own conversation, the owner's words its first turn (TASKCONV-1).
         assert!(body["conversation"].is_string(), "{body}");
         assert!(body["turn"].is_string(), "{body}");
@@ -1556,9 +1557,9 @@ fn messages_reach_only_jobs_that_can_take_them() {
 }
 
 /// A follow-up of a job whose commits aren't merged (here not published: this obid has no `gh`)
-/// starts from that job's branch head, on a branch of its own: its agent sees that work, and its
-/// commits are what it publishes beyond what that job pushed (only its pull request failed here),
-/// its own (#770). A job takes one follow-up at a time: while one works, more words
+/// starts from that job's branch head and carries that branch on (PUBLISHING-34): its agent sees
+/// that work, and its commits are what it publishes beyond what that job pushed (only its pull
+/// request failed here) (#770). A job takes one follow-up at a time: while one works, more words
 /// for the first job go to it, never a second.
 #[test]
 fn a_follow_up_starts_from_the_first_jobs_unmerged_work() {
@@ -1591,7 +1592,7 @@ fn a_follow_up_starts_from_the_first_jobs_unmerged_work() {
     let followed = post(&first, "COMMIT: two.txt");
     assert_eq!(followed.status, 201, "{}", followed.text);
     let next = followed.body["id"].as_str().unwrap().to_owned();
-    assert_eq!(followed.body["branch"], format!("oby/build-{next}"));
+    assert_eq!(followed.body["branch"], format!("oby/build-{first}"));
     let after = ended(&obid, &next);
     assert_eq!(after["startCommit"], head.as_str(), "{after}");
     assert_eq!(done["pushed"], 1, "{done}");

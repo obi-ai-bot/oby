@@ -1312,15 +1312,7 @@ impl Jobs {
             }
             jobs.insert(job.id.clone(), job);
         }
-        // Task chains, once (PUBLISHING-37): a file that doesn't save is built again next start.
-        for id in chain::settle(&mut jobs) {
-            if let Err(e) = store.save(&jobs[&id]) {
-                tracing::warn!("job {id}: can't keep its task chain: {e}");
-            }
-        }
-        for id in jobs.keys().cloned().collect::<Vec<_>>() {
-            chain::mark_carried(&mut jobs, &id);
-        }
+        keep::settle_chains(&store, &mut jobs);
         let identity = commit_identity(&config.owner);
         let kept = crate::settings::load(&config.home);
         crate::settings::use_limits(kept.limits);
