@@ -344,16 +344,20 @@ def next_attempt(item, j, case=None):
     return ("message", why) if case else ("build", retry_words(j))
 
 
-def retry(item, j, case):
+def retry(item, j, case, jobs):
     """Decides how the task carries on, as next_attempt() says: it ends now, or waits `retrying` for one_pass() to
     start its attempt through a new start's checks (--max, free disk, files, --dry-run). An attempt that ends it reads
-    its pull request first: one that touches a security path waits for the owner instead, and one that can't be read
-    leaves the task as it was, judged again at the next pass. Returns True when it changed."""
+    its pull request first: one merged by hand ends it `merged`, one that touches a security path waits for the owner
+    instead, and one that can't be read leaves the task as it was, judged again at the next pass. Returns True when it
+    changed."""
     verdict, why = next_attempt(item, j, case)
     if verdict == "end" and item.get("pr"):
         pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", VIEW)
         if not pr:
             return False
+        if pr["state"] == "MERGED":
+            merged(item, jobs)
+            return True
         hit = touches_security([f["path"] for f in pr.get("files", [])]) if pr["state"] == "OPEN" else []
         if hit:
             strip_build_folders(item["job"])
@@ -502,7 +506,7 @@ def follow(item, jobs):
         hit = touches_security([f["path"] for f in (pr or {}).get("files", [])])
         held = item["state"] == "waiting" and (item.get("note") or "").startswith(SECURITY_HOLD)
         if not hit and not held and item["state"] != "merging":
-            return retry(item, None, None)
+            return retry(item, None, None, jobs)
         if hit and item["state"] not in ("waiting", "merging"):
             item.update(state="waiting", note=f"{SECURITY_HOLD} ({hit[0]}) and obid no longer has its job: merge it yourself")
             return True
@@ -521,7 +525,7 @@ def follow(item, jobs):
         first = (j.get("summary") or "").strip().splitlines()[0:1]
         pr = pr_number(j.get("published")) if j["status"] == "done" else None
         if not pr or (first and first[0].startswith("STATUS: BLOCKED")):
-            return retry(item, j, None)
+            return retry(item, j, None, jobs)
         strip_build_folders(item["job"])
         item.update(state="reviewing", pr=pr)
         return True
@@ -536,7 +540,7 @@ def follow(item, jobs):
             item.update(state="failed", note="its pull request was closed")
             return True
         if stuck(pr, j):
-            return retry(item, j, stuck(pr, j))
+            return retry(item, j, stuck(pr, j), jobs)
         head = pr["headRefOid"]
         verdict, said = may_arm(j, pr, item.get("refused"))
         if verdict == "pending":
@@ -577,7 +581,7 @@ def follow(item, jobs):
         if hit:  # a lost job's security-path pull request stays the owner's, refused or not
             item.update(state="waiting", note=f"{SECURITY_HOLD} ({hit[0]}) and obid no longer has its job: merge it yourself")
         else:
-            retry(item, None, None) if lost else retry(item, j, "queue")  # a lost job takes no follow-up
+            retry(item, None, None, jobs) if lost else retry(item, j, "queue", jobs)  # a lost job takes no follow-up
         return True
     if item["state"] == "waiting":
         pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", VIEW)
@@ -590,7 +594,7 @@ def follow(item, jobs):
             item.update(state="failed", note="its pull request was closed")
             return True
         if stuck(pr, j):
-            return retry(item, j, stuck(pr, j))
+            return retry(item, j, stuck(pr, j), jobs)
         head = pr["headRefOid"]
         verdict, said = may_arm(j, pr, item.get("refused"))
         if verdict == "arm":

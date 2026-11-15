@@ -719,6 +719,19 @@ class ObyFeed(unittest.TestCase):
                 self.one_pass()
                 self.assertEqual(self.task_now()["state"], "merged")
 
+    def test_feedloop_12_a_last_attempt_whose_pull_request_was_merged_ends_it_merged(self):
+        self.no_ready()
+        self.task("running", head=OLD, attempt=3)
+        self.stand.jobs[JOB].update(status="failed")
+        self.feed.oby_jobs = lambda: [self.stand.jobs[JOB], {"id": "review-1", "reviewOf": JOB}]
+        self.stand.view = {"headRefOid": OLD, "state": "MERGED", "files": [{"path": "x.py"}]}
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual(self.stand.sent, [])
+        self.assertEqual(item["state"], "merged")
+        deleted = sorted(c[2] for c in self.stand.calls if c[:2] == ("api", "DELETE"))
+        self.assertEqual(deleted, [f"/v1/jobs/{JOB}", "/v1/jobs/review-1"])
+
     # FEEDLOOP-13: a held follow-up whose job obid lost is never posted to it: a new build, or the end at the cap
     def test_feedloop_13_a_held_follow_up_whose_job_was_lost_takes_the_new_build_path(self):
         self.no_ready()
