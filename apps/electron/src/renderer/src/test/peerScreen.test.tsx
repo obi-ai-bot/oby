@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { PeerPost } from '../obid';
+import { liveBridge } from './liveBridge';
 
 // The thread's screen and its row as they really render and wire up, on an obid that answers from
 // here (docs/contracts/peer-thread.md, PEER-7 to PEER-15, PEER-24). Composer is a marker holding what it's given;
@@ -21,7 +22,6 @@ const page = vi.hoisted(() => {
     // its last cleanup first. Slots go by call order, which only the screen's own hooks rely on.
     hooks: null as null | { at: number; kept: { value?: unknown; deps?: unknown[]; stop?: (() => void) | void }[] },
     onSphere: (() => {}) as (s: { sphere: string; name: string }) => void,
-    chunk: (() => {}) as (text: string) => void,
     kept,
   };
   g.location = { search: '' };
@@ -37,11 +37,13 @@ const page = vi.hoisted(() => {
         the.calls.push({ method, path, body });
         return the.routes[`${method} ${path}`]?.() ?? { status: 404, text: '{}' };
       },
-      follow: (chunk: typeof the.chunk) => { the.chunk = chunk; return () => {}; },
     },
   } };
   return the;
 });
+// main's one follower of obid's events, as the page meets it
+const bridge = liveBridge();
+Object.assign((globalThis as unknown as { window: { app: { obid: object } } }).window.app.obid, bridge.obid);
 vi.mock('react', async (original) => {
   const real = await original<typeof import('react')>();
   return {
@@ -158,15 +160,14 @@ describe('the screen', () => {
   it('peer_7_opening_reads_it_and_the_stream_reads_it_again', async () => {
     await opened(ok(thread()));
     expect(page.calls.filter((c) => c.path === '/v1/obid/sphere/peers/dana')).toHaveLength(1);
-    // obid's event, through the stream as it comes in, and the stream coming back
-    for (const [path, value] of Object.entries({ '/v1/status': { accounts: [] }, '/v1/jobs?limit=100': [], '/v1/conversations?limit=200': [] })) page.routes[`GET ${path}`] = ok(value);
+    // obid's event, through main as it comes in, and main's stream coming back
     page.calls = [];
     m.live.connect();
-    page.chunk(': hello\n\n');
+    bridge.sync({ status: { accounts: [] } });
     await vi.waitFor(() => expect(page.calls.some((c) => c.path === '/v1/obid/sphere/peers/dana')).toBe(true));
     await vi.waitFor(() => expect(m.live.liveState().connection).toBe('live'));
     page.calls = [];
-    page.chunk('event: peerThread\ndata: {"owner":"dana","posts":[]}\n\n');
+    bridge.event('peerThread', { owner: 'dana', posts: [] });
     await vi.waitFor(() => expect(page.calls.map((c) => c.path)).toContain('/v1/obid/sphere/peers/dana'));
   });
 

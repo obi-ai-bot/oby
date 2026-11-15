@@ -4,6 +4,7 @@ import { parseEvent, type RoomPost } from '../obid';
 import { leftInBox, stackedAt } from '../Composer';
 import { aboutWords, atEnd, doing, merged, roomOpens } from '../room';
 import { RoomThread } from '../RoomView';
+import { liveBridge } from './liveBridge';
 
 // The Sphere's room in the app (docs/contracts/room-app.md). What the mock's clicks showed is in the
 // pull request; here, the rules.
@@ -224,20 +225,21 @@ describe('the room, against obid', () => {
   });
 
   it('ROOMAPP-5: live.ts hands obid’s roomPost to the room, and an event it doesn’t know goes nowhere', async () => {
-    let chunk!: (text: string) => void;
-    // obid as far as the first look needs: GitHub's work not read, every list empty
+    const bridge = liveBridge();
+    // obid as far as the first look needs: every read empty
     call.mockImplementation(async (_: string, path: string) => {
       if (path.includes('/room')) return answer(200, { room: 'available', posts: [] });
-      if (path === '/v1/github/work') return answer(404, {});
+      if (path === '/v1/status') return answer(200, { accounts: [] });
       return answer(200, /^\/v1\/(inbox|jobs|conversations|limit-decisions)/.test(path) ? [] : {});
     });
-    (page.window as { app: { obid: Record<string, unknown> } }).app.obid.follow = (on: (t: string) => void) => { chunk = on; return () => {}; };
+    Object.assign((page.window as { app: { obid: Record<string, unknown> } }).app.obid, bridge.obid);
     await looked(answer(200, { room: 'available', posts: [] }));
     const { connect } = await import('../live');
     connect();
-    chunk('');
+    bridge.sync();
     await vi.waitFor(() => expect(call).toHaveBeenCalledWith('GET', '/v1/status', undefined));
-    chunk(`event: roomPost\ndata: ${JSON.stringify(post('live', 4))}\n\nevent: somethingNew\ndata: {"id":"x"}\n\n`);
+    bridge.event('roomPost', post('live', 4));
+    bridge.event('somethingNew', { id: 'x' });
     await vi.waitFor(() => expect(room.roomNow().posts.map((p) => p.id)).toEqual(['live']));
   });
 });

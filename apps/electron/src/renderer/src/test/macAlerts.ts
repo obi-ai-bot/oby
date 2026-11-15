@@ -2,9 +2,11 @@ import { closeSync, constants, mkdtempSync, openSync, writeSync } from 'node:fs'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, vi } from 'vitest';
+import type { LiveMessage } from '../../../shared/live-wire';
 
 // Oby's alerts on this Mac as they're drawn (main/notify.ts, docs/contracts/alerts.md): one launch
-// of it over an app folder, obid answering from here, its event stream ours to write to, and
+// of it with main's one follower of obid's events (main/live.ts) over an app folder, obid answering
+// from here, its event stream ours to write to, the window's page a list of what main sent it, and
 // Notification Center a list of banners whose buttons a test presses.
 
 export type Banner = {
@@ -14,14 +16,15 @@ export type Banner = {
 
 export const mac = {
   userData: '',
-  // GET /v1/alerts, /v1/inbox, /v1/limit-decisions, /v1/jobs
+  // GET /v1/alerts, /v1/inbox, /v1/limit-decisions, /v1/jobs?limit=100
   served: [] as unknown[],
   inbox: [] as unknown[],
   decisions: [] as unknown[],
   jobs: [] as unknown[],
   // obid can't serve GET /v1/alerts (503, its vault unreadable)
   down: false,
-  // whether the window is in front
+  // whether the window is open, and in front
+  window: true,
   front: false,
   // whether main's own read of GET /v1/status says obid takes request keys
   receipts: false,
@@ -35,6 +38,12 @@ export const mac = {
   opened: [] as unknown[],
   // how many times GET /v1/alerts was read since launch
   alertReads: 0,
+  // the paths of the event streams Oby asked obid for since launch
+  streams: [] as string[],
+  // what main sent the window's page on obid-live
+  page: [] as LiveMessage[],
+  // a channel's handler, as the window's own page reaches it
+  ask: (_channel: string, ..._args: unknown[]): unknown => undefined,
   event: (_name: string, _data: unknown) => {},
 };
 
@@ -44,7 +53,7 @@ let launches = 0;
 // A new app folder, nothing served
 export function fresh() {
   launches++;
-  Object.assign(mac, { userData: mkdtempSync(join(tmpdir(), 'oby-alerts-')), served: [], inbox: [], decisions: [], jobs: [], down: false, front: false, receipts: false, lost: 0 });
+  Object.assign(mac, { userData: mkdtempSync(join(tmpdir(), 'oby-alerts-')), served: [], inbox: [], decisions: [], jobs: [], down: false, window: true, front: false, receipts: false, lost: 0 });
 }
 
 // One alert of obid's list (docs/runner-api.md, GET /v1/alerts)
@@ -52,8 +61,8 @@ export const served = (key: string, more: Record<string, unknown> = {}) => ({
   key, what: 'open', title: 'Needs your OK: Fix it', body: 'npm test', category: 'inbox', thread: 'inbox', urgent: true, answers: [], ...more,
 });
 
-// One launch of Oby: notify.ts fresh, following obid until its first look. The next launch or
-// fresh() retires it: notify.ts has no stop, and its timers would otherwise reach the shared mac.
+// One launch of Oby: live.ts and notify.ts fresh, following obid until the first look. The next
+// launch or fresh() retires it: neither has a stop, and their timers would otherwise reach the shared mac.
 // Retired, its mocks post, badge, send and write nothing, and its reads never answer
 export async function launch() {
   const me = ++launches;
@@ -65,8 +74,18 @@ export async function launch() {
   mac.badge = undefined;
   mac.sent = [];
   mac.opened = [];
-  const handlers: Record<string, (e: unknown) => unknown> = {};
-  const window = { isVisible: () => true, isMinimized: () => false, isFocused: () => mac.front, webContents: { send: () => { if (live()) mac.opened.push(handlers.opened({})); } } };
+  mac.streams = [];
+  mac.page = [];
+  const handlers: Record<string, (e: unknown, ...args: unknown[]) => unknown> = {};
+  mac.ask = (channel, ...args) => handlers[channel]({}, ...args);
+  const window = {
+    isVisible: () => true, isMinimized: () => false, isFocused: () => mac.front, isDestroyed: () => false,
+    webContents: { send: (channel: string, m: LiveMessage) => {
+      if (!live()) return;
+      if (channel === 'open') mac.opened.push(handlers.opened({}));
+      if (channel === 'obid-live') mac.page.push(m);
+    } },
+  };
   vi.doMock('electron', () => ({
     app: { getPath: () => userData, isPackaged: false, dock: { setBadge: (b: string) => { if (live()) mac.badge = b; } } },
     Notification: class {
@@ -85,11 +104,10 @@ export async function launch() {
       close() { this.banner.closed = true; }
       show() { if (live()) mac.posted.push(this.banner); }
     },
-    ipcMain: { on() {}, handle: (name: string, f: (e: unknown) => unknown) => { handlers[name] = f; } },
+    ipcMain: { on() {}, handle: (name: string, f: (e: unknown, ...args: unknown[]) => unknown) => { handlers[name] = f; } },
     powerMonitor: { on() {}, getSystemIdleState: () => 'active' },
     shell: {},
   }));
-  let lists = 0;
   mac.alertReads = 0;
   const answer = (method: string, path: string, body: unknown, signed: boolean) => {
     if (method !== 'GET') {
@@ -97,18 +115,25 @@ export async function launch() {
       if (mac.lost > 0) { mac.lost--; return { status: 0, text: 'obid closed the connection.' }; }
       return { status: 200, text: '{}' };
     }
-    lists++;
     if (path === '/v1/alerts') mac.alertReads++;
     if (path === '/v1/alerts' && mac.down) return { status: 503, text: '{"error": "The vault can’t be read."}' };
-    const got = ({ '/v1/alerts': mac.served, '/v1/inbox': mac.inbox, '/v1/limit-decisions': mac.decisions, '/v1/jobs': mac.jobs } as Record<string, unknown[]>)[path] ?? [];
+    if (path === '/v1/status') return { status: 200, text: JSON.stringify({ runner: { version: '0.2.4', host: 'mac' }, accounts: [], models: {}, maxRunning: 6, running: 0 }) };
+    if (path === '/v1/github/work') return { status: 404, text: '{"error": "Not found."}' };
+    const got = ({ '/v1/alerts': mac.served, '/v1/inbox': mac.inbox, '/v1/limit-decisions': mac.decisions, '/v1/jobs?limit=100': mac.jobs } as Record<string, unknown[]>)[path] ?? [];
     return { status: 200, text: JSON.stringify(got) };
   };
   let stream!: ReadableStreamDefaultController<Uint8Array>;
   mac.event = (name, data) => stream.enqueue(new TextEncoder().encode(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`));
   vi.doMock('../../../main/obid', () => ({
     obid: async (method: string, path: string, body?: unknown) => (live() ? answer(method, path, body, false) : never),
-    send: async () => (live() ? new Response(new ReadableStream<Uint8Array>({ start: (c) => { stream = c; } })) : never),
+    send: async (_method: string, path: string) => {
+      if (!live()) return never;
+      mac.streams.push(path);
+      return new Response(new ReadableStream<Uint8Array>({ start: (c) => { stream = c; } }));
+    },
     takesKeys: async () => mac.receipts,
+    streamEnded: () => {},
+    reason: (e: unknown) => ({ status: 0, text: String(e) }),
   }));
   vi.doMock('../../../main/device', () => ({
     answerLimit: async (...a: unknown[]) => { if (!live()) return never; mac.sent.push({ method: 'POST', path: 'answerLimit', body: a, signed: true }); return { status: 200, text: '{}' }; },
@@ -121,11 +146,14 @@ export async function launch() {
     },
   }));
   const notify = await import('../../../main/notify');
-  notify.notifying(() => true, () => window as never, () => window as never);
+  const main = await import('../../../main/live');
+  const shown = () => (mac.window ? window as never : null);
+  notify.notifying(() => true, shown, () => window as never);
+  main.living(() => true, shown);
   // obid's lists answered, then the look that follows them
-  await vi.waitFor(() => expect(lists).toBeGreaterThanOrEqual(4));
+  await vi.waitFor(() => expect(mac.alertReads).toBeGreaterThanOrEqual(1));
   await new Promise((done) => setTimeout(done, 0));
-  return notify;
+  return Object.assign(notify, { main });
 }
 
 export const titles = () => mac.posted.map((b) => b.title);
