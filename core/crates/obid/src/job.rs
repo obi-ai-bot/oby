@@ -844,8 +844,9 @@ pub struct Job {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub vetted: bool,
     /// It was planned in a turn of the owner's own conversation whose words an app of theirs
-    /// signed (crate::brain::actions), or follows up such a job: its pull request merges by itself
-    /// on any base (crate::merge::own_work, MERGING-44). In its file, never in the API.
+    /// signed (crate::brain::actions), or started by a `POST /v1/jobs` an app of theirs signed
+    /// (crate::routes::dispatch), or follows up such a job: its pull request merges by itself on
+    /// any base (crate::merge::own_work, MERGING-44). In its file, never in the API.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub own_conversation: bool,
     /// Why obid didn't merge its pull request, when only the owner can take it on from here

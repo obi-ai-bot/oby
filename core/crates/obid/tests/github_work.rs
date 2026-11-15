@@ -878,6 +878,37 @@ fn taskconv_2_a_task_from_github_gets_its_own_conversation() {
     assert_eq!(turns.last().unwrap()["jobs"], json!([id]));
 }
 
+/// MERGING-51 (docs/contracts/merging.md): GitHub work a tap starts isn't the owner's own work,
+/// even sent signed: its job's file holds no own mark, so its pull request keeps its card
+/// (`merge_api::merging_46_work_not_from_the_owners_conversation_keeps_its_card`).
+#[test]
+fn merging_51_github_work_started_by_a_tap_gets_no_own_mark() {
+    let folder = Folder::new("merging-51");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &agents().join("fake-claude"));
+    let obid = start(&folder.0, &config, Some(&agents()));
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(
+        gh.join("view.json"),
+        json!({"title": "Thing 703", "body": "Fix it.", "author": {"login": "sangam"},
+               "labels": [], "comments": []})
+        .to_string(),
+    )
+    .unwrap();
+    serve(&gh, &[(REPO, 703)], &[], &[]);
+    let feed = refresh(&obid);
+    let tap = format!("/v1/github/work/{}/start", id_of(&feed, "reviews", 703));
+    let started = call_signed(&obid, "POST", &tap, None);
+    assert_eq!(started.status, 201, "{}", started.text);
+    let id = started.body["id"].as_str().unwrap();
+    let file = folder.0.join(format!("home/jobs/{id}.json"));
+    let kept: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert!(kept.get("ownConversation").is_none(), "{kept}");
+    let job: obid::job::Job = serde_json::from_value(kept).unwrap();
+    assert!(!obid::merge::own_work(&job), "{job:?}");
+}
+
 /// A job on `issue` of the fixture repository, as `POST /v1/jobs` starts one with `task`, once it
 /// ended.
 fn issue_job_ended(obid: &Obid, issue: u64, task: &str) -> Value {

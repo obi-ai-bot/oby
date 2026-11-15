@@ -680,8 +680,8 @@ pub struct NewJob {
     /// a follow-up of a vetted job told by those words. Nothing else sets it.
     #[serde(default)]
     pub vetted: bool,
-    /// Planned in the owner's own conversation on words an app of theirs signed
-    /// ([`Job::own_conversation`]). Only obid's own code sets it, never the API.
+    /// Planned in the owner's own conversation, or sent by `POST /v1/jobs`, on words an app of
+    /// theirs signed ([`Job::own_conversation`]). Only obid's own code sets it, never the body.
     #[serde(default)]
     pub own_conversation: bool,
     /// Why its words aren't on obid's allowlist from the start (crate::secretspec): Oby's
@@ -16491,7 +16491,7 @@ mod tests {
         assert!(own.own_conversation);
         let next = jobs.create(follow_up(&own, "and the docs")).unwrap();
         assert!(next.own_conversation);
-        let other = jobs.create(new("From the Tasks view")).unwrap();
+        let other = jobs.create(new("From a routine")).unwrap();
         assert!(!other.own_conversation);
         let after = jobs.create(follow_up(&other, "go on")).unwrap();
         assert!(!after.own_conversation);
