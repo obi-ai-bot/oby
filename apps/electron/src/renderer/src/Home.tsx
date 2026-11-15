@@ -28,7 +28,8 @@ import { WELCOME, setUp, startOnboarding } from './onboarding';
 import { askOby, chatOfTask, latestChat, renameChat, restingChat, tellAbout, useChats } from './chats';
 import { useConvos, useThreads, whoseOby } from './peers';
 import { AvatarStack } from './ObyFace';
-import { convoTitle, hasAttachments, type Attachments } from './mock';
+import { convoTitle } from './mock';
+import { hasAttachments, type Attachments } from './view';
 import { box as draftBox } from './drafts';
 import { TYPES, renameTask, tell, countOf, runningCount, firstTab, hasFresh, toDoOf, useTasks, asksWaiting, type Tab } from './tasks';
 

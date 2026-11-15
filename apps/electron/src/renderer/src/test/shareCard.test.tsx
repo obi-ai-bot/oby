@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { InboxItem } from '../../../shared/obid-wire';
-import type { Ask } from '../mock';
+import type { Ask } from '../view';
 
 // The card that asks which repositories to share, as it renders (docs/contracts/peer-thread.md,
 // PEER-38, PEER-42): a click mustn't share private work unread.

@@ -158,3 +158,9 @@ Kept outside this channel, in the page's `localStorage` (`useKeptSetting`): `mod
 #### Test it when it's done (on a real Mac)
 
 1. `npm run dev`: turn Open at login off in Settings › General, quit Oby and open it again: it shows off. Notifications and Update automatically keep their own choices.
+
+## The live path without the mock (R06-12)
+
+The view types the screens draw (`Job`, `Message`, `Ask`, ...), their constants (`AGENTS`, `TELL`, `STEER`, `ASK_LABEL`) and pure helpers (`agentOf`, `hasAttachments`, `ago`) live in `apps/electron/src/renderer/src/view.ts`, which imports nothing from `mock.ts` or `lean.ts`; `mock.ts` holds only the demo data and the functions that read it. Roadmap task R06-12 (`factory/queue/done/R06-12.md`).
+
+- **LIVE-22** (implemented) Given the source of `live.ts`, when the test reads its imports, then none is `./mock`. `live_22_live_ts_imports_nothing_from_the_mock`, and `live_22: view.ts imports nothing from the mock or lean.ts`, in `apps/electron/src/renderer/src/test/view.test.ts`.

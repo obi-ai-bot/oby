@@ -1,9 +1,9 @@
 import type { Account, EntryDetail, Job, Outgoing, TranscriptEntry } from './obid';
-import type { Page, Stage, StageId, ToolGroup } from './mock';
+import type { Page, Stage, StageId, ToolGroup } from './view';
 import { modeLabel } from './modes';
 import type { Detail, Entry, ToolKind } from './session';
 
-// obid's job as Sangam's task page shows it (TaskCard.tsx, mock.ts's Page): the stages with their
+// obid's job as Sangam's task page shows it (TaskCard.tsx, view.ts's Page): the stages with their
 // times, the time track from obid's estimate, the agent's activity, what the job used and its share
 // of the account's windows, and what went out (docs/runner-api.md, #730-#733). A part obid has no
 // data for is left out, so his page doesn't draw it. Pure, so it's tested (test/jobPage.test.ts).

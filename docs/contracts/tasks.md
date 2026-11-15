@@ -28,7 +28,7 @@ A delete of a job obid no longer has (`404`) counts as gone. Asking first only w
 
 ### The page
 
-What obid has goes into Sangam's `Page` (`mock.ts`) and stages, in `jobPage.ts`; a part with no data isn't drawn, as his page already does:
+What obid has goes into Sangam's `Page` (`view.ts`) and stages, in `jobPage.ts`; a part with no data isn't drawn, as his page already does:
 
 - **Stages:** each one's time: `seconds` when it's over ("22s", "3m 19s"), counted from `started` less `waited` while it's current ("9m 38s so far"), the middle of its `estimate` while it's to come ("≈ 30s"). Under Work, the activity when there's any, and the agent's latest words (`context`) while it's current.
 - **Timeline:** from `estimate` and the stage times. Running: "10m in · done in about 2–10m", the track's done, from and to, paused while the task needs the owner, and `basis` under it; past the range, "25m in · jobs like this: 12–20m". Done: "Took 25m · estimated 10–18m" (the range first given). Failed or stopped: "Ran 25m · jobs like this: 12–20m". With no estimate, the section stays "Stages".

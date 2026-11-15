@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ObyFace } from '../ObyFace';
-import { AGENTS, type Agent, type Ask, type AskKind, type SetupStep, type Stage, type StageId } from '../mock';
+import { AGENTS, type Agent, type Ask, type AskKind, type SetupStep, type Stage, type StageId } from '../view';
 import { FIRST_TASK, WELCOME, pick, signInGitHub, dev as setupDev, type Setup } from '../onboarding';
 import { addTask, stop, useTasks, dev as tasksDev, type Task } from '../tasks';
 import { closeOnboarding, openOnboarding } from '../FirstRun';

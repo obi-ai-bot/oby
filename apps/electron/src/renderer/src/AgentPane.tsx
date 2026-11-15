@@ -8,7 +8,7 @@ import { box as draftBox } from './drafts';
 import { onObid } from './lean';
 import { tellAgent } from './live';
 import { around, lastSteps, thoughtWords, todosOf, type Step, type Todo } from './liveTask';
-import { agentOf } from './mock';
+import { agentOf } from './view';
 import { markSeen, stop, tell, tellPlaceholder, useTasks, type Task } from './tasks';
 
 // How the to-do it's on stands: at work, waiting on you, stopped by a failure, or just ended;

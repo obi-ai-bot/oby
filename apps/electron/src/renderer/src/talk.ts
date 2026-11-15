@@ -1,6 +1,6 @@
 // Which account a conversation talks through (docs/contracts/conversation-agent.md), as the chat
 // window's pill and its menu show it: what obid says, in words. obid decides; this only reads.
-import { agentOf, type Agent } from './mock';
+import { agentOf, type Agent } from './view';
 import { isAgent } from '../../shared/obid-wire';
 import { cursorCompose, cursorPick, fullness, type Account } from './SettingsView';
 import type { CursorGroup } from './obid';

@@ -5,7 +5,7 @@ import Formatted from './Formatted';
 import Said from './Said';
 import { BrandMark, type Brand } from './brands';
 import { useScrollThumb } from './useScrollThumb';
-import { agentOf, type Attachments } from './mock';
+import { agentOf, type Attachments } from './view';
 import { SESSIONS, type Detail, type Entry } from './session';
 import { useTasks, type Task } from './tasks';
 import { box as draftBox } from './drafts';

@@ -8,7 +8,7 @@ import { ApiError, api, type Status, type TetrixTarget } from './obid';
 import { ask, liveState, useLive } from './live';
 import { UNFINISHED, signInSaid, signInWhy } from './signInWhy';
 import { MOCK_WELCOME, accountNow, waitingOver } from './chatgpt';
-import { AGENTS, type Agent, type SetupStep } from './mock';
+import { AGENTS, type Agent, type SetupStep } from './view';
 
 // Setting up, in Oby's first conversation: no wizard, Oby talks you through it
 // (as Grok Bot and OpenMausBot do). Oby says what it found and what's next, a
