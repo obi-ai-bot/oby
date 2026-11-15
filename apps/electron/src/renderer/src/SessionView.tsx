@@ -191,9 +191,9 @@ export default function SessionView({ id, leaving, covered = false, onBack, onGo
   );
 }
 
-// One entry of the session. inPane: in the agent's own conversation beside the chat (AgentPane.tsx),
-// where a message has its clock time and thinking shows without a click
-export const Line = memo(function Line({ entry: e, job, brand, live, inPane = false }: { entry: Entry; job: string; brand: Brand; live: { shown: string; tick: number }; inPane?: boolean }) {
+// One entry of the session. inCard: in the agent's own conversation, opened in place under its card
+// (AgentThread.tsx), where a message has its clock time and thinking shows without a click
+export const Line = memo(function Line({ entry: e, job, brand, live, inCard = false }: { entry: Entry; job: string; brand: Brand; live: { shown: string; tick: number }; inCard?: boolean }) {
   switch (e.kind) {
     case 'start':
       // a round begins: a quiet divider with the agent, model and time
@@ -205,12 +205,12 @@ export const Line = memo(function Line({ entry: e, job, brand, live, inPane = fa
           <div className="ss-words">
             <Said text={e.live ? live.shown : e.text} streaming={e.live} />
             {e.live && <span className="ss-caret" aria-hidden="true" />}
-            {inPane && <time className="ss-clock">{e.at}</time>}
+            {inCard && <time className="ss-clock">{e.at}</time>}
           </div>
         </li>
       );
     case 'thought':
-      return <Thought thought={e} inPane={inPane} />;
+      return <Thought thought={e} inCard={inCard} />;
     case 'you':
       return <li className="ss-you"><p>{e.text}</p><time>{e.at}</time></li>;
     case 'plan':
@@ -265,8 +265,8 @@ function Tool({ call: e, job, tick }: { call: Extract<Entry, { kind: 'tool' }>; 
 
 // A thought, only what its tool gave. Thinking while it goes on. Claude Code's: how long, with no
 // words, so nothing opens. Codex's and Cursor's: their words, when they give any, which open
-function Thought({ thought: e, inPane }: { thought: Extract<Entry, { kind: 'thought' }>; inPane: boolean }) {
-  const [open, setOpen] = useState(inPane || !e.seconds);
+function Thought({ thought: e, inCard }: { thought: Extract<Entry, { kind: 'thought' }>; inCard: boolean }) {
+  const [open, setOpen] = useState(inCard || !e.seconds);
   if (e.running) return <li className="ss-thought"><span className="sheen">Thinking</span></li>;
   const label = e.seconds ? `Thought for ${took(e.seconds)}` : 'Thought';
   if (!e.text) return <li className="ss-thought"><span>{label}</span></li>;

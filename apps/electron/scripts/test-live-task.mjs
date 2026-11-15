@@ -1,9 +1,9 @@
 // LIVETASK (docs/contracts/live-task.md), through the built app with real input: Electron → a real
 // obid in a scratch home, with stand-in agents and a local fixture repository. Nothing reaches a real
-// agent, account or GitHub. What only this proves: the card opens the agent's conversation and not
-// the task's page, it follows its follow-up, the box tells it, Stop stops it, Esc closes it, a tool
-// line fetches its detail and stays that call's as the to-dos change, a deleted job's conversation
-// closes, and the layout at its widths.
+// agent, account or GitHub. What only this proves: the card opens in place into the agent's
+// conversation and not the task's page, a second click folds it, the box tells it, its follow-up's
+// card opens, Stop in the box stops it, a tool line fetches its detail and stays that call's as the
+// to-dos change, a deleted job's card goes, and the card's menu opens the task's page.
 // Screenshots go to OBY_LIVE_SHOTS (a folder), when it's set.
 // Run: OBY_TEST_OBID=<obid> (else core/target/debug/obid), npm run build, then npm run test:live-task.
 import assert from 'node:assert/strict';
@@ -78,7 +78,7 @@ async function main() {
   await size(1180);
   const shot = async (name) => { if (shots) { mkdirSync(shots, { recursive: true }); await page.screenshot({ path: join(shots, `${name}.png`) }); } };
   const type = async (selector, words) => {
-    const box = page.locator(selector).last();
+    const box = typeof selector === 'string' ? page.locator(selector).last() : selector;
     await until('the box shown', () => box.evaluate((el) => el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })));
     await box.click();
     await page.keyboard.insertText(words);
@@ -91,8 +91,8 @@ async function main() {
     return job;
   };
   const card = (title) => page.locator('.msg-task-work').filter({ hasText: title });
-  const pane = page.locator('.agent-pane');
-  const box = (el) => el.evaluate((e) => { const r = e.getBoundingClientRect(); return { left: r.left, right: r.right, width: r.width }; });
+  // a card opened in place: the agent's own conversation, under its head
+  const thread = (title) => card(title).locator('.lt-thread');
 
   // LIVETASK-1: the card shows the list and what it's doing, as it goes
   const job = await dispatch('The list', 'TODOS', '[contenteditable="true"]');
@@ -102,68 +102,40 @@ async function main() {
   await shot('1-card');
   ok('LIVETASK-1 the card shows the list, the current one lit, and the last things it did');
 
-  // LIVETASK-5: a click opens the agent's conversation, not the task's page
+  // LIVETASK-5: a click opens the agent's conversation in place, not the task's page
   const layers = () => page.locator('.chat-layer').count();
   const under = await layers();
   await card('The list').locator('.msg-task.is-link').click();
-  await until('its conversation', () => pane.count());
+  await until('its conversation', () => thread('The list').count());
   assert.equal(await layers(), under, 'no page opened over the chat');
-  assert.equal(await pane.locator('.agent-pane-title').filter({ hasText: 'The list' }).count(), 1);
-  assert.equal(await pane.locator('.agent-pane-todos li').count(), 2, 'its to-dos on top');
-  assert.equal(await pane.locator('.ss-plan').count(), 0, 'and not in the conversation as well');
-  await shot('2-pane');
-  ok('LIVETASK-5 a click opens its own conversation beside the chat');
+  assert.equal(await card('The list').locator('.msg-task.is-link').getAttribute('aria-expanded'), 'true');
+  assert.equal(await thread('The list').locator('.lt-thread-todos li').count(), 2, 'its to-dos on top');
+  assert.equal(await thread('The list').locator('.ss-plan').count(), 0, 'and not in the conversation as well');
+  assert.equal(await card('The list').locator('.lt-now').count(), 0, 'nor on the card as well');
+  await shot('2-opened');
+  ok('LIVETASK-5 a click opens its own conversation in place, under its card');
 
   // LIVETASK-11, -15: a line fetches what it ran, and stays that call's as the to-dos change
-  const alpha = pane.locator('.ss-tool', { hasText: 'echo alpha' });
+  const alpha = thread('The list').locator('.ss-tool', { hasText: 'echo alpha' });
   const planBefore = (await s.call('GET', `/v1/jobs/${job.id}/transcript`)).entries.filter((e) => e.kind === 'plan').length;
   await alpha.locator('.ss-tool-row').click();
   await until('its output', () => alpha.locator('.ss-out', { hasText: 'alpha said this' }).count(), 10_000);
   ok('LIVETASK-11 a tool line opens to what it gave back');
   await until('a to-do ticked', async () => (await s.call('GET', `/v1/jobs/${job.id}/transcript`)).entries.filter((e) => e.kind === 'plan').length > planBefore, 15_000);
-  await until('the tick shown', () => pane.locator('.agent-pane-todos li.is-done').count(), 15_000);
-  assert.equal(await pane.locator('.ss-tool.is-open').count(), 1);
-  assert.equal(await pane.locator('.ss-tool.is-open', { hasText: 'echo alpha' }).count(), 1, 'the same call stays open');
+  await until('the tick shown', () => thread('The list').locator('.lt-thread-todos li.is-done').count(), 15_000);
+  assert.equal(await thread('The list').locator('.ss-tool.is-open').count(), 1);
+  assert.equal(await thread('The list').locator('.ss-tool.is-open', { hasText: 'echo alpha' }).count(), 1, 'the same call stays open');
   await shot('3-line-open');
   ok('LIVETASK-15 an opened line stays that call’s as the to-dos change');
 
-  // LIVETASK-8: Esc closes it; beside the chat, and over it when narrow; the box under the chat
-  await page.keyboard.press('Escape');
-  await until('closed', async () => (await pane.count()) === 0);
-  assert.equal(await page.locator('.chat-layer').count(), under, 'Esc closed only that');
+  // LIVETASK-5: a second click folds it, and another opens it again
   await card('The list').locator('.msg-task.is-link').click();
-  await until('open again', () => pane.count());
-  await size(1800, 800);
-  const [column, composer, wide] = await Promise.all([box(page.locator('.chat-column').last()), box(page.locator('.chat-layer > .chat-composer').last()), box(pane)]);
-  assert.ok(wide.width <= 460 && wide.right === 1800, `beside the chat: ${JSON.stringify(wide)}`);
-  assert.ok(Math.abs((composer.left + composer.right) / 2 - (column.left + column.right) / 2) < 2, `the box under the chat: ${JSON.stringify({ column, composer })}`);
-  // what Oby asks over the chat (.asks-over, Home's) leaves the pane and its bar in view
-  const over = await page.evaluate(() => {
-    const d = document.createElement('div');
-    d.className = 'asks-over';
-    d.style.height = '40px';
-    document.querySelector('.home').append(d);
-    const r = d.getBoundingClientRect(), bar = document.querySelector('.agent-pane-bar').getBoundingClientRect();
-    d.remove();
-    return { right: r.right, top: r.top, pane: bar.left, bar: bar.bottom };
-  });
-  assert.ok(over.right <= over.pane + 1 && over.top >= over.bar - 1, `asks clear of the pane: ${JSON.stringify(over)}`);
-  await shot('4-wide');
-  await size(620);
-  const narrow = await box(pane);
-  assert.equal(narrow.width, 620, 'over the chat');
-  await shot('5-narrow');
-  // the side panel open in a window too narrow for both: all of the pane's bar shows
-  await page.getByRole('button', { name: 'Show sidebar' }).click();
-  await sleep(500);
-  const stopOr = await box(pane.getByRole('button', { name: 'Open the task’s page' }));
-  const send = await box(pane.locator('.composer'));
-  const edge = await page.evaluate(() => innerWidth);
-  assert.ok(stopOr.right <= edge && send.right <= edge, `in view: ${JSON.stringify({ stopOr, send, edge })}`);
-  await shot('6-sidebar-narrow');
-  await page.getByRole('button', { name: 'Hide sidebar' }).click();
-  await size(1180);
-  ok('LIVETASK-8 beside the chat, over it when narrow, and in view with the side panel open');
+  await until('folded', async () => (await thread('The list').count()) === 0);
+  assert.equal(await card('The list').locator('.msg-task.is-link').getAttribute('aria-expanded'), 'false');
+  await card('The list').locator('.msg-task.is-link').click();
+  await until('open again', () => thread('The list').count());
+  assert.equal(await page.locator('.chat-layer').count(), under, 'nothing opened beside or over the chat');
+  ok('LIVETASK-5 a second click folds it, and another opens it again');
 
   // LIVETASK-4: ended, one line
   await until('it ends', async () => ended(await s.call('GET', `/v1/jobs/${job.id}`)), 60_000);
@@ -171,41 +143,38 @@ async function main() {
   await shot('7-ended');
   ok('LIVETASK-4 ended, the card folds');
 
-  // LIVETASK-7: the box tells it, and the pane follows the follow-up
-  assert.equal(await pane.getByRole('button', { name: 'Stop' }).count(), 0, 'nothing to stop');
-  await type('.agent-pane [contenteditable="true"]', 'ECHO one more thing');
+  // LIVETASK-7: the card's box tells it, and the follow-up's card shows opened where it's listed
+  assert.equal(await thread('The list').getByRole('button', { name: 'Stop' }).count(), 0, 'nothing to stop');
+  await type(thread('The list').locator('[contenteditable="true"]'), 'ECHO one more thing');
   const next = await until('the follow-up', async () => (await s.call('GET', '/v1/jobs')).find((j) => j.followUpOf === job.id), 30_000);
-  await until('the pane follows it', () => pane.locator('.agent-pane-title').filter({ hasText: next.title }).count(), 15_000);
-  await until('your words in it', () => pane.locator('.ss-you', { hasText: 'one more thing' }).count(), 15_000);
+  await until('your words in its opened card', () => page.locator('.lt-thread .ss-you', { hasText: 'one more thing' }).count(), 15_000);
   await until('it ends', async () => ended(await s.call('GET', `/v1/jobs/${next.id}`)), 60_000);
-  ok('LIVETASK-7 the box tells it, and a finished one’s follow-up is what it then follows');
+  ok('LIVETASK-7 the card’s box tells it, and a finished one’s follow-up shows opened');
 
-  // Stop stops it, and the card says so
-  await page.keyboard.press('Escape');
-  await until('closed', async () => (await pane.count()) === 0);
+  // LIVETASK-5: Stop in the card's box stops it, and the card says so
   const stopping = await dispatch('The long one', 'SLEEP', '.chat-layer > .composer [contenteditable="true"]');
   await until('at work', async () => (await s.call('GET', `/v1/jobs/${stopping.id}`)).status === 'running', 30_000);
   await card('The long one').locator('.msg-task.is-link').click();
-  await until('its conversation', () => pane.locator('.agent-pane-title').filter({ hasText: 'The long one' }).count());
-  await pane.getByRole('button', { name: 'Stop' }).click();
+  await until('its conversation', () => thread('The long one').count());
+  await thread('The long one').getByRole('button', { name: 'Stop' }).click();
   await until('stopped', async () => (await s.call('GET', `/v1/jobs/${stopping.id}`)).status === 'stopped', 30_000);
   await until('the card says so', () => card('The long one').locator('.msg-task-meta', { hasText: 'Stopped ·' }).count(), 15_000);
   assert.equal(await card('The long one').locator('[aria-label="Stopped"]').count(), 1);
-  await until('no Stop any more', async () => (await pane.getByRole('button', { name: 'Stop' }).count()) === 0);
+  await until('no Stop any more', async () => (await thread('The long one').getByRole('button', { name: 'Stop' }).count()) === 0);
   await shot('8-stopped');
-  ok('LIVETASK-5 Stop stops it, and the card says so');
+  ok('LIVETASK-5 Stop in the card’s box stops it, and the card says so');
 
-  // LIVETASK-15: deleted, its conversation closes
+  // LIVETASK-15: deleted, its opened card goes with it
   await s.call('POST', `/v1/jobs/${stopping.id}/delete`).catch(() => s.call('DELETE', `/v1/jobs/${stopping.id}`));
-  await until('it closes', async () => (await pane.count()) === 0, 15_000);
-  assert.equal(await card('The long one').count(), 0);
-  ok('LIVETASK-15 a deleted job’s conversation closes');
+  await until('it goes', async () => (await card('The long one').count()) === 0, 15_000);
+  ok('LIVETASK-15 a deleted job’s opened card goes with it');
 
-  // LIVETASK-15, again where every list is in the session: the page's button, then Full session
+  // LIVETASK-18: the card's menu (right-click), View details: the task's page; then, LIVETASK-15 again
+  // where every list is in the session, Full session
   const second = await dispatch('The second list', 'TODOS', '.chat-layer > .composer [contenteditable="true"]');
-  await card('The second list').locator('.msg-task.is-link').click();
-  await until('its conversation', () => pane.locator('.agent-pane-title').filter({ hasText: 'The second list' }).count());
-  await pane.getByRole('button', { name: 'Open the task’s page' }).click();
+  await card('The second list').locator('.msg-task.is-link').click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'View details' }).click();
+  ok('LIVETASK-18 the card’s menu opens the task’s page');
   await page.getByRole('button', { name: 'Full session' }).click();
   const session = page.getByRole('region', { name: 'The second list: session' });
   const line = session.locator('.ss-tool', { hasText: 'echo alpha' });

@@ -16,8 +16,10 @@ frees the disk afterwards:
   (`gh pr merge --auto --match-head-commit`), so GitHub's Check on the combined code is the gate.
   One that touches a security path waits for the owner (AGENTS.md, "Carrying and merging").
 - A Quint model the pull request adds or changes (docs/models/*.qnt) is verified first, on the gate VM, as its
-  own `// verify:` lines say: every invariant must hold and every witness must be violated. A model with no
-  such line, or one that fails, keeps the pull request waiting.
+  own `// verify:` lines say, each check on an Apalache port of its own. Each run is read with factory/bin/prove's
+  rule, imported: an invariant passes only when Quint says it holds, and a witness only when Quint reports a
+  violation. A model with no such line, or one that fails, keeps the pull request waiting; so does a run with no
+  verdict (a name error, a crash, a timeout, nothing printed), with a note saying which check gave none.
 - A build's own build folders (core/target, node_modules) are removed as soon as its pull request is open:
   reviews and follow-ups have worktrees of their own.
 - When the pull request is merged, the task's Oby jobs (the build, its follow-ups, its reviews) are
@@ -46,6 +48,10 @@ _loader = importlib.machinery.SourceFileLoader("factory_job", str(HERE / "job"))
 _spec = importlib.util.spec_from_loader("factory_job", _loader)
 job = importlib.util.module_from_spec(_spec)
 _loader.exec_module(job)
+_loader = importlib.machinery.SourceFileLoader("factory_prove", str(HERE / "prove"))
+_spec = importlib.util.spec_from_loader("factory_prove", _loader)
+prove = importlib.util.module_from_spec(_spec)
+_loader.exec_module(prove)
 
 REPO = job.REPO
 HOME = Path(os.environ.get("OBY_FACTORY_HOME", Path.home() / ".oby-factory"))
@@ -113,16 +119,29 @@ def touches_security(files):
 
 
 VERIFY = re.compile(r"^// verify: (.+)$", re.M)
+# The feeder's first Apalache port on the gate VM: above Quint's default 8822 and the builder slots' 8823 to 8886
+# (apalache_port in factory/remote/oby-remote-gate, 8822 + N for N up to MAX_SLOTS 64).
+APALACHE_PORT = 8900
 
 
 def check_models(files, head):
     """Verifies each Quint model the pull request touches, on the gate VM. Returns why it can't merge, or None."""
+
+    class Verified:
+        """One `quint verify` over ssh, as prove's verify_result reads a run: `timeout` exits 124 when it kills it."""
+        says = prove.Run.says
+
+        def __init__(self, ran):
+            self.code, self.timed_out, self.error = ran.returncode, ran.returncode == 124, None
+            self.lines = [line.strip() for line in ran.stdout.splitlines()]
+
     models = [f for f in files if f.startswith("docs/models/") and f.endswith(".qnt")]
     if not models:
         return None
     host = job.CONFIG.get("remote_gate", {}).get("ssh_host")
     if not host:
         return "it changes a Quint model and no gate VM is configured to verify it"
+    port = APALACHE_PORT
     for path in models:
         got = subprocess.run(["gh", "api", f"repos/{GH_REPO}/contents/{path}?ref={head}", "-H", "Accept: application/vnd.github.raw"],
                              cwd=REPO, capture_output=True, text=True)
@@ -137,18 +156,29 @@ def check_models(files, head):
             return f"the gate VM didn't take {path}: {put.stderr.strip()[:120]}"
         for line in runs:
             opts = dict(part.split("=", 1) for part in line.split() if "=" in part)
-            base = f"quint verify --main={opts.get('main', '')} --max-steps={opts.get('steps', '12')}"
+            base = f"--main={opts.get('main', '')} --max-steps={opts.get('steps', '12')}"
             for kind in ("invariants", "witnesses"):
                 for inv in filter(None, opts.get(kind, "").split(",")):
                     if not re.fullmatch(r"[A-Za-z0-9_]+", inv) or not re.fullmatch(r"[A-Za-z0-9_]*", opts.get("main", "")) or not opts.get("steps", "12").isdigit():
                         return f"{path}: a '// verify:' line isn't names and numbers only"
-                    out = subprocess.run(["ssh", "-o", "BatchMode=yes", host, f"timeout 900 {base} --invariant={inv} {name} 2>&1"],
-                                         capture_output=True, text=True).stdout
-                    holds = "[ok] No violation found" in out
-                    if kind == "invariants" and not holds:
+                    run = Verified(subprocess.run(["ssh", "-o", "BatchMode=yes", host,
+                                                   f"timeout 900 quint verify --server-endpoint=localhost:{port} {base} --invariant={inv} {name} 2>&1"],
+                                                  capture_output=True, text=True))
+                    port += 1
+                    result = prove.verify_result(run)
+                    if result == ("HOLDS" if kind == "invariants" else "VIOLATED"):
+                        continue
+                    if result == "VIOLATED":
                         return f"{path}: the invariant {inv} does not hold"
-                    if kind == "witnesses" and (holds or "violation" not in out.lower() and "error" not in out.lower()):
+                    if result == "HOLDS":
                         return f"{path}: the witness {inv} was not violated, so the model may prove nothing"
+                    said = [line for line in run.lines if line]
+                    first = next((said_line for said_line in said if said_line.lower().startswith("error")),
+                                 said[-1] if said else None)
+                    detail = ("it timed out after 900s" if result == "TIMEOUT"
+                              else first[:100] if first else f"it printed nothing (exit {run.code})")
+                    check = "invariant" if kind == "invariants" else "witness"
+                    return f"{path}: the {check} {inv} (main={opts.get('main', '')}) gave no verdict: {detail}"
         subprocess.run(["ssh", "-o", "BatchMode=yes", host, f"rm -f {name}"], capture_output=True)
     return None
 
