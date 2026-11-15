@@ -208,13 +208,14 @@ pub(super) fn reviews_left(job: &Job) -> bool {
 /// Whether the job `id`'s pull request at `head` may have a `round` of obid's by itself
 /// (MERGING-38 to 40): obid's own branch, never another's (a rebase force-pushes it), at the head
 /// obid pushed last (someone else's push is theirs to settle), that [`Jobs::onto_base`] rebases (no
-/// pull request's or follow-up's start), the job done, nothing else on its branch (no follow-up
-/// carrying it, no job at work: PUBLISHING-4), short of a safety stall; and no round of its kind
-/// for this head yet (for its checks, for the job), change requests' counted with Oby's own review
-/// rounds within [`crate::review::REVIEWS`].
+/// pull request's or follow-up's start), the job done and still carried (never one the owner let
+/// go: a merge queue's drop is seen before the follower asks that), nothing else on its branch (no
+/// follow-up carrying it, no job at work: PUBLISHING-4), short of a safety stall; and no round of
+/// its kind for this head yet (for its checks, for the job), change requests' counted with Oby's
+/// own review rounds within [`crate::review::REVIEWS`].
 fn may_round(jobs: &HashMap<String, Job>, id: &str, head: &str, round: Round) -> bool {
     jobs.get(id).is_some_and(|job| {
-        job.status == Status::Done
+        carries(job)
             && crate::merge::own_branch(job, &job.branch)
             && job.pushed_head() == Some(head)
             && job.pr.is_none()

@@ -3065,6 +3065,36 @@ fn merging_56_a_drop_gets_one_rebase_round_and_its_new_head_is_armed() {
     assert!(merge_cards(&obid).is_empty());
 }
 
+/// MERGING-56: a job the owner let go gets no round, even when GitHub didn't take obid's
+/// `--disable-auto` and its merge queue drops the head it kept armed: the job stays let go, its
+/// branch as it was.
+#[test]
+fn merging_56_a_job_let_go_gets_no_round_when_its_head_is_dropped() {
+    let folder = Folder::new("merge-queue-let-go");
+    let gh = ["person", "queue", "queue-said", "no-disable"];
+    let (obid, id, head, remote) = published_for_real(&folder, PERSON, &gh, |_| {}, |_| {});
+    within(30, "the job handed to GitHub", || {
+        (job_of(&obid, &id)["autoMerge"]["head"] == head.as_str()).then_some(())
+    });
+    let let_go = call(&obid, "POST", &format!("/v1/jobs/{id}/dismiss"), None);
+    assert_eq!(let_go.status, 200, "{}", let_go.text);
+    within(30, "a --disable-auto GitHub didn't take", || {
+        (disarms(&folder) > 0).then_some(())
+    });
+    move_dev(&remote, "other.txt");
+    std::fs::remove_file(folder.0.join("gh/armed")).unwrap();
+    within(30, "the drop noted", || {
+        let kept = kept(&folder, &id);
+        (kept["queueDrops"][0]["head"] == head.as_str()).then_some(())
+    });
+    no_round(&obid, &id);
+    let kept = kept(&folder, &id);
+    assert!(kept["dismissed"].is_number(), "{kept}");
+    assert!(kept["checksRounds"].is_null(), "{kept}");
+    assert_eq!(git(&remote, &["rev-parse", "refs/heads/oby/fix-7"]), head);
+    assert_eq!(auto_merges(&folder).len(), 1);
+}
+
 /// MERGING-57: a second drop on the job starts no round, even where it now conflicts with dev
 /// (no MERGING-38 rebase round either): work that isn't the owner's own gets the card saying the
 /// queue dropped it twice, and nothing is armed again. A drop on a branch obid didn't make starts
