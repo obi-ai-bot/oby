@@ -41,7 +41,10 @@ agents_md_at_limit() {
     agents_md "${at:-1}"
     git add AGENTS.md
 }
-git add scripts "$sleepy" AGENTS.md
+# AGENTS.md's rules (CI-42 to 44): the manifest's one entry is in the fixture's AGENTS.md.
+mkdir docs
+printf 'The rules.\n\n### L1\n- `AGENTS.md`: x\n' >docs/agents-rules-manifest.md
+git add scripts "$sleepy" AGENTS.md docs/agents-rules-manifest.md
 git -c user.name=check -c user.email=check@example.invalid -c commit.gpgsign=false commit --quiet -m base
 
 code() { # file lines
@@ -433,6 +436,68 @@ grep -qxF "oby-check: tests_sleep_limit's payback: R05-02 a sleep's cut" <<<"$ra
     wrong "CI-41: under OBY_CHECK_ONLY=limits, a payback line wasn't printed"
 git reset --quiet --hard HEAD~2
 since=
+
+# AGENTS.md's rules are where the manifest says (docs/contracts/ci.md, CI-42 to 44), on the commit's
+# own copy of the script, committed here as the base: a root that links docs/rules.md, the rule there,
+# and in core/AGENTS.md one wrapped over two lines and one whose link goes elsewhere.
+printf '%s\n' "$committed_script" >scripts/oby-check.sh
+agents_limit=$(sed -n 's/^agents_md_bytes_limit=//p' scripts/oby-check.sh)
+link='[rules](docs/rules.md)'
+{ printf '%s\n' "$link"; head -c "$((${agents_limit:-100} - ${#link} - 1))" /dev/zero | tr '\0' x; } >AGENTS.md
+mkdir -p core
+printf '# Rules\n\n- One rule, wrapped\n  over two lines.\n- A rule with [a link](../docs/x.md) in it.\n' >core/AGENTS.md
+printf '# More rules\n\n- A linked rule.\n' >docs/rules.md
+printf '%s\n' 'The rules.' '' '### L1' '- `AGENTS.md`: x' '### L2' '- `core/AGENTS.md`: One rule, wrapped over two lines.' \
+    '### L3' '- `core/AGENTS.md`: A rule with [a link](docs/x.md) in it.' '### L4' '- `docs/rules.md`: A linked rule.' \
+    >docs/agents-rules-manifest.md
+git add AGENTS.md core/AGENTS.md docs
+commit_scripts 'the rules'
+rules_ok="AGENTS.md's rules: each of the 4 in docs/agents-rules-manifest.md is where it says"
+rules_failed="failed: AGENTS.md's rules"
+export OBY_CHECK_PATHS=docs/agents-rules-manifest.md
+expect "$rules_ok" 'CI-42: every sentence where it says, one wrapped over two lines and one whose link differs'
+expect no 'no longer holds' 'CI-42: every sentence where it says, none named missing'
+# CI-42: a sentence taken out of its home is named, and fails a real run.
+printf '# Rules\n\n- One rule, wrapped\n  over two lines.\n' >core/AGENTS.md
+expect "AGENTS.md's rules: core/AGENTS.md no longer holds \"A rule with \[a link\](docs/x.md) in it.\"" 'CI-42: a sentence taken out of its home is named'
+if ran=$(env -u OBY_CHECK_PLAN scripts/oby-check.sh HEAD 2>&1); then wrong 'CI-42: a run with a sentence out of its home passed'; fi
+grep -qF "$rules_failed" <<<"$ran" || wrong 'CI-42: a run with a sentence out of its home failed without naming it'
+git checkout --quiet -- core/AGENTS.md
+# CI-43: a home the root doesn't link fails naming it; once the root links it, it passes.
+printf '# Other rules\n\n- An unlinked rule.\n' >docs/other.md
+printf '%s\n' '### L5' '- `docs/other.md`: An unlinked rule.' >>docs/agents-rules-manifest.md
+expect "AGENTS.md's rules: docs/other.md, a home in docs/agents-rules-manifest.md, isn't AGENTS.md, core/AGENTS.md or a file the root AGENTS.md links" 'CI-43: a home the root does not link'
+if ran=$(env -u OBY_CHECK_PLAN scripts/oby-check.sh HEAD 2>&1); then wrong 'CI-43: a run with a home the root does not link passed'; fi
+grep -qF "$rules_failed" <<<"$ran" || wrong 'CI-43: a run with a home the root does not link failed without naming it'
+printf '%s\n' '[other](./docs/other.md#rules)' >>AGENTS.md
+expect "AGENTS.md's rules: each of the 5 in docs/agents-rules-manifest.md is where it says" 'CI-43: the same home passes once the root links it'
+git checkout --quiet -- AGENTS.md docs/agents-rules-manifest.md
+rm docs/other.md
+# CI-43: a commit with no manifest fails, saying so.
+git rm --quiet docs/agents-rules-manifest.md
+commit_scripts 'no manifest'
+expect 'this commit has no docs/agents-rules-manifest.md, which lists AGENTS.md.s rules: put it back' 'CI-43: a commit that deletes the manifest'
+if ran=$(env -u OBY_CHECK_PLAN scripts/oby-check.sh HEAD 2>&1); then wrong 'CI-43: a run on a commit with no manifest passed'; fi
+grep -qF 'failed: the rules manifest is gone' <<<"$ran" || wrong 'CI-43: a run on a commit with no manifest failed without naming it'
+git reset --quiet --hard HEAD~1
+unset OBY_CHECK_PATHS
+# CI-44: what changed plans the rules: a doc the manifest names does, with no cargo step; one it
+# doesn't name doesn't; AGENTS.md alone still plans what CI-38 says.
+echo '- Another line.' >>docs/rules.md
+said=$(planned)
+grep -qx 'oby-check: group rust' <<<"$said" && grep -qF "$rules_ok" <<<"$said" && ! grep -q '^==> cargo' <<<"$said" ||
+    { ran=$said; wrong 'CI-44: a change to only a doc the manifest names did not plan the rules alone'; }
+git checkout --quiet -- docs/rules.md
+printf 'Not a rule.\n' >docs/unnamed.md
+expect no "AGENTS.md's rules" "CI-44: a change to only a doc the manifest doesn't name"
+rm docs/unnamed.md
+sed 's/^x/y/' AGENTS.md >AGENTS.new && cat AGENTS.new >AGENTS.md && rm AGENTS.new
+said=$(planned)
+grep -qx 'oby-check: group rust' <<<"$said" && grep -q "AGENTS.md has ${agents_limit:-100} bytes" <<<"$said" &&
+    grep -qF "$rules_ok" <<<"$said" && ! grep -q '^==> cargo' <<<"$said" ||
+    { ran=$said; wrong 'CI-44: a change to AGENTS.md alone did not plan what CI-38 says'; }
+git checkout --quiet -- AGENTS.md
+git reset --quiet --hard HEAD~1
 
 # Nested in a job's sandbox, the tests that make a sandbox of their own aren't run, and a change
 # they'd test ends the check couldn't judge (PUBLISHING-22).
