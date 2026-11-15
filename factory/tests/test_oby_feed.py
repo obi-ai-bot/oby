@@ -580,6 +580,35 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual(len(self.builds()), 1)
         self.assertEqual(self.task_now()["state"], "running")
 
+    # FEEDLOOP-10: a task waiting `retrying` is under way: the feeder doesn't stop while its retry is held
+    def test_feedloop_10_a_held_retry_keeps_the_feeder_passing(self):
+        self.no_ready()
+        self.feed.free_gb = lambda: 100.0
+        factory_job = [{"stage": "building", "issue": "A00-50"}]
+        stand_api = self.feed.api
+        refusing = lambda method, path, body=None, timeout=30: (  # noqa: E731
+            (409, {"error": "refused"}) if method == "POST" else stand_api(method, path, body, timeout))
+        for hold in ("disk", "file overlap", "obid refusal"):
+            with self.subTest(hold=hold):
+                self.feed.api = refusing if hold == "obid refusal" else stand_api
+                jobs = factory_job if hold == "file overlap" else []
+                with mock.patch.object(self.feed.job, "all_jobs", return_value=jobs), \
+                        mock.patch.object(self.feed.job, "read_task", return_value={}), \
+                        mock.patch.object(self.feed.job, "code_files", return_value={"x.py"}):
+                    self.task("running", attempt=1)
+                    self.stand.jobs[JOB].update(status="failed")
+                    active, started = self.one_pass(min_free_gb=200 if hold == "disk" else 0)
+                    self.assertEqual(self.task_now()["state"], "retrying")
+                    self.assertEqual((active, started), (1, 0))
+                    # and main() keeps passing instead of saying it has nothing under way
+                    argv = ["oby-feed", "--every", "1", "--min-free-gb", "200" if hold == "disk" else "0"]
+                    with mock.patch.object(self.feed.sys, "argv", argv), \
+                            mock.patch.object(self.feed.time, "sleep", side_effect=StopIteration):
+                        with self.assertRaises(StopIteration):
+                            self.feed.main()
+                    self.assertNotIn("nothing under way and nothing ready: stopping", self.said)
+        self.assertEqual(self.builds(), [])
+
 
 class CheckModels(unittest.TestCase):
     def check(self, line, runs):

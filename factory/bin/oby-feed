@@ -644,7 +644,8 @@ def one_pass(args):
             say(f"{task['key']}: started as Oby job {oby_id} on {args.account}")
             started += 1
             taken |= files
-    return len([i for i in state.values() if i["state"] in ACTIVE]), started
+    # a task waiting `retrying` is under way: the feeder keeps passing until its attempt starts or it ends
+    return len([i for i in state.values() if i["state"] in ACTIVE or i["state"] == "retrying"]), started
 
 
 def status():

@@ -321,7 +321,7 @@ WHY: <why>                                (SKIPPED and NO RESULT only)
 ### Feature and status
 
 - **Outcome:** with nobody watching, a task the feeder started is merged, under way, or ended for good with its last reason: a failed or interrupted job, a lost one, a head GitHub's merge queue refused or one that conflicts with dev never parks it while attempts are left.
-- **Status:** FEEDLOOP-1 to FEEDLOOP-9 are **implemented** by A00-96, in `factory/bin/oby-feed`'s `next_attempt()` (the one rule), `retry()` and `carry()`, tested by `factory/tests/test_oby_feed.py`. Model of record: `docs/models/oby_feed_loops.qnt` (`loops_fixed`: `attemptsBounded`, `nothingOwed` and `endsWithReason` hold).
+- **Status:** FEEDLOOP-1 to FEEDLOOP-10 are **implemented** by A00-96, in `factory/bin/oby-feed`'s `next_attempt()` (the one rule), `retry()` and `carry()`, tested by `factory/tests/test_oby_feed.py`. Model of record: `docs/models/oby_feed_loops.qnt` (`loops_fixed`: `attemptsBounded`, `nothingOwed` and `endsWithReason` hold).
 
 ### The rule
 
@@ -343,3 +343,4 @@ WHY: <why>                                (SKIPPED and NO RESULT only)
 - **FEEDLOOP-7** (implemented). No brief or message the tests send carries the agent's summary or GitHub's text (a refusal's reason, a `publishError`, a `nextStep` or `waiting` text), checked after every test of the feeder. Tests: `test_feedloop_7_nothing_from_github_or_the_agent_reaches_a_brief_or_message`, `test_feedloop_7_no_text_field_of_obids_job_reaches_a_brief`.
 - **FEEDLOOP-8** (implemented). Given `--dry-run` and a failed job and a refused head, then the pass sends obid no build and no message, says `would retry` for each, and the next real pass starts both. Tests: `test_feedloop_8_dry_run_sends_no_retry`.
 - **FEEDLOOP-9** (implemented). Given a failed job, then its retry doesn't start while `--max` is full, the disk is under `--min-free-gb` or a task under way shares one of its files, the task staying `retrying`, and starts once all three clear. Tests: `test_feedloop_9_a_retry_waits_for_a_slot_free_disk_and_its_files`.
+- **FEEDLOOP-10** (implemented). Given the last task under way failing and its retry held (free disk, a file shared with a factory job, or obid refusing it), then the task, `retrying`, counts as under way: the feeder keeps passing until its attempt starts or it ends, and never stops with `nothing under way and nothing ready`. Tests: `test_feedloop_10_a_held_retry_keeps_the_feeder_passing`.
