@@ -777,7 +777,9 @@ async fn agent_mcp(
         let Some(session) = shared.harness.session(&job, token) else {
             // Its Claude Code waiting for a turn connects and lists Oby's tools, and calls none.
             if shared.harness.waiting_with(&job, token) {
-                return replied(crate::brain::tools::handshake(&value));
+                let conversation = job.trim_start_matches("conversation-");
+                let listed = crate::brain::tools::handshake(&shared, conversation, &value);
+                return replied(listed);
             }
             return ApiError::new(StatusCode::UNAUTHORIZED, crate::api::NO_TOKEN).into_response();
         };
