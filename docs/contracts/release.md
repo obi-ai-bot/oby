@@ -5,7 +5,7 @@ The business behavior contract for publishing the Mac app, from [the template](.
 ## Feature and status
 
 - **Outcome:** A `v*` tag on `main` builds both architectures, signs, notarizes and staples them, writes and signs `latest-mac.yml`, and uploads the zips first and the feed last. No release step depends on one developer's Mac or on the deleted Swift app (`apps/mac` is gone; its bundle scripts are `apps/electron/scripts/bundle-{obid,gh,gitleaks}.sh`).
-- **Status:** RELEASE-1 to 3 are **implemented** in `.github/workflows/release.yml` and the scripts it runs, each tested on its own (`apps/electron/src/renderer/src/test/release.test.ts`). The first run on a real tag, and a Mac on the previous version updating to it, are the owner's ([q044](../decisions/2026-11-13-roadmap-answers.md#r09-14-q044): the builder makes only the test tag).
+- **Status:** RELEASE-1 to 4 are **implemented** in `.github/workflows/release.yml` and the scripts it runs, each tested on its own (`apps/electron/src/renderer/src/test/release.test.ts`). The first run on a real tag, and a Mac on the previous version updating to it, are the owner's ([q044](../decisions/2026-11-13-roadmap-answers.md#r09-14-q044): the builder makes only the test tag).
 - **Scope:** The Mac app's zips, DMGs and `latest-mac.yml` on `https://downloads.oby.dev/electron` ([updates.md](updates.md)). **Out of scope:** a staged rollout; Linux archives of obid (R09-16); GitHub Releases as a second place to download from.
 
 ## Behavior
@@ -23,6 +23,7 @@ The business behavior contract for publishing the Mac app, from [the template](.
 - **Credentials from the environment in CI, the keychain on a Mac.** `package.sh` notarizes with the App Store Connect API key when `OBY_NOTARY_KEY_FILE` is set, else with the keychain profile `oby-notary`.
 - **Scanned before it leaves.** Each architecture's app is scanned with gitleaks before it is notarized; a finding, or a gitleaks that can't run, stops `package.sh`, so nothing is notarized or uploaded.
 - **Zips first, the feed last.** `upload-release.sh` uploads every zip `latest-mac.yml` names, and the DMGs, to `oby-downloads/electron/`, then `latest-mac.yml` with `Cache-Control: no-cache`. A feed with no signature, or naming a zip that isn't there, uploads nothing.
+- **A test tag never reaches a Mac.** The tag decides where the upload goes, against `latest-mac.yml`'s `version` (`apps/electron/package.json`'s): `v<version>` is the release, under `electron/`; `v<version>-<suffix>` (such as `v0.3.0-test.1`) is a test run, under `electron-test/<tag>/`, which no Mac's `app-update.yml` names; any other tag uploads nothing. So the builder's test tag (q044) runs every step, signing, notarizing and uploading included, without touching the feed Macs read.
 
 ### Failures and recovery
 
@@ -39,3 +40,4 @@ The business behavior contract for publishing the Mac app, from [the template](.
 - **RELEASE-1** (implemented). Given a `v*` tag on main, when the workflow runs, then it publishes both zips and then a signed `latest-mac.yml`, and a Mac on the previous version sees the update. Test: `release_1_a_tag_publishes_zips_then_the_feed` (the upload's order and refusals, and the workflow packaging before it uploads); the run on a real tag and the Mac that updates are the owner's.
 - **RELEASE-2** (implemented). Given a tag not on main, when the workflow runs, then it publishes nothing. Test: `release_2_a_tag_off_main_publishes_nothing` (`on-main.sh` on a repository of its own, and `mac` needing `on-main`).
 - **RELEASE-3** (implemented). Given gitleaks finds something in the app, when the workflow runs, then nothing is notarized or uploaded. Test: `release_3_a_secret_in_the_app_stops_the_release` (`scan-app.sh` with a finding and with a gitleaks that can't run, and `package.sh` scanning before it notarizes).
+- **RELEASE-4** (implemented). Given a test tag `v<version>-<suffix>` on main, when the workflow runs, then it uploads only under `electron-test/<tag>/`, nothing under `electron/`; a tag that is neither that nor `v<version>` uploads nothing. Test: `release_4_a_test_tag_publishes_only_to_the_test_path` (`upload-release.sh` with a test tag, a wrong version, an empty suffix, a slash and no `v`).

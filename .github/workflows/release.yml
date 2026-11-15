@@ -9,7 +9,9 @@
 #             RUNNER_TEMP, outside the checkout. package.sh builds both architectures, signs, scans
 #             (a finding notarizes and uploads nothing, RELEASE-3), notarizes and staples, and
 #             writes and signs latest-mac.yml; upload-release.sh puts the zips and DMGs in
-#             oby-downloads, then latest-mac.yml last (RELEASE-1). The keychain and the key files
+#             oby-downloads, then latest-mac.yml last (RELEASE-1): under electron/ for the tag
+#             v<package.json's version>, under electron-test/<tag>/ for a test tag
+#             v<version>-<suffix>, which no Mac reads (RELEASE-4). The keychain and the key files
 #             are deleted in an always() step.
 #
 # No secret is printed: each reaches a step through env:, and nothing that decodes one echoes it.
@@ -122,7 +124,8 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.OBY_R2_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: auto
           OBY_R2_ENDPOINT: ${{ secrets.OBY_R2_ENDPOINT }}
-        run: zsh scripts/upload-release.sh dist
+          TAG: ${{ github.ref_name }}
+        run: zsh scripts/upload-release.sh "$TAG" dist
 
       - name: Delete the keychain and the key files
         if: always()

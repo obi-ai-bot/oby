@@ -64,7 +64,7 @@ The footer "Oby downloads updates in the background and installs them when you q
 
 ### Publishing a release
 
-The owner pushes a `v*` tag on `main` and approves the run; `.github/workflows/release.yml` does the rest ([release.md](release.md)):
+The owner pushes the tag `v<apps/electron/package.json's version>` on `main` and approves the run (a tag `v<version>-<suffix>` is a test run, published under `electron-test/<tag>/`, where no Mac looks); `.github/workflows/release.yml` does the rest ([release.md](release.md)):
 
 1. `apps/electron/scripts/package.sh arm64 x64`, with the feed key's file as `OBY_FEED_KEY_FILE` (both architectures: a feed with one leaves the other's Macs without an update).
 2. `apps/electron/scripts/upload-release.sh`: both zips and the DMGs to the `oby-downloads` R2 bucket under `electron/`, then `latest-mac.yml` there last (no Mac is sent to a zip that isn't there yet), with `Cache-Control: no-cache`, so a new release is seen at the next look.

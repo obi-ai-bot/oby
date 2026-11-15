@@ -26,38 +26,44 @@ function standIn(dir: string, name: string, body: string) {
   writeFileSync(join(dir, 'bin', name), `#!/bin/sh\n${body}\n`);
   chmodSync(join(dir, 'bin', name), 0o755);
 }
+// dist as package.sh leaves it for 1.2.3, with a stand-in aws that notes each upload
+function built() {
+  const dir = folder();
+  const dist = join(dir, 'dist');
+  mkdirSync(dist);
+  const zips = ['Oby-1.2.3-arm64-mac.zip', 'Oby-1.2.3-x64-mac.zip'];
+  for (const zip of zips) writeFileSync(join(dist, zip), zip);
+  writeFileSync(join(dist, 'Oby-1.2.3-arm64.dmg'), 'dmg');
+  const feed = (signed: boolean) => `version: 1.2.3\nfiles:\n${zips.map((z) => `  - url: ${z}\n    sha512: x\n    size: 1\n`).join('')}path: ${zips[0]}\n${signed ? "signature: 'abc'\n" : ''}`;
+  const calls = join(dir, 'calls');
+  standIn(dir, 'aws', `echo "$*" >> "${calls}"`);
+  const said = () => existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n') : [];
+  const upload = (tag: string) => run(dir, '/bin/zsh', 'upload-release.sh', [tag, 'dist'], { OBY_R2_ENDPOINT: 'https://r2.example.invalid' });
+  return { dist, zips, feed, said, upload };
+}
+const destination = (call: string) => call.split(' ').find((word) => word.startsWith('s3://'));
 const steps = () => (load(readFileSync(workflow, 'utf8')) as { jobs: Record<string, { needs?: string; environment?: string; steps: { run?: string }[] }> }).jobs;
 
 describe('the Mac release from a tag on main', () => {
   afterEach(() => { for (const made of folders.splice(0)) rmSync(made, { recursive: true, force: true }); });
 
   it('release_1_a_tag_publishes_zips_then_the_feed', () => {
-    const dir = folder();
-    const dist = join(dir, 'dist');
-    mkdirSync(dist);
-    const zips = ['Oby-1.2.3-arm64-mac.zip', 'Oby-1.2.3-x64-mac.zip'];
-    for (const zip of zips) writeFileSync(join(dist, zip), zip);
-    writeFileSync(join(dist, 'Oby-1.2.3-arm64.dmg'), 'dmg');
-    const feed = (signed: boolean) => `version: 1.2.3\nfiles:\n${zips.map((z) => `  - url: ${z}\n    sha512: x\n    size: 1\n`).join('')}path: ${zips[0]}\n${signed ? "signature: 'abc'\n" : ''}`;
-    const calls = join(dir, 'calls');
-    standIn(dir, 'aws', `echo "$*" >> "${calls}"`);
-    const env = { OBY_R2_ENDPOINT: 'https://r2.example.invalid' };
-    const said = () => existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n') : [];
+    const { dist, zips, feed, said, upload } = built();
 
     // unsigned, or naming a zip that isn't there: nothing goes up
     writeFileSync(join(dist, 'latest-mac.yml'), feed(false));
-    expect(run(dir, '/bin/zsh', 'upload-release.sh', ['dist'], env).status).not.toBe(0);
+    expect(upload('v1.2.3').status).not.toBe(0);
     rmSync(join(dist, zips[1]));
     writeFileSync(join(dist, 'latest-mac.yml'), feed(true));
-    expect(run(dir, '/bin/zsh', 'upload-release.sh', ['dist'], env).words).toContain(`names ${zips[1]}`);
+    expect(upload('v1.2.3').words).toContain(`names ${zips[1]}`);
     expect(said()).toEqual([]);
 
     // both zips and the DMG first, the feed last, never cached
     writeFileSync(join(dist, zips[1]), zips[1]);
-    const published = run(dir, '/bin/zsh', 'upload-release.sh', ['dist'], env);
+    const published = upload('v1.2.3');
     expect(published.status, published.words).toBe(0);
     const uploads = said();
-    expect(uploads.map((call) => call.split(' ').find((word) => word.startsWith('s3://')))).toEqual([
+    expect(uploads.map(destination)).toEqual([
       ...zips.map((zip) => `s3://oby-downloads/electron/${zip}`),
       's3://oby-downloads/electron/Oby-1.2.3-arm64.dmg',
       's3://oby-downloads/electron/latest-mac.yml',
@@ -71,7 +77,28 @@ describe('the Mac release from a tag on main', () => {
     const runs = mac.steps.map((step) => step.run ?? '');
     const packaged = runs.findIndex((r) => r.includes('scripts/package.sh arm64 x64'));
     expect(packaged).toBeGreaterThan(-1);
-    expect(runs.findIndex((r) => r.includes('scripts/upload-release.sh'))).toBeGreaterThan(packaged);
+    expect(runs.findIndex((r) => r.includes('scripts/upload-release.sh "$TAG" dist'))).toBeGreaterThan(packaged);
+  });
+
+  it('release_4_a_test_tag_publishes_only_to_the_test_path', () => {
+    const { feed, dist, said, upload } = built();
+    writeFileSync(join(dist, 'latest-mac.yml'), feed(true));
+
+    // a tag that isn't this build's version, as a release or a test: nothing goes up
+    for (const tag of ['v1.2.4', 'v1.2.3-', 'v1.2.3-a/b', 'v1.2', '1.2.3']) {
+      const refused = upload(tag);
+      expect(refused.status, tag).not.toBe(0);
+      expect(refused.words, tag).toContain('nothing is uploaded');
+    }
+    expect(said()).toEqual([]);
+
+    // a test tag: everything under its own folder of electron-test/, nothing under electron/
+    const tested = upload('v1.2.3-test.1');
+    expect(tested.status, tested.words).toBe(0);
+    const places = said().map(destination);
+    expect(places).toHaveLength(4);
+    for (const place of places) expect(place).toMatch(/^s3:\/\/oby-downloads\/electron-test\/v1\.2\.3-test\.1\/[^/]+$/);
+    expect(places.at(-1)).toBe('s3://oby-downloads/electron-test/v1.2.3-test.1/latest-mac.yml');
   });
 
   it('release_2_a_tag_off_main_publishes_nothing', () => {
