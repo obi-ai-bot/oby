@@ -3,7 +3,7 @@ import { Check, ChevronDown, ChevronRight, Info } from 'lucide-react';
 import { BrandMark } from './brands';
 import StatusDot from './StatusDot';
 import { MODES } from './modes';
-import { ASK_LABEL, agentOf, STEER, TELL, ago, type CheckRow, type Job, type Page, type Stage, type ToolGroup } from './view';
+import { ASK_LABEL, agentOf, STEER, TELL, ago, stoppedLine, type CheckRow, type Job, type Page, type Stage, type ToolGroup } from './view';
 import { api, type PublishChoices } from './obid';
 import { answer, changeCheck, changeMode, markSeen, openOnGitHub, type Task } from './tasks';
 import { prName, prUrl } from './jobPage';
@@ -44,6 +44,8 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
   // a status this build doesn't know has no result to tell (docs/contracts/wire.md, WIRE-3)
   const ended = done && !task.unknown;
   const result = ended ? resultLine(task) : null;
+  // failed or interrupted: why, in obid's words, one plain line (TASKS-25)
+  const stopped = ended ? stoppedLine(j) : undefined;
 
   return (
     <article
@@ -101,8 +103,8 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
       {/* answered, it no longer needs you, but the pick stays on the card */}
       {j.ask && (task.status === 'needs' || task.answer) && <AskBlock task={task} />}
 
-      {/* done: what it left behind, one line; on its page, Result has it */}
-      {result && <div className="tc-done"><div>{result}</div></div>}
+      {/* done: what it left behind, one line; on its page, Result has it. Failed or interrupted, why first */}
+      {(stopped || result) && <div className="tc-done"><div>{stopped && <p className="tc-result">{stopped}</p>}{result}</div></div>}
 
       {/* done, the stages are in the details only */}
       {!done && <Progress stages={j.stages} />}

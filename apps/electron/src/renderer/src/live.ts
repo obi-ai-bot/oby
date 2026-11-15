@@ -10,7 +10,7 @@ import { replaceTasks, type Asking, type PersonQuestion, type PersonReview, type
 import { keepFoldersOf, nameFoldersBy, saveFolders, sendFoldersBy, takeFolders } from './folders';
 import { accountRow, moveKeptChoices, replaceAccounts } from './SettingsView';
 import { BRANDS } from './brands';
-import { ANOTHER_ROUND, TRY_AGAIN } from '../../shared/words';
+import { TRY_AGAIN } from '../../shared/words';
 import { has } from '../../shared/capabilities';
 import { answer, answerStatus, answerTurns, apply as applyToObid, type ObidState } from '../../shared/live-state';
 import { unwired, type LiveMessage, type LiveSnapshot } from '../../shared/live-wire';
@@ -257,42 +257,36 @@ const isEscalation = (i: InboxItem) => i.id.startsWith('orchestrator-');
 const escalationAsk = (ask: Ask, item: InboxItem, steer: boolean): Ask =>
   isEscalation(item) ? { ...ask, fullText: true, ...(steer && item.job ? { steer: true } : {}) } : ask;
 
-// Sangam's failed card: another round always tells its agent obid's Try-again words
-// (docs/runner-api.md); one that never started is run again by obid as itself, with no follow-up
-// (TASKS-20). Stop here lets it go. His Open the session is the card's Open task. A task whose
-// follow-up carries it on asks nothing: tell that one.
-const STOP_HERE = 'Stop here';
-
 const limitHolds = (s: Live, j: Job) => !!j.accountLimit || s.limits.some((d) => d.jobs.some((job) => job.id === j.id));
+// Failed or interrupted, not let go, no follow-up carrying it on, and no account's limit holding it
+// (a limit's job goes on only by its limit card's signed choice, #1563): its menu's Try again and
+// Stop here (TASKS-25)
+const stoppedHere = (s: Live, j: Job) =>
+  (j.status === 'failed' || j.status === 'interrupted') && !limitHolds(s, j) && !j.dismissed && !Object.values(s.jobs).some((o) => o.followUpOf === j.id);
 
-// What a job needs from you: that decision (a permission's command as its detail); or, failed or
-// interrupted and not let go, what's next for it
+// What a job needs from you: that decision (a permission's command as its detail). A failed or
+// interrupted one with no item asks nothing: its reason is a plain line, Try again in its menu (TASKS-25)
 export function askOf(s: Live, j: Job): Ask | undefined {
   // a status this build doesn't know: no answer it could judge (docs/contracts/wire.md, WIRE-3)
   if (!isJobStatus(j.status)) return undefined;
   const item = itemOf(s, j.id);
   // The grouped limit appears once, but unrelated permissions or questions still need attention.
-  const limited = limitHolds(s, j);
-  if (limited && (!item || item.kind === 'limit')) return undefined;
-  // (a limit's job goes on only by its limit card's signed choice, #1563: no round from here)
-  const stopped = (j.status === 'failed' || j.status === 'interrupted') && !limited && !j.dismissed && !Object.values(s.jobs).some((o) => o.followUpOf === j.id);
+  if (limitHolds(s, j) && (!item || item.kind === 'limit')) return undefined;
   if (item) {
     const ask = itemAsk(item, item.kind === 'permission' ? j.permission?.detail : undefined);
     if (item.kind === 'permission' && j.permission?.always) ask.always = j.permission.always;
-    // Oby's own question about a task that stopped: a lone Done would only settle it, so it answers
-    // as his failed card does, and his question card's Tell it something (#1795). What Oby
-    // recommends is in its text, so no button looks recommended
-    if (stopped && item.kind === 'question') {
-      return escalationAsk({ ...ask, options: [ANOTHER_ROUND, TELL, STOP_HERE], recommended: -1 }, item, false);
+    // Oby's own question about a task that stopped: its own Done, and his question card's Tell it
+    // something (#1795); a stalled task's takes no answer, so Tell it something alone. Try again and
+    // Stop here are the task's menu's (TASKS-25). What Oby recommends is in its text, so no button
+    // looks recommended
+    if (stoppedHere(s, j) && item.kind === 'question') {
+      return escalationAsk({ ...ask, options: [...(takesNoAnswer(item) ? [] : ask.options), TELL], recommended: -1 }, item, false);
     }
     // (a task let go: obid settles its question by itself, TASKS-13)
     if (item.kind === 'question' && (j.dismissed || takesNoAnswer(item))) return undefined;
     // still running or done: Done alone only settles it, so the card also has Tell it what to do
     // (TASKS-17), signed as the task page's box; Later stays; the headline stays
     return escalationAsk(ask, item, item.kind === 'question');
-  }
-  if (stopped) {
-    return { kind: 'failed', headline: j.status === 'failed' ? 'It failed' : 'It was interrupted', text: (j.reason || j.summary).split('\n')[0] || j.step, options: [ANOTHER_ROUND, STOP_HERE], recommended: 0 };
   }
 }
 
@@ -508,7 +502,7 @@ export function taskOf(s: Live, j: Job): Task {
     check: j.check ?? undefined, repoCheck: s.repos.find((r) => r.repo === j.repo)?.check, status: j.status, step: j.step, waiting: j.waiting ?? undefined,
     round: j.rounds > 1 ? [j.round, j.rounds] : undefined,
     stages: stagesOf(j),
-    ask, summary: j.summary || undefined, reason: j.reason || undefined, commits: j.commits ?? undefined, published: j.published ?? undefined, nothingDone: j.nothingDone || undefined,
+    ask, summary: j.summary || undefined, reason: j.reason || undefined, canTryAgain: !unknown && stoppedHere(s, j), commits: j.commits ?? undefined, published: j.published ?? undefined, nothingDone: j.nothingDone || undefined,
     created: minutesAgo(j.created), finished: j.finished ? minutesAgo(j.finished) : undefined, conversation: j.conversation ? shownId(j.conversation) : undefined,
     noConversation: !s.conversations.some((c) => c.id === j.conversation),
     archived: !!j.archived, publish: publishOf(j, carriedOn(j, Object.values(s.jobs))),
@@ -1028,8 +1022,6 @@ const settleQuestion = async (item: InboxItem) => {
 export async function answerJob(id: string, option: string, words?: string) {
   if (id.startsWith('limit:')) return answerLimitAsk(id, option).catch(say);
   const j = state.jobs[id], item = itemOf(state, id) ?? state.inbox.find((i) => i.id === id), ask = j && askOf(state, j);
-  // a card drawn before the limit came: this click would sign past its grouped choice (#1563)
-  if (j && option === ANOTHER_ROUND && limitHolds(state, j)) return;
   const shown = option === 'Edit' && words ? `Use ${words}` : (option === TELL || option === STEER) && words ? words : option;
   if (ask) set({ answered: { ...state.answered, [id]: { ask, option: shown, item: item?.id, ...(option === 'Later' ? { until: Date.now() + 3600_000 } : {}) } } });
   else if (item) answering(item.id, true);
@@ -1054,12 +1046,10 @@ export async function answerJob(id: string, option: string, words?: string) {
     else if (item?.kind === 'permission' && j?.permission && DECISIONS[option]) {
       const next = await api.permission(id, { id: j.permission.id, decision: DECISIONS[option] });
       take({ kind: 'job', job: next });
-    } else if (item?.kind === 'question' && j && (option === ANOTHER_ROUND || option === TELL || option === STEER || option === STOP_HERE)) {
-      // let go, obid settles the question by itself (TASKS-13). On, it leaves it open while the task
-      // runs, so it's settled here; refused, it's still asked. Tell it what to do (TASKS-17) is the
-      // task page's shape: conversation true, then Done
-      if (option === STOP_HERE) take({ kind: 'job', job: await api.dismiss(id) });
-      else if (await tellJob(id, option === ANOTHER_ROUND ? TRY_AGAIN : words!, [], option === STEER)) await settleQuestion(item);
+    } else if (item?.kind === 'question' && j && (option === TELL || option === STEER)) {
+      // obid leaves the question open while the task runs on, so it's settled here; refused, it's
+      // still asked. Tell it what to do (TASKS-17) is the task page's shape: conversation true, then Done
+      if (await tellJob(id, words!, [], option === STEER)) await settleQuestion(item);
       set({ answered: without(state.answered, id) });
     } else if (item) {
       // (an agent's question by its own item, never the job's permission, which can lag behind the
@@ -1067,14 +1057,6 @@ export async function answerJob(id: string, option: string, words?: string) {
       const said = (option === TELL || option === STEER) && words ? words : option;
       const body = option === 'Later' ? { later: new Date(Date.now() + 3600_000).toISOString().replace(/\.\d+Z$/, 'Z') } : { answer: said };
       take({ kind: 'inbox', item: await keyed((key) => api.answer(item.id, body, key)) });
-    } else if (option === STOP_HERE) {
-      // a failed job with no item: let go
-      const next = await api.dismiss(id);
-      take({ kind: 'job', job: next });
-    } else if (option === ANOTHER_ROUND) {
-      // (a refusal is said; either way the card is obid's again, so a second failure shows too)
-      await tellJob(id, TRY_AGAIN);
-      set({ answered: without(state.answered, id) });
     }
   } catch (e) {
     // not taken: it's still yours to answer
@@ -1083,6 +1065,22 @@ export async function answerJob(id: string, option: string, words?: string) {
   } finally {
     if (!j && item) answering(item.id, false);
   }
+}
+// A failed or interrupted task's menu (TASKS-25). Try again tells its agent obid's Try-again words
+// (docs/runner-api.md), signed for that click; one that never started is run again by obid as
+// itself (TASKS-20). Not for a job an account's limit holds: only its limit card's signed choice
+// carries it on (#1563). Taken, Oby's own question about it is answered Done; refused, obid's
+// words show (tellJob). Stop here lets it go: obid settles that question itself (TASKS-13).
+export async function tryAgainJob(id: string) {
+  const j = state.jobs[id];
+  if (j && limitHolds(state, j)) return;
+  const question = state.inbox.find((i) => i.job === id && i.kind === 'question' && isEscalation(i));
+  try {
+    if ((await tellJob(id, TRY_AGAIN)) && question) await settleQuestion(question);
+  } catch (e) { say(e); }
+}
+export async function letGoJob(id: string) {
+  try { take({ kind: 'job', job: await api.dismiss(id) }); } catch (e) { say(e); }
 }
 // Change check, on a task's page (#1062): the owner's own command for its repository, or none to
 // start over. obid asks for it (POST /v1/repos/check) and this Mac's signature over that ask's
