@@ -73,6 +73,7 @@ pub(crate) use lanes::claude_place;
 use lanes::{own_codex_settings, own_run_env, owners_for};
 mod logins;
 mod moves;
+mod obi_review;
 mod own_refs;
 pub(crate) use own_refs::OWN_COMMON;
 mod research;
@@ -3617,64 +3618,6 @@ impl Jobs {
         if let Err(why) = self.config.repos.keep(&repo) {
             tracing::warn!("{why}");
         }
-        let job = self.insert(job).map_err(NotMade::Unkept)?;
-        self.schedule();
-        Ok(job)
-    }
-
-    /// Starts the review another Obi asked for (runner-api.md, "obid only: Obi-to-Obi review jobs",
-    /// step 1): a `review` job on an account routing picks, titled from typed fields only.
-    pub fn start_obi_review(self: &Arc<Self>, request: ObiReview) -> Result<Job, NotMade> {
-        let body: ReviewRequest = serde_json::from_value(request.body.clone())
-            .map_err(|e| Refused(format!("The request isn't a review_request: {e}")))?;
-        // Another Obi's request: only in a repository obid lists, never one of GitHub's it doesn't.
-        if !self.config.repos.get().iter().any(|r| r.repo == body.repo) {
-            return Err(Refused(format!("{} isn't a repository obid knows.", body.repo)).into());
-        }
-        // Claude Code's: the review's answer is its structured output (`--json-schema`).
-        let (_, account) =
-            self.pick_for(Some(Tool::Claude.id()), None, &Work::new(None, None, true))?;
-        let id = self.new_id();
-        let repo_name = body
-            .repo
-            .rsplit('/')
-            .next()
-            .unwrap_or(&body.repo)
-            .to_owned();
-        let task = format!(
-            "Review {} for {}: {} at {} into {}.",
-            body.repo,
-            request.from_owner,
-            body.head_branch,
-            &body.head_sha[..7.min(body.head_sha.len())],
-            body.base_branch
-        );
-        let mut job = Job::new(
-            id,
-            body.repo.clone(),
-            "review".into(),
-            task,
-            "claude".into(),
-            account.id,
-        );
-        job.title = Some(format!("Review for {}: {repo_name}", request.from_owner));
-        job.branch = body.head_branch.clone();
-        job.base = Some(body.base_branch.clone());
-        job.pr = body.pr;
-        job.check = self.repo(&body.repo).and_then(|r| r.check.clone());
-        job.mode = Some("bypass".into());
-        job.round = Some(1);
-        job.obi = Some(ObiRef {
-            correlation_id: request.correlation_id.clone(),
-            from: request.from.clone(),
-            from_owner: request.from_owner.clone(),
-            request_id: request.request_id.clone(),
-        });
-        job.obi_request = Some(json!({
-            "from": request.from, "from_owner": request.from_owner, "type": "review_request", "body": request.body
-        }));
-        job.phase = Some(Phase::Prepare);
-        job.step = format!("Getting {repo_name} ready");
         let job = self.insert(job).map_err(NotMade::Unkept)?;
         self.schedule();
         Ok(job)
@@ -9219,6 +9162,12 @@ impl Jobs {
         let quoted = job.obi_request.clone().ok_or("the job has no request")?;
         let request: ReviewRequest = serde_json::from_value(quoted["body"].clone())
             .map_err(|e| format!("the request isn't a review_request: {e}"))?;
+        // With no check to run it can't vouch that the tests pass (TEAMREVIEW-4): no agent either.
+        if job.check.is_none() {
+            self.review_without_a_check(id, job.current_round(), &request)
+                .await;
+            return Ok(());
+        }
         if let Err(why) = &self.sandbox {
             return Err(format!(
                 "obid can't make the job sandbox on this machine, so it ran nothing: {why}"

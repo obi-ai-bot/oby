@@ -10,6 +10,7 @@ use obi_protocol::time;
 use serde_json::{Value, json};
 
 use super::*;
+use crate::sphere::review_start::{self, FirstAnswer};
 
 /// Whether `item` is the card that asks to share, still open, whichever words it has: the one with no
 /// repositories to tick (it adds a job's progress to a rule of theirs) is one too until it's replaced.
@@ -1053,8 +1054,32 @@ impl Link {
     }
 
     /// Accepts the request: `accept` (with `by_rule` when a decision made it) waits to be sent, and
-    /// the review job starts. When the job can't even start, a failed result follows.
-    pub(super) fn accept_locked(&self, state: &State, exchange: &mut Exchange, rule: Option<&str>) {
+    /// the review job starts. A review this Oby can't start is declined instead, never accepted
+    /// (TEAMREVIEW-3): only a `decline` with obid's note goes, and that note is returned. When the
+    /// job still can't start once accepted, a failed result follows.
+    pub(super) fn accept_locked(
+        &self,
+        state: &State,
+        exchange: &mut Exchange,
+        rule: Option<&str>,
+    ) -> Option<&'static str> {
+        let repo = exchange.request["body"]["repo"].as_str().unwrap_or("");
+        if let FirstAnswer::Decline(why) = review_start::first_answer(self.jobs.can_review(repo)) {
+            let note = why.note();
+            tracing::info!(
+                "sphere: declined the review {} ({why:?}): {note}",
+                exchange.correlation_id
+            );
+            exchange.outbox.extend(self.reply_locked(
+                state,
+                exchange,
+                "decline",
+                json!({"reason": "unavailable", "note": note}),
+            ));
+            exchange.state = "declined".into();
+            exchange.error = Some(note.to_owned());
+            return Some(note);
+        }
         let body = match rule {
             Some(rule) => json!({"by_rule": rule}),
             None => json!({}),
@@ -1091,6 +1116,7 @@ impl Link {
                     .extend(self.reply_locked(state, exchange, "result", failed));
             }
         }
+        None
     }
 
     /// A reply in `exchange`, built and signed (runner-api.md, "Expiry of what obid sends"):
