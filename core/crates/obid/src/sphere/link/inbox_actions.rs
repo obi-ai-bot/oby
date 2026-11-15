@@ -1001,6 +1001,18 @@ impl Link {
         self.save_item(&item);
     }
 
+    /// The items that waited for the owner at `at`: made before it, and done, if they are, no
+    /// earlier than it. What a turn begun then saw waiting, whatever was answered since.
+    pub fn waiting_at(&self, at: i64) -> Vec<Item> {
+        let state = self.lock();
+        let waited = |i: &&Item| {
+            i.created < at
+                && i.done.is_none_or(|done| done >= at)
+                && i.later.is_none_or(|l| l <= at)
+        };
+        state.inbox.values().filter(waited).cloned().collect()
+    }
+
     /// The items waiting for the owner now (not done, and not put off past `now`), what needs them
     /// first and each group in the order they came: what the brain is told about the inbox (#546).
     pub fn waiting_items(&self, now: i64) -> Vec<Item> {

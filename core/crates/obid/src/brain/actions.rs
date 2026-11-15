@@ -947,8 +947,9 @@ const NAMED_KINDS: [&str; 7] = [
     "start",
 ];
 
-/// How many of `conversation`'s cards of `item`'s kind wait, made before `begun`, when `item` is
-/// one of them; else 0.
+/// How many of `conversation`'s cards of `item`'s kind waited when the turn began (`begun`), when
+/// `item` is one of them; else 0. Counted as they were then, so a card the turn answers first
+/// doesn't leave another as the only one.
 fn waiting_here(shared: &Shared, item: &Item, conversation: &str, begun: i64) -> u32 {
     let ours = |i: &Item| {
         i.conversation().as_deref() == Some(conversation)
@@ -957,10 +958,10 @@ fn waiting_here(shared: &Shared, item: &Item, conversation: &str, begun: i64) ->
                 .get(&i.job)
                 .is_some_and(|j| j.conversation.as_deref() == Some(conversation))
     };
-    let waiting = shared.link.waiting_items(obi_protocol::time::now());
-    let here: Vec<&Item> = waiting
+    let waited = shared.link.waiting_at(begun);
+    let here: Vec<&Item> = waited
         .iter()
-        .filter(|i| i.kind == item.kind && i.created < begun && ours(i))
+        .filter(|i| i.kind == item.kind && ours(i))
         .collect();
     if here.iter().any(|i| i.id == item.id) {
         u32::try_from(here.len()).unwrap_or(u32::MAX)

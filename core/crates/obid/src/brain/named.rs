@@ -127,6 +127,20 @@ pub(crate) fn names_card(words: &str, item: &Item, job: Option<&Job>) -> bool {
         || about.is_some_and(|(repo, number)| names_number(words, repo, number))
 }
 
+/// Whether `words` name a merge of `repo`'s pull request `pr`: they say "merge", and its number or
+/// link or its job's task name (`job`). "Summarize #3" names #3 but no merge of it.
+pub(crate) fn names_merge(words: &str, repo: &str, pr: u64, job: Option<&str>) -> bool {
+    says_words(words, "merge")
+        && (names_number(words, repo, pr) || job.is_some_and(|title| says_words(words, title)))
+}
+
+/// Whether `words` name `action` (`comment`, `approve`, `request_changes`, `close`, `label`) on
+/// `repo`'s issue or pull request `number`: they say the action and its number or link. "Comment
+/// on #3" names no approval of it.
+pub(crate) fn names_write(words: &str, action: &str, repo: &str, number: u64) -> bool {
+    says_words(words, &action.replace('_', " ")) && names_number(words, repo, number)
+}
+
 /// The answer when a call is [`Act::Skip`]: `what` isn't done, and how to have it done.
 pub(crate) fn skipped(what: &str) -> String {
     format!(
@@ -171,6 +185,28 @@ mod tests {
         assert_eq!(owners_words(&said), "yes");
         assert!(!names_number(owners_words(&said), "o/r", 3));
         assert_eq!(owners_words("merge #3"), "merge #3");
+    }
+
+    #[test]
+    fn taskconv_27_a_merge_or_write_is_named_by_its_action_and_its_number() {
+        assert!(names_merge("Merge #3", "o/r", 3, None));
+        assert!(names_merge(
+            "merge Add a greeting",
+            "o/r",
+            3,
+            Some("Add a greeting")
+        ));
+        assert!(!names_merge("Summarize the comments on #3", "o/r", 3, None));
+        assert!(!names_merge("Merge #33", "o/r", 3, None));
+        assert!(names_write("Approve #3", "approve", "o/r", 3));
+        assert!(names_write(
+            "request changes on PR 3",
+            "request_changes",
+            "o/r",
+            3
+        ));
+        assert!(!names_write("Comment on #3", "approve", "o/r", 3));
+        assert!(!names_write("Approve it", "approve", "o/r", 3));
     }
 
     #[test]
