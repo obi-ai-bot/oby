@@ -15,7 +15,7 @@
     "proofs": { "proofs": "opus" },
     "model": { "proofs": "opus" }
   },
-  "proofs": { "mode": "advisory", "timeout_s": 600 },
+  "proofs": { "mode": "blocking", "timeout_s": 600 },
   "mutants": { "budget_s": 1800 },
   "protected_paths": [
     "factory/checks.sh",
