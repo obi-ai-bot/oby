@@ -286,7 +286,7 @@ export function ShareModal({ card: opened, onClose, onAnswered }: { card: InboxI
 // Before it's deleted (or left): what goes with it, and, to delete, its name
 // typed in, so it isn't done by a slip. Esc, Cancel, the x or a click outside
 // closes it.
-function ConfirmModal({ sphere, onClose }: { sphere: Sphere; onClose: () => void }) {
+export function ConfirmModal({ sphere, onClose }: { sphere: Sphere; onClose: () => void }) {
   const [typed, setTyped] = useState('');
   const leaving = !sphere.admin;
   const ready = leaving || typed.trim() === sphere.name;
