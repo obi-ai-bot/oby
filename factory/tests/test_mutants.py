@@ -194,7 +194,7 @@ class Mutants(unittest.TestCase):
             "CHECK_LOG": str(self.dir / "check.log"), "CHECK_PLAN": str(self.dir / "plan.out"),
         }
         for name in ("STAND_IN", "STAND_IN_CODE", "CARGO_MUTANTS_JOBS", "STAND_IN_OBID_OUTPUT", "STAND_IN_OBID_CODE",
-                     "CHECK", "CHECK_CODE", "OBY_CHECK_PLAN", "OBY_CHECK_ONLY"):
+                     "CHECK", "CHECK_CODE", *(k for k in os.environ if k.startswith("OBY_CHECK_"))):
             self.env.pop(name, None)
         self.stand_in("1 mutant tested: 1 caught\n")
         self.git("init", "-q", "-b", "dev")
