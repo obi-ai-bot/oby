@@ -164,6 +164,21 @@ fn flagged_here(job: &Job, head: &str) -> Flagged {
 /// head to merge (MERGING-49).
 const FOLLOW_UP_AT_WORK: &str = "Not merged yet: a follow-up is still at work on its branch.";
 
+/// A merge past Oby's review (MERGING-49) is held quietly in `lifted` while a follow-up is at
+/// work on `job`'s branch.
+fn follow_up_holds(job: &Job, lifted: &mut Vec<Blocked>) {
+    if job.follow_up_at_work {
+        lifted.push(held(FOLLOW_UP_AT_WORK));
+    }
+}
+
+/// Whether a workflow whose review is `learned` (none: none learned for the base) lets the owner's
+/// own work merge past Oby's review that asks for changes (MERGING-49): only where Oby's own review
+/// is the review, never on a person's or a teammate's approval (MERGING-45).
+pub fn merges_past_by(learned: Option<Approval>) -> bool {
+    !matches!(learned, Some(Approval::Person | Approval::Teammate))
+}
+
 /// What the owner's own work's conversation is told once it merged into `base` past Oby's
 /// review, `title` its task's (MERGING-49): with what the review still flagged, when its text is
 /// there.
@@ -709,8 +724,8 @@ pub fn ready_as(
     };
     let by = workflow.review;
     let mut second = None;
-    // It merges past Oby's review that asks for changes (MERGING-49): GitHub's required approval
-    // is then the owner's to settle, never a wait.
+    // It merges past Oby's review that asks for changes (MERGING-49), once no follow-up is at work
+    // on its branch: GitHub's required approval is then the owner's to settle, never a wait.
     let mut past = false;
     if by_own_review(by, reviewers) {
         // Oby's own review of this very head is the review, for the owner's own pull request (the
@@ -730,10 +745,10 @@ pub fn ready_as(
         if let Err(blocked) = oby_approval(job, head) {
             match flagged_here(job, head) {
                 Flagged::Owners => second = Some(yours(REVIEW_ASKS)),
-                Flagged::MergesPast if job.follow_up_at_work => {
-                    lifted.push(held(FOLLOW_UP_AT_WORK));
+                Flagged::MergesPast => {
+                    past = true;
+                    follow_up_holds(job, &mut lifted);
                 }
-                Flagged::MergesPast => past = true,
                 Flagged::Waits => lifted.push(held(blocked.why)),
             }
         }
@@ -745,7 +760,9 @@ pub fn ready_as(
                         "Not merged yet: Oby couldn't read whether GitHub requires an approving review here.",
                     ),
                 }),
-            Some(true) if past => return Err(needs_you(requires_person(base))),
+            Some(true) if past && !job.follow_up_at_work => {
+                return Err(needs_you(requires_person(base)));
+            }
             Some(true) => return Err(wait(requires_person(base))),
             Some(false) => {}
         }
@@ -762,10 +779,10 @@ pub fn ready_as(
             };
             match flag {
                 Flagged::Owners => second = Some(yours(REVIEW_ASKS)),
-                Flagged::MergesPast if job.follow_up_at_work => {
-                    lifted.push(held(FOLLOW_UP_AT_WORK));
+                Flagged::MergesPast => {
+                    past = true;
+                    follow_up_holds(job, &mut lifted);
                 }
-                Flagged::MergesPast => past = true,
                 Flagged::Waits => lifted.push(held(match by {
                     Approval::Reviewer => {
                         "Not merged yet: Oby's reviewer account hasn't approved its head."
@@ -778,8 +795,9 @@ pub fn ready_as(
             }
         }
         // The owner's own conversation work waits for Oby's own review of its head too, two where
-        // it needs them, whoever else approved it (MERGING-45, the owner's answer of 2026-11-15).
-        if own_work(job) && second.is_none() {
+        // it needs them, whoever else approved it (MERGING-45, the owner's answer of 2026-11-15),
+        // unless it merges past that review (MERGING-49).
+        if own_work(job) && second.is_none() && !past {
             match oby_approval(job, head) {
                 Err(_) if left_to_owner(job, head) => second = Some(yours(REVIEW_ASKS)),
                 Err(blocked) => lifted.push(held(blocked.why)),
@@ -790,7 +808,7 @@ pub fn ready_as(
             && (lift.is_none() || lifted.is_empty())
             && pr.review_decision.as_deref() == Some("REVIEW_REQUIRED")
         {
-            return Err(if past {
+            return Err(if past && !job.follow_up_at_work {
                 needs_you(requires_person(base))
             } else {
                 wait("Not merged yet: GitHub waits for more reviews.")
@@ -4220,6 +4238,26 @@ mod tests {
         assert_eq!(ready_by_itself(&security), Err(yours(REVIEW_ASKS)));
         // Past its last round, one-review own work merges past it: on Oby's review, not ana's.
         assert_eq!(ready_by_itself(&flagged_own()), Ok(()));
+        // Under a learned workflow a person or a teammate approves, ana's approval never takes it
+        // past: it's the owner's Merge on the review's item (MERGING-45).
+        for by in [Approval::Person, Approval::Teammate] {
+            assert!(!merges_past_by(Some(by)), "{by:?}");
+            let workflow = Workflow {
+                review: by,
+                ..obis()
+            };
+            let blocked = ready(
+                &flagged_own(),
+                Some(&workflow),
+                &pr,
+                &merging,
+                Some(&signed_in()),
+            );
+            assert_eq!(blocked, Err(yours(REVIEW_ASKS)), "{by:?}");
+        }
+        for by in [None, Some(Approval::Oby), Some(Approval::Reviewer)] {
+            assert!(merges_past_by(by), "{by:?}");
+        }
     }
 
     /// MERGING-21: a Ready to merge card says what it asks once, in Sangam's words ("Merge
@@ -5683,11 +5721,16 @@ mod proofs {
     }
 
     /// MERGING-50: a head that needs two approving reviews never merges past a review that asks
-    /// for changes, whatever else holds.
+    /// for changes, whatever else holds: it waits, then it's the owner's Merge.
     #[kani::proof]
     fn merging_50_a_two_review_head_never_merges_past_its_review() {
         let (ran_out, own): (bool, bool) = (kani::any(), kani::any());
-        assert_ne!(flagged(ran_out, own, true), Flagged::MergesPast);
+        let owners = if ran_out {
+            Flagged::Owners
+        } else {
+            Flagged::Waits
+        };
+        assert_eq!(flagged(ran_out, own, true), owners);
     }
 
     /// MERGING-51: only the owner's own work merges past a review that asks for changes; any other
@@ -5695,8 +5738,12 @@ mod proofs {
     #[kani::proof]
     fn merging_51_only_own_work_merges_past_its_review() {
         let (ran_out, two_reviews): (bool, bool) = (kani::any(), kani::any());
-        let not_own = flagged(ran_out, false, two_reviews);
-        assert!(matches!(not_own, Flagged::Owners | Flagged::Waits));
+        let owners = if ran_out {
+            Flagged::Owners
+        } else {
+            Flagged::Waits
+        };
+        assert_eq!(flagged(ran_out, false, two_reviews), owners);
     }
 
     /// MERGING-49: nothing merges past a review that asks for changes before its rounds ran out:

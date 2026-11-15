@@ -12083,9 +12083,7 @@ impl Jobs {
         }
         let following = chain::branch_carrier(&self.lock().jobs, &job, Holds::AtWork).is_some();
         // The owner's own one-review work merges past it instead (MERGING-49).
-        let own = crate::merge::own_work(&job);
-        let past = crate::merge::flagged(true, own, job.two_reviews_why().is_some());
-        if !job.review_needs_you() || following || past == crate::merge::Flagged::MergesPast {
+        if !job.review_needs_you() || following || self.merges_past_review(&job) {
             return None;
         }
         let mut item = crate::sphere::inbox::reviews_ran_out_item(&job, &review.job);
@@ -18911,7 +18909,8 @@ mod tests {
     }
 
     /// MERGING-49: the owner's own one-review work whose review still asks for changes after its
-    /// rounds raises no review item (it merges past it); the same job, not the owner's own, does.
+    /// rounds raises no review item (it merges past it); the same job, not the owner's own, does,
+    /// and so does own work under a learned workflow a person approves (MERGING-45).
     #[tokio::test]
     async fn merging_49_no_review_item_for_own_work_past_its_rounds() {
         let root = std::env::temp_dir().join(format!("obid-merged-past-{}", uuid::Uuid::new_v4()));
@@ -18926,6 +18925,7 @@ mod tests {
         );
         job.status = Status::Done;
         job.branch = "oby/fix".into();
+        job.base = Some("dev".into());
         job.published = Some("https://github.com/o/r/pull/7".into());
         let push = crate::publish::Outgoing::new("push", "o/r", &head, Some("oby/fix"));
         job.outgoing.push(push);
@@ -18952,6 +18952,20 @@ mod tests {
         assert!(jobs.review_left_to_owner("aaaa0001").is_none());
         let item = jobs.review_left_to_owner("aaaa0002").unwrap();
         assert_eq!(item.options, ["One more round", "Merge"]);
+        let memory = root.join("home/memory/repos/o/r");
+        std::fs::create_dir_all(&memory).unwrap();
+        for (review, item) in [("oby", false), ("person", true), ("teammate", true)] {
+            let workflow = format!(
+                r#"{{"base":"dev","method":"squash","rebaseFirst":false,"review":"{review}","checks":"github"}}"#
+            );
+            std::fs::write(
+                memory.join("m1a2b3c4d.md"),
+                format!("---\nid: m1a2b3c4d\nscope: project\nrepo: o/r\nkind: workflow\nsource: user\ntitle: How r merges\nfrom: You merged it\ncreated: 2026-10-24T10:00:00Z\nupdated: 2026-10-24T10:00:00Z\nused: 0\nworkflow: {workflow}\n---\nSquash-merge into dev.\n"),
+            )
+            .unwrap();
+            let raised = jobs.review_left_to_owner("aaaa0001").is_some();
+            assert_eq!(raised, item, "{review}");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
