@@ -435,15 +435,24 @@ def follow(item, jobs):
     """One look at a task that is under way or waiting. Returns True when it changed."""
     key = item["key"]
     code, j = api("GET", f"/v1/jobs/{item['job']}")
-    if code == 404:
-        # a pull request that touches a security path stays the owner's: still followed, never rebuilt
+    lost = code == 404
+    if lost:
+        # a lost job's pull request decides: merged or closed ends the task, one in GitHub's queue is still followed,
+        # and one that touches a security path stays the owner's; only the rest is rebuilt
         pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", VIEW) if item.get("pr") else None
         if item.get("pr") and not pr:
-            return False  # its files unread: looked at again at the next pass
-        hit =touches_security([f["path"] for f in (pr or {}).get("files", [])])
-        if not hit and not (item["state"] == "waiting" and (item.get("note") or "").startswith(SECURITY_HOLD)):
+            return False  # unread: looked at again at the next pass
+        if pr and pr["state"] == "MERGED":
+            merged(item, jobs)
+            return True
+        if pr and pr["state"] == "CLOSED":
+            item.update(state="failed", note="its pull request was closed")
+            return True
+        hit = touches_security([f["path"] for f in (pr or {}).get("files", [])])
+        held = item["state"] == "waiting" and (item.get("note") or "").startswith(SECURITY_HOLD)
+        if not hit and not held and item["state"] != "merging":
             return retry(item, None, None)
-        if item["state"] != "waiting":
+        if hit and item["state"] not in ("waiting", "merging"):
             item.update(state="waiting", note=f"{SECURITY_HOLD} ({hit[0]}) and obid no longer has its job: merge it yourself")
             return True
         j = {}
@@ -514,7 +523,7 @@ def follow(item, jobs):
             why = "its reason couldn't be read"
         say(f"{key}: GitHub's queue didn't merge {item.get('head')}: {why}")
         item.update(refused=item.get("head"), note=f"GitHub's queue didn't merge {item.get('head')}: {why}"[:240])
-        retry(item, j, "queue")
+        retry(item, None, None) if lost else retry(item, j, "queue")  # a lost job takes no follow-up
         return True
     if item["state"] == "waiting":
         pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", VIEW)

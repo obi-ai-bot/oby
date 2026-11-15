@@ -377,6 +377,33 @@ class ObyFeed(unittest.TestCase):
         self.assertIn("ended with lost: obid no longer has its job", build["task"])
         self.assertEqual(self.task_now()["attempt"], 2)
 
+    def test_feedloop_2_a_lost_job_whose_pull_request_merged_or_closed_ends_it(self):
+        for state, pr_state, ends in (("waiting", "MERGED", "merged"), ("merging", "MERGED", "merged"),
+                                      ("reviewing", "CLOSED", "failed")):
+            with self.subTest(state=state, pr_state=pr_state):
+                self.setUp()
+                self.no_ready()
+                self.task(state, job="job-gone", head=OLD, armedAt="2026-11-15T10:00:00Z")
+                self.stand.view = {"headRefOid": OLD, "state": pr_state, "files": [{"path": "x.py"}]}
+                self.one_pass()
+                self.assertEqual(self.task_now()["state"], ends)
+                self.assertEqual(self.stand.sent, [])
+
+    def test_feedloop_2_a_lost_job_in_the_queue_is_followed_and_rebuilt_only_once_refused(self):
+        self.no_ready()
+        self.task("merging", job="job-gone", head=OLD, armedAt="2026-11-15T10:00:00Z")
+        self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "x.py"}]}
+        self.stand.graphql = queue(in_queue=True)
+        self.one_pass()
+        self.assertEqual(self.task_now()["state"], "merging")
+        self.assertEqual(self.stand.sent, [])
+        self.stand.graphql = queue(removed={"createdAt": "2026-11-15T10:05:00Z", "reason": GITHUB})
+        self.one_pass()
+        [build] = self.builds()
+        self.assertIn("ended with lost: obid no longer has its job", build["task"])
+        self.assertEqual(self.messages(), [])
+        self.assertEqual((self.task_now()["state"], self.task_now()["attempt"]), ("running", 2))
+
     def test_feedloop_2_done_with_nothing_published_starts_again(self):
         self.no_ready()
         self.task("running", attempt=1)
