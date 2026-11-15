@@ -12928,7 +12928,7 @@ impl Jobs {
             .filter(|c| !c.text.is_empty())
         } else {
             // A learned workflow is followed; the owner's own conversation work merges by itself
-            // by the proposed one (MERGING-46); any other asks first.
+            // by the proposed one, on Oby's own review (MERGING-46); any other asks first.
             let learned =
                 (learned.as_ref()).and_then(|m| Some((m.id.as_str(), m.workflow.as_ref()?)));
             let seen = (pr, &merging, reviewers.as_ref());
@@ -12939,7 +12939,7 @@ impl Jobs {
                 },
                 crate::merge::MergesBy::Itself => {
                     let r = reviewers.as_ref();
-                    match r.and_then(|r| crate::merge::proposed(&job, pr, &merging, r)) {
+                    match r.and_then(|r| crate::merge::own_proposed(&job, pr, &merging, r)) {
                         Some(w) => self.merges(gh, &job, &w, seen, None).await,
                         None => None,
                     }

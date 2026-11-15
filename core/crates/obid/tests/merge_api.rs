@@ -3814,8 +3814,8 @@ fn merging_47_a_repository_with_no_check_merges_own_work() {
 }
 
 /// MERGING-48: the owner's own conversation work that read something untrusted, into main, waits
-/// for a second review by another tool with no card and nothing sent, then merges by itself once
-/// that review approved the head.
+/// for a second review by another tool with no card and nothing sent, a member's approval on
+/// GitHub standing in for none, then merges by itself once that review approved the head.
 #[test]
 fn merging_48_untrusted_own_work_into_main_waits_for_a_second_review_then_merges() {
     let untrusted = |second: Option<&str>| {
@@ -3826,7 +3826,7 @@ fn merging_48_untrusted_own_work_into_main_waits_for_a_second_review_then_merges
         job
     };
     let folder = Folder::new("merge-own-second-review-waits");
-    let obid = started_into(&folder, None, untrusted(None), "main", &[]);
+    let obid = started_into(&folder, None, untrusted(None), "main", &["person"]);
     let reads = || calls(&folder.0).matches("pr view 7").count();
     within(30, "a few reads", || (reads() >= 4).then_some(()));
     let waiting = job(&obid);
@@ -3838,7 +3838,13 @@ fn merging_48_untrusted_own_work_into_main_waits_for_a_second_review_then_merges
     drop(obid);
 
     let folder = Folder::new("merge-own-second-review-merges");
-    let obid = started_into(&folder, None, untrusted(Some("claude")), "main", &[]);
+    let obid = started_into(
+        &folder,
+        None,
+        untrusted(Some("claude")),
+        "main",
+        &["person"],
+    );
     let merged = merged_with_no_card(&obid, "oby");
     merged_into(&merged, "main");
     assert_eq!(calls(&folder.0).matches("-X PUT").count(), 1);
