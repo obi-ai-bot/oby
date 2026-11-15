@@ -98,6 +98,46 @@ pub(crate) fn says_words(words: &str, phrase: &str) -> bool {
             .any(|run| run == phrase.as_slice())
 }
 
+/// Whether `words` say `phrase` plainly: in a sentence that asks nothing (no `?`) and says no
+/// "not", "never" or "don't" (any `n't`). "Should I merge #3?" and "don't merge #3" say no
+/// merge (the owner's answer of 2026-11-15).
+pub(crate) fn says_plainly(words: &str, phrase: &str) -> bool {
+    const CLOSING: &str = "'\"”’)]>";
+    let denies = |word: &&str| {
+        let word = word
+            .trim_matches(|c: char| AROUND.contains(c))
+            .to_lowercase();
+        ["not", "never", "dont"].contains(&word.as_str())
+            || word.ends_with("n't")
+            || word.ends_with("n’t")
+    };
+    let ends = |word: &&str| {
+        word.trim_end_matches(|c: char| CLOSING.contains(c))
+            .ends_with(['.', '!', '?', ';'])
+    };
+    let plain = |sentence: &[&str]| {
+        let asked = sentence.last().is_some_and(|w| {
+            w.trim_end_matches(|c: char| CLOSING.contains(c))
+                .ends_with('?')
+        });
+        !asked && !sentence.iter().any(denies) && says_words(&sentence.join(" "), phrase)
+    };
+    words.lines().any(|line| {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        words.split_inclusive(ends).any(plain)
+    })
+}
+
+/// What an owner says to continue a job, and to change one (`oby_continue_job`, `oby_change_job`).
+pub(crate) const CONTINUE: [&str; 4] = ["continue", "try again", "resume", "go on"];
+pub(crate) const CHANGE: [&str; 4] = ["change", "move", "put", "switch"];
+
+/// Whether `words` name `job` and say plainly one of `verbs` to do to it ([`CONTINUE`],
+/// [`CHANGE`]): "how is Fix login going?" names Fix login, but no continuing of it.
+pub(crate) fn names_job_to(words: &str, verbs: &[&str], job: &Job) -> bool {
+    verbs.iter().any(|verb| says_plainly(words, verb)) && names_job(words, job)
+}
+
 /// Whether `words` name `job`: its task name, its own pull request, or the pull request or issue
 /// it is about.
 pub(crate) fn names_job(words: &str, job: &Job) -> bool {
@@ -127,24 +167,24 @@ pub(crate) fn names_card(words: &str, item: &Item, job: Option<&Job>) -> bool {
         || about.is_some_and(|(repo, number)| names_number(words, repo, number))
 }
 
-/// Whether `words` name a merge of `repo`'s pull request `pr`: they say "merge", and its number or
-/// link or its job's task name (`job`). "Summarize #3" names #3 but no merge of it.
+/// Whether `words` name a merge of `repo`'s pull request `pr`: they say "merge" plainly, and its
+/// number or link or its job's task name (`job`). "Summarize #3" names #3 but no merge of it.
 pub(crate) fn names_merge(words: &str, repo: &str, pr: u64, job: Option<&str>) -> bool {
-    says_words(words, "merge")
+    says_plainly(words, "merge")
         && (names_number(words, repo, pr) || job.is_some_and(|title| says_words(words, title)))
 }
 
 /// Whether `words` name `action` (`comment`, `approve`, `request_changes`, `close`, `label`) on
-/// `repo`'s issue or pull request `number`: they say the action and its number or link. "Comment
-/// on #3" names no approval of it.
+/// `repo`'s issue or pull request `number`: they say the action plainly and its number or link.
+/// "Comment on #3" names no approval of it.
 pub(crate) fn names_write(words: &str, action: &str, repo: &str, number: u64) -> bool {
-    says_words(words, &action.replace('_', " ")) && names_number(words, repo, number)
+    says_plainly(words, &action.replace('_', " ")) && names_number(words, repo, number)
 }
 
 /// The answer when a call is [`Act::Skip`]: `what` isn't done, and how to have it done.
 pub(crate) fn skipped(what: &str) -> String {
     format!(
-        "Not done: {what}. This conversation read text Oby didn't write, so Oby does only what your own words this turn name: say it again with its number, link or task name."
+        "Not done: {what}. This conversation read text Oby didn't write, so Oby does only what your own words this turn name: say it again plainly, with its number, link or task name."
     )
 }
 
@@ -207,6 +247,56 @@ mod tests {
         ));
         assert!(!names_write("Comment on #3", "approve", "o/r", 3));
         assert!(!names_write("Approve it", "approve", "o/r", 3));
+    }
+
+    #[test]
+    fn taskconv_27_negated_or_asked_words_say_no_action() {
+        for words in [
+            "don't merge #3",
+            "Don’t merge #3",
+            "do not merge #3",
+            "never merge #3",
+            "should I merge #3?",
+            "Not merge #3 yet",
+            "we won't merge #3",
+        ] {
+            assert!(!names_merge(words, "o/r", 3, None), "{words}");
+        }
+        assert!(!names_merge("not merging #3 yet", "o/r", 3, None));
+        assert!(names_merge("merge #3", "o/r", 3, None));
+        assert!(names_merge("Should I? Yes. Merge #3.", "o/r", 3, None));
+        assert!(names_merge(
+            "merge https://github.com/o/r/pull/3",
+            "o/r",
+            3,
+            None
+        ));
+        assert!(!names_merge(
+            "merge https://github.com/o/r/pull/3?",
+            "o/r",
+            3,
+            None
+        ));
+        assert!(!names_write("don't approve #3", "approve", "o/r", 3));
+        assert!(!says_plainly("don't allow it", "Allow"));
+        assert!(!says_plainly("allow it?", "Allow"));
+        assert!(says_plainly("allow it", "Allow"));
+    }
+
+    #[test]
+    fn taskconv_33_a_job_is_continued_or_changed_only_when_the_words_say_so() {
+        let job = Job {
+            title: Some("Fix login".into()),
+            repo: "o/r".into(),
+            ..Job::default()
+        };
+        assert!(names_job_to("continue Fix login", &CONTINUE, &job));
+        assert!(names_job_to("Fix login: try again.", &CONTINUE, &job));
+        assert!(!names_job_to("how is Fix login going?", &CONTINUE, &job));
+        assert!(!names_job_to("don't continue Fix login", &CONTINUE, &job));
+        assert!(!names_job_to("continue it", &CONTINUE, &job));
+        assert!(names_job_to("put Fix login in Plan", &CHANGE, &job));
+        assert!(!names_job_to("is Fix login in Plan?", &CHANGE, &job));
     }
 
     #[test]

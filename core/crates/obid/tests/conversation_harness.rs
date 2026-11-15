@@ -1562,6 +1562,40 @@ fn taskconv_27_signed_words_naming_another_number_merge_nothing() {
     assert!(!uses.contains(&("merge".into(), true)), "{uses:?}");
 }
 
+/// TASKCONV-27: after a read, words that say the merge negated or asked ("don't merge #3",
+/// "should I merge #3?") don't name it: nothing merges, and the answer says so; plain "merge #3"
+/// still merges (the owner's answer of 2026-11-15).
+#[test]
+fn taskconv_27_a_negated_or_asked_merge_is_not_done() {
+    let (_folder, obid, github, conversation) = obid_with_a_pull("harness-negated-merge");
+    let merge = json!({"repo": "o/r", "pr": 3});
+    for words in [
+        "don't merge #3",
+        "do not merge #3",
+        "never merge #3",
+        "should I merge #3?",
+        "not merging #3 yet",
+        "Not merge #3 yet",
+    ] {
+        let answered = after_a_read(
+            &obid,
+            &conversation,
+            words,
+            true,
+            "oby_merge",
+            merge.clone(),
+        );
+        assert!(
+            answered.contains("Not done: Merge o/r#3"),
+            "{words}: {answered}"
+        );
+        assert!(!github.join("merges").exists(), "{words}");
+    }
+    let answered = after_a_read(&obid, &conversation, "merge #3", true, "oby_merge", merge);
+    assert!(!answered.contains("Not done"), "{answered}");
+    assert!(github.join("merges").exists());
+}
+
 /// TASKCONV-29: after a read, "start it" in signed words starts the one offer waiting in the
 /// conversation, still marked untrusted, with no Confirm; with two waiting it starts neither, and
 /// words naming one's task start that one. Two that waited when the turn began stay two, though
@@ -1598,6 +1632,8 @@ fn taskconv_29_a_card_is_settled_when_named_or_the_only_one_waiting() {
     };
     let (greeting, conversation) = offer("Add a greeting", None);
     a_second_passes();
+    let answered = start(&conversation, "don't start it", &greeting);
+    assert!(answered.contains("Not done:"), "{answered}");
     let answered = start(&conversation, "start it", &greeting);
     assert!(!answered.contains("Not done"), "{answered}");
     let started = within(10, "the offer starts", || {
@@ -1734,18 +1770,25 @@ fn taskconv_33_a_job_named_after_a_read_continues_at_once() {
     let (id, conversation) = ended_job(&obid, None);
     let before = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
     let go = json!({"id": id});
-    let answered = after_a_read(
-        &obid,
-        &conversation,
+    // Neither the job alone nor the action alone names it.
+    for words in [
         "Go on",
-        true,
-        "oby_continue_job",
-        go.clone(),
-    );
-    assert!(
-        answered.contains("Not done: Continue Add a greeting"),
-        "{answered}"
-    );
+        "How is Add a greeting going?",
+        "Don't continue Add a greeting",
+    ] {
+        let answered = after_a_read(
+            &obid,
+            &conversation,
+            words,
+            true,
+            "oby_continue_job",
+            go.clone(),
+        );
+        assert!(
+            answered.contains("Not done: Continue Add a greeting"),
+            "{words}: {answered}"
+        );
+    }
     let now = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
     assert_eq!(
         (&now["status"], &now["round"]),
@@ -1767,6 +1810,23 @@ fn taskconv_33_a_job_named_after_a_read_continues_at_once() {
             .unwrap()
             .contains("lets the job do more"),
     );
+    let plan = json!({"id": id, "mode": "plan"});
+    let words = "Is Add a greeting in Plan?";
+    let answered = after_a_read(
+        &obid,
+        &conversation,
+        words,
+        true,
+        "oby_change_job",
+        plan.clone(),
+    );
+    assert!(
+        answered.contains("Not done: Put Add a greeting in Plan mode"),
+        "{answered}"
+    );
+    let words = "Put Add a greeting in Plan";
+    let answered = after_a_read(&obid, &conversation, words, true, "oby_change_job", plan);
+    assert!(answered.contains("is in Plan mode now"), "{answered}");
 }
 
 /// #1686: a call of Oby's tools reaches obid apart from the agent's output, and is judged only

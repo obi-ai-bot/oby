@@ -415,10 +415,15 @@ fn foreign(job: &crate::job::Job) -> Option<&'static str> {
 }
 
 /// What this turn's read does to acting on `job`, when it read something (TASKCONV-33): its
-/// owner's signed words act on the job they name, and skip one they don't; unsigned, a Confirm.
-fn on_read(session: &Session, job: &crate::job::Job) -> Option<Act> {
+/// owner's signed words act on the job they name and say plainly one of `verbs` to, and skip one
+/// they don't; unsigned, a Confirm.
+fn on_read(session: &Session, job: &crate::job::Job, verbs: &[&str]) -> Option<Act> {
     let read = session.web.load(Ordering::SeqCst);
-    read.then(|| act_on(session, read, |words| named::names_job(words, job)))
+    read.then(|| {
+        act_on(session, read, |words| {
+            named::names_job_to(words, verbs, job)
+        })
+    })
 }
 
 /// Why acting on `job` in this turn waits for the owner's Confirm, when it does: the turn read
@@ -755,7 +760,7 @@ fn continue_job(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<
         shown.push(format!("What Oby adds for its agent:\n{words}"));
     }
     let shown = crate::secrets::known().redact(&shown.join("\n\n"));
-    let read = on_read(session, &job);
+    let read = on_read(session, &job, &named::CONTINUE);
     let why =
         waits(session, &job, read).or(bypass.then_some("it runs in Bypass mode, never asking"));
     if let Some(why) = why {
@@ -967,7 +972,7 @@ fn change_job(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<St
     // A mode that asks less than the job's widens what it may do, Bypass most; the job's own mode
     // again (a job in Bypass "put in Bypass") widens nothing.
     let widens = mode.is_some_and(|m| m.reach() > was.reach());
-    let read = on_read(session, &job);
+    let read = on_read(session, &job, &named::CHANGE);
     let why = waits(session, &job, read)
         .or(widens.then_some("it lets the job do more without asking you"));
     if let Some(why) = why {
