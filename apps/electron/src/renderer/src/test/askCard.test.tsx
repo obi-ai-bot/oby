@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { AskMark, Turn } from '../obid';
 import type { Chat } from '../chats';
 import { parseEvent } from '../../../shared/obid-wire';
+import { liveBridge } from './liveBridge';
 
 // A question to another Oby is one card in the conversation (docs/contracts/ask-an-oby.md, ASK-19 to
 // ASK-24): the real ChatView on real turns, through chatOf. Clicks are the handlers React got; effects
@@ -50,7 +51,7 @@ const read = (html: string) => html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' '
 
 beforeAll(async () => {
   vi.stubGlobal('location', { search: '' });
-  vi.stubGlobal('window', { app: { obid: { call: async () => ({ status: 404, text: '{}' }), follow: () => () => {} } } });
+  vi.stubGlobal('window', { app: { obid: { call: async () => ({ status: 404, text: '{}' }), ...liveBridge().obid } } });
   vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {}, removeItem: () => {} });
   vi.stubGlobal('document', { createElement: () => ({}) });
   vi.stubGlobal('addEventListener', () => {});

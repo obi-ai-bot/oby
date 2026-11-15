@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { knownUpTo, withEntries, withLine } from './liveTask';
 import { LIMIT_REACHED, LIMIT_WORDS, MANAGE_USAGE, manageUsage } from './chatgpt';
-import { ApiError, api, isInboxKind, isJobStatus, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type TranscriptEntry, type Turn, type AskMark } from './obid';
+import { ApiError, api, isInboxKind, isJobStatus, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type TranscriptEntry, type Turn, type AskMark } from './obid';
 import { carriedOn, detailOf, pageOf, publishOf, stagesOf } from './jobPage';
 import { STEER, TELL, agentOf, type Ask, type AskKind, type Job as JobView, type Attachments, type Message, type Offer } from './mock';
 import { replaceChats, type Chat } from './chats';
@@ -12,16 +12,17 @@ import { accountRow, moveKeptChoices, replaceAccounts } from './SettingsView';
 import { BRANDS } from './brands';
 import { ANOTHER_ROUND, TRY_AGAIN } from '../../shared/words';
 import { has } from '../../shared/capabilities';
-import { LATEST_JOBS, answer, answerStatus, answerTurns, apply as applyToObid, synced, type ObidState } from '../../shared/live-state';
+import { answer, answerStatus, answerTurns, apply as applyToObid, type ObidState } from '../../shared/live-state';
+import { unwired, type LiveMessage, type LiveSnapshot } from '../../shared/live-wire';
 import { onObid } from './lean';
 import type { GitHubItem } from './mock';
 import type { GitHubWork } from './obid';
 import { lookAgain, takeRoomPost } from './room';
 import { lookAgainAtThreads, plainId, threadChanged } from './peers';
 
-// What obid has (docs/runner-api.md), kept live by its event stream, as apps/web/src/live.ts does
-// it: the stream first, then the status, jobs, inbox and conversations, with the events that came
-// meanwhile applied over them. Sangam's screens don't change: what obid has goes into the same
+// What obid has (docs/runner-api.md), as main's one follower of its events keeps it (main/live.ts):
+// main's snapshot when the page opens and after each sync, then each event main applied, applied
+// here too. Sangam's screens don't change: what obid has goes into the same
 // stores the mock filled (chats.ts, tasks.ts), as conversations and tasks. Without ?everything
 // (lean.ts) the app runs on this; with it, on the mock. What obid has (its jobs, conversations,
 // turns, inbox, status and GitHub's work) is ObidState's, kept by the shared rule (shared/live-state.ts)
@@ -72,10 +73,14 @@ const set = (patch: Partial<Live>) => {
 // An event, or obid's answer to a call as one, over the state as it is when it's taken: never a
 // state read before the call's await, which would undo what came meanwhile (a Confirm's answer
 // putting back the job its own `deleted` event took away)
-const take = (e: Event) => {
+// (main brings an event's item's job itself; an answer's the page asks it for)
+const takeEvent = (e: Event) => {
   if (e.kind === 'transcript' || e.kind === 'transcriptLine') return heard(e);
   if (e.kind === 'jobGone') sessions.delete(e.id);
   set(apply(state, e));
+};
+const take = (e: Event) => {
+  takeEvent(e);
   if (e.kind === 'inbox') lookUpJobOf(e.item);
 };
 // a job that waits on you, however old: past the latest 100, its ask would show nowhere (obid
@@ -88,8 +93,9 @@ const tasksLine = (s: Pick<Live, 'jobs'>, tasks?: string[]) => {
   return tasks.every((id) => ENDED.includes(s.jobs[id]?.status ?? '')) ? `Finished ${of}` : `Started ${of}`;
 };
 
+// (read and kept by main, which sends it on as its event)
 const lookUpJobOf = (i: Pick<InboxItem, 'job' | 'kind' | 'state'>) => {
-  if (i.job && i.kind !== 'start' && i.state !== 'done' && !state.jobs[i.job] && !state.gone.has(i.job)) void api.job(i.job).then((job) => take({ kind: 'job', job }), () => {});
+  if (i.job && i.kind !== 'start' && i.state !== 'done' && !state.jobs[i.job] && !state.gone.has(i.job)) void window.app?.obid.load({ job: i.job });
 };
 export const useLive = () => useSyncExternalStore((l) => { listeners.add(l); return () => { listeners.delete(l); }; }, () => state);
 // the limit decisions for a conversation's or a job's work (ChatView), as Home's stack shows them
@@ -641,151 +647,67 @@ function tick() {
   else { clearInterval(pacing); pacing = undefined; }
 }
 
-// --- following obid
+// --- following obid, through main (main/live.ts)
 
-let generation = 0;
-let retry = 0;
-let reconnecting: ReturnType<typeof setTimeout> | undefined;
-let unfollow: (() => void) | undefined;
-let limitTimer: ReturnType<typeof setTimeout> | undefined;
-let limitRequest = 0;
-
-// Options can change as accounts become available. Refresh after job/account events and
-// periodically; discard an older response if a newer refresh has already started.
-export async function refreshLimits() {
-  const request = ++limitRequest;
-  try {
-    const limits = await api.limitDecisions();
-    if (request === limitRequest) set({ limits });
-  } catch { /* older obid, or a temporary disconnect: keep the last known decisions */ }
-}
-function queueLimits() {
-  clearTimeout(limitTimer);
-  limitTimer = setTimeout(() => void refreshLimits(), 300);
-}
-setInterval(() => { if (state.connection === 'live') void refreshLimits(); }, 15_000);
-
+// An answer to a limit's card: the decisions again, read by main, whatever the answer
 export async function answerLimit(decision: LimitDecision, option: LimitDecision['options'][number]) {
   try {
     await api.answerLimit(decision, option);
-    await refreshLimits();
-  } catch (e) {
-    await refreshLimits();
-    throw e;
+  } finally {
+    await window.app?.obid.load({ limits: true });
   }
 }
 
+// Main's snapshot, then each message it sends (main.tsx)
 export function connect() {
-  const mine = ++generation;
-  clearTimeout(reconnecting);
-  set({ connection: state.connection === 'down' ? 'down' : 'connecting' });
-  const pending: Event[] = [];
-  let syncing = true;
-  const read = sseReader((name, data) => {
-    if (['limitDecision', 'job', 'accounts'].includes(name)) queueLimits();
-    const e = parseEvent(name, data);
-    if (!e || mine !== generation) return;
-    if (syncing) pending.push(e);
-    else {
-      take(e);
-      // what a first turn would use (TalkPill) changed once the one obid named can't run
-      if (e.kind === 'accounts') {
-        const next = e.accounts.find((a) => a.id === state.status?.talkNext);
-        if (next && (!next.signedIn || (next.fullUntil && Date.parse(next.fullUntil) > Date.now()))) lookAtUsage();
-      }
-    }
+  window.app!.obid.live(snapshot, message);
+}
+
+let usageLooked = false;
+// What main holds replaces what the page held of obid's; what's the screen's own stays. Once it's
+// live, what stays the page's own after obid's lists are read again
+function snapshot(s: LiveSnapshot) {
+  const obid = unwired(s.state);
+  // the folders of conversations deleted since (folders.ts). A list cut short isn't all of them:
+  // nothing's dropped then
+  if (s.connection === 'live' && s.complete) keepFoldersOf(new Set(obid.conversations.map((c) => c.id)));
+  set({
+    ...obid, limits: s.limits, connection: s.connection, problem: s.problem, why: s.why,
+    firstJobs: state.status || !obid.status ? state.firstJobs : new Set(Object.keys(obid.jobs)),
   });
-  let first = true;
-  unfollow?.();
-  unfollow = window.app!.obid.follow(
-    (chunk) => {
-      read(chunk);
-      // obid follows the stream before it answers anything else: fetch once its first text came
-      if (first) { first = false; void sync(mine, pending, () => { syncing = false; }); }
-    },
-    ({ status, text, why }) => {
-      if (status === 401) return down(mine, 'obid refused this Mac’s token (api-token).');
-      if (!status) return down(mine, text, why);
-      // obid's own words ("Oby’s engine didn’t start.", a failed start's answer to the held
-      // stream). `starting` is only GET /v1/status's 503 while obid opens (core's Door): taken as
-      // no problem yet, should the stream ever get it
-      let said: { error?: unknown; starting?: unknown } | null = null;
-      try { said = JSON.parse(text); } catch { /* not obid's JSON */ }
-      down(mine, typeof said?.error === 'string' ? said.error : `obid answered ${status}.`, said?.starting ? 'waiting' : undefined);
-    },
-  );
+  if (s.connection !== 'live') return;
+  // what the room missed while the stream was away
+  lookAgain();
+  lookAgainAtThreads();
+  // Settings › Agents' choices kept here before obid kept them: moved to it once (AGENTS-7)
+  if (obid.status) void moveKeptChoices(obid.status).then((moved) => { if (moved) lookAtUsage(); });
+  // where work can start: GitHub's list takes a moment, so the rest doesn't wait for it
+  void api.repos().then(({ repos }) => set({ repos }), () => {});
+  // the app opened: obid asks the tools for usage it hasn't read in 10 minutes, as a stream opening did
+  if (!usageLooked) { usageLooked = true; lookAtUsage(); }
 }
 
-function down(mine: number, problem: string, why?: Live['why']) {
-  if (mine !== generation) return;
-  generation++;
-  unfollow?.();
-  set({ connection: 'down', problem, why, working: {}, expected: {}, words: {}, pace: {} });
-  // every second while main starts obid before the first load (the splash, main.tsx), so the chat
-  // comes soon after it; otherwise backing off, as a failure won't clear that fast
-  reconnecting = setTimeout(connect, state.status || why !== 'waiting' ? Math.min(10_000, 1000 * 2 ** retry++) : 1000);
-}
-
-async function sync(mine: number, pending: Event[], onSynced: () => void) {
-  try {
-    const limitVersion = ++limitRequest;
-    const before: ObidState = state;
-    const [status, jobs, inbox, { list: conversations, complete }, github, limits] = await Promise.all([
-      api.status(), api.jobs(LATEST_JOBS), api.inbox().catch(() => []), allConversations(),
-      // GitHub's work: not read, the last read stands, with why (as obid keeps its last lists)
-      api.githubWork().catch((e) => (state.github ? { ...state.github, error: e instanceof Error ? e.message : String(e) } : null)),
-      api.limitDecisions().catch(() => state.limits),
-    ]);
-    if (mine !== generation) return;
-    retry = 0;
-    // obid's lists win, but over a copy an answer brought while they were read: the newer of the
-    // two (a restart can take a revision back: obid's then, not one from before the stream went)
-    let next: Live = {
-      ...state, ...synced(state, before, { jobs, conversations, complete, inbox, status, github }), connection: 'live', problem: null, why: undefined,
-      limits: limitVersion === limitRequest ? limits : state.limits,
-      firstJobs: state.status ? state.firstJobs : new Set(jobs.map((j) => j.id)),
-    };
-    for (const e of pending) {
-      if (e.kind === 'transcript' || e.kind === 'transcriptLine') heard(e);
-      else { if (e.kind === 'jobGone') sessions.delete(e.id); next = apply(next, e); }
-    }
-    pending.length = 0;
-    // the folders of conversations deleted since (folders.ts); with the ones that moved up a page
-    // while it was read (their events, just applied). A list cut short at allConversations' last
-    // page isn't all of them: nothing's dropped then
-    if (complete) keepFoldersOf(new Set(next.conversations.map((c) => c.id)));
-    set(next);
-    onSynced();
-    next.inbox.forEach(lookUpJobOf);
-    // what the room missed while the stream was away
-    lookAgain();
-    lookAgainAtThreads();
-    // Settings › Agents' choices kept here before obid kept them: moved to it once (AGENTS-7)
-    void moveKeptChoices(status).then((moved) => { if (moved && mine === generation) lookAtUsage(); });
-    // where work can start: GitHub's list takes a moment, so the rest doesn't wait for it
-    void api.repos().then(({ repos }) => { if (mine === generation) set({ repos }); }, () => {});
-    // the conversations opened before: what they missed while obid was away; and the latest
-    // words of the newest ones, for their lines in Conversations
-    const latest = [...conversations].sort((a, b) => b.lastActivity.localeCompare(a.lastActivity)).slice(0, 20).map((c) => c.id);
-    for (const c of new Set([...state.loaded, ...latest])) {
-      void api.conversation({ id: c, limit: state.loaded.has(c) ? 100 : 2 }).then((turns) => set(answerTurns(state, c, turns)), () => {});
-    }
-  } catch (e) {
-    down(mine, e instanceof Error ? e.message : String(e));
+function message(m: LiveMessage) {
+  if (m.kind === 'snapshot') return snapshot(m);
+  if (m.kind === 'turns') return set(answerTurns(state, m.conversation, m.turns));
+  if (m.kind === 'limits') return set({ limits: m.limits });
+  if (m.kind === 'connection') {
+    if (m.connection === 'down') return set({ connection: 'down', problem: m.problem, why: m.why, working: {}, expected: {}, words: {}, pace: {} });
+    return set({ connection: m.connection, problem: m.problem, why: m.why });
+  }
+  const e = m.event;
+  takeEvent(e);
+  // what a first turn would use (TalkPill) changed once the one obid named can't run
+  if (e.kind === 'accounts') {
+    const next = e.accounts.find((a) => a.id === state.status?.talkNext);
+    if (next && (!next.signedIn || (next.fullUntil && Date.parse(next.fullUntil) > Date.now()))) lookAtUsage();
   }
 }
 
-// every conversation, a page at a time (obid keeps 200, more when pinned)
-async function allConversations() {
-  const all = new Map<string, Conversation>();
-  let complete = false;
-  for (let after: string | undefined, page = 0; page < 10; page++) {
-    const list = await api.conversations({ after, limit: 200 });
-    for (const c of list) if (!all.has(c.id)) all.set(c.id, c);
-    if (list.length < 200) { complete = true; break; }
-    after = list.at(-1)!.cursor;
-  }
-  return { list: [...all.values()], complete };
+// A conversation's turns, read by main and sent here before it answers (main/live.ts): why not, when not
+async function loadTurns(c: string) {
+  const done = await window.app!.obid.load({ conversation: c });
+  if (done !== true) throw new Error(done ?? 'Oby’s engine is reached from the Mac app only.');
 }
 
 // what went wrong with something the app did, for a moment
@@ -821,18 +743,14 @@ export function useRepos(shown?: string) {
 const inRepo = (words: string, repo: string | undefined, shown?: string) =>
   !repo || repo === lastRepo(state, shown).here || words.toLowerCase().includes(repo.toLowerCase()) ? words : `In ${repo}: ${words}`;
 
-// A conversation opened: its turns fetched once (then the events keep them), and the jobs they
-// name that aren't among the latest
+// A conversation opened: its turns fetched once by main (then the events keep them), and the jobs
+// they name that aren't among the latest
 export async function openConversation(shown: string) {
   const c = realId(shown);
   if (state.loaded.has(c) || c.startsWith('new:')) return;
   set({ loaded: new Set([...state.loaded, c]) });
   try {
-    const turns = await api.conversation({ id: c, limit: 100 });
-    set(answerTurns(state, c, turns));
-    for (const j of new Set(turns.flatMap((t) => t.jobs))) {
-      if (!state.jobs[j] && !state.gone.has(j)) await api.job(j).then((job) => take({ kind: 'job', job }), () => {});
-    }
+    await loadTurns(c);
   } catch (e) {
     set({ loaded: new Set([...state.loaded].filter((x) => x !== c)) });
     say(e);
@@ -883,8 +801,7 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
       if (!c && where) {
         set({ loaded: new Set([...state.loaded, where]) });
         // (the turns as they are once these come: any that came meanwhile stay)
-        const turns = await api.conversation({ id: where, limit: 100 });
-        set(answerTurns(state, where, turns));
+        await loadTurns(where);
       }
       // Oby's turn is in a reply or a question (its event may land after this answer, and the card
       // would jump); a `none` has none, unless it's the same words again, answered in their turn.

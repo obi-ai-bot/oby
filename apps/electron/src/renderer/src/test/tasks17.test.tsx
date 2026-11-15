@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { liveBridge } from './liveBridge';
 
 // TASKS-17: Oby's escalation on the AskStack shows its whole text and, with a job, Tell it what
 // to do (docs/contracts/tasks.md). Render the card, not helpers.
@@ -9,7 +10,7 @@ vi.mock('react', async (original) => ({
 }));
 
 let answers: Record<string, unknown> = {};
-let feed: (text: string) => void = () => {};
+let bridge = liveBridge();
 const flush = async () => { for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0)); };
 const at = '2026-10-30T10:00:00Z';
 const LONG = Array.from({ length: 8 }, (_, i) => `Line ${i + 1}: Oby looked at the pull request and recommends a rebase onto main.`).join('\n');
@@ -37,18 +38,12 @@ async function stack(inbox: unknown[], jobs: unknown[] = [job('j1')]) {
       const a = answers[`${method} ${path}`];
       return a === undefined ? { status: 404, text: '{"error":"Not found."}' } : { status: 200, text: JSON.stringify(a) };
     },
-    follow: (onChunk: (text: string) => void) => { feed = onChunk; return () => {}; },
+    ...(bridge = liveBridge()).obid,
   } } });
-  answers = {
-    'GET /v1/status': { runner: { version: '0.2.4', host: 'mac' }, accounts: [], models: {}, maxRunning: 6, running: 0 },
-    'GET /v1/jobs?limit=100': jobs,
-    'GET /v1/inbox': inbox,
-    'GET /v1/conversations?limit=200': [{ id: 'c1', title: 'Talk', pinned: false, created: at, lastActivity: at, cursor: '' }],
-    'GET /v1/limit-decisions': [],
-  };
+  answers = { 'GET /v1/status': { runner: { version: '0.2.4', host: 'mac' }, accounts: [], models: {}, maxRunning: 6, running: 0 } };
   const live = await import('../live');
   live.connect();
-  feed('');
+  bridge.sync({ jobs, inbox, conversations: [{ id: 'c1', title: 'Talk', pinned: false, created: at, lastActivity: at, cursor: '' }] });
   await flush();
   expect(live.liveState().connection).toBe('live');
   const { default: AskStack } = await import('../AskStack');

@@ -24,11 +24,23 @@ const the = vi.hoisted(() => {
     Element, HTMLElement, HTMLSelectElement, KeyboardEvent, HTMLTextAreaElement: class extends HTMLElement {}, HTMLInputElement: class extends HTMLElement {},
     addEventListener: (name: string, f: (e: unknown) => void) => listeners.set(name, f),
   });
-  return { HTMLElement, HTMLSelectElement, KeyboardEvent, listeners, invoked: [] as unknown[][], exposed: {} as Record<string, { obid: { confirm: (id: string) => unknown; call: (method: string, path: string, body: unknown) => unknown } }> };
+  type Live = (onSnapshot: (s: { seq: number }) => void, onMessage: (m: { seq: number }) => void) => () => void;
+  return {
+    HTMLElement, HTMLSelectElement, KeyboardEvent, listeners, invoked: [] as unknown[][],
+    exposed: {} as Record<string, { obid: { confirm: (id: string) => unknown; call: (method: string, path: string, body: unknown) => unknown; live: Live } }>,
+    // what the page listens to from main, and main's answer to obid-snapshot
+    on: new Map<string, (e: unknown, m: unknown) => void>(),
+    snapshot: Promise.resolve(null as unknown),
+  };
 });
 vi.mock('electron', () => ({
   contextBridge: { exposeInMainWorld: (name: string, api: never) => { the.exposed[name] = api; } },
-  ipcRenderer: { sendSync: () => null, on: () => {}, off: () => {}, send: () => {}, invoke: async (...args: unknown[]) => { the.invoked.push(args); return { status: 200, text: '' }; } },
+  ipcRenderer: {
+    sendSync: () => null, send: () => {},
+    on: (channel: string, f: (e: unknown, m: unknown) => void) => { the.on.set(channel, f); },
+    off: (channel: string, f: unknown) => { if (the.on.get(channel) === f) the.on.delete(channel); },
+    invoke: async (...args: unknown[]) => { the.invoked.push(args); return args[0] === 'obid-snapshot' ? the.snapshot : { status: 200, text: '' }; },
+  },
 }));
 await import('../../../preload/index');
 
@@ -80,5 +92,34 @@ describe('the preload on a press of Confirm', () => {
       the.listeners.get('keydown')!(new the.KeyboardEvent(key, new the.HTMLElement('Confirm')));
       expect((await sent())[2]).toBe(true);
     }
+  });
+});
+
+describe('the preload following main (main/live.ts)', () => {
+  it('obid.live: main’s snapshot first, then each message past it once, in order; none at or below it', async () => {
+    let answer!: (s: unknown) => void;
+    the.snapshot = new Promise((done) => { answer = done; });
+    const got: string[] = [];
+    const stop = the.exposed.app.obid.live((s) => got.push(`snapshot ${s.seq}`), (m) => got.push(`message ${m.seq}`));
+    // listening before it asks
+    expect(the.invoked.at(-1)).toEqual(['obid-snapshot']);
+    const send = (seq: number, kind = 'event') => the.on.get('obid-live')?.({}, { seq, kind, event: { kind: 'jobGone', id: `j${seq}` } });
+    // sent while the snapshot was on its way: 4 and 5 are in it, 6 isn't
+    send(4);
+    send(5);
+    send(6);
+    expect(got).toEqual([]);
+    answer({ seq: 5, connection: 'live', problem: null, state: {}, limits: [], complete: true });
+    await new Promise((done) => setTimeout(done, 0));
+    expect(got).toEqual(['snapshot 5', 'message 6']);
+    // the same again, then what comes next: a snapshot after a sync goes to onSnapshot
+    send(6);
+    send(7, 'snapshot');
+    send(8);
+    expect(got).toEqual(['snapshot 5', 'message 6', 'snapshot 7', 'message 8']);
+    stop();
+    send(9);
+    expect(got).toHaveLength(4);
+    expect(the.on.has('obid-live')).toBe(false);
   });
 });

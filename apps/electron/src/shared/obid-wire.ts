@@ -1,5 +1,5 @@
 // Shared wire types and Server-Sent Events framing for obid's API (docs/runner-api.md),
-// used by both Electron's main process (main/notify.ts) and renderer (renderer/src/obid.ts).
+// used by both Electron's main process (main/live.ts, main/notify.ts) and renderer (renderer/src/obid.ts).
 
 // A value obid sends that this build doesn't know is typed as possible (docs/contracts/wire.md):
 // each reader shows it neutral, by these lists of the values it knows, written here once.
@@ -293,7 +293,7 @@ export type PlanAnswer = (
   | { kind: 'none'; jobs: Job[]; repeated?: boolean }
 ) & { conversation?: string };
 
-// "GET /v1/events": what a turn of the conversation is doing as it happens. step: an action of
+// obid's events: what a turn of the conversation is doing as it happens. step: an action of
 // the turn (`turn` is the user's turn); thinking: its brain at work; delta: a piece of its words
 // as they're written (obid only: the conversation harness)
 export type Step = { turn: string; conversation?: string; index: number; text: string; state: 'running' | 'done' | 'failed' | (string & {}) };

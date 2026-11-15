@@ -2,12 +2,14 @@ import { app, Notification, powerMonitor, shell, type BrowserWindow } from 'elec
 import { randomUUID } from 'node:crypto';
 import { closeSync, constants, openSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { obid, send, takesKeys, type Answer, type Trusted } from './obid';
+import { obid, takesKeys, type Answer, type Trusted } from './obid';
 import { answerLimit, notificationWords, writeOwn } from './device';
 import { ipc } from './ipc';
+import { limitDecisions, obidState, onLive } from './live';
 import { settings, writeSettings } from './settings';
 import { boolean, orUndefined, type Decoder } from '../shared/decode';
-import { parseEvent, plainId, sseReader, type Conversation, type Event, type InboxItem, type LimitDecision, type Turn } from '../shared/obid-wire';
+import type { LiveMessage } from '../shared/live-wire';
+import { plainId, type Event, type InboxItem, type Turn } from '../shared/obid-wire';
 
 // Oby's alerts on this Mac (docs/contracts/alerts.md). What waits on the owner is obid's one list,
 // `GET /v1/alerts` (ALERTS-1: core/crates/obid/src/push.rs, `wanted`), the same the phones are
@@ -17,9 +19,9 @@ import { parseEvent, plainId, sseReader, type Conversation, type Event, type Inb
 // Oby, which its card promises (`pingOf`), and Oby's answer in a conversation, FYI the gate keeps
 // in. One alert per thing (obid's `key`), replaced when what it needs (`what`) changes, gone once
 // it's settled anywhere; nothing that was there when Oby first opened with this.
-// Main follows obid's event stream for them by itself, from launch until Oby quits, with the
-// window closed too (the page's own stream ends with the window), and reads the list again after
-// each burst. A ping every 15 seconds is all it hears while nothing happens.
+// What obid has (its inbox, limit decisions and conversations' titles) is main's one follower's
+// (live.ts), from launch until Oby quits, with the window closed too: the alerts take its
+// messages in the order it applied them, and read the list again after each sync and each burst.
 
 // Where an alert's click opens the window: a job's page, else a conversation, else Home
 type Place = { job?: string; conversation?: string };
@@ -86,21 +88,8 @@ function again() {
   const wait = Math.min(60_000, 2000 * 2 ** failures++);
   retry = setTimeout(() => { retry = undefined; void refresh(); }, wait);
 }
-const inbox = new Map<string, InboxItem>();
-// The limit decisions, for a `limitDecision` alert's choices; obid's list is read again only when
-// they change, so the 15 seconds' poll reads nothing more while nothing happens
-const limits = new Map<string, LimitDecision>();
-let limitsRequest = 0;
-async function refreshLimits() {
-  const request = ++limitsRequest;
-  const active = json<LimitDecision[]>(await obid('GET', '/v1/limit-decisions'));
-  if (request !== limitsRequest || !active) return;
-  const before = JSON.stringify([...limits.values()]);
-  limits.clear();
-  for (const d of active) limits.set(d.id, d);
-  if (JSON.stringify(active) !== before) later();
-}
-const titles = new Map<string, string>();
+// a conversation's title, as main holds it
+const titleOf = (c: string) => obidState().conversations.find((x) => x.id === c)?.title;
 // Oby's last answer heard in each conversation, and the ones to alert at the next look
 const lastAnswer = new Map<string, Turn>();
 const answers = new Map<string, string>();
@@ -138,7 +127,7 @@ export const waiting = (want: Map<string, { needs: boolean }>) => {
 function buttonsOf(a: Served): Button[] {
   if (a.category === 'confirm') return [];
   if (a.category === 'limitDecision') {
-    const d = limits.get(a.item ?? a.key);
+    const d = limitDecisions().find((x) => x.id === (a.item ?? a.key));
     // the count and "all" on every action describe the scope in the collapsed banner
     return d ? d.options.map((o): Button => ({
       text: o.kind === 'move' ? `Move all to ${plain(o.name)} · ${plain(o.agent)}` : o.kind === 'resume' ? 'Resume all when available' : 'Keep all stopped',
@@ -154,7 +143,7 @@ function buttonsOf(a: Served): Button[] {
 // its card shows it (`questionOf`, answered on its card), and a click that opens its job or
 // conversation
 function drawn(a: Served): Alert {
-  const item = a.item ? inbox.get(a.item) : undefined;
+  const item = a.item ? obidState().inbox.find((i) => i.id === a.item) : undefined;
   const question = item ? questionOf(item) : null;
   return {
     needs: true, title: question?.title ?? plain(a.title), body: question?.body ?? plain(a.body),
@@ -289,14 +278,14 @@ function look() {
   // How many things wait on the owner, on the Dock's icon, whether or not macOS lets alerts through
   app.dock?.setBadge(waiting(new Map([...want.keys()].map((key) => [key, { needs: true }]))));
   for (const [c, p] of pings) {
-    if (notifies(true, focused())) post(`ask:${p.id}`, { needs: true, title: p.title, subtitle: titles.get(c), body: plain(p.body), place: { conversation: c }, thread: c, buttons: [] });
+    if (notifies(true, focused())) post(`ask:${p.id}`, { needs: true, title: p.title, subtitle: titleOf(c), body: plain(p.body), place: { conversation: c }, thread: c, buttons: [] });
   }
   pings.clear();
   // Oby's answer asks nothing (its asks come as inbox items, in obid's list): FYI, which the gate keeps in
   for (const [c, text] of answers) {
     const place = { conversation: c };
     if (!notifies(false, focused()) || (askedAt.get(c) ?? 0) > Date.now() - 60_000) continue;
-    post(`turn:${c}`, { needs: false, title: 'Oby answered', subtitle: titles.get(c), body: plain(text), place, thread: c, buttons: [] });
+    post(`turn:${c}`, { needs: false, title: 'Oby answered', subtitle: titleOf(c), body: plain(text), place, thread: c, buttons: [] });
   }
   answers.clear();
 }
@@ -339,78 +328,37 @@ function heard(t: Turn) {
 }
 
 function take(e: Event) {
-  if (e.kind === 'inbox' && e.item.state === 'done') inbox.delete(e.item.id);
-  else if (e.kind === 'inbox') inbox.set(e.item.id, e.item);
-  else if (e.kind === 'turn') return void (heard(e.turn), later(false));
-  else if (e.kind === 'conversation') return void titles.set(e.conversation.id, e.conversation.title);
-  else if (e.kind === 'conversationGone') {
-    titles.delete(e.id); lastAnswer.delete(e.id); answers.delete(e.id); askedAt.delete(e.id);
+  if (e.kind === 'turn') return void (heard(e.turn), later(false));
+  if (e.kind === 'conversationGone') {
+    lastAnswer.delete(e.id); answers.delete(e.id); askedAt.delete(e.id);
     return void withdraw(`turn:${e.id}`);
-  // a job changed: obid's list says what it needs now
-  } else if (e.kind !== 'job' && e.kind !== 'jobGone') return;
-  later();
+  }
+  // a job or an item changed: obid's list says what it needs now
+  if (e.kind === 'job' || e.kind === 'jobGone' || e.kind === 'inbox') later();
 }
 
-// --- following obid
+// --- main's state (live.ts)
 
-const FOLLOWED = new Set(['job', 'inbox', 'turn', 'conversation']);
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
 const json = <T>(a: Answer): T | null => { try { return a.status === 200 ? JSON.parse(a.text) as T : null; } catch { return null; } };
 
-// What obid has now: what waits on the owner, the inbox, the limit decisions and the
-// conversations' titles. A list obid couldn't serve (its vault unreadable) changes nothing, and is
-// read again (`again`).
-async function sync(): Promise<boolean> {
-  // whether obid takes keys, read again whenever obid's stream starts (pressed, device.ts)
-  void takesKeys();
-  const limitVersion = ++limitsRequest, servedVersion = ++servedRequest;
-  const [list, [items, cs, decisions]] = await Promise.all([readServed(), Promise.all(['/v1/inbox', '/v1/conversations?limit=200', '/v1/limit-decisions'].map((p) => obid('GET', p)))]);
-  const open = json<InboxItem[]>(items);
-  if (!open) return false;
-  if (servedVersion === servedRequest) {
+// What main sends the page, as it sends it: after each sync, what waits on the owner (a list obid
+// couldn't serve, its vault unreadable, changes nothing and is read again, `again`), then a look;
+// each event, in the order main applied it, the ones that came during the sync after it; and a
+// change of the limit decisions, whose `limitDecision` alerts' choices it is
+function heardLive(m: LiveMessage) {
+  if (m.kind === 'snapshot') void synced();
+  else if (m.kind === 'event') take(m.event);
+  else if (m.kind === 'limits') later();
+}
+async function synced() {
+  const request = ++servedRequest;
+  const list = await readServed();
+  if (request === servedRequest) {
     if (list) { failures = 0; served = list; } else again();
   }
-  inbox.clear();
-  for (const i of open) if (i.state !== 'done') inbox.set(i.id, i);
-  const active = json<LimitDecision[]>(decisions);
-  if (active && limitVersion === limitsRequest) { limits.clear(); for (const d of active) limits.set(d.id, d); }
-  titles.clear();
-  for (const c of json<Conversation[]>(cs) ?? []) titles.set(c.id, c.title);
-  return true;
-}
-
-// The stream, again whenever it ends (obid restarted, or not up yet): what came meanwhile is
-// compared with what was said, so nothing alerts twice. `alerts=1` tells obid it's the Mac app
-// following: it opens Oby hidden only while none is (ALERTS-3)
-async function follow() {
-  for (let retry = 0; ; await sleep(Math.min(30_000, 1000 * 2 ** retry++))) {
-    const control = new AbortController();
-    const r = await send('GET', '/v1/events?alerts=1', undefined, control.signal);
-    if (!(r instanceof Response)) continue;
-    if (!r.ok || !r.body) { await r.body?.cancel().catch(() => {}); continue; }
-    let synced = false;
-    const pending: Event[] = [];
-    const read = sseReader((name, data) => {
-      if (name === 'limitDecision' || name === 'job' || name === 'accounts') {
-        void refreshLimits();
-      }
-      const e = FOLLOWED.has(name) ? parseEvent(name, data) : null;
-      if (e && synced) take(e);
-      else if (e) pending.push(e);
-    });
-    const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
-    const reading = (async () => { for (;;) { const { value, done } = await reader.read(); if (done) return; read(value); } })();
-    // obid follows the stream before it answers: what it has now, with the events that came
-    // meanwhile over it
-    if (await sync()) {
-      synced = true;
-      pending.splice(0).forEach(take);
-      ready = true;
-      retry = 0;
-      look();
-    } else control.abort();
-    await reading.catch(() => {});
-  }
+  ready = true;
+  look();
 }
 
 // --- the window
@@ -468,6 +416,5 @@ export function notifying(trusted: Trusted, window: () => BrowserWindow | null, 
     return on;
   }, null);
   channels.on('open-notification-settings', [], () => { void shell.openExternal(SYSTEM); });
-  setInterval(() => { if (ready) void refreshLimits(); }, 15_000);
-  void follow();
+  onLive(heardLive);
 }
