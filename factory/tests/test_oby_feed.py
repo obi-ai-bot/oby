@@ -759,6 +759,45 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual(self.stand.sent, [])
         self.assertEqual((item["state"], item["note"]), ("failed", "attempt 3 of 3 ended: lost: obid no longer has its job"))
 
+    # FEEDLOOP-14: the last attempt's pull request is read before it ends, the one its rebuilt job published included
+    def test_feedloop_14_a_last_attempt_reads_the_pull_request_its_job_published(self):
+        for case, state, files, want in (("merged by hand", "MERGED", "x.py", "merged"),
+                                         ("on a security path", "OPEN", "AGENTS.md", "waiting")):
+            with self.subTest(case=case):
+                self.setUp()
+                self.no_ready()
+                self.task("running", attempt=3, pr=None)  # a rebuilt job: its pull request isn't saved yet
+                self.stand.jobs[JOB].update(status="failed", published=f"https://github.com/{REPO}/pull/{PR}")
+                self.stand.view = {"headRefOid": OLD, "state": state, "files": [{"path": files}]}
+                self.one_pass()
+                item = self.task_now()
+                self.assertEqual(self.stand.sent, [])
+                self.assertEqual((item["state"], item["pr"]), (want, PR))
+                if want == "waiting":
+                    self.assertEqual(item["note"], f"{self.feed.SECURITY_HOLD} (AGENTS.md): merge it yourself")
+
+    # FEEDLOOP-15: a lost job that obid has a follow-up of is followed there, never rebuilt
+    def test_feedloop_15_a_lost_job_with_a_follow_up_is_followed_not_rebuilt(self):
+        words = self.feed.AGAIN["queue"].format(head=OLD)
+        for case in ("reviewing", "retrying a follow-up", "retrying a build"):
+            with self.subTest(case=case):
+                self.setUp()
+                self.no_ready()
+                self.feed.free_gb = lambda: 100.0
+                if case == "reviewing":
+                    self.task("reviewing", job="job-gone", head=OLD, attempt=1)
+                else:
+                    kind = "message" if case.endswith("follow-up") else "build"
+                    self.task("retrying", job="job-gone", head=OLD, attempt=1, retry=kind, words=words, note=words)
+                follow_up = {"id": "job-9", "kind": "build", "status": "running", "followUpOf": "job-gone"}
+                self.stand.jobs["job-9"] = follow_up
+                self.feed.oby_jobs = lambda: [follow_up]
+                self.one_pass()
+                item = self.task_now()
+                self.assertEqual(self.stand.sent, [])
+                self.assertEqual((item["state"], item["job"], item["attempt"]), ("running", "job-9", 1))
+                self.assertNotIn("retry", item)
+
 
 class CheckModels(unittest.TestCase):
     def check(self, line, runs):

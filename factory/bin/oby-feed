@@ -347,14 +347,16 @@ def next_attempt(item, j, case=None):
 def retry(item, j, case, jobs):
     """Decides how the task carries on, as next_attempt() says: it ends now, or waits `retrying` for one_pass() to
     start its attempt through a new start's checks (--max, free disk, files, --dry-run). An attempt that ends it reads
-    its pull request first: one merged by hand ends it `merged`, one that touches a security path waits for the owner
+    its pull request first (the task's, or else the one its job published): one merged by hand ends it `merged`, one that touches a security path waits for the owner
     instead, and one that can't be read leaves the task as it was, judged again at the next pass. Returns True when it
     changed."""
     verdict, why = next_attempt(item, j, case)
-    if verdict == "end" and item.get("pr"):
-        pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", VIEW)
+    number = item.get("pr") or pr_number((j or {}).get("published"))  # a rebuilt job's own, not saved yet
+    if verdict == "end" and number:
+        pr = gh_json("pr", "view", str(number), "--repo", GH_REPO, "--json", VIEW)
         if not pr:
             return False
+        item["pr"] = number
         if pr["state"] == "MERGED":
             merged(item, jobs)
             return True
@@ -375,8 +377,8 @@ def retry(item, j, case, jobs):
 def recheck(item, jobs):
     """One look at a `retrying` task in the pass that may send its attempt, as things may have moved while it waited.
     Its pull request's current state and files are read first: merged or closed by hand ends it, and one that touches
-    a security path waits for the owner, its pull request kept, whichever attempt it waited for. Then a follow-up whose
-    job obid lost takes the new-build path, or ends at the attempt cap (next_attempt()). Returns (changed, clear):
+    a security path waits for the owner, its pull request kept, whichever attempt it waited for. A lost job that obid
+    has a follow-up of is followed there, nothing rebuilt. Then a follow-up whose job obid lost takes the new-build path, or ends at the attempt cap (next_attempt()). Returns (changed, clear):
     clear says its attempt may be sent in this pass; a pull request that can't be read sends nothing until one can."""
     lost = api("GET", f"/v1/jobs/{item['job']}")[0] == 404
     if item.get("pr"):
@@ -396,6 +398,8 @@ def recheck(item, jobs):
                 gone = " and obid no longer has its job" if lost else ""
                 item.update(state="waiting", note=f"{SECURITY_HOLD} ({hit[0]}){gone}: merge it yourself")
             return True, False
+    if lost and follow_up(item, jobs):  # a follow-up of the lost job carries it on: nothing is rebuilt
+        return True, False
     if item.get("retry") == "message" and lost:
         verdict, why = next_attempt(item, None, None)
         if verdict == "end":
@@ -480,6 +484,19 @@ def arm(item, head, tools):
     item.update(state="merging", head=head, approved=tools, armedAt=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
 
 
+def follow_up(item, jobs):
+    """Moves the task onto a build job obid started as a follow-up of its job, if there is one: the work carries on
+    there, whether its own job is still in obid or lost. Returns True when it moved."""
+    for other in jobs:
+        if other.get("followUpOf") == item["job"] and other.get("kind") == "build":
+            for k in ("retry", "words"):
+                item.pop(k, None)
+            item.update(job=other["id"], state="running")
+            say(f"{item['key']}: Oby started a follow-up ({other['id']})")
+            return True
+    return False
+
+
 def merged(item, jobs):
     gone = delete_jobs(family(item["job"], jobs))
     item.update(state="merged", note=f"merged; {gone} Oby jobs and their worktrees removed")
@@ -506,7 +523,7 @@ def follow(item, jobs):
         hit = touches_security([f["path"] for f in (pr or {}).get("files", [])])
         held = item["state"] == "waiting" and (item.get("note") or "").startswith(SECURITY_HOLD)
         if not hit and not held and item["state"] != "merging":
-            return retry(item, None, None, jobs)
+            return follow_up(item, jobs) or retry(item, None, None, jobs)  # a follow-up of the lost job carries it on
         if hit and item["state"] not in ("waiting", "merging"):
             item.update(state="waiting", note=f"{SECURITY_HOLD} ({hit[0]}) and obid no longer has its job: merge it yourself")
             return True
@@ -514,11 +531,8 @@ def follow(item, jobs):
     elif code != 200:
         return False
     # a follow-up carries the work on: follow the newest job of the chain
-    for other in jobs:
-        if other.get("followUpOf") == item["job"] and other.get("kind") == "build":
-            item.update(job=other["id"], state="running")
-            say(f"{key}: Oby started a follow-up ({other['id']})")
-            return True
+    if follow_up(item, jobs):
+        return True
     if item["state"] == "running":
         if j["status"] in ("queued", "running"):
             return False
