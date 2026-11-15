@@ -12,8 +12,8 @@ import { localSettings, loginDefault } from './settings';
 import { menu } from '../shared/menu';
 import { sphering } from './sphere';
 import { ipc } from './ipc';
-import { childGone, quit, quitting, rendererGone, started, windowLoaded } from './runMarker';
-import { flag, https } from '../shared/decode';
+import { childGone, quit, quitting, renderFailed, rendererGone, started, windowLoaded } from './runMarker';
+import { flag, https, string } from '../shared/decode';
 
 // One small window: Oby, what needs you, and a way to talk. The renderer gets
 // the cursor's position wherever it is on screen, so Oby can watch it outside
@@ -108,6 +108,8 @@ channels.handle('pick-folders', [folder], async (_e, from) => {
   if (!r.canceled) picked(r.filePaths);
   return r.canceled ? [] : r.filePaths;
 }, []);
+// a render error the page's root boundary caught: a crash line, and the window reloaded once (runMarker.ts)
+channels.on('render-error', [string, string, string], (_e, name, message, componentStack) => renderFailed({ name, message, componentStack }, win && !win.isDestroyed() ? win.webContents : null));
 
 function track(on: boolean) {
   if (tracker) clearInterval(tracker);
