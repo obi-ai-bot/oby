@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import { JOBS, MOCK_HELPERS, TURNS as LOG, convoTitle, followUpsOf } from './mock';
+import { JOBS, MOCK_HELPERS, MOCK_PROJECTS, TURNS as LOG, convoTitle, followUpsOf } from './mock';
 import { hasAttachments, type Attachments, type Message } from './view';
 import { addTask, conversationOfTask, relay } from './tasks';
 import { streamWords, wait } from './stream';
@@ -23,7 +23,8 @@ type Ask = { question: string; options: string[] };
 // local: the app's own, not obid's (Oby's first conversation, onboarding.ts): kept as obid's change
 // profile: the mock's only, the profile it's in (none: the default; profiles.ts)
 // helper: a helper's own conversation, its id (helpers.ts): under Agents, never among the chats
-export type Chat = { id: string; title: string; said: Message[]; typing?: boolean; step?: string; waiting?: Ask; needs?: boolean; pinned?: boolean; fromObys?: boolean; at?: number; about?: string; local?: boolean; talkAccount?: string | null; talkedOn?: string | null; movedOff?: string | null; profile?: string; helper?: string };
+// project: the project it's in, or null (projects.ts): its group in the side panel
+export type Chat = { id: string; title: string; said: Message[]; typing?: boolean; step?: string; waiting?: Ask; needs?: boolean; pinned?: boolean; fromObys?: boolean; at?: number; about?: string; local?: boolean; talkAccount?: string | null; talkedOn?: string | null; movedOff?: string | null; profile?: string; helper?: string; project?: string | null };
 
 // named after its first line, as Oby would title it
 const titled = (text: string) => {
@@ -43,7 +44,9 @@ const seeded: Chat[] = LOG.flatMap((t, i) => {
   said.push(...jobs.flatMap(followUpsOf));
   said.sort((a, b) => b.ago - a.ago);
   const first = JOBS.find((j) => j.id === jobs[0]);
-  return [{ id: `c-${t.id}`, title: first ? convoTitle(first) : titled(t.text), said }];
+  // in the project whose repositories hold its first task's (MOCK_PROJECTS), if one does
+  const project = MOCK_PROJECTS.find((p) => first && p.repos.includes(first.repo))?.id ?? null;
+  return [{ id: `c-${t.id}`, title: first ? convoTitle(first) : titled(t.text), said, project }];
 });
 // Older ones, over the last five weeks: questions Oby answered on the spot,
 // nothing started (most of what you ask it is like this; a task is the exception); a few in the
@@ -192,6 +195,8 @@ export function renameChat(id: string, title: string) {
 export const chooseTalk = (id: string, account: string) => (ofObid(id) ? live.chooseTalk(id, account) : update(id, () => ({ talkAccount: account })));
 export const useTalkSetting = () => { const s = live.useLive().status; const [kept] = useKeptSetting<string | null>(TALK_DEFAULT, null); return onObid ? { account: s?.talkAccount ?? null, next: s?.talkNext ?? null } : { account: kept, next: null }; };
 export const lookAtUsage = () => { if (onObid) live.lookAtUsage(); };
+// into a project or out of it (null), from the title bar's chip: obid's from its answer; the mock's, here
+export const moveChat = (id: string, project: string | null) => (ofObid(id) ? void live.moveToProject(id, project) : update(id, () => ({ project })));
 export const pinChat = (id: string, pinned: boolean) => (ofObid(id) ? void live.pinConversation(id, pinned) : update(id, () => ({ pinned })));
 export const deleteChat = (id: string) => {
   forget(draftBox.conversation(id));  // its unsent words go with it
@@ -206,7 +211,7 @@ export function askOby(text: string, att?: Attachments) {
   const t = text.trim();
   if (!t && !hasAttachments(att)) return;
   const id = `c${++made}`;
-  set([{ id, title: titled(t || att?.files?.[0]?.name || 'New conversation'), said: [{ who: 'you', text: t, ago: 0, ...att }] }, ...chats]);
+  set([{ id, title: titled(t || att?.files?.[0]?.name || 'New conversation'), said: [{ who: 'you', text: t, ago: 0, ...att }], project: att?.project ?? null }, ...chats]);
   answer(id);
   return id;
 }

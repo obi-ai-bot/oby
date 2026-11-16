@@ -1,6 +1,6 @@
 import { BRANDS, type Brand } from './brands';
 import { everything, onObid } from './lean';
-import type { Helper, Profile, RoomPost } from '../../shared/obid-wire';
+import type { Helper, Profile, Project, RoomPost } from '../../shared/obid-wire';
 import { agentOf, type Archived, type GitHubItem, type Job, type Message, type Peer, type PeerConvo, type Place, type Share, type Stage, type StageId, type StageState, type Turn } from './view';
 
 // Mock data until the app talks to Oby's engine. The shapes follow the Mac
@@ -586,6 +586,12 @@ export const MOCK_PROFILES: Profile[] = [
   { id: 'default', name: 'Default', color: '#3a5a8c', default: true, waiting: false },
   { id: 'deskree', name: 'Deskree', color: '#2f7a6a', default: false, waiting: true },
   { id: 'acme', name: 'Acme', color: '#8c5a3a', default: false, waiting: false },
+];
+// The projects on the mock (screens 01 to 03), in the order made: each holds the mock's conversations
+// whose first task is in one of its repositories (chats.ts)
+export const MOCK_PROJECTS: Project[] = [
+  { id: 'oby-app', name: 'Oby app', folders: ['/Users/me/Projects/oby'], repos: ['deskree-inc/oby', 'obi-ai-bot/obi'] },
+  { id: 'tetrix', name: 'Tetrix', folders: ['/Users/me/Projects/tetrix'], repos: ['deskree-inc/tetrix-ee', 'deskree-inc/tetrix-front-end', 'deskree-inc/api-gateway'] },
 ];
 // The agents on the mock (screen 08), in the default profile, oldest first: each a helper of obid's
 // shape with its own conversation (chats.ts, the mock's helper chats)

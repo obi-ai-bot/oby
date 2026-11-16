@@ -34,4 +34,4 @@ On every route: an unknown id is `404`; a body that doesn't parse (another key, 
 
 **Through the gateway and the phone relay** the four routes are off the gateway's list: `404` `That route isn't available through the gateway.` A conversation's `project` may only be `null` there: `{"project": "<id>"}` on `PATCH /v1/conversations/{id}`, and `project` on `POST /v1/plans`, are `422` (`Projects are chosen only on the Mac: from here you can take a conversation out of one.`).
 
-The refusal texts are placeholders until Sangam's screens (A00-71) say otherwise.
+The refusal texts are placeholders. Sangam's screens 01 to 03 (A00-71) draw no refusal, so the Electron app shows obid's words as they are.

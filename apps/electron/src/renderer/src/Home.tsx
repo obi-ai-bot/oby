@@ -24,9 +24,11 @@ import SphereSettings, { sphereSettingsLabel } from './SphereSettings';
 import KnowledgeView, { knowledgeLabel } from './KnowledgeView';
 import { outOfSphere, useSpheres } from './spheres';
 import { chatFirst, everything, onObid, welcome } from './lean';
-import { realId, shownId, useLive } from './live';
+import { realId, shownId, talkReady, useLive } from './live';
 import { WELCOME, setUp, startOnboarding } from './onboarding';
-import { askOby, chatOfTask, latestChat, renameChat, restingChat, tellAbout, useChats } from './chats';
+import { askOby, chatOfTask, latestChat, moveChat, renameChat, restingChat, tellAbout, useChats } from './chats';
+import { useProjectsOn } from './projects';
+import { ProjectChip } from './ProjectSheet';
 import { useConvos, useThreads, whoseOby } from './peers';
 import { AvatarStack, ObyFace } from './ObyFace';
 import { MOCK_SCHEDULE, convoTitle } from './mock';
@@ -154,6 +156,9 @@ export default function Home() {
   // an agent's conversation: its face and name in the bar, and no menu (it goes with its agent)
   const helpers = useHelpers();
   const shownAgent = shownTalk?.helper ? helpers.find((h) => h.id === shownTalk.helper) : undefined;
+  // its project's chip beside its title (screen 03), once obid has named it: never an agent's
+  const projectsOn = useProjectsOn();
+  const chipFor = shownTalk && projectsOn && !shownTalk.helper && !shownTalk.local && talkReady(shownTalk.id) ? shownTalk : undefined;
   const [barMenu, setBarMenu] = useState<DOMRect | null>(null);
   const [renaming, setRenaming] = useState(false);
   useEffect(() => { setBarMenu(null); setRenaming(false); }, [top?.key]);
@@ -437,6 +442,7 @@ export default function Home() {
                       {!onObid && MOCK_SCHEDULE[shownAgent.id] && <span className="bar-schedule">{MOCK_SCHEDULE[shownAgent.id]}</span>}
                     </> : <>
                       <Crumb>{label(l)}</Crumb>
+                      {chipFor && !leavingAll && <ProjectChip chosen={chipFor.project} onChoose={(p) => moveChat(chipFor.id, p)} className="bar-project" />}
                       {/* a task's or a conversation's menu, as on its side panel row */}
                       {(shown || shownTalk) && !leavingAll && (
                         <button
