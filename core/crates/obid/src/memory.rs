@@ -1798,9 +1798,8 @@ pub async fn find(State(shared): State<Arc<Shared>>) -> Result<Response, ApiErro
     };
     let home = shared.config.home.clone();
     let unavailable = |why: String| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, why);
-    let brain = crate::brain::calls::quick(&shared, "memory").ok_or_else(|| {
-        unavailable("Finding needs a Claude Code account: Oby asks it to read.".into())
-    })?;
+    let brain = crate::brain::calls::quick(&shared, "memory")
+        .map_err(|why| unavailable(format!("Finding needs an account: {why}.")))?;
     let mut said = own_words(&shared);
     let conversations: BTreeSet<Place> = said.iter().map(|s| s.place.clone()).collect();
     let repos = repos(&shared);

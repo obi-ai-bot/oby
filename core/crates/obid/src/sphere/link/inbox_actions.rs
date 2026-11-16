@@ -97,6 +97,7 @@ impl Link {
         let shown = items.into_iter().map(|i| {
             let mut shown = i.to_json();
             shown["triage"] = sorts.get(i).into();
+            shown["triageWhy"] = sorts.why(i).into();
             shown
         });
         Value::Array(shown.collect())
@@ -1065,7 +1066,7 @@ impl Link {
     /// An answer's item with its `triage`, as every item the API shows (crate::triage).
     pub(super) fn with_triage(&self, mut shown: Value) -> Value {
         if let Some(item) = shown["id"].as_str().and_then(|id| self.item(id)) {
-            shown["triage"] = self.triage_of(&item).into();
+            self.sort_into(&item, &mut shown);
         }
         shown
     }

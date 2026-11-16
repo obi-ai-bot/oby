@@ -630,6 +630,25 @@ impl Jobs {
         self.by_room(result, None)
     }
 
+    /// The accounts the brain's quick side calls think with (inbox sorting, memory, the recap;
+    /// B00-15): every tool's [`Jobs::thinking_accounts`] whose binary obid finds, the most room
+    /// first as a new job's routing ranks them (USAGE-11), never a ChatGPT login (its runs go
+    /// through a job's relay).
+    pub fn quick_accounts(&self) -> Vec<(Tool, crate::config::Account)> {
+        let accounts = Tool::ALL
+            .into_iter()
+            .filter(|tool| self.agent_bin(*tool).is_some())
+            .flat_map(|tool| {
+                self.thinking_accounts(tool)
+                    .into_iter()
+                    .map(move |a| (tool, a))
+            })
+            .filter(|(_, account)| crate::chatgpt::marker_of(account).is_none())
+            .collect();
+        let first = crate::settings::load(&self.config.home).default_account;
+        self.by_room(accounts, first.as_deref())
+    }
+
     /// `accounts` the most room first, for a move (LIMITS-15, 19) and a new job (USAGE-11): `first`
     /// (the owner's default) while it's there, then the fullest window each reports now (one reset
     /// since reads empty, USAGE-10) emptiest, those reporting none (an API key, a ChatGPT login,

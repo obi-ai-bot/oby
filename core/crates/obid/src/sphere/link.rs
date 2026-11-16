@@ -1614,8 +1614,17 @@ impl Link {
     /// An item as the API shows it: with its `triage`.
     pub fn shown(&self, item: &Item) -> Value {
         let mut shown = item.to_json();
-        shown["triage"] = self.triage_of(item).into();
+        self.sort_into(item, &mut shown);
         shown
+    }
+
+    /// Puts an item's `triage` now in `shown`, and its `triageWhy` (crate::triage, B00-15). Never
+    /// with this Link's state locked.
+    pub fn sort_into(&self, item: &Item, shown: &mut Value) {
+        let state = self.lock();
+        let sorts = self.sorts(&state.inbox);
+        shown["triage"] = sorts.get(item).into();
+        shown["triageWhy"] = sorts.why(item).into();
     }
 
     /// Open items waiting for the quick model (crate::triage), the longest-waiting first.

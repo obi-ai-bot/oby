@@ -189,6 +189,8 @@ pub struct Sorts<'a> {
     /// before one that only says something, then the first to come. The others are `ignore`.
     first: HashMap<(String, String), (bool, u64, &'a str)>,
     now: i64,
+    /// Why no model can sort now ([`Kept::waits_because`]): waiting items stay `pending`.
+    stuck: Option<String>,
 }
 
 impl<'a> Sorts<'a> {
@@ -203,7 +205,13 @@ impl<'a> Sorts<'a> {
                 }
             }
         }
-        Sorts { kept, first, now }
+        let stuck = kept.stuck();
+        Sorts {
+            kept,
+            first,
+            now,
+            stuck,
+        }
     }
 
     /// `item`'s sort, unless it waits for the model.
@@ -219,14 +227,21 @@ impl<'a> Sorts<'a> {
     }
 
     /// `item`'s sort as the API shows it: `pending` while it waits for the model, `needs_you` once
-    /// it has waited [`pending_seconds`].
+    /// it has waited [`pending_seconds`], unless no model can sort it now: then it stays `pending`
+    /// (B00-15), nothing guessed.
     pub fn get(&self, item: &Item) -> &'static str {
-        self.sorted(item)
-            .unwrap_or(if self.now - item.created < pending_seconds() {
+        self.sorted(item).unwrap_or(
+            if self.now - item.created < pending_seconds() || self.stuck.is_some() {
                 PENDING
             } else {
                 NEEDS_YOU
-            })
+            },
+        )
+    }
+
+    /// Why `item` stays `pending`, when no model can sort it now: its `triageWhy`.
+    pub fn why(&self, item: &Item) -> Option<&str> {
+        self.stuck.as_deref().filter(|_| self.waits(item))
     }
 
     /// Whether `item` is open and waits for the model.
@@ -251,6 +266,8 @@ struct File {
 pub struct Kept {
     path: PathBuf,
     file: Mutex<File>,
+    /// Why no model can sort now, while none can (in memory only).
+    stuck: Mutex<Option<String>>,
 }
 
 impl Kept {
@@ -273,7 +290,18 @@ impl Kept {
         Kept {
             path,
             file: Mutex::new(file),
+            stuck: Mutex::new(None),
         }
+    }
+
+    /// Why no model can sort now, or none once one can: whether that changed.
+    pub fn waits_because(&self, why: Option<String>) -> bool {
+        let mut stuck = self.stuck.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::replace(&mut *stuck, why) != *stuck
+    }
+
+    fn stuck(&self) -> Option<String> {
+        self.stuck.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn get(&self, id: &str) -> Option<&'static str> {
@@ -458,9 +486,10 @@ where
 }
 
 /// Sorts what no rule can, in the background, with the brain's quick model: soon after such an item
-/// comes, at most one call a minute and [`PER_HOUR`] an hour. With no Claude Code account nothing is
-/// scanned or sent, and the items are sorted once one is added. An item that waited
-/// [`pending_seconds`] unsorted needs the owner, and the apps hear it.
+/// comes, at most one call a minute and [`PER_HOUR`] an hour, on any tool's signed-in account with
+/// the most room (B00-15). With none, nothing is scanned or sent: the items stay `pending`, saying
+/// why, and are sorted once one is signed in. An item that waited [`pending_seconds`] unsorted
+/// needs the owner, and the apps hear it.
 pub fn spawn(shared: Arc<Shared>) {
     use tokio::sync::broadcast::error::RecvError;
     let mut bus = shared.events.subscribe();
@@ -480,11 +509,21 @@ pub fn spawn(shared: Arc<Shared>) {
                 .map(|i| i.id.clone())
                 .collect();
             told.extend(due.iter().cloned());
-            let brain = if waiting.is_empty() {
-                None
-            } else {
-                quick_model(&shared)
+            let brain = match waiting.is_empty() {
+                true => Ok(None),
+                false => crate::brain::calls::quick(&shared, "triage").map(Some),
             };
+            // With no account to sort them, they stay `pending` and say why; the apps hear it.
+            let why = brain
+                .as_ref()
+                .err()
+                .map(|why| format!("Oby can't sort it yet: {why}."));
+            if shared.link.triage.waits_because(why) {
+                shared
+                    .link
+                    .retell(&waiting.iter().map(|i| i.id.clone()).collect::<Vec<_>>());
+            }
+            let brain = brain.ok().flatten();
             // What was past its time when obid started, the apps read with the inbox.
             if first {
                 tracing::info!("triage: {} item(s) wait for the quick model", waiting.len());
@@ -556,11 +595,6 @@ pub fn spawn(shared: Arc<Shared>) {
             }
         }
     });
-}
-
-/// The brain's quick model, as the listener and the watcher ask it: none with no Claude Code account.
-fn quick_model(shared: &Shared) -> Option<crate::brain::calls::Quick> {
-    crate::brain::calls::quick(shared, "triage")
 }
 
 #[cfg(test)]
@@ -855,6 +889,29 @@ mod tests {
         );
         m2.id = "ev-m2".into();
         assert_eq!(sorted(&kept, &[&m1, &m2], 1000), [NEEDS_YOU, NEEDS_YOU]);
+    }
+
+    /// B00-15: while no account can sort, an item stays `pending` past its time and says why;
+    /// nothing is guessed. Once one can, it needs the owner until the model sorts it.
+    #[test]
+    fn with_no_account_an_item_stays_pending_and_says_why() {
+        let kept = Kept::open(&scratch("stuck"));
+        let mut assigned = work("assigned", 7, "sangam", "Fix the login");
+        assigned.created = 1000;
+        let late = 1000 + pending_seconds();
+        assert!(kept.waits_because(Some("none signed in".into())));
+        assert!(!kept.waits_because(Some("none signed in".into())));
+        let sorts = Sorts::of(&kept, [&assigned].into_iter(), late);
+        assert_eq!(
+            (sorts.get(&assigned), sorts.why(&assigned)),
+            (PENDING, Some("none signed in"))
+        );
+        assert!(kept.waits_because(None));
+        let sorts = Sorts::of(&kept, [&assigned].into_iter(), late);
+        assert_eq!(
+            (sorts.get(&assigned), sorts.why(&assigned)),
+            (NEEDS_YOU, None)
+        );
     }
 
     /// An item only the model can sort is `pending` until it has, at most `pending_seconds`; then

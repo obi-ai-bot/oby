@@ -371,8 +371,8 @@ fn told(items: Vec<Item>, triage: impl Fn(&Item) -> &'static str) -> Vec<Item> {
 }
 
 /// The recap for an owner back at `now` after being seen last at `since` (none: they weren't
-/// away), written with the first Claude account's quick model and sent as a `recap` event.
-/// Without Claude there's no recap: a background call never goes to Codex (#537).
+/// away), written with the quick model ([`quick`]) and sent as a `recap` event. With no account to
+/// think with there's no recap.
 pub async fn back(shared: &Shared, since: Option<i64>, now: i64) -> Option<String> {
     let since = since?;
     let facts = facts(
@@ -395,8 +395,8 @@ pub async fn back(shared: &Shared, since: Option<i64>, now: i64) -> Option<Strin
     Some(recap)
 }
 
-/// What the first Claude account's quick model writes of `facts` with `system`, or none: no Claude
-/// (a background call never goes to Codex, #537), or [`write`] wrote none.
+/// What the quick model writes of `facts` with `system`, on any tool's signed-in account with the
+/// most room (B00-15), or none: no such account, or [`write`] wrote none.
 async fn quick(
     shared: &Shared,
     system: &str,
@@ -404,7 +404,7 @@ async fn quick(
     since: i64,
     now: i64,
 ) -> Option<String> {
-    let brain = super::calls::quick(shared, "recap")?;
+    let brain = super::calls::quick(shared, "recap").ok()?;
     write(system, facts, since, now, |system, user| async move {
         brain.background(&system, &user, None, SCHEMA).await
     })

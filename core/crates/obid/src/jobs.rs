@@ -7455,23 +7455,21 @@ impl Jobs {
 
     /// The brain's command line when it may read its quoted file (#65): boxed like a job's agent,
     /// so all it sees is `dir` (its working directory, `work.md` in it) and its account's login.
-    /// `flags` follow Claude Code's binary; Codex runs `app-server`. The brain thinks with the
-    /// tool's first [`signed_in`] account, else its first. Throws why it can't run.
+    /// `flags` follow Claude Code's binary; Codex runs `app-server`. It thinks with `account`.
+    /// Throws why it can't run.
     pub fn brain_launch(
         &self,
         tool: Tool,
+        account: &crate::config::Account,
         dir: &Path,
         flags: Vec<OsString>,
     ) -> Result<Launch, String> {
-        let account = self
-            .brain_account(tool)
-            .ok_or_else(|| format!("{} has no account.", tool.name()))?;
         let temp = dir.join("home");
         store::make_private_dir(&temp)
             .map_err(|e| format!("obid can't make the brain's folder: {e}"))?;
         self.boxed_launch(Boxed {
             tool,
-            account: &account,
+            account,
             dir,
             temp: &temp,
             login: &dir.join("login"),
