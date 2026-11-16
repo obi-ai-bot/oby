@@ -52,6 +52,8 @@ export type EntryDetail = {
 export type Outgoing = { action: string; repo?: string; id?: string; branch?: string; date: string };
 
 // "Job": the keys this app reads
+// Oby's review of a job's published work, as obid sends it (job.rs, Review::to_json)
+export type JobReview = { verdict: 'approved' | 'changesRequested' | (string & {}); job: string; agent: string; account: string; round: number; date: string; commit: string };
 export type Job = {
   // the agent's session to pick up, and who it moved to: with neither it never started (obid only)
   session?: string | null;
@@ -83,6 +85,11 @@ export type Job = {
   nothingDone?: boolean;
   rounds: number;
   round: number;
+  // obid only: how big its change is (docs/api/jobs.md, `diff`), and Oby's reviews of its published
+  // work, each by its reviewer's tool (`agent`): the latest, and the approving ones kept before it
+  diff?: { files: number; added: number; removed: number } | null;
+  review?: JobReview | null;
+  approvals?: JobReview[];
   check: string | null;
   model: string | null;
   dismissed: string | null;
@@ -261,6 +268,10 @@ export type Status = {
 // GitHub's (newest push first)
 // check: the one its jobs run (none: null); noCheck: the owner said No check (#1062)
 export type Repo = { repo: string; defaultBranch: string; listed: boolean; check?: string | null; noCheck?: boolean };
+
+// obid only: "GET /v1/profiles" (docs/api/profiles.md), a local profile on this Mac: its name and
+// colour, the one obid made first (default), and whether something in it waits on the owner
+export type Profile = { id: string; name: string; color: string; default: boolean; waiting: boolean };
 
 // A rule Always allow saved (or a deny), for a repository or `conversations` ("GET /v1/permissions/rules")
 export type SavedRule = { id: string; rule: string; repo: string; decision: 'allow' | 'deny' | (string & {}) };

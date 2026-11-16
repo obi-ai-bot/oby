@@ -2231,6 +2231,30 @@ async fn a_phones_writes_count_toward_its_32_after_its_session_ends() {
     }
 }
 
+/// VAULT-3: the vault's routes are loopback only: through the gateway, even with a paired device
+/// and the owner's signed words, each is `404` and nothing is saved.
+#[test]
+fn vault_3_the_gateway_never_reaches_the_vault() {
+    let folder = Folder::new("gateway-vault");
+    let obid = started(&folder);
+    let token = paired(&obid);
+    let body = json!({"value": "k9/Gateway+v=4?q&r é"});
+    for (method, body) in [("GET", None), ("PUT", Some(&body)), ("DELETE", None)] {
+        let target = if method == "GET" {
+            "/v1/obid/vault"
+        } else {
+            "/v1/obid/vault/x"
+        };
+        let header = words_header(&obid, method, target, body);
+        let extra = format!("X-Oby-Words: {header}\r\n");
+        let answer = through_with(&obid, Some(&token), method, target, body, &extra);
+        assert_eq!(answer.status, 404, "{method} {target}: {}", answer.text);
+    }
+    let listed = call(&obid, "GET", "/v1/obid/vault", None);
+    assert_eq!(listed.status, 200, "{}", listed.text);
+    assert_eq!(listed.body, json!({"names": []}));
+}
+
 /// PAIRING-8: a whole write the phone sent runs once though its session ends before the answer,
 /// and nothing of its answer reaches the phone's new session; its next read shows what came of it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

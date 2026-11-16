@@ -12,6 +12,7 @@ pub mod lookalike;
 pub mod membership;
 pub mod pins;
 pub mod refusal;
+pub mod review_start;
 pub mod room;
 pub mod routes;
 pub mod sharing;

@@ -1331,5 +1331,72 @@ class GateRemote(unittest.TestCase):
         self.assertEqual(self.lines("mac-runs"), ["all"])
 
 
+    # ---- FEEDGATE-1, 2: gate --checkout, the job-free entry factory/bin/oby-feed imports -------------------------------
+
+    # A stand-in factory/checks.sh that runs every tests/*.sh of the commit and fails when one does.
+    RUNS_TESTS = """#!/usr/bin/env bash
+code=0
+for test in tests/*.sh; do
+    [[ -e "$test" ]] || continue
+    if bash "$test"; then echo "$test passed"; else echo "$test failed"; code=1; fi
+done
+exit $code
+"""
+
+    def checkout(self, commit, out, **env):
+        return self.run_bin("gate", "--checkout", str(self.worktree), commit, "factory/x", str(out), **env)
+
+    def test_feedgate_1_a_failing_test_is_red_and_a_clean_commit_green(self):
+        (self.repo / "factory" / "checks.sh").write_text(self.RUNS_TESTS)
+        shutil.rmtree(self.repo / "factory" / "jobs")
+        clean = self.change("tests/passes.sh", push=True, text="exit 0\n")
+        code, out, err = self.checkout(clean, self.dir / "out-clean", remote=False)
+        self.assertEqual(code, 0, out + err)
+        md = (self.dir / "out-clean" / "checks.md").read_text()
+        self.assertTrue(md.startswith(f"GATE: PASS\nCOMMIT: {clean}\n"), md)
+        self.assertIn("tests/passes.sh passed", (self.dir / "out-clean" / "checks.log").read_text())
+        self.assertRegex(out, rf"^GATE: PASS \(factory/x at {clean[:7]}, checks.sh exit 0 in \d+s\)\n$")
+        red = self.change("tests/fails.sh", push=True, text="echo 'assertion failed: 1 == 2'; exit 1\n")
+        code, out, err = self.checkout(red, self.dir / "out-red", remote=False)
+        self.assertEqual(code, 1, out + err)
+        md = (self.dir / "out-red" / "checks.md").read_text()
+        self.assertTrue(md.startswith(f"GATE: FAIL\nCOMMIT: {red}\n"), md)
+        self.assertIn("tests/fails.sh failed", md)
+        self.assertIn("assertion failed: 1 == 2", (self.dir / "out-red" / "checks.log").read_text())
+        # No job folder was read or written.
+        self.assertFalse((self.repo / "factory" / "jobs").exists())
+        # A worktree that isn't at the commit is no gate at all.
+        code, out, err = self.checkout(clean, self.dir / "out-moved", remote=False)
+        self.assertEqual(code, 2, out + err)
+        self.assertIn(f"is at {red}, not {clean}", err)
+        self.assertFalse((self.dir / "out-moved").exists())
+
+    def test_feedgate_2_the_same_parts_as_the_claude_code_gate(self):
+        commit, (code, out, err) = self.sharded()
+        self.assertEqual(code, 0, out + err)
+        claude = self.checks()
+        self.forget()
+        code, out, err = self.checkout(commit, self.dir / "out", FACTORY_MAC_WORKER=PRO, FACTORY_GATE_SHARDS=SHARDS)
+        self.assertEqual(code, 0, out + err)
+        feed = (self.dir / "out" / "checks.md").read_text()
+
+        def head_and_where(text):
+            header = text.split("\n\n", 1)[0].splitlines()
+            where = text.split("## Where it ran\n", 1)[1].split("\n\n", 1)[0].splitlines()
+            return header, [re.sub(r" in \d+s$", "", line) for line in where]
+
+        self.assertEqual(head_and_where(feed), head_and_where(claude))
+        header, where = head_and_where(feed)
+        self.assertEqual([header[0], header[1], header[3]], ["GATE: PASS", f"COMMIT: {commit}",
+                                                             "HOST: oby-gate, oby-mac-pro, mac"])
+        self.assertRegex(header[2], r"^CHECKS: [0-9a-f]{64}$")
+        self.assertEqual(where, ["- oby-gate: rust shard 1/3, scan in slot 1: passed with exit 0",
+                                 "- oby-gate: rust shard 2/3 in slot 2: passed with exit 0",
+                                 "- oby-gate: rust shard 3/3 in slot 3: passed with exit 0",
+                                 f"- oby-mac-pro: rust shard 1/2 {self.SANDBOX_ONLY} in slot 1: passed with exit 0",
+                                 f"- mac: rust shard 2/2 {self.SANDBOX_ONLY}: passed with exit 0"])
+        self.assertTrue(out.startswith(f"GATE: PASS (factory/x at {commit[:7]}, on oby-gate, oby-mac-pro, mac, "), out)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1739,8 +1739,9 @@ impl Link {
             let accept = chosen == inbox::ACCEPT || chosen == inbox::ACCEPT_REMEMBER;
             let remember = chosen == inbox::ACCEPT_REMEMBER || chosen == inbox::DECLINE_REMEMBER;
             exchange.decided_by = Some("inbox".into());
+            let mut declined = None;
             if accept {
-                self.accept_locked(&state, &mut exchange, None);
+                declined = self.accept_locked(&state, &mut exchange, None);
             } else {
                 exchange.state = "declined".into();
                 let decline = self.reply_locked(
@@ -1779,6 +1780,10 @@ impl Link {
             let mut item = item;
             item.done = Some(now);
             item.answer = answer;
+            // An accept this Oby couldn't start was declined: the item says why (TEAMREVIEW-3).
+            if let Some(note) = declined {
+                item.text = format!("{} {note}", item.text);
+            }
             state.inbox.insert(item.id.clone(), item.clone());
             state.exchanges.insert(cid, exchange.clone());
             (item, exchange, decisions)

@@ -391,6 +391,40 @@ fn recovery_1_a_passing_error_continues_the_same_session() {
     assert!(told[1].contains("stopped without finishing"), "{told:?}");
 }
 
+/// TASKS-25: a passing error in a job no app signed goes on by itself, in its session, and asks the
+/// owner nothing: no inbox item, open or in an event.
+#[test]
+fn tasks_25_an_unsigned_jobs_passing_error_goes_on_with_no_inbox_item() {
+    let (_folder, obid) = obid("tasks-25-goes-on");
+    let events = follow_events(&obid);
+    let id = post_job(&obid, "TRANSIENT KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(prompts(&job).len(), 2, "{job}");
+    no_inbox_item_for(&events, &id, "done", || {
+        call(&obid, "GET", "/v1/inbox", None).body
+    });
+}
+
+/// TASKS-25: a failure a retry can't fix (a login) ends a job no app signed with its reason, and
+/// asks the owner nothing: no inbox item, open or in an event.
+#[test]
+fn tasks_25_an_unsigned_jobs_failure_a_retry_cant_fix_ends_with_its_reason_and_no_inbox_item() {
+    let (_folder, obid) = obid("tasks-25-ends");
+    let events = follow_events(&obid);
+    let id = post_job(&obid, "DIE LOGIN KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert!(
+        job["reason"].as_str().unwrap().contains("Not logged in"),
+        "{job}"
+    );
+    assert_eq!(prompts(&job).len(), 1, "{job}");
+    no_inbox_item_for(&events, &id, "interrupted", || {
+        call(&obid, "GET", "/v1/inbox", None).body
+    });
+}
+
 /// RECOVERY-1: tries count together: 3 in a row, then today's end with the real reason. The
 /// owner's own words start them again, never words that aren't theirs.
 #[test]

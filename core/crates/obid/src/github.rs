@@ -96,18 +96,47 @@ pub fn is_remote(remote: &str) -> bool {
     .any(|prefix| remote.starts_with(prefix))
 }
 
-/// The number of a pull request URL in `repo`: exactly `https://github.com/<repo>/pull/<n>`, or
-/// none. Only a pull request of the job's own repository is ever read or followed.
-pub fn pull_request_number(url: &str, repo: &str) -> Option<u64> {
+/// Whether a pull request of `pr_repo` is the repository's: under the name it's configured with
+/// or the one GitHub gave it (`canonical`), ignoring ASCII case, never another owner's or name's.
+pub fn same_repository(pr_repo: &[u8], configured: &[u8], canonical: Option<&[u8]>) -> bool {
+    pr_repo.eq_ignore_ascii_case(configured)
+        || canonical.is_some_and(|canonical| pr_repo.eq_ignore_ascii_case(canonical))
+}
+
+/// The number of a pull request URL in `repo`: exactly `https://github.com/<owner>/<name>/pull/<n>`,
+/// under `repo` or the name GitHub gives it now (`on_github`, PUBLISHING-38), or none. Only a pull
+/// request of the job's own repository is ever read or followed.
+pub fn pull_request_number(url: &str, repo: &str, on_github: Option<&str>) -> Option<u64> {
     if !is_repo(repo) {
         return None;
     }
-    let rest = url.strip_prefix("https://github.com/")?;
-    let number = rest.strip_prefix(repo)?.strip_prefix("/pull/")?;
+    let (pr_repo, number) = url
+        .strip_prefix("https://github.com/")?
+        .rsplit_once("/pull/")?;
+    let on_github = on_github.filter(|name| is_repo(name)).map(str::as_bytes);
+    if !is_repo(pr_repo) || !same_repository(pr_repo.as_bytes(), repo.as_bytes(), on_github) {
+        return None;
+    }
     if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) || number.len() > 10 {
         return None;
     }
     number.parse::<u64>().ok().filter(|n| *n > 0)
+}
+
+/// The name GitHub gives `repo` now (`gh repo view`), when it moved or was renamed since it was
+/// configured; none when gh can't say (PUBLISHING-38).
+pub async fn name_on_github(gh: &Path, repo: &str) -> Option<String> {
+    let said = run(gh, &["repo", "view", repo, "--json", "nameWithOwner"]).await;
+    said.ok().as_deref().and_then(name_with_owner)
+}
+
+/// `nameWithOwner` from `gh repo view --json`, only when it's a repository's name ([`is_repo`]).
+fn name_with_owner(said: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(said).ok()?;
+    let name = value["nameWithOwner"]
+        .as_str()
+        .filter(|name| is_repo(name))?;
+    Some(name.to_owned())
 }
 
 /// Runs `gh` with `args`: its stdout, trimmed, or the last line it said on stderr.
@@ -327,7 +356,13 @@ pub enum Sent {
 /// branch of the same name, which `gh pr list --head` would match too), into `base`, and with one of `heads` as
 /// its head: the commit obid just pushed, or the one it pushed before (GitHub may not have moved
 /// it yet). `gh pr list --json` answers a list of them.
-pub fn own_pull_request(listed: &str, repo: &str, base: &str, heads: &[&str]) -> Option<String> {
+pub fn own_pull_request(
+    listed: &str,
+    repo: &str,
+    on_github: Option<&str>,
+    base: &str,
+    heads: &[&str],
+) -> Option<String> {
     if listed.trim().is_empty() {
         return None;
     }
@@ -341,17 +376,20 @@ pub fn own_pull_request(listed: &str, repo: &str, base: &str, heads: &[&str]) ->
                     .is_some_and(|h| git_sha(h) && heads.contains(&h))
         })
         .filter_map(|pr| pr["url"].as_str())
-        .find(|url| pull_request_number(url, repo).is_some())
+        .find(|url| pull_request_number(url, repo, on_github).is_some())
         .map(str::to_owned)
 }
 
 /// Opens the pull request for `branch` into `base`, ready for review (never a draft), or finds the
 /// one obid already opened for it (`own_pull_request`: same repository, one of `heads` its head) and
 /// brings its description up to date from `body_file`. Answers its URL, which must be a pull
-/// request of `repo`, and what went out; or what failed, worded to follow "Pushed, but ".
+/// request of `repo` (under it or `on_github`), and what went out; or what failed, worded to
+/// follow "Pushed, but ".
+#[allow(clippy::too_many_arguments)]
 pub async fn open_pull_request(
     gh: &Path,
     repo: &str,
+    on_github: Option<&str>,
     base: &str,
     branch: &str,
     heads: &[&str],
@@ -378,7 +416,7 @@ pub async fn open_pull_request(
     )
     .await
     .map_err(|e| format!("couldn't look for the open pull request: {e}"))?;
-    if let Some(open) = own_pull_request(&listed, repo, base, heads) {
+    if let Some(open) = own_pull_request(&listed, repo, on_github, base, heads) {
         // The commits are on it already; a description that didn't update isn't worth failing for.
         let edited = run(gh, &["pr", "edit", &open, "-R", repo, "--body-file", &body])
             .await
@@ -405,7 +443,7 @@ pub async fn open_pull_request(
     .await
     .map_err(|e| format!("couldn't open the pull request: {e}"))?;
     let url = created.lines().last().unwrap_or("").trim().to_owned();
-    if pull_request_number(&url, repo).is_none() {
+    if pull_request_number(&url, repo, on_github).is_none() {
         return Err("gh opened no pull request of this repository.".into());
     }
     Ok((url, Sent::Opened))
@@ -872,32 +910,112 @@ fn git_sha(text: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// URLs no job's pull request has, under `deskree-inc/oby` or `deskree-inc/oby-renamed`.
+    const NOT_ITS_OWN: [&str; 10] = [
+        "https://github.com/deskree-inc/oby/pull/0",
+        "https://github.com/deskree-inc/oby/pull/",
+        "https://github.com/deskree-inc/oby/pull/42/files",
+        "https://github.com/deskree-inc/oby/pull/42?x=1",
+        "https://github.com/deskree-inc/oby2/pull/42",
+        "https://github.com/other/oby/pull/42",
+        "http://github.com/deskree-inc/oby/pull/42",
+        "https://github.com.evil/deskree-inc/oby/pull/42",
+        "https://user@github.com/deskree-inc/oby/pull/42",
+        "https://github.com/deskree-inc/oby/issues/42",
+    ];
+
     /// The gh Oby.app carries is found only beside an obid inside an app's Contents.
     #[test]
     fn only_pull_requests_of_the_jobs_repository() {
         let repo = "deskree-inc/oby";
         assert_eq!(
-            pull_request_number("https://github.com/deskree-inc/oby/pull/42", repo),
+            pull_request_number("https://github.com/deskree-inc/oby/pull/42", repo, None),
             Some(42)
         );
-        for url in [
-            "https://github.com/deskree-inc/oby/pull/0",
-            "https://github.com/deskree-inc/oby/pull/",
-            "https://github.com/deskree-inc/oby/pull/42/files",
-            "https://github.com/deskree-inc/oby/pull/42?x=1",
-            "https://github.com/deskree-inc/oby2/pull/42",
-            "https://github.com/other/oby/pull/42",
-            "http://github.com/deskree-inc/oby/pull/42",
-            "https://github.com.evil/deskree-inc/oby/pull/42",
-            "https://user@github.com/deskree-inc/oby/pull/42",
-            "https://github.com/deskree-inc/oby/issues/42",
-        ] {
-            assert_eq!(pull_request_number(url, repo), None, "{url}");
+        for on_github in [None, Some("deskree-inc/oby-renamed")] {
+            for url in NOT_ITS_OWN {
+                assert_eq!(pull_request_number(url, repo, on_github), None, "{url}");
+            }
         }
         assert_eq!(
-            pull_request_number("https://github.com/../x/pull/1", "../x"),
+            pull_request_number("https://github.com/../x/pull/1", "../x", None),
             None
         );
+    }
+
+    /// PUBLISHING-38: the configured name or GitHub's current one, letter case aside, never
+    /// another owner, another name or a longer one.
+    #[test]
+    fn publishing_38_same_repository_cases() {
+        let (configured, now) = (
+            &b"deskree-inc/oby"[..],
+            Some(&b"deskree-inc/oby-renamed"[..]),
+        );
+        for pr_repo in [
+            "Deskree-Inc/OBY",
+            "deskree-inc/oby-renamed",
+            "DESKREE-INC/Oby-Renamed",
+        ] {
+            assert!(
+                same_repository(pr_repo.as_bytes(), configured, now),
+                "{pr_repo}"
+            );
+        }
+        for pr_repo in [
+            "other/oby",
+            "deskree-inc/other",
+            "deskree-inc/oby2",
+            "deskree-inc/oby-renamed2",
+        ] {
+            assert!(
+                !same_repository(pr_repo.as_bytes(), configured, now),
+                "{pr_repo}"
+            );
+        }
+        assert!(!same_repository(
+            b"deskree-inc/oby-renamed",
+            configured,
+            None
+        ));
+        assert!(same_repository(b"deskree-inc/OBY", configured, None));
+    }
+
+    /// PUBLISHING-38: a pull request under GitHub's current name is the job's; nothing else is.
+    #[test]
+    fn publishing_38_only_pull_requests_of_either_name() {
+        let (repo, now) = ("deskree-inc/oby", Some("deskree-inc/oby-renamed"));
+        for (url, number) in [
+            ("https://github.com/deskree-inc/oby-renamed/pull/42", 42),
+            ("https://github.com/Deskree-Inc/Oby-Renamed/pull/7", 7),
+            ("https://github.com/deskree-inc/oby/pull/3", 3),
+        ] {
+            assert_eq!(pull_request_number(url, repo, now), Some(number), "{url}");
+        }
+        for url in NOT_ITS_OWN {
+            assert_eq!(pull_request_number(url, repo, now), None, "{url}");
+        }
+        // A current name that isn't a repository's widens nothing.
+        let url = "https://github.com/../x/pull/1";
+        assert_eq!(pull_request_number(url, repo, Some("../x")), None);
+    }
+
+    /// PUBLISHING-38: only `gh repo view`'s answer, as JSON with a repository's name, names it.
+    #[test]
+    fn publishing_38_the_name_gh_gives_it() {
+        assert_eq!(
+            name_with_owner(r#"{"nameWithOwner": "obi-e2e/fixture-app-renamed"}"#),
+            Some("obi-e2e/fixture-app-renamed".into())
+        );
+        for said in [
+            "obi-e2e/fixture-app-renamed",
+            "{}",
+            r#"{"name": "fixture-app"}"#,
+            r#"{"nameWithOwner": "../evil"}"#,
+            r#"{"nameWithOwner": 7}"#,
+            "",
+        ] {
+            assert_eq!(name_with_owner(said), None, "{said}");
+        }
     }
 
     /// Only a pull request from this repository's own branch, at a commit obid pushed: never a
@@ -911,13 +1029,20 @@ mod tests {
         let ours = "https://github.com/deskree-inc/oby/pull/42";
         let list = |items: Vec<Value>| Value::Array(items).to_string();
         assert_eq!(
-            own_pull_request(&list(vec![pr(ours, false, &head)]), repo, "dev", &[&head]),
+            own_pull_request(
+                &list(vec![pr(ours, false, &head)]),
+                repo,
+                None,
+                "dev",
+                &[&head]
+            ),
             Some(ours.into())
         );
         assert_eq!(
             own_pull_request(
                 &list(vec![pr(ours, false, &before)]),
                 repo,
+                None,
                 "dev",
                 &[&head, &before]
             ),
@@ -940,11 +1065,26 @@ mod tests {
             "not json".into(),
         ] {
             assert_eq!(
-                own_pull_request(&listed, repo, "dev", &[&head]),
+                own_pull_request(&listed, repo, None, "dev", &[&head]),
                 None,
                 "{listed}"
             );
         }
+    }
+
+    /// PUBLISHING-38: an open pull request listed under the name GitHub gives the repository now is
+    /// its own too; with no such name, it isn't.
+    #[test]
+    fn publishing_38_own_pull_request_under_the_current_name() {
+        let head = "a".repeat(40);
+        let renamed = "https://github.com/deskree-inc/oby-renamed/pull/42";
+        let listed = json!([{"url": renamed, "isCrossRepository": false, "headRefOid": head, "baseRefName": "dev"}]).to_string();
+        let (repo, now) = ("deskree-inc/oby", Some("deskree-inc/oby-renamed"));
+        assert_eq!(
+            own_pull_request(&listed, repo, now, "dev", &[&head]),
+            Some(renamed.into())
+        );
+        assert_eq!(own_pull_request(&listed, repo, None, "dev", &[&head]), None);
     }
 
     #[test]
@@ -1351,5 +1491,47 @@ mod tests {
             "No log of the failed runs could be read. The checks that failed: test, ci/lint."
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod proofs {
+    #![cfg(kani)]
+    //! Kani's proof of which pull requests are the repository's (PUBLISHING-38): `kani::any()`
+    //! stands for every name of up to three bytes, and for whether GitHub gave it another.
+
+    use super::*;
+
+    /// Whether `a` is `b`, letter case aside, byte by byte.
+    fn same(a: &[u8], b: &[u8]) -> bool {
+        a.len() == b.len()
+            && a.iter()
+                .zip(b)
+                .all(|(x, y)| x.to_ascii_lowercase() == y.to_ascii_lowercase())
+    }
+
+    /// PUBLISHING-38: a pull request is the repository's exactly under its configured name or
+    /// GitHub's current one, letter case aside; under any other, never.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn publishing_38_a_renamed_repositorys_pull_request_is_its_own() {
+        let pr_repo: [u8; 3] = kani::any();
+        let configured: [u8; 3] = kani::any();
+        let canonical: [u8; 3] = kani::any();
+        let pr_repo = &pr_repo[..usize::from(kani::any::<u8>() % 4)];
+        let canonical = if kani::any::<bool>() {
+            Some(&canonical[..])
+        } else {
+            None
+        };
+        let expected = same(pr_repo, &configured)
+            || canonical.is_some_and(|canonical| same(pr_repo, canonical));
+        let answered = same_repository(pr_repo, &configured, canonical);
+        assert_eq!(answered, expected);
+        if !same(pr_repo, &configured)
+            && !canonical.is_some_and(|canonical| same(pr_repo, canonical))
+        {
+            assert!(!answered);
+        }
     }
 }

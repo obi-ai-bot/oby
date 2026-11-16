@@ -34,10 +34,11 @@ impl Link {
                 _ => return,
             }
         };
+        // A failed result goes with text only when it carries obid's own summary (TEAMREVIEW-4).
         let body = job
             .review_result
             .clone()
-            .filter(|b| done && b["outcome"] != "failed");
+            .filter(|b| done && (b["outcome"] != "failed" || b["summary"].is_string()));
         let Some(mut body) = body else {
             self.reply_failed(&cid, None).await;
             return;
@@ -94,9 +95,14 @@ impl Link {
                 return;
             };
             exchange.outbox.push(result);
+            exchange.state = if body["outcome"] == "failed" {
+                "failed"
+            } else {
+                "done"
+            }
+            .into();
             exchange.result = Some(body);
             exchange.publish_scan = Some(scan_json);
-            exchange.state = "done".into();
             exchange.updated = time::now();
             state.exchanges.insert(cid.clone(), exchange.clone());
             exchange

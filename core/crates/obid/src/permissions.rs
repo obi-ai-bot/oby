@@ -286,6 +286,10 @@ pub struct Parked {
     /// ([`Parked::lets_through`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allowed: bool,
+    /// A Codex turn in Plan ended with this plan (crate::jobs, `codex_plan`): no call of the
+    /// agent's waited for it, and the run its answer starts stays in Oby's box.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ended_turn: bool,
 }
 
 impl Parked {
@@ -310,6 +314,15 @@ const QUOTED_CALL: usize = 4_000;
 /// [`QUOTED_CALL`] characters of it) and the answer.
 pub fn after_park(parked: &Parked, answer: &crate::agent::Answer) -> String {
     use crate::agent::Answer;
+    // Proposed words, Sangam's and the owner's to change.
+    if parked.tool == "ExitPlanMode" && parked.ended_turn {
+        return match answer {
+            Answer::Deny(why) => format!(
+                "The owner sent back the plan you ended your last turn with: {why}\nYou're still in Plan mode: change no file, and end your turn with your new plan."
+            ),
+            _ => "The owner approved the plan you ended your last turn with. This job is out of Plan mode now: carry that plan out.".to_owned(),
+        };
+    }
     if parked.tool == "ExitPlanMode" {
         let paused = "obid paused you while your plan waited for the owner's OK, so ExitPlanMode got no reply.";
         return match answer {
@@ -5242,6 +5255,7 @@ mod tests {
             input: json!({"command": "npm test"}),
             answered: false,
             allowed: false,
+            ended_turn: false,
         };
         assert_eq!(
             after_park(&run, &Answer::Allow),
@@ -5256,6 +5270,7 @@ mod tests {
             input: json!({"file_path": "big.txt", "content": "x".repeat(10_000)}),
             answered: false,
             allowed: false,
+            ended_turn: false,
         };
         let told = after_park(&write, &Answer::Allow);
         assert!(told.len() < 4_500, "{}", told.len());
@@ -5267,6 +5282,7 @@ mod tests {
             input: json!({"plan": "1. Fix"}),
             answered: false,
             allowed: false,
+            ended_turn: false,
         };
         assert!(
             after_park(&plan, &Answer::Allow).ends_with("The owner approved it: carry it out now.")
@@ -5275,6 +5291,33 @@ mod tests {
             after_park(&plan, &Answer::Deny("Smaller.".into()))
                 .ends_with("The owner sent it back: Smaller.")
         );
+    }
+
+    /// PERMISSIONS-18, PERMISSIONS-19: the plan a Codex turn ended with, approved or sent back,
+    /// is told so, with no word of a paused call.
+    #[test]
+    fn a_codex_plan_is_told_its_answer() {
+        use crate::agent::Answer;
+        let plan = Parked {
+            tool: "ExitPlanMode".into(),
+            input: json!({"plan": "Plan: add plan.txt"}),
+            answered: false,
+            allowed: false,
+            ended_turn: true,
+        };
+        assert_eq!(
+            after_park(&plan, &Answer::Allow),
+            "The owner approved the plan you ended your last turn with. This job is out of Plan mode now: carry that plan out."
+        );
+        assert_eq!(
+            after_park(&plan, &Answer::Deny("Split it in two.".into())),
+            "The owner sent back the plan you ended your last turn with: Split it in two.\nYou're still in Plan mode: change no file, and end your turn with your new plan."
+        );
+        let sent_back = after_park(&plan, &Answer::Deny(PLAN_SENT_BACK.into()));
+        assert!(sent_back.contains(PLAN_SENT_BACK), "{sent_back}");
+        for told in [&sent_back, &after_park(&plan, &Answer::Allow)] {
+            assert!(!told.contains("obid paused you"), "{told}");
+        }
     }
 
     /// The owner's allow of a parked call lets the resumed agent's same call through: the same
@@ -5287,6 +5330,7 @@ mod tests {
             input,
             answered: true,
             allowed: true,
+            ended_turn: false,
         };
         let bash = allowed(
             "Bash",

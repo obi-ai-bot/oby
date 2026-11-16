@@ -13,7 +13,12 @@ bin/gate        runs checks.sh in a job's worktree → round-N/checks.md; with `
                 the gate VM and the macOS-only part on the Mac, falling back to the Mac; with `mac_worker` set too, that
                 macOS part on the Mac worker (the second Mac) when it is free, else on this Mac; with `gate_shards`
                 set too, obid's test binaries in shards on the VM's slots, the Mac worker and this Mac, all at
-                once, with one verdict; `gate --idle` deallocates the idle VM (job queue runs it)
+                once, with one verdict; `gate --idle` deallocates the idle VM (job queue runs it); `gate --checkout
+                <worktree> <commit> <branch> <out-dir>` is the same gate with no job folder (oby-feed's)
+bin/oby-feed    feeds the task files to the factory's own obid, each as intake, then spec, then build (Oby builds
+                against the spec and reviews it), and merges what Oby approved twice, once the models, Kani and
+                bin/gate passed on the head; a task intake holds for the owner waits `blocked`; state in
+                ~/.oby-factory/feed/
 bin/prove       re-runs the Kani harnesses a job's spec.md lists under `## Proofs` on the commit its gate passed, through
                 bin/test-run, checks each can fail on its declared broken rule and that the branch adds nothing that
                 games them; for a `model` job, runs `quint typecheck`, `run` and `verify` on each Quint model its
@@ -42,6 +47,18 @@ queue/done/     finished tasks: a task's own pull request moves its file here
 dashboard.html  the board: cd factory && python3 -m http.server, then http://localhost:8000/dashboard.html
 jobs/           runtime state, local to this Mac (gitignored); jobs/remote-gate/state.json is the gate VM's uses
 ```
+
+`bin/oby-feed` runs the same gate before Oby's own factory merges (docs/contracts/factory.md, FEEDGATE): once a
+pull request's head is approved twice by two tools and its models and Kani passed, or it waits for the owner on a
+security path, it fetches the head into the main checkout, adds a detached worktree of it, and calls `bin/gate`'s
+`check_commit()`, imported. So it reads `remote_gate`, `mac_worker`, `gate_shards`, `protected_paths` and
+`base_branch` from this `config.json` (and `FACTORY_REMOTE_GATE`, `FACTORY_MAC_WORKER` and `FACTORY_GATE_SHARDS` for
+one run), runs the main checkout's `checks.sh`, and keeps each head's `checks.md` and `checks.log` in
+`~/.oby-factory/feed/gate/<KEY>/<head>/`, the verdict in the task's state, so a head is gated once. Green arms the
+merge. Red holds the head, never merged, and when a part of the check failed sends the build job one fix message
+with the failing parts and the log's end, fenced as data, so Oby follows up on the same branch. A gate that couldn't
+judge (a part didn't report, or the gate raised) holds the head with a note and no message. A security-path pull
+request still waits for the owner, the gate's result added to its note.
 
 `jobs/nightly/` holds the nightly check's results, one `<stamp>.md` (`GATE: PASS|FAIL`, the commit, when it
 started, the log's last 80 lines) and its `<stamp>.log` per run, named by the UTC start time; the dashboard
@@ -108,6 +125,34 @@ its `DEPENDS` line names are in `queue/done`. Intake's questions and the owner's
 folder (`/factory <answer>`), and nothing reads or writes a GitHub issue or the project board. A pull request
 stays a draft until the approver says APPROVE; then GitHub merges it, and the job waits in the stage `queued`
 while GitHub's merge queue holds it.
+
+Reading a job takes no lock (`bin/job` writes `job.json` whole, by renaming a temporary file), so `job queue`,
+the slot count and a long-running importer such as `bin/oby-feed` never hold one. Every write of `job.json` holds
+that job's lock: a command that changes a job (`create`, `advance`, `merge`, `answer`, `feedback`, `reject`,
+`agents`, `sync`, and `queue` for a queued or merged job) holds it while it reads, decides and saves, and lets it
+go when it ends, a refusal included; a save outside the lock is refused. When merging `dev` into a job's branch brings
+`queue/tasks/<KEY>.md` back next to its `queue/done/<KEY>.md`, `job advance <job> gate` closes the task again in a
+commit of its own, with `dev`'s text of the task. It pushes that only when origin already had the branch at
+its head, and only once gitleaks, as `bin/test-run` runs it, passed the commit's diff: a finding, or a scanner
+that can't run, refuses the advance and pushes nothing. An unpushed branch keeps the commit and is
+refused as unpushed, for the builder to push. A branch with no `done/` copy, or one whose
+`tasks/` file differs from `dev`'s, is refused as before.
+
+Oby's factory (`bin/oby-feed`, building on the factory's own obid) starts each task as the Claude Code factory
+does: an intake job first, then a spec job, then the build, told to build against that spec (FEEDSPEC in
+`docs/contracts/factory.md`). Intake and spec are read-only `research` jobs following `.claude/agents/intake.md` and
+`spec-writer.md` as `dev` has them; their documents reach the next job as fenced message parts. NEEDS-INFO, REJECT
+or a step that gave nothing usable leaves the task `blocked`, holding no slot, until its task file changes.
+
+It has an approver step too. When a head is
+approved twice by different tools and passes the security-path, model and Kani checks and the gate, the feeder starts an approver
+job on obid for that head: a read-only review that follows `.claude/agents/approver.md` as `dev` has it. Only its
+`APPROVE` for that same head arms the merge. `ESCALATE` holds the head for the owner, with the approver's reasons
+in `oby-feed --status`. No verdict (any other first line, a job that failed or is gone) holds the head too, and a
+head that moved while the approver read it needs two fresh approvals and a fresh `APPROVE`. Before it arms on an
+`APPROVE`, the feeder checks the approvals, security paths, models, Kani proofs and the gate's verdict again. The
+approver still checks the task file's own acceptance list, not the spec's, as `dev` has it, never the pull request's copy;
+a task whose file isn't on `dev` is held for the owner. Its contract is FEEDAPPROVE in `docs/contracts/factory.md`.
 
 ## From AGENTS.md
 

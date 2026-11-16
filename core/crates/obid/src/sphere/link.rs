@@ -3256,7 +3256,7 @@ pub(crate) fn dead_confirm(item: &Item, jobs: &[crate::job::Job]) -> Option<&'st
                     j.repo == asked.repo
                         && j.published
                             .as_deref()
-                            .and_then(|url| crate::github::pull_request_number(url, &j.repo))
+                            .and_then(|url| j.pull_request_number(url))
                             == Some(asked.pr)
                 })
                 .filter_map(|j| j.pull_request.as_ref())
@@ -3721,6 +3721,79 @@ mod tests {
             Teammate::NeedsYou("No teammate's Oby could approve it on GitHub. Invite a teammate who can push to acme/app to your Obysphere, or get their approval on GitHub yourself.".into()),
             "zoe couldn't, and nobody else can"
         );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// TEAMREVIEW-4: a teammate whose Oby has no check answers `failed`, saying so: that request
+    /// is spent, and the next teammate's Oby is asked, never the owner.
+    #[tokio::test]
+    async fn teamreview_4_the_sender_asks_the_next_teammate_after_no_check() {
+        use approval::Teammate;
+        let home = std::env::temp_dir().join(format!("obid-link-no-check-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let config = Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "wellington"}).to_string(),
+        )
+        .unwrap();
+        let events = Events::new();
+        let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
+        let (_stop, stopping) = watch::channel(false);
+        let link = Link::open(config, jobs, events, stopping);
+        let head = "6d20146f366b9fac8907b5066c30ee39aaec09b3";
+        let change = approval::Change {
+            repo: "acme/app",
+            pr: 12,
+            base: "dev",
+            head_branch: "oby/fix-12",
+            head,
+            goal: "Fix the thing",
+        };
+        let member = |owner: &str| Member {
+            name: None,
+            owner: owner.into(),
+            active: true,
+            accepts: vec!["review_request".into()],
+            seal: None,
+            sealed_since: None,
+        };
+        let request = json!({"id": "c-zoe", "correlation_id": "c-zoe", "type": "review_request",
+                             "expires_at": time::format(time::now() + 3600),
+                             "body": approval::request_body(&change)});
+        let mut zoe = Exchange::new("outgoing", request, "obi-zoe".into(), Some("zoe".into()));
+        zoe.state = "done".into();
+        let no_check = "This Oby has no check for acme/app, so it can't vouch that the tests pass.";
+        let failed = json!({"for": "review_request", "outcome": "failed", "repo": "acme/app",
+                            "head_sha": head, "findings": [], "summary": no_check});
+        zoe.result = Some(failed);
+        {
+            let mut state = link.lock();
+            state.membership = Some(Membership {
+                state: "joined".into(),
+                url: "http://127.0.0.1:1".into(),
+                sphere: "team".into(),
+                obi_id: "obi-wellington".into(),
+                card: json!({}),
+                joined_at: 0,
+            });
+            for (obi, owner) in [
+                ("obi-wellington", "wellington"),
+                ("obi-zoe", "zoe"),
+                ("obi-yuri", "yuri"),
+            ] {
+                state.directory.members.insert(obi.into(), member(owner));
+            }
+            state.exchanges.insert(zoe.correlation_id.clone(), zoe);
+        }
+        let asked = link.ask_teammate(&change).await;
+        let Teammate::Waiting(said) = &asked else {
+            panic!("the owner was asked: {asked:?}");
+        };
+        assert!(
+            said.starts_with("Asked yuri's Oby")
+                || said.starts_with("Oby couldn't reach the Obysphere to ask yuri's Oby"),
+            "{said}"
+        );
+        assert!(!said.contains("zoe"), "{said}");
         let _ = std::fs::remove_dir_all(&home);
     }
 

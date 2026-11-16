@@ -1,28 +1,32 @@
 # Cleanup: a finished job's builds don't fill the Mac
 
-The business behavior contract for what obid frees by itself on the Mac's disk, from [the template](../business-contract-template.md). The API is `docs/runner-api.md` (`cleanup`, `buildFreed`).
+The business behavior contract for what obid frees by itself on the Mac's disk, from [the template](../business-contract-template.md). The API is `docs/runner-api.md` (`cleanup`, `buildFreed`, `worktreeFreed`).
 
 ## Feature and status
 
 - **Outcome:** The owner's report of 2026-11-10: the Mac's disk fell to 350 MB because obid kept every finished job's builds (44 jobs, 75 GB: a worktree's `core/target` about 9.4 GB; in the job's HOME a check's `check-target` 4.9 GB, `oby-check-sim-target` 1.2 GB, `.cargo` 0.4 GB). A job's builds go when it ends, and a disk low on space gets room back by itself.
-- **Status:** **Implemented** (CLEANUP-1, CLEANUP-2). The words in `why` are proposed, and Sangam's to change.
-- **Scope:** Build outputs and caches: what a build makes again. Outside it: removing a worktree or its HOME, which stays the 24-hour rule of the cleanup pass (`cleanup` in runner-api.md, unchanged), a job's branch and commits, its login copies, and the clones in `home/clones`.
+- **Status:** **Implemented** (CLEANUP-1 to CLEANUP-6). The words in `why` are proposed, and Sangam's to change.
+- **Scope:** Build outputs and caches: what a build makes again. A done job whose pull request merged or closed, or which has nothing to publish, frees its worktree and its HOME at once (CLEANUP-3 to CLEANUP-6); other jobs' worktrees go under the cleanup pass's rules (`cleanup` in runner-api.md). Outside it: a job's branch and commits, its login copies, and the clones in `home/clones`.
 
 ## Behavior
 
 ### Actors and ownership
 
 - **obid** decides and frees, in its cleanup pass. No model turn and no click.
-- **The apps** may show `status.cleanup.freed` and a job's `buildFreed`; they send nothing.
+- **The apps** may show `status.cleanup.freed` and a job's `buildFreed` and `worktreeFreed`; they send nothing.
 
 ### Rules
 
 - A job **at rest**: it ended (done, failed, stopped or interrupted) and no worker or publish holds it.
 - What a job's **builds** are, in its worktree and in its HOME (`home/tmp/<job id>`): a folder with a `CACHEDIR.TAG` (cargo's target folders have one), Xcode's `DerivedData`, cargo's and npm's caches (`.cargo`, `.npm`) and a `node_modules`'s `.cache`. In the worktree, only folders git ignores: never the job's commits or uncommitted files. In the HOME, only its own folders: its login copies (`.claude`, `.claude.json`, `.codex`) and everything else stay. A Python virtual environment, a `node_modules`'s packages, `.obi/` and anything reached through a link stay.
-- The worktree and the HOME stay: a follow-up, a fix round or Try again builds again.
+- The worktree and the HOME stay, but for a job CLEANUP-3 frees: a follow-up, a fix round or Try again builds again.
 - A check runs without the network in the job's HOME. After its `.cargo` or `.npm` went, a check that runs with no agent run before it (Publish by hand) has no cached packages to build with; a job that runs again fetches them with its agent.
 
 ## Acceptance scenarios
 
 - **CLEANUP-1.** A job at rest frees its builds on the next cleanup pass (which its end wakes), its pull request open or not, needing the owner or not; its `buildFreed` says what that freed, and `status.cleanup.freed` says it, with `why` "Jobs ended.". A job still running keeps its builds. A pass looks once per end: a job that runs again and ends frees them again. Test: `cleanup_1_a_job_that_ends_frees_its_builds` (core/crates/obid/src/jobs.rs).
 - **CLEANUP-2.** obid looks at its disk's free space every 5 minutes. Under 20 GB free, the cleanup pass runs at once, and frees the builds of every job at rest (a check run since its end included), oldest end first, until it freed what 30 GB free lacks; a queued or running job keeps them. `status.cleanup.freed` says how much it freed and why ("The disk had 12 GB free."). From 20 GB free up, nothing more is freed than CLEANUP-1 frees. Test: `cleanup_2_a_low_disk_frees_every_idle_jobs_builds_oldest_first` (core/crates/obid/src/jobs.rs).
+- **CLEANUP-3.** A job that ended done, isn't another Oby's, has nothing unpublished (`unpublished` 0), and whose pull request was merged or closed (as obid read it, or obid merged it), or which has no pull request and nothing to publish, loses its worktree (`home/worktrees/<job id>`) and its HOME (`home/tmp/<job id>`) on the next cleanup pass, without being dismissed, archived or cleared and without waiting 24 hours, as long as it needs nothing, no worker or publish holds it and no follow-up still at work carries its branch on. obid's own merge wakes the pass, as a worker's end and the follower reading a pull request merged or closed do. The job's record stays: its file, transcript, diffs, result, artifacts and its branch in obid's clone; Try again or a fix round makes the worktree again from the branch. The worktrees folder and `home/tmp` are back to their size from before the job. Test: `cleanup_3_a_merged_job_frees_its_worktree_at_once` (core/crates/obid/src/jobs.rs).
+- **CLEANUP-4.** The pass removes a worktree only when one rule says so (`may_free`, core/crates/obid/src/jobs/free.rs), read under the lock a worktree is made with, right before the removal: the job is still settled, isn't running, queued or publishing, and its worktree holds nothing unpublished (commits on no remote, artifacts that weren't published, or anything the guard can't vouch for) and nothing uncommitted. A worktree the guard answered for stays, in `status.cleanup.kept` with its `why` as before. Test: `cleanup_4_a_merged_job_with_work_keeps_its_worktree` (core/crates/obid/src/jobs.rs); the Kani proofs `may_free_never_while_running`, `may_free_never_with_unpublished_work` and `may_free_never_with_uncommitted_work` (core/crates/obid/src/jobs/free.rs); the model `docs/models/worktree_free.qnt`.
+- **CLEANUP-5.** Every other ended job keeps the rule before CLEANUP-3: a failed, stopped or interrupted job goes once it's put away (dismissed, archived, Clear done) or 24 hours after it ended; another Oby's review keeps its 24 hours (docs/api/teammate-review.md, step 10); a done job with an open pull request, commits not on its pull request, or one that needs the owner, stays. An Oby review of the owner's own still goes as soon as it ends, and CLEANUP-1 and CLEANUP-2 are unchanged. Test: `cleanup_5_other_ended_jobs_keep_the_24_hour_rule` (core/crates/obid/src/jobs.rs).
+- **CLEANUP-6.** A job whose worktree the pass removed says when, `worktreeFreed` (RFC 3339), kept in its file across restarts; absent before that, and again once its worktree is made again. No other key or value changes. Test: `cleanup_6_a_freed_worktree_says_so_until_it_is_made_again` (core/crates/obid/src/jobs.rs).
