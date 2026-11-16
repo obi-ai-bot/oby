@@ -73,8 +73,8 @@ folder. That is
   obid's API, and no new value in an enum the Swift apps decode as closed
   (`apps/shared`).
 - **Dispatcher, not harness**: nothing added to obid that is the agent CLI's
-  own work (AGENTS.md), and neither `obid_lines_limit` nor `jobs_rs_limit` in
-  `scripts/oby-check.sh` is raised.
+  own work (AGENTS.md), and `jobs_rs_limit` in `scripts/oby-check.sh` isn't
+  raised.
 - **The task is closed**: the branch moves `factory/queue/tasks/<key>.md` to
   `factory/queue/done/<key>.md` unchanged, and touches no other file under
   `factory/`.
