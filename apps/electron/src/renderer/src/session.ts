@@ -40,6 +40,20 @@ export const SESSIONS: Record<string, Entry[]> = {
     { kind: 'thought', text: 'The merge made org optional, and the route still reads it as always there.', seconds: 0 },
     { kind: 'tool', tool: 'Edit', verb: 'Editing', target: 'src/flags/route.ts', state: 'running', seconds: 2 },
   ],
+  // two cards opened in place in one conversation (screens 03 and 04): one at work, one asking
+  s1: [
+    { kind: 'start', text: 'Started on Claude Code', at: '10:02 AM' },
+    { kind: 'you', text: 'when the secret scan blocks the first push, give the job a round to fix it instead of failing', at: '10:02 AM' },
+    { kind: 'said', text: 'A first block ends the job as failed, so I’ll give it one round to fix the finding before it fails.', at: '10:05 AM' },
+    { kind: 'tool', tool: 'Edit', verb: 'Edited', target: 'core/crates/obid/src/publish.rs', state: 'done', seconds: 0.2, meta: '+18 −6' },
+    { kind: 'tool', tool: 'Bash', verb: 'Running', target: 'cargo test -p obid publish::', state: 'running', seconds: 41 },
+  ],
+  s3: [
+    { kind: 'start', text: 'Started on Codex', at: '10:02 AM' },
+    { kind: 'you', text: 'the side panel stutters past 200 tasks, virtualize the list', at: '10:02 AM' },
+    { kind: 'tool', tool: 'Read', verb: 'Read', target: 'src/renderer/src/Sidebar.tsx', state: 'done', seconds: 0.3 },
+    { kind: 'said', text: 'The panel draws every row at once. @tanstack/react-virtual draws only the rows in view, but this job has no network, so installing it needs your OK.', at: '10:06 AM' },
+  ],
   i1: [
     { kind: 'start', text: 'Round 1 · Cursor · Sonnet 5.5', at: '10:02 AM' },
     { kind: 'said', at: '10:02 AM', text: 'I’ll read how the attention queue is built before changing anything.' },

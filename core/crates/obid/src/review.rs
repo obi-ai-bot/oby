@@ -540,6 +540,17 @@ pub fn failed_result(request: &ReviewRequest) -> Value {
     json!({"for": "review_request", "outcome": "failed", "repo": request.repo, "head_sha": request.head_sha, "findings": []})
 }
 
+/// The result of a review with no check to run (TEAMREVIEW-4): failed, no findings, and obid's own
+/// sentence saying why, built from the request's repository only.
+pub fn no_check_result(request: &ReviewRequest) -> Value {
+    let mut body = failed_result(request);
+    body["summary"] = Value::String(format!(
+        "This Oby has no check for {}, so it can't vouch that the tests pass.",
+        request.repo
+    ));
+    body
+}
+
 fn severity_rank(severity: Severity) -> u8 {
     match severity {
         Severity::Nit => 1,

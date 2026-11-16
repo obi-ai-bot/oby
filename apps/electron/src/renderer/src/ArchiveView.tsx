@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Search } from 'lucide-react';
 import { BrandMark } from './brands';
 import { useScrollThumb } from './useScrollThumb';
-import { agentOf, ago } from './mock';
+import { agentOf, ago } from './view';
 import { TYPES, archivedTasks, useTasks } from './tasks';
 
 // how long the way out takes (the sink animation in app.css)

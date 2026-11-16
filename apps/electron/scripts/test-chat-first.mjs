@@ -120,16 +120,15 @@ async function main() {
   await until('its card', () => page.locator('.msg-task.is-link', { hasText: 'Core flow' }).count());
   ok('CHATFIRST-2 words on the empty chat open their conversation');
 
-  // CHATFIRST-6: a task from its card in the conversation, and back to it
+  // CHATFIRST-6: a task from its card's menu in the conversation (View details), and back to it
   const talk = await onTop(page);
-  await page.locator('.msg-task.is-link', { hasText: 'Core flow' }).click();
-  await until('its conversation beside the chat', () => page.locator('.agent-pane').count());
-  await button(page, 'Open the task’s page').click();
+  await page.locator('.msg-task.is-link', { hasText: 'Core flow' }).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'View details' }).click();
   await until('its page', () => page.locator('[aria-placeholder="Tell Oby about this task…"]').count());
   await shot(page, '6-task-from-its-card');
   await button(page, 'Back').click();
   await until('back in the conversation', async () => (await onTop(page)) === talk);
-  ok('CHATFIRST-6 a task opens from its card, back returns to its conversation');
+  ok('CHATFIRST-6 a task opens from its card’s menu, back returns to its conversation');
   await until('the task ends', async () => ['done', 'failed', 'interrupted', 'stopped'].includes((await s.call('GET', `/v1/jobs/${job.id}`)).status), 120_000);
   await close();
 
@@ -245,7 +244,7 @@ async function main() {
   const mine = await onTop(page);
   const chatsColumn = await page.locator('.sidebar-content').innerText();
   // (the demo's own words name people and tools, so its rows, not its text)
-  assert.ok(chatsColumn.startsWith('Chats'), chatsColumn.slice(0, 80));
+  assert.ok(chatsColumn.startsWith('Default'), chatsColumn.slice(0, 80));
   assert.equal(await page.locator('.oby-row, .sphere-group').count(), 0, 'no Sphere’s people under the chats');
   await shot(page, '3-panel');
   await page.locator('.rail-button[aria-label="Deskree"]').click();

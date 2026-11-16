@@ -251,8 +251,9 @@ async function main() {
   await page.locator('.convo-row', { hasText: 'Draft task' }).evaluate((el) => el.click());
   const row = page.locator('.msg-task.is-link', { hasText: 'Draft task' });
   await until('its card in its conversation', async () => (await row.count()) === 1);
-  await row.evaluate((el) => el.click());
-  await page.getByRole('button', { name: 'Open the task’s page', exact: true }).evaluate((el) => el.click());
+  // its page from the card's menu (LIVETASK-18): a right-click, then View details
+  await row.evaluate((el) => el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 20 })));
+  await page.getByRole('menuitem', { name: 'View details', exact: true }).evaluate((el) => el.click());
   await page.getByRole('button', { name: 'Task options', exact: true }).evaluate((el) => el.click());
   await page.getByRole('menuitem', { name: 'Delete task' }).evaluate((el) => el.click());
   await until('obid’s Confirm', async () => (await s.call('GET', '/v1/inbox')).some((i) => i.job === draft.id && i.state === 'open'));

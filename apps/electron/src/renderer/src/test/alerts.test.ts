@@ -1,10 +1,12 @@
 import { readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { apply } from '../../../shared/live-state';
+import { unwired, type LiveSnapshot } from '../../../shared/live-wire';
 import { fresh, launch, mac, served, titles } from './macAlerts';
 
-// Oby's alerts on this Mac (docs/contracts/alerts.md): main/notify.ts launched, quit and launched
-// again over the same app folder, drawing what obid's GET /v1/alerts serves.
+// Oby's alerts on this Mac (docs/contracts/alerts.md): main/notify.ts and main/live.ts launched,
+// quit and launched again over the same app folder, drawing what obid's GET /v1/alerts serves.
 
 const SAID = () => join(mac.userData, 'alerts-said-v2.json');
 const permission = served('p1', { title: 'Run npm test?', category: 'permission', item: 'p1', answers: ['Allow', 'Deny'] });
@@ -216,5 +218,50 @@ describe('ALERTS-8', () => {
     notify.windowLeft();
     notify.windowLeft();
     expect(titles()).toEqual(['Run npm test?']);
+  });
+});
+
+describe('ALERTS-9', () => {
+  it('alerts_9_one_follower_of_obids_events_with_alerts_window_open_or_closed', async () => {
+    // launched with no window (obid's open -g -j): main follows by itself
+    mac.window = false;
+    await launch();
+    expect(mac.streams).toEqual(['/v1/events?alerts=1']);
+    // the window opens, and its page asks main for what it holds
+    mac.window = true;
+    expect(mac.ask('obid-snapshot')).toMatchObject({ connection: 'live' });
+    await new Promise((done) => setTimeout(done, 100));
+    expect(mac.streams).toEqual(['/v1/events?alerts=1']);
+    // it closes, and a new page asks again
+    mac.window = false;
+    mac.window = true;
+    expect(mac.ask('obid-snapshot')).toMatchObject({ connection: 'live' });
+    await new Promise((done) => setTimeout(done, 100));
+    expect(mac.streams).toEqual(['/v1/events?alerts=1']);
+  });
+});
+
+describe('ALERTS-10', () => {
+  it('alerts_10_an_item_answered_on_the_iphone_leaves_the_window_and_the_alert_from_the_same_state', async () => {
+    const item = { id: 'p1', kind: 'permission', job: '', title: 'Run npm test?', text: 'npm test', options: ['Allow', 'Deny'], created: '2026-11-12T10:00:00Z', state: 'open' };
+    await launch();
+    mac.served = [permission];
+    mac.inbox = [item];
+    const { main } = await launch();
+    expect(titles()).toEqual(['Run npm test?']);
+    // the window's page, as it holds main's state
+    let page = unwired((mac.ask('obid-snapshot') as LiveSnapshot).state);
+    expect(page.inbox.map((i) => i.id)).toEqual(['p1']);
+    // answered on the iPhone: obid's event says it's settled, and obid stops serving it
+    const before = mac.page.length;
+    mac.served = [];
+    mac.event('inbox', { ...item, state: 'done' });
+    await vi.waitFor(() => expect(main.obidState().inbox).toEqual([]));
+    const told = mac.page.slice(before).filter((m) => m.kind === 'event');
+    expect(told).toEqual([expect.objectContaining({ event: { kind: 'inbox', item: { ...item, state: 'done' } } })]);
+    for (const m of told) if (m.kind === 'event' && m.event.kind === 'inbox') page = apply(page, m.event);
+    expect(page.inbox).toEqual([]);
+    await vi.waitFor(() => expect(mac.posted[0].closed).toBe(true), { timeout: 5000 });
+    expect(mac.badge).toBe('');
   });
 });

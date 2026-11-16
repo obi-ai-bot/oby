@@ -14,11 +14,11 @@
   - **Your conversation:** where you come to rest, its box focused. It's the one that moved last by obid's `lastActivity` when the app opens, then whichever you're in. Esc and the back arrow have nothing to leave it for.
   - **The empty chat:** no conversation open: Oby's character, its line, "What do you want me to work on?" with no name and whatever is running, what Oby is asking you, and the box (Home's stage, without the chips). Words sent there start a conversation, which opens. It's a resting place too, reached from Oby's row or New conversation.
   - **A page over it:** a task, a kind of work, Settings, an Obysphere, a teammate's Oby. Back returns to where you were resting.
-- **The side panel** (the canvas's Chats and Sphere boards, the owner's decision of 2026-11-03; no profiles yet, so no circle, no name under Chats, and no Connectors or Automations until their pages exist):
+- **The side panel** (the canvas's Chats and Sphere boards, the owner's decision of 2026-11-03; its title is the open profile's name with its menu, docs/contracts/profiles.md PROFILES-19 to 25, and there is still no profile circle in the icons; no Connectors or Automations until their pages exist):
   - **The icons:** Chats; a line and each Obysphere's tile, with no line when there's none; Settings at the foot. They only open: the panel's toggle closes it. Chats from a page (a thread, Settings) also brings your conversation back. A tile opens its column (Knowledge, Invite member, Members), and its room when it has one.
   - **Chats:** Oby's row, which opens the empty chat, New conversation, then every conversation in one scrolling list, pinned ones first. Search on the panel's top row covers all of it: titles, and the words of those loaded.
 - **Where each thing went:**
-  - **A task:** a card in its conversation, as before, with its detail view (the card, then Open the task's page), an alert's click, and a task's Go to conversation all as they were. Its own list, left, is hidden, not deleted: `?home` or `oby.home` on obid, `?everything&chat` on the demo.
+  - **A task:** a card in its conversation, as before, with its detail view (the card's menu, View details), an alert's click, and a task's Go to conversation all as they were. Its own list, left, is hidden, not deleted: `?home` or `oby.home` on obid, `?everything&chat` on the demo.
   - **Archived:** at the foot of Chats once something's in it, with Archive completed's choice still in force (the choice's menu went with the list: `?home`). A done task with no conversation to hold its card (one from before every task had one, or whose conversation was deleted) is there too.
   - **Review PR and Issues (GitHub's To do):** went with the list, behind `?home`. What obid offers from them is on the stack, below. An item no one's started lights nothing: there's nowhere left to click.
 - **What waits on you** shows, and is answered in one click, in the same place whatever it is: the stack ("Oby is asking"), over any conversation and on the empty chat. Over any other page it waits for you to come back, with the dots saying so. The orange dot always leads somewhere: on a row, and on the Chats icon while any row has one. The row you're on stays in view however you came back to it; Chats, with the chats showing, brings the first row that waits into view, however far down.
@@ -44,7 +44,7 @@
 
 None in obid. A member of a live Obysphere shows in the panel and opens their thread (docs/contracts/peer-thread.md).
 
-Proposed words, Sangam's to change: "Chats" (the panel's title, from the canvas), "Back" (the arrow's label). The rest are his or the canvas's: Oby, New conversation, No conversations yet, Tasks, "Ernesto's Oby", "Accounts and how much of each is used". The canvas's "Bring your team in" row isn't here: it asks for a field to paste an invite, which the app doesn't have yet.
+Proposed words, Sangam's to change: "Chats" (the icon's label, from the canvas; the panel's title is the profile's name), "Back" (the arrow's label). The rest are his or the canvas's: Oby, New conversation, No conversations yet, Tasks, "Ernesto's Oby", "Accounts and how much of each is used". The canvas's "Bring your team in" row isn't here: it asks for a field to paste an invite, which the app doesn't have yet.
 
 ## Acceptance scenarios
 
@@ -55,7 +55,7 @@ Tests: `apps/electron/src/renderer/src/test/chatFirst.test.tsx`, `test/leftPanel
 - **CHATFIRST-3:** The side panel, open the first time where it fits, lists Oby first, then New conversation. It shows no usage: that's in the message box, its gauge and its picker's list (the owner's decision of 2026-11-03).
 - **CHATFIRST-4:** New conversation is one click from the side panel, and lands on the empty chat with its box focused. So does Oby's row.
 - **CHATFIRST-5:** A tile opens the Obysphere's column, and its room only chat first; a teammate's Oby opens from its row, and Chats brings you back to your conversation.
-- **CHATFIRST-6:** A task opens from its card in the conversation, and back returns to that conversation.
+- **CHATFIRST-6:** A task opens from its card's menu in the conversation (a right-click, View details), and back returns to that conversation.
 - **CHATFIRST-7:** Retired with the Tasks icon (2026-11-03). Review PR, Issues and Tasks open from Home's chips with `?home`.
 - **CHATFIRST-8:** What Oby is asking shows over your conversation and is answered there in one click. Taller than the window it scrolls, so its choices stay reachable. An alert already out for one with no task goes.
 - **CHATFIRST-9:** From a page opened from the side panel, back returns to the conversation you were last in, or to the empty chat if that's where you were, your words still in its box; the panel goes back to the chats. Esc in your conversation stays there.

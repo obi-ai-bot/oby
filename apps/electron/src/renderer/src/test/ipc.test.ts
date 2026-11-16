@@ -97,7 +97,8 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'pick-folders': { args: ['/tmp'], refusal: [] },
   obid: { args: ['GET', '/v1/status'], refusal: FORBIDDEN },
   'open-login-items': { args: [], refusal: undefined },
-  'obid-follow': { args: [], refusal: undefined },
+  'obid-snapshot': { args: [], refusal: null },
+  'obid-load': { args: [{ conversation: 'c1' }], refusal: null },
   'obid-confirm': { args: ['confirm-1', true], refusal: FORBIDDEN },
   'obid-pair-invite': { args: [], refusal: FORBIDDEN },
   'obid-publish': { args: ['j1', 'Publish this', {}], refusal: FORBIDDEN },
@@ -109,9 +110,11 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   updates: { args: ['check'], refusal: null },
   'local-settings': { args: [], refusal: null },
   'local-setting': { args: ['login', false], refusal: null },
+  'login-item': { args: [false], refusal: null },
   'sphere-leave': { args: [], refusal: 'Not this app’s page.' },
   'sphere-policy': { args: [], refusal: null },
   'sphere-set-policy': { args: [0], refusal: null },
+  'render-error': { args: ['TypeError', 'm', ''], refusal: undefined },
 };
 
 const UNSET = Symbol('unset');
@@ -155,6 +158,7 @@ describe('IPC-1', () => {
     expect(the.dialogs).toBe(0);
     expect(the.opened).toEqual([]);
     expect(existsSync(join(the.userData, 'settings.json'))).toBe(false);
+    expect(existsSync(join(the.userData, 'crashes.jsonl'))).toBe(false);
     the.windows[0].fullScreen = false;
   });
 
@@ -231,6 +235,10 @@ describe('IPC-3', () => {
     for (const choices of [null, [], { force: false }, { to: '' }, { other: true }]) {
       expect(await call('obid-publish', own(), 'j1', 'Publish this', choices), JSON.stringify(choices)).toEqual(FORBIDDEN);
     }
+    // what main reads for the page: exactly one of a conversation, a job or the limit decisions
+    for (const what of [{}, { job: '' }, { limits: 1 }, { conversation: 'c1', job: 'j1' }, { conversation: 7 }, null, 'c1', [{ job: 'j1' }]]) {
+      expect(await call('obid-load', own(), what), JSON.stringify(what)).toBeNull();
+    }
     // the Obysphere's rules: only a version the page read
     for (const version of ['0', 1.5, null, undefined]) expect(await call('sphere-set-policy', own(), version), String(version)).toBeNull();
     expect(the.policies).toBe(0);
@@ -243,6 +251,9 @@ describe('IPC-3', () => {
     expect(the.opened).toEqual([]);
     await call('open-external', own(), 'https://example.com');
     expect(the.opened).toEqual(['https://example.com']);
+    // a render error's report: strings only, else no crash line
+    await call('render-error', own(), 'TypeError', { secret: 1 }, '');
+    expect(existsSync(join(the.userData, 'crashes.jsonl'))).toBe(false);
   });
 
   it('ipc_3: the decoders', () => {

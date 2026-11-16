@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TRY_AGAIN, owners } from '../../../shared/words';
+import { stoppedLine } from '../view';
+import { liveBridge } from './liveBridge';
 
 // The task's menu wired to obid (docs/contracts/tasks.md, TASKS-1 to TASKS-3, TASKS-10): what the
 // app sends obid through main's bridge (window.app.obid), and what the task does with the answer.
@@ -7,8 +9,8 @@ import { TRY_AGAIN, owners } from '../../../shared/words';
 // hold: obid answers only once it's settled (an event can come meanwhile)
 type Answer = { status: number; body?: unknown; hold?: Promise<unknown> };
 const calls: { method: string; path: string; body?: unknown }[] = [];
-// obid's event stream, as main passes it on (window.app.obid.follow): fed by the test
-let feed: (text: string) => void = () => {};
+// main's one follower of obid's events, as the page meets it (window.app.obid.live and load)
+let bridge = liveBridge();
 let answers: Record<string, Answer> = {};
 const job = (more: Record<string, unknown> = {}) => ({
   id: 'j1', request: 'Fix it', agent: 'claude', account: 'a1', repo: 'deskree-inc/oby', branch: 'oby/fix-1', base: 'dev', issue: null,
@@ -43,8 +45,8 @@ async function load(withObid: boolean) {
     await answers[`CONFIRM ${item}`]?.hold;
     return { status: 200, text: JSON.stringify(answers[`CONFIRM ${item}`]?.body ?? {}) };
   };
-  const follow = (onChunk: (text: string) => void) => { feed = onChunk; return () => {}; };
-  vi.stubGlobal('window', withObid ? { app: { obid: { call, confirm, follow } } } : {});
+  bridge = liveBridge(call);
+  vi.stubGlobal('window', withObid ? { app: { obid: { call, confirm, ...bridge.obid } } } : {});
   const tasks = await import('../tasks');
   const live = await import('../live');
   return { tasks, live };
@@ -57,18 +59,15 @@ async function seed(t: Awaited<ReturnType<typeof load>>['tasks'], more: Record<s
   calls.length = 0;
 }
 
-// Following obid's events, with obid having `jobs` and nothing else; then an event, as obid sends it
+// Following obid's events through main, with obid having `jobs` and nothing else; then an event, as
+// main passes it on
 async function following(live: Awaited<ReturnType<typeof load>>['live'], jobs: unknown[]) {
-  answers['GET /v1/status'] = { status: 200, body: { runner: { version: '0.2.4', host: 'mac' }, accounts: [], models: {}, maxRunning: 6, running: 0 } };
-  answers['GET /v1/jobs?limit=100'] = { status: 200, body: jobs };
-  answers['GET /v1/inbox'] = { status: 200, body: [] };
-  answers['GET /v1/conversations?limit=200'] = { status: 200, body: [] };
   live.connect();
-  feed('');
+  bridge.sync({ jobs });
   for (let i = 0; i < 5; i++) await flush();
   expect(live.liveState().connection).toBe('live');
   calls.length = 0;
-  return (name: string, data: unknown) => feed(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+  return bridge.event;
 }
 // an answer of obid's held until the test lets it go
 function held() {
@@ -234,13 +233,10 @@ describe('the task menu on obid', () => {
     const entry = (n: number) => ({ n, at: '2026-10-30T10:00:00Z', kind: 'tool', tool: 'Read', summary: `Reading f${n}.rs`, state: 'done' });
     answers['GET /v1/jobs/j1/transcript'] = { status: 200, body: { next: null, entries: [entry(1)] } };
     await live.loadSession('j1');
-    answers['GET /v1/status'] = { status: 200, body: { runner: { version: '0.2.4', host: 'mac' }, accounts: [], models: {}, maxRunning: 6, running: 0 } };
-    answers['GET /v1/jobs?limit=100'] = { status: 200, body: [job({ status: 'running' })] };
-    answers['GET /v1/inbox'] = { status: 200, body: [] };
-    answers['GET /v1/conversations?limit=200'] = { status: 200, body: [] };
     live.connect();
-    // obid's first text holds it: the read of everything else starts only then
-    feed(`event: transcript\ndata: ${JSON.stringify({ job: 'j1', entry: entry(2) })}\n\n`);
+    // main held it while it read obid's lists: it comes right after main's snapshot
+    bridge.sync({ jobs: [job({ status: 'running' })] });
+    bridge.event('transcript', { job: 'j1', entry: entry(2) });
     for (let i = 0; i < 5; i++) await flush();
     expect(live.liveState().connection).toBe('live');
     expect(live.sessionNow('j1')!.map((e) => e.n).sort()).toEqual([1, 2]);
@@ -256,14 +252,14 @@ describe('the task menu on obid', () => {
     expect(live.liveState().problem).toBe('Not found.');
   });
 
-  it('LIVETASK-12: why it stopped is obid\'s reason, on its task and on the card that asks, before the agent\'s last words', async () => {
+  it('LIVETASK-12: why it stopped is obid\'s reason, on its task and its plain line, before the agent\'s last words', async () => {
     const { live, tasks } = await load(true);
     await following(live, [job({ id: 'j1', status: 'stopped', reason: 'Stopped by you.', summary: 'I was reading.' }), job({ id: 'j2', status: 'failed', reason: 'The login failed.\nThe log', summary: 'I was reading.', dismissed: null })]);
     const all = tasks.tasksOf('tasks');
     expect(all.find((t) => t.id === 'j1')!.job.reason).toBe('Stopped by you.');
     const failed = all.find((t) => t.id === 'j2')!;
     expect(failed.job.reason).toBe('The login failed.\nThe log');
-    expect(failed.job.ask?.text).toBe('The login failed.');
+    expect(stoppedLine(failed.job)).toBe('The login failed.');
   });
 
   it('LIVETASK-15: a deleted job fetches nothing more', async () => {
@@ -518,25 +514,6 @@ describe('obid\'s answers over the events that came meanwhile', () => {
     expect(tasks.dev!.get().map((t) => t.id)).toEqual(['j1']);
   });
 
-  it('back after the stream was away: a task deleted meanwhile (on the iPhone) leaves, the older ones a conversation fetched stay', async () => {
-    const { tasks, live } = await load(true);
-    await following(live, [job({ id: 'j2', created: '2026-10-30T11:00:00Z' }), job()]);
-    // one older than obid's latest 100, which an opened conversation fetched
-    answers['GET /v1/conversation?id=c1&limit=100'] = { status: 200, body: [{ id: 't1', who: 'oby', text: 'Done.', at: '2026-10-01T10:00:00Z', jobs: ['j0'], conversation: 'c1' }] };
-    answers['GET /v1/jobs/j0'] = { status: 200, body: job({ id: 'j0', created: '2026-10-01T10:00:00Z' }) };
-    await live.openConversation('c1');
-    for (let i = 0; i < 3; i++) await flush();
-    expect(tasks.dev!.get().map((t) => t.id)).toEqual(['j2', 'j1', 'j0']);
-
-    // j1 deleted while away; obid's 100 newest are j2 and 99 after it
-    const latest = [job({ id: 'j2', created: '2026-10-30T11:00:00Z' }), ...Array.from({ length: 99 }, (_, i) => job({ id: `k${i}`, created: `2026-10-29T10:${String(i % 60).padStart(2, '0')}:00Z` }))];
-    await following(live, latest);
-    expect(tasks.dev!.get().map((t) => t.id).filter((id) => !id.startsWith('k'))).toEqual(['j2', 'j0']);
-    // fewer than 100: that's all of them
-    await following(live, [job({ id: 'j2', created: '2026-10-30T11:00:00Z' })]);
-    expect(tasks.dev!.get().map((t) => t.id)).toEqual(['j2']);
-  });
-
   // each answer obid gives as the whole job, crossed by the job's newer event (its revision on, #1709)
   const asJobs: [string, (live: Awaited<ReturnType<typeof load>>['live']) => Promise<unknown>][] = [
     ['POST /v1/jobs/j1/stop', (l) => l.stopJob('j1')],
@@ -545,41 +522,43 @@ describe('obid\'s answers over the events that came meanwhile', () => {
     ['PATCH /v1/jobs/j1', (l) => l.renameJob('j1', 'Vault tests')],
     ['POST /v1/github/work/w1/start', (l) => l.startGitHubWork('w1')],
     ['POST /v1/jobs/j1/messages', (l) => l.tellJob('j1', 'And the docs')],
-    ['POST /v1/jobs/j1/dismiss', (l) => l.answerJob('j1', 'Stop here')],
+    ['POST /v1/jobs/j1/dismiss', (l) => l.letGoJob('j1')],
   ];
 
-  // #1836: Sangam's failed card, on a job with no inbox item
-  describe('a failed task\'s card', () => {
+  // #1836: a failed task, on a job with no inbox item: no card of the app's own (TASKS-25)
+  describe('a failed task', () => {
     const failed = async () => {
       const { tasks, live } = await load(true);
       const event = await following(live, [job({ status: 'failed', step: 'Failed', summary: 'It broke', session: 's1', revision: 1 })]);
       calls.length = 0;
       return { tasks, live, event };
     };
-    const ask = (t: Awaited<ReturnType<typeof load>>['tasks']) => t.dev!.get().find((x) => x.id === 'j1')!.job.ask;
+    const task = (t: Awaited<ReturnType<typeof load>>['tasks']) => t.dev!.get().find((x) => x.id === 'j1')!;
+    const ask = (t: Awaited<ReturnType<typeof load>>['tasks']) => task(t).job.ask;
+    const sent = () => calls.map((c) => [c.path, c.body]);
+    const question = {
+      id: 'orchestrator-1', kind: 'question', job: 'j1', title: 'Fix it needs your decision', text: 'Oby looked at it. Oby recommends: Rebase it.', options: ['Done'], details: null,
+      created: '2026-10-30T11:00:00Z', state: 'open', later: null, headline: null, recommended: null,
+    };
+    const stalled = { ...question, id: 'supervisor-1', title: 'Fix it stalled' };
+    const asked = async (item: Record<string, unknown> = question) => {
+      const it = await failed();
+      it.event('job', job({ status: 'interrupted', step: 'Stopped', session: 's1', reason: 'Stopped at a limit', revision: 2 }));
+      it.event('inbox', item);
+      answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ status: 'running', step: 'Working', session: 's1', revision: 3 }) };
+      answers['POST /v1/inbox/orchestrator-1/answer'] = { status: 200, body: { ...question, state: 'done', answer: 'Done' } };
+      answers['POST /v1/jobs/j1/dismiss'] = { status: 200, body: job({ status: 'interrupted', step: 'Stopped', session: 's1', dismissed: '2026-10-30T12:00:00Z', revision: 3 }) };
+      calls.length = 0;
+      return it;
+    };
+    const limit = { decision: 'd1', state: 'pending', resetAt: null };
 
-    describe('TASKS-14, #1795: Oby\'s own question about it, whose lone Done only settles it', () => {
-      const question = {
-        id: 'orchestrator-1', kind: 'question', job: 'j1', title: 'Fix it needs your decision', text: 'Oby looked at it. Oby recommends: Rebase it.', options: ['Done'], details: null,
-        created: '2026-10-30T11:00:00Z', state: 'open', later: null, headline: null, recommended: null,
-      };
-      const stalled = { ...question, id: 'supervisor-1', title: 'Fix it stalled' };
-      const asked = async (item: Record<string, unknown> = question) => {
-        const it = await failed();
-        it.event('job', job({ status: 'interrupted', step: 'Stopped', session: 's1', reason: 'Stopped at a limit', revision: 2 }));
-        it.event('inbox', item);
-        answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ status: 'running', step: 'Working', session: 's1', revision: 3 }) };
-        answers['POST /v1/inbox/orchestrator-1/answer'] = { status: 200, body: { ...question, state: 'done', answer: 'Done' } };
-        answers['POST /v1/jobs/j1/dismiss'] = { status: 200, body: job({ status: 'interrupted', step: 'Stopped', session: 's1', dismissed: '2026-10-30T12:00:00Z', revision: 3 }) };
-        calls.length = 0;
-        return it;
-      };
-      const sent = () => calls.map((c) => [c.path, c.body]);
-      const WAYS = ['Give it another round', 'Tell it something', 'Stop here'];
+    describe('TASKS-14, #1795: Oby\'s own question about it', () => {
+      const WAYS = ['Done', 'Tell it something'];
 
-      it('offers the way on, with no button looking recommended, and no Done that only settles it', async () => {
+      it('offers its own Done and Tell it something, with no button looking recommended', async () => {
         const { tasks } = await asked();
-        expect(ask(tasks)).toMatchObject({ kind: 'question', options: WAYS, recommended: -1 });
+        expect(ask(tasks)).toMatchObject({ kind: 'question', options: WAYS, recommended: -1, fullText: true });
       });
       it('stays as obid asked on a task that didn\'t stop, or one its follow-up carries on', async () => {
         const { tasks, event } = await asked();
@@ -589,15 +568,11 @@ describe('obid\'s answers over the events that came meanwhile', () => {
         event('job', job({ id: 'j2', followUpOf: 'j1', status: 'running', revision: 1 }));
         expect(ask(tasks)!.options).toEqual(['Done']);
       });
-      it('Give it another round tells its agent, in words a click on it signs, then settles the question', async () => {
+      it('Done answers it as any item\'s Done does', async () => {
         const { tasks, live } = await asked();
-        await live.answerJob('j1', 'Give it another round');
-        expect(sent()).toEqual([
-          ['/v1/jobs/j1/messages', { text: TRY_AGAIN }],
-          ['/v1/inbox/orchestrator-1/answer', { answer: 'Done' }],
-        ]);
-        expect(owners('POST', calls[0].path, calls[0].body, ['Give it another round'], [])).toEqual([0]);
-        expect(ask(tasks)).toBeUndefined();
+        await live.answerJob('j1', 'Done');
+        expect(sent()).toEqual([['/v1/inbox/orchestrator-1/answer', { answer: 'Done' }]]);
+        expect(task(tasks)).toMatchObject({ status: 'done', answer: 'Done' });
       });
       it('Tell it something sends the owner\'s words to the task, never as the question\'s answer', async () => {
         const { live } = await asked();
@@ -621,34 +596,16 @@ describe('obid\'s answers over the events that came meanwhile', () => {
         expect(owners('POST', calls[0].path, calls[0].body, ['Rebase onto main, then merge'], [])).toEqual([0]);
         expect(ask(tasks)).toBeUndefined();
       });
-      it('Stop here lets the task go and sends no Done, which obid would refuse: it settled the question itself', async () => {
-        const { tasks, live } = await asked();
-        answers['POST /v1/inbox/orchestrator-1/answer'] = { status: 409, body: { error: 'That item is done already.' } };
-        await live.answerJob('j1', 'Stop here');
-        expect(sent().map(([path]) => path)).toEqual(['/v1/jobs/j1/dismiss']);
-        expect(live.liveState().problem).toBeNull();
-        expect(ask(tasks)).toBeUndefined();
-      });
-      it('a task its limit stopped: its limit card decides, so no round is offered, nor sent by a card drawn before it (#1563)', async () => {
-        const { tasks, live, event } = await asked();
+      it('a task its limit stopped: its limit card decides, so its question is as obid asked it (#1563)', async () => {
+        const { tasks, event } = await asked();
         expect(ask(tasks)!.options).toEqual(WAYS);
-        event('job', job({ status: 'interrupted', step: 'Stopped', session: 's1', accountLimit: { decision: 'd1', state: 'pending', resetAt: null }, revision: 3 }));
+        event('job', job({ status: 'interrupted', step: 'Stopped', session: 's1', accountLimit: limit, revision: 3 }));
         expect(ask(tasks)!.options).toEqual(['Done']);
-        await live.answerJob('j1', 'Give it another round');
-        expect(sent()).toEqual([]);
       });
-      it('refused, it says why and is still asked', async () => {
-        const { tasks, live } = await asked();
-        answers['POST /v1/jobs/j1/messages'] = { status: 409, body: { error: 'It can\'t go on from here.' } };
-        await live.answerJob('j1', 'Give it another round');
-        expect(sent().map(([path]) => path)).toEqual(['/v1/jobs/j1/messages']);
-        expect(live.liveState().problem).toBe('It can\'t go on from here.');
-        expect(ask(tasks)!.options).toEqual(WAYS);
-      });
-      it('a stalled task\'s question refuses an answer: none is sent, and it means nothing once the task goes on', async () => {
+      it('a stalled task\'s question takes no answer: Tell it something alone, and it means nothing once the task goes on', async () => {
         const { tasks, live, event } = await asked(stalled);
-        expect(ask(tasks)!.options).toEqual(WAYS);
-        await live.answerJob('j1', 'Give it another round');
+        expect(ask(tasks)).toMatchObject({ options: ['Tell it something'], recommended: -1 });
+        await live.tryAgainJob('j1');
         expect(sent().map(([path]) => path)).toEqual(['/v1/jobs/j1/messages']);
         expect(live.liveState().problem).toBeNull();
         expect(ask(tasks)).toBeUndefined();
@@ -659,7 +616,7 @@ describe('obid\'s answers over the events that came meanwhile', () => {
         const { tasks, live, event } = await asked();
         answers['POST /v1/jobs/j1/messages'] = { status: 422, body: { error: 'It ran past its safety limit: Confirm to go on.' } };
         const confirm = { ...question, id: 'confirm-1', kind: 'confirm', title: 'Carry on Fix it', text: 'Past its limit', options: ['Confirm', 'Cancel'], confirm: { action: 'retry_job', target: 'j1', payload: null } };
-        await live.answerJob('j1', 'Give it another round');
+        await live.tryAgainJob('j1');
         event('inbox', confirm);
         expect(ask(tasks)!.options).toEqual(['Confirm', 'Cancel']);
         expect(sent().map(([path]) => path)).toEqual(['/v1/jobs/j1/messages']);
@@ -671,61 +628,110 @@ describe('obid\'s answers over the events that came meanwhile', () => {
       });
     });
 
-    it('offers another round and stopping, with another round first', async () => {
-      const { tasks } = await failed();
-      expect(ask(tasks)).toMatchObject({ kind: 'failed', options: ['Give it another round', 'Stop here'], recommended: 0 });
-    });
-    it('Give it another round tells its agent obid\'s Try-again words', async () => {
-      const { live } = await failed();
-      answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ status: 'running', step: 'Working', revision: 2 }) };
-      await live.answerJob('j1', 'Give it another round');
-      expect(calls.at(-1)).toMatchObject({ method: 'POST', path: '/v1/jobs/j1/messages' });
-      expect(JSON.stringify(calls.at(-1)!.body)).toContain('Try again, picking up where you left off.');
-      // a click on it signs them: the job stays the owner's own, not "words no app of the owner's signed"
-      expect(owners('POST', calls.at(-1)!.path, calls.at(-1)!.body, ['Give it another round'], [])).toEqual([0]);
-      expect(live.liveState().jobs.j1.status).toBe('running');
-    });
-    it('a second failure asks again', async () => {
-      const { tasks, live, event } = await failed();
-      answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ status: 'running', step: 'Working', session: 's1', revision: 2 }) };
-      await live.answerJob('j1', 'Give it another round');
-      expect(ask(tasks)).toBeUndefined();
-      event('job', job({ status: 'failed', step: 'Failed', summary: 'It broke again', session: 's1', revision: 3 }));
-      expect(ask(tasks)).toMatchObject({ options: ['Give it another round', 'Stop here'] });
-      expect(tasks.dev!.get().find((x) => x.id === 'j1')!.status).toBe('needs');
-    });
-    it('TASKS-20: one that never started is tried again with the Try-again words, as itself', async () => {
-      const { live, event } = await failed();
-      event('job', job({ status: 'failed', step: 'Failed', session: null, moves: [], title: 'Rebase 391', request: 'yes, do that', revision: 2 }));
-      answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ status: 'running', step: 'Working', session: null, revision: 3 }) };
-      await live.answerJob('j1', 'Give it another round');
-      const told = calls.find((c) => c.path === '/v1/jobs/j1/messages')!;
-      expect(told.body).toEqual({ text: TRY_AGAIN });
-      expect(JSON.stringify(told.body)).not.toContain('Rebase 391');
-      expect(JSON.stringify(told.body)).not.toContain('yes, do that');
-      // signed as the owner's, as on a task that started
-      expect(owners('POST', told.path, told.body, ['Give it another round'], [])).toEqual([0]);
-      expect(live.liveState().jobs.j1.status).toBe('running');
-    });
-    it('one moved to another account picks up with the Try-again words', async () => {
-      const { live, event } = await failed();
-      event('job', job({ status: 'failed', step: 'Failed', session: null, moves: [{ from: 'a' }], revision: 2 }));
-      answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ status: 'running', revision: 3 }) };
-      await live.answerJob('j1', 'Give it another round');
-      expect(JSON.stringify(calls.find((c) => c.path === '/v1/jobs/j1/messages')!.body)).toContain('Try again');
-    });
-    it('one its follow-up carries on asks nothing', async () => {
-      const { tasks, event } = await failed();
-      event('job', job({ id: 'j2', followUpOf: 'j1', status: 'running', revision: 1 }));
-      expect(ask(tasks)).toBeUndefined();
-    });
-    it('a refused round says why, and leaves the choice', async () => {
-      const { tasks, live } = await failed();
-      answers['POST /v1/jobs/j1/messages'] = { status: 409, body: { error: 'It can\'t go on from here.' } };
-      await live.answerJob('j1', 'Give it another round');
-      expect(live.liveState().problem).toBe('It can\'t go on from here.');
-      expect(live.liveState().answered.j1).toBeUndefined();
-      expect(ask(tasks)!.options).toContain('Stop here');
+    describe('TASKS-25: it asks nothing; its reason is a plain line, Try again and Stop here in its menu', () => {
+      it('a failed job, and an interrupted one, with no inbox item: no card, done, and its menu can try again', async () => {
+        const { tasks, event } = await failed();
+        expect(ask(tasks)).toBeUndefined();
+        expect(task(tasks).status).toBe('done');
+        expect(task(tasks).job.canTryAgain).toBe(true);
+        event('job', job({ status: 'interrupted', step: 'Stopped', reason: 'Not logged in', session: 's1', revision: 2 }));
+        expect(ask(tasks)).toBeUndefined();
+        expect(task(tasks).status).toBe('done');
+        expect(task(tasks).job.canTryAgain).toBe(true);
+      });
+      it('no Try again once it\'s let go, a follow-up carries it on, or an account\'s limit holds it', async () => {
+        const { tasks, event } = await failed();
+        event('job', job({ status: 'failed', step: 'Failed', session: 's1', dismissed: '2026-10-30T12:00:00Z', revision: 2 }));
+        expect(task(tasks).job.canTryAgain).toBe(false);
+        event('job', job({ status: 'failed', step: 'Failed', session: 's1', accountLimit: limit, revision: 3 }));
+        expect(task(tasks).job.canTryAgain).toBe(false);
+        event('job', job({ status: 'failed', step: 'Failed', session: 's1', revision: 4 }));
+        expect(task(tasks).job.canTryAgain).toBe(true);
+        event('job', job({ id: 'j2', followUpOf: 'j1', status: 'running', revision: 1 }));
+        expect(task(tasks).job.canTryAgain).toBe(false);
+        expect(ask(tasks)).toBeUndefined();
+      });
+      it('Try again tells its agent obid\'s Try-again words, signed for a click on Try again', async () => {
+        const { live } = await failed();
+        answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ status: 'running', step: 'Working', revision: 2 }) };
+        await live.tryAgainJob('j1');
+        expect(sent()).toEqual([['/v1/jobs/j1/messages', { text: TRY_AGAIN }]]);
+        // a click on it signs them: the job stays the owner's own, not "words no app of the owner's signed"
+        expect(owners('POST', calls[0].path, calls[0].body, ['Try again'], [])).toEqual([0]);
+        expect(live.liveState().jobs.j1.status).toBe('running');
+      });
+      it('TASKS-20: one that never started is tried again with the Try-again words, as itself', async () => {
+        const { live, event } = await failed();
+        event('job', job({ status: 'failed', step: 'Failed', session: null, moves: [], title: 'Rebase 391', request: 'yes, do that', revision: 2 }));
+        answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ status: 'running', step: 'Working', session: null, revision: 3 }) };
+        await live.tryAgainJob('j1');
+        const told = calls.find((c) => c.path === '/v1/jobs/j1/messages')!;
+        expect(told.body).toEqual({ text: TRY_AGAIN });
+        // signed as the owner's, as on a task that started
+        expect(owners('POST', told.path, told.body, ['Try again'], [])).toEqual([0]);
+        expect(live.liveState().jobs.j1.status).toBe('running');
+      });
+      it('one moved to another account picks up with the Try-again words', async () => {
+        const { live, event } = await failed();
+        event('job', job({ status: 'failed', step: 'Failed', session: null, moves: [{ from: 'a' }], revision: 2 }));
+        answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ status: 'running', revision: 3 }) };
+        await live.tryAgainJob('j1');
+        expect(calls.find((c) => c.path === '/v1/jobs/j1/messages')!.body).toEqual({ text: TRY_AGAIN });
+      });
+      it('a refused Try again shows obid\'s words, and leaves Try again in its menu', async () => {
+        const { tasks, live } = await failed();
+        answers['POST /v1/jobs/j1/messages'] = { status: 409, body: { error: 'It can\'t go on from here.' } };
+        await live.tryAgainJob('j1');
+        expect(live.liveState().problem).toBe('It can\'t go on from here.');
+        expect(task(tasks).job.canTryAgain).toBe(true);
+      });
+      it('one an account\'s limit holds: Try again sends nothing, its limit card decides (#1563)', async () => {
+        const { live, event } = await failed();
+        event('job', job({ status: 'interrupted', step: 'Stopped', session: 's1', accountLimit: limit, revision: 2 }));
+        calls.length = 0;
+        await live.tryAgainJob('j1');
+        expect(sent()).toEqual([]);
+      });
+      it('with Oby\'s question open, Try again sends the Try-again words, then Done to it', async () => {
+        const { tasks, live } = await asked();
+        await live.tryAgainJob('j1');
+        expect(sent()).toEqual([
+          ['/v1/jobs/j1/messages', { text: TRY_AGAIN }],
+          ['/v1/inbox/orchestrator-1/answer', { answer: 'Done' }],
+        ]);
+        expect(ask(tasks)).toBeUndefined();
+      });
+      it('Stop here lets it go: only POST /v1/jobs/j1/dismiss', async () => {
+        const { tasks, live } = await failed();
+        answers['POST /v1/jobs/j1/dismiss'] = { status: 200, body: job({ status: 'failed', step: 'Failed', session: 's1', dismissed: '2026-10-30T12:00:00Z', revision: 2 }) };
+        await live.letGoJob('j1');
+        expect(sent().map(([path]) => path)).toEqual(['/v1/jobs/j1/dismiss']);
+        expect(task(tasks).job.canTryAgain).toBe(false);
+      });
+      it('Stop here with Oby\'s question open sends no Done, which obid would refuse: it settled the question itself', async () => {
+        const { tasks, live } = await asked();
+        answers['POST /v1/inbox/orchestrator-1/answer'] = { status: 409, body: { error: 'That item is done already.' } };
+        await live.letGoJob('j1');
+        expect(sent().map(([path]) => path)).toEqual(['/v1/jobs/j1/dismiss']);
+        expect(live.liveState().problem).toBeNull();
+        expect(ask(tasks)).toBeUndefined();
+      });
+      it('a refused Stop here shows obid\'s words', async () => {
+        const { live } = await failed();
+        answers['POST /v1/jobs/j1/dismiss'] = { status: 409, body: { error: 'It is running.' } };
+        await live.letGoJob('j1');
+        expect(live.liveState().problem).toBe('It is running.');
+      });
+      it('a second failure after Try again raises no card again', async () => {
+        const { tasks, live, event } = await failed();
+        answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ status: 'running', step: 'Working', session: 's1', revision: 2 }) };
+        await live.tryAgainJob('j1');
+        expect(task(tasks).status).toBe('running');
+        event('job', job({ status: 'failed', step: 'Failed', summary: 'It broke again', session: 's1', revision: 3 }));
+        expect(ask(tasks)).toBeUndefined();
+        expect(task(tasks).status).toBe('done');
+        expect(task(tasks).job.canTryAgain).toBe(true);
+      });
     });
   });
   it.each(asJobs)('%s: an answer older than the job\'s event keeps the event\'s job, and never brings back a deleted one', async (route, act) => {
@@ -756,38 +762,6 @@ describe('obid\'s answers over the events that came meanwhile', () => {
     const event = await following(live, [job({ status: 'running', step: 'Working', revision: 5 })]);
     event('job', job({ status: 'done', step: 'Done' }));
     expect(live.liveState().jobs.j1.status).toBe('done');
-  });
-
-  it('back after obid restarted with a lower revision: obid\'s list wins, but a newer answer that came while it was read stays (#1709)', async () => {
-    const { live } = await load(true);
-    await following(live, [job({ status: 'running', step: 'Working', revision: 5 })]);
-    // obid restarted before its last save (its revision went back): its list is the job now
-    await following(live, [job({ status: 'done', step: 'Done', revision: 2 })]);
-    expect(live.liveState().jobs.j1.status).toBe('done');
-
-    // a rename's answer, newer than the list read meanwhile
-    const { hold, go } = held();
-    answers['GET /v1/jobs?limit=100'] = { status: 200, body: [job({ revision: 3 })], hold };
-    answers['PATCH /v1/jobs/j1'] = { status: 200, body: job({ title: 'Vault tests', revision: 4 }) };
-    live.connect();
-    feed('');
-    await flush();
-    await live.renameJob('j1', 'Vault tests');
-    go();
-    for (let i = 0; i < 5; i++) await flush();
-    expect(live.liveState().connection).toBe('live');
-    expect(live.liveState().jobs.j1.title).toBe('Vault tests');
-  });
-
-  it('a conversation opened after its task was deleted doesn\'t fetch the task back (#1709)', async () => {
-    const { tasks, live } = await load(true);
-    const event = await following(live, [job()]);
-    event('job', { id: 'j1', deleted: true });
-    answers['GET /v1/conversation?id=c1&limit=100'] = { status: 200, body: [{ id: 't1', who: 'oby', text: 'Done.', at: '2026-10-30T10:20:00Z', jobs: ['j1'], conversation: 'c1' }] };
-    answers['GET /v1/jobs/j1'] = { status: 200, body: job() };
-    await live.openConversation('c1');
-    for (let i = 0; i < 3; i++) await flush();
-    expect(tasks.dev!.get()).toEqual([]);
   });
 
   it('words that start a conversation: the turns other conversations got while its own were read stay', async () => {

@@ -5,8 +5,15 @@
 // does comes from the thread's first prompt (the job's task):
 //   COMMIT: <file>   asks to write the file (a file change), writes it, asks to commit, commits
 //   SNEAK: <file>    writes the file and commits it without asking (Plan mode or not)
+//   PLAN: <file>     appends its thread to .obi/threads.log every turn and asks to write the file
+//                    (a file change), the answer appended to .obi/answers.log; told the owner
+//                    approved the plan, writes it on accept and says "Added <file>."; otherwise
+//                    ends with "Plan: add <file>", and told the plan was sent back, appends that
+//                    prompt to .obi/heard.log first
 //   ASK: <command>   asks to run the command and says what obid answered, and what it heard after;
 //                    every answer goes to .obi/answers.log, one per line
+//   RUN: <command>   runs the command with /bin/sh in its worktree, asking nothing, and says its
+//                    exit status and output
 //   obid's word that it paused it  (a call of its waited for the owner past parkAfter, and its
 //                    thread is resumed with the answer): allowed, the turn goes on with the task
 //                    (and its call again); otherwise says what it heard
@@ -62,7 +69,7 @@
 // the policy and profile it was asked for. A thread keeps the `-c` settings it was started with
 // (`settings`).
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -197,6 +204,11 @@ async function runTurn(turnId, prompt) {
     const read = existsSync("work.md") ? ` It read work.md: ${readFileSync("work.md", "utf8").split("\n")[0]}` : "";
     return complete(turnId, `The plan: {"action":"reply_only","reply":"From Codex.${read}","dispatches":[],"question":null}`);
   }
+  const run = task.match(/RUN: (.+)$/m);
+  if (run) {
+    const ran = spawnSync("/bin/sh", ["-c", run[1]], { encoding: "utf8" });
+    return complete(turnId, `ran: ${ran.status}\n${ran.stdout}${ran.stderr}`);
+  }
   const commit = task.match(/COMMIT: (\S+)/);
   const command = task.match(/ASK: (.+)$/m);
   const sneak = task.match(/SNEAK: (\S+)/);
@@ -206,6 +218,23 @@ async function runTurn(turnId, prompt) {
     execFileSync("git", ["add", sneak[1]]);
     execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", `Add ${sneak[1]}`]);
     return complete(turnId, `Added ${sneak[1]}.`);
+  }
+  const plan = task.match(/PLAN: (\S+)/);
+  if (plan) {
+    mkdirSync(".obi", { recursive: true });
+    appendFileSync(".obi/threads.log", `${thread}\n`);
+    const file = resolve(plan[1]);
+    const change = item("fileChange", { changes: [{ path: file, kind: { type: "add" } }], status: "inProgress" });
+    send({ method: "item/started", params: { threadId: thread, turnId, item: change } });
+    const edit = await ask("item/fileChange/requestApproval", { threadId: thread, turnId, itemId: change.id });
+    appendFileSync(".obi/answers.log", `${edit.decision}\n`);
+    if (prompt.includes("The owner approved the plan")) {
+      if (edit.decision !== "accept") return complete(turnId, `edit: ${edit.decision}`);
+      writeFileSync(file, "hello\n");
+      return complete(turnId, `Added ${plan[1]}.`);
+    }
+    if (prompt.includes("sent back the plan")) appendFileSync(".obi/heard.log", `${prompt}\n`);
+    return complete(turnId, `Plan: add ${plan[1]}`);
   }
   if (commit) {
     const file = resolve(commit[1]);

@@ -6,7 +6,7 @@ import { everything } from './lean';
 import { useAccounts, useModels, useTalkDefault, type Account } from './SettingsView';
 import { chooseTalk, lookAtUsage, useTalkSetting, type Chat } from './chats';
 import { AUTO, PILL_TOOL_NAME, accountModels, chosenOf, dot, list, menuModels, modelChoice, modelUsage, percent, rowTitle, shownAccount, toolName, usageLines } from './talk';
-import { agentOf, type Agent } from './mock';
+import { agentOf, type Agent } from './view';
 import { isAgent } from '../../shared/obid-wire';
 
 // Claude's mark in its own colour; OpenAI's and Cursor's are one colour, drawn in the text's (a tool

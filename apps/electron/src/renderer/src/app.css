@@ -359,6 +359,29 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .archive-who { margin-right: 6px; color: var(--text); }
 .archive-about, .archive-ago { color: var(--muted); font-size: var(--text-sm); }
 .archive-ago { flex: none; }
+/* Waiting for you (WaitingView.tsx, Sangam's screen 17): one card per thing that needs your word */
+.waiting-head { width: 100%; margin-bottom: 12px; display: flex; align-items: center; gap: 12px; }
+.waiting-head .group-title { margin: 0; }
+.waiting-chip { height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: none; color: var(--text); font-size: var(--text-sm); }
+.waiting-counts { color: var(--muted); font-size: var(--text-sm); }
+.waiting-list { width: 100%; margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.waiting-row { padding: 16px; display: flex; align-items: flex-start; gap: 12px; border: 1px solid var(--line); border-radius: 12px; }
+.waiting-row > svg { flex: none; margin-top: 2px; }
+.waiting-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.waiting-title { margin: 0; color: var(--ink); font-size: var(--text-base); font-weight: 500; }
+.waiting-meta, .waiting-about { margin: 0; color: var(--muted); font-size: var(--text-sm); }
+.waiting-about { color: var(--text); }
+.waiting-summary { margin: 0; color: var(--muted); font-size: var(--text-sm); }
+.waiting-tag.is-failed { color: var(--danger); }
+.waiting-tag { display: inline-flex; align-items: center; gap: 4px; }
+.waiting-diff .is-added { color: #30d158; }  /* lines added: macOS's green */
+.waiting-diff .is-removed { color: var(--danger); }
+.waiting-detail { align-self: flex-start; color: var(--danger); font-size: var(--text-sm); }
+.waiting-chips { margin: 4px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.waiting-kind, .waiting-tag { padding: 2px 8px; border-radius: 6px; background: var(--hover); color: var(--muted); font-size: var(--text-sm); }
+.waiting-kind.is-permission, .waiting-kind.is-question { color: var(--needs); }
+.waiting-actions { flex: none; display: flex; gap: 8px; }
+.waiting-count { margin-left: auto; padding: 0 7px; border-radius: 6px; background: var(--hover); color: var(--needs); font-size: var(--text-sm); }
 .group-cards { width: 100%; display: flex; flex-direction: column; gap: 8px; }
 .group-empty { margin: 8px 4px; color: var(--muted); font-size: var(--text-base); }
 /* a tab with nothing in it: its words in the middle of the window's height (the view starts under
@@ -486,8 +509,11 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .tc-done { margin-top: 12px; display: grid; grid-template-rows: 1fr; transition: grid-template-rows 360ms var(--warm), opacity var(--fade), margin-top 360ms var(--warm); }
 .tc-done > div { min-height: 0; overflow: hidden; }
 .tc-done .tc-result { margin: 0; }
+.tc-done .tc-result + .tc-result { margin-top: 4px; }
 .task-card.is-open .tc-done { grid-template-rows: 0fr; opacity: 0; margin-top: 0; }
 .tc-result { margin: 8px 0 0; color: var(--muted); font-size: var(--text-sm); }
+/* failed or interrupted: why, the line the owner reads, so in --text (TASKS-25) */
+.tc-result.is-stopped { color: var(--text); }
 .tc-result a { color: var(--text); text-decoration: none; }
 .tc-result a:hover { color: var(--ink); text-decoration: underline; }
 
@@ -1259,6 +1285,22 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
   overflow: hidden;
   mask-image: var(--fade-out);
 }
+/* chat first: the open profile's name, its menu under it (screen 07), the text where a plain title's is;
+   a long name ends in an ellipsis instead of the fade, so its chevron always shows */
+.sidebar-title:has(> .sidebar-title-button) { mask-image: none; }
+.sidebar-title-button { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; height: 32px; margin-left: -6px; padding: 0 6px; border-radius: 8px; transition: background-color var(--fade); }
+.sidebar-title-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-title-button svg { flex: none; color: var(--muted); }
+.sidebar-title-button:is(:hover, .is-on) { background: var(--hover); }
+/* its menu's rows: the profile's initial on its colour, its name, then its dot and the check */
+.row-menu button.profile-choice { height: 34px; padding: 0 10px; gap: 12px; }
+.profile-choice .owner-avatar { font-size: 9px; }
+.profile-choice .status-dot { margin-left: auto; }
+.profile-choice .status-dot + .menu-check { margin-left: 8px; }
+/* New profile's colours */
+.profile-swatches { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.profile-swatch { width: 24px; height: 24px; border-radius: 50%; transition: box-shadow var(--fade); }
+.profile-swatch.is-on { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--ink); }
 /* a side panel row: a picture or logo, a name, a line under it; conversations
    and Members share it */
 .connector, .task {

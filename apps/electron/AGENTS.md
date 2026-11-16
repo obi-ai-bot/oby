@@ -12,7 +12,7 @@ obid's API shapes for this app are declared in `src/shared/obid-wire.ts`, shared
 
 ## The mock
 
-`src/renderer/src/mock.ts` holds the demo data shown in a browser (`npm run web`) or with `?everything`. Production renderer files also import from it: view types (`Job`, `Message`, ...), constants (`AGENTS`, `ago`, ...) and some demo lists (`JOBS`, `TURNS`, `OBYS`, ...). On obid, `OBYS`, `PLACES` and `SHARED_WITH_ME` are empty (`onObid` in `src/renderer/src/lean.ts`). Moving the view types out of `mock.ts` is follow-up work, not done yet.
+The view types (`Job`, `Message`, ...), constants (`AGENTS`, `TELL`, ...) and pure helpers (`agentOf`, `ago`, ...) are in `src/renderer/src/view.ts`. `src/renderer/src/mock.ts` holds the demo data shown in a browser (`npm run web`) or with `?everything`; production renderer files still import some demo lists from it (`JOBS`, `TURNS`, `OBYS`, ...). On obid, `OBYS`, `PLACES` and `SHARED_WITH_ME` are empty (`onObid` in `src/renderer/src/lean.ts`).
 
 ## Build and run
 

@@ -4,7 +4,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // Settings rows obid has no setting for yet, kept by main (docs/contracts/live-state.md, LIVE-25
-// and 26): the page's half, useSetting, with main's bridge (window.app.settings) stood in for.
+// to 29): the page's half, useSetting, with main's bridge (window.app.settings, and Open at login's
+// window.app.loginItem) stood in for.
 
 type Local = Record<string, unknown> | null;
 let root: Root | null = null;
@@ -19,13 +20,13 @@ afterEach(async () => {
   document.body.innerHTML = '';
 });
 
-// main's bridge, its kept rows answered when the test says; then SettingsView loaded fresh, as
-// the app starts
-async function start() {
+// main's bridge, its kept rows answered when the test says, and the app's login item when given;
+// then SettingsView loaded fresh, as the app starts
+async function start(loginItem?: (on?: boolean) => Promise<boolean | null>) {
   let answer!: (local: Local) => void;
   const local = new Promise<Local>((r) => { answer = r; });
   const keep = vi.fn(async (_key: string, _value: unknown) => true);
-  (window as { app?: unknown }).app = { settings: { local: () => local, keep } };
+  (window as { app?: unknown }).app = { settings: { local: () => local, keep }, ...(loginItem && { loginItem }) };
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('location', { search: '' });
   const view = await import('../SettingsView');
@@ -109,6 +110,72 @@ describe('LIVE-26', () => {
     await act(async () => root!.render(<Again />));
     await again.answer({ login: false, 'share.chosen': ['g1'] });
     expect(rows).toMatchObject({ login: false, chosen: ['g1'] });
+  });
+});
+
+describe('WORDS-17', () => {
+  it('words_17: Settings › Vault removes a secret by its own Remove Secret button, never a bare Remove', async () => {
+    const { view, answer } = await start();
+    await act(async () => root!.render(<view.default page="vault" leaving={false} onClose={() => {}} onGone={() => {}} />));
+    await answer({ vault: ['staging-key'] });
+    const labels = Array.from(host.querySelectorAll('button')).map((b) => b.textContent);
+    expect(labels).toContain('Remove Secret');
+    expect(labels).not.toContain('Remove');
+  });
+});
+
+describe('LIVE-27', () => {
+  it('live_27: turning the switch keeps the row and asks main to apply it', async () => {
+    const loginItem = vi.fn(async (_on?: boolean) => true as boolean | null).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const { view, keep, answer } = await start(loginItem);
+    await general(view);
+    await answer({});
+    expect(loginItem).toHaveBeenCalledWith();
+    expect(login().getAttribute('aria-checked')).toBe('true');
+    await act(async () => login().click());
+    expect(keep).toHaveBeenLastCalledWith('login', false);
+    expect(loginItem).toHaveBeenLastCalledWith(false);
+    expect(login().getAttribute('aria-checked')).toBe('false');
+  });
+});
+
+describe('LIVE-29', () => {
+  it('live_29_the_switch_shows_macos_state_when_it_differs_from_the_saved_value', async () => {
+    const { view, answer } = await start(async () => false);
+    await general(view);
+    await answer({ login: true });
+    expect(login().getAttribute('aria-checked')).toBe('false');
+    // and the other way round
+    await act(async () => root!.unmount());
+    vi.resetModules();
+    const again = await start(async () => true);
+    root = createRoot(host);
+    await general(again.view);
+    await again.answer({ login: false });
+    expect(login().getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('live_29: a change macOS doesn\'t take goes back to what macOS says', async () => {
+    const loginItem = vi.fn(async (_on?: boolean) => false as boolean | null);
+    const { view, keep, answer } = await start(loginItem);
+    await general(view);
+    await answer({ login: false });
+    await act(async () => login().click());
+    expect(keep).toHaveBeenLastCalledWith('login', true);
+    expect(loginItem).toHaveBeenLastCalledWith(true);
+    expect(login().getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('live_29: no answer from main shows the kept row', async () => {
+    const loginItem = vi.fn(async (_on?: boolean) => null as boolean | null).mockRejectedValueOnce(new Error('main is gone'));
+    const { view, answer } = await start(loginItem);
+    await general(view);
+    await answer({ login: false });
+    expect(login().getAttribute('aria-checked')).toBe('false');
+    // a null answer to a turn: the row as turned
+    await act(async () => login().click());
+    expect(loginItem).toHaveBeenLastCalledWith(true);
+    expect(login().getAttribute('aria-checked')).toBe('true');
   });
 });
 

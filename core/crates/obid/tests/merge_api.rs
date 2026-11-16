@@ -39,7 +39,10 @@ fn head() -> String {
 /// `--disable-auto` off (failing with `gh/no-disable`). With `gh/queue` its base takes it only
 /// through a merge queue. `gh/changes.json`, when a test writes one, is a review more, as it is,
 /// `gh/comments.json` every review's comments, and `gh/wrote.json` GraphQL's answer about who
-/// wrote and edited the pull request's texts; the owner is a member of `obi-e2e`.
+/// wrote and edited the pull request's texts; the owner is a member of `obi-e2e`. With `gh/into`
+/// the pull request's base is the branch that file names instead of dev, and with `gh/bare` it
+/// has no checks on GitHub; the merge's input is kept as `gh/put.json`. With `gh/branch` its head
+/// branch is the one that file names instead of `oby/fix-7`.
 fn stand_in_gh(folder: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let bin = folder.join("bin");
@@ -92,8 +95,11 @@ fn stand_in_gh(folder: &Path) -> PathBuf {
         r#"#!/bin/sh
 dir='{state}'
 printf '%s|%s\n' "$GH_CONFIG_DIR" "$*" >> "$dir/calls"
-now=; [ -f "$dir/remote" ] && remote="$(cat "$dir/remote")" && now="$(git --git-dir="$remote" rev-parse refs/heads/oby/fix-7)"
-out() {{ if [ -n "$now" ]; then sed "s/{head}/$now/g" "$1"; else cat "$1"; fi; }}
+br=oby/fix-7; [ -f "$dir/branch" ] && br="$(cat "$dir/branch")"
+now=; [ -f "$dir/remote" ] && remote="$(cat "$dir/remote")" && now="$(git --git-dir="$remote" rev-parse "refs/heads/$br")"
+out() {{ if [ -n "$now" ]; then sed "s/{head}/$now/g" "$1"; else cat "$1"; fi | into | bare; }}
+into() {{ if [ -f "$dir/into" ]; then sed "s/\"dev\"/\"$(cat "$dir/into")\"/g"; else cat; fi; }}
+bare() {{ if [ -f "$dir/bare" ]; then sed 's/"statusCheckRollup":\[[^]]*\]/"statusCheckRollup":[]/'; else cat; fi; }}
 behind() {{ if [ -f "$dir/behind" ] && ! git --git-dir="$remote" merge-base --is-ancestor refs/heads/dev "$now"; then sed 's/"CLEAN"/"BEHIND"/'; else cat; fi; }}
 running() {{ if [ -f "$dir/running" ]; then sed -e 's/"COMPLETED"/"IN_PROGRESS"/' -e 's/"conclusion":"SUCCESS"/"conclusion":""/' -e 's/"CLEAN"/"BLOCKED"/';
   elif [ -f "$dir/optional" ]; then sed -e 's/"COMPLETED"/"IN_PROGRESS"/' -e 's/"conclusion":"SUCCESS"/"conclusion":""/' -e 's/"CLEAN"/"UNSTABLE"/'; else cat; fi; }}
@@ -135,10 +141,10 @@ case "$*" in
     echo '{{"message": "Branch not protected", "status": "404"}}'; echo 'gh: Branch not protected (HTTP 404)' >&2; exit 1 ;;
   "api -X POST repos/{REPO}/pulls/7/reviews "*) touch "$dir/approved"; echo '{{"id": 1}}' ;;
   "api repos/{REPO}/pulls/7")
-    if [ -f "$dir/named" ]; then out "$dir/pull.json" | sed 's#oby/fix-7#codex/7-x#'; else out "$dir/pull.json"; fi ;;
+    if [ -f "$dir/named" ]; then out "$dir/pull.json" | sed 's#oby/fix-7#codex/7-x#'; else out "$dir/pull.json" | sed "s#oby/fix-7#$br#"; fi ;;
   "api -X PUT repos/{REPO}/pulls/7/merge "*)
     [ -f "$dir/queue" ] && {{ echo 'gh: Changes must be made through the merge queue (HTTP 405)' >&2; exit 1; }}
-    touch "$dir/merged"; echo '{{"merged": true}}' ;;
+    cp "$6" "$dir/put.json"; touch "$dir/merged"; echo '{{"merged": true}}' ;;
   "pr merge 7 --repo {REPO} --auto "*)
     [ -f "$dir/no-auto" ] && {{ echo 'GraphQL: Auto merge is not allowed for this repository (enablePullRequestAutoMerge)' >&2; exit 1; }}
     touch "$dir/armed" ;;
@@ -149,6 +155,7 @@ case "$*" in
     if [ -n "$now" ]; then echo "{{\"behind_by\": $(git --git-dir="$remote" rev-list --count "$now..refs/heads/dev")}}"; else echo '{{"behind_by": 3}}'; fi ;;
   "api -X DELETE repos/{REPO}/git/refs/heads/oby/fix-7") touch "$dir/deleted"; exit 0 ;;
   "api -X DELETE repos/{REPO}/git/refs/heads/codex/7-x") touch "$dir/deleted-named"; exit 0 ;;
+  "api -X DELETE repos/{REPO}/git/refs/heads/$br") touch "$dir/deleted-branch"; exit 0 ;;
   "run list --repo {REPO} --commit "*" --status failure --json databaseId")
     if [ -f "$dir/runs.json" ]; then cat "$dir/runs.json"; else echo '[]'; fi ;;
   "run view "*" --repo {REPO} --log-failed")
@@ -3612,6 +3619,729 @@ fn merging_34_a_second_review_waits_with_no_card_then_merges() {
     assert_eq!(merged["noReviewer"], Value::Null);
     assert!(merge_cards(&obid).is_empty(), "{:?}", merge_cards(&obid));
     assert_eq!(calls(&folder.0).matches("-X PUT").count(), 1);
+}
+
+/// [`published`], as the owner's own conversation work (MERGING-44).
+fn own() -> obid::job::Job {
+    let mut job = published();
+    job.own_conversation = true;
+    job
+}
+
+/// [`started_with`], with no reviewer account, the stand-in's pull request into `base` from its
+/// first read (`gh/into`), and `gh` files there before it starts.
+fn started_into(
+    folder: &Folder,
+    workflow: Option<&str>,
+    job: obid::job::Job,
+    base: &str,
+    gh: &[&str],
+) -> Obid {
+    std::fs::create_dir_all(folder.0.join("gh")).unwrap();
+    std::fs::write(folder.0.join("gh/into"), base).unwrap();
+    started_with(folder, false, workflow, job, gh)
+}
+
+/// The job once it merged by itself, `mergedBy` `by`, with no merge card for it at any read.
+fn merged_with_no_card(obid: &Obid, by: &str) -> Value {
+    within(30, "the job to be merged", || {
+        let cards = merge_cards(obid);
+        assert!(cards.is_empty(), "{cards:?}");
+        let job = job(obid);
+        (job["mergedBy"]["by"] == by).then_some(job)
+    })
+}
+
+/// What `merged` says of its merge by itself into `base`: nothing waits on the owner, its Merged
+/// stage is done, and the mark it merged on is never in the API (MERGING-44).
+fn merged_into(merged: &Value, base: &str) {
+    assert_eq!(merged["mergeNeedsYou"], false, "{merged}");
+    assert!(merged["mergeError"].is_null(), "{merged}");
+    assert!(merged["pullRequest"]["state"] == "MERGED", "{merged}");
+    let stage = merged_stage(merged);
+    assert_eq!(stage["state"], "done", "{stage}");
+    assert_eq!(stage["title"], format!("Merged into {base}"), "{stage}");
+    let text = merged.to_string();
+    assert!(
+        !text.contains("ownConversation") && !text.contains("own_conversation"),
+        "{text}"
+    );
+}
+
+/// Every file under obid's `home/memory`.
+fn memory_files(home: &Path) -> Vec<PathBuf> {
+    let mut files = vec![];
+    let mut folders = vec![home.join("memory")];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                folders.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// MERGING-45: the owner's own conversation work into main merges by itself, with no card at any
+/// read: with no workflow learned (`mergedBy` `oby`), and by one learned into main (`memory`).
+#[test]
+fn merging_45_own_work_into_main_merges_by_itself_with_no_card() {
+    let into_main = OBY.replace(r#""base":"dev""#, r#""base":"main""#);
+    for (workflow, by, detail) in [
+        (None, "oby", Value::Null),
+        (
+            Some(into_main.as_str()),
+            "memory",
+            json!("Merged into main, as you like"),
+        ),
+    ] {
+        let folder = Folder::new(&format!("merge-own-main-{by}"));
+        let mut mine = own();
+        mine.base = Some("main".into());
+        let obid = started_into(&folder, workflow, mine, "main", &[]);
+        let merged = merged_with_no_card(&obid, by);
+        merged_into(&merged, "main");
+        assert_eq!(merged_stage(&merged)["detail"], detail, "{by}");
+        let sent = calls(&folder.0);
+        assert_eq!(
+            sent.matches(&format!("-X PUT repos/{REPO}/pulls/7/merge"))
+                .count(),
+            1,
+            "{sent}"
+        );
+        assert!(merge_cards(&obid).is_empty(), "{by}");
+    }
+}
+
+/// MERGING-45: under a learned workflow a person approves, the owner's own conversation work
+/// whose Oby review still flags it doesn't merge on that person's approval; once Oby's review
+/// approved the head, it merges by itself by that workflow, with no card.
+#[test]
+fn merging_45_a_learned_persons_approval_never_merges_past_obys_flagging_review() {
+    let folder = Folder::new("merge-own-person-flagged");
+    let mut flagged = changes_asked();
+    flagged.own_conversation = true;
+    let obid = started_with(&folder, false, Some(PERSON), flagged, &["person"]);
+    let reads = || calls(&folder.0).matches("pr view 7").count();
+    within(30, "a few reads", || (reads() >= 4).then_some(()));
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    assert!(job(&obid)["mergedBy"].is_null());
+    assert!(merge_cards(&obid).is_empty(), "{:?}", merge_cards(&obid));
+    drop(obid);
+
+    let folder = Folder::new("merge-own-person-approved");
+    let obid = started_with(&folder, false, Some(PERSON), own(), &["person"]);
+    let merged = merged_with_no_card(&obid, "memory");
+    merged_into(&merged, "dev");
+    assert_eq!(calls(&folder.0).matches("-X PUT").count(), 1);
+}
+
+/// MERGING-46: with no workflow learned for its base, the owner's own conversation work merges by
+/// a squash into its own base on Oby's own review, with no "Ready to merge?" and nothing
+/// remembered: into dev with nothing learned, and into release with a workflow learned into dev.
+#[test]
+fn merging_46_unlearned_own_work_merges_by_a_squash_and_remembers_nothing() {
+    for (base, workflow) in [("dev", None), ("release", Some(OBY))] {
+        let folder = Folder::new(&format!("merge-own-unlearned-{base}"));
+        let mut mine = own();
+        mine.base = Some(base.into());
+        let obid = started_into(&folder, workflow, mine, base, &[]);
+        let home = folder.0.join("home");
+        let memories = memory_files(&home);
+        let merged = merged_with_no_card(&obid, "oby");
+        merged_into(&merged, base);
+        assert!(merged["mergedBy"]["memory"].is_null(), "{merged}");
+        assert!(merged_stage(&merged)["detail"].is_null(), "{merged}");
+        let put: Value =
+            serde_json::from_slice(&std::fs::read(folder.0.join("gh/put.json")).unwrap()).unwrap();
+        assert_eq!(put["merge_method"], "squash", "{put}");
+        assert_eq!(put["sha"], head(), "{put}");
+        assert_eq!(memory_files(&home), memories, "{base}");
+        let memory = call(&obid, "GET", "/v1/memory", None).body;
+        let used: Vec<&Value> = memory["memories"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|m| &m["used"])
+            .collect();
+        assert!(used.iter().all(|u| **u == 0), "{memory}");
+        assert!(!calls(&folder.0).contains("-X POST"));
+    }
+}
+
+/// MERGING-46: the same pull request, not the owner's own conversation work, keeps its "Ready to
+/// merge?" card; another Obi's, marked or not, merges nothing and gets no merge card.
+#[test]
+fn merging_46_work_not_from_the_owners_conversation_keeps_its_card() {
+    let folder = Folder::new("merge-not-own");
+    let obid = started_with(&folder, false, None, published(), &[]);
+    let card = within(30, "the ready card", || {
+        merge_cards(&obid)
+            .into_iter()
+            .find(|c| c["id"] == format!("merge-ready-{ID}-{}", head()))
+    });
+    assert_eq!(
+        card["options"],
+        json!(["Merge", "Merge, and remember", "Leave it open"])
+    );
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    drop(obid);
+
+    let folder = Folder::new("merge-not-own-obi");
+    let mut theirs = own();
+    theirs.obi = Some(obid::job::ObiRef {
+        correlation_id: "c1".into(),
+        from: "o2".into(),
+        from_owner: "ana".into(),
+        request_id: "r1".into(),
+    });
+    let obid = started_with(&folder, false, None, theirs, &[]);
+    within(30, "a few reads", || {
+        (calls(&folder.0).matches("pr view 7").count() >= 3).then_some(())
+    });
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    assert!(merge_cards(&obid).is_empty(), "{:?}", merge_cards(&obid));
+}
+
+/// MERGING-47: a repository with no check and no GitHub checks on the head merges the owner's own
+/// conversation work by itself once Oby's review approved it, after GitHub's time to show its
+/// checks. Any other work there is the owner's to merge.
+#[test]
+fn merging_47_a_repository_with_no_check_merges_own_work() {
+    let folder = Folder::new("merge-own-no-check");
+    let mut mine = own();
+    mine.outgoing[0].date -= obid::merge::CHECKS_SETTLE;
+    assert!(mine.check.is_none());
+    let obid = started_into(&folder, None, mine, "dev", &["bare"]);
+    let merged = merged_with_no_card(&obid, "oby");
+    merged_into(&merged, "dev");
+    drop(obid);
+
+    let folder = Folder::new("merge-not-own-no-check");
+    let obid = started_into(
+        &folder,
+        None,
+        pushed_ago(obid::merge::CHECKS_SETTLE),
+        "dev",
+        &["bare"],
+    );
+    let why = "No check ran on its head (this repository has none), so it's yours to merge.";
+    let card = within(30, "the card", || {
+        merge_cards(&obid)
+            .into_iter()
+            .find(|c| c["text"] == asks("dev", &[why]))
+    });
+    assert_eq!(card["options"], json!(["Merge", "Leave it open"]));
+    assert!(!calls(&folder.0).contains("-X PUT"));
+}
+
+/// MERGING-48: the owner's own conversation work that read something untrusted, into main, waits
+/// for a second review by another tool with no card and nothing sent, a member's approval on
+/// GitHub standing in for none, then merges by itself once that review approved the head.
+#[test]
+fn merging_48_untrusted_own_work_into_main_waits_for_a_second_review_then_merges() {
+    let untrusted = |second: Option<&str>| {
+        let mut job = needs_two(second);
+        job.own_conversation = true;
+        job.untrusted = true;
+        job.base = Some("main".into());
+        job
+    };
+    let folder = Folder::new("merge-own-second-review-waits");
+    let obid = started_into(&folder, None, untrusted(None), "main", &["person"]);
+    let reads = || calls(&folder.0).matches("pr view 7").count();
+    within(30, "a few reads", || (reads() >= 4).then_some(()));
+    let waiting = job(&obid);
+    assert!(merge_cards(&obid).is_empty(), "{:?}", merge_cards(&obid));
+    assert_eq!(waiting["mergeNeedsYou"], false, "{waiting}");
+    assert!(waiting["mergeError"].is_null(), "{waiting}");
+    assert!(waiting["mergedBy"].is_null(), "{waiting}");
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    drop(obid);
+
+    let folder = Folder::new("merge-own-second-review-merges");
+    let obid = started_into(
+        &folder,
+        None,
+        untrusted(Some("claude")),
+        "main",
+        &["person"],
+    );
+    let merged = merged_with_no_card(&obid, "oby");
+    merged_into(&merged, "main");
+    assert_eq!(calls(&folder.0).matches("-X PUT").count(), 1);
+}
+
+/// A conversation kept in obid's home before it starts, with no turn yet: its id.
+fn kept_conversation(folder: &Folder) -> String {
+    use std::os::unix::fs::DirBuilderExt;
+    let id = "00000000-0000-4000-8000-000000000001";
+    let dir = folder.0.join("home/conversations");
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir)
+        .unwrap();
+    let thread = json!({"id": id, "title": "Work", "pinned": false,
+                        "created": "2026-10-01T00:00:00Z", "sequence": 1, "turns": []});
+    std::fs::write(dir.join(format!("{id}.json")), thread.to_string()).unwrap();
+    id.into()
+}
+
+/// What Oby's review of [`changes_asked`] still flags.
+const FLAGGED: &str = "It skips the empty case in src/a.rs:3.";
+
+/// [`changes_asked`]'s review job, kept with its summary.
+fn flagging_review() -> obid::job::Job {
+    let mut review = obid::job::Job::new(
+        "r1b2c3d4".into(),
+        REPO.into(),
+        "review".into(),
+        "Fix the thing".into(),
+        "codex".into(),
+        "default".into(),
+    );
+    review.status = obid::job::Status::Done;
+    review.review_of = Some(ID.into());
+    review.finished = Some(review.created);
+    review.summary = format!("{FLAGGED}\n\nVERDICT: REQUEST CHANGES");
+    review
+}
+
+/// [`changes_asked`] into `base`, as the owner's own conversation work in `conversation`.
+fn own_flagged(conversation: &str, base: &str) -> obid::job::Job {
+    let mut job = changes_asked();
+    job.own_conversation = true;
+    job.conversation = Some(conversation.into());
+    job.base = Some(base.into());
+    job
+}
+
+/// The turns of `conversation` that say `text`.
+fn told(obid: &Obid, conversation: &str, text: &str) -> Vec<Value> {
+    let turns = call(
+        obid,
+        "GET",
+        &format!("/v1/conversation?id={conversation}"),
+        None,
+    );
+    (turns.body.as_array().into_iter().flatten())
+        .filter(|t| t["text"] == text)
+        .cloned()
+        .collect()
+}
+
+/// MERGING-49: the owner's own conversation work whose review still asks for changes after its
+/// last round merges by itself, with no review item and no merge card at any read: into dev with
+/// no workflow learned (`mergedBy` `oby`), into main by one learned (`memory`). Its conversation
+/// gets one line of Oby's with its card, saying what the review flagged; nothing approves it on
+/// GitHub, and the marks it merged on are never in the API.
+#[test]
+fn merging_49_own_work_flagged_after_its_last_round_merges_and_says_what_was_flagged() {
+    let into_main = OBY.replace(r#""base":"dev""#, r#""base":"main""#);
+    for (workflow, by, base) in [
+        (None, "oby", "dev"),
+        (Some(into_main.as_str()), "memory", "main"),
+    ] {
+        let folder = Folder::new(&format!("merge-own-flagged-{by}"));
+        let conversation = kept_conversation(&folder);
+        std::fs::create_dir_all(folder.0.join("gh")).unwrap();
+        std::fs::write(folder.0.join("gh/into"), base).unwrap();
+        let jobs = [own_flagged(&conversation, base), flagging_review()];
+        let obid = started_with_jobs(&folder, false, workflow, &jobs, &[]);
+        let merged = within(30, "the job to be merged", || {
+            assert!(review_items(&obid).is_empty(), "{by}");
+            assert!(
+                merge_cards(&obid).is_empty(),
+                "{by}: {:?}",
+                merge_cards(&obid)
+            );
+            let job = job(&obid);
+            (job["mergedBy"]["by"] == by).then_some(job)
+        });
+        merged_into(&merged, base);
+        let text = merged.to_string();
+        for key in [
+            "followUpAtWork",
+            "follow_up_at_work",
+            "toldMergedPast",
+            "told_merged_past",
+        ] {
+            assert!(!text.contains(key), "{key}: {text}");
+        }
+        assert_eq!(merged["approvals"], json!([]), "{merged}");
+        let said = obid::merge::merged_past_review("Fix the thing", base, Some(FLAGGED));
+        let turns = within(30, "the conversation's line", || {
+            let turns = told(&obid, &conversation, &said);
+            (!turns.is_empty()).then_some(turns)
+        });
+        assert_eq!(turns.len(), 1, "{turns:?}");
+        assert_eq!(turns[0]["who"], "oby", "{turns:?}");
+        assert_eq!(turns[0]["jobs"], json!([ID]), "{turns:?}");
+        // A report of the job's: a session hears its first line only (TASKCONV-17).
+        assert_eq!(turns[0]["ended"], true, "{turns:?}");
+        assert!(review_items(&obid).is_empty(), "{by}");
+        assert!(merge_cards(&obid).is_empty(), "{by}");
+        let sent = calls(&folder.0);
+        assert!(!sent.contains("-X POST"), "{sent}");
+        assert_eq!(sent.matches("-X PUT").count(), 1, "{sent}");
+    }
+}
+
+/// MERGING-49: the line is told once for its merged head, a restart of obid included: once two
+/// more such jobs kept while it was down, one older and one newer, are told, obid's start has
+/// looked at the first again, and it said nothing more.
+#[test]
+fn merging_49_the_line_is_told_once_per_merged_head() {
+    let folder = Folder::new("merge-own-flagged-once");
+    let conversation = kept_conversation(&folder);
+    let jobs = [own_flagged(&conversation, "dev"), flagging_review()];
+    let mut obid = started_with_jobs(&folder, false, None, &jobs, &[]);
+    let said = obid::merge::merged_past_review("Fix the thing", "dev", Some(FLAGGED));
+    within(30, "the conversation's line", || {
+        (!told(&obid, &conversation, &said).is_empty()).then_some(())
+    });
+    obid.stop();
+    std::fs::write(folder.0.join("gh/merged-on-github"), "").unwrap();
+    let kept = folder.0.join(format!("home/jobs/{ID}.json"));
+    let first: obid::job::Job = serde_json::from_slice(&std::fs::read(&kept).unwrap()).unwrap();
+    assert_eq!(first.told_merged_past, Some(head()));
+    let others = [("00000001", -60, 8), ("ffffffff", 60, 9)];
+    for (id, moved, number) in others {
+        let mut other = first.clone();
+        other.id = id.into();
+        other.title = Some(format!("Fix {id}"));
+        other.created += moved;
+        other.branch = format!("oby/{id}");
+        other.published = Some(format!("https://github.com/{REPO}/pull/{number}"));
+        other.outgoing[0].branch = Some(other.branch.clone());
+        other.told_merged_past = None;
+        std::fs::write(
+            folder.0.join(format!("home/jobs/{id}.json")),
+            serde_json::to_vec(&other).unwrap(),
+        )
+        .unwrap();
+    }
+    let config: Value =
+        serde_json::from_slice(&std::fs::read(folder.0.join("config.json")).unwrap()).unwrap();
+    let bin = folder.0.join("bin");
+    let obid = start_with(
+        &folder.0,
+        &config,
+        Some(&bin),
+        &[("OBID_FOLLOW_SECONDS", "1")],
+    );
+    for (id, _, _) in others {
+        let theirs = obid::merge::merged_past_review(&format!("Fix {id}"), "dev", Some(FLAGGED));
+        within(30, "another job's line", || {
+            (!told(&obid, &conversation, &theirs).is_empty()).then_some(())
+        });
+    }
+    assert_eq!(told(&obid, &conversation, &said).len(), 1);
+}
+
+/// MERGING-50: the owner's own conversation work whose head needs two approving reviews (it read
+/// something untrusted, it changes a security path, or Oby couldn't read what it changes) never
+/// merges past a review that still asks for changes: it keeps MERGING-8's item, and the owner's
+/// Merge on it merges with their own login. A member's approval on GitHub doesn't merge it.
+#[test]
+fn merging_50_untrusted_or_security_path_own_work_flagged_keeps_the_owners_item() {
+    for (name, two_reviews) in [
+        ("untrusted", None),
+        ("security", Some("it changes AGENTS.md")),
+        ("unread", Some("Oby couldn't read what it changes")),
+    ] {
+        let folder = Folder::new(&format!("merge-own-flagged-{name}"));
+        let mut mine = changes_asked();
+        mine.own_conversation = true;
+        match two_reviews {
+            None => mine.untrusted = true,
+            Some(why) => mine.review.as_mut().unwrap().two_reviews = Some(why.into()),
+        }
+        // A member's approval on GitHub counts for neither review (MERGING-46, 48).
+        let obid = started_with(&folder, false, None, mine, &["person"]);
+        let item = within(30, "the review's item", || {
+            review_items(&obid).into_iter().next()
+        });
+        assert_eq!(
+            item["text"], "Oby's review still asks for changes. Take it from here.",
+            "{name}"
+        );
+        assert_eq!(
+            item["options"],
+            json!(["One more round", "Merge"]),
+            "{name}"
+        );
+        within(30, "a few reads", || {
+            (calls(&folder.0).matches("pr view 7").count() >= 3).then_some(())
+        });
+        assert!(!calls(&folder.0).contains("-X PUT"), "{name}");
+        let merged = answer(&obid, &item, "Merge");
+        assert_eq!(merged.status, 200, "{name}: {}", merged.text);
+        assert_eq!(job(&obid)["mergedBy"]["by"], "owner", "{name}");
+        assert_eq!(calls(&folder.0).matches("-X PUT").count(), 1, "{name}");
+    }
+}
+
+/// MERGING-51: work that isn't the owner's own conversation work keeps MERGING-8's item when Oby's
+/// review still asks for changes, and nothing merges by itself.
+#[test]
+fn merging_51_work_not_own_flagged_keeps_its_item() {
+    let folder = Folder::new("merge-not-own-flagged");
+    let obid = started_with(&folder, false, None, changes_asked(), &[]);
+    let item = within(30, "the review's item", || {
+        review_items(&obid).into_iter().next()
+    });
+    assert_eq!(item["options"], json!(["One more round", "Merge"]));
+    within(30, "a few reads", || {
+        (calls(&folder.0).matches("pr view 7").count() >= 3).then_some(())
+    });
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    assert!(job(&obid)["mergedBy"].is_null());
+}
+
+/// MERGING-51: the owner's own work whose head no reviewer could review (its review gave no
+/// verdict) keeps its item with Try again, and doesn't merge.
+#[test]
+fn merging_51_a_review_with_no_verdict_keeps_try_again() {
+    let folder = Folder::new("merge-own-no-verdict");
+    let mut mine = own();
+    mine.review = None;
+    mine.reviewing = Some("r2b3c4d5".into());
+    let mut review = flagging_review();
+    review.id = "r2b3c4d5".into();
+    review.summary = "It looked at the change.".into();
+    review.start_commit = Some(head());
+    let obid = started_with_jobs(&folder, false, None, &[mine, review], &[]);
+    let item = within(30, "the review's item", || {
+        call(&obid, "GET", "/v1/inbox", None)
+            .body
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|i| i["id"] == format!("{ID}-review-r2b3c4d5") && i["done"].is_null())
+            .cloned()
+    });
+    assert_eq!(item["kind"], "failed");
+    assert_eq!(item["options"], json!(["Try again"]));
+    within(30, "a few reads", || {
+        (calls(&folder.0).matches("pr view 7").count() >= 3).then_some(())
+    });
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    assert!(job(&obid)["mergedBy"].is_null());
+}
+
+/// obid on fixture-app for real ([`real_config`]) with no workflow remembered, the stand-in's pull
+/// request into `base` and its head the one fixture-app's bare remote has. obid, its configuration
+/// and the stand-in's folder, to start it again with ([`reviewed_for_real`]).
+fn real_into(folder: &Folder, base: &str) -> (Obid, Value, PathBuf) {
+    let remote = fixture(&folder.0.join("fixture"));
+    git(&remote, &["branch", "dev", "main"]);
+    let config = real_config(folder, &remote);
+    let bin = stand_in_gh(&folder.0);
+    std::fs::write(folder.0.join("gh/remote"), remote.to_str().unwrap()).unwrap();
+    std::fs::write(folder.0.join("gh/into"), base).unwrap();
+    let obid = start_with(
+        &folder.0,
+        &config,
+        Some(&bin),
+        &[("OBID_FOLLOW_SECONDS", "1")],
+    );
+    (obid, config, bin)
+}
+
+/// A task the Tasks view's `POST /v1/jobs` starts into `base`, sent signed by an app of the owner's
+/// (`call_typed`) or with only obid's token (`call`): its id once it ended done.
+fn dispatched_into(obid: &Obid, base: &str, signed: bool) -> String {
+    let task = json!({"job": {"repo": REPO, "kind": "build", "task": "COMMIT: fix.txt",
+                              "branch": "oby/fix-7", "base": base, "check": null, "rounds": 1}});
+    let posted = if signed {
+        call_typed(obid, "POST", "/v1/jobs", &task)
+    } else {
+        call(obid, "POST", "/v1/jobs", Some(&task))
+    };
+    assert_eq!(posted.status, 201, "{}", posted.text);
+    let id = posted.body["id"].as_str().unwrap().to_owned();
+    let done = ended_within(obid, &id, 60);
+    assert_eq!(done["status"], "done", "{done}");
+    id
+}
+
+/// A message to job `id`, signed or with only obid's token: its follow-up's id once it ended done.
+fn told_job(obid: &Obid, id: &str, signed: bool) -> String {
+    let path = format!("/v1/jobs/{id}/messages");
+    let text = json!({"text": "COMMIT: more.txt"});
+    let told = if signed {
+        call_typed(obid, "POST", &path, &text)
+    } else {
+        call(obid, "POST", &path, Some(&text))
+    };
+    assert_eq!(told.status, 201, "{}", told.text);
+    let next = told.body["id"].as_str().unwrap().to_owned();
+    let done = ended_within(obid, &next, 60);
+    assert_eq!(done["status"], "done", "{done}");
+    next
+}
+
+/// Job `id` as its file keeps it.
+fn kept_job(folder: &Folder, id: &str) -> obid::job::Job {
+    serde_json::from_value(kept(folder, id)).unwrap()
+}
+
+/// obid started again once job `id`'s file says it published pull request #7 from its branch
+/// (`gh/branch`), at the head fixture-app's remote has, and Oby's own review (Claude Code's)
+/// approved that head.
+fn reviewed_for_real(obid: Obid, folder: &Folder, config: &Value, bin: &Path, id: &str) -> Obid {
+    drop(obid);
+    let mut job = kept(folder, id);
+    let branch = job["branch"].as_str().unwrap().to_owned();
+    std::fs::write(folder.0.join("gh/branch"), &branch).unwrap();
+    let remote = PathBuf::from(read(&folder.0.join("gh/remote")));
+    let head = git(&remote, &["rev-parse", &format!("refs/heads/{branch}")]);
+    let file = folder.0.join(format!("home/jobs/{id}.json"));
+    job["published"] = json!(PULL);
+    let mut review = serde_json::to_value(published().review).unwrap();
+    review["agent"] = json!("claude");
+    review["account"] = json!("stub");
+    review["commit"] = json!(head);
+    job["review"] = review;
+    std::fs::write(&file, serde_json::to_vec(&job).unwrap()).unwrap();
+    start_with(
+        &folder.0,
+        config,
+        Some(bin),
+        &[("OBID_FOLLOW_SECONDS", "1")],
+    )
+}
+
+/// Job `id` once it merged by itself into main with no workflow learned (`mergedBy` `oby`), with
+/// no merge card at any read, nothing waiting on the owner, the mark never in the API, and one
+/// merge sent.
+fn merged_by_itself_into_main(obid: &Obid, folder: &Folder, id: &str) {
+    let merged = within(60, "the job to be merged", || {
+        let cards = merge_cards(obid);
+        assert!(cards.is_empty(), "{cards:?}");
+        let job = job_of(obid, id);
+        (job["mergedBy"]["by"] == "oby").then_some(job)
+    });
+    merged_into(&merged, "main");
+    let sent = calls(&folder.0);
+    assert_eq!(
+        sent.matches(&format!("-X PUT repos/{REPO}/pulls/7/merge"))
+            .count(),
+        1,
+        "{sent}"
+    );
+}
+
+/// Job `id` merges nothing by itself over a few of the follower's reads.
+fn merges_nothing(obid: &Obid, folder: &Folder, id: &str) {
+    within(30, "a few reads", || {
+        (calls(&folder.0).matches("pr view 7").count() >= 4).then_some(())
+    });
+    assert!(job_of(obid, id)["mergedBy"].is_null());
+    assert!(!calls(&folder.0).contains("-X PUT"));
+}
+
+/// MERGING-52: a task the owner starts with a signed `POST /v1/jobs` is their own work: its pull
+/// request into main, with no workflow learned, merges by itself with no card, and the mark it
+/// merged on is in its file, never in the API.
+#[test]
+fn merging_52_a_signed_task_into_main_merges_by_itself_with_no_card() {
+    let folder = Folder::new("merge-signed-task");
+    let (obid, config, bin) = real_into(&folder, "main");
+    let id = dispatched_into(&obid, "main", true);
+    let job = kept_job(&folder, &id);
+    assert!(job.own_conversation && !job.unsigned, "{job:?}");
+    let text = job_of(&obid, &id).to_string();
+    assert!(
+        !text.contains("ownConversation") && !text.contains("own_conversation"),
+        "{text}"
+    );
+    let obid = reviewed_for_real(obid, &folder, &config, &bin, &id);
+    merged_by_itself_into_main(&obid, &folder, &id);
+}
+
+/// MERGING-52: the same task sent with only obid's token is unsigned and gets no mark: it needs
+/// two reviews (MERGING-14), so it waits for its second one, merging nothing.
+#[test]
+fn merging_52_the_same_task_unsigned_keeps_its_card_and_two_reviews() {
+    let folder = Folder::new("merge-unsigned-task");
+    let (obid, config, bin) = real_into(&folder, "main");
+    let id = dispatched_into(&obid, "main", false);
+    let job = kept_job(&folder, &id);
+    assert!(!job.own_conversation && job.unsigned, "{job:?}");
+    assert!(kept(&folder, &id).get("ownConversation").is_none());
+    let obid = reviewed_for_real(obid, &folder, &config, &bin, &id);
+    let why = "Waiting for a second review: no tool other than Claude Code is signed in.";
+    within(30, "the second review to wait", || {
+        (job_of(&obid, &id)["noReviewer"] == why).then_some(())
+    });
+    merges_nothing(&obid, &folder, &id);
+}
+
+/// MERGING-53: a signed follow-up of a signed task is the owner's own work too, and merges the
+/// same way.
+#[test]
+fn merging_53_a_signed_follow_up_of_a_signed_task_merges_the_same() {
+    let folder = Folder::new("merge-signed-follow-up");
+    let (obid, config, bin) = real_into(&folder, "main");
+    let id = dispatched_into(&obid, "main", true);
+    let next = told_job(&obid, &id, true);
+    let job = kept_job(&folder, &next);
+    assert_eq!(job.follow_up_of.as_deref(), Some(id.as_str()));
+    assert!(obid::merge::own_work(&job), "{job:?}");
+    let obid = reviewed_for_real(obid, &folder, &config, &bin, &next);
+    merged_by_itself_into_main(&obid, &folder, &next);
+}
+
+/// MERGING-53: unsigned words take a signed task out of the owner's own work: the follow-up they
+/// start once it ended merges nothing by itself, and a task that hears them while it runs is
+/// unsigned itself.
+#[test]
+fn merging_53_unsigned_words_take_a_signed_task_out_of_own_work() {
+    let folder = Folder::new("merge-unsigned-follow-up");
+    let (obid, config, bin) = real_into(&folder, "main");
+    let id = dispatched_into(&obid, "main", true);
+    let next = told_job(&obid, &id, false);
+    let job = kept_job(&folder, &next);
+    assert!(job.unsigned && !obid::merge::own_work(&job), "{job:?}");
+    let obid = reviewed_for_real(obid, &folder, &config, &bin, &next);
+    merges_nothing(&obid, &folder, &next);
+
+    let task = json!({"job": {"repo": REPO, "kind": "build", "task": "SLEEP", "base": "main"}});
+    let posted = call_typed(&obid, "POST", "/v1/jobs", &task);
+    assert_eq!(posted.status, 201, "{}", posted.text);
+    let running = posted.body["id"].as_str().unwrap().to_owned();
+    assert!(obid::merge::own_work(&kept_job(&folder, &running)));
+    within(30, "the task to run", || {
+        (job_of(&obid, &running)["status"] == "running").then_some(())
+    });
+    let path = format!("/v1/jobs/{running}/messages");
+    let heard = call(&obid, "POST", &path, Some(&json!({"text": "and the docs"})));
+    assert_eq!(heard.status, 200, "{}", heard.text);
+    let job = kept_job(&folder, &running);
+    assert!(job.unsigned && !obid::merge::own_work(&job), "{job:?}");
+}
+
+/// MERGING-53: a signed message to a job that was never the owner's own work doesn't make its
+/// follow-up their own work.
+#[test]
+fn merging_53_a_signed_follow_up_of_other_work_keeps_its_card() {
+    let folder = Folder::new("merge-signed-follow-up-other");
+    let obid = started_with(&folder, false, None, published(), &[]);
+    let path = format!("/v1/jobs/{ID}/messages");
+    let told = call_typed(&obid, "POST", &path, &json!({"text": "and the docs"}));
+    assert_eq!(told.status, 201, "{}", told.text);
+    let next = told.body["id"].as_str().unwrap().to_owned();
+    let job = kept_job(&folder, &next);
+    assert_eq!(job.follow_up_of.as_deref(), Some(ID));
+    assert!(!job.own_conversation, "{job:?}");
+    assert!(!obid::merge::own_work(&job), "{job:?}");
 }
 
 /// MERGING-35: the owner's Merge while GitHub is still working out whether it can merge is kept:

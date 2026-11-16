@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { PolicyAnswer } from '../../shared/sphere';
 import type { Update } from '../../shared/updates';
+import type { LoadWhat } from '../../shared/decode';
+import type { LiveMessage, LiveSnapshot } from '../../shared/live-wire';
 
 type Point = { x: number; y: number };
 declare global {
@@ -11,6 +13,7 @@ declare global {
       fullScreen: boolean;
       onFullScreen(fn: (on: boolean) => void): () => void;
       openExternal(url: string): void;
+      renderError?(name: string, message: string, componentStack: string): void;  // a render error the root caught (preload, main/runMarker.ts)
       pickFolders?(from?: string): Promise<string[]>;  // the Mac's folder picker (main), several at once, opening in from
       openLoginItems(): void;
       // Oby's alerts (preload, main/notify.ts)
@@ -22,6 +25,7 @@ declare global {
       onUpdate?(fn: (update: Update) => void): () => void;
       // Settings rows obid has no setting for yet, kept by main (preload, main/settings.ts)
       settings?: { local(): Promise<Record<string, unknown> | null>; keep(key: string, value: unknown): Promise<boolean | null> };
+      loginItem?(on?: boolean): Promise<boolean | null>;  // Open at login's login item, as macOS has it (preload, main/settings.ts)
       setupWindow?(on: boolean): number | null;  // the width the window's growing to (null: already there)
       // an Obysphere joined by its invite link, and Leave (preload, main/sphere.ts)
       onSphere?(fn: (joined: { sphere: string; name: string }) => void): () => void;
@@ -29,14 +33,15 @@ declare global {
       // the Obysphere's rules, and the members rule added at the version read (preload, main/sphere.ts)
       spherePolicy?(): Promise<PolicyAnswer | null>;
       sphereSetPolicy?(version: number): Promise<PolicyAnswer | null>;
-      // obid, through main (preload, main/obid.ts)
+      // obid, through main (preload, main/obid.ts); its events, from main's one follower (main/live.ts)
       obid: {
         call(method: string, path: string, body?: unknown): Promise<{ status: number; text: string }>;
         confirm(item: string): Promise<{ status: number; text: string }>;
         publish(job: string, action: string, choices: { anyway?: boolean; force?: boolean; to?: string }): Promise<{ status: number; text: string }>;
         limitAnswer(item: string, revision: number, choice: string, account?: string): Promise<{ status: number; text: string }>;
         pairInvite(): Promise<{ status: number; text: string }>;
-        follow(onChunk: (text: string) => void, onEnd: (a: { status: number; text: string; why?: 'waiting' | 'approval' }) => void): () => void;
+        live(onSnapshot: (s: LiveSnapshot) => void, onMessage: (m: LiveMessage) => void): () => void;
+        load(what: LoadWhat): Promise<true | string | null>;
       };
     };
   }

@@ -1,27 +1,29 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { knownUpTo, withEntries, withLine } from './liveTask';
 import { LIMIT_REACHED, LIMIT_WORDS, MANAGE_USAGE, manageUsage } from './chatgpt';
-import { ApiError, api, isInboxKind, isJobStatus, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type TranscriptEntry, type Turn, type AskMark } from './obid';
+import { ApiError, api, isInboxKind, isJobStatus, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type TranscriptEntry, type Turn, type AskMark } from './obid';
 import { carriedOn, detailOf, pageOf, publishOf, stagesOf } from './jobPage';
-import { STEER, TELL, agentOf, type Ask, type AskKind, type Job as JobView, type Attachments, type Message, type Offer } from './mock';
+import { STEER, TELL, agentOf, type Ask, type AskKind, type Job as JobView, type Attachments, type Message, type Offer } from './view';
 import { replaceChats, type Chat } from './chats';
 import { repoTicks } from './sharing';
 import { replaceTasks, type Asking, type PersonQuestion, type PersonReview, type Task } from './tasks';
 import { keepFoldersOf, nameFoldersBy, saveFolders, sendFoldersBy, takeFolders } from './folders';
 import { accountRow, moveKeptChoices, replaceAccounts } from './SettingsView';
 import { BRANDS } from './brands';
-import { ANOTHER_ROUND, TRY_AGAIN } from '../../shared/words';
+import { ALLOW_ONCE, TRY_AGAIN } from '../../shared/words';
 import { has } from '../../shared/capabilities';
-import { LATEST_JOBS, answer, answerStatus, answerTurns, apply as applyToObid, synced, type ObidState } from '../../shared/live-state';
+import { answer, answerStatus, answerTurns, apply as applyToObid, type ObidState } from '../../shared/live-state';
+import { unwired, type LiveMessage, type LiveSnapshot } from '../../shared/live-wire';
 import { onObid } from './lean';
-import type { GitHubItem } from './mock';
+import type { GitHubItem } from './view';
 import type { GitHubWork } from './obid';
 import { lookAgain, takeRoomPost } from './room';
 import { lookAgainAtThreads, plainId, threadChanged } from './peers';
+import { added, adopted, answered as planAnswered, awaited, awaitedIn, conversationOf, failed as sendFailed, gone as goneWith, settled, starts, type Pendings } from './pending';
 
-// What obid has (docs/runner-api.md), kept live by its event stream, as apps/web/src/live.ts does
-// it: the stream first, then the status, jobs, inbox and conversations, with the events that came
-// meanwhile applied over them. Sangam's screens don't change: what obid has goes into the same
+// What obid has (docs/runner-api.md), as main's one follower of its events keeps it (main/live.ts):
+// main's snapshot when the page opens and after each sync, then each event main applied, applied
+// here too. Sangam's screens don't change: what obid has goes into the same
 // stores the mock filled (chats.ts, tasks.ts), as conversations and tasks. Without ?everything
 // (lean.ts) the app runs on this; with it, on the mock. What obid has (its jobs, conversations,
 // turns, inbox, status and GitHub's work) is ObidState's, kept by the shared rule (shared/live-state.ts)
@@ -36,8 +38,8 @@ type Live = ObidState & {
   loaded: Set<string>;           // the conversations whose turns were fetched
   working: Record<string, string>;            // a turn under way, by conversation: what it's on
   on: Record<string, string>;                 // and whose words it's for, by conversation: a supervisor's are nobody's
-  // words this app sent whose answer is on its way: their turn, and the conversation as shown
-  expected: Record<string, string>;
+  // words this app sent, by their turn, until obid's state answers for them (pending.ts)
+  pending: Pendings;
   // words whose next answer isn't theirs (a supervisor's came first): they keep what they started
   unanswered: Set<string>;
   words: Record<string, string>;              // its words so far (delta events), by conversation
@@ -45,9 +47,8 @@ type Live = ObidState & {
   // turn's once that's in; the turn waits, hidden, until they're all shown). History shows at once.
   pace: Record<string, { to: string; n: number; turn?: string }>;
   waiting: Record<string, Question & { said: string }>;  // Oby's question back, by conversation
-  // words to Oby starting a new conversation, shown at once under an id of the app's own
-  // ('new:1'); obid's id for it, once known, maps onto that one (alias), so its page stays open
-  starting: { id: string; said: string; turn?: string; files?: { name: string; preview?: string }[] } | null;
+  // obid's id for a conversation words of this app's started, by their turn or the plan's answer
+  // only, onto the app's own id they're shown under ('new:1'), so its page stays open
   alias: Record<string, string>;
   // decisions answered here, by job: what was asked, the pick, and the inbox item it settles.
   // The cards keep showing it answered (as the mock's do), and the stack lets it go.
@@ -62,7 +63,7 @@ type Live = ObidState & {
 
 let state: Live = {
   connection: 'connecting', problem: null, status: null, repos: [], github: null, jobs: {}, firstJobs: new Set(), seen: new Set(), inbox: [], limits: [],
-  conversations: [], turns: {}, loaded: new Set(), working: {}, on: {}, expected: {}, unanswered: new Set(), words: {}, pace: {}, waiting: {}, starting: null, alias: {}, answered: {}, answering: new Set(), picked: {}, previews: {}, gone: new Set(), goneConversations: new Set(), settledInbox: {},
+  conversations: [], turns: {}, loaded: new Set(), working: {}, on: {}, pending: {}, unanswered: new Set(), words: {}, pace: {}, waiting: {}, alias: {}, answered: {}, answering: new Set(), picked: {}, previews: {}, gone: new Set(), goneConversations: new Set(), settledInbox: {},
 };
 const listeners = new Set<() => void>();
 const set = (patch: Partial<Live>) => {
@@ -72,10 +73,14 @@ const set = (patch: Partial<Live>) => {
 // An event, or obid's answer to a call as one, over the state as it is when it's taken: never a
 // state read before the call's await, which would undo what came meanwhile (a Confirm's answer
 // putting back the job its own `deleted` event took away)
-const take = (e: Event) => {
+// (main brings an event's item's job itself; an answer's the page asks it for)
+const takeEvent = (e: Event) => {
   if (e.kind === 'transcript' || e.kind === 'transcriptLine') return heard(e);
   if (e.kind === 'jobGone') sessions.delete(e.id);
   set(apply(state, e));
+};
+const take = (e: Event) => {
+  takeEvent(e);
   if (e.kind === 'inbox') lookUpJobOf(e.item);
 };
 // a job that waits on you, however old: past the latest 100, its ask would show nowhere (obid
@@ -88,8 +93,9 @@ const tasksLine = (s: Pick<Live, 'jobs'>, tasks?: string[]) => {
   return tasks.every((id) => ENDED.includes(s.jobs[id]?.status ?? '')) ? `Finished ${of}` : `Started ${of}`;
 };
 
+// (read and kept by main, which sends it on as its event)
 const lookUpJobOf = (i: Pick<InboxItem, 'job' | 'kind' | 'state'>) => {
-  if (i.job && i.kind !== 'start' && i.state !== 'done' && !state.jobs[i.job] && !state.gone.has(i.job)) void api.job(i.job).then((job) => take({ kind: 'job', job }), () => {});
+  if (i.job && i.kind !== 'start' && i.state !== 'done' && !state.jobs[i.job] && !state.gone.has(i.job)) void window.app?.obid.load({ job: i.job });
 };
 export const useLive = () => useSyncExternalStore((l) => { listeners.add(l); return () => { listeners.delete(l); }; }, () => state);
 // the limit decisions for a conversation's or a job's work (ChatView), as Home's stack shows them
@@ -106,7 +112,7 @@ const asksOn = (t: Turn): AskMark[] => (Array.isArray(t.asks) ? t.asks : []).fil
 // obid's own turn about a question, which its card says instead (only those are relayed with a card)
 const folded = (t: Turn) => !!t.relayed && asksOn(t).length > 0;
 // words this app has on their way in a conversation
-const inFlight = (s: Live, c: string) => Object.values(s.expected).includes(s.alias[c] ?? c);
+const inFlight = (s: Live, c: string) => awaitedIn(s.pending, s.alias[c] ?? c, c);
 // the app's id for one of obid's conversations, and back
 export const shownId = (c: string) => state.alias[c] ?? c;
 export const realId = (shown: string) => Object.keys(state.alias).find((k) => state.alias[k] === shown) ?? shown;
@@ -119,6 +125,13 @@ sendFoldersBy((shown, folders) => {
   return api.editConversation(c, { folders }).then((conversation) => take({ kind: 'conversation', conversation }));
 }, say);
 let aliasSeen: Live['alias'] | undefined;
+// obid's state as it now is, under the words on their way: words starting a conversation are shown
+// for the one their own turn is in, and those obid's state answers for leave (pending.ts)
+const overlaid = (s: Live): Live => {
+  const alias = Object.values(s.pending).reduce((a, e) => adopted(a, e, conversationOf(e, s)), s.alias);
+  const pending = settled(s.pending, s, answers);
+  return alias === s.alias && pending === s.pending ? s : { ...s, alias, pending };
+};
 
 // --- obid's state as the screens' conversations and tasks
 
@@ -163,7 +176,7 @@ export function chatOf(s: Live, c: Conversation): Chat {
   // report later: anything else under way (the next words, a supervisor's turn) isn't for them
   const lastWords = turns.map((t) => t.who).lastIndexOf('user');
   const last = turns[lastWords];
-  const coming = !!last && (!!p?.turn || last.id in s.expected || (s.on[c.id] === last.id && (c.id in s.working || c.id in s.words || !!p)));
+  const coming = !!last && (!!p?.turn || awaited(s.pending, last.id) || (s.on[c.id] === last.id && (c.id in s.working || c.id in s.words || !!p)));
   const settled = !coming && !turns.slice(lastWords + 1).some(answers) ? last : undefined;
   // a question to another Oby is one card: where it first showed, under Oby's next words, as it
   // stands now, in place of the turns that tell of it. Whichever turn holds it, a restart reads the same
@@ -214,12 +227,15 @@ export function chatOf(s: Live, c: Conversation): Chat {
 function chatsOf(s: Live): Chat[] {
   const chats = [...s.conversations].sort((a, b) => b.lastActivity.localeCompare(a.lastActivity)).map((c) => chatOf(s, c));
   // words starting a conversation obid hasn't listed yet: shown under the app's id meanwhile
-  const st = s.starting;
-  if (!st || chats.some((c) => c.id === st.id)) return chats;
-  const real = Object.keys(s.alias).find((k) => s.alias[k] === st.id);
   const now = new Date().toISOString();
-  const shown = chatOf(s, { id: real ?? st.id, title: st.said.split('\n')[0].slice(0, 48), pinned: false, created: now, lastActivity: now, cursor: '' });
-  return [{ ...shown, id: st.id, said: shown.said.length ? shown.said : [{ who: 'you', text: st.said, ago: 0, ...(st.files?.length ? { files: st.files } : {}) }], typing: true, step: shown.step ?? 'Thinking' }, ...chats];
+  const rows: Chat[] = [];
+  for (const st of Object.values(s.pending)) {
+    if (!starts(st) || [...rows, ...chats].some((c) => c.id === st.shown)) continue;
+    const real = st.conversation ?? Object.keys(s.alias).find((k) => s.alias[k] === st.shown);
+    const shown = chatOf(s, { id: real ?? st.shown, title: st.said.split('\n')[0].slice(0, 48), pinned: false, created: now, lastActivity: now, cursor: '' });
+    rows.push({ ...shown, id: st.shown, said: shown.said.length ? shown.said : [{ who: 'you', text: st.said, ago: 0, ...(st.files.length ? { files: st.files } : {}) }], ...(st.over ? {} : { typing: true, step: shown.step ?? 'Thinking' }) });
+  }
+  return [...rows, ...chats];
 }
 
 // The decision a job's card shows, of its open inbox items: what its agent waits on first (a
@@ -241,42 +257,36 @@ const isEscalation = (i: InboxItem) => i.id.startsWith('orchestrator-');
 const escalationAsk = (ask: Ask, item: InboxItem, steer: boolean): Ask =>
   isEscalation(item) ? { ...ask, fullText: true, ...(steer && item.job ? { steer: true } : {}) } : ask;
 
-// Sangam's failed card: another round always tells its agent obid's Try-again words
-// (docs/runner-api.md); one that never started is run again by obid as itself, with no follow-up
-// (TASKS-20). Stop here lets it go. His Open the session is the card's Open task. A task whose
-// follow-up carries it on asks nothing: tell that one.
-const STOP_HERE = 'Stop here';
-
 const limitHolds = (s: Live, j: Job) => !!j.accountLimit || s.limits.some((d) => d.jobs.some((job) => job.id === j.id));
+// Failed or interrupted, not let go, no follow-up carrying it on, and no account's limit holding it
+// (a limit's job goes on only by its limit card's signed choice, #1563): its menu's Try again and
+// Stop here (TASKS-25)
+const stoppedHere = (s: Live, j: Job) =>
+  (j.status === 'failed' || j.status === 'interrupted') && !limitHolds(s, j) && !j.dismissed && !Object.values(s.jobs).some((o) => o.followUpOf === j.id);
 
-// What a job needs from you: that decision (a permission's command as its detail); or, failed or
-// interrupted and not let go, what's next for it
+// What a job needs from you: that decision (a permission's command as its detail). A failed or
+// interrupted one with no item asks nothing: its reason is a plain line, Try again in its menu (TASKS-25)
 export function askOf(s: Live, j: Job): Ask | undefined {
   // a status this build doesn't know: no answer it could judge (docs/contracts/wire.md, WIRE-3)
   if (!isJobStatus(j.status)) return undefined;
   const item = itemOf(s, j.id);
   // The grouped limit appears once, but unrelated permissions or questions still need attention.
-  const limited = limitHolds(s, j);
-  if (limited && (!item || item.kind === 'limit')) return undefined;
-  // (a limit's job goes on only by its limit card's signed choice, #1563: no round from here)
-  const stopped = (j.status === 'failed' || j.status === 'interrupted') && !limited && !j.dismissed && !Object.values(s.jobs).some((o) => o.followUpOf === j.id);
+  if (limitHolds(s, j) && (!item || item.kind === 'limit')) return undefined;
   if (item) {
     const ask = itemAsk(item, item.kind === 'permission' ? j.permission?.detail : undefined);
     if (item.kind === 'permission' && j.permission?.always) ask.always = j.permission.always;
-    // Oby's own question about a task that stopped: a lone Done would only settle it, so it answers
-    // as his failed card does, and his question card's Tell it something (#1795). What Oby
-    // recommends is in its text, so no button looks recommended
-    if (stopped && item.kind === 'question') {
-      return escalationAsk({ ...ask, options: [ANOTHER_ROUND, TELL, STOP_HERE], recommended: -1 }, item, false);
+    // Oby's own question about a task that stopped: its own Done, and his question card's Tell it
+    // something (#1795); a stalled task's takes no answer, so Tell it something alone. Try again and
+    // Stop here are the task's menu's (TASKS-25). What Oby recommends is in its text, so no button
+    // looks recommended
+    if (stoppedHere(s, j) && item.kind === 'question') {
+      return escalationAsk({ ...ask, options: [...(takesNoAnswer(item) ? [] : ask.options), TELL], recommended: -1 }, item, false);
     }
     // (a task let go: obid settles its question by itself, TASKS-13)
     if (item.kind === 'question' && (j.dismissed || takesNoAnswer(item))) return undefined;
     // still running or done: Done alone only settles it, so the card also has Tell it what to do
     // (TASKS-17), signed as the task page's box; Later stays; the headline stays
     return escalationAsk(ask, item, item.kind === 'question');
-  }
-  if (stopped) {
-    return { kind: 'failed', headline: j.status === 'failed' ? 'It failed' : 'It was interrupted', text: (j.reason || j.summary).split('\n')[0] || j.step, options: [ANOTHER_ROUND, STOP_HERE], recommended: 0 };
   }
 }
 
@@ -397,6 +407,33 @@ function asksOf(s: Live): Asking[] {
   ];
 }
 
+// Waiting for you (docs/contracts/home.md, WAITING-1 to 3): everything across the profile's
+// projects that needs the owner's word, as obid sorts it (needs_you), and every merge card
+// (MERGING-21); open, not put off, not while its answer is on its way; longest waiting first. A
+// view over GET /v1/inbox, with no state of its own.
+export function waitingOf(s: Live): InboxItem[] {
+  const now = Date.now();
+  return s.inbox.filter((i) => i.state === 'open' && (i.triage === 'needs_you' || i.kind === 'merge')
+    && !(i.later && Date.parse(i.later) > now) && !s.answering.has(i.id) && !(i.job && s.answered[i.job]?.item === i.id))
+    .sort((a, b) => Date.parse(a.created) - Date.parse(b.created));
+}
+export const useWaitingCount = () => useSyncExternalStore((l) => { listeners.add(l); return () => { listeners.delete(l); }; }, () => waitingOf(state).length);
+// the project an item is in: its task's repository, else GitHub's, else none ('')
+export const projectOf = (s: Live, i: InboxItem) => s.jobs[i.job]?.repo || i.github?.repo || '';
+// Merge on a row is the merge card's own Merge, signed by main by its button's label
+// (docs/contracts/signed-words.md); Allow once and Deny answer the task's permission, as its card does
+export const mergeWaiting = (i: InboxItem) => answerJob(i.id, 'Merge');
+export const allowWaiting = (i: InboxItem, option: 'Allow once' | 'Deny') => answerJob(i.job, option);
+// an item with nothing to open (a standalone Confirm, another Oby's question): its own answer, by label
+export const answerWaiting = (i: InboxItem, option: string) => answerJob(i.id, option);
+// The tools whose reviews of Oby's approved the head obid last pushed to the job's branch, as obid
+// counts them (job.rs, approving_tools): its approvals and its latest review, each tool once
+export const approvingTools = (j: Job) => {
+  const head = (j.outgoing ?? []).filter((o) => o.action === 'push' && o.branch === j.branch).at(-1)?.id;
+  return [...new Set([...(j.approvals ?? []), ...(j.review ? [j.review] : [])]
+    .filter((r) => r.verdict === 'approved' && !!head && r.commit === head).map((r) => r.agent))].sort();
+};
+
 // An account's limit (#1563): one card for all the jobs it stopped, its answers obid's options. The
 // card's id carries the revision it shows, so a choice covers exactly the jobs and destination on
 // it: once obid's decision changes, the old card's answer is refused (answerJob) and a new card
@@ -492,7 +529,7 @@ export function taskOf(s: Live, j: Job): Task {
     check: j.check ?? undefined, repoCheck: s.repos.find((r) => r.repo === j.repo)?.check, status: j.status, step: j.step, waiting: j.waiting ?? undefined,
     round: j.rounds > 1 ? [j.round, j.rounds] : undefined,
     stages: stagesOf(j),
-    ask, summary: j.summary || undefined, reason: j.reason || undefined, commits: j.commits ?? undefined, published: j.published ?? undefined, nothingDone: j.nothingDone || undefined,
+    ask, summary: j.summary || undefined, reason: j.reason || undefined, canTryAgain: !unknown && stoppedHere(s, j), commits: j.commits ?? undefined, published: j.published ?? undefined, nothingDone: j.nothingDone || undefined,
     created: minutesAgo(j.created), finished: j.finished ? minutesAgo(j.finished) : undefined, conversation: j.conversation ? shownId(j.conversation) : undefined,
     noConversation: !s.conversations.some((c) => c.id === j.conversation),
     archived: !!j.archived, publish: publishOf(j, carriedOn(j, Object.values(s.jobs))),
@@ -550,26 +587,24 @@ export function lookAtUsage() {
 
 export function apply(s: Live, e: Exclude<Event, { kind: 'transcript' | 'transcriptLine' }>): Live {
   switch (e.kind) {
-    // a conversation's isn't taken as the one this app's words start: another device may start one
-    // meanwhile (the words' own turn, or the plan's answer, says which is this app's). A question's
-    // card on a turn changes only the card, and nothing about a turn under way
-    case 'job': case 'jobGone': case 'inbox': case 'turnAsks': case 'conversation': case 'conversationGone': case 'accounts': case 'github':
+    // A question's card on a turn changes only the card, and nothing about a turn under way
+    case 'job': case 'jobGone': case 'inbox': case 'turnAsks': case 'accounts': case 'github':
       return { ...s, ...applyToObid(s, e) };
+    // a conversation's isn't taken as the one this app's words start: another device may start one
+    // meanwhile (the words' own turn, or the plan's answer, says which is this app's). Its listing
+    // lets go of words kept only for it; its deletion, of the words to it
+    case 'conversation': case 'conversationGone':
+      return overlaid({ ...s, ...applyToObid(s, e), ...(e.kind === 'conversationGone' ? { pending: goneWith(s.pending, e.id) } : {}) });
     case 'turn': {
       const c = e.turn.conversation, reduced = { ...s, ...applyToObid(s, e) };
       // one the rule kept out (an older copy, a deleted conversation's, or one of none) changes nothing shown
       if (!c || reduced.turns === s.turns) return s;
-      let alias = s.alias;
-      // the words this app sent to start one: that conversation is the one shown for them
-      if (s.starting && e.turn.who === 'user' && (e.turn.id === s.starting.turn || e.turn.text.trim() === s.starting.said) && !(c in s.alias) && !s.turns[c]?.length) {
-        alias = { ...alias, [c]: s.starting.id };
-      }
-      const next = { ...reduced, alias };
-      // an answer: the words it answers expect nothing more (the next, not here yet, still do). One
-      // a turn for other words gave (a supervisor's) leaves the last words what they started
+      // the words this app sent to start one: the conversation their turn is in is the one shown for
+      // them. An answer: the words it answers expect nothing more (the next, not here yet, still do)
+      const next = overlaid(reduced);
+      // one a turn for other words gave (a supervisor's) leaves the last words what they started
       const said = next.turns[c].filter((t) => t.who === 'user').at(-1);
       const answered = {
-        expected: Object.fromEntries(Object.entries(s.expected).filter(([t]) => !next.turns[c].some((x) => x.id === t))),
         unanswered: said && s.on[c] && s.on[c] !== said.id && c in s.working ? new Set([...s.unanswered, said.id]) : s.unanswered,
       };
       // one sent again (its jobs changed): only it changes, unless it's the answer still being shown.
@@ -641,151 +676,67 @@ function tick() {
   else { clearInterval(pacing); pacing = undefined; }
 }
 
-// --- following obid
+// --- following obid, through main (main/live.ts)
 
-let generation = 0;
-let retry = 0;
-let reconnecting: ReturnType<typeof setTimeout> | undefined;
-let unfollow: (() => void) | undefined;
-let limitTimer: ReturnType<typeof setTimeout> | undefined;
-let limitRequest = 0;
-
-// Options can change as accounts become available. Refresh after job/account events and
-// periodically; discard an older response if a newer refresh has already started.
-export async function refreshLimits() {
-  const request = ++limitRequest;
-  try {
-    const limits = await api.limitDecisions();
-    if (request === limitRequest) set({ limits });
-  } catch { /* older obid, or a temporary disconnect: keep the last known decisions */ }
-}
-function queueLimits() {
-  clearTimeout(limitTimer);
-  limitTimer = setTimeout(() => void refreshLimits(), 300);
-}
-setInterval(() => { if (state.connection === 'live') void refreshLimits(); }, 15_000);
-
+// An answer to a limit's card: the decisions again, read by main, whatever the answer
 export async function answerLimit(decision: LimitDecision, option: LimitDecision['options'][number]) {
   try {
     await api.answerLimit(decision, option);
-    await refreshLimits();
-  } catch (e) {
-    await refreshLimits();
-    throw e;
+  } finally {
+    await window.app?.obid.load({ limits: true });
   }
 }
 
+// Main's snapshot, then each message it sends (main.tsx)
 export function connect() {
-  const mine = ++generation;
-  clearTimeout(reconnecting);
-  set({ connection: state.connection === 'down' ? 'down' : 'connecting' });
-  const pending: Event[] = [];
-  let syncing = true;
-  const read = sseReader((name, data) => {
-    if (['limitDecision', 'job', 'accounts'].includes(name)) queueLimits();
-    const e = parseEvent(name, data);
-    if (!e || mine !== generation) return;
-    if (syncing) pending.push(e);
-    else {
-      take(e);
-      // what a first turn would use (TalkPill) changed once the one obid named can't run
-      if (e.kind === 'accounts') {
-        const next = e.accounts.find((a) => a.id === state.status?.talkNext);
-        if (next && (!next.signedIn || (next.fullUntil && Date.parse(next.fullUntil) > Date.now()))) lookAtUsage();
-      }
-    }
-  });
-  let first = true;
-  unfollow?.();
-  unfollow = window.app!.obid.follow(
-    (chunk) => {
-      read(chunk);
-      // obid follows the stream before it answers anything else: fetch once its first text came
-      if (first) { first = false; void sync(mine, pending, () => { syncing = false; }); }
-    },
-    ({ status, text, why }) => {
-      if (status === 401) return down(mine, 'obid refused this Mac’s token (api-token).');
-      if (!status) return down(mine, text, why);
-      // obid's own words ("Oby’s engine didn’t start.", a failed start's answer to the held
-      // stream). `starting` is only GET /v1/status's 503 while obid opens (core's Door): taken as
-      // no problem yet, should the stream ever get it
-      let said: { error?: unknown; starting?: unknown } | null = null;
-      try { said = JSON.parse(text); } catch { /* not obid's JSON */ }
-      down(mine, typeof said?.error === 'string' ? said.error : `obid answered ${status}.`, said?.starting ? 'waiting' : undefined);
-    },
-  );
+  window.app!.obid.live(snapshot, message);
 }
 
-function down(mine: number, problem: string, why?: Live['why']) {
-  if (mine !== generation) return;
-  generation++;
-  unfollow?.();
-  set({ connection: 'down', problem, why, working: {}, expected: {}, words: {}, pace: {} });
-  // every second while main starts obid before the first load (the splash, main.tsx), so the chat
-  // comes soon after it; otherwise backing off, as a failure won't clear that fast
-  reconnecting = setTimeout(connect, state.status || why !== 'waiting' ? Math.min(10_000, 1000 * 2 ** retry++) : 1000);
+let usageLooked = false;
+// What main holds replaces what the page held of obid's; what's the screen's own stays. Once it's
+// live, what stays the page's own after obid's lists are read again
+function snapshot(s: LiveSnapshot) {
+  const obid = unwired(s.state);
+  // the folders of conversations deleted since (folders.ts). A list cut short isn't all of them:
+  // nothing's dropped then
+  if (s.connection === 'live' && s.complete) keepFoldersOf(new Set(obid.conversations.map((c) => c.id)));
+  set(overlaid({
+    ...state, ...obid, limits: s.limits, connection: s.connection, problem: s.problem, why: s.why,
+    firstJobs: state.status || !obid.status ? state.firstJobs : new Set(Object.keys(obid.jobs)),
+  }));
+  if (s.connection !== 'live') return;
+  // what the room missed while the stream was away
+  lookAgain();
+  lookAgainAtThreads();
+  // Settings › Agents' choices kept here before obid kept them: moved to it once (AGENTS-7)
+  if (obid.status) void moveKeptChoices(obid.status).then((moved) => { if (moved) lookAtUsage(); });
+  // where work can start: GitHub's list takes a moment, so the rest doesn't wait for it
+  void api.repos().then(({ repos }) => set({ repos }), () => {});
+  // the app opened: obid asks the tools for usage it hasn't read in 10 minutes, as a stream opening did
+  if (!usageLooked) { usageLooked = true; lookAtUsage(); }
 }
 
-async function sync(mine: number, pending: Event[], onSynced: () => void) {
-  try {
-    const limitVersion = ++limitRequest;
-    const before: ObidState = state;
-    const [status, jobs, inbox, { list: conversations, complete }, github, limits] = await Promise.all([
-      api.status(), api.jobs(LATEST_JOBS), api.inbox().catch(() => []), allConversations(),
-      // GitHub's work: not read, the last read stands, with why (as obid keeps its last lists)
-      api.githubWork().catch((e) => (state.github ? { ...state.github, error: e instanceof Error ? e.message : String(e) } : null)),
-      api.limitDecisions().catch(() => state.limits),
-    ]);
-    if (mine !== generation) return;
-    retry = 0;
-    // obid's lists win, but over a copy an answer brought while they were read: the newer of the
-    // two (a restart can take a revision back: obid's then, not one from before the stream went)
-    let next: Live = {
-      ...state, ...synced(state, before, { jobs, conversations, complete, inbox, status, github }), connection: 'live', problem: null, why: undefined,
-      limits: limitVersion === limitRequest ? limits : state.limits,
-      firstJobs: state.status ? state.firstJobs : new Set(jobs.map((j) => j.id)),
-    };
-    for (const e of pending) {
-      if (e.kind === 'transcript' || e.kind === 'transcriptLine') heard(e);
-      else { if (e.kind === 'jobGone') sessions.delete(e.id); next = apply(next, e); }
-    }
-    pending.length = 0;
-    // the folders of conversations deleted since (folders.ts); with the ones that moved up a page
-    // while it was read (their events, just applied). A list cut short at allConversations' last
-    // page isn't all of them: nothing's dropped then
-    if (complete) keepFoldersOf(new Set(next.conversations.map((c) => c.id)));
-    set(next);
-    onSynced();
-    next.inbox.forEach(lookUpJobOf);
-    // what the room missed while the stream was away
-    lookAgain();
-    lookAgainAtThreads();
-    // Settings › Agents' choices kept here before obid kept them: moved to it once (AGENTS-7)
-    void moveKeptChoices(status).then((moved) => { if (moved && mine === generation) lookAtUsage(); });
-    // where work can start: GitHub's list takes a moment, so the rest doesn't wait for it
-    void api.repos().then(({ repos }) => { if (mine === generation) set({ repos }); }, () => {});
-    // the conversations opened before: what they missed while obid was away; and the latest
-    // words of the newest ones, for their lines in Conversations
-    const latest = [...conversations].sort((a, b) => b.lastActivity.localeCompare(a.lastActivity)).slice(0, 20).map((c) => c.id);
-    for (const c of new Set([...state.loaded, ...latest])) {
-      void api.conversation({ id: c, limit: state.loaded.has(c) ? 100 : 2 }).then((turns) => set(answerTurns(state, c, turns)), () => {});
-    }
-  } catch (e) {
-    down(mine, e instanceof Error ? e.message : String(e));
+function message(m: LiveMessage) {
+  if (m.kind === 'snapshot') return snapshot(m);
+  if (m.kind === 'turns') return set(overlaid({ ...state, ...answerTurns(state, m.conversation, m.turns) }));
+  if (m.kind === 'limits') return set({ limits: m.limits });
+  if (m.kind === 'connection') {
+    if (m.connection === 'down') return set({ connection: 'down', problem: m.problem, why: m.why, working: {}, words: {}, pace: {} });
+    return set({ connection: m.connection, problem: m.problem, why: m.why });
+  }
+  const e = m.event;
+  takeEvent(e);
+  // what a first turn would use (TalkPill) changed once the one obid named can't run
+  if (e.kind === 'accounts') {
+    const next = e.accounts.find((a) => a.id === state.status?.talkNext);
+    if (next && (!next.signedIn || (next.fullUntil && Date.parse(next.fullUntil) > Date.now()))) lookAtUsage();
   }
 }
 
-// every conversation, a page at a time (obid keeps 200, more when pinned)
-async function allConversations() {
-  const all = new Map<string, Conversation>();
-  let complete = false;
-  for (let after: string | undefined, page = 0; page < 10; page++) {
-    const list = await api.conversations({ after, limit: 200 });
-    for (const c of list) if (!all.has(c.id)) all.set(c.id, c);
-    if (list.length < 200) { complete = true; break; }
-    after = list.at(-1)!.cursor;
-  }
-  return { list: [...all.values()], complete };
+// A conversation's turns, read by main and sent here before it answers (main/live.ts): why not, when not
+async function loadTurns(c: string) {
+  const done = await window.app!.obid.load({ conversation: c });
+  if (done !== true) throw new Error(done ?? 'Oby’s engine is reached from the Mac app only.');
 }
 
 // what went wrong with something the app did, for a moment
@@ -821,18 +772,14 @@ export function useRepos(shown?: string) {
 const inRepo = (words: string, repo: string | undefined, shown?: string) =>
   !repo || repo === lastRepo(state, shown).here || words.toLowerCase().includes(repo.toLowerCase()) ? words : `In ${repo}: ${words}`;
 
-// A conversation opened: its turns fetched once (then the events keep them), and the jobs they
-// name that aren't among the latest
+// A conversation opened: its turns fetched once by main (then the events keep them), and the jobs
+// they name that aren't among the latest
 export async function openConversation(shown: string) {
   const c = realId(shown);
   if (state.loaded.has(c) || c.startsWith('new:')) return;
   set({ loaded: new Set([...state.loaded, c]) });
   try {
-    const turns = await api.conversation({ id: c, limit: 100 });
-    set(answerTurns(state, c, turns));
-    for (const j of new Set(turns.flatMap((t) => t.jobs))) {
-      if (!state.jobs[j] && !state.gone.has(j)) await api.job(j).then((job) => take({ kind: 'job', job }), () => {});
-    }
+    await loadTurns(c);
   } catch (e) {
     set({ loaded: new Set([...state.loaded].filter((x) => x !== c)) });
     say(e);
@@ -855,11 +802,12 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
   // an answer to Oby's question is only the answer
   const words = q ? said.trim() : said.trim() ? inRepo(said.trim(), repo, shown) : '';
   if (repo && !q) set({ picked: { ...state.picked, [id]: { repo, at: new Date().toISOString() } } });
+  // on their way until obid's state answers for them (pending.ts); words starting a conversation
+  // show at once under the app's own id
+  set({ pending: added(state.pending, { id: turn, shown: id, conversation: c, said: words, files: files.map(({ name, preview }) => ({ name, preview })) }) });
   // (the rest of Oby's last answer, if it's still being shown, shows whole)
-  set({ expected: { ...state.expected, [turn]: id } });
   if (c) set({ waiting: without(state.waiting, c), working: { ...state.working, [c]: 'Thinking' }, on: { ...state.on, [c]: turn }, ...(state.pace[c]?.turn ? { pace: without(state.pace, c) } : {}) });
-  else set({ starting: { id, said: words, turn, files: files.map(({ name, preview }) => ({ name, preview })) } });
-  let failed = false, answerComing = false;
+  let failed = false, planned = false, answerComing = false;
   const paths = files.map((f) => f.path!);
   void (async () => {
     try {
@@ -868,38 +816,35 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
       // older one refuses the key); a conversation's own are obid's already (sendFoldersBy)
       const a = await sent(() => api.plan(q ? q.said : words, q ? { question: q.text, option: words } : undefined, c ? { conversation: c } : { new: true },
         has(state.status, 'folders-v1') && !c ? folders : undefined, { id: turn, attachments: paths, jobs }));
+      planned = true;
       const where = a.conversation ?? c;
-      // the plan's answer is the one: it replaces a guess from the words' turn
-      const alias = !c && a.conversation ? { ...Object.fromEntries(Object.entries(state.alias).filter(([, v]) => v !== id)), [a.conversation]: id } : state.alias;
-      // the one it started, listed at once (its own event may come later), so its page stays
-      const now = new Date().toISOString();
-      const listed = !where || state.conversations.some((x) => x.id === where) ? state.conversations
-        : [...state.conversations, { id: where, title: (words || files[0]?.name || '').split('\n')[0].slice(0, 48), pinned: false, created: now, lastActivity: now, cursor: '' }];
+      // Oby's turn is in a reply or a question (its event may land after this answer, and the card
+      // would jump); a `none` has none, unless it's the same words again, answered in their turn
+      answerComing = a.kind !== 'none' || a.repeated === true;
+      // the conversation the plan's answer names is obid's own for these words: it's the one shown
+      // for words starting one (their entry stays until obid lists it, so its page stays)
       set({
-        alias, conversations: listed, jobs: a.jobs.reduce(answer, state).jobs,
+        alias: adopted(state.alias, state.pending[turn], a.conversation), pending: planAnswered(state.pending, turn, a, state),
+        jobs: a.jobs.reduce(answer, state).jobs,
         ...(a.kind === 'question' && where ? { waiting: { ...state.waiting, [where]: { ...a.question, said: a.said } } } : {}),
       });
       // the turns of the one it started, from the start
       if (!c && where) {
         set({ loaded: new Set([...state.loaded, where]) });
         // (the turns as they are once these come: any that came meanwhile stay)
-        const turns = await api.conversation({ id: where, limit: 100 });
-        set(answerTurns(state, where, turns));
+        await loadTurns(where);
       }
-      // Oby's turn is in a reply or a question (its event may land after this answer, and the card
-      // would jump); a `none` has none, unless it's the same words again, answered in their turn.
-      // The one just fetched has what obid had.
-      else answerComing = a.kind !== 'none' || a.repeated === true;
     } catch (e) {
       failed = true;
+      // the send failed: its words aren't on their way any more
+      if (!planned) set({ pending: sendFailed(state.pending, turn, state) });
       // obid refused the words: their files go too (one it didn't answer may have them)
       if (e instanceof ApiError && e.status) forgetUploads(paths);
       say(e);
     } finally {
       // (words still being shown carry on to their turn, unless it failed; with none they stop)
       const where = c ?? Object.keys(state.alias).find((k) => state.alias[k] === id);
-      if (!answerComing) set({ expected: without(state.expected, turn) });
-      set({ starting: state.starting?.id === id ? null : state.starting, ...(where && !answerComing && !Object.values(state.expected).includes(id) ? { working: without(state.working, where), words: without(state.words, where), ...(failed || !state.pace[where]?.turn ? { pace: without(state.pace, where) } : {}) } : {}) });
+      if (where && !answerComing && !awaitedIn(state.pending, id, where)) set({ working: without(state.working, where), words: without(state.words, where), ...(failed || !state.pace[where]?.turn ? { pace: without(state.pace, where) } : {}) });
     }
   })();
   return id;
@@ -985,7 +930,7 @@ export async function tellJob(id: string, text: string, files: { path?: string }
     say(e);
   }
 }
-// Told from the agent's own conversation (AgentPane.tsx): the follow-up it started, if it had finished
+// Told from the agent's own conversation, opened in place under its card (AgentThread.tsx): the follow-up it started, if it had finished
 export const tellAgent = async (id: string, text: string, files?: { path?: string }[]) => {
   const j = await tellJob(id, text, files, true);
   return j && j.id !== id ? j.id : undefined;
@@ -1097,15 +1042,13 @@ export async function startGitHubWork(id: string) {
 // On Oby's ask for a check, Use it is the owner's Confirm, No check (or Keep it) their Cancel; Edit
 // sends the command they typed (words) to POST /v1/repos/check, which asks for it in the ask's
 // place, confirmed here at once with this Mac's signature over that ask's title.
-const DECISIONS: Record<string, 'allow' | 'always' | 'deny'> = { Allow: 'allow', 'Always allow': 'always', Deny: 'deny' };
+const DECISIONS: Record<string, 'allow' | 'always' | 'deny'> = { Allow: 'allow', [ALLOW_ONCE]: 'allow', 'Always allow': 'always', Deny: 'deny' };
 const settleQuestion = async (item: InboxItem) => {
   if (!takesNoAnswer(item)) take({ kind: 'inbox', item: await keyed((key) => api.answer(item.id, { answer: 'Done' }, key)) });
 };
 export async function answerJob(id: string, option: string, words?: string) {
   if (id.startsWith('limit:')) return answerLimitAsk(id, option).catch(say);
   const j = state.jobs[id], item = itemOf(state, id) ?? state.inbox.find((i) => i.id === id), ask = j && askOf(state, j);
-  // a card drawn before the limit came: this click would sign past its grouped choice (#1563)
-  if (j && option === ANOTHER_ROUND && limitHolds(state, j)) return;
   const shown = option === 'Edit' && words ? `Use ${words}` : (option === TELL || option === STEER) && words ? words : option;
   if (ask) set({ answered: { ...state.answered, [id]: { ask, option: shown, item: item?.id, ...(option === 'Later' ? { until: Date.now() + 3600_000 } : {}) } } });
   else if (item) answering(item.id, true);
@@ -1130,12 +1073,10 @@ export async function answerJob(id: string, option: string, words?: string) {
     else if (item?.kind === 'permission' && j?.permission && DECISIONS[option]) {
       const next = await api.permission(id, { id: j.permission.id, decision: DECISIONS[option] });
       take({ kind: 'job', job: next });
-    } else if (item?.kind === 'question' && j && (option === ANOTHER_ROUND || option === TELL || option === STEER || option === STOP_HERE)) {
-      // let go, obid settles the question by itself (TASKS-13). On, it leaves it open while the task
-      // runs, so it's settled here; refused, it's still asked. Tell it what to do (TASKS-17) is the
-      // task page's shape: conversation true, then Done
-      if (option === STOP_HERE) take({ kind: 'job', job: await api.dismiss(id) });
-      else if (await tellJob(id, option === ANOTHER_ROUND ? TRY_AGAIN : words!, [], option === STEER)) await settleQuestion(item);
+    } else if (item?.kind === 'question' && j && (option === TELL || option === STEER)) {
+      // obid leaves the question open while the task runs on, so it's settled here; refused, it's
+      // still asked. Tell it what to do (TASKS-17) is the task page's shape: conversation true, then Done
+      if (await tellJob(id, words!, [], option === STEER)) await settleQuestion(item);
       set({ answered: without(state.answered, id) });
     } else if (item) {
       // (an agent's question by its own item, never the job's permission, which can lag behind the
@@ -1143,14 +1084,6 @@ export async function answerJob(id: string, option: string, words?: string) {
       const said = (option === TELL || option === STEER) && words ? words : option;
       const body = option === 'Later' ? { later: new Date(Date.now() + 3600_000).toISOString().replace(/\.\d+Z$/, 'Z') } : { answer: said };
       take({ kind: 'inbox', item: await keyed((key) => api.answer(item.id, body, key)) });
-    } else if (option === STOP_HERE) {
-      // a failed job with no item: let go
-      const next = await api.dismiss(id);
-      take({ kind: 'job', job: next });
-    } else if (option === ANOTHER_ROUND) {
-      // (a refusal is said; either way the card is obid's again, so a second failure shows too)
-      await tellJob(id, TRY_AGAIN);
-      set({ answered: without(state.answered, id) });
     }
   } catch (e) {
     // not taken: it's still yours to answer
@@ -1159,6 +1092,22 @@ export async function answerJob(id: string, option: string, words?: string) {
   } finally {
     if (!j && item) answering(item.id, false);
   }
+}
+// A failed or interrupted task's menu (TASKS-25). Try again tells its agent obid's Try-again words
+// (docs/runner-api.md), signed for that click; one that never started is run again by obid as
+// itself (TASKS-20). Not for a job an account's limit holds: only its limit card's signed choice
+// carries it on (#1563). Taken, Oby's own question about it is answered Done; refused, obid's
+// words show (tellJob). Stop here lets it go: obid settles that question itself (TASKS-13).
+export async function tryAgainJob(id: string) {
+  const j = state.jobs[id];
+  if (j && limitHolds(state, j)) return;
+  const question = state.inbox.find((i) => i.job === id && i.kind === 'question' && isEscalation(i));
+  try {
+    if ((await tellJob(id, TRY_AGAIN)) && question) await settleQuestion(question);
+  } catch (e) { say(e); }
+}
+export async function letGoJob(id: string) {
+  try { take({ kind: 'job', job: await api.dismiss(id) }); } catch (e) { say(e); }
 }
 // Change check, on a task's page (#1062): the owner's own command for its repository, or none to
 // start over. obid asks for it (POST /v1/repos/check) and this Mac's signature over that ask's

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fresh, launch, mac, served } from './macAlerts';
+import { liveBridge } from './liveBridge';
 
 // The Electron app's request key (docs/contracts/receipts.md, RECEIPTS-16): one per click, sent
 // only once obid says it takes keys, and the same again when obid didn't answer at all.
@@ -8,7 +9,6 @@ import { fresh, launch, mac, served } from './macAlerts';
 type Answer = { status: number; body?: unknown };
 let answers: Record<string, Answer[]> = {};
 const calls: { method: string; path: string; body?: unknown }[] = [];
-let feed: (text: string) => void = () => {};
 const sends = (path: string) => calls.filter((c) => c.method === 'POST' && c.path === path);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -43,15 +43,12 @@ async function onObid(status: Record<string, unknown>, inbox: unknown[] = []) {
     const a = (queue && queue.length > 1 ? queue.shift() : queue?.[0]) ?? { status: 404, body: { error: 'Not found.' } };
     return { status: a.status, text: a.status === 0 ? 'obid closed the connection.' : a.body === undefined ? '' : JSON.stringify(a.body) };
   };
-  const follow = (onChunk: (text: string) => void) => { feed = onChunk; return () => {}; };
-  vi.stubGlobal('window', { app: { obid: { call, confirm: async () => ({ status: 200, text: '{}' }), follow } } });
+  const bridge = liveBridge();
+  vi.stubGlobal('window', { app: { obid: { call, confirm: async () => ({ status: 200, text: '{}' }), ...bridge.obid } } });
   const live = await import('../live');
   answers['GET /v1/status'] = [{ status: 200, body: { runner: { version: '0.2.4', host: 'mac' }, accounts: [], models: {}, maxRunning: 6, running: 0, ...status } }];
-  answers['GET /v1/jobs?limit=100'] = [{ status: 200, body: [job()] }];
-  answers['GET /v1/inbox'] = [{ status: 200, body: inbox }];
-  answers['GET /v1/conversations?limit=200'] = [{ status: 200, body: [] }];
   live.connect();
-  feed('');
+  bridge.sync({ status: answers['GET /v1/status'][0].body, jobs: [job()], inbox });
   for (let i = 0; i < 5; i++) await flush();
   expect(live.liveState().connection).toBe('live');
   calls.length = 0;

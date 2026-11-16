@@ -1234,6 +1234,26 @@ async fn next_binary(ws: &mut Socket, seconds: u64) -> Option<Result<Vec<u8>, u1
     }
 }
 
+/// Says the phone's hello on `ws` until the Mac welcomes it, again each second while a session
+/// that just started ignores it (about 10 seconds in all): the new session's keys. What the old
+/// session sealed before the welcome is passed over.
+async fn welcomed(ws: &mut Socket, key: &[u8]) -> (Sealer, Opener) {
+    let phone = Phone::hello(key).unwrap();
+    for _ in 0..10 {
+        ws.send(Message::Binary(phone.hello.clone().into()))
+            .await
+            .unwrap();
+        while let Some(got) = next_binary(ws, 1).await {
+            let bytes = got.expect("the socket stays open");
+            // A welcome's second byte is 2; a sealed envelope's is 3.
+            if bytes.get(1) == Some(&2) {
+                return phone.welcomed(&bytes).expect("the pinned Mac answers");
+            }
+        }
+    }
+    panic!("no welcome");
+}
+
 impl TestPhone {
     /// Opens its socket with the QR's relay token and starts a session with the QR's Mac key.
     async fn connect(relay: &Value) -> TestPhone {
@@ -1245,15 +1265,7 @@ impl TestPhone {
             relay["key"].as_str().unwrap(),
         )
         .unwrap();
-        let phone = Phone::hello(&key).unwrap();
-        ws.send(Message::Binary(phone.hello.clone().into()))
-            .await
-            .unwrap();
-        let welcome = next_binary(&mut ws, 10)
-            .await
-            .expect("a welcome")
-            .expect("the socket stays open");
-        let (sealer, opener) = phone.welcomed(&welcome).expect("the pinned Mac answers");
+        let (sealer, opener) = welcomed(&mut ws, &key).await;
         TestPhone {
             ws,
             key,
@@ -1266,16 +1278,7 @@ impl TestPhone {
 
     /// A new session on the same socket, as a phone starts over.
     async fn hello_again(&mut self) {
-        let phone = Phone::hello(&self.key).unwrap();
-        self.ws
-            .send(Message::Binary(phone.hello.clone().into()))
-            .await
-            .unwrap();
-        let welcome = next_binary(&mut self.ws, 10)
-            .await
-            .expect("a welcome")
-            .expect("the socket stays open");
-        (self.sealer, self.opener) = phone.welcomed(&welcome).expect("the pinned Mac answers");
+        (self.sealer, self.opener) = welcomed(&mut self.ws, &self.key).await;
         self.next = 1;
         self.sent.clear();
     }
@@ -1721,26 +1724,70 @@ async fn the_relay_refuses_replayed_changed_and_foreign_envelopes() {
     assert!(routed.body.get("relay").is_none(), "{}", routed.text);
 }
 
-/// Before its token ends, obid opens the relay's socket again with a new one, which replaces the
-/// old (`4003`): the phone's socket stays, and its event stream goes on through the new one.
+/// PAIRING-10: before its token ends, obid opens the relay's socket again with a new one, which
+/// replaces the old (`4003`): the phone's socket stays, a request held across the replacements is
+/// answered once, and its event stream goes on through the new one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_new_token_replaces_the_relays_socket_and_the_phone_sees_nothing() {
+async fn pairing_10_rotation_loses_nothing() {
     let folder = Folder::new("gateway-relay-renew");
+    let (bin, gh) = holding_gh(&folder.0);
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agent());
+    config["gateway"] = json!("127.0.0.1:0");
     let sphere = FakeSphere::start().await;
     // Tokens of 50 seconds: obid renews 45 seconds before the end, every 5 seconds.
     sphere.lock().token_lifetime = Some(50);
-    let obid = started(&folder);
+    let obid = start_with(
+        &folder.0,
+        &config,
+        Some(&bin),
+        &[("OBID_GITHUB_REFRESH_SECONDS", "0")],
+    );
     tokio::task::block_in_place(|| join_a(&obid, &sphere, &Owner::new("wellington")));
     let (mut phone, token, relay) = relay_paired(&obid, &sphere, "Alice's iPhone").await;
     let id = relay["id"].as_str().unwrap().to_owned();
     let events = phone.ask("GET", "/v1/events", Some(&token), None).await;
     assert_eq!(phone.frame(10).await.unwrap().kind, Kind::Open);
+
+    // A write waits on GitHub while two new sockets replace the relay's.
+    std::fs::write(gh.join("hold"), "").unwrap();
+    let write = phone
+        .ask("POST", "/v1/github/work/refresh", Some(&token), None)
+        .await;
+    tokio::task::block_in_place(|| {
+        within(30, "a refresh at GitHub", || {
+            gh.join("held").exists().then_some(())
+        })
+    });
     let opened = sphere.lock().relay_opens[&id];
     tokio::task::block_in_place(|| {
         within(30, "two new sockets with new tokens", || {
             (sphere.lock().relay_opens[&id] >= opened + 2).then_some(())
         })
     });
+    while let Some(frame) = phone.frame(1).await {
+        assert_ne!(frame.stream, write, "answered while held: {frame:?}");
+    }
+
+    // Let go, it's answered once: one head, one end, and nothing after.
+    std::fs::remove_file(gh.join("hold")).unwrap();
+    let (mut heads, mut ends) = (0, 0);
+    while ends == 0 {
+        let frame = phone.frame(30).await.expect("the write's answer");
+        if frame.stream == write {
+            match frame.kind {
+                Kind::Open => heads += 1,
+                Kind::End => ends += 1,
+                Kind::Data => {}
+                Kind::Reset => panic!("the answer broke off"),
+            }
+        }
+    }
+    while let Some(frame) = phone.frame(2).await {
+        assert_ne!(frame.stream, write, "answered again: {frame:?}");
+    }
+    assert_eq!((heads, ends), (1, 1));
+
     assert_eq!(
         tokio::task::block_in_place(|| call(&obid, "POST", "/v1/clear", None)).status,
         200
@@ -1918,8 +1965,8 @@ async fn folders_7_a_phone_on_the_relay_adds_no_folder() {
 }
 
 /// A stand-in gh for one pull request, open, green and clean into dev at `head`, whose merge waits
-/// in GitHub until the test lets it go: it says `merging` when it starts, waits for `go`, then
-/// says `merged`.
+/// in GitHub until the test lets it go: it says `merging` when it starts, and a line in `merges`
+/// for each call, waits for `go`, then says `merged`.
 fn waiting_gh(folder: &Path, repo: &str, head: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let bin = folder.join("bin");
@@ -1955,7 +2002,7 @@ case "$*" in
     echo '{{"message": "Branch not protected", "status": "404"}}'; echo 'gh: Branch not protected (HTTP 404)' >&2; exit 1 ;;
   "api repos/{repo}/pulls/7") cat "$dir/pull.json" ;;
   "api -X PUT repos/{repo}/pulls/7/merge "*)
-    touch "$dir/merging"
+    touch "$dir/merging"; echo merge >> "$dir/merges"
     i=0; while [ ! -f "$dir/go" ] && [ $i -lt 300 ]; do sleep 0.1; i=$((i+1)); done
     touch "$dir/merged"; echo '{{"merged": true}}' ;;
   "api repos/{repo}/compare/"*) echo '{{"behind_by": 0}}' ;;
@@ -1970,14 +2017,15 @@ esac
     bin
 }
 
-/// WIRE-1: a phone's Merge goes on after its session ends mid-answer (it said hello again, as an
-/// iPhone does coming back from the background): only the answer is lost, and the merge shows
-/// when the phone reads the job in its new session.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_phones_merge_finishes_after_its_session_ends() {
-    const REPO: &str = "obi-e2e/fixture-app";
-    const ID: &str = "a1b2c3d4";
-    let folder = Folder::new("gateway-relay-merge");
+const MERGE_REPO: &str = "obi-e2e/fixture-app";
+const MERGE_ID: &str = "a1b2c3d4";
+
+/// obid with a job done and published into dev, which Oby's own review approved, its pull
+/// request's merge held in [`waiting_gh`] until `gh/go`; a phone paired through the relay; and the
+/// job's ready card in the inbox: obid, its Sphere, the phone, its device token and the card.
+async fn a_merge_to_hold(folder: &Folder) -> (FakeSphere, Obid, TestPhone, String, String) {
+    const REPO: &str = MERGE_REPO;
+    const ID: &str = MERGE_ID;
     let head = "a".repeat(40);
     // A job done and published at `head` into dev, which Oby's own review approved.
     let mut job = obid::job::Job::new(
@@ -2038,7 +2086,7 @@ async fn a_phones_merge_finishes_after_its_session_ends() {
     let membership =
         tokio::task::block_in_place(|| join_a(&obid, &sphere, &Owner::new("wellington")));
     assert_eq!(membership["state"], "joined");
-    let (mut phone, token, _) = relay_paired(&obid, &sphere, "Alice's iPhone").await;
+    let (phone, token, _) = relay_paired(&obid, &sphere, "Alice's iPhone").await;
     let card = format!("merge-ready-{ID}-{head}");
     tokio::task::block_in_place(|| {
         within(30, "the ready card", || {
@@ -2050,6 +2098,17 @@ async fn a_phones_merge_finishes_after_its_session_ends() {
                 .then_some(())
         })
     });
+    (sphere, obid, phone, token, card)
+}
+
+/// WIRE-1: a phone's Merge goes on after its session ends mid-answer (it said hello again, as an
+/// iPhone does coming back from the background): only the answer is lost, and the merge shows
+/// when the phone reads the job in its new session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_phones_merge_finishes_after_its_session_ends() {
+    const ID: &str = MERGE_ID;
+    let folder = Folder::new("gateway-relay-merge");
+    let (_sphere, _obid, mut phone, token, card) = a_merge_to_hold(&folder).await;
 
     // The phone's Merge reaches GitHub, and its session ends while GitHub is still merging.
     phone
@@ -2091,16 +2150,12 @@ async fn a_phones_merge_finishes_after_its_session_ends() {
     assert_eq!(merged["mergedBy"]["by"], "owner", "{merged}");
 }
 
-/// WIRE-1: a phone's 32 requests at once hold across its sessions. Writes it no longer waits for
-/// (it said hello again) still count until they're done, so its 33rd is refused; once they're
-/// done, it's let in again.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_phones_writes_count_toward_its_32_after_its_session_ends() {
+/// A gh that waits in GitHub while `gh/hold` is there (saying `held`), so each refresh waits for
+/// the one read: its folder, and its state's.
+fn holding_gh(folder: &Path) -> (PathBuf, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
-    let folder = Folder::new("gateway-relay-32-writes");
-    // A gh that waits in GitHub while `gh/hold` is there, so each refresh waits for the one read.
-    let bin = folder.0.join("bin");
-    let gh = folder.0.join("gh");
+    let bin = folder.join("bin");
+    let gh = folder.join("gh");
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::create_dir_all(&gh).unwrap();
     std::fs::write(
@@ -2112,6 +2167,16 @@ async fn a_phones_writes_count_toward_its_32_after_its_session_ends() {
     )
     .unwrap();
     std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    (bin, gh)
+}
+
+/// WIRE-1: a phone's 32 requests at once hold across its sessions. Writes it no longer waits for
+/// (it said hello again) still count until they're done, so its 33rd is refused; once they're
+/// done, it's let in again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_phones_writes_count_toward_its_32_after_its_session_ends() {
+    let folder = Folder::new("gateway-relay-32-writes");
+    let (bin, gh) = holding_gh(&folder.0);
     let remote = fixture(&folder.0.join("fixture"));
     let mut config = config(&folder.0, &remote, &agent());
     config["gateway"] = json!("127.0.0.1:0");
@@ -2164,4 +2229,188 @@ async fn a_phones_writes_count_toward_its_32_after_its_session_ends() {
         assert!(tokio::time::Instant::now() < until, "still refused: {body}");
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
+}
+
+/// VAULT-3: the vault's routes are loopback only: through the gateway, even with a paired device
+/// and the owner's signed words, each is `404` and nothing is saved.
+#[test]
+fn vault_3_the_gateway_never_reaches_the_vault() {
+    let folder = Folder::new("gateway-vault");
+    let obid = started(&folder);
+    let token = paired(&obid);
+    let body = json!({"value": "k9/Gateway+v=4?q&r é"});
+    for (method, body) in [("GET", None), ("PUT", Some(&body)), ("DELETE", None)] {
+        let target = if method == "GET" {
+            "/v1/obid/vault"
+        } else {
+            "/v1/obid/vault/x"
+        };
+        let header = words_header(&obid, method, target, body);
+        let extra = format!("X-Oby-Words: {header}\r\n");
+        let answer = through_with(&obid, Some(&token), method, target, body, &extra);
+        assert_eq!(answer.status, 404, "{method} {target}: {}", answer.text);
+    }
+    let listed = call(&obid, "GET", "/v1/obid/vault", None);
+    assert_eq!(listed.status, 200, "{}", listed.text);
+    assert_eq!(listed.body, json!({"names": []}));
+}
+
+/// PAIRING-8: a whole write the phone sent runs once though its session ends before the answer,
+/// and nothing of its answer reaches the phone's new session; its next read shows what came of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pairing_8_a_whole_write_runs_once_after_a_drop() {
+    const ID: &str = MERGE_ID;
+    let folder = Folder::new("gateway-relay-merge-once");
+    let (_sphere, obid, mut phone, token, card) = a_merge_to_hold(&folder).await;
+    phone
+        .ask(
+            "POST",
+            &format!("/v1/inbox/{card}/answer"),
+            Some(&token),
+            Some(&json!({"answer": "Merge"})),
+        )
+        .await;
+    let gh = folder.0.join("gh");
+    tokio::task::block_in_place(|| {
+        within(30, "the merge at GitHub", || {
+            gh.join("merging").exists().then_some(())
+        })
+    });
+    phone.hello_again().await;
+    std::fs::write(gh.join("go"), "").unwrap();
+    tokio::task::block_in_place(|| {
+        within(30, "the merge done", || {
+            let job = call(&obid, "GET", &format!("/v1/jobs/{ID}"), None).body;
+            (!job["mergedBy"].is_null()).then_some(())
+        })
+    });
+    assert!(
+        phone.frame(2).await.is_none(),
+        "the old session's answer reached the new one"
+    );
+    let merges = std::fs::read_to_string(gh.join("merges")).unwrap();
+    assert_eq!(merges.lines().count(), 1, "{merges}");
+    let (status, job) = phone
+        .call("GET", &format!("/v1/jobs/{ID}"), Some(&token), None)
+        .await;
+    assert_eq!(status, 200, "{job}");
+    assert_eq!(job["mergedBy"]["by"], "owner", "{job}");
+}
+
+/// `count` event streams the phone opens, each one's head come: their streams.
+async fn event_streams(phone: &mut TestPhone, token: &str, count: usize) -> Vec<u32> {
+    let mut streams = Vec::new();
+    for _ in 0..count {
+        streams.push(phone.ask("GET", "/v1/events", Some(token), None).await);
+    }
+    let mut open = std::collections::HashSet::new();
+    while open.len() < count {
+        let frame = phone.frame(10).await.expect("each stream's head");
+        if frame.kind == Kind::Open && streams.contains(&frame.stream) {
+            open.insert(frame.stream);
+        }
+    }
+    streams
+}
+
+/// The phone's 33rd request is refused: its 32 slots are taken.
+async fn refused_a_33rd(phone: &mut TestPhone, token: &str) {
+    let (status, said) = phone.call("GET", "/v1/status", Some(token), None).await;
+    assert_eq!(status, 429, "{said}");
+}
+
+/// A `GET /v1/status` gets `200` within a second of the session's welcome, `welcomed`: a `429`
+/// is asked again only inside that second, while the old session's slots come free.
+async fn status_within_a_second(
+    phone: &mut TestPhone,
+    token: &str,
+    welcomed: tokio::time::Instant,
+) {
+    loop {
+        let (status, said) = phone.call("GET", "/v1/status", Some(token), None).await;
+        if status == 200 {
+            return;
+        }
+        assert_eq!(status, 429, "{said}");
+        assert!(
+            welcomed.elapsed() < Duration::from_secs(1),
+            "still refused a second after the welcome: {said}"
+        );
+    }
+}
+
+/// PAIRING-9: the reads and unfinished requests of a phone the Sphere dropped, or whose socket a
+/// new one replaced, free its 32 slots: its first request in its new session is let in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pairing_9_a_dropped_phone_frees_its_slots() {
+    let folder = Folder::new("gateway-relay-dropped-slots");
+    let (sphere, obid) = joined(&folder).await;
+    let (mut phone, token, relay) = relay_paired(&obid, &sphere, "Alice's iPhone").await;
+    let id = relay["id"].as_str().unwrap().to_owned();
+
+    // 32 event streams; its socket closes, so the Sphere tells obid it left; it comes back.
+    event_streams(&mut phone, &token, 32).await;
+    refused_a_33rd(&mut phone, &token).await;
+    phone.ws.close(None).await.unwrap();
+    tokio::task::block_in_place(|| {
+        within(10, "the phone gone from the Sphere", || {
+            (!sphere.lock().relay_phones.keys().any(|(r, _)| *r == id)).then_some(())
+        })
+    });
+    let mut phone = TestPhone::connect(&relay).await;
+    status_within_a_second(&mut phone, &token, tokio::time::Instant::now()).await;
+
+    // Kicked and back: 16 requests not yet whole and 16 event streams; a new socket with the same
+    // relay token replaces the phone's (`4003`), and its hello there starts a new session.
+    for _ in 0..16 {
+        let stream = phone.next;
+        phone.next += 1;
+        let head = json!({"method": "POST", "path": "/v1/clear",
+                          "headers": {"authorization": format!("Bearer {token}")}});
+        phone.send(Frame::json(stream, Kind::Open, &head)).await;
+    }
+    event_streams(&mut phone, &token, 16).await;
+    refused_a_33rd(&mut phone, &token).await;
+    let ws = relay_socket(&relay, relay["token"].as_str().unwrap())
+        .await
+        .unwrap();
+    let mut old = std::mem::replace(&mut phone.ws, ws);
+    let closed = loop {
+        match next_binary(&mut old, 10)
+            .await
+            .expect("the old socket's close")
+        {
+            Ok(_) => {}
+            Err(code) => break code,
+        }
+    };
+    assert_eq!(closed, 4003);
+    phone.hello_again().await;
+    status_within_a_second(&mut phone, &token, tokio::time::Instant::now()).await;
+}
+
+/// PAIRING-11: an envelope that went missing ends the phone's session with a sealed `reset` on
+/// stream 0, and the session's event streams free their slots: after a new hello on the same
+/// socket, its request is let in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pairing_11_a_gap_resets_and_frees() {
+    let folder = Folder::new("gateway-relay-gap-slots");
+    let (sphere, obid) = joined(&folder).await;
+    let (mut phone, token, _) = relay_paired(&obid, &sphere, "Alice's iPhone").await;
+    event_streams(&mut phone, &token, 32).await;
+
+    // One envelope sealed and never sent, then the next.
+    phone
+        .sealer
+        .seal(&Frame::new(phone.next, Kind::End, Vec::new()).encode());
+    phone.ask("GET", "/v1/status", Some(&token), None).await;
+    let over = loop {
+        let frame = phone.frame(10).await.expect("the session's end");
+        if frame.stream == 0 {
+            break frame;
+        }
+    };
+    assert_eq!((over.stream, over.kind), (0, Kind::Reset), "{over:?}");
+    phone.hello_again().await;
+    status_within_a_second(&mut phone, &token, tokio::time::Instant::now()).await;
 }

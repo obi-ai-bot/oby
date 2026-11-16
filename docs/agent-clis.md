@@ -13,3 +13,9 @@ The text of the root [AGENTS.md](../AGENTS.md)'s "Proven on 2026-10-09 (keep the
 - **Codex jobs:** `thread/start` with `sandbox: "workspace-write"`, `approvalPolicy: "on-request"`, `approvalsReviewer: "user"` and `config.sandbox_workspace_write` (`writable_roots`: the clone's git directory, `network_access: false`), so commits stay sandboxed. Approvals arrive as `item/commandExecution/requestApproval` and `item/fileChange/requestApproval`; answer `{"decision": "accept" | "decline"}`.
 - **Reading agents' output:** split on `\n` only. A reader that also breaks at U+2028 (Swift Foundation's `lines` does) breaks inside JSON strings, and a broken `result` line hangs the job.
 - **The character in the window:** Oby follows the pointer anywhere on screen only while its window is shown, and main stops watching it when the window is hidden, minimized or closed ([apps/electron/AGENTS.md](../apps/electron/AGENTS.md#the-character-in-the-window)).
+
+## What a Codex job reads
+
+- obid starts every Codex thread of a job (`config/read`, `thread/start`, `thread/resume`) with the job's worktree root as `cwd`: `jobs.rs` sets the job's `Launch.cwd` to the worktree, and `codex.rs` sends it on `config/read` and, through `thread_params`, on every thread, own or boxed, new or resumed. `codex::tests::lanes_18_an_own_thread_is_held_to_obids_profile` asserts that `cwd` on each of them.
+- Codex reads `AGENTS.md` files only from the project root down to that folder, so a Codex job does not load `core/AGENTS.md`, nor any other folder's `AGENTS.md`.
+- What covers it is the root [AGENTS.md](../AGENTS.md)'s one-line summaries of the "Logins and secrets" and "Tetrix" rules and its line telling agents to read [core/AGENTS.md](../core/AGENTS.md) in full before changing anything under `core/`. obid doesn't change how it starts Codex: what an agent reads is the agent's (AGENTS.md, "Dispatcher, not harness").

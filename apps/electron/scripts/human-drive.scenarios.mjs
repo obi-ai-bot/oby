@@ -88,8 +88,8 @@ async function answerCards(t, { done, ms = 25 * MIN, mine = () => false }) {
   throw new Error(`not done in ${ms / MIN} minutes`);
 }
 
-// a task's page, as the owner opens it: its card in its conversation, then its detail view. Its
-// conversation is the latest few: they go down the list until its card shows
+// a task's page, as the owner opens it: its card in its conversation, then View details in the card's
+// menu (a right-click). Its conversation is the latest few: they go down the list until its card shows
 async function openTask(t, title) {
   await home(t);
   const card = t.page.locator('.msg-task.is-link', { hasText: title }).first(), rows = t.page.locator('.convo-row');
@@ -97,8 +97,8 @@ async function openTask(t, title) {
     await rows.nth(i).click();
     await sleep(500);
   }
-  await card.click();
-  await t.click('Open the task’s page');
+  await card.click({ button: 'right' });
+  await t.page.getByRole('menuitem', { name: 'View details' }).click();
   await t.see('Tell Oby about this task…', { label: 'its page' });
 }
 

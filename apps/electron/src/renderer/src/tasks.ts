@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { BRANDS, type Brand } from './brands';
-import { ARCHIVE, GITHUB_WORK, JOBS, agentOf, hasAttachments, STEER, TELL, type Archived, type Ask, type Attachments, type GitHubItem, type Job, type Message, type Offer } from './mock';
+import { ARCHIVE, GITHUB_WORK, JOBS } from './mock';
+import { agentOf, hasAttachments, STEER, TELL, type Archived, type Ask, type Attachments, type GitHubItem, type Job, type Message, type Offer } from './view';
 import { modeLabel } from './modes';
 import { streamWords, wait } from './stream';
 import { chatFirst, everything, onObid } from './lean';
@@ -200,6 +201,16 @@ export function stop(id: string) {
     status: 'done',
     job: { ...k.job, status: 'stopped', ask: undefined, step: 'Stopped', finished: 0, stages: k.job.stages.map((st) => (st.state === 'current' ? { ...st, state: 'skipped' } : st)) },
   }));
+}
+// A failed or interrupted task's menu (TASKS-25): Try again sends obid's Try-again words; Stop here
+// lets it go. On the mock, at once (TASKS-10)
+export function tryAgain(id: string) {
+  if (onObid) return void live.tryAgainJob(id);
+  update(id, (k) => ({ status: 'running', job: { ...k.job, status: 'running', step: 'Getting ready', canTryAgain: undefined } }));
+}
+export function letGo(id: string) {
+  if (onObid) return void live.letGoJob(id);
+  update(id, (k) => ({ job: { ...k.job, canTryAgain: undefined } }));
 }
 
 // the task renamed (its title on cards, rows and the trail); on obid, its job (live.renameJob)

@@ -1,7 +1,7 @@
 // A typed client of obid's API (docs/runner-api.md), copied from apps/web/src/api.ts and trimmed
-// to what this app shows: the status, jobs, the inbox, the conversations and the event stream.
-// Every call goes through main (window.app.obid, main/obid.ts), which holds obid's token and adds
-// it: the page never sees it.
+// to what this app shows: the status, jobs, the inbox and the conversations; obid's events come
+// from main's one follower of them (main/live.ts, live.ts). Every call goes through main
+// (window.app.obid, main/obid.ts), which holds obid's token and adds it: the page never sees it.
 
 import type { SharingRule } from './sharing';
 import type {
@@ -15,6 +15,7 @@ import type {
   Job,
   LimitDecision,
   PlanAnswer,
+  Profile,
   Repo,
   RoomAnswer,
   RoomPost,
@@ -158,6 +159,9 @@ export const api = {
   // one uploaded for words that never went: it goes (obid keeps one that words or a task use)
   unload: (path: string) => call<null>('DELETE', `/v1/attachments${q({ path })}`),
   repos: () => call<{ repos: Repo[] }>('GET', '/v1/repos'),
+  // obid only: the profiles on this Mac (docs/api/profiles.md), and a new one; older runners answer 404
+  profiles: () => call<Profile[]>('GET', '/v1/profiles'),
+  createProfile: (name: string, color: string) => call<Profile>('POST', '/v1/profiles', { name, color }),
   // Settings › Permissions: the mode new jobs get, and the rules Always allow saved
   permissions: () => call<{ mode: string }>('GET', '/v1/settings/permissions'),
   setPermissions: (mode: string) => call<{ mode: string }>('PUT', '/v1/settings/permissions', { mode }),

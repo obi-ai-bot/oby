@@ -1,5 +1,5 @@
 // Shared wire types and Server-Sent Events framing for obid's API (docs/runner-api.md),
-// used by both Electron's main process (main/notify.ts) and renderer (renderer/src/obid.ts).
+// used by both Electron's main process (main/live.ts, main/notify.ts) and renderer (renderer/src/obid.ts).
 
 // A value obid sends that this build doesn't know is typed as possible (docs/contracts/wire.md):
 // each reader shows it neutral, by these lists of the values it knows, written here once.
@@ -52,6 +52,8 @@ export type EntryDetail = {
 export type Outgoing = { action: string; repo?: string; id?: string; branch?: string; date: string };
 
 // "Job": the keys this app reads
+// Oby's review of a job's published work, as obid sends it (job.rs, Review::to_json)
+export type JobReview = { verdict: 'approved' | 'changesRequested' | (string & {}); job: string; agent: string; account: string; round: number; date: string; commit: string };
 export type Job = {
   // the agent's session to pick up, and who it moved to: with neither it never started (obid only)
   session?: string | null;
@@ -83,6 +85,11 @@ export type Job = {
   nothingDone?: boolean;
   rounds: number;
   round: number;
+  // obid only: how big its change is (docs/api/jobs.md, `diff`), and Oby's reviews of its published
+  // work, each by its reviewer's tool (`agent`): the latest, and the approving ones kept before it
+  diff?: { files: number; added: number; removed: number } | null;
+  review?: JobReview | null;
+  approvals?: JobReview[];
   check: string | null;
   model: string | null;
   dismissed: string | null;
@@ -262,6 +269,10 @@ export type Status = {
 // check: the one its jobs run (none: null); noCheck: the owner said No check (#1062)
 export type Repo = { repo: string; defaultBranch: string; listed: boolean; check?: string | null; noCheck?: boolean };
 
+// obid only: "GET /v1/profiles" (docs/api/profiles.md), a local profile on this Mac: its name and
+// colour, the one obid made first (default), and whether something in it waits on the owner
+export type Profile = { id: string; name: string; color: string; default: boolean; waiting: boolean };
+
 // A rule Always allow saved (or a deny), for a repository or `conversations` ("GET /v1/permissions/rules")
 export type SavedRule = { id: string; rule: string; repo: string; decision: 'allow' | 'deny' | (string & {}) };
 
@@ -293,7 +304,7 @@ export type PlanAnswer = (
   | { kind: 'none'; jobs: Job[]; repeated?: boolean }
 ) & { conversation?: string };
 
-// "GET /v1/events": what a turn of the conversation is doing as it happens. step: an action of
+// obid's events: what a turn of the conversation is doing as it happens. step: an action of
 // the turn (`turn` is the user's turn); thinking: its brain at work; delta: a piece of its words
 // as they're written (obid only: the conversation harness)
 export type Step = { turn: string; conversation?: string; index: number; text: string; state: 'running' | 'done' | 'failed' | (string & {}) };

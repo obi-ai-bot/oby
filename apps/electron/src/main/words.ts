@@ -3,11 +3,12 @@ import { WITHIN_MS, wordsOf } from '../shared/words';
 
 // X-Oby-Words for the owner's words (docs/runner-api.md, "Words the owner typed"): `<device>
 // <signedAt> <signature>`, ECDSA P-256 with SHA-256 over obid's sentence for exactly this request,
-// its body as send() sends it (JSON), signed to the millisecond. Null for a request that isn't one
-// of the app's words requests in exactly its shape (wordsOf): main signs nothing else.
+// its body as send() sends it (JSON, or empty with none), signed to the millisecond. Null for a
+// request that isn't one of the app's words requests in exactly its shape (wordsOf): main signs
+// nothing else.
 export function wordsHeader(key: KeyObject, device: string, method: string, path: string, body: unknown, signedAt = new Date().toISOString()): string | null {
   if (!wordsOf(method, path, body) || !ownFolders(body)) return null;
-  const digest = createHash('sha256').update(JSON.stringify(body)).digest('hex');
+  const digest = createHash('sha256').update(body === undefined ? '' : JSON.stringify(body)).digest('hex');
   const signature = sign('sha256', Buffer.from(`oby-words\n${method}\n${path.split('?')[0]}\n${digest}\n${signedAt}`, 'utf8'), key).toString('base64');
   return `${device} ${signedAt} ${signature}`;
 }
@@ -18,7 +19,7 @@ export function wordsHeader(key: KeyObject, device: string, method: string, path
 const chosen = new Set<string>();
 export const picked = (paths: string[]) => { for (const p of paths) chosen.add(p); };
 const ownFolders = (body: unknown) => {
-  const folders = (body as { folders?: unknown }).folders;
+  const folders = (body as { folders?: unknown } | undefined)?.folders;
   return folders === undefined || (Array.isArray(folders) && folders.every((f) => chosen.has(f)));
 };
 

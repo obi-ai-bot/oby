@@ -1,0 +1,140 @@
+import { waitSays } from './chatgpt';
+import { useEffect, useMemo } from 'react';
+import { Check } from 'lucide-react';
+import Composer from './Composer';
+import { Earlier, Line, liveFor, useEntries, useLiveEnd, useLiveLines, useTail } from './SessionView';
+import { AskBlock } from './TaskCard';
+import { box as draftBox } from './drafts';
+import { onObid } from './lean';
+import { replyTarget } from './replyTarget';
+import { tellAgent } from './live';
+import { around, lastSteps, thoughtWords, todosOf, type Step, type Todo } from './liveTask';
+import { agentOf } from './view';
+import { markSeen, stop, tell, tellPlaceholder, useTasks, type Task } from './tasks';
+
+// How the to-do it's on stands: at work, waiting on you, stopped by a failure, or just ended;
+// unknown: a status this build doesn't know (docs/contracts/wire.md, WIRE-3)
+const stateOf = (task: Task) => (task.unknown ? 'unknown' : task.status === 'needs' ? 'needs' : task.status === 'running' ? 'working' : task.job.status === 'done' ? 'ended' : 'failed');
+
+// Its to-dos as the agent wrote them, the one it's on lit (Sangam's sp-todos), and under it what's
+// passed in: on a card, the last things it did
+function Todos({ todos, task, children }: { todos: Todo[]; task: Task; children?: React.ReactNode }) {
+  const state = stateOf(task);
+  return (
+    <ol className="lt-todos" aria-label="What it’s doing">
+      {todos.map((t, i) => {
+        const on = t.state === 'running';
+        const dot = !on ? 'is-queued' : state === 'working' ? 'is-working' : state === 'needs' ? 'is-needs' : state === 'failed' ? 'is-failed' : 'is-queued';
+        return (
+          <li key={i} className={t.state === 'done' ? 'is-done' : on ? `is-on is-${state}` : 'is-up'}>
+            <div className="lt-todo">
+              <span className="status">{t.state === 'done' ? <Check size={12} strokeWidth={2} /> : <span className={`status-dot ${dot}`} />}</span>
+              <span className={on && state === 'working' ? 'sheen' : undefined}>{t.text}</span>
+            </div>
+            {on && children}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+// One of the last things it did, on a card: its thinking and its words as a line each, a tool call
+// with its mark, its verb and what it ran or touched
+function StepLine({ step: e }: { step: Step }) {
+  if (e.kind === 'thought') return <p className="lt-thought">{e.running ? <span className="sheen">{thoughtWords(e)}</span> : thoughtWords(e)}</p>;
+  if (e.kind === 'said') return <p className="lt-said">{e.text.replace(/\s+/g, ' ').slice(0, 200)}</p>;
+  return (
+    <div className={`lt-tool is-${e.state}`}>
+      <span className="status">{e.state === 'done' ? <Check size={12} strokeWidth={2} /> : <span className={`status-dot ${e.state === 'running' ? 'is-working' : e.state === 'failed' ? 'is-failed' : 'is-queued'}`} />}</span>
+      <span className="lt-tool-text"><span className="lt-verb">{e.verb}</span>{e.target && <> <span className={e.tool === 'Bash' || e.tool === 'Read' || e.tool === 'Edit' ? 'tok-path' : undefined}>{e.target}</span></>}</span>
+    </div>
+  );
+}
+
+// A task's work under its card while it goes on (Sangam's board "Oby at work"): its to-dos if the
+// agent made a list, the last things it did either way. Nothing from its agent yet: what obid says
+// it's on. Past its agent's work (the check, publishing): the stage it's in. A wait of obid's: that too.
+export function WorkNow({ task, onClick }: { task: Task; onClick?: () => void }) {
+  const entries = useEntries(task.id);
+  const j = task.job, list = todosOf(entries), steps = lastSteps(entries);
+  const stage = j.stages.find((st) => st.state === 'current' && st.id !== 'work');
+  const lines = steps.length > 0 && <div className="lt-steps">{steps.map((e, i) => <StepLine key={i} step={e} />)}</div>;
+  const shown = list && around(list);
+  // a list with none in hand now: the last things it did go under the whole list
+  const under = !list?.some((t) => t.state === 'running');
+  // a step its session doesn't hold is obid's own ("Trying again in 5 minutes (2 of 3)", RECOVERY-5)
+  const own = j.step && j.step !== 'Working' && j.step !== 'Thinking' && !entries.some((e) => e.kind === 'tool' && e.summary === j.step);
+  const says = !steps.length && !list ? waitSays(j) : own && j.step;
+  const now = stage && task.status === 'running' ? <p className="lt-thought"><span className="sheen">{stage.title}</span></p>
+    : task.status === 'running' && says ? <p className="lt-thought"><span className="sheen">{says}</span></p>
+    : null;
+  if (!shown && !lines && !now && task.status !== 'needs') return null;
+  return (
+    <div className="lt-now" onClick={onClick}>
+      {task.status === 'needs' && j.ask && <p className="lt-needs">{j.ask.headline}</p>}
+      {shown && (
+        <>
+          {shown.before > 0 && <p className="lt-more">{shown.before} done before these</p>}
+          <Todos todos={shown.todos} task={task}>{!under && lines}</Todos>
+          {shown.after > 0 && <p className="lt-more">{shown.after} more to do</p>}
+        </>
+      )}
+      {(!shown || under) && lines}
+      {now}
+    </div>
+  );
+}
+
+// Which cards in a conversation show opened (LIVETASK-16): the ones the owner opened, and every one
+// that needs them unless they folded it during this need. Opening by itself never folds one.
+export const openCards = (opened: ReadonlySet<string>, folded: ReadonlySet<string>, needing: readonly string[]) =>
+  new Set([...opened, ...needing.filter((id) => !folded.has(id))]);
+
+// The agent's own conversation (Sangam's screens 03 and 04, docs/design/oby-home/), opened in place
+// under its card: from the start, what it said, did and thought and what you told it, its to-dos on
+// top, the decision it waits on, and the box to tell it something (POST /v1/jobs/{id}/messages), with
+// Stop in it while it runs. Told something once it's finished, it starts a follow-up (onFollowUp).
+export default function AgentThread({ id, onFollowUp }: { id: string; onFollowUp: (id: string) => void }) {
+  const tasks = useTasks();
+  const task = tasks.find((t) => t.id === id)!;
+  const entries = useEntries(id);
+  // opened, it's seen, as its page is
+  useEffect(() => { markSeen(id); }, [id]);
+  const atWork = task.status === 'running' || task.status === 'needs';
+  const live = useLiveLines(entries, atWork);
+  const { list, onListScroll, thumbProps } = useLiveEnd();
+  const j = task.job, agent = agentOf(j.agent), todos = todosOf(entries);
+  // its to-dos are on top, not in the conversation as well
+  const tail = useTail(useMemo(() => entries.filter((e) => e.kind !== 'plan'), [entries]));
+  // words typed here go to this job and nothing else (replyTarget, LIVETASK-17)
+  const send = (text: string, att: Parameters<typeof tell>[2]) => {
+    const { job } = replyTarget({ card: id });
+    if (!onObid) return void tell(job, text, att);
+    void tellAgent(job, text, att?.files).then((next) => { if (next) onFollowUp(next); });
+  };
+  return (
+    <div className="lt-thread" role="group" aria-label={`Conversation with ${agent.name}`}>
+      {todos && <div className="lt-thread-todos"><Todos todos={todos} task={task} /></div>}
+      <div className="lt-thread-scroll">
+        <section ref={list} className="lt-thread-lines" onScroll={onListScroll}>
+          <ol className="ss-entries">
+            <Earlier count={tail.earlier} onClick={tail.more} />
+            {tail.shown.map((e, i) => <Line key={e.n ?? i} entry={e} job={id} brand={agent.brand} live={liveFor(e, live)} inCard />)}
+          </ol>
+        </section>
+        <div {...thumbProps} />
+      </div>
+      {task.status === 'needs' && j.ask && <div className="lt-thread-ask"><AskBlock task={task} inChat /></div>}
+      <Composer
+        className="lt-box"
+        autoFocus={false}
+        placeholder={tellPlaceholder(task, agent.name)}
+        label={`Tell the agent about ${task.title}`}
+        onSend={send}
+        draft={draftBox.task(id)}
+        onStop={task.status === 'running' ? () => stop(id) : undefined}
+      />
+    </div>
+  );
+}

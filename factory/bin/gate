@@ -5,6 +5,9 @@ Usage:
   gate <job-id>            write round-N/checks.md; exit 0 on PASS, 1 on FAIL
   gate <job-id> --merge    same, as round-N/merge-checks.md (job merge runs it)
   gate --idle              deallocate the gate VM 30 minutes after its last gate ended (job queue runs it)
+  gate --checkout <worktree> <commit> <branch> <out-dir>
+                           the same gate with no job folder: <out-dir>/checks.md and checks.log; exit 0 on PASS,
+                           1 on FAIL, 2 when it couldn't run (check_commit(), which factory/bin/oby-feed imports)
 
 The gate runs the main checkout's factory/checks.sh inside the job's worktree,
 so a branch can't change the checks it is judged by. It also fails when the
@@ -55,6 +58,24 @@ factory/remote/oby-remote-gate, else that part falls back saying to run factory/
 optional `builder_slots` (0 to 64, by default 0) is how many builder slots factory/bin/test-run may use on it for
 builders' macOS-only runs (REMOTE-35 to 42), with or without `remote_gate`; a wrong type or count makes the
 settings invalid, and the gate's macOS part falls back saying why. The gate's own call and slots don't change.
+
+Shards (REMOTE-58 to 65). With `remote_gate` on and config.json's `gate_shards` ({"linux": <1 to 64>, "mac": <1 to
+3>}, both whole numbers), or the same JSON in FACTORY_GATE_SHARDS for one run, the steps up to the VM call are as
+above, and so is each case that runs the whole check on this Mac. Then every part starts at once and runs to its
+end, the macOS part no longer waiting for the VM's: with rust planned and `linux` 2 or more, `linux` VM calls
+`oby-remote-gate [counts] --shard <k>/<linux> <commit> origin/<base>`, after one reach and in one use of the VM,
+shard 1 with electron and scan; with macOS-only code and `mac` 2 or more, macOS rust shards 1 to mac-1 on the Mac
+worker (`--mac --shard <k>/<mac> ... rust`, shard 1 with swift and factory) and the last here, or every one here
+without a Mac worker. The check deals obid's test binaries to the shards (OBY_CHECK_SHARD, scripts/oby-check.sh);
+this only passes k/n, to the one run it is meant for. Runs on this Mac go one at a time. A VM shard that couldn't
+judge or was cut off, and a Mac worker shard that would fall back above, runs here instead, saying `Fell back from
+<host> to this Mac for rust shard <k>/<n>: <why>` (an unreachable VM sends every VM shard here, said once). GATE:
+FAIL when any part's code isn't 0, a remote call ended 0 or 1 without its verdict line, a part's thread raised or a
+part has no result; each of the last three says `didn't report: <why>`. checks.md adds `Sharded: ...` to its
+summary and a `## Time` section (the wall clock, then each host's seconds), and its seconds are the wall clock's.
+An invalid `gate_shards` runs as without it, saying `Ran unsharded: <why>`, and so does a worktree that isn't its
+commit (a changed, staged or untracked file, or an ignored one under obid's tests): this Mac's shards would deal its
+test files, the other hosts' the commit's, and a binary could run nowhere. Without the key nothing here changes.
 """
 
 import fcntl
@@ -66,6 +87,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 import uuid
@@ -130,6 +152,8 @@ MACOS_ONLY = (
 # on the Mac. A path ending in / stands for everything under it.
 CHECK_FILES = ("scripts/oby-check.sh", "scripts/oby-check-test.sh", "tools/oby-check-blok/")
 REMOTE_KEYS = ("ssh_host", "resource_group", "vm")
+SHARD_COUNTS = {"linux": 64, "mac": 3}  # gate_shards: each field's highest count, its lowest 1 (REMOTE-58 to 65)
+VERDICT_LINE = re.compile(r"oby-remote-gate: (passed|failed|couldn't judge) in slot \d+ after \d+s")
 RULE_KEYS = ("nsg", "nsg_rule")  # optional: the SSH rule the gate may move, by default <vm>NSG and ssh-from-owner
 # Optional: the VM's gate slots and builders' slots (factory/bin/test-run), as (lowest, highest, default), and the
 # builders' user there, which has no sudo.
@@ -182,9 +206,11 @@ def protected_changes(worktree):
     return hits
 
 
-def run_checks(worktree, group=None):
+def run_checks(worktree, group=None, shard=None):
     start = time.monotonic()
     env = dict(os.environ, OBY_CHECK_ONLY=group) if group else None
+    if shard:
+        env["OBY_CHECK_SHARD"] = shard
     res = subprocess.run(["bash", str(CHECKS)], cwd=worktree, capture_output=True, text=True, env=env)
     return res.returncode, res.stdout + res.stderr, int(time.monotonic() - start)
 
@@ -277,6 +303,24 @@ def mac_worker_config():
             and low <= worker["builder_slots"] <= high):
         return None, f"{where}'s builder_slots must be a whole number from {low} to {high}, when set"
     return {"builder_slots": default, **worker}, None
+
+
+def shards_config():
+    """The gate's shards, as remote_config's: FACTORY_GATE_SHARDS takes the place of `gate_shards`."""
+    if "FACTORY_GATE_SHARDS" in os.environ:
+        where = "FACTORY_GATE_SHARDS"
+        try:
+            shards = json.loads(os.environ[where])
+        except ValueError:
+            return None, f"{where} isn't JSON"
+    else:
+        where, shards = "gate_shards", CONFIG.get("gate_shards")
+    if shards is None:
+        return None, None
+    if not isinstance(shards, dict) or not all(type(shards.get(k)) is int and 1 <= shards[k] <= high
+                                               for k, high in SHARD_COUNTS.items()):
+        return None, f"{where} needs linux, a whole number from 1 to 64, and mac, a whole number from 1 to 3"
+    return {k: shards[k] for k in SHARD_COUNTS}, None
 
 
 def utc(when=None):
@@ -515,6 +559,7 @@ def remote_gate(remote, words, groups, heading, log):
     proc.stdin.close()
     seconds = int(time.monotonic() - start)
     slot = re.search(r"^oby-remote-gate: slot (\d+)$", out, re.M)
+    reported = bool(VERDICT_LINE.fullmatch(out.rstrip("\n").rsplit("\n", 1)[-1]))
     if code not in (0, 1):
         log.append(f"==== {host}: its output before the fallback, not part of the verdict ====\n{out}")
         if code == 2 and re.search(r"^oby-remote-gate: both slots are busy$", out, re.M):
@@ -522,7 +567,8 @@ def remote_gate(remote, words, groups, heading, log):
         what = "couldn't judge" if code == 2 else "was cut off"
         raise Fallback(f"oby-remote-gate {what} (exit {code})")
     log.append(f"==== {host}: {heading} ====\n{out}")
-    return {"host": host, "groups": groups, "slot": slot and slot.group(1), "seconds": seconds, "code": code}
+    return {"host": host, "groups": groups, "slot": slot and slot.group(1), "seconds": seconds, "code": code,
+            "reported": reported}
 
 
 def vm_part(remote, commit, base, groups, log, moves):
@@ -602,9 +648,9 @@ def macos_only(worktree, base, touched, head="HEAD"):
     return [f for f in touched if f in MACOS_ONLY or f in named]
 
 
-def remote_parts(remote, invalid, job, worktree, commit):
+def remote_parts(remote, invalid, job, worktree, commit, shards=None):
     """The check's parts where they belong: (parts, the lines saying why a part fell back, the SSH rule's moves for
-    checks.md, log)."""
+    checks.md, log, whether they were spread in shards). With shards, once the commit is on origin, sharded_parts'."""
     base = f"origin/{CONFIG['base_branch']}"
     log, moves = [], []
     try:
@@ -618,14 +664,17 @@ def remote_parts(remote, invalid, job, worktree, commit):
             why = f"the diff touches the check's own files: {named(own)}" if own else "no Linux group planned"
             code, out, seconds = run_checks(worktree)
             return [{"host": "mac", "groups": [f"the whole check ({why})"], "seconds": seconds,
-                     "code": code}], [], moves, out
+                     "code": code}], [], moves, out, False
         on_origin(job.get("branch"), worktree, commit, base)
+        if shards:
+            parts, notes, out = sharded_parts(remote, shards, worktree, commit, base, planned, touched, linux, moves)
+            return parts, notes, moves, out, True
         parts = [vm_part(remote, commit, base, linux, log, moves)]
     except Fallback as e:
         code, out, seconds = run_checks(worktree)
         log.append(f"==== mac: the whole check, after falling back: {e} ====\n{out}")
         return [{"host": "mac", "groups": ["the whole check"], "seconds": seconds, "code": code}], \
-            [f"Fell back to the Mac: {e}"], moves, "\n".join(log)
+            [f"Fell back to the Mac: {e}"], moves, "\n".join(log), False
     macos = macos_only(worktree, base, touched) if "rust" in planned else []
     mac = (["rust"] if macos else []) + [g for g in ("swift", "factory") if g in planned]
     labels = [g + (f" (the diff touches macOS-only code: {named(macos)})" if g == "rust" else "") for g in mac]
@@ -634,7 +683,7 @@ def remote_parts(remote, invalid, job, worktree, commit):
     if worker or worker_invalid:
         part, note = mac_worker_part(worker, worker_invalid, commit, base, mac, labels, log)
         if part:
-            return parts + [part], [], moves, "\n".join(log)
+            return parts + [part], [], moves, "\n".join(log), False
         notes = [note]
     for group, label in zip(mac, labels):
         if parts[0]["code"] != 0:
@@ -643,17 +692,189 @@ def remote_parts(remote, invalid, job, worktree, commit):
         code, out, seconds = run_checks(worktree, group)
         log.append(f"==== mac: OBY_CHECK_ONLY={label} ====\n{out}")
         parts.append({"host": "mac", "groups": [label], "seconds": seconds, "code": code})
-    return parts, notes, moves, "\n".join(log)
+    return parts, notes, moves, "\n".join(log), False
+
+
+def worst(codes):
+    """One part's code from its groups' on this Mac: a failure (1) first, then any other that isn't 0."""
+    return next((c for c in codes if c == 1), next((c for c in codes if c), 0))
+
+
+def sharded_parts(remote, shards, worktree, commit, base, planned, touched, linux, moves):
+    """The check's parts spread over the VM's slots, the Mac worker and this Mac, every one started at once and run to
+    its end (REMOTE-58 to 65): (parts, the lines saying why a part fell back, log), all in the order the parts were
+    expected. A part that ran nowhere, or whose call didn't end with its verdict line, didn't report: a FAIL."""
+    expected = []  # each: where it is meant to run, its host, the groups it runs, their labels and its shard
+    vm_host = remote["ssh_host"]
+    count = shards["linux"]
+    if "rust" in linux and count >= 2:
+        for k in range(1, count + 1):
+            others = [g for g in linux if g != "rust"] if k == 1 else []
+            expected.append({"on": "vm", "host": vm_host, "groups": ["rust", *others],
+                             "labels": [f"rust shard {k}/{count}", *others], "shard": f"{k}/{count}"})
+    else:
+        expected.append({"on": "vm", "host": vm_host, "groups": linux, "labels": linux, "shard": None})
+    macos = macos_only(worktree, base, touched) if "rust" in planned else []
+    others = [g for g in ("swift", "factory") if g in planned]
+    why = f" (the diff touches macOS-only code: {named(macos)})"
+    worker, worker_invalid = mac_worker_config()
+    on_worker = bool(worker or worker_invalid)
+    worker_host = worker["ssh_host"] if worker else "the Mac worker"
+    count = shards["mac"]
+    if macos and count >= 2:
+        def rust(k, host, on, extra=()):
+            return {"on": on, "host": host, "groups": ["rust", *extra], "shard": f"{k}/{count}",
+                    "labels": [f"rust shard {k}/{count}{why}", *extra]}
+        if on_worker:
+            expected += [rust(k, worker_host, "worker", others if k == 1 else ()) for k in range(1, count)]
+            expected.append(rust(count, "mac", "mac"))
+        else:
+            expected.append(rust(1, "mac", "mac"))
+            expected += [{"on": "mac", "host": "mac", "groups": [g], "labels": [g], "shard": None} for g in others]
+            expected += [rust(k, "mac", "mac") for k in range(2, count + 1)]
+    else:
+        mac = (["rust"] if macos else []) + others
+        labels = [g + (why if g == "rust" else "") for g in mac]
+        if mac and on_worker:
+            expected.append({"on": "worker", "host": worker_host, "groups": mac, "labels": labels, "shard": None})
+        else:
+            expected += [{"on": "mac", "host": "mac", "groups": [g], "labels": [label], "shard": None}
+                         for g, label in zip(mac, labels)]
+
+    results, logs, notes = [None] * len(expected), [[] for _ in expected], [[] for _ in expected]
+    here_lock = threading.Lock()
+
+    def meant(on):
+        return [i for i, part in enumerate(expected) if part["on"] == on]
+
+    def unreported(i, why, **seen):
+        part = expected[i]
+        return {"host": part["host"], "groups": part["labels"], "note": f"didn't report: {why}", "code": 1, **seen}
+
+    def fell_back(i, host, why):
+        """Say part i fell back from host, and run it on this Mac."""
+        part = expected[i]
+        what = f" for rust shard {part['shard']}" if part["shard"] else ""
+        notes[i].append(f"Fell back from {host} to this Mac{what}: {why}")
+        here(i)
+
+    def here(i):
+        """Part i's groups on this Mac, each through checks.sh, one run at a time within this gate."""
+        part, codes, seconds = expected[i], [], 0
+        part["host"] = "mac"  # what it says when it doesn't report, too
+        for group, label in zip(part["groups"], part["labels"]):
+            with here_lock:
+                code, out, took = run_checks(worktree, group, part["shard"] if group == "rust" else None)
+            logs[i].append(f"==== mac: {label} ====\n{out}")
+            codes.append(code)
+            seconds += took
+        results[i] = {"host": "mac", "groups": part["labels"], "seconds": seconds, "code": worst(codes)}
+
+    def call(i, host, words):
+        """Part i's call of oby-remote-gate on host: its result, or Fallback."""
+        part = remote_gate(host, words, expected[i]["labels"], ", ".join(expected[i]["labels"]), logs[i])
+        if not part["reported"]:
+            part = unreported(i, f"it ended {part['code']} without its verdict line", seconds=part["seconds"])
+        results[i] = part
+
+    def shard_words(i):
+        return ["--shard", expected[i]["shard"]] if expected[i]["shard"] else []
+
+    def guarded(indices, run, *args):
+        """run(*args), and when it raises, each of indices it left without a result didn't report."""
+        try:
+            run(*args)
+        except Exception as e:
+            for i in indices:
+                if results[i] is None:
+                    results[i] = unreported(i, f"its run raised {type(e).__name__}: {e}")
+
+    def vm():
+        """The VM's calls at once, after one reach and in one use of it; then each that gave no verdict on this Mac."""
+        mine = meant("vm")
+        failed = {}  # a part whose call gave no verdict: why, or None when the VM wasn't reached (said once)
+        slots, builders = sizes(remote)
+        sized = ["--slots", str(slots), "--builder-slots", str(builders)] if set(SIZES) & set(remote) else []
+
+        def one(i):
+            try:
+                call(i, remote, ["oby-remote-gate", *sized, *shard_words(i), commit, base])
+            except Fallback as e:
+                failed[i] = str(e)
+
+        use = open_use()
+        try:
+            try:
+                reach(remote, logs[mine[0]], moves)
+            except Fallback as e:
+                notes[mine[0]].append(f"Fell back from {vm_host} to this Mac: {e}")
+                failed.update(dict.fromkeys(mine))
+            else:
+                calls = [threading.Thread(target=guarded, args=([i], one, i)) for i in mine]
+                for thread in calls:
+                    thread.start()
+                for thread in calls:
+                    thread.join()
+        finally:
+            close_use(use)
+        for i in mine:
+            if i in failed:
+                if failed[i] is None:
+                    guarded([i], here, i)
+                else:
+                    guarded([i], fell_back, i, vm_host, failed[i])
+
+    def mac_worker(i):
+        if worker_invalid:
+            return fell_back(i, "the Mac worker", worker_invalid)
+        try:
+            answers(worker, time.monotonic() + MAC_REACH, MAC_REACH)
+            check_runner(worker)
+            call(i, worker, [MAC_GATE, "--mac", *shard_words(i), commit, base, *expected[i]["groups"]])
+        except Fallback as e:
+            fell_back(i, worker_host, e)
+
+    def this_mac():
+        for i in meant("mac"):
+            guarded([i], here, i)
+
+    threads = [threading.Thread(target=guarded, args=(meant("vm"), vm)),
+               *(threading.Thread(target=guarded, args=([i], mac_worker, i)) for i in meant("worker")),
+               threading.Thread(target=guarded, args=(meant("mac"), this_mac))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    parts = [result or unreported(i, "it has no result") for i, result in enumerate(results)]
+    return parts, [line for lines in notes for line in lines], "\n".join(s for sections in logs for s in sections)
+
+
+def uncommitted(worktree):
+    """The worktree's paths that aren't its commit's: changed, staged or untracked, and ignored ones under obid's
+    tests, which the check would deal into shards too."""
+    out = git(worktree, "status", "--porcelain", "--untracked-files=all") + git(
+        worktree, "status", "--porcelain", "--untracked-files=all", "--ignored", "--", "core/crates/obid/tests")
+    return list(dict.fromkeys(line[3:] for line in out.splitlines() if line.strip()))
 
 
 def describe(part):
-    """One line for checks.md: host, groups, slot, seconds and exit code, or why it didn't run."""
+    """One line for checks.md: host, groups, slot, seconds and exit code, or why it didn't run or report."""
     where = f"{part['host']}: {', '.join(part['groups'])}"
-    if "code" not in part:
+    if "note" in part:
         return f"{where}: {part['note']}"
     code = part["code"]
     slot = f" in slot {part['slot']}" if part.get("slot") else ""
     return f"{where}{slot}: {'passed' if code == 0 else 'failed'} with exit {code} in {part['seconds']}s"
+
+
+def timing(ran, hosts, remote, wall):
+    """## Time's lines in sharded mode: the wall clock, then each host's seconds, the VM's with its calls."""
+    lines = [f"Wall clock: {wall}s"]
+    for host in hosts:
+        mine = [p for p in ran if p["host"] == host]
+        calls = f" over {len(mine)} call{'s' if len(mine) > 1 else ''}" if host == remote["ssh_host"] else ""
+        lines.append(f"{host}: {sum(p['seconds'] for p in mine)}s{calls}")
+    return lines
 
 
 def gate(job_id, merge):
@@ -665,15 +886,42 @@ def gate(job_id, merge):
     commit = git(worktree, "rev-parse", "HEAD").strip()
     if reuse(round_dir, commit, merge):
         sys.exit(0)
+    result = check_commit(worktree, commit, job.get("branch"), round_dir, f"{job_id} round {job['round']}", merge)
+    sys.exit(0 if result["verdict"] == "PASS" else 1)
+
+
+def check_commit(worktree, commit, branch, out_dir, label, merge=False):
+    """The gate on a checkout at a commit of a branch, with no factory job folder: writes <out_dir>/checks.md and
+    checks.log (merge-checks.* with merge), prints the GATE line with label, and returns the verdict, the check's code,
+    each part's describe() line, those that failed and those that didn't report, the fallback lines, the protected
+    changes, the hosts and both files' paths. gate <job-id> runs it; so do `gate --checkout` and factory/bin/oby-feed."""
+    head = git(worktree, "rev-parse", "HEAD").strip()
+    if head != commit:
+        die(f"{worktree} is at {head}, not {commit}")
+    round_dir = Path(out_dir)
+    round_dir.mkdir(parents=True, exist_ok=True)
     protected = protected_changes(worktree)
     remote, invalid = remote_config()
+    sharded = False
     if remote or invalid:
-        parts, fell_back, moves, log = remote_parts(remote, invalid, job, worktree, commit)
-        ran = [p for p in parts if "code" in p]
-        code = next((p["code"] for p in ran if p["code"] != 0), 0)
-        seconds = sum(p["seconds"] for p in ran)
-        host = ", ".join(dict.fromkeys(p["host"] for p in ran))
+        shards, unsharded = shards_config() if remote else (None, None)
+        changed = uncommitted(worktree) if shards else []
+        if changed:
+            # This Mac's shards deal the worktree's test files, the other hosts' the commit's (REMOTE-65).
+            shards, unsharded = None, f"the worktree has changes its commit doesn't: {named(changed)}"
+        started = time.monotonic()
+        parts, fell_back, moves, log, sharded = remote_parts(remote, invalid, {"branch": branch}, worktree, commit,
+                                                             shards)
+        if unsharded:
+            fell_back.append(f"Ran unsharded: {unsharded}")
+        ran = [p for p in parts if "seconds" in p]
+        code = next((p["code"] for p in parts if p.get("code", 0) != 0), 0)
+        # This Mac last: a part that fell back to it keeps its place in the parts, not in HOST.
+        hosts = sorted(dict.fromkeys(p["host"] for p in ran), key=lambda h: h == "mac")
+        host = ", ".join(hosts)
+        seconds = int(time.monotonic() - started) if sharded else sum(p["seconds"] for p in ran)
     else:
+        parts, fell_back, host = [], [], "mac"
         code, log, seconds = run_checks(worktree)
     verdict = "PASS" if code == 0 and not protected else "FAIL"
     name = "merge-checks" if merge else "checks"
@@ -683,6 +931,10 @@ def gate(job_id, merge):
         checked = [describe(p) for p in parts] + fell_back
         where = ("## Where it ran\n" + "\n".join(f"- {line}" for line in [describe(p) for p in parts] + moves)
                  + "".join(f"\n\n{line}" for line in fell_back) + "\n\n")
+        if sharded:
+            checked.insert(len(parts), f"Sharded: obid's test binaries in {shards['linux']} shards on Linux and "
+                                       f"{shards['mac']} on macOS")
+            where += "## Time\n" + "\n".join(f"- {line}" for line in timing(ran, hosts, remote, seconds)) + "\n\n"
     else:
         checked = [f"checks.sh {'passed' if code == 0 else f'failed with exit {code}'} in {seconds}s"]
         where = ""
@@ -698,11 +950,15 @@ def gate(job_id, merge):
         + ("\n".join(f"- {p}" for p in protected) if protected else "None changed.")
         + f"\n\n## checks.sh\nExit {code} in {seconds}s. Last {TAIL} lines of {name}.log:\n\n```\n{tail}\n```\n"
     )
-    print(f"GATE: {verdict} ({job_id} round {job['round']}, "
+    print(f"GATE: {verdict} ({label}, "
           + (f"on {host}, exit {code} in {seconds}s" + "".join(f", {line[0].lower()}{line[1:]}" for line in fell_back)
              if remote or invalid else f"checks.sh exit {code} in {seconds}s")
           + (f", protected paths changed: {', '.join(protected)}" if protected else "") + ")")
-    sys.exit(0 if verdict == "PASS" else 1)
+    failed = [describe(p) for p in parts if p.get("code", 0) != 0] or (checked[:1] if code and not parts else [])
+    return {"verdict": verdict, "code": code, "parts": [describe(p) for p in parts], "failed": failed,
+            "unreported": [describe(p) for p in parts if p.get("note", "").startswith("didn't report")],
+            "fell_back": fell_back, "protected": protected, "host": host,
+            "md": str(round_dir / f"{name}.md"), "log": str(round_dir / f"{name}.log")}
 
 
 def idle():
@@ -749,12 +1005,18 @@ def idle():
 
 
 def main(argv):
+    # A shard is only ever set for the one checks.sh run it is meant for, never inherited by every run.
+    os.environ.pop("OBY_CHECK_SHARD", None)
     if argv == ["--idle"]:
         sys.exit(idle())
     elif len(argv) == 1 and not argv[0].startswith("-"):
         gate(argv[0], merge=False)
     elif len(argv) == 2 and argv[1] == "--merge":
         gate(argv[0], merge=True)
+    elif len(argv) == 5 and argv[0] == "--checkout":
+        _, worktree, commit, branch, out_dir = argv
+        result = check_commit(worktree, commit, branch, out_dir, f"{branch} at {commit[:7]}")
+        sys.exit(0 if result["verdict"] == "PASS" else 1)
     else:
         die(__doc__.strip())
 

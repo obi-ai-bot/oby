@@ -1,15 +1,21 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { load } from 'js-yaml';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DEADLINES, EVERY, FEED, failure, next, onFeed, settings, type Event, type Update } from '../../../shared/updates';
+import {
+  DEADLINES, EVERY, FEED, FEED_PUBLIC_KEY, failure, next, onFeed, settings, verifyFeed, type Event, type Update,
+} from '../../../shared/updates';
 
-// docs/contracts/updates.md: each test is named after its scenario. UPDATES-15 to 17 run main's
-// updater (main/updates.ts) for real over an app folder of its own, with Electron and
-// electron-updater stood in for, on fake timers.
+// docs/contracts/updates.md: each test is named after its scenario. UPDATES-11, 14 and 15 to 17 run
+// main's updater (main/updates.ts) for real over an app folder of its own, with Electron (its net
+// too: the feed main reads again) and electron-updater stood in for, on fake timers. Every key a
+// feed is signed with here is made while the test runs.
 type Handler = (e: unknown, ...args: unknown[]) => unknown;
 const the = vi.hoisted(() => ({
-  handlers: new Map<string, Handler>(), userData: '',
+  handlers: new Map<string, Handler>(), userData: '', fetch: (async () => new Response(null, { status: 404 })) as (...a: unknown[]) => Promise<Response>,
   // the updater's events main listens to, and the stand-in for electron-updater's autoUpdater
   events: new Map<string, (...args: unknown[]) => void>(), updater: {} as Record<string, unknown>,
 }));
@@ -21,6 +27,7 @@ vi.mock('electron', () => {
     BrowserWindow: class {}, dialog: {}, safeStorage: {}, shell: {},
     Notification: class { static isSupported = () => true; },
     powerMonitor: { on() {}, getSystemIdleState: () => 'active' },
+    net: { fetch: (...a: unknown[]) => the.fetch(...a) },
   };
 });
 vi.mock('electron-updater', () => ({
@@ -33,14 +40,17 @@ const emit = (name: string, ...args: unknown[]) => the.events.get(name)!(...args
 const shown = async () => ((await the.handlers.get('updates')!(own)) as { update: Update }).update;
 const install = () => the.handlers.get('updates')!(own, 'install');
 
-// One launch of main's updater, Update automatically on: checkForUpdates answers with `check`
-async function launch(check: Promise<unknown>) {
+// One launch of main's updater, Update automatically on unless userData's settings.json says
+// otherwise: checkForUpdates answers with `check`
+async function launch(check: Promise<unknown>, userData = mkdtempSync(join(tmpdir(), 'oby-updates-'))) {
   vi.resetModules();
   the.handlers.clear();
   the.events.clear();
-  the.userData = mkdtempSync(join(tmpdir(), 'oby-updates-'));
+  the.userData = userData;
+  // electron-updater's own check, which main's wrapper calls last
+  const original = vi.fn(() => true);
   the.updater = {
-    setFeedURL() {}, isUpdateSupported: () => true,
+    setFeedURL() {}, isUpdateSupported: original,
     on: (name: string, f: (...args: unknown[]) => void) => { the.events.set(name, f); },
     checkForUpdates: vi.fn(() => check), downloadUpdate: vi.fn(async () => []), quitAndInstall: vi.fn(),
   };
@@ -48,12 +58,65 @@ async function launch(check: Promise<unknown>) {
   const { updating } = await import('../../../main/updates');
   vi.useFakeTimers();
   updating((e) => (e as { own?: boolean }).own === true, () => null);
-  return { warn, quitAndInstall: the.updater.quitAndInstall as ReturnType<typeof vi.fn> };
+  return {
+    warn, quitAndInstall: the.updater.quitAndInstall as ReturnType<typeof vi.fn>, original,
+    // main's wrapper, as electron-updater calls it before an update counts as found
+    supported: (info: unknown) => (the.updater.isUpdateSupported as (i: unknown) => Promise<boolean>)(info),
+  };
 }
+
+// latest-mac.yml as package.sh writes it before it's signed, and signed by key as sign-feed.mjs signs it
+const unsigned = (f: { version?: string; issued?: string; minimumVersion?: string } = {}) => {
+  const { version = '0.2.24', issued = '2026-11-15T10:00:00Z', minimumVersion = '0.2.23' } = f;
+  return `version: ${version}\nfiles:\n  - url: Oby-${version}-arm64-mac.zip\n    sha512: c2hh\n    size: 1\n`
+    + `path: Oby-${version}-arm64-mac.zip\nsha512: c2hh\nreleaseDate: '2026-11-15T10:00:00.000Z'\n`
+    + `issued: '${issued}'\nminimumVersion: '${minimumVersion}'\n`;
+};
+const signatureOf = (text: string, key: KeyObject) => `signature: '${sign(null, Buffer.from(text), key).toString('base64')}'\n`;
+const signed = (text: string, key: KeyObject) => Buffer.from(text + signatureOf(text, key));
+// what electron-updater parsed from the same bytes
+const parsed = (raw: Buffer | string) => load(raw.toString());
+const pair = generateKeyPairSync('ed25519');
+const other = generateKeyPairSync('ed25519');
+const check = (raw: Buffer, lastIssued?: unknown, info: unknown = parsed(raw)) => verifyFeed(raw, info, lastIssued, pair.publicKey);
+// main reads this as latest-mac.yml
+const serve = (raw: Buffer | null, status = 200) => {
+  the.fetch = vi.fn(async () => new Response(raw && new Uint8Array(raw), { status }));
+  return the.fetch;
+};
+
+// scripts/sign-feed.mjs on its own in a folder of its own, whose src/shared/updates.ts carries
+// carried as FEED_KEY; keyFile, when set, as OBY_FEED_KEY_FILE
+function signer(carried: KeyObject, keyFile: ((app: string) => string) | null, ...args: string[]) {
+  const app = mkdtempSync(join(tmpdir(), 'oby-signer-'));
+  try {
+    mkdirSync(join(app, 'scripts'));
+    mkdirSync(join(app, 'src/shared'), { recursive: true });
+    cpSync(resolve(__dirname, '../../../../scripts/sign-feed.mjs'), join(app, 'scripts/sign-feed.mjs'));
+    const der = carried.export({ type: 'spki', format: 'der' }).toString('base64');
+    writeFileSync(join(app, 'src/shared/updates.ts'), `// the app's key\nexport const FEED_KEY = '${der}';\n`);
+    const env: Record<string, string> = { PATH: process.env.PATH ?? '/usr/bin:/bin' };
+    if (keyFile) env.OBY_FEED_KEY_FILE = keyFile(app);
+    const { status, stdout, stderr } = spawnSync(process.execPath, [join(app, 'scripts/sign-feed.mjs'), ...args], { encoding: 'utf8', env });
+    return { status, words: stdout + stderr };
+  } finally {
+    rmSync(app, { recursive: true, force: true });
+  }
+}
+// a private key's file in a folder of its own outside any app folder, removed after each test
+const keyFolders: string[] = [];
+const keyFileOf = (key: KeyObject, folder = mkdtempSync(join(tmpdir(), 'oby-feed-key-'))) => {
+  keyFolders.push(folder);
+  const file = join(folder, 'feed.pem');
+  writeFileSync(file, key.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 });
+  return file;
+};
 
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.doUnmock('../../../shared/updates');
+  for (const folder of keyFolders.splice(0)) rmSync(folder, { recursive: true, force: true });
 });
 
 const idle: Update = { state: 'idle' };
@@ -164,6 +227,124 @@ describe('updates', () => {
     // a second Update and Restart while one downloads for it
     const downloading: Update = { state: 'downloading', restart: true, ...found };
     expect(next(downloading, { kind: 'install' }, false)).toEqual([downloading, null, 'downloading']);
+  });
+
+  it('updates_11_an_unsigned_or_badly_signed_feed_is_refused', async () => {
+    // the owner's key, as the issue's comment gives it
+    const owner = '-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA2PAZCZ8StseJm63/g0XJWsvq0r0iprM7HHTd3SRkihI=\n-----END PUBLIC KEY-----\n';
+    expect(FEED_PUBLIC_KEY.export({ type: 'spki', format: 'pem' })).toBe(owner);
+    expect(FEED_PUBLIC_KEY.asymmetricKeyType).toBe('ed25519');
+
+    const text = unsigned();
+    expect(check(signed(text, pair.privateKey))).toEqual({ issued: '2026-11-15T10:00:00Z' });
+    const refused = (raw: Buffer, why: string, info: unknown = parsed(raw)) => expect(() => check(raw, undefined, info), why).toThrow(`refused the feed: ${why}`);
+    refused(Buffer.from(text), 'no signature');
+    refused(Buffer.from(text.slice(0, -1)), 'no signature');
+    refused(signed(text, other.privateKey), 'bad signature');
+    // one byte changed after it was signed
+    refused(Buffer.from(signed(text, pair.privateKey).toString().replace('size: 1', 'size: 2')), 'bad signature');
+    // a signature line that isn't the last, or a second one above it
+    refused(Buffer.from(`${text}${signatureOf(text, pair.privateKey)}size: 2\n`), 'no signature');
+    const twice = text + signatureOf(text, pair.privateKey);
+    refused(signed(twice, pair.privateKey), 'no signature', parsed(text));
+    // electron-updater acting on other bytes than the ones checked
+    const raw = signed(text, pair.privateKey);
+    refused(raw, 'not the feed that was checked', parsed(signed(unsigned({ version: '0.2.25' }), pair.privateKey)));
+    refused(raw, 'not the feed that was checked', { ...(parsed(raw) as object), path: 'Oby-0.2.0-arm64-mac.zip' });
+    // what it says names no key, signature or feed text
+    try { check(signed(text, other.privateKey)); } catch (e) { expect((e as Error).message).toBe('refused the feed: bad signature'); }
+
+    // main: the wrapper reads latest-mac.yml again and refuses it before electron-updater's own check
+    const { supported, original } = await launch(new Promise(() => {}));
+    const fetched = serve(Buffer.from(text));
+    await expect(supported(parsed(text))).rejects.toThrow('refused the feed: no signature');
+    expect(fetched).toHaveBeenCalledWith(`${FEED}/latest-mac.yml`, { cache: 'no-store' });
+    serve(null, 404);
+    await expect(supported(parsed(text))).rejects.toThrow('refused the feed: couldn\'t read it (404)');
+    // the real key isn't the test's: a feed only the test's key signed is refused too
+    serve(raw);
+    await expect(supported(parsed(raw))).rejects.toThrow('refused the feed: bad signature');
+    expect(original).not.toHaveBeenCalled();
+
+    // the signer: it stops without the key the app carries, and signs what verifyFeed accepts
+    expect(signer(pair.publicKey, null).words).toMatch(/error: .*OBY_FEED_KEY_FILE/);
+    expect(signer(pair.publicKey, null).status).not.toBe(0);
+    const missing = signer(pair.publicKey, () => join(tmpdir(), 'oby-no-such-feed-key.pem'));
+    expect(missing.status).not.toBe(0);
+    expect(missing.words).toMatch(/^error: .*isn't there/m);
+    const mismatched = signer(pair.publicKey, () => keyFileOf(other.privateKey));
+    expect(mismatched.status).not.toBe(0);
+    expect(mismatched.words).toContain('error: the feed key doesn\'t match the key the app carries');
+    const inside = signer(pair.publicKey, (app) => keyFileOf(pair.privateKey, app));
+    expect(inside.status).not.toBe(0);
+    expect(inside.words).toContain('error: the feed key is inside the repository');
+    const notKey = signer(pair.publicKey, () => { const f = keyFileOf(pair.privateKey); writeFileSync(f, 'not a key'); return f; });
+    expect(notKey.words).toContain('error: the file OBY_FEED_KEY_FILE names isn\'t a readable private key');
+    expect(signer(pair.publicKey, () => keyFileOf(pair.privateKey))).toEqual({ status: 0, words: '==> The feed key matches the app\'s\n' });
+    const work = mkdtempSync(join(tmpdir(), 'oby-feed-'));
+    keyFolders.push(work);
+    writeFileSync(join(work, 'unsigned.yml'), text);
+    const key = keyFileOf(pair.privateKey);
+    const made = signer(pair.publicKey, () => key, join(work, 'unsigned.yml'), join(work, 'latest-mac.yml'));
+    expect(made.status, made.words).toBe(0);
+    const out = readFileSync(join(work, 'latest-mac.yml'));
+    expect(out.toString().startsWith(text)).toBe(true);
+    expect(check(out)).toEqual({ issued: '2026-11-15T10:00:00Z' });
+    // never what the key holds
+    expect(made.words).not.toContain(readFileSync(key, 'utf8').split('\n')[1]);
+    // an unsigned file signed already isn't signed again
+    const again = signer(pair.publicKey, () => key, join(work, 'latest-mac.yml'), join(work, 'twice.yml'));
+    expect(again.status).not.toBe(0);
+    expect(again.words).toContain('is signed already');
+  });
+
+  it('updates_12_a_replayed_feed_is_refused', () => {
+    const raw = signed(unsigned({ issued: '2026-11-15T10:00:00Z' }), pair.privateKey);
+    expect(() => check(raw, '2026-11-15T10:00:01Z')).toThrow('refused the feed: a replay');
+    expect(() => check(raw, '2026-12-01T00:00:00Z')).toThrow('refused the feed: a replay');
+    // the same issued again, a later one, or none kept
+    expect(check(raw, '2026-11-15T10:00:00Z')).toEqual({ issued: '2026-11-15T10:00:00Z' });
+    expect(check(raw, '2026-11-15T09:59:59Z')).toEqual({ issued: '2026-11-15T10:00:00Z' });
+    for (const none of [undefined, null, 42, '', 'yesterday', '2026-13-45T99:99:99Z']) expect(check(raw, none), String(none)).toEqual({ issued: '2026-11-15T10:00:00Z' });
+  });
+
+  it('updates_13_a_version_under_the_floor_is_refused', () => {
+    const feed = (version: string, minimumVersion: string) => signed(unsigned({ version, minimumVersion }), pair.privateKey);
+    expect(() => check(feed('0.2.9', '0.2.10'))).toThrow('refused the feed: under its minimum version');
+    expect(() => check(feed('0.2.23', '0.3.0'))).toThrow('refused the feed: under its minimum version');
+    expect(() => check(feed('1.9.9', '2.0.0'))).toThrow('refused the feed: under its minimum version');
+    // in numeric order, not the text's
+    expect(check(feed('0.2.10', '0.2.9')).issued).toBe('2026-11-15T10:00:00Z');
+    expect(check(feed('0.2.23', '0.2.23')).issued).toBe('2026-11-15T10:00:00Z');
+    for (const [version, floor] of [['0.2.24', 'latest'], ['0.2.24', '0.2'], ['0.2', '0.2.0'], ['0.2.24-beta', '0.2.23']]) {
+      expect(() => check(feed(version, floor)), `${version} ${floor}`).toThrow('refused the feed: unreadable version');
+    }
+    for (const issued of ['yesterday', '2026-11-15T10:00:00.000Z', '2026-11-15 10:00:00Z', '2026-19-15T10:00:00Z']) {
+      expect(() => check(signed(unsigned({ issued }), pair.privateKey)), issued).toThrow('refused the feed: unreadable issued');
+    }
+  });
+
+  it('updates_14_the_last_issued_is_kept', async () => {
+    vi.doMock('../../../shared/updates', async (original) => ({ ...await original<typeof import('../../../shared/updates')>(), FEED_PUBLIC_KEY: pair.publicKey }));
+    const userData = mkdtempSync(join(tmpdir(), 'oby-updates-'));
+    const file = join(userData, 'settings.json');
+    writeFileSync(file, JSON.stringify({ updatesAuto: false, notifications: { jobs: true } }));
+    const newer = signed(unsigned({ issued: '2026-11-15T10:00:00Z' }), pair.privateKey);
+    const older = signed(unsigned({ issued: '2026-11-14T10:00:00Z' }), pair.privateKey);
+
+    let { supported } = await launch(new Promise(() => {}), userData);
+    serve(newer);
+    await expect(supported(parsed(newer))).resolves.toBe(true);
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ updatesAuto: false, notifications: { jobs: true }, updatesIssued: '2026-11-15T10:00:00Z' });
+
+    // relaunched over the same folder: an older feed is a replay, the same one isn't
+    ({ supported } = await launch(new Promise(() => {}), userData));
+    serve(older);
+    await expect(supported(parsed(older))).rejects.toThrow('refused the feed: a replay');
+    serve(newer);
+    await expect(supported(parsed(newer))).resolves.toBe(true);
+    expect(JSON.parse(readFileSync(file, 'utf8')).updatesIssued).toBe('2026-11-15T10:00:00Z');
+    rmSync(userData, { recursive: true, force: true });
   });
 
   it('updates_15_a_check_that_never_answers_ends', async () => {

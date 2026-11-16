@@ -1,5 +1,5 @@
 {
-  "concurrency": 12,
+  "concurrency": 60,
   "max_rounds": 3,
   "base_branch": "dev",
   "merge_method": "squash",
@@ -15,7 +15,7 @@
     "proofs": { "proofs": "opus" },
     "model": { "proofs": "opus" }
   },
-  "proofs": { "mode": "advisory", "timeout_s": 600 },
+  "proofs": { "mode": "blocking", "timeout_s": 600 },
   "mutants": { "budget_s": 1800 },
   "protected_paths": [
     "factory/checks.sh",
@@ -28,6 +28,7 @@
     "claude-sonnet-5-5": { "input": 2.0,  "output": 10.0, "cache_write_5m": 2.5,  "cache_write_1h": 4.0,  "cache_read": 0.20 },
     "claude-haiku-5-5":  { "input": 0.10, "output": 0.50, "cache_write_5m": 0.125, "cache_write_1h": 0.20, "cache_read": 0.01 }
   },
-  "remote_gate": { "ssh_host": "oby-gate", "resource_group": "oby-factory", "vm": "oby-gate", "slots": 4, "builder_slots": 8 },
+  "remote_gate": { "ssh_host": "oby-gate", "resource_group": "oby-factory", "vm": "oby-gate", "slots": 8, "builder_slots": 8 },
+  "gate_shards": { "linux": 4, "mac": 2 },
   "mac_worker": { "ssh_host": "oby-mac-pro", "builder_slots": 2 }
 }

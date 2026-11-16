@@ -86,7 +86,7 @@ async fn a_reviews_request_and_diff_reach_the_agent_without_the_vaults_secrets()
             "agents": {"claude": {"bin": obi().join("e2e/stub-agent/stub-agent"),
                                   "accounts": [{"id": "stub", "name": "Stub", "configDir": home.join("accounts/stub")}]}},
             "repos": [{"repo": "obi-e2e/fixture-app", "remote": format!("file://{}", remote.display()),
-                       "defaultBranch": "main", "check": null}],
+                       "defaultBranch": "main", "check": "true"}],
             "allowFileRemotes": true
         })
         .to_string(),

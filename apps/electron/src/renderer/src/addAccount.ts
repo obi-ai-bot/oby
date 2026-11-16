@@ -1,4 +1,4 @@
-import type { Agent } from './mock';
+import type { Agent } from './view';
 import { ApiError, api, type SignIn, type Status } from './obid';
 
 // Settings › Agents' Add account, what isn't the sheet's (docs/contracts/accounts.md): a row per
