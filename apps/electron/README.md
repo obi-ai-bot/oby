@@ -58,7 +58,7 @@ folder). macOS delivers no notification from the unsigned development build.
 
 It opens on your own conversation with Oby, a chat, not on Home
 (`docs/contracts/chat-first.md`, the owner's decision of 2026-11-02): the side panel lists Oby,
-New conversation and every conversation; each Obysphere has its tile. The panel's title is the open profile with its menu (`docs/contracts/profiles.md`). A task is a card in its
+New conversation and every conversation; each Obysphere has its tile. The panel's title is the open profile with its menu (`docs/contracts/profiles.md`), and under it a switch shows Projects (those chats) or Agents, each agent a coloured Oby with its own conversation (`docs/contracts/helpers.md`, HELPERS-12 to 20). A task is a card in its
 conversation; the Tasks list, Review PR and Issues are hidden, not deleted. Sangam's Home stays to compare: `?home`, or `oby.home` = `1` in the window's local
 storage; `?everything&chat` shows this on his demo data, with the Tasks icon. A Sphere's tile opens its room when obid has one
 (`docs/contracts/room-app.md`); on the mock, Deskree's, with `&room=empty`, `waiting`, `refused` or `unavailable`.
@@ -140,7 +140,9 @@ Sidebar.tsx         the side panel: Home's tasks (its foot opens Archived),
                     its menu), each Obysphere you're in (Knowledge, Invite
                     member, Members, Invited; its ⋮ opens its settings; + in
                     the icon strip makes another), Settings (from your
-                    account picture)
+                    account picture); chat first, Projects or Agents
+AgentsList.tsx      Agents in the side panel: each agent's row, Needs you first
+AgentSheet.tsx      New agent: its Oby's colour, name, instructions, tool and what it can use
 GroupView.tsx       one kind of work's cards, Running or Completed
 TaskView.tsx        one task on its own page; TaskCard.tsx draws its card
 ChatView.tsx        a conversation: with Oby, with other people's Obys (the
@@ -170,9 +172,9 @@ Formatted.tsx       a sent message's text, set as it was typed
 Menu.tsx            the small ⋮ menu; TaskMenu.tsx is a task's, ConvoMenu.tsx a
                     conversation's
 StatusDot.tsx       a task's state as one mark
-Oby.tsx             Oby's frame; ObyFace.tsx its small icon and owners' pictures;
-                    ObyFaceLive.tsx Oby's face in a conversation while it works
-                    (2D, melting into dots)
+Oby.tsx             Oby's frame; ObyFace.tsx its small icon and owners' pictures,
+                    in an agent's colour too; ObyFaceLive.tsx Oby's face in a
+                    conversation while it works (2D, melting into dots)
 brands.tsx          connector logos
 useScrollThumb.ts   the Safari-like scroll thumb
 lean.ts             what's shown: only the conversation, unless ?everything
@@ -181,6 +183,7 @@ onboarding.ts       setting up in Oby's first conversation, step by step;
 chats.ts            your conversations with Oby (renamed, pinned, deleted), and
                     how Oby answers in the mock
 tasks.ts, peers.ts  the tasks and the conversations with other Obys, as small stores
+helpers.ts          the agents (obid's helpers) as a small store, and making one
 spheres.ts          the Obyspheres you're in, their members and invites
 knowledge.ts        each Obysphere's knowledge sources
 stream.ts           Oby's words coming in a word at a time

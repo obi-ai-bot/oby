@@ -1,19 +1,19 @@
 # Helpers: an Oby of its own for one kind of general work
 
-The business behavior contract for helpers, from [the template](../business-contract-template.md). The API is [docs/api/helpers.md](../api/helpers.md); the code is `core/crates/obid/src/helpers.rs` (the record, its file, the routes and the pure check `may_use`), with the turn's part in `brain/harness.rs` (`run`, `mcp_config`, `claude_flags`, `orientation`), `brain/talk.rs`, `brain/harness_codex.rs`, `brain/harness_cursor.rs`, `brain/tools.rs` (`handshake`, `call`), `connections.rs` (`agent_mcp`), `tetrix.rs` (`converse`) and `conversation.rs`. Scenarios are numbered `HELPERS-n`; the tests that prove them are named after them (`helpers_<n>_…` in `core/crates/obid/tests/helpers_api.rs` and in `helpers.rs`'s unit tests), with the Kani proof `helpers_8_may_use_exactly_what_was_granted` in `helpers.rs` and the Quint model `docs/models/helpers.qnt`. Task A00-77.
+The business behavior contract for helpers, from [the template](../business-contract-template.md). The API is [docs/api/helpers.md](../api/helpers.md); the code is `core/crates/obid/src/helpers.rs` (the record, its file, the routes and the pure check `may_use`), with the turn's part in `brain/harness.rs` (`run`, `mcp_config`, `claude_flags`, `orientation`), `brain/talk.rs`, `brain/harness_codex.rs`, `brain/harness_cursor.rs`, `brain/tools.rs` (`handshake`, `call`), `connections.rs` (`agent_mcp`), `tetrix.rs` (`converse`) and `conversation.rs`. Scenarios are numbered `HELPERS-n`; the tests that prove them are named after them (`helpers_<n>_…` in `core/crates/obid/tests/helpers_api.rs` and in `helpers.rs`'s unit tests), with the Kani proof `helpers_8_may_use_exactly_what_was_granted` in `helpers.rs` and the Quint model `docs/models/helpers.qnt`. Task A00-77. The Electron app shows them as Agents (HELPERS-12 to 20, task A00-78): `apps/electron/src/renderer/src/` `AgentsList.tsx`, `AgentSheet.tsx`, `helpers.ts`, `Sidebar.tsx`, `ChatView.tsx` and `Home.tsx`, tested in `test/agentsPanel.test.tsx`.
 
 ## Feature and status
 
 - **Outcome:** The owner has a named assistant for one kind of general work, as OpenBot has: a name, a colour, what it helps with (its standing instructions), the tool it runs on and the connectors it may use, in one profile, with one ongoing conversation. Words sent to it run a turn on its tool, told its instructions, reaching only what it was given.
-- **Status:** **Implemented** (HELPERS-1 to 11), in obid only. The app calls them Agents (docs/design/oby-home/, screens 08 to 10); no app shows them yet. The words of the refusals and of the helper's section are obid's own, Sangam's to change.
-- **Scope:** the record and its file, `GET` and `POST /v1/helpers`, `PATCH` and `DELETE /v1/helpers/{id}`, the helper's conversation, and its turns' tool, instructions and connectors. **Left out, for later tasks:** a helper's routine and the line saying one ran; Gmail, Slack or any other connector; any app screen (Electron, iPhone, Watch); a gateway or phone-relay route; changing a helper's profile after it's made; scoping conversations, jobs or accounts to a profile (PROF-3).
+- **Status:** **Implemented** (HELPERS-1 to 20): obid, and the Electron app, which shows them as Agents (docs/design/oby-home/, screens 08 to 10, task A00-78). The iPhone and Watch apps don't show them yet. The words of the refusals and of the helper's section are obid's own, Sangam's to change.
+- **Scope:** the record and its file, `GET` and `POST /v1/helpers`, `PATCH` and `DELETE /v1/helpers/{id}`, the helper's conversation, and its turns' tool, instructions and connectors. In the Electron app: Agents beside Projects in the side panel, the New agent sheet, and an agent's conversation (A00-78). **Left out, for later tasks:** a helper's routine and the line saying one ran; Gmail, Slack or any other connector; the iPhone and Watch screens; editing, recolouring, renaming or deleting an agent from the app; a gateway or phone-relay route; changing a helper's profile after it's made; scoping conversations, jobs or accounts to a profile (PROF-3).
 
 ## Behavior
 
 ### Actors and ownership
 
 - **obid** owns the helpers (`home/helpers.json`, 0600), checks every change, makes and deletes each one's conversation, and decides each of its turns' tool, orientation and connectors. Every grant decision is `helpers::may_use(granted, asked)`: true exactly when `asked` is in `granted`.
-- **Clients** send the routes on the Mac. Nothing shows yet; the app's word is "Agents".
+- **Clients** send the routes on the Mac. The Electron app shows helpers as Agents (In the app, below); the iPhone and Watch apps don't yet.
 - **The agent** (the user's own Claude Code, Codex or Cursor) runs the turn as for any conversation; obid reaches GitHub and Tetrix for it with its own login and the turn's token, as today.
 
 ### Triggers and prerequisites
@@ -75,6 +75,14 @@ The business behavior contract for helpers, from [the template](../business-cont
 - **The instructions are the owner's standing words**, set only through the loopback routes with the runner's token, as a routine's prompt is; they don't change whether a turn counts as the owner's signed word or as untrusted.
 - **Limits picked here**, Sangam's or the owner's to change: names as conversation titles, instructions up to 4,000 characters, colours as `#rrggbb`, at most 50 helpers.
 
+### In the app
+
+- **The switch.** In the side panel's chats, under the profile's name, one switch shows Projects (Oby's row and the conversations, as before) or Agents. The choice is the panel's, kept on this Mac as `oby.panelSide` (`projects` by default), across a restart. A helper's conversation is under Agents only: it's no row on Projects, Projects' search doesn't find it, and it's never Oby's row's line or where the app opens.
+- **The list.** New agent first, then the open profile's helpers (every one when obid lists no profiles): those that need you under "Needs you" with their count, then the rest under "Agents", each group most recently moved first, one whose conversation isn't listed last. A row is the agent's Oby in its colour, its name, its line (what its turn is on, else its last words, blank when nothing is loaded) and one mark: orange when something in its conversation needs you (a question back, a Confirm, an offer, a limit, or one of its tasks), grey while it works, else when it last moved. The panel reads obid's list as it starts, each time Agents shows, and after a create; an obid without helpers (`404`) or not answering shows New agent and no rows, with no error.
+- **The sheet.** New agent asks for its Oby's colour (the first no agent of this profile has), its name, what it helps with, what it runs on (Claude Code by default) and what it can use (none by default). Create agent sends `POST /v1/helpers` with exactly `name` and `instructions` trimmed, `color`, `tool` and `connectors` (`github`, `web`), and `profile` only when obid lists profiles. Made, its conversation opens once obid's event brings it; refused, obid's sentence shows in the sheet, which keeps everything as it was.
+- **Gmail and Slack** are drawn as on screen 10 but can't be chosen on obid, and are never sent; on the app's mock all four can be. Tetrix has no chip.
+- **Its conversation.** It opens in the app's conversation view: its Oby in its colour beside its words and, with its name, in the bar (no ⋮: it goes with its helper), and the box reads "Message <name>…". Its steps, cards and question back are drawn as in any conversation, and words go to `POST /v1/plans` with its conversation.
+
 ## Interfaces and dependencies
 
 - Persistence: `home/helpers.json` (0600), `{"helpers": [{id, profile, name, color, instructions, tool, connectors, conversation, created}]}`; a helper's conversation keeps `helper` in its own file.
@@ -96,7 +104,21 @@ The business behavior contract for helpers, from [the template](../business-cont
 - **HELPERS-10** (`helpers_10_cursor_keeps_the_web`): a `cursor` helper without `web` is `422` `cursor-needs-web`, on `POST`, on a `PATCH` taking `web` away and on one switching a helper without it to `cursor`; with `web` it's `201`. **Implemented.**
 - **HELPERS-11** (`helpers_11_the_conversation_stays_and_is_never_the_latest`): with a helper made first and then more than 200 other conversations, its conversation is still there; after it had the latest turn, the latest conversation is another one. **Implemented.**
 
+- **HELPERS-12** (`helpers_12_the_switch`): the panel shows Projects and Agents under the title. Agents shows the agents list; Projects shows Oby's row and the chats. The choice is kept as `oby.panelSide` and holds across a restart. **Implemented** (`apps/electron/src/renderer/src/test/agentsPanel.test.tsx`).
+- **HELPERS-13** (`helpers_13_needs_you_first_in_the_open_profile`): four helpers, three in the open profile (one needs you, one working, one idle) and one in another profile. The open profile's three are listed, "Needs you" `1` first with the needing one, then "Agents" with the working one (grey mark) and the idle one (its time). The other profile's helper is absent. **Implemented** (`agentsPanel.test.tsx`).
+- **HELPERS-14** (`helpers_14_a_helper_s_conversation_is_not_among_the_chats`): a conversation with `helper` is not a row on Projects, is not found by Projects' search, and its words are not Oby's row's line. **Implemented** (`agentsPanel.test.tsx`).
+- **HELPERS-15** (`helpers_15_the_sheet_sends_what_it_shows`): fill in the sheet, choose GitHub, The web and Codex, then Create agent. The request is `POST /v1/helpers` with exactly `{name, color, instructions, tool: "codex", connectors: ["github","web"], profile}`. On `201` the sheet closes and the new conversation opens. **Implemented** (`agentsPanel.test.tsx`).
+- **HELPERS-16** (`helpers_16_gmail_and_slack_are_never_sent_on_obid`): on obid, Gmail and Slack are disabled, clicking them chooses nothing, and the request's `connectors` holds neither. **Implemented** (`agentsPanel.test.tsx`).
+- **HELPERS-17** (`helpers_17_a_refusal_keeps_the_sheet`): `422` `{"error": "…", "reason": "cursor-needs-web"}`. obid's sentence shows in the sheet, the sheet stays open with the name, instructions and choices as they were, and the list is unchanged. **Implemented** (`agentsPanel.test.tsx`).
+- **HELPERS-18** (`helpers_18_an_agent_s_conversation`): an agent's conversation shows the agent's face in its colour beside its words and in the bar with its name, and the box says `Message <name>…`. Words sent go to `POST /v1/plans` with its conversation's id. **Implemented** (`agentsPanel.test.tsx`).
+- **HELPERS-19** (`helpers_19_an_agent_waiting_on_two_questions`): an agent whose conversation holds two Question cards is under "Needs you" with the orange mark, and its conversation shows both cards with their options and Later. **Implemented** (`agentsPanel.test.tsx`).
+- **HELPERS-20** (`helpers_20_an_obid_without_helpers`): `GET /v1/helpers` answers `404`, or obid can't be reached. Agents shows "New agent" and no rows, no error shows, and Projects is as it was. **Implemented** (`agentsPanel.test.tsx`).
+
 **Test it when it's done (real Mac):**
 
 1. Make a helper on Codex with no connectors (`curl -X POST …/v1/helpers`), send it words that ask it to search the web, and see it say it can't.
 2. Make one on Claude Code with `["github"]`, ask it for the pull requests waiting for your review, then `PATCH` its connectors to `[]` and ask again: it says it wasn't given GitHub.
+3. In the app, switch to Agents.
+4. Create an agent on Claude Code with The web, and see its conversation open.
+5. Ask it something, and see its face, the "Message <name>…" box and its row's working mark, then its time.
+6. Quit and reopen: Agents is still the side shown.
