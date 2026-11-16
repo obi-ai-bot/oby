@@ -36,8 +36,9 @@ export const mac = {
   sent: [] as { method: string; path: string; body?: unknown; signed: boolean }[],
   // where a banner's click opened the window
   opened: [] as unknown[],
-  // how many times GET /v1/alerts was read since launch
+  // how many times GET /v1/alerts was read since launch, and each read's path with its query
   alertReads: 0,
+  alertPaths: [] as string[],
   // the paths of the event streams Oby asked obid for since launch
   streams: [] as string[],
   // what main sent the window's page on obid-live
@@ -109,14 +110,20 @@ export async function launch() {
     shell: {},
   }));
   mac.alertReads = 0;
+  mac.alertPaths = [];
   const answer = (method: string, path: string, body: unknown, signed: boolean) => {
     if (method !== 'GET') {
       mac.sent.push({ method, path, body, signed });
       if (mac.lost > 0) { mac.lost--; return { status: 0, text: 'obid closed the connection.' }; }
       return { status: 200, text: '{}' };
     }
-    if (path === '/v1/alerts') mac.alertReads++;
-    if (path === '/v1/alerts' && mac.down) return { status: 503, text: '{"error": "The vault can’t be read."}' };
+    // GET /v1/alerts with any query (`fyi`, ALERTS-15) serves mac.served
+    if (path.split('?')[0] === '/v1/alerts') {
+      mac.alertReads++;
+      mac.alertPaths.push(path);
+      if (mac.down) return { status: 503, text: '{"error": "The vault can’t be read."}' };
+      path = '/v1/alerts';
+    }
     if (path === '/v1/status') return { status: 200, text: JSON.stringify({ runner: { version: '0.2.4', host: 'mac' }, accounts: [], models: {}, maxRunning: 6, running: 0 }) };
     if (path === '/v1/github/work') return { status: 404, text: '{"error": "Not found."}' };
     const got = ({ '/v1/alerts': mac.served, '/v1/inbox': mac.inbox, '/v1/limit-decisions': mac.decisions, '/v1/jobs?limit=100': mac.jobs } as Record<string, unknown[]>)[path] ?? [];

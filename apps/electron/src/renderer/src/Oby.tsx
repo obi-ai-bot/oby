@@ -5,6 +5,8 @@ import type { LoadWhat } from '../../shared/decode';
 import type { LiveMessage, LiveSnapshot } from '../../shared/live-wire';
 
 type Point = { x: number; y: number };
+// Settings › Notifications' switches for news that needs nothing (main/notify.ts)
+type NotificationKinds = { finished: boolean; merged: boolean; limit: boolean };
 declare global {
   interface Window {
     app?: {
@@ -18,8 +20,13 @@ declare global {
       openLoginItems(): void;
       // Oby's alerts (preload, main/notify.ts)
       showing(place: { job?: string; conversation?: string } | null): void;
-      onOpen(fn: (place: { job?: string; conversation?: string }) => void): () => void;
-      notifications: { alerts(on?: boolean): Promise<boolean | null>; openSystemSettings(): void };
+      onOpen(fn: (place: { job?: string; conversation?: string; settings?: string }) => void): () => void;
+      notifications: {
+        alerts(on?: boolean): Promise<boolean | null>;
+        openSystemSettings(): void;
+        // the news that needs nothing, each kind on or off (ALERTS-15)
+        kinds(change?: Partial<NotificationKinds>): Promise<NotificationKinds | null>;
+      };
       // Oby's own updates (preload, main/updates.ts)
       updates?(ask?: 'check' | 'install' | boolean): Promise<{ auto: boolean; update: Update } | null>;
       onUpdate?(fn: (update: Update) => void): () => void;

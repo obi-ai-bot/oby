@@ -144,9 +144,14 @@ pub async fn limit_decisions(State(shared): State<Arc<Shared>>) -> Response {
 }
 
 /// `GET /v1/alerts` (ALERTS-1, loopback only): what waits on the owner now, as the phones are
-/// told it (`crate::push::listed`). `503` while the vault can't be read.
-pub async fn alerts(State(shared): State<Arc<Shared>>) -> Result<Response, ApiError> {
-    let list = crate::push::listed(&shared)
+/// told it, and with `fyi` the Mac's news its switches turn on (ALERTS-12 to 17,
+/// `crate::push::listed`). `503` while the vault can't be read.
+pub async fn alerts(
+    State(shared): State<Arc<Shared>>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Response, ApiError> {
+    let on = crate::push::Switches::parse(query.get("fyi").map(String::as_str));
+    let list = crate::push::listed(&shared, on)
         .await
         .map_err(|why| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, why))?;
     Ok(json(StatusCode::OK, Value::Array(list)))
