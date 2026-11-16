@@ -829,6 +829,47 @@ class ObyFeed(unittest.TestCase):
                 self.assertEqual((item["state"], item["job"], item["attempt"]), ("running", "job-9", 1))
                 self.assertNotIn("retry", item)
 
+    # FEEDLOOP-17: a held retry whose own job the owner resumed in obid follows that job, sending nothing
+    def test_feedloop_17_a_held_retry_whose_job_runs_again_follows_it(self):
+        for kind in ("build", "message"):
+            with self.subTest(kind=kind):
+                self.setUp()
+                self.no_ready()
+                disk = {"gb": 5.0}
+                self.feed.free_gb = lambda: disk["gb"]
+                if kind == "build":
+                    self.task("running", attempt=1, pr=None)
+                    self.stand.jobs[JOB].update(status="interrupted")
+                else:
+                    self.task("merging", head=OLD, attempt=1, armedAt="2026-11-15T10:00:00Z")
+                    self.stand.graphql = queue(removed={"createdAt": "2026-11-15T10:05:00Z", "reason": GITHUB})
+                self.one_pass(min_free_gb=10)  # its retry waits for disk
+                self.assertEqual((self.task_now()["state"], self.task_now()["retry"]), ("retrying", kind))
+                self.stand.jobs[JOB]["status"] = "running"  # the owner's "Try again" resumes that same job
+                disk["gb"] = 100.0
+                self.one_pass(min_free_gb=10)
+                item = self.task_now()
+                self.assertEqual(self.stand.sent, [])
+                self.assertEqual((item["state"], item["job"], item["attempt"]), ("running", JOB, 1))
+                self.assertNotIn("retry", item)
+                self.one_pass(min_free_gb=10)
+                self.assertEqual(self.stand.sent, [])
+        # a job that can't be read sends nothing either, until it can
+        self.setUp()
+        self.no_ready()
+        self.feed.free_gb = lambda: 100.0
+        words = self.feed.AGAIN["queue"].format(head=OLD)
+        self.task("retrying", head=OLD, attempt=1, retry="message", words=words, note=words)
+        stand_api = self.feed.api
+        self.feed.api = lambda method, path, body=None, timeout=30: (  # noqa: E731
+            (503, {"error": "obid is busy"}) if method == "GET" else stand_api(method, path, body, timeout))
+        self.one_pass()
+        self.assertEqual(self.stand.sent, [])
+        self.assertEqual(self.task_now()["state"], "retrying")
+        self.feed.api = stand_api
+        self.one_pass()
+        self.assertEqual(len(self.messages()), 1)
+
     # FEEDLOOP-16: a task merged after a rebuild deletes every attempt's jobs, not only its last job's
     def test_feedloop_16_a_merged_task_deletes_the_jobs_of_every_attempt(self):
         self.no_ready()

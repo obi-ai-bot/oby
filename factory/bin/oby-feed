@@ -387,9 +387,13 @@ def recheck(item, jobs):
     """One look at a `retrying` task in the pass that may send its attempt, as things may have moved while it waited.
     Its pull request's current state and files are read first: merged or closed by hand ends it, and one that touches
     a security path waits for the owner, its pull request kept, whichever attempt it waited for. A job that obid has a
-    follow-up of, lost or not, is followed there, nothing sent. Then a follow-up whose job obid lost takes the new-build path, or ends at the attempt cap (next_attempt()). Returns (changed, clear):
+    follow-up of, lost or not, is followed there, nothing sent, and so is its own job when it is `queued` or `running`
+    again (the owner resumed it in obid); a job that can't be read sends nothing. Then a follow-up whose job obid lost takes the new-build path, or ends at the attempt cap (next_attempt()). Returns (changed, clear):
     clear says its attempt may be sent in this pass; a pull request that can't be read sends nothing until one can."""
-    lost = api("GET", f"/v1/jobs/{item['job']}")[0] == 404
+    code, j = api("GET", f"/v1/jobs/{item['job']}")
+    if code not in (200, 404):
+        return False, False  # its job can't be read: looked at again at the next pass, nothing sent meanwhile
+    lost = code == 404
     if item.get("pr"):
         pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", VIEW)
         if not pr:
@@ -408,6 +412,12 @@ def recheck(item, jobs):
                 item.update(state="waiting", note=f"{SECURITY_HOLD} ({hit[0]}){gone}: merge it yourself")
             return True, False
     if follow_up(item, jobs):  # a follow-up obid started while it waited, its job lost or not, carries it on: nothing is sent
+        return True, False
+    if not lost and (j or {}).get("status") in ("queued", "running"):  # the owner resumed it in obid while it waited
+        for k in ("retry", "words", "note"):
+            item.pop(k, None)
+        item["state"] = "running"
+        say(f"{item['key']}: its job {item['job']} runs again in obid: followed, nothing sent")
         return True, False
     if item.get("retry") == "message" and lost:
         verdict, why = next_attempt(item, None, None)
