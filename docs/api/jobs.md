@@ -334,7 +334,7 @@ The transcript's entry `n` as it is now, with its `detail` (#784): what the call
 
 ### `GET /v1/jobs/{id}/changes` (obid only)
 
-What the job's branch committed against its base (A00-93; docs/contracts/tasks.md, TASKS-23, 24, 26 and 27): each changed file, and the diff. Read in the job's worktree, in its sandbox, from the merge-base of `origin/<base>` (as the clone has it) to the worktree's HEAD, read once; uncommitted work isn't in it. It changes nothing.
+What the job's branch committed against its base (A00-93; docs/contracts/tasks.md, TASKS-23, 24, 29 and 30): each changed file, and the diff. Read in the job's worktree, in its sandbox, from the merge-base of `origin/<base>` (as the clone has it) to the worktree's HEAD, read once; uncommitted work isn't in it. It changes nothing.
 
 ```json
 {"base": "main", "head": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",

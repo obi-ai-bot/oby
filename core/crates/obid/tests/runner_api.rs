@@ -3120,11 +3120,11 @@ fn tasks_24_a_diff_over_a_mebibyte_is_cut_at_the_cap_and_says_so() {
     assert_eq!(answer["truncated"], true);
 }
 
-/// TASKS-27: a vault secret and obid's API token written into a changed file are taken out of
+/// TASKS-30: a vault secret and obid's API token written into a changed file are taken out of
 /// the diff, each marked by name.
 #[test]
-fn tasks_27_a_secret_in_a_changed_file_is_redacted_in_the_diff() {
-    let folder = Folder::new("tasks-27");
+fn tasks_30_a_secret_in_a_changed_file_is_redacted_in_the_diff() {
+    let folder = Folder::new("tasks-30");
     let (obid, _) = obid(&folder);
     let (id, worktree) = changed_job(&obid);
     let value = format!("key/{}+R8n3=c0dZ", std::process::id() % 1_000_000 + 100_000);
@@ -3159,10 +3159,10 @@ fn tasks_27_a_secret_in_a_changed_file_is_redacted_in_the_diff() {
     assert!(diff.contains("[redacted: api-token]"), "{diff}");
 }
 
-/// TASKS-26: a job still queued, with no worktree yet, answers no files, and no such job `404`.
+/// TASKS-29: a job still queued, with no worktree yet, answers no files, and no such job `404`.
 #[test]
-fn tasks_26_a_queued_job_answers_no_files_and_no_job_404() {
-    let folder = Folder::new("tasks-26");
+fn tasks_29_a_queued_job_answers_no_files_and_no_job_404() {
+    let folder = Folder::new("tasks-29");
     let (obid, _) = obid(&folder);
     let one = call(
         &obid,

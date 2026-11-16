@@ -793,10 +793,10 @@ fn a_wait_through_the_gateway_starts_at_once() {
     assert!(rest.contains(&id), "{rest}");
 }
 
-/// TASKS-26: a job's changes answer on the loopback API and not through the gateway, which
+/// TASKS-29: a job's changes answer on the loopback API and not through the gateway, which
 /// passes the job's transcript for the same device token.
 #[test]
-fn tasks_26_the_gateway_refuses_a_jobs_changes() {
+fn tasks_29_the_gateway_refuses_a_jobs_changes() {
     let folder = Folder::new("gateway-changes");
     let obid = started(&folder);
     let token = paired(&obid);
