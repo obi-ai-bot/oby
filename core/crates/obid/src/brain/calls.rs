@@ -402,10 +402,7 @@ impl Quick {
         let turn = if self.tool == Tool::Codex {
             // No web search, apps or plug-ins: its one way out is OpenAI's model.
             let mut flags: Vec<OsString> = vec!["-c".into(), r#"web_search="disabled""#.into()];
-            for feature in super::harness_codex::OFF
-                .iter()
-                .filter(|f| **f != "shell_tool")
-            {
+            for feature in codex_off(quoted.is_some()) {
                 flags.extend(["-c".into(), format!("features.{feature}=false").into()]);
             }
             // On a ChatGPT login no run holds a token: Codex goes through obid's relay with this
@@ -438,6 +435,7 @@ impl Quick {
             }
             let options = crate::codex::Options {
                 plan: true,
+                no_commands: quoted.is_none(),
                 quoted,
                 chatgpt: self.relay.is_some(),
                 model,
@@ -511,6 +509,14 @@ impl Quick {
             )),
         }
     }
+}
+
+/// The Codex features a side call turns off: those a conversation's Codex has off
+/// ([`super::harness_codex::OFF`]), its shell kept only for a call with a `quoted` file to read,
+/// whose login copy is gone before the file is there (crate::codex::Quoted). With nothing to read,
+/// its login copy stays in its box, so it gets no shell, as a conversation's Codex doesn't.
+fn codex_off(quoted: bool) -> impl Iterator<Item = &'static str> {
+    (super::harness_codex::OFF.iter().copied()).filter(move |f| !quoted || *f != "shell_tool")
 }
 
 /// What the model gets, with the vault's secrets taken out ([`crate::vault::for_agent`]), or why
@@ -897,6 +903,18 @@ pub async fn usage(State(shared): State<Arc<Shared>>) -> axum::Json<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// B00-15: a Codex side call with nothing quoted to read (a recap) keeps its login copy in its
+    /// box, so it gets no shell, as a conversation's Codex doesn't; one with a quoted file gets the
+    /// shell for that read alone, its login copy gone first. Every other feature is off in both.
+    #[test]
+    fn a_codex_side_call_with_nothing_to_read_gets_no_shell() {
+        let off = |quoted| codex_off(quoted).collect::<Vec<_>>();
+        assert!(off(false).contains(&"shell_tool"));
+        assert_eq!(off(false), super::super::harness_codex::OFF);
+        assert!(!off(true).contains(&"shell_tool"));
+        assert_eq!(off(true).len(), off(false).len() - 1);
+    }
 
     /// #642: a quoted file asking a side call to read its login gets nothing from it. Its Read is
     /// allowed on work.md alone, and denied on the box's login and home, where obid copies the
