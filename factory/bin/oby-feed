@@ -25,8 +25,14 @@ frees the disk afterwards:
   violation. A model with no such line, or one that fails, keeps the pull request waiting, its head held the same
   way; so does a run with no verdict (a name error, a crash, a timeout), with a note saying which
   check gave none, and so does a model whose file name isn't `[A-Za-z0-9_.-]+.qnt`, never sent to the VM.
+- A Kani proof is then run as factory/bin/prove runs one, with its functions, imported: from docs/proofs/<KEY>.md at the
+  head, each `### PROOF-<n>` harness on the gate VM, then its broken rule, which must turn it red. A failing harness, a
+  broken rule that isn't red, a forbidden construct, a malformed entry or a timeout holds the head, whatever
+  `proofs.mode` says; so does a missing proofs file when the pull request adds a `#[kani::proof]` harness or its task
+  (as origin/<base> has it) asks for a Kani proof. A run that fell back to this Mac is never read as a pass.
 - A passing failure is tried again at the next pass, the head not held: a merge GitHub didn't take for the network,
-  a 5xx, a 429 or "try again", or a gate VM ssh couldn't reach. At most 3 times per head, then the head is held.
+  a 5xx, a 429 or "try again", a gate VM ssh couldn't reach, or a Kani check whose head wasn't fetched, whose run fell
+  back to this Mac or whose prove function exited. At most 3 times per head, then the head is held.
 - The loop runs until it is stopped (SIGTERM, Ctrl-C), every --idle-every seconds while nothing is under way;
   --until-idle stops it after a pass with nothing under way or started. A pass that can't reach obid or GitHub is
   skipped with one line, and the wait doubles, up to 10 minutes, until a pass gets through.
@@ -162,6 +168,11 @@ class GitHubUnreached(Unreached):
     removed model, so the head is tried again at the next pass, unverified heads never armed."""
 
 
+class KaniUnreached(Unreached):
+    """check_kani()'s note when the head wasn't fetched, a Kani run fell back to this Mac or a prove function exited:
+    never read as a pass, tried again at the next pass, at most TRIES times a head (tried_again)."""
+
+
 def check_models(files, head):
     """Verifies each Quint model the pull request touches, on the gate VM. Returns why it can't merge, or None."""
 
@@ -232,6 +243,73 @@ def check_models(files, head):
     return None
 
 
+# test-run's own line when the gate VM couldn't take a run, printed before it runs the command here
+FELL_BACK = "factory/bin/test-run: fell back to this Mac:"
+FORMAL = re.compile(r"^###[ \t]+Formal verification[ \t]*\n(.*?)(?=^#{1,6}[ \t]|\Z)", re.M | re.S)
+
+
+def asks_for_kani(text):
+    """Whether a task's `### Formal verification` section, up to the next heading, names Kani and doesn't begin None."""
+    m = FORMAL.search(text or "")
+    said = m.group(1).strip() if m else ""
+    return bool(re.search(r"\bkani\b", said, re.I)) and not said.startswith("None")
+
+
+def task_text(key):
+    """The task's text as origin/<base> has it, else the checkout's copy, else None: never the pull request's own."""
+    path = job.TASKS / f"{key}.md"
+    res = subprocess.run(["git", "show", f"origin/{job.BASE}:{path.relative_to(REPO)}"], cwd=REPO, capture_output=True, text=True)
+    if res.returncode == 0:
+        return res.stdout
+    return path.read_text() if path.is_file() else None
+
+
+def check_kani(key, files, head):
+    """Runs the head's Kani harnesses and their broken rules from docs/proofs/<KEY>.md, with factory/bin/prove's own
+    functions. Returns why it can't merge, a KaniUnreached, or None."""
+    proofs = f"docs/proofs/{key}.md"
+    carried = proofs in files
+    asks = not carried and asks_for_kani(task_text(key))
+    if not carried and not asks and not any(f.endswith(".rs") for f in files):
+        return None
+    got = subprocess.run(["git", "fetch", "-q", "origin", head], cwd=REPO, capture_output=True, text=True)
+    if got.returncode != 0 or subprocess.run(["git", "cat-file", "-e", f"{head}^{{commit}}"], cwd=REPO,
+                                             capture_output=True).returncode != 0:
+        return KaniUnreached(f"the head {head[:12]} wasn't fetched: {(got.stderr or '').strip()[:120] or 'no such commit'}")
+    base, log = f"origin/{job.BASE}", FEED / f"{key}.proofs.log"
+    try:
+        if not carried:
+            for path, numbers in prove.added_lines(REPO, base, head).items():
+                lines = prove.git(REPO, "show", f"{head}:{path}").splitlines()
+                for n in numbers:
+                    line = lines[n - 1].strip() if n <= len(lines) else ""
+                    if line.startswith("#[") and "kani::proof" in line:
+                        return f"{proofs} is missing: {path}:{n} adds a #[kani::proof] harness, and only its entry says how to run it"
+            if asks:
+                return f"{proofs} is missing: the task's Formal verification asks for a Kani proof"
+            return None
+        spec = FEED / "proofs" / f"{key}.md"
+        spec.parent.mkdir(parents=True, exist_ok=True)
+        shown = subprocess.run(["git", "show", f"{head}:{proofs}"], cwd=REPO, capture_output=True, text=True)
+        spec.write_text(shown.stdout if shown.returncode == 0 else "")
+        found, problems = prove.entries(spec)
+        if problems:
+            return f"{proofs}: {problems[0]}"
+        hits = prove.forbidden(REPO, base, head, found)
+        if hits:
+            return f"forbidden construct: {hits[0]}"
+        _, timeout = prove.settings()  # the mode is ignored: a FAIL or TIMEOUT holds the head in advisory mode too
+        log.write_text("")
+        _, reasons = prove.harnesses(REPO, head, found, timeout, log)
+    except SystemExit as e:
+        return KaniUnreached(f"factory/bin/prove exited {e.code} checking {proofs} at {head[:12]}: its words are on stderr")
+    if any(line.strip().startswith(FELL_BACK) for line in log.read_text().splitlines()):
+        return KaniUnreached(f"a Kani run of {proofs} fell back to this Mac, so it proves nothing for the gate VM: see {log}")
+    if reasons:
+        return f"{proofs}: {reasons[0][1]}"
+    return None
+
+
 def free_gb():
     return shutil.disk_usage(str(HOME)).free / 1e9
 
@@ -284,9 +362,12 @@ def brief(task, on_base):
     close = (f"Close the task in its own last commit: git mv factory/queue/tasks/{key}.md factory/queue/done/{key}.md, the file unchanged."
              if on_base else
              f"Close the task in its own last commit: write the task text below, exactly, to factory/queue/done/{key}.md, under its header lines (KEY: {key}, TITLE: {title}, DEPENDS: none).")
+    kani = (f"Write docs/proofs/{key}.md holding a ## Proofs section in factory/bin/prove's shape (docs/contracts/factory.md, "
+            "'The ## Proofs format'), one ### PROOF-<n> entry per harness: Oby runs each harness and its broken rule before it merges. "
+            if asks_for_kani(task.get("body")) else "")
     text = (f"You are building roadmap task {key}: {title}. {where} Read AGENTS.md too and follow it, 'Rules Oby never breaks' above all. "
             "Make the simplest change that fully meets the task; match the code around it; format only the lines you change. "
-            "Every numbered scenario gets a test named after it. Run only the tests and lints your change touches "
+            f"Every numbered scenario gets a test named after it. {kani}Run only the tests and lints your change touches "
             "(Rust: CARGO_TARGET_DIR=$PWD/core/target and --manifest-path core/Cargo.toml), never the whole check. "
             "Never raise obid_lines_limit or jobs_rs_limit in scripts/oby-check.sh: if the change can't fit, stop and say by how many lines. "
             f"Commit with Conventional Commits; the first commit's subject is the task's title. {close} "
@@ -415,10 +496,11 @@ def pr_number(url):
 HELD = "approved twice, but "
 
 
-def may_arm(j, pr, refused):
+def may_arm(j, pr, refused, key):
     """The one rule for arming a pull request's head: ("arm", its tools), ("pending", None), ("wait", why) or
     ("retry", why) when the gate VM couldn't be reached.
-    The cheap checks come first, so the models are verified only for a head that passed every other one."""
+    The cheap checks come first, so the models are verified, and then the Kani proofs run, only for a head that passed
+    every other one."""
     head = pr["headRefOid"]
     if head == refused:
         return "wait", f"{head} was refused once: push a new head or merge it yourself"
@@ -432,11 +514,12 @@ def may_arm(j, pr, refused):
     hit = touches_security(files)
     if hit:
         return "wait", f"{HELD}it touches a security path ({hit[0]}): merge it yourself"
-    why = check_models(files, head)
-    if isinstance(why, Unreached):
-        return "retry", why
-    if why:
-        return "wait", (HELD + why)[:240]
+    for check in (lambda: check_models(files, head), lambda: check_kani(key, files, head)):
+        why = check()
+        if isinstance(why, Unreached):
+            return "retry", why
+        if why:
+            return "wait", (HELD + why)[:240]
     return "arm", sorted(tools)
 
 
@@ -458,9 +541,12 @@ def tried_again(item, head, why):
 
 def gate_unreached(item, head, why):
     """ssh to the gate VM failed or dropped: an unanswered request, so the pass is skipped and the head is tried
-    again at the next one, never held for it. A model GitHub didn't give is GitHub's miss, already in GH_MISSED."""
+    again at the next one, never held for it. A model GitHub didn't give is GitHub's miss, already in GH_MISSED. A Kani
+    check's passing failure costs a whole run each pass, so it is tried at most TRIES times a head."""
     if not isinstance(why, GitHubUnreached):
         GATE_MISSED.append(why)
+    if isinstance(why, KaniUnreached):
+        return tried_again(item, head, why)
     item.update(state="waiting", head=head, note=f"{why[:200]}; tried again at the next pass")
 
 
@@ -565,7 +651,7 @@ def follow(item, jobs):
             item.update(state="failed", note="its pull request was closed")
             return True
         head = pr["headRefOid"]
-        verdict, said = may_arm(j, pr, item.get("refused"))
+        verdict, said = may_arm(j, pr, item.get("refused"), key)
         if verdict == "pending":
             return False
         if verdict == "retry":
@@ -615,7 +701,7 @@ def follow(item, jobs):
             item.update(state="failed", note="its pull request was closed")
             return True
         head = pr["headRefOid"]
-        verdict, said = may_arm(j, pr, item.get("refused"))
+        verdict, said = may_arm(j, pr, item.get("refused"), key)
         if verdict == "arm":
             arm(item, head, said)
             return True

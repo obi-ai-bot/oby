@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""factory/bin/oby-feed's own tests (docs/contracts/factory.md, FEEDMODEL-1 to 5; task A00-80, FEED-1 to FEED-6),
-never obid, GitHub, ssh, Quint, the gate VM or the network.
+"""factory/bin/oby-feed's own tests (docs/contracts/factory.md, FEEDMODEL-1 to 5, FEEDKANI-1 to 9; task A00-80, FEED-1 to
+FEED-6), never obid, GitHub, ssh, Quint, Kani, the gate VM or the network.
 
 FEED-1 to FEED-6: the feeder's state is a temporary folder; obid's API and every `gh` call are stand-ins that log
 what they were asked and answer as each test sets.
@@ -10,6 +10,10 @@ FEEDMODEL-1 to 4: check_models() runs with subprocess.run stubbed: `gh api` retu
 returns the output and exit code the test gives that name, as Quint 0.33.1 printed them on the gate VM. Every output
 that isn't empty starts with a stand-in for the VM's protobuf warning, a line that holds the word "error" without
 starting with it; an empty one stands for a run that printed nothing at all (a timeout, a dropped connection).
+
+FEEDKANI-1 to 9: check_kani() runs prove's own functions against a real bare origin and the feeder's clone of it, each
+pull request's head pushed to origin only, with a stand-in test-run in a temporary prove.BIN that prints Kani's verdict
+lines; `gh` and obid are the stand-ins above.
 
 Run from the repository root: python3 -m unittest discover -s factory/tests -p 'test_oby_feed.py' -v
 """
@@ -95,6 +99,8 @@ class StandIns:
             out = json.dumps(self.graphql) if self.graphql else ""
         elif cmd[:3] == ["gh", "pr", "merge"]:
             code = self.merge_code
+        elif cmd[:2] == ["git", "show"]:  # the Kani check's read of the task on origin/<base>: none there
+            return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="fatal: path does not exist")
         elif cmd[:2] != ["git", "fetch"]:
             raise AssertionError(f"unexpected command: {cmd}")
         return subprocess.CompletedProcess(cmd, code, stdout=out, stderr=self.merge_err if code else "")
@@ -308,9 +314,9 @@ class ObyFeed(unittest.TestCase):
         self.feed.check_models = lambda files, head: self.fail("check_models ran for a head that can't merge")
         pr = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "AGENTS.md"}, {"path": "docs/models/x.qnt"}]}
         j = {"approvals": approvals(OLD, "claude", "codex")}
-        self.assertEqual(self.feed.may_arm(j, pr, None)[0], "wait")
-        self.assertEqual(self.feed.may_arm({"approvals": approvals(OLD, "claude")}, pr, None), ("pending", None))
-        self.assertEqual(self.feed.may_arm(j, pr, OLD)[0], "wait")
+        self.assertEqual(self.feed.may_arm(j, pr, None, "A00-99")[0], "wait")
+        self.assertEqual(self.feed.may_arm({"approvals": approvals(OLD, "claude")}, pr, None, "A00-99"), ("pending", None))
+        self.assertEqual(self.feed.may_arm(j, pr, OLD, "A00-99")[0], "wait")
 
     def main(self, *argv, passes=None):
         """Runs main() with `argv`; each sleep is logged and `passes(n)` is called before the n-th one, from 1,
@@ -1134,9 +1140,9 @@ class ObyFeed(unittest.TestCase):
         pr = {"headRefOid": OLD, "files": [{"path": PATH}]}
         self.feed.touches_security = lambda files: []
         self.feed.check_models = lambda files, head: self.feed.Unreached("gave no verdict: it printed nothing (exit 255)")
-        self.assertEqual(self.feed.may_arm(j, pr, None)[0], "retry")
+        self.assertEqual(self.feed.may_arm(j, pr, None, "A00-99")[0], "retry")
         self.feed.check_models = lambda files, head: f"{PATH}: the invariant safe does not hold"
-        self.assertEqual(self.feed.may_arm(j, pr, None)[0], "wait")
+        self.assertEqual(self.feed.may_arm(j, pr, None, "A00-99")[0], "wait")
 
     def test_feedalive_5_a_connection_dropped_after_some_output_is_unreached(self):
         def run(cmd, **_):
@@ -1219,6 +1225,326 @@ class ObyFeed(unittest.TestCase):
         self.feed.FEED = self.dir / "feed-2"
         self.main("--once")
         self.assertEqual(sent[1]["account"], "deskree-team")
+
+
+KEY = "A00-99"
+PROOFS = f"docs/proofs/{KEY}.md"
+LIB = "core/crates/demo/src/lib.rs"
+HARNESS = "add_never_panics"
+KANI_RUN = ["cargo", "kani", "-p", "demo", "--tests", "--harness", HARNESS]
+BASE_LIB = "pub fn add(a: u8, b: u8) -> u8 {\n    a.saturating_add(b)\n}\n"
+PROOF_MODULE = """
+#[cfg(test)]
+mod proofs {
+    #![cfg(kani)]
+
+    #[kani::proof]
+    fn add_never_panics() {
+        let a: u8 = kani::any();
+        let b: u8 = kani::any();
+        let _ = super::add(a, b);
+    }
+}
+"""
+PROOF_ENTRY = """# Proofs of A00-99
+
+## Proofs
+
+### PROOF-1
+- Property: add never panics for any two bytes.
+- Scenario: DEMO-1
+- Crate: `demo`
+- Harness: `add_never_panics`
+- Assumes: none
+- Unwind: none
+- Broken file: `core/crates/demo/src/lib.rs`
+- Broken old: `{old}`
+- Broken new: `a.saturating_add(b) // BROKEN`
+"""
+# The gate VM's stand-in: logs each command, then prints VERIFICATION:- FAILED when a `.rs` file of the tree it runs
+# in holds BROKEN, else SUCCESSFUL; STAND_IN makes it always fail, always succeed (vacuous), sleep, or fall back to
+# this Mac and then succeed.
+KANI_STAND_IN = """#!/usr/bin/env python3
+import json, os, sys, time
+from pathlib import Path
+with open(os.environ["STAND_IN_LOG"], "a") as f:
+    f.write(json.dumps(sys.argv[2:]) + "\\n")
+mode = os.environ.get("STAND_IN", "kani")
+if mode == "sleep":
+    time.sleep(30)
+if mode == "fallback":
+    print("factory/bin/test-run: fell back to this Mac: ssh ended 255 before the run started", file=sys.stderr)
+    print("VERIFICATION:- SUCCESSFUL")
+    sys.exit(0)
+broken = any("BROKEN" in p.read_text() for p in Path.cwd().rglob("*.rs"))
+if mode == "failing" or (broken and mode != "vacuous"):
+    print("VERIFICATION:- FAILED")
+    sys.exit(1)
+print("VERIFICATION:- SUCCESSFUL")
+"""
+
+
+class FeedKani(unittest.TestCase):
+    """FEEDKANI-1 to 9: a real bare origin and the feeder's clone of it, each pull request's head pushed to origin
+    only, and a stand-in test-run in a temporary prove.BIN; `gh` and obid are StandIns. No cargo, Kani or ssh."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        # GIT_DIR and the like, set when the tests run inside a worktree's hooks, would point git at that repository
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") and k != "STAND_IN"}
+        no_git_env = mock.patch.dict(os.environ, dict(env, STAND_IN_LOG=str(self.dir / "test-run.log")), clear=True)
+        no_git_env.start()
+        self.addCleanup(no_git_env.stop)
+        self.feed = load_feed()
+        self.stand = StandIns()
+        self.feed.HOME = self.dir
+        self.feed.FEED = self.dir / "feed"
+        self.feed.GH_REPO = REPO
+        self.feed.api = self.stand.api
+        self.feed.say = lambda msg: None
+        self.feed.ready_tasks = lambda state: []
+        self.feed.touches_security = lambda files: []  # merge.rs isn't in this throwaway checkout
+        base = self.feed.job.BASE
+        origin, self.seed, self.repo = self.dir / "origin.git", self.dir / "seed", self.dir / "repo"
+        self.git(self.dir, "init", "-q", "--bare", "-b", base, str(origin))
+        self.git(self.dir, "init", "-q", "-b", base, str(self.seed))
+        (self.seed / LIB).parent.mkdir(parents=True)
+        (self.seed / LIB).write_text(BASE_LIB)
+        self.git(self.seed, "add", LIB)
+        self.git(self.seed, "commit", "-q", "-m", "base")
+        self.git(self.seed, "remote", "add", "origin", str(origin))
+        self.git(self.seed, "push", "-q", "origin", base)
+        self.git(self.dir, "clone", "-q", "-b", base, str(origin), str(self.repo))
+        bin_dir = self.dir / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "test-run").write_text(KANI_STAND_IN)
+        (bin_dir / "test-run").chmod(0o755)
+        self.feed.prove.BIN = bin_dir
+        self.feed.REPO = self.repo
+        job = self.feed.job
+        for patch in (mock.patch.object(job, "REPO", self.repo),
+                      mock.patch.object(job, "TASKS", self.repo / "factory" / "queue" / "tasks")):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.feed.subprocess = Namespace(run=self.git_or_gh)
+
+    def git_or_gh(self, cmd, **kwargs):
+        """git runs for real in the throwaway repositories, logged; `gh` goes to the stand-in."""
+        if cmd[0] == "git":
+            self.stand.calls.append(("run", *cmd))
+            return subprocess.run(cmd, **kwargs)
+        return self.stand.run(cmd, **kwargs)
+
+    def git(self, cwd, *args):
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *args],
+                              cwd=cwd, check=True, capture_output=True, text=True).stdout
+
+    def base_task(self, formal):
+        """Commits factory/queue/tasks/A00-99.md, whose `### Formal verification` says `formal`, on origin's base."""
+        base = self.feed.job.BASE
+        self.git(self.seed, "checkout", "-q", base)
+        path = self.seed / "factory" / "queue" / "tasks" / f"{KEY}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"KEY: {KEY}\nTITLE: a task\n\n## What\nA rule.\n\n### Formal verification\n{formal}\n\n### Files\n- x.py\n")
+        self.git(self.seed, "add", "factory")
+        self.git(self.seed, "commit", "-q", "-m", "a task")
+        self.git(self.seed, "push", "-q", "origin", base)
+
+    def head(self, files):
+        """Commits `files` (path: text) on a branch from origin's base, pushes it to origin only, and returns its sha."""
+        self.git(self.seed, "checkout", "-q", "-B", "pr", self.feed.job.BASE)
+        for path, text in files.items():
+            (self.seed / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.seed / path).write_text(text)
+        self.git(self.seed, "add", *files)
+        self.git(self.seed, "commit", "-q", "-m", "the pull request")
+        self.git(self.seed, "push", "-q", "-f", "origin", "pr")
+        return self.git(self.seed, "rev-parse", "HEAD").strip()
+
+    def review(self, head, files, state="reviewing"):
+        """One pass over the task, `state`, its pull request at `head` changing `files` and approved twice by two
+        tools; the test-run log is emptied first. Returns the pass's result and the task."""
+        self.feed.save({"key": KEY, "title": "a task", "job": JOB, "state": state, "pr": PR, "files": ["x.py"]})
+        (self.dir / "test-run.log").unlink(missing_ok=True)
+        self.stand.jobs[JOB]["approvals"] = approvals(head, "claude", "codex")
+        self.stand.view = {"headRefOid": head, "state": "OPEN", "files": [{"path": f} for f in files]}
+        return self.one_pass(), self.feed.load_state()[KEY]
+
+    def one_pass(self):
+        return self.feed.one_pass(Namespace(max=3, min_free_gb=0, dry_run=False, account="acct"))
+
+    def kani_calls(self):
+        log = self.dir / "test-run.log"
+        return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+    def proved_head(self, old="a.saturating_add(b)", lib=PROOF_MODULE, proofs=None):
+        """A head adding the harness and docs/proofs/A00-99.md: (its sha, the pull request's files)."""
+        files = {LIB: BASE_LIB + lib, PROOFS: PROOF_ENTRY.format(old=old) if proofs is None else proofs}
+        return self.head(files), list(files)
+
+    def assert_held(self, item, head, *said):
+        self.assertEqual(item["state"], "waiting")
+        self.assertEqual(item.get("refused"), head)
+        self.assertTrue(item["note"].startswith(self.feed.HELD), item["note"])
+        for words in said:
+            self.assertIn(words, item["note"])
+
+    def assert_no_scratch_copy(self):
+        listed = self.git(self.repo, "worktree", "list", "--porcelain")
+        self.assertEqual([line for line in listed.splitlines() if line.startswith("worktree ")],
+                         [f"worktree {self.repo}"], listed)
+
+    # FEEDKANI-1: a passing harness whose broken rule turns it red arms the merge
+    def test_feedkani_1_passing_harness_and_red_broken_rule_arm_the_merge(self):
+        head, files = self.proved_head()
+        got, item = self.review(head, files)
+        self.assertEqual(got, (1, 0))
+        self.assertEqual(self.stand.merges(), [("gh", "pr", "merge", str(PR), "--repo", REPO, "--auto", "--match-head-commit", head)])
+        self.assertEqual(item["state"], "merging")
+        self.assertEqual(self.kani_calls(), [KANI_RUN, KANI_RUN])
+        self.assert_no_scratch_copy()
+        self.assertEqual(self.git(self.repo, "show", f"{head}:{LIB}"), BASE_LIB + PROOF_MODULE)
+        self.assertIn("VERIFICATION:- FAILED", (self.feed.FEED / f"{KEY}.proofs.log").read_text())
+
+    # FEEDKANI-2: a failing harness holds the head, naming its entry and harness
+    def test_feedkani_2_failing_harness_is_held_and_named(self):
+        os.environ["STAND_IN"] = "failing"
+        head, files = self.proved_head()
+        _, item = self.review(head, files)
+        self.assertEqual(self.stand.merges(), [])
+        self.assert_held(item, head, HARNESS, "FAILED")
+        self.assertTrue(item["note"].startswith(f"approved twice, but {PROOFS}: PROOF-1"), item["note"])
+        self.assertEqual(self.kani_calls(), [KANI_RUN])
+        self.assert_no_scratch_copy()
+
+    # FEEDKANI-3: a broken rule that leaves the harness green, or that doesn't apply, holds the head
+    def test_feedkani_3_broken_rule_still_green_is_held_as_vacuous(self):
+        os.environ["STAND_IN"] = "vacuous"
+        head, files = self.proved_head()
+        _, item = self.review(head, files)
+        self.assertEqual(self.stand.merges(), [])
+        self.assert_held(item, head, f"{PROOFS}: PROOF-1", HARNESS, "vacuous")
+        self.assertEqual(self.kani_calls(), [KANI_RUN, KANI_RUN])
+
+    def test_feedkani_3_broken_rule_that_does_not_apply_is_held(self):
+        head, files = self.proved_head(old="a.wrapping_add(b)")
+        _, item = self.review(head, files)
+        self.assertEqual(self.stand.merges(), [])
+        self.assert_held(item, head, f"{PROOFS}: PROOF-1", HARNESS, "DID NOT APPLY")
+        self.assertEqual(self.kani_calls(), [KANI_RUN])
+
+    # FEEDKANI-4: a run past proofs.timeout_s holds the head in advisory mode as in blocking mode
+    def test_feedkani_4_timeout_holds_whatever_the_mode(self):
+        os.environ["STAND_IN"] = "sleep"
+        head, files = self.proved_head()
+        for mode in ("advisory", "blocking"):
+            with self.subTest(mode=mode), mock.patch.dict(self.feed.prove.JOB.CONFIG, {"proofs": {"mode": mode, "timeout_s": 1}}):
+                _, item = self.review(head, files)
+                self.assert_held(item, head, f"{PROOFS}: PROOF-1", HARNESS, "TIMEOUT")
+                self.assertEqual(self.stand.merges(), [])
+                self.assertEqual(self.kani_calls(), [KANI_RUN])
+        self.assert_no_scratch_copy()
+
+    # FEEDKANI-5: a forbidden construct or a malformed entry holds the head before anything runs
+    def test_feedkani_5_forbidden_construct_or_malformed_entry_is_held_before_any_run(self):
+        stubbed = PROOF_MODULE.replace("    #[kani::proof]\n", "    #[kani::proof]\n    #[kani::stub(core::cmp::max, core::cmp::min)]\n")
+        line = next(n for n, text in enumerate((BASE_LIB + stubbed).splitlines(), 1) if "kani::stub" in text)
+        no_crate = "".join(text for text in PROOF_ENTRY.format(old="a.saturating_add(b)").splitlines(True)
+                           if not text.startswith("- Crate:"))
+        cases = (({"lib": stubbed}, ("forbidden construct:", f"{LIB}:{line}: kani::stub")),
+                 ({"proofs": no_crate}, (f"{PROOFS}: PROOF-1: Crate is missing",)),
+                 ({"proofs": "# Proofs of A00-99\n\nNone here.\n"}, (f"{KEY}.md has no `## Proofs` section",)))
+        for how, said in cases:
+            with self.subTest(said=said[0]):
+                head, files = self.proved_head(**how)
+                _, item = self.review(head, files)
+                self.assert_held(item, head, *said)
+                self.assertEqual(self.kani_calls(), [])
+                self.assertEqual(self.stand.merges(), [])
+
+    # FEEDKANI-6: a new harness, or a task that asks for Kani, with no proofs file waits, held, and nothing runs
+    def test_feedkani_6_new_harness_or_task_asking_for_kani_without_the_file_waits(self):
+        head = self.head({LIB: BASE_LIB + PROOF_MODULE})
+        _, item = self.review(head, [LIB])
+        self.assert_held(item, head, f"{PROOFS} is missing", "#[kani::proof]", LIB)
+        self.base_task("A Kani harness over the pure function add: it never panics. The harness must turn red when "
+                       "saturating_add is swapped for a plain +.")
+        head = self.head({"x.py": "x = 1\n"})
+        _, item = self.review(head, ["x.py"])
+        self.assert_held(item, head, f"{PROOFS} is missing", "asks for a Kani proof")
+        self.assertEqual(self.kani_calls(), [])
+        self.assertEqual(self.stand.merges(), [])
+
+    # FEEDKANI-7: nothing to prove arms as before, with no Kani run and, with no .rs file, no fetch of the head
+    def test_feedkani_7_nothing_to_prove_arms_with_no_kani_run(self):
+        self.base_task("None: no rule decides an outcome here, so no Kani harness.")
+        head = self.head({LIB: BASE_LIB.replace("saturating_add", "wrapping_add")})
+        _, item = self.review(head, [LIB])
+        self.assertEqual(item["state"], "merging")
+        self.assertEqual(self.kani_calls(), [])
+        head = self.head({"x.py": "x = 1\n"})
+        _, item = self.review(head, ["x.py"])
+        self.assertEqual(item["state"], "merging")
+        self.assertEqual(len(self.stand.merges()), 2)
+        self.assertEqual(self.kani_calls(), [])
+        self.assertNotIn(("run", "git", "fetch", "-q", "origin", head), self.stand.calls)
+
+    # FEEDKANI-8: a run that fell back to this Mac, a head not fetched or a prove exit is retried, never passed
+    def test_feedkani_8_fallback_to_this_mac_is_retried_never_passed(self):
+        os.environ["STAND_IN"] = "fallback"
+        head, files = self.proved_head()
+        got, item = self.review(head, files)
+        self.assertIsNone(got)
+        self.assertEqual(item["state"], "waiting")
+        self.assertNotIn("refused", item)
+        self.assertTrue(item["note"].endswith("tried again at the next pass (1 of 3)"), item["note"])
+        self.assertIn("fell back to this Mac", item["note"])
+        for n in (2, 3):
+            self.assertIsNone(self.one_pass())
+            item = self.feed.load_state()[KEY]
+            self.assertNotIn("refused", item)
+            self.assertTrue(item["note"].endswith(f"tried again at the next pass ({n} of 3)"), item["note"])
+        self.assertIsNone(self.one_pass())
+        item = self.feed.load_state()[KEY]
+        self.assertEqual(item["refused"], head)
+        self.assertTrue(item["note"].endswith("held after 3 tries"), item["note"])
+        self.assertEqual(self.stand.merges(), [])
+        self.assert_no_scratch_copy()
+
+    def test_feedkani_8_head_not_fetched_or_prove_exit_is_retried(self):
+        missing = "f" * 40  # never pushed: the fetch fails
+        got, item = self.review(missing, [PROOFS])
+        self.assertIsNone(got)
+        self.assertEqual(item["state"], "waiting")
+        self.assertNotIn("refused", item)
+        self.assertIn("wasn't fetched", item["note"])
+        self.assertTrue(item["note"].endswith("tried again at the next pass (1 of 3)"), item["note"])
+        head, files = self.proved_head()
+        with mock.patch.dict(self.feed.prove.JOB.CONFIG, {"proofs": {"timeout_s": 0}}):  # settings() exits 2
+            got, item = self.review(head, files)
+        self.assertIsNone(got)
+        self.assertEqual(item["state"], "waiting")
+        self.assertNotIn("refused", item)
+        self.assertIn("factory/bin/prove exited 2", item["note"])
+        self.assertTrue(item["note"].endswith("tried again at the next pass (1 of 3)"), item["note"])
+        self.assertEqual(self.kani_calls(), [])
+        self.assertEqual(self.stand.merges(), [])
+
+    # FEEDKANI-9: the brief asks for docs/proofs/<KEY>.md only when the task's Formal verification asks for Kani
+    def test_feedkani_9_brief_asks_for_the_proofs_file_only_when_the_task_asks_for_kani(self):
+        def task(formal):
+            return {"key": KEY, "title": "a task", "body": f"## What\nA rule.\n\n### Formal verification\n{formal}\n\n### Files\n- x.py\n"}
+
+        for on_base in (True, False):
+            text = self.feed.brief(task("A Kani harness over the pure function add: it never panics."), on_base)
+            self.assertIn(PROOFS, text)
+            self.assertIn("## Proofs", text)
+            for formal in ("None of its own: no Kani harness, the rule is tested with unit tests.",
+                           "A Quint model docs/models/x.qnt with\n// verify: main=x steps=4 invariants=safe"):
+                text = self.feed.brief(task(formal), on_base)
+                self.assertNotIn(PROOFS, text)
+                self.assertNotIn("## Proofs", text)
 
 
 class Stop(Exception):
