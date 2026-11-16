@@ -128,20 +128,70 @@ describe('Waiting for you', () => {
     expect(words.owners('POST', '/v1/jobs/j3/permission', { id: 'p1', decision: 'deny' }, ['Allow once'], [])).toBeNull();
   });
 
-  it('waiting_2_an_item_with_no_task_or_conversation_is_answered_here', async () => {
+  it('waiting_2_another_obys_question_is_shown_quoted_and_answered_in_words', async () => {
     fill();
     const s = live.liveState();
+    // as obid makes it (sphere/inbox.rs, question_item): Decline and Decline-and-remember its options,
+    // the question and its choices quoted under obi.quoted, never buttons
     s.inbox = [item('obi-q1', 'obiRequest', '', at(3), {
-      title: 'Question from dima', options: [], obi: { type: 'question', fromOwner: 'dima', quoted: { text: 'Ship it today?', choices: ['Yes', 'No'] } },
+      title: 'Question from dima', text: 'dima’s Obi (dima-obi) asks a question, quoted below. Answer it in your own words, or say no.',
+      options: ['Decline', 'Decline, and remember for this repo'],
+      obi: { type: 'question', fromOwner: 'dima', repos: [], quoted: { text: 'Ship it today?', choices: ['Yes', 'No'] } },
     })];
+    let clock = 0;
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => clock);
     await waitingPage();
+    clock += 1000;
+    const row = host.querySelector('.waiting-row')!;
+    expect(row.querySelector('blockquote')?.textContent).toBe('Ship it today?');
+    expect(row.textContent).toContain('Their choices: Yes · No');
+    const buttons = () => [...row.querySelectorAll('button')];
+    expect(buttons().map((b) => b.textContent)).toEqual(['Answer', 'Decline', 'Later']);
+    await act(async () => buttons()[0].click());
+    const box = row.querySelector<HTMLInputElement>('input[aria-label="Your answer"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(box, 'Yes');
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+    });
     call.mockResolvedValue({ status: 200, text: JSON.stringify({ ...s.inbox[0], state: 'done' }) });
-    const yes = [...host.querySelectorAll('.waiting-row button')].find((b) => b.textContent === 'Yes') as HTMLButtonElement;
-    expect([...host.querySelectorAll('.waiting-row button')].map((b) => b.textContent)).toEqual(['Yes', 'No']);
-    await act(async () => yes.click());
+    await act(async () => box.form!.requestSubmit());
+    // the owner's own words, which main signs as typed
     expect(call).toHaveBeenCalledWith('POST', '/v1/inbox/obi-q1/answer', { answer: 'Yes' });
     expect(words.owners('POST', '/v1/inbox/obi-q1/answer', { answer: 'Yes' }, ['Yes'], [])).toEqual([0]);
     expect(rows()).toEqual([]);
+    now.mockRestore();
+  });
+
+  it('waiting_2_an_item_with_no_task_or_conversation_is_answered_here', async () => {
+    fill();
+    const s = live.liveState();
+    // Oby's ask to share (sphere/inbox.rs, share_item): a Confirm with no job, its repositories to tick;
+    // and one obid sorts as needing the owner with no task, conversation or answers of its own
+    s.inbox = [
+      item('share-1', 'confirm', '', at(9), {
+        title: 'Can I tell people in your Obysphere how your tasks are going, with each one’s current step and latest report line, in oby?',
+        text: 'Only what you tick.', options: ['Confirm', 'Cancel'],
+        confirm: { action: 'share_status', target: '', payload: { offered: ['obi-ai-bot/oby'], repos: ['obi-ai-bot/oby'] } },
+      }),
+      item('bare-1', 'question', '', at(4), { title: 'Oby is stuck', text: 'Nothing to go on.' }),
+    ];
+    let clock = 0;
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    await waitingPage();
+    clock += 1000;
+    const [share, bare] = [...host.querySelectorAll('.waiting-row')];
+    expect(share.textContent).toContain('Only what you tick.');
+    expect(share.querySelector('[aria-label="Repositories to tell about"]')).not.toBeNull();
+    expect([...share.querySelectorAll('.tc-options button')].map((b) => b.textContent)).toEqual(['Confirm', 'Cancel', 'Later']);
+    expect(bare.textContent).toContain('Nothing to go on.');
+    expect([...bare.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['Later']);
+    // Confirm: main's own signed Confirm of the card (obid.ts, api.confirm)
+    const confirm = vi.fn().mockResolvedValue({ status: 200, text: JSON.stringify({ ...s.inbox[0], state: 'done' }) });
+    (window.app!.obid as unknown as { confirm: typeof confirm }).confirm = confirm;
+    await act(async () => share.querySelector<HTMLButtonElement>('.tc-options button')!.click());
+    expect(confirm).toHaveBeenCalledWith('share-1');
+    expect(rows()).toEqual(['Oby is stuck']);
+    now.mockRestore();
   });
 
   it('waiting_3_count_matches', async () => {

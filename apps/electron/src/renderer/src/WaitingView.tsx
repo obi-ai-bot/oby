@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react';
 import { BrandMark } from './brands';
 import { useScrollThumb } from './useScrollThumb';
 import { agentOf, ago } from './view';
-import { allowWaiting, answerWaiting, approvingTools, itemAsk, mergeWaiting, projectOf, questionOf, shownId, useLive, waitingOf } from './live';
+import { allowWaiting, answerWaiting, approvingTools, homeAsk, itemAsk, mergeWaiting, projectOf, questionOf, shownId, useLive, waitingOf } from './live';
+import { QuestionBlock } from './QuestionCard';
+import { AskBlock } from './TaskCard';
 import { ALLOW_ONCE } from '../../shared/words';
 import type { InboxItem } from './obid';
 
@@ -87,12 +89,15 @@ function WaitingRow({ item: i, onOpenTask, onOpenTalk }: { item: InboxItem; onOp
   const review = tools.length ? undefined : stage('review')?.detail;
   const summary = kind === 'merge' ? j?.summary : undefined;
   const diff = kind === 'merge' ? j?.diff : undefined;
-  // what it waits on with no task's permission and nowhere to open: its own answers, as obid offers
-  // them (another Oby's question: its choices), each signed by its button's label
+  // what it waits on with no task's permission and nowhere to open: its card, as Home's stack shows
+  // it (another Oby's question quoted, with Answer for the owner's own words; anything else obid's
+  // answers and Later); a merge card with no Merge: its own answers, each signed by its button's label
   const permits = kind === 'permission' && !!j?.permission;
   const opens = kind !== 'merge' && !permits && (!!talk || !!i.job);
   const merges = kind === 'merge' && i.options.includes('Merge');
-  const answers = permits || opens || merges ? [] : i.options.length ? i.options : questionOf(i)?.choices ?? [];
+  const card = kind !== 'merge' && !permits && !opens;
+  const question = card ? questionOf(i) : undefined;
+  const answers = kind === 'merge' && !merges ? i.options : [];
   const meta = [project ? name(project) : 'No project', ago((Date.now() - Date.parse(i.created)) / 60_000)].join(' · ');
   return (
     <li className="waiting-row" aria-label={j?.title ?? i.title}>
@@ -100,6 +105,8 @@ function WaitingRow({ item: i, onOpenTask, onOpenTalk }: { item: InboxItem; onOp
       <div className="waiting-text">
         <h2 className="waiting-title">{j?.title ?? i.title}</h2>
         <p className="waiting-meta">{meta}</p>
+        {card && (question ? <QuestionBlock question={question} /> : <AskBlock task={{ id: i.id, job: { ask: homeAsk(i) } }} />)}
+        {!card && <>
         <p className="waiting-about">{ask.headline}{ask.text ? ` ${ask.text}` : ''}</p>
         {summary && <p className="waiting-summary">{summary}</p>}
         {kind === 'permission' && j?.permission?.detail && <code className="waiting-detail">{j.permission.detail}</code>}
@@ -112,6 +119,7 @@ function WaitingRow({ item: i, onOpenTask, onOpenTalk }: { item: InboxItem; onOp
           {review && <span className="waiting-tag">{review}</span>}
           {diff && <span className="waiting-tag waiting-diff"><span className="is-added">+{diff.added}</span> <span className="is-removed">−{diff.removed}</span> · {plural(diff.files, 'file')}</span>}
         </p>
+        </>}
       </div>
       <div className="waiting-actions">
         {kind === 'merge' && i.job && <button className="tc-option" onClick={() => onOpenTask(i.job)}>Open</button>}
