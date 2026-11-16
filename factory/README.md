@@ -145,7 +145,10 @@ does: an intake job first, then a spec job, then the build, told to build agains
 `spec-writer.md` as `dev` has them; their documents reach the next job as fenced message parts. NEEDS-INFO, REJECT
 or a step that gave nothing usable leaves the task `blocked`, holding no slot, until its task file changes. Both
 factories refuse to spec an intake with no valid `LANE:` line, or an ACCEPT in the `agent` lane (`job advance <job>
-spec`, and the feeder before its spec job; NOTHARNESS in `docs/contracts/factory.md`).
+spec`, and the feeder before its spec job; NOTHARNESS in `docs/contracts/factory.md`). A build that failed, was
+interrupted, is gone or published nothing, on a task with no pull request yet, is built again against the same spec,
+its brief giving obid's reason, up to three attempts; then the task fails with that reason, every attempt's job kept
+(FEEDLOOP in `docs/contracts/factory.md`).
 
 It has lens reviews and an approver step too. When a head is approved twice by different tools and passes the
 security-path, model and Kani checks and the gate, it goes first to its lens reviews: one read-only review job on obid
