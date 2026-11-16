@@ -901,8 +901,8 @@ def lens_routing(key, files):
 
 
 def lens_risk(key):
-    """The task's risk for routing when it has no accepted intake: its RISK: header line as origin/<base> has it (task_text),
-    read with job.header(). A blank one, or one that isn't a row of config.json's `routing`, is high."""
+    """The task's risk for routing when it has no accepted intake: its RISK: header line as origin/<base> has it
+    (task_text), read with job.header(). A blank one, or one that isn't a row of config.json's `routing`, is high."""
     copy = FEED / "lenses" / f"{key}.md"
     copy.parent.mkdir(parents=True, exist_ok=True)
     copy.write_text(task_text(key) or "")
