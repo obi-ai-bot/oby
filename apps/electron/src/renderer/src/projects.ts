@@ -4,7 +4,7 @@ import { JOBS, MOCK_PROJECTS } from './mock';
 import { onObid } from './lean';
 import { takesProjects, useLive } from './live';
 
-// The projects (docs/contracts/projects.md, PROJECTS-13 to 21): the side panel's groups, and the chip
+// The projects (docs/contracts/projects.md, PROJECTS-16 to 24): the side panel's groups, and the chip
 // that picks one in Home's box and moves a conversation in its title bar. obid's list (GET
 // /v1/projects), only once its status lists projects-v1, or the mock's. A read that fails leaves the
 // list as it was, with nothing shown as an error. The app keeps none of it.

@@ -290,7 +290,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     if (!next.delete(name)) next.add(name);
     return next;
   });
-  // The Projects side's groups (docs/contracts/projects.md, PROJECTS-13 to 15): one per project, then
+  // The Projects side's groups (docs/contracts/projects.md, PROJECTS-16 to 18): one per project, then
   // No project. Which are folded is kept (oby.projectsFolded: their ids, "" for No project), the one
   // thing the app keeps of projects
   const projectsOn = useProjectsOn();

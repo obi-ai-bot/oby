@@ -128,7 +128,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   const canFolders = !everything && withRepos && !!window.app?.pickFolders;
   const kept = useFolders(conversation);
   const [homeFolders, setHomeFolders] = useState<string[]>([]);
-  // The project (docs/contracts/projects.md, PROJECTS-16 and 19): Home's chip picks the one its words
+  // The project (docs/contracts/projects.md, PROJECTS-19 and 22): Home's chip picks the one its words
   // start a conversation in, for this run only; a conversation in one works in its folders, shown
   // as obid answers them, with no ×. Either way the box picks and sends no folders of its own
   const projectsOn = useProjectsOn();

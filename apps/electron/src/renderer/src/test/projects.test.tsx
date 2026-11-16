@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { liveBridge } from './liveBridge';
 
 // Conversations under their project, and a project to pick or make (docs/contracts/projects.md,
-// PROJECTS-13 to 21): the real Home, with its Sidebar and Composer, on what obid lists through
+// PROJECTS-16 to 24): the real Home, with its Sidebar and Composer, on what obid lists through
 // live.ts, main's bridge (window.app.obid.call) stood in for as obid.
 
 vi.mock('react-dom', async (original) => ({ ...await original<typeof import('react-dom')>(), createPortal: (node: unknown) => node }));
@@ -152,8 +152,8 @@ async function openRow(title: string) {
   await until(() => expect(host.querySelector('.crumb.is-here')?.textContent).toBe(title));
 }
 
-describe('PROJECTS-13', () => {
-  it('PROJECTS-13: projects_13_no_projects', async () => {
+describe('PROJECTS-16', () => {
+  it('PROJECTS-16: projects_16_no_projects', async () => {
     const o = obid([], [convo('c1', 'Talk one'), convo('c2', 'Talk two')]);
     await showHome(o);
     await until(() => expect(o.calls.some((c) => c.path === '/v1/projects')).toBe(true));
@@ -166,8 +166,8 @@ describe('PROJECTS-13', () => {
   });
 });
 
-describe('PROJECTS-14', () => {
-  it('PROJECTS-14: projects_14_one_project', async () => {
+describe('PROJECTS-17', () => {
+  it('PROJECTS-17: projects_17_one_project', async () => {
     const o = obid([OBY], [convo('c1', 'In the app', { project: OBY.id, tasks: ['j1'] }), convo('c2', 'Elsewhere', { tasks: ['j2'] })]);
     await showHome(o);
     await until(() => expect(listed()).toEqual(['# Oby app', 'In the app', '# No project', 'Elsewhere', '+ New project']));
@@ -183,8 +183,8 @@ describe('PROJECTS-14', () => {
   });
 });
 
-describe('PROJECTS-15', () => {
-  it('PROJECTS-15: projects_15_several_folding_and_search', async () => {
+describe('PROJECTS-18', () => {
+  it('PROJECTS-18: projects_18_several_folding_and_search', async () => {
     const talks = [
       convo('c1', 'App one', { project: OBY.id }), convo('c2', 'Retry jitter', { project: TETRIX.id }),
       convo('c3', 'Graph cache', { project: TETRIX.id, pinned: true }), convo('c4', 'Loose talk'), convo('c5', 'Lost one', { project: UNLISTED }),
@@ -220,8 +220,8 @@ describe('PROJECTS-15', () => {
   });
 });
 
-describe('PROJECTS-16', () => {
-  it('PROJECTS-16: projects_16_the_menu', async () => {
+describe('PROJECTS-19', () => {
+  it('PROJECTS-19: projects_19_the_menu', async () => {
     const o = obid([OBY, TETRIX]);
     await showHome(o);
     await until(() => expect(o.calls.some((c) => c.path === '/v1/projects')).toBe(true));
@@ -260,8 +260,8 @@ describe('PROJECTS-16', () => {
   });
 });
 
-describe('PROJECTS-17', () => {
-  it('PROJECTS-17: projects_17_the_sheet', async () => {
+describe('PROJECTS-20', () => {
+  it('PROJECTS-20: projects_20_the_sheet', async () => {
     const o = obid([OBY]);
     await showHome(o);
     await until(() => expect(button('New project')).toBeDefined());
@@ -321,8 +321,8 @@ describe('PROJECTS-17', () => {
   });
 });
 
-describe('PROJECTS-17, no repositories', () => {
-  it('PROJECTS-17: projects_17_add_from_github_with_none_listed_says_so', async () => {
+describe('PROJECTS-20, no repositories', () => {
+  it('PROJECTS-20: projects_20_add_from_github_with_none_listed_says_so', async () => {
     const o = obid([OBY]);
     o.said.repos = [];
     await showHome(o);
@@ -341,8 +341,8 @@ describe('PROJECTS-17, no repositories', () => {
   });
 });
 
-describe('PROJECTS-18', () => {
-  it('PROJECTS-18: projects_18_a_refused_create', async () => {
+describe('PROJECTS-21', () => {
+  it('PROJECTS-21: projects_21_a_refused_create', async () => {
     const o = obid([OBY, TETRIX]);
     o.said.create = { status: 422, text: '{"error":"/Users/me/website is one of the places Oby never works in."}' };
     await showHome(o);
@@ -363,8 +363,8 @@ describe('PROJECTS-18', () => {
   });
 });
 
-describe('PROJECTS-19', () => {
-  it('PROJECTS-19: projects_19_the_title_bar_chip', async () => {
+describe('PROJECTS-22', () => {
+  it('PROJECTS-22: projects_22_the_title_bar_chip', async () => {
     const talks = [convo('c1', 'Two fixes for today', { project: OBY.id, folders: OBY.folders }), convo('c2', 'Loose talk'), convo('conv-h1', 'Researcher', { helper: 'h1' })];
     const o = obid([OBY, TETRIX], talks);
     await showHome(o);
@@ -415,8 +415,8 @@ describe('PROJECTS-19', () => {
   });
 });
 
-describe('PROJECTS-20', () => {
-  it('PROJECTS-20: projects_20_an_obid_without_projects', async () => {
+describe('PROJECTS-23', () => {
+  it('PROJECTS-23: projects_23_an_obid_without_projects', async () => {
     const o = obid([OBY], [convo('c1', 'Talk one'), convo('c2', 'Talk two')]);
     await showHome(o, ['folders-v1']);
     await until(() => expect(listed()).toEqual(['Talk one', 'Talk two']));
@@ -433,8 +433,8 @@ describe('PROJECTS-20', () => {
   });
 });
 
-describe('PROJECTS-21', () => {
-  it('PROJECTS-21: projects_21_the_mock', async () => {
+describe('PROJECTS-24', () => {
+  it('PROJECTS-24: projects_24_the_mock', async () => {
     await showMock();
     const heads = listed().filter((l) => l.startsWith('#'));
     expect(heads).toEqual(['# Oby app', '# Tetrix', '# No project']);
