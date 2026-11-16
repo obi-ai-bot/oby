@@ -632,8 +632,8 @@ impl Jobs {
 
     /// The accounts the brain's quick side calls think with (inbox sorting, memory, the recap;
     /// B00-15): every tool's [`Jobs::thinking_accounts`] whose binary obid finds, the most room
-    /// first as a new job's routing ranks them (USAGE-11), never a ChatGPT login (its runs go
-    /// through a job's relay).
+    /// first as a new job's routing ranks them (USAGE-11); a ChatGPT login only with the owner's
+    /// yes to work nobody's watching (CHATGPT-20), its call through obid's relay.
     pub fn quick_accounts(&self) -> Vec<(Tool, crate::config::Account)> {
         let accounts = Tool::ALL
             .into_iter()
@@ -643,7 +643,7 @@ impl Jobs {
                     .into_iter()
                     .map(move |a| (tool, a))
             })
-            .filter(|(_, account)| crate::chatgpt::marker_of(account).is_none())
+            .filter(|(_, account)| self.takes_background(account))
             .collect();
         let first = crate::settings::load(&self.config.home).default_account;
         self.by_room(accounts, first.as_deref())
@@ -1060,6 +1060,45 @@ mod tests {
             "c2",
             "its 5-hour window reset: 30% is its fullest"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// B00-15: the brain's side calls think on a ChatGPT login too, once the owner said yes to work
+    /// nobody's watching there (CHATGPT-20), and never before.
+    #[test]
+    fn side_calls_take_a_chatgpt_login_only_with_the_owners_yes() {
+        let root = std::env::temp_dir().join(format!("obid-quick-plan-{}", uuid::Uuid::new_v4()));
+        let plan = root.join("accounts/plan");
+        std::fs::create_dir_all(&plan).unwrap();
+        let now = obi_protocol::time::now();
+        let marker =
+            json!({"signed": true, "planUse": true, "expiresAt": now + 3600, "refreshedAt": now});
+        std::fs::write(plan.join(crate::chatgpt::MARKER), marker.to_string()).unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"codex": {"bin": "/usr/bin/true",
+                    "accounts": [{"id": "plan", "name": "Plan", "configDir": plan}]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(config, crate::events::Events::new(), Err("none".into())).unwrap();
+        assert!(jobs.quick_accounts().is_empty(), "no yes yet");
+        crate::settings::update(&jobs.config.home, |s| {
+            let yes = crate::settings::BackgroundConsent {
+                given: true,
+                at: now,
+                device: Some("d".into()),
+            };
+            s.background_consent.insert("plan".into(), yes);
+        })
+        .unwrap();
+        let ids: Vec<_> = jobs
+            .quick_accounts()
+            .into_iter()
+            .map(|(_, a)| a.id)
+            .collect();
+        assert_eq!(ids, ["plan"]);
         let _ = std::fs::remove_dir_all(&root);
     }
 

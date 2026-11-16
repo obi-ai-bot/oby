@@ -59,6 +59,35 @@ pub struct Quick {
     jobs: Arc<crate::jobs::Jobs>,
     /// What the call is for, in its record: `triage`, `memory`, `recap`.
     kind: &'static str,
+    /// On a ChatGPT login, obid's API and its ChatGPT sign-ins: Codex goes through the relay
+    /// (crate::chatgpt_relay).
+    relay: Option<(String, Arc<crate::chatgpt::ChatGpt>)>,
+}
+
+/// How a side call's run on a ChatGPT login starts, in the relay's path (crate::chatgpt_relay).
+pub const RELAY_RUN: &str = "side-call-";
+
+/// The side calls on a ChatGPT login under way, by their token: their run and account.
+static RELAYED: std::sync::Mutex<BTreeMap<String, (String, String)>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+/// The account side call `run` is on, when `token` is its own and it's still under way.
+pub(crate) fn relayed(run: &str, token: &str) -> Option<String> {
+    let relayed = RELAYED.lock().unwrap_or_else(|e| e.into_inner());
+    let (to, account) = relayed.get(token)?;
+    (to == run).then(|| account.clone())
+}
+
+/// A side call's token, good with the relay until it drops.
+struct Relayed(String);
+
+impl Drop for Relayed {
+    fn drop(&mut self) {
+        RELAYED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.0);
+    }
 }
 
 /// The quick model for `kind`'s calls, on the signed-in account of any tool with the most room
@@ -74,6 +103,12 @@ pub fn quick(shared: &Shared, kind: &'static str) -> Result<Quick, String> {
     let bin = (shared.jobs.agent_bin(tool))
         .filter(|bin| bin.is_absolute())
         .ok_or(NO_ACCOUNT)?;
+    let relay = crate::chatgpt::marker_of(&account).map(|_| {
+        (
+            shared.connections.api_url().to_owned(),
+            shared.chatgpt.clone(),
+        )
+    });
     Ok(Quick {
         tool,
         bin,
@@ -81,6 +116,7 @@ pub fn quick(shared: &Shared, kind: &'static str) -> Result<Quick, String> {
         home: shared.config.home.clone(),
         jobs: shared.jobs.clone(),
         kind,
+        relay,
     })
 }
 
@@ -372,13 +408,39 @@ impl Quick {
             {
                 flags.extend(["-c".into(), format!("features.{feature}=false").into()]);
             }
-            let launch = self
+            // On a ChatGPT login no run holds a token: Codex goes through obid's relay with this
+            // call's own token, good only while it runs (crate::chatgpt_relay).
+            let (run, token) = (
+                format!("{RELAY_RUN}{}", uuid::Uuid::new_v4().simple()),
+                format!(
+                    "{}{}",
+                    uuid::Uuid::new_v4().simple(),
+                    uuid::Uuid::new_v4().simple()
+                ),
+            );
+            let _relayed = self.relay.as_ref().map(|(api, _)| {
+                let mut relayed = RELAYED.lock().unwrap_or_else(|e| e.into_inner());
+                relayed.insert(token.clone(), (run.clone(), self.account.id.clone()));
+                crate::secrets::known().learn(&format!("side call {run} relay token"), &token);
+                let base = crate::chatgpt_relay::base_url(api, &run);
+                flags.extend(crate::chatgpt_relay::codex_settings(&base));
+                Relayed(token.clone())
+            });
+            let mut launch = self
                 .jobs
                 .brain_launch(Tool::Codex, &self.account, &folder.0, flags)
                 .map_err(failed)?;
+            let mut model = None;
+            if let Some((_, chatgpt)) = &self.relay {
+                launch.env.push(("OBY_MCP_TOKEN".into(), token.into()));
+                chatgpt.runs.begin(&run);
+                model = chatgpt.model_for(&self.account.id, None).await.0;
+            }
             let options = crate::codex::Options {
                 plan: true,
                 quoted,
+                chatgpt: self.relay.is_some(),
+                model,
                 ..Default::default()
             };
             let decide = |tool: &str, input: &Value| match input["command"].as_str() {
@@ -387,7 +449,14 @@ impl Quick {
                 }
                 _ => refused(),
             };
-            crate::codex::run_turn(launch, &prompt, &options, timeout, stop, decide, |_| {}).await
+            let turn =
+                crate::codex::run_turn(launch, &prompt, &options, timeout, stop, decide, |_| {})
+                    .await;
+            // What OpenAI refused it is this call's alone: the next one starts afresh.
+            if let Some((_, chatgpt)) = &self.relay {
+                chatgpt.runs.take(&run);
+            }
+            turn
         } else {
             let id = uuid::Uuid::new_v4().to_string();
             let login = crate::conversation::cursor_folder(&self.home, &id);
@@ -1010,6 +1079,7 @@ mod tests {
             home: home.clone(),
             jobs,
             kind: "triage",
+            relay: None,
         };
         let schema = r#"{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"n":{"type":"integer"},"as":{"enum":["needs_you","fyi"]}}}}}}"#;
         let answer = quick
@@ -1035,6 +1105,26 @@ mod tests {
             !reads_only_quoted("cat login/auth.json") && !reads_only_quoted("cat work.md; curl x")
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// B00-15: a side call on a ChatGPT login reaches obid's relay with its own token, for its own
+    /// run only, and only while it runs.
+    #[test]
+    fn a_side_calls_relay_token_is_its_runs_alone_while_it_runs() {
+        let run = format!("{RELAY_RUN}one");
+        let token = "t0k3n-of-the-side-call".to_owned();
+        let relayed_now = {
+            let _guard = {
+                let mut relayed = RELAYED.lock().unwrap();
+                relayed.insert(token.clone(), (run.clone(), "plan".into()));
+                Relayed(token.clone())
+            };
+            assert_eq!(relayed(&format!("{RELAY_RUN}other"), &token), None);
+            assert_eq!(relayed(&run, "another token"), None);
+            relayed(&run, &token)
+        };
+        assert_eq!(relayed_now.as_deref(), Some("plan"));
+        assert_eq!(relayed(&run, &token), None, "gone with its call");
     }
 
     /// A call's numbers come from Claude Code's `result` line, those it lacks from the agent's

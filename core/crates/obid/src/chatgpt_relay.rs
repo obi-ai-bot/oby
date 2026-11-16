@@ -180,7 +180,8 @@ pub(crate) fn run_of(path: &str) -> Option<&str> {
 }
 
 /// The account `run` is on, when `headers` hold its token and that account is signed in with
-/// ChatGPT: a job with its broker token, or a conversation's turn with its turn's.
+/// ChatGPT: a job with its broker token, a conversation's turn with its turn's, or a brain's side
+/// call with its own (crate::brain::calls, B00-15).
 fn account_of(shared: &Shared, run: &str, headers: &HeaderMap) -> Option<String> {
     let token = headers
         .get(header::AUTHORIZATION)
@@ -188,6 +189,8 @@ fn account_of(shared: &Shared, run: &str, headers: &HeaderMap) -> Option<String>
         .and_then(|h| h.strip_prefix("Bearer "))?;
     let account = if run.starts_with("conversation-") {
         shared.harness.session(run, token)?.account.clone()
+    } else if run.starts_with(crate::brain::calls::RELAY_RUN) {
+        crate::brain::calls::relayed(run, token)?
     } else if shared.connections.allows(run, token) {
         shared.jobs.get(run)?.account
     } else {
