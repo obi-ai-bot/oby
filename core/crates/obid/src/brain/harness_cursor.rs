@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use super::harness::{Place, orientation};
 use crate::agent::Launch;
 use crate::api::Shared;
+use crate::helpers::Told;
 
 /// What a conversation's egress door is called: `conversation-<id>`, never a job's id.
 pub const DOOR: &str = "conversation-";
@@ -30,10 +31,16 @@ pub(super) const MARK: &str = "it talked on Cursor, whose own reads obid can't s
 /// What the orientation adds on Cursor, in the first prompt of its session: ACP has no system prompt.
 const ON_CURSOR: &str = "\n\nYou run on Cursor here. Your own shell is refused: you run no commands. You reach only Cursor's own services, not the web: say so when that stops you. Oby can't see what your own tools read, so this conversation counts as having read something untrusted: what the owner asks through Oby's tools may become a Confirm card they answer with one click.";
 
-/// The first prompt of a Cursor session: what its session has no other way of being told, then
-/// `first`.
-pub(super) fn first_prompt(shared: &Shared, tetrix: bool, first: &str) -> Result<String, String> {
-    let told = crate::vault::for_agent(&format!("{}{ON_CURSOR}", orientation(shared, tetrix)))?;
+/// The first prompt of a Cursor session: what its session has no other way of being told, a
+/// `helper`'s section among it, then `first`.
+pub(super) fn first_prompt(
+    shared: &Shared,
+    tetrix: bool,
+    helper: Option<&Told>,
+    first: &str,
+) -> Result<String, String> {
+    let oriented = orientation(shared, tetrix, helper);
+    let told = crate::vault::for_agent(&format!("{oriented}{ON_CURSOR}"))?;
     Ok(format!("{told}\n\n{first}"))
 }
 

@@ -27,6 +27,7 @@ use super::turn::{self, Answered, Control, End, State};
 use crate::agent::{self, Answer, Event, Ruling, Tool};
 use crate::api::Shared;
 use crate::conversation::Turn;
+use crate::helpers::{Connector, Told, may_use};
 use crate::permissions::{self, Bounds, Call, Mode, Reach};
 
 /// A boxed session runs no commands (CONVO-2): it reads the room, and work goes to a job. An own
@@ -589,7 +590,7 @@ async fn start_next(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
     let chosen = crate::settings::load(&shared.config.home)
         .talk_account
         .filter(|id| id != super::talk::AUTO);
-    let account = match super::talk::accounts(shared, chosen.as_deref(), None)
+    let account = match super::talk::accounts(shared, chosen.as_deref(), None, None)
         .into_iter()
         .next()
     {
@@ -612,9 +613,9 @@ async fn start_next(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
     }
     place.scrub();
     let token = new_token();
-    let (mcp, url, tetrix) = mcp_config(shared, &place, id, own)?;
+    let (mcp, url, tetrix) = mcp_config(shared, &place, id, own, None)?;
     write_mcp(&mcp, &url, tetrix.as_deref(), &token)?;
-    let mut flags = claude_flags(shared, &account.id, tetrix.is_some(), own);
+    let mut flags = claude_flags(shared, &account.id, tetrix.is_some(), own, None);
     let key = flags_key(&flags);
     flags.extend(["--mcp-config".into(), mcp.into_os_string()]);
     let launch = claude_launch(shared, &account, &place, flags, own)?;
@@ -732,12 +733,24 @@ fn own_conversation(macos: bool, tool: Tool, from_obys: bool, codex: bool) -> bo
 }
 
 /// A conversation's Claude Code's flags, before `--resume` and `--mcp-config`; `tetrix` when its
-/// session gets Tetrix's server. An `own` one loads the owner's settings and MCP servers.
-fn claude_flags(shared: &Shared, account: &str, tetrix: bool, own: bool) -> Vec<OsString> {
+/// session gets Tetrix's server. An `own` one loads the owner's settings and MCP servers. A
+/// `helper`'s turn has the web's tools only when granted.
+fn claude_flags(
+    shared: &Shared,
+    account: &str,
+    tetrix: bool,
+    own: bool,
+    helper: Option<&Told>,
+) -> Vec<OsString> {
     let offered = shared.jobs.model_lists.for_account(Tool::Claude, account);
     let model =
         crate::settings::account_model(&shared.config.home, Tool::Claude, account, &offered);
-    let mut orientation = orientation(shared, tetrix);
+    let mut orientation = orientation(shared, tetrix, helper);
+    let tools = if own { OWN_TOOLS } else { TOOLS };
+    let tools = match web(helper) {
+        true => tools.to_owned(),
+        false => tools.replace("WebSearch,WebFetch,", ""),
+    };
     if own {
         orientation = orientation.replacen(NO_SHELL, OWN_SHELL, 1);
     }
@@ -774,7 +787,7 @@ fn claude_flags(shared: &Shared, account: &str, tetrix: bool, own: bool) -> Vec<
         // The room's path out of the prompt's cached part: every conversation's prefix is one.
         "--exclude-dynamic-system-prompt-sections",
         "--tools",
-        if own { OWN_TOOLS } else { TOOLS },
+        &tools,
         "--max-turns",
         MAX_TURNS,
         "--model",
@@ -824,18 +837,18 @@ fn claude_launch(
 }
 
 /// Where a conversation's MCP configuration is ([`mcp_file`]), the URL of Oby's tools for it, and
-/// of obid's Tetrix server for it while Oby is signed in to Tetrix (crate::tetrix): the one place a
-/// turn asks, so its server and its orientation always agree.
+/// of obid's Tetrix server for it while Oby is signed in to Tetrix (crate::tetrix) and a `helper`'s
+/// turn was granted it: the one place a turn asks, so its server and its orientation always agree.
 fn mcp_config(
     shared: &Shared,
     place: &Place,
     conversation: &str,
     own: bool,
+    helper: Option<&Told>,
 ) -> Result<(PathBuf, String, Option<String>), String> {
     let api = shared.connections.api_url();
-    let tetrix = shared
-        .tetrix
-        .usable()
+    let granted = helper.is_none_or(|h| may_use(h.granted, Connector::Tetrix));
+    let tetrix = (shared.tetrix.usable() && granted)
         .then(|| format!("{api}/v1/agent/tetrix/conversation-{conversation}"));
     Ok((
         mcp_file(place, own)?,
@@ -899,15 +912,21 @@ pub async fn run(
     // The account the owner chose (super::talk), else whichever has room; the one its session is
     // on first while that one has room, so it keeps its session. Another, of any tool, is tried
     // only when a turn's account can't run: at most three in one turn.
+    // A helper's conversation talks only through its tool's accounts (crate::helpers).
     let place = Place::of(&shared.config.home, &control.conversation);
-    let chosen = super::talk::chosen(shared, &control.conversation);
+    let only = shared.helpers.of(&control.conversation).map(|h| h.tool);
+    let only = only.as_deref();
+    let agents = shared.config.agents.get();
+    let tool_of = |id: &str| crate::accounts::find(&agents, id).map(|(t, _)| t.id());
+    let chosen = super::talk::chosen(shared, &control.conversation)
+        .filter(|id| only.is_none_or(|only| tool_of(id) == Some(only)));
     let on = kept_on(&place);
-    let accounts = super::talk::accounts(shared, chosen.as_deref(), on.as_deref());
+    let accounts = super::talk::accounts(shared, chosen.as_deref(), on.as_deref(), only);
     let mut full = Vec::new();
     let mut failed: Option<String> = None;
     let mut why = String::new();
     if accounts.is_empty() {
-        why = super::talk::why_none(shared, chosen.as_deref());
+        why = super::talk::why_none(shared, chosen.as_deref(), only);
     }
     for (tool, account) in &accounts {
         match session(shared, *tool, account, said, given, asked, control).await {
@@ -1596,7 +1615,11 @@ async fn attempts(
     let own = own_lane(shared, tool, account, &control.conversation);
     // The budget is the turn's, both runs together.
     let deadline = Instant::now() + config.budget;
-    let (mcp, url, tetrix) = mcp_config(shared, place, &control.conversation, own)?;
+    // A helper's turn (crate::helpers): its grants as it starts, and what it's told of it.
+    let helper = (shared.helpers.of(&control.conversation)).map(|h| h.told());
+    let helper = helper.transpose()?;
+    let helper = helper.as_ref();
+    let (mcp, url, tetrix) = mcp_config(shared, place, &control.conversation, own, helper)?;
     // What reaches the agent has the vault's secrets taken out; a vault that can't be read sends
     // nothing.
     // The files the owner attached, in the room, named before their words (quoted).
@@ -1694,7 +1717,7 @@ async fn attempts(
     let words = crate::vault::for_agent(&with(words))?;
     let first = crate::vault::for_agent(&with(first_prompt(shared, said.trim(), given)))?;
     let first = if tool == Tool::Cursor {
-        super::harness_cursor::first_prompt(shared, tetrix.is_some(), &first)?
+        super::harness_cursor::first_prompt(shared, tetrix.is_some(), helper, &first)?
     } else {
         first
     };
@@ -1725,7 +1748,7 @@ async fn attempts(
             (Some(_), None) => words.clone(),
             (None, _) => first.clone(),
         };
-        let mut flags = claude_flags(shared, &account.id, tetrix.is_some(), own);
+        let mut flags = claude_flags(shared, &account.id, tetrix.is_some(), own, helper);
         let key = flags_key(&flags);
         if let Some(session) = &resume {
             flags.extend(["--resume".into(), session.into()]);
@@ -1781,6 +1804,7 @@ async fn attempts(
                         token,
                         &resume,
                         own,
+                        helper,
                     )
                     .await
                     .map_err(Unanswered::moves)?;
@@ -2251,9 +2275,9 @@ fn first_prompt(shared: &Shared, words: &str, given: &[Turn]) -> String {
     )
 }
 
-/// [`ORIENTATION`], with the repositories the room holds, and [`TETRIX`] when the session gets
-/// Tetrix's server (`tetrix`).
-pub(super) fn orientation(shared: &Shared, tetrix: bool) -> String {
+/// [`ORIENTATION`], with the repositories the room holds, [`TETRIX`] when the session gets
+/// Tetrix's server (`tetrix`), and a `helper`'s section (crate::helpers).
+pub(super) fn orientation(shared: &Shared, tetrix: bool, helper: Option<&Told>) -> String {
     let repos: Vec<String> = shared
         .config
         .repos
@@ -2291,7 +2315,16 @@ pub(super) fn orientation(shared: &Shared, tetrix: bool) -> String {
         orientation += TETRIX;
     }
     orientation += &super::ask::orientation(shared);
+    // A helper's own section, last, so every other conversation's prefix stays one.
+    if let Some(helper) = helper {
+        orientation += &helper.section;
+    }
     orientation
+}
+
+/// Whether a turn may use the web: any but a `helper`'s not granted it.
+pub(super) fn web(helper: Option<&Told>) -> bool {
+    helper.is_none_or(|h| may_use(h.granted, Connector::Web))
 }
 
 /// Repositories as the orientation names them, in an order no push changes: the prompt's cached part
@@ -3309,7 +3342,7 @@ mod tests {
             ("tetrix", TETRIX.len()),
             (
                 "oby_tools",
-                serde_json::to_vec(&super::super::tools::list())
+                serde_json::to_vec(&super::super::tools::list(true))
                     .unwrap()
                     .len(),
             ),
@@ -4133,7 +4166,7 @@ mod tests {
             "REPL",
             "JavaScript",
         ];
-        let oby: Vec<String> = super::super::tools::list()
+        let oby: Vec<String> = super::super::tools::list(true)
             .as_array()
             .unwrap()
             .iter()

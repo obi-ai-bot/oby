@@ -144,6 +144,9 @@ struct Thread {
     /// never opens on it, and no owner's words go to it unless they name it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     from_obys: bool,
+    /// The helper whose one conversation it is (crate::helpers): kept aside as [`Self::from_obys`]'s.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    helper: Option<String>,
     /// The folders its work is in (crate::folders): canonical paths, in the order picked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     folders: Vec<String>,
@@ -332,7 +335,16 @@ impl Thread {
         if self.from_obys {
             summary["fromObys"] = json!(true);
         }
+        if let Some(helper) = &self.helper {
+            summary["helper"] = json!(helper);
+        }
         summary
+    }
+
+    /// Kept aside from the owner's: never counted or forgotten by [`Conversations::prune`], never
+    /// the latest.
+    fn aside(&self) -> bool {
+        self.from_obys || self.helper.is_some()
     }
 
     /// Its summary to send, one revision on: taken under the lock it changed under, before the
@@ -428,6 +440,8 @@ pub enum Error {
     Folder(String),
     /// A paired device's change would add a folder: only the owner's Mac app adds one.
     AddsFolders,
+    /// It's a helper's: it goes with its helper (crate::helpers).
+    HelperConversation,
 }
 
 /// The folders a `PATCH` asks a conversation to work in: each path as sent, with its check
@@ -484,6 +498,11 @@ impl From<Error> for ApiError {
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "Folders are added only on the Mac: from here you can take one off.",
             ),
+            Error::HelperConversation => ApiError::new(
+                StatusCode::CONFLICT,
+                "It's a helper's conversation: it goes when its helper is deleted.",
+            )
+            .because("helper-conversation"),
             Error::TooManyFolders => ApiError::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 format!(
@@ -907,12 +926,23 @@ impl Conversations {
     /// A new conversation titled `title`, with no turn yet: the one a routine's runs go to
     /// (crate::routines). Its first turn follows at once.
     pub fn start_for(&self, title: &str) -> Result<String, Error> {
+        self.start(title, None)
+    }
+
+    /// [`Self::start_for`], the one conversation of the helper `helper` (crate::helpers): kept
+    /// aside, so it forgets none of the owner's.
+    pub fn start_helper(&self, title: &str, helper: &str) -> Result<String, Error> {
+        self.start(title, Some(helper.to_owned()))
+    }
+
+    fn start(&self, title: &str, helper: Option<String>) -> Result<String, Error> {
         let mut threads = self.lock();
         let mut thread = Thread {
             id: new_id(),
             title: titled(title),
             created: obi_protocol::time::format(obi_protocol::time::now()),
             sequence: next_sequence(&threads),
+            helper,
             ..Thread::default()
         };
         let summary = thread.revised();
@@ -1139,12 +1169,12 @@ impl Conversations {
     /// latest. [`Self::from_obys`]'s doesn't count and isn't forgotten: it takes no room of theirs.
     fn prune(&self, threads: &mut Vec<Thread>) -> Vec<String> {
         let mut uploads = vec![];
-        while threads.iter().filter(|t| !t.from_obys).count() > CONVERSATIONS {
+        while threads.iter().filter(|t| !t.aside()).count() > CONVERSATIONS {
             let newest = threads.iter().map(|t| t.sequence).max().unwrap_or(0);
             let Some(oldest) = threads
                 .iter()
                 .enumerate()
-                .filter(|(_, t)| !t.pinned && !t.from_obys && t.sequence != newest)
+                .filter(|(_, t)| !t.pinned && !t.aside() && t.sequence != newest)
                 .min_by_key(|(_, t)| t.sequence)
                 .map(|(i, _)| i)
             else {
@@ -1363,8 +1393,16 @@ impl Conversations {
     /// Forgets the conversation `id` and its turns. The jobs it started stay, with its id. Answers
     /// the files attached to its words, for the caller to remove ([`crate::brain::drop_uploads`]).
     pub fn delete(&self, id: &str) -> Result<Vec<String>, Error> {
+        self.delete_any(id, false)
+    }
+
+    /// [`Self::delete`], that deletes a helper's only when `helper` (crate::helpers).
+    pub fn delete_any(&self, id: &str, helper: bool) -> Result<Vec<String>, Error> {
         let mut threads = self.lock();
         let index = index_of(&threads, id)?;
+        if threads[index].helper.is_some() && !helper {
+            return Err(Error::HelperConversation);
+        }
         let gone = self.forget(&mut threads, index);
         drop(threads);
         self.end_forgotten();
@@ -1858,7 +1896,7 @@ fn index_of(threads: &[Thread], id: &str) -> Result<usize, Error> {
 /// The conversation with the latest turn.
 fn latest(threads: &[Thread]) -> Option<usize> {
     (0..threads.len())
-        .filter(|&i| !threads[i].from_obys)
+        .filter(|&i| !threads[i].aside())
         .max_by_key(|&i| threads[i].sequence)
 }
 
@@ -2068,11 +2106,7 @@ pub async fn update(
         remote,
     });
     let title = change.title.map(|t| t.trim().to_owned());
-    if title.as_ref().is_some_and(|t| {
-        t.is_empty()
-            || t.chars().count() > TITLE
-            || t.chars().any(|c| c.is_control() || breaks_line(c))
-    }) {
+    if title.as_ref().is_some_and(|t| !one_line(t)) {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
             "title is one line of 1 to 100 characters.",
@@ -2085,20 +2119,26 @@ pub async fn update(
     Ok((StatusCode::OK, axum::Json(summary)).into_response())
 }
 
+/// Whether `text` is a title a rename may set: one line of 1 to [`TITLE`] characters.
+pub(crate) fn one_line(text: &str) -> bool {
+    let length = text.chars().count();
+    (1..=TITLE).contains(&length) && !text.chars().any(|c| c.is_control() || breaks_line(c))
+}
+
 /// `DELETE /v1/conversations/{id}`: the conversation goes, and the offers made in it close; the
-/// jobs it started stay.
+/// jobs it started stay; a helper's stays, `409`.
 pub async fn remove(
     State(shared): State<std::sync::Arc<Shared>>,
     UrlPath(id): UrlPath<String>,
 ) -> Result<Response, ApiError> {
-    forget(&shared, &id).await?;
+    forget(&shared, &id, false).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// The conversation `id` goes, with the files attached to its words, and the offers made in it
-/// close.
-async fn forget(shared: &Shared, id: &str) -> Result<(), Error> {
-    let uploads = shared.conversations.delete(id)?;
+/// close; a helper's only when `helper`.
+pub(crate) async fn forget(shared: &Shared, id: &str, helper: bool) -> Result<(), Error> {
+    let uploads = shared.conversations.delete_any(id, helper)?;
     crate::brain::drop_uploads(shared, uploads).await;
     // What Oby offered there can't be started from it any more.
     shared.link.close_offers(id);
@@ -2128,7 +2168,7 @@ pub async fn confirmed(shared: &Shared, item: &crate::sphere::inbox::Item) {
             .iter()
             .any(|c| c["id"] == named["id"] && c["cursor"] == named["cursor"]);
         if let Some(id) = named["id"].as_str().filter(|_| unchanged)
-            && let Err(why) = forget(shared, id).await
+            && let Err(why) = forget(shared, id, false).await
         {
             tracing::warn!("conversation {id} wasn't deleted: {why:?}");
         }
