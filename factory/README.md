@@ -13,7 +13,10 @@ bin/gate        runs checks.sh in a job's worktree → round-N/checks.md; with `
                 the gate VM and the macOS-only part on the Mac, falling back to the Mac; with `mac_worker` set too, that
                 macOS part on the Mac worker (the second Mac) when it is free, else on this Mac; with `gate_shards`
                 set too, obid's test binaries in shards on the VM's slots, the Mac worker and this Mac, all at
-                once, with one verdict; `gate --idle` deallocates the idle VM (job queue runs it)
+                once, with one verdict; `gate --idle` deallocates the idle VM (job queue runs it); `gate --checkout
+                <worktree> <commit> <branch> <out-dir>` is the same gate with no job folder (oby-feed's)
+bin/oby-feed    feeds the task files to the factory's own obid (Oby builds and reviews them) and merges what Oby
+                approved twice, once the models, Kani and bin/gate passed on the head; state in ~/.oby-factory/feed/
 bin/prove       re-runs the Kani harnesses a job's spec.md lists under `## Proofs` on the commit its gate passed, through
                 bin/test-run, checks each can fail on its declared broken rule and that the branch adds nothing that
                 games them; for a `model` job, runs `quint typecheck`, `run` and `verify` on each Quint model its
@@ -42,6 +45,18 @@ queue/done/     finished tasks: a task's own pull request moves its file here
 dashboard.html  the board: cd factory && python3 -m http.server, then http://localhost:8000/dashboard.html
 jobs/           runtime state, local to this Mac (gitignored); jobs/remote-gate/state.json is the gate VM's uses
 ```
+
+`bin/oby-feed` runs the same gate before Oby's own factory merges (docs/contracts/factory.md, FEEDGATE): once a
+pull request's head is approved twice by two tools and its models and Kani passed, or it waits for the owner on a
+security path, it fetches the head into the main checkout, adds a detached worktree of it, and calls `bin/gate`'s
+`check_commit()`, imported. So it reads `remote_gate`, `mac_worker`, `gate_shards`, `protected_paths` and
+`base_branch` from this `config.json` (and `FACTORY_REMOTE_GATE`, `FACTORY_MAC_WORKER` and `FACTORY_GATE_SHARDS` for
+one run), runs the main checkout's `checks.sh`, and keeps each head's `checks.md` and `checks.log` in
+`~/.oby-factory/feed/gate/<KEY>/<head>/`, the verdict in the task's state, so a head is gated once. Green arms the
+merge. Red holds the head, never merged, and when a part of the check failed sends the build job one fix message
+with the failing parts and the log's end, fenced as data, so Oby follows up on the same branch. A gate that couldn't
+judge (a part didn't report, or the gate raised) holds the head with a note and no message. A security-path pull
+request still waits for the owner, the gate's result added to its note.
 
 `jobs/nightly/` holds the nightly check's results, one `<stamp>.md` (`GATE: PASS|FAIL`, the commit, when it
 started, the log's last 80 lines) and its `<stamp>.log` per run, named by the UTC start time; the dashboard
