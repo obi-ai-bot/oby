@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { BrandMark } from './brands';
 import { useScrollThumb } from './useScrollThumb';
 import { agentOf, ago } from './view';
-import { allowWaiting, itemAsk, mergeWaiting, projectOf, shownId, useLive, waitingOf } from './live';
+import { allowWaiting, answerWaiting, approvingTools, itemAsk, mergeWaiting, projectOf, questionOf, shownId, useLive, waitingOf } from './live';
 import { ALLOW_ONCE } from '../../shared/words';
 import type { InboxItem } from './obid';
 
@@ -79,12 +79,20 @@ function WaitingRow({ item: i, onOpenTask, onOpenTalk }: { item: InboxItem; onOp
   const kind = kindOf(i);
   const project = projectOf(s, i);
   const talk = i.conversation ?? j?.conversation;
-  // a merge's: Oby's summary of the work, its check as it ended, and who approved it (the Review
-  // stage, in obid's words: "Approved by Oby"). obid sends no lines changed for a job yet.
+  // a merge's: Oby's summary of the work, its check as it ended, each tool that approved its pushed
+  // head (else the Review stage's words: "Waiting for a second review"), and the lines it changes
   const stage = (id: string) => j?.pipeline?.stages.find((st) => st.id === id);
   const check = stage('check')?.state === 'done' ? 'Check passed' : stage('check')?.state === 'failed' ? 'Check failed' : undefined;
-  const review = stage('review')?.detail;
+  const tools = j ? approvingTools(j) : [];
+  const review = tools.length ? undefined : stage('review')?.detail;
   const summary = kind === 'merge' ? j?.summary : undefined;
+  const diff = kind === 'merge' ? j?.diff : undefined;
+  // what it waits on with no task's permission and nowhere to open: its own answers, as obid offers
+  // them (another Oby's question: its choices), each signed by its button's label
+  const permits = kind === 'permission' && !!j?.permission;
+  const opens = kind !== 'merge' && !permits && (!!talk || !!i.job);
+  const merges = kind === 'merge' && i.options.includes('Merge');
+  const answers = permits || opens || merges ? [] : i.options.length ? i.options : questionOf(i)?.choices ?? [];
   const meta = [project ? name(project) : 'No project', ago((Date.now() - Date.parse(i.created)) / 60_000)].join(' · ');
   return (
     <li className="waiting-row" aria-label={j?.title ?? i.title}>
@@ -98,19 +106,22 @@ function WaitingRow({ item: i, onOpenTask, onOpenTalk }: { item: InboxItem; onOp
         <p className="waiting-chips">
           <span className={`waiting-kind is-${kind}`}>{ask.label ?? (kind === 'permission' ? 'Permission' : kind === 'merge' ? 'Merge' : 'Question')}</span>
           {check && <span className={`waiting-tag${check === 'Check failed' ? ' is-failed' : ''}`}>{check}</span>}
+          {tools.map((t) => (
+            <span key={t} className="waiting-tag" aria-label={`Approved by ${agentOf(t).name}`}><BrandMark brand={agentOf(t).brand} size={12} mono />Approved</span>
+          ))}
           {review && <span className="waiting-tag">{review}</span>}
+          {diff && <span className="waiting-tag waiting-diff"><span className="is-added">+{diff.added}</span> <span className="is-removed">−{diff.removed}</span> · {plural(diff.files, 'file')}</span>}
         </p>
       </div>
       <div className="waiting-actions">
         {kind === 'merge' && i.job && <button className="tc-option" onClick={() => onOpenTask(i.job)}>Open</button>}
-        {kind === 'merge' && i.options.includes('Merge') && <button className="tc-option is-primary" onClick={() => void mergeWaiting(i)}>Merge</button>}
-        {kind === 'permission' && j?.permission && <>
+        {merges && <button className="tc-option is-primary" onClick={() => void mergeWaiting(i)}>Merge</button>}
+        {permits && <>
           <button className="tc-option" onClick={() => void allowWaiting(i, 'Deny')}>Deny</button>
           <button className="tc-option is-primary" onClick={() => void allowWaiting(i, ALLOW_ONCE)}>{ALLOW_ONCE}</button>
         </>}
-        {(kind === 'question' || (kind === 'permission' && !j?.permission)) && (talk || i.job) && (
-          <button className="tc-option" onClick={() => (talk ? onOpenTalk(shownId(talk)) : onOpenTask(i.job))}>Answer</button>
-        )}
+        {opens && <button className="tc-option" onClick={() => (talk ? onOpenTalk(shownId(talk)) : onOpenTask(i.job))}>Answer</button>}
+        {answers.map((o) => <button key={o} className="tc-option" onClick={() => void answerWaiting(i, o)}>{o}</button>)}
       </div>
     </li>
   );

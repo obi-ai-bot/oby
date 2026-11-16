@@ -35,6 +35,8 @@ const job = (id: string, repo: string, title: string, more: Partial<Job> = {}) =
     dismissed: null, permission: null, pipeline: null, conversation: null, ...more,
   }) as Job;
 
+const review = (agent: string, commit: string) => ({ verdict: 'approved', job: `r-${agent}`, agent, account: 'a1', round: 1, date: at(45), commit });
+
 // three that need you in two projects, one that doesn't, and one put off
 function fill() {
   const s = live.liveState();
@@ -42,6 +44,11 @@ function fill() {
     j1: job('j1', 'obi-ai-bot/oby', 'Fix the live panel’s queue order'),
     j2: job('j2', 'deskree-inc/tetrix', 'Retry jitter for the collector', {
       summary: 'Backoff gets ±20% jitter so a fleet doesn’t retry at once.',
+      // two tools approved the head obid pushed; an approval of an older head doesn't count
+      outgoing: [{ action: 'push', id: 'old', branch: 'oby/j2', date: at(70) }, { action: 'push', id: 'head', branch: 'oby/j2', date: at(50) }],
+      approvals: [review('codex', 'head'), review('cursor', 'old')],
+      review: review('claude', 'head'),
+      diff: { files: 2, added: 21, removed: 4 },
       pipeline: { number: 6, total: 6, stages: [
         { id: 'check', title: 'Check', state: 'done', detail: 'npm test' },
         { id: 'review', title: 'Review', state: 'done', detail: 'Approved by Oby' },
@@ -86,7 +93,9 @@ describe('Waiting for you', () => {
     // a merge's row: Oby's summary, its check and who approved it
     const first = host.querySelector('.waiting-row')!;
     expect(first.querySelector('.waiting-summary')?.textContent).toBe('Backoff gets ±20% jitter so a fleet doesn’t retry at once.');
-    expect([...first.querySelectorAll('.waiting-tag')].map((t) => t.textContent)).toEqual(['Check passed', 'Approved by Oby']);
+    const tags = [...first.querySelectorAll('.waiting-tag')];
+    expect(tags.map((t) => t.textContent)).toEqual(['Check passed', 'Approved', 'Approved', '+21 −4 · 2 files']);
+    expect(tags.map((t) => t.getAttribute('aria-label')).filter(Boolean)).toEqual(['Approved by Claude Code', 'Approved by Codex']);
     // All projects narrows to one
     const select = host.querySelector('select')!;
     expect([...select.options].map((o) => o.textContent)).toEqual(['All projects', 'tetrix', 'oby']);
@@ -117,6 +126,22 @@ describe('Waiting for you', () => {
     // main signs it on the label held, Allow once standing for allow
     expect(words.owners('POST', '/v1/jobs/j3/permission', { id: 'p1', decision: 'allow' }, ['Allow once'], [])).toEqual([0]);
     expect(words.owners('POST', '/v1/jobs/j3/permission', { id: 'p1', decision: 'deny' }, ['Allow once'], [])).toBeNull();
+  });
+
+  it('waiting_2_an_item_with_no_task_or_conversation_is_answered_here', async () => {
+    fill();
+    const s = live.liveState();
+    s.inbox = [item('obi-q1', 'obiRequest', '', at(3), {
+      title: 'Question from dima', options: [], obi: { type: 'question', fromOwner: 'dima', quoted: { text: 'Ship it today?', choices: ['Yes', 'No'] } },
+    })];
+    await waitingPage();
+    call.mockResolvedValue({ status: 200, text: JSON.stringify({ ...s.inbox[0], state: 'done' }) });
+    const yes = [...host.querySelectorAll('.waiting-row button')].find((b) => b.textContent === 'Yes') as HTMLButtonElement;
+    expect([...host.querySelectorAll('.waiting-row button')].map((b) => b.textContent)).toEqual(['Yes', 'No']);
+    await act(async () => yes.click());
+    expect(call).toHaveBeenCalledWith('POST', '/v1/inbox/obi-q1/answer', { answer: 'Yes' });
+    expect(words.owners('POST', '/v1/inbox/obi-q1/answer', { answer: 'Yes' }, ['Yes'], [])).toEqual([0]);
+    expect(rows()).toEqual([]);
   });
 
   it('waiting_3_count_matches', async () => {

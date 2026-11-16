@@ -373,6 +373,9 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .waiting-about { color: var(--text); }
 .waiting-summary { margin: 0; color: var(--muted); font-size: var(--text-sm); }
 .waiting-tag.is-failed { color: var(--danger); }
+.waiting-tag { display: inline-flex; align-items: center; gap: 4px; }
+.waiting-diff .is-added { color: #30d158; }  /* lines added: macOS's green */
+.waiting-diff .is-removed { color: var(--danger); }
 .waiting-detail { align-self: flex-start; color: var(--danger); font-size: var(--text-sm); }
 .waiting-chips { margin: 4px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
 .waiting-kind, .waiting-tag { padding: 2px 8px; border-radius: 6px; background: var(--hover); color: var(--muted); font-size: var(--text-sm); }

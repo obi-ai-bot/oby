@@ -424,6 +424,15 @@ export const projectOf = (s: Live, i: InboxItem) => s.jobs[i.job]?.repo || i.git
 // (docs/contracts/signed-words.md); Allow once and Deny answer the task's permission, as its card does
 export const mergeWaiting = (i: InboxItem) => answerJob(i.id, 'Merge');
 export const allowWaiting = (i: InboxItem, option: 'Allow once' | 'Deny') => answerJob(i.job, option);
+// an item with nothing to open (a standalone Confirm, another Oby's question): its own answer, by label
+export const answerWaiting = (i: InboxItem, option: string) => answerJob(i.id, option);
+// The tools whose reviews of Oby's approved the head obid last pushed to the job's branch, as obid
+// counts them (job.rs, approving_tools): its approvals and its latest review, each tool once
+export const approvingTools = (j: Job) => {
+  const head = (j.outgoing ?? []).filter((o) => o.action === 'push' && o.branch === j.branch).at(-1)?.id;
+  return [...new Set([...(j.approvals ?? []), ...(j.review ? [j.review] : [])]
+    .filter((r) => r.verdict === 'approved' && !!head && r.commit === head).map((r) => r.agent))].sort();
+};
 
 // An account's limit (#1563): one card for all the jobs it stopped, its answers obid's options. The
 // card's id carries the revision it shows, so a choice covers exactly the jobs and destination on
