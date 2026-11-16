@@ -133,8 +133,10 @@ export default function ProjectSheet({ onClose, onMade }: { onClose: () => void;
           <button type="button" className="set-button" onClick={onClose}>Cancel</button>
           <button type="submit" className="modal-primary" disabled={!ready}>Create project</button>
         </div>
-        {github && github.list.length > 0 && (
-          <Menu at={github.at} onClose={() => setGithub(null)} align="left" width={240} height={github.list.length * 36 + 12}>
+        {/* (none listed: it says so, rather than opening nothing) */}
+        {github && (
+          <Menu at={github.at} onClose={() => setGithub(null)} align="left" width={240} height={Math.max(github.list.length, 1) * 36 + 12}>
+            {!github.list.length && <span className="menu-label" role="status">No repositories to add</span>}
             {github.list.map((r) => (
               <button key={r} type="button" role="menuitemcheckbox" aria-checked={repos.includes(r)} onClick={() => { setRepos((all) => (all.includes(r) ? all : [...all, r])); setGithub(null); }}>
                 {r}

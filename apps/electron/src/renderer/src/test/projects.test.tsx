@@ -50,7 +50,8 @@ const convo = (id: string, title: string, more: object = {}) => ({ id, title, pi
 // main's bridge, as obid answers: its projects (a create is listed), a conversation's move (its answer,
 // or a refusal), words (taken), its repositories and one helper; the rest 404
 function obid(projects: unknown[], conversations: ReturnType<typeof convo>[] = []) {
-  const said = { projects, create: undefined as Answer | undefined, patch: undefined as Answer | undefined };
+  const said = { projects, create: undefined as Answer | undefined, patch: undefined as Answer | undefined,
+    repos: [{ repo: 'o/website-cms', defaultBranch: 'main', listed: true }, { repo: 'o/docs', defaultBranch: 'main', listed: true }] };
   const calls: Call[] = [];
   const call = vi.fn(async (method: string, path: string, body?: unknown) => {
     calls.push({ method, path, body });
@@ -68,7 +69,7 @@ function obid(projects: unknown[], conversations: ReturnType<typeof convo>[] = [
       return { status: 200, text: JSON.stringify({ ...c, ...(body as object), revision: 2 }) };
     }
     if (method === 'POST' && path === '/v1/plans') return { status: 200, text: JSON.stringify({ kind: 'none', jobs: [] }) };
-    if (method === 'GET' && path === '/v1/repos') return { status: 200, text: JSON.stringify({ repos: [{ repo: 'o/website-cms', defaultBranch: 'main', listed: true }, { repo: 'o/docs', defaultBranch: 'main', listed: true }] }) };
+    if (method === 'GET' && path === '/v1/repos') return { status: 200, text: JSON.stringify({ repos: said.repos }) };
     if (method === 'GET' && path === '/v1/helpers') return { status: 200, text: JSON.stringify([{ id: 'h1', profile: 'p', name: 'Researcher', color: '#c2b5fd', instructions: 'x', tool: 'claude', connectors: [], conversation: 'conv-h1', created: at }]) };
     if (method === 'GET' && path.startsWith('/v1/conversation?id=')) return { status: 200, text: '[]' };
     return { status: 404, text: '{"error":"Not found."}' };
@@ -317,6 +318,26 @@ describe('PROJECTS-17', () => {
     expect(dialog()).toBeNull();
     expect(posted(o.calls, '/v1/projects')).toHaveLength(sent);
     expect(posted(o.calls, '/v1/plans')).toHaveLength(0);
+  });
+});
+
+describe('PROJECTS-17, no repositories', () => {
+  it('PROJECTS-17: projects_17_add_from_github_with_none_listed_says_so', async () => {
+    const o = obid([OBY]);
+    o.said.repos = [];
+    await showHome(o);
+    await until(() => expect(button('New project')).toBeDefined());
+    await click(button('New project')!);
+    await fill('#project-name', 'Website');
+    await click(button('Add from GitHub…', dialog()!)!);
+    await until(() => expect(dialog()!.querySelector('.row-menu [role="status"]')?.textContent).toBe('No repositories to add'));
+    expect(button('Add from GitHub…', dialog()!)!.getAttribute('aria-expanded')).toBe('true');
+    expect(dialog()!.querySelectorAll('[role="menuitemcheckbox"]')).toHaveLength(0);
+    // the sheet stays as it was, and closes the line again
+    expect(host.querySelector<HTMLInputElement>('#project-name')!.value).toBe('Website');
+    await click(button('Add from GitHub…', dialog()!)!);
+    expect(dialog()!.querySelector('.row-menu')).toBeNull();
+    expect(dialog()).not.toBeNull();
   });
 });
 
