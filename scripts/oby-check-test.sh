@@ -1,6 +1,7 @@
 #!/bin/bash
-# What scripts/oby-check.sh's line limit promises (AGENTS.md, "Dispatcher, not harness"), run on a
-# repository of its own. scripts/oby-check.sh runs this when it changes.
+# What scripts/oby-check.sh promises (docs/contracts/ci.md): obid's line count reported, its limits,
+# its plans and its groups, run on a repository of its own. scripts/oby-check.sh runs this when it
+# changes.
 set -eo pipefail
 # Each case plans what it changed: a full check's own OBY_CHECK_ALL or OBY_CHECK_PATHS isn't theirs.
 unset OBY_CHECK_ALL OBY_CHECK_PATHS OBY_CHECK_ONLY
@@ -11,7 +12,6 @@ script="$(cd "$(dirname "$0")" && pwd)/oby-check.sh"
 # obid installs the base's authoritative check script before running this test. Keep testing
 # its existing rules below, but test the new group interface against the commit that adds it.
 committed_script=$(git show HEAD:scripts/oby-check.sh)
-limit=$(sed -n 's/^obid_lines_limit=//p' "$script")
 repo=$(mktemp -d "${TMPDIR:-/tmp}/oby-check-test.XXXXXX")
 trap 'rm -rf "$repo"' EXIT
 cd "$repo"
@@ -61,80 +61,57 @@ expect() { # words said, or "no" and the words not said; what it's about
         grep -q "$1" <<<"$said" || { echo "oby-check-test: didn't say \"$1\": $2" >&2; exit 1; }
     fi
 }
-past='past its limit'
 main=core/crates/obid/src/main.rs
-
-code "$main" "$limit"
-expect no "$past" 'at the limit is within it'
-
-code "$main" "$((limit + 1))"
-expect "$past" 'one line past the limit'
-# A real run fails on it, not only says so.
-if ran=$(env -u OBY_CHECK_PLAN scripts/oby-check.sh HEAD 2>&1); then
-    echo 'oby-check-test: a run past the limit passed' >&2
-    exit 1
-fi
-grep -q "failed: the Rust core's line limit" <<<"$ran" || {
-    echo "oby-check-test: a run past the limit failed without naming it:" >&2
-    # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
-    sed 's/^/| /' <<<"$ran" >&2
-    exit 1
+jobs=core/crates/obid/src/jobs.rs
+jobs_limit=$(sed -n 's/^jobs_rs_limit=//p' scripts/oby-check.sh)
+# What the Rust core's production lines outside the Sphere count (AGENTS.md, "Dispatcher, not
+# harness"): the plan says exactly how many, from this copy of the script or the base's.
+counted() { # lines, what it's about
+    expect "the Rust core has $1 production lines outside the Sphere" "$2"
 }
+count=1000
 
-code "$main" "$limit"
+code "$main" "$count"
+counted "$count" "a file's lines count"
 { echo '#[cfg(test)]'; echo; echo 'mod tests {'; seq 50; echo '}'; } >>"$main"
-expect no "$past" "a file's tests don't count"
-code "$main" "$limit"
+counted "$count" "a file's tests don't count"
+code "$main" "$count"
 { echo '#[cfg(test)]'; echo 'pub(crate) mod tests {'; seq 50; echo '}'; } >>"$main"
-expect no "$past" "a file's public test module doesn't count"
+counted "$count" "a file's public test module doesn't count"
 
 # cfg(test) helper counted: a `#[cfg(test)]` on one helper doesn't hide the production code after it.
-code "$main" "$((limit - 2))"
+code "$main" "$((count - 2))"
 { echo '#[cfg(test)]'; echo 'fn helper() {}'; echo 'fn production() {}'; echo '#[cfg(test)]'; echo 'mod tests {}'; } >>"$main"
-expect "$past" 'a cfg(test) helper and the code after it count'
-code "$main" "$((limit - 2))"
+counted "$((count + 1))" 'a cfg(test) helper and the code after it count'
+code "$main" "$((count - 2))"
 { echo '#[cfg(test)]'; echo 'mod helpers;'; echo 'fn production() {}'; echo '#[cfg(test)]'; echo 'mod tests {}'; } >>"$main"
-expect "$past" 'an out-of-line cfg(test) module and the code after it count'
+counted "$((count + 1))" 'an out-of-line cfg(test) module and the code after it count'
 # Code after a mid-file test module counts: only the module, to its `}` in column 0, doesn't.
-code "$main" "$((limit - 1))"
+code "$main" "$((count - 1))"
 { echo '#[cfg(test)]'; echo 'mod tests {'; echo '    fn t() {}'; echo '}'; echo 'fn production() {}'; echo 'fn more() {}'; } >>"$main"
-expect "$past" 'code after a mid-file test module counts'
-{ echo '#[cfg(test)]'; echo 'mod t {}'; seq "$((limit + 1))"; } >"$main"
-expect "$past" 'a one-line test module at the top hides nothing after it'
+counted "$((count + 1))" 'code after a mid-file test module counts'
+{ echo '#[cfg(test)]'; echo 'mod t {}'; seq "$((count + 1))"; } >"$main"
+counted "$((count + 1))" 'a one-line test module at the top hides nothing after it'
 rm "$main"
 
-code core/crates/obid/src/sphere/inbox.rs "$((limit + 1))"
-expect "$past" "the Sphere's inbox counts"
+code core/crates/obid/src/sphere/inbox.rs "$((count + 1))"
+counted "$((count + 1))" "the Sphere's inbox counts"
 rm core/crates/obid/src/sphere/inbox.rs
-code core/crates/obid/src/sphere/link/inbox_actions.rs "$((limit + 1))"
-expect "$past" "the Sphere's inbox actions count"
+code core/crates/obid/src/sphere/link/inbox_actions.rs "$((count + 1))"
+counted "$((count + 1))" "the Sphere's inbox actions count"
 rm core/crates/obid/src/sphere/link/inbox_actions.rs
 
-code core/crates/obid/src/sphere/link.rs "$((limit + 1))"
-expect no "$past" "the Sphere doesn't count"
+code core/crates/obid/src/sphere/link.rs "$((count + 1))"
+counted 0 "the Sphere doesn't count"
 rm core/crates/obid/src/sphere/link.rs
 
-code core/crates/obi-protocol/src/lib.rs "$((limit + 1))"
-expect no "$past" "the Sphere's protocol doesn't count"
+code core/crates/obi-protocol/src/lib.rs "$((count + 1))"
+counted 0 "the Sphere's protocol doesn't count"
 rm core/crates/obi-protocol/src/lib.rs
 
-code core/crates/new/src/lib.rs "$((limit + 1))"
-expect "$past" 'a new crate counts'
+code core/crates/new/src/lib.rs "$((count + 1))"
+counted "$((count + 1))" 'a new crate counts'
 rm core/crates/new/src/lib.rs
-
-# Far under fails: a cut of more than 1,000 lines lowers the limit in the same change.
-code "$main" "$((limit - 1001))"
-expect "lower obid_lines_limit in this script from $limit to $(((limit - 1001 + 499) / 500 * 500))" 'a cut asks for the limit to come down, to a number'
-if ran=$(env -u OBY_CHECK_PLAN scripts/oby-check.sh HEAD 2>&1); then
-    echo 'oby-check-test: a run far under the limit passed' >&2
-    exit 1
-fi
-grep -q "failed: the Rust core's line limit" <<<"$ran" || {
-    echo "oby-check-test: a run far under the limit failed without naming it: $ran" >&2
-    exit 1
-}
-code "$main" "$((limit - 1000))"
-expect no 'lower obid_lines_limit' 'a small cut leaves the limit'
 
 # On a job's base, which changed nothing, obid names the paths the job changed (PUBLISHING-18):
 # those are what changed, not the diff (main.rs, which would plan every lib test).
@@ -151,38 +128,30 @@ set_limit() { # name value, in the working copy (its mode kept)
     rm scripts/edited
 }
 since=HEAD~1
-# A cut that lowers the limit passes the base's copy: the branch's lower one holds.
-set_limit obid_lines_limit "$((limit - 1500))"
-commit_scripts 'a cut'
-git show HEAD~1:scripts/oby-check.sh >scripts/oby-check.sh
-code "$main" "$((limit - 1500))"
-expect no 'lower obid_lines_limit' "a commit's lower limit holds against the base's copy"
-expect no "$past" "a commit's lower limit holds against the base's copy"
-code "$main" "$((limit - 1499))"
-expect "$past" "a commit's lower limit holds against the base's copy"
-git reset --quiet --hard HEAD~1
 # A commit's higher limit isn't taken.
-set_limit obid_lines_limit "$((limit + 1000))"
+set_limit jobs_rs_limit "$((jobs_limit + 1000))"
 commit_scripts 'a raise'
 git show HEAD~1:scripts/oby-check.sh >scripts/oby-check.sh
-code "$main" "$((limit + 1))"
-expect "$past" "a commit's higher limit isn't taken"
+code "$jobs" "$((jobs_limit + 1))"
+expect 'jobs.rs has .* past its limit' "a commit's higher limit isn't taken"
 git reset --quiet --hard HEAD~1
 # Dev's limit raised since the branch started, which didn't change it: dev's holds.
 commit_scripts 'other work'
-set_limit obid_lines_limit "$((limit + 1000))"
-code "$main" "$((limit + 500))"
-expect no "$past" "dev's raise holds for a branch that started before it"
+set_limit jobs_rs_limit "$((jobs_limit + 1000))"
+code "$jobs" "$((jobs_limit + 500))"
+expect no 'jobs.rs has .* past' "dev's raise holds for a branch that started before it"
 git reset --quiet --hard HEAD~1
 # Dev's limit lowered since: past it, the check says to rebase.
 commit_scripts 'other work'
-set_limit obid_lines_limit "$((limit - 1000))"
-code "$main" "$limit"
-expect "$past" "dev's cut holds for a branch that started before it"
+set_limit jobs_rs_limit "$((jobs_limit - 1000))"
+code "$jobs" "$jobs_limit"
+expect 'jobs.rs has .* past its limit' "dev's cut holds for a branch that started before it"
 expect 'rebase onto dev' "a branch that started before dev's limit changed is told to rebase"
 git reset --quiet --hard HEAD~1
-code "$main" "$((limit + 1))"
+code "$jobs" "$((jobs_limit + 1))"
+since=HEAD expect 'jobs.rs has .* past its limit' "a branch whose limit didn't move, past it"
 since=HEAD expect no 'rebase onto dev' "a branch whose limit didn't move isn't told to rebase"
+rm "$jobs"
 # A commit with no scripts/oby-check.sh fails, saying so.
 git rm --quiet scripts/oby-check.sh
 git -c user.name=check -c user.email=check@example.invalid -c commit.gpgsign=false commit --quiet -m 'no check'
@@ -203,15 +172,13 @@ git reset --quiet --hard HEAD~1
 since=
 rm "$main"
 
-# jobs.rs may only shrink: past its own limit fails, though the whole is within its own.
-jobs=core/crates/obid/src/jobs.rs
-jobs_limit=$(sed -n 's/^jobs_rs_limit=//p' scripts/oby-check.sh)
+# jobs.rs may only shrink: past its own limit fails.
 code "$jobs" "$jobs_limit"
 { echo '#[cfg(test)]'; echo 'mod tests {'; seq 50; echo '}'; } >>"$jobs"
 expect no 'jobs.rs has .* past' 'jobs.rs at its limit is within it'
 code "$jobs" "$((jobs_limit + 1))"
 expect 'jobs.rs has .* past its limit' 'jobs.rs one line past its limit'
-expect no "the Rust core has .* $past" 'jobs.rs past its limit while the whole is within its own'
+counted "$((jobs_limit + 1))" "jobs.rs's lines count in the Rust core's"
 if ran=$(env -u OBY_CHECK_PLAN scripts/oby-check.sh HEAD 2>&1); then
     echo 'oby-check-test: a run with jobs.rs past its limit passed' >&2
     exit 1
@@ -338,17 +305,14 @@ grep -qF 'failed: AGENTS.md is gone' <<<"$ran" && ! grep -q 'AGENTS.md has 0 byt
 git reset --quiet --hard HEAD~2
 unset OBY_CHECK_PATHS
 
-# A raise of a line limit names its payback and comes alone (docs/contracts/ci.md, CI-39 to 41), on
+# A raise of jobs_rs_limit names its payback and comes alone (docs/contracts/ci.md, CI-39 to 41), on
 # the commit's own copy of the script, committed here as the base within every limit and with none of
 # its payback lines, with a stand-in for this test, which the check runs when the script changes. Each
 # case is a commit on it.
 grep -v '^# payback: ' <<<"$committed_script" >scripts/oby-check.sh
 agents_md_at_limit
-raise_limit=$(sed -n 's/^obid_lines_limit=//p' scripts/oby-check.sh)
 raise_jobs=$(sed -n 's/^jobs_rs_limit=//p' scripts/oby-check.sh)
-code "$main" "$((raise_limit - 500))"
 printf '#!/bin/bash\n' >scripts/oby-check-test.sh
-git add "$main"
 commit_scripts 'the raise rules'
 since=HEAD~1
 payback() { # name line [line]: the line directly above the name's limit in the working copy, the third between them
@@ -371,30 +335,27 @@ raise_passes() { # what it's about
     grep -qx 'oby-check: passed' <<<"$ran" && ! grep -q "payback line\|in a pull request of its own" <<<"$ran" ||
         wrong "$1 didn't pass"
 }
-raise obid_lines_limit "$((raise_limit + 100))"
-expect "raises obid_lines_limit from $raise_limit to $((raise_limit + 100)) with no payback line" 'CI-39: a raise of obid_lines_limit with no payback line says so'
-raise_fails 'CI-39: a raise of obid_lines_limit with no payback line' "obid_lines_limit's payback line"
-grep -qF "directly above \"obid_lines_limit=$((raise_limit + 100))\"" <<<"$ran" && ! grep -q 'in a pull request of its own' <<<"$ran" ||
+raise jobs_rs_limit "$((raise_jobs + 10))"
+expect "raises jobs_rs_limit from $raise_jobs to $((raise_jobs + 10)) with no payback line" 'CI-39: a raise of jobs_rs_limit with no payback line says so'
+raise_fails 'CI-39: a raise of jobs_rs_limit with no payback line' "jobs_rs_limit's payback line"
+grep -qF "directly above \"jobs_rs_limit=$((raise_jobs + 10))\"" <<<"$ran" && ! grep -q 'in a pull request of its own' <<<"$ran" ||
     wrong "CI-39: a raise alone with no payback line didn't say where the line goes, or was told to come alone"
 git reset --quiet --hard HEAD~1
-raise jobs_rs_limit "$((raise_jobs + 10))"
-raise_fails 'CI-39: a raise of jobs_rs_limit with no payback line' "jobs_rs_limit's payback line"
-git reset --quiet --hard HEAD~1
-raise obid_lines_limit "$((raise_limit + 100))" '# payback: #2131'
+raise jobs_rs_limit "$((raise_jobs + 10))" '# payback: #2131'
 raise_passes 'CI-39: a raise alone with "# payback: #2131" directly above it'
-[[ $(grep -A1 '^oby-check: the Rust core has' <<<"$ran" | sed -n 2p) == "oby-check: obid_lines_limit's payback: #2131" ]] ||
-    wrong "CI-41: a payback line above obid_lines_limit wasn't printed after its message"
+[[ $(grep -A1 '^oby-check: jobs.rs has' <<<"$ran" | sed -n 2p) == "oby-check: jobs_rs_limit's payback: #2131" ]] ||
+    wrong "CI-41: a payback line above jobs_rs_limit wasn't printed after its message"
 git reset --quiet --hard HEAD~1
-raise obid_lines_limit "$((raise_limit + 100))" '# payback: R05-02 until oby_shell goes'
+raise jobs_rs_limit "$((raise_jobs + 10))" '# payback: R05-02 until oby_shell goes'
 raise_passes 'CI-39: a raise alone with a task key as its payback'
 git reset --quiet --hard HEAD~1
-raise obid_lines_limit "$((raise_limit + 100))" '# payback: R05-02' '# the limit'
-raise_fails 'CI-39: a raise whose payback line is one line higher' "obid_lines_limit's payback line"
+raise jobs_rs_limit "$((raise_jobs + 10))" '# payback: R05-02' '# the limit'
+raise_fails 'CI-39: a raise whose payback line is one line higher' "jobs_rs_limit's payback line"
 git reset --quiet --hard HEAD~1
-raise obid_lines_limit "$((raise_limit + 100))" '# payback: soon'
-raise_fails 'CI-39: a raise whose payback line names no issue or task' "obid_lines_limit's payback line"
+raise jobs_rs_limit "$((raise_jobs + 10))" '# payback: soon'
+raise_fails 'CI-39: a raise whose payback line names no issue or task' "jobs_rs_limit's payback line"
 git reset --quiet --hard HEAD~1
-raise obid_lines_limit "$((raise_limit - 100))"
+raise jobs_rs_limit "$((raise_jobs - 10))"
 raise_passes 'CI-39: a cut with no payback line'
 git reset --quiet --hard HEAD~1
 echo '# another rule' >>scripts/oby-check.sh
@@ -405,9 +366,9 @@ raise_passes 'CI-39: an unchanged limit, with another file'
 git reset --quiet --hard HEAD~1
 code README.md 1
 git add README.md
-raise obid_lines_limit "$((raise_limit + 100))" '# payback: #2131'
-expect 'raises obid_lines_limit .* and changes README.md too' 'CI-40: a raise with another file names it'
-raise_fails 'CI-40: a raise with another file' "obid_lines_limit's raise in a pull request of its own"
+raise jobs_rs_limit "$((raise_jobs + 10))" '# payback: #2131'
+expect 'raises jobs_rs_limit .* and changes README.md too' 'CI-40: a raise with another file names it'
+raise_fails 'CI-40: a raise with another file' "jobs_rs_limit's raise in a pull request of its own"
 ! grep -q 'failed: .*payback line' <<<"$ran" || wrong 'CI-40: a raise with its payback line was told to add one'
 git reset --quiet --hard HEAD~1
 for n in 1 2 3 4 5 6; do code "docs/n$n.md" 1; done
@@ -416,7 +377,7 @@ raise jobs_rs_limit "$((raise_jobs + 10))" '# payback: R05-02'
 expect 'changes docs/n1.md, docs/n2.md, docs/n3.md, docs/n4.md, docs/n5.md and 1 more too' 'CI-40: a raise with six other files names five and counts the rest'
 git reset --quiet --hard HEAD~1
 # Uncommitted: the base's copy installed over the commit's, a tracked file changed, an untracked one.
-raise obid_lines_limit "$((raise_limit + 100))" '# payback: #2131'
+raise jobs_rs_limit "$((raise_jobs + 10))" '# payback: #2131'
 git show HEAD~1:scripts/oby-check.sh >scripts/oby-check.sh
 echo '# changed' >>scripts/oby-check-test.sh
 code README.md 1
@@ -427,8 +388,8 @@ rm README.md
 code README.md 1
 git add README.md
 payback tests_sleep_limit "# payback: R05-02 a sleep's cut"
-raise obid_lines_limit "$((raise_limit + 100))"
-raise_fails 'CI-41: the rust group, by contrast, on a raise with no payback line and another file' "obid_lines_limit's raise in a pull request of its own"
+raise jobs_rs_limit "$((raise_jobs + 10))"
+raise_fails 'CI-41: the rust group, by contrast, on a raise with no payback line and another file' "jobs_rs_limit's raise in a pull request of its own"
 ran=$(env -u OBY_CHECK_PLAN -u OBY_CHECK_PATHS OBY_CHECK_ONLY=limits scripts/oby-check.sh "$since" 2>&1) ||
     wrong 'CI-41: under OBY_CHECK_ONLY=limits, a raise with no payback line and another file failed'
 grep -qx 'oby-check: passed' <<<"$ran" && ! grep -q "payback line\|in a pull request of its own" <<<"$ran" ||
@@ -519,8 +480,8 @@ code core/crates/obid/src/foo.rs 1
 code core/crates/obid/tests/sandbox.rs 1
 code core/crates/obid/tests/plugins_api.rs 1
 code core/crates/obid/tests/foo.rs 1
-# At its line limit, so only the box's tests can leave it unjudged (far under fails the check too).
-code "$main" "$((limit - 500))"
+# obid's own code changed too, whose lines are only reported.
+code "$main" 1
 # Not nested, they run.
 if /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null; then
     expect ' --test sandbox' 'not nested, tests/sandbox.rs runs'
@@ -576,7 +537,7 @@ said=$(nested)
 # tests/jobs_setup.rs makes a sandbox of its own too, but only the setup's and the box's code plan
 # it: nested, a change to jobs.rs alone is judged, and one to jobs/setup.rs couldn't be.
 code core/crates/obid/tests/jobs_setup.rs 1
-code "$main" "$((limit - 500))"
+code "$main" 1
 said=$(OBY_CHECK_PATHS=core/crates/obid/src/jobs.rs nested)
 ! grep -qE -- "jobs_setup|^couldn't judge:" <<<"$said" || {
     echo "oby-check-test: nested, a change to jobs.rs alone planned tests/jobs_setup.rs:" >&2
@@ -792,7 +753,7 @@ rm -r core/crates/obid
 # of the lib's, and has one task file. Within its limits, so only what a case does can fail its run.
 printf '%s\n' "$committed_script" >scripts/oby-check.sh
 agents_md_at_limit
-code "$main" "$(($(sed -n 's/^obid_lines_limit=//p' scripts/oby-check.sh) - 500))"
+code "$main" 1
 sleeps "$sleepy" "$(sed -n 's/^tests_sleep_limit=//p' scripts/oby-check.sh)"
 listed=core/.config/nextest.toml
 entry() { # key, binary id, the filter's test(…)
@@ -1210,15 +1171,13 @@ git rm --quiet core/crates/obid/tests/[a-g].rs
 for name in a b c d e f g; do rm "$fake/$name-0123abcd"; done
 commit 'no shards'
 
-# CI-35: OBY_CHECK_ONLY=limits, GitHub's `limits` job, judges the line limits alone on the commit,
-# whatever changed since its base: committed here, measured against HEAD, the diff is empty. On the
-# commit's own copy of the script (the base's copy a job's check installs may predate the mode).
+# CI-35: OBY_CHECK_ONLY=limits, GitHub's `limits` job, judges the limits alone on the commit, whatever
+# changed since its base: committed here, measured against HEAD, the diff is empty. On the commit's own
+# copy of the script (the base's copy a job's check installs may predate the mode).
 printf '%s\n' "$committed_script" >scripts/oby-check.sh
 agents_md_at_limit
-limit=$(sed -n 's/^obid_lines_limit=//p' scripts/oby-check.sh)
 jobs_limit=$(sed -n 's/^jobs_rs_limit=//p' scripts/oby-check.sh)
 sleep_limit=$(sed -n 's/^tests_sleep_limit=//p' scripts/oby-check.sh)
-jobs=core/crates/obid/src/jobs.rs
 limits_commit() { # message: what the cases wrote, committed
     git add scripts core AGENTS.md >/dev/null && git -c user.name=check -c user.email=check@example.invalid -c commit.gpgsign=false commit --quiet --allow-empty -m "$1"
 }
@@ -1235,34 +1194,30 @@ limits_fails() { # what it's about, the failure it names, then limits' arguments
     grep -qF "oby-check: failed: $named" <<<"$ran" || wrong "$at: $about didn't fail naming \"$named\""
     ! grep -q "^==> \|oby-check-blok can't judge this" <<<"$ran" || wrong "$at: $about ran a step or asked for oby-check-blok"
 }
-limits_passes() { # what it's about, then limits' arguments
-    local about=$1
+limits_passes() { # what it's about, then limits' arguments; its scenario, CI-35 unless set
+    local about=$1 at=${scenario:-CI-35}
     shift
-    ran=$(limits "$@") || wrong "CI-35: $about failed"
-    grep -qx 'oby-check: passed' <<<"$ran" && ! grep -q '^==> ' <<<"$ran" || wrong "CI-35: $about didn't pass on the limits alone"
+    ran=$(limits "$@") || wrong "$at: $about failed"
+    grep -qx 'oby-check: passed' <<<"$ran" && ! grep -q '^==> ' <<<"$ran" || wrong "$at: $about didn't pass on the limits alone"
 }
-code "$main" "$((limit + 1))"
+# The Rust core past the line limit it once had (102,450) passes, its lines reported (CI-49).
+code "$main" 102451
 sleeps "$sleepy" "$sleep_limit"
-limits_commit 'one line past'
+limits_commit 'past the old line limit'
 [[ -z "$(git status --porcelain -- core scripts AGENTS.md)" ]] || wrong 'CI-35: the commit left something uncommitted'
-limits_fails 'one line past the line limit, nothing changed since the base' "the Rust core's line limit" HEAD
-grep -q "has $((limit + 1)) production lines outside the Sphere, past its limit of $limit" <<<"$ran" ||
-    wrong "CI-35: one line past the line limit didn't say its count and limit"
+past_report='oby-check: the Rust core has 102451 production lines outside the Sphere, +0 since its base'
+limits_passes 'the Rust core past its old line limit, nothing changed since the base' HEAD
+grep -qxF "$past_report" <<<"$ran" || wrong "CI-35: the Rust core past its old line limit wasn't reported"
 # The rust group, by contrast, judges nothing here: nothing changed since the base.
 ran=$(env -u OBY_CHECK_PLAN OBY_CHECK_ONLY=rust scripts/oby-check.sh HEAD 2>&1) && ! grep -q 'Rust core has' <<<"$ran" ||
     wrong 'CI-35: the rust group judged the limits with nothing changed: the case proves nothing'
 # Under oby-check-blok (OBY_CHECK_INNER) or not, the same: the mode never needs the tool.
-limits_fails 'one line past the line limit, under oby-check-blok' "the Rust core's line limit" HEAD OBY_CHECK_INNER=1
-code "$main" "$limit"
-limits_commit 'at the limit'
-limits_passes 'at the line limit' HEAD
-limits_passes 'at the line limit, under oby-check-blok' HEAD OBY_CHECK_INNER=1
-code "$main" "$((limit - jobs_limit - 1))"
+limits_passes 'the Rust core past its old line limit, under oby-check-blok' HEAD OBY_CHECK_INNER=1
+grep -qxF "$past_report" <<<"$ran" || wrong "CI-35: the Rust core past its old line limit, under oby-check-blok, wasn't reported"
 code "$jobs" "$((jobs_limit + 1))"
 limits_commit 'jobs.rs past'
 limits_fails "one line past jobs.rs's limit" "jobs.rs's line limit" HEAD
 rm "$jobs"
-code "$main" "$limit"
 sleeps "$sleepy" "$((sleep_limit + 1))"
 limits_commit 'one sleep past'
 limits_fails "one sleep past the tests' limit" "obid's tests' sleep limit" HEAD
@@ -1274,19 +1229,69 @@ scenario=CI-38 limits_fails 'AGENTS.md one byte past its limit, nothing changed 
 agents_md "${agents_limit:-1}"
 limits_commit 'back within'
 limits_passes 'back within every limit' HEAD
-# A commit that lowered the line limit since an earlier base, run by that base's copy with its higher
+# A commit that lowered jobs_rs_limit since an earlier base, run by that base's copy with its higher
 # limit: from that base, the commit is held to its own lower limit; from itself, it isn't.
-set_limit obid_lines_limit "$((limit - 100))"
-code "$main" "$((limit - 50))"
+set_limit jobs_rs_limit "$((jobs_limit - 100))"
+code "$jobs" "$((jobs_limit - 50))"
 limits_commit 'a cut that lowers the limit'
 git show HEAD~1:scripts/oby-check.sh >scripts/oby-check.sh
-limits_fails "a commit's lower limit, from an earlier base" "the Rust core's line limit" HEAD~1
-grep -q "past its limit of $((limit - 100))" <<<"$ran" || wrong "CI-35: from an earlier base, the commit's lower limit didn't hold"
+limits_fails "a commit's lower limit, from an earlier base" "jobs.rs's line limit" HEAD~1
+grep -q "jobs.rs has $((jobs_limit - 50)) production lines, past its limit of $((jobs_limit - 100))" <<<"$ran" ||
+    wrong "CI-35: from an earlier base, the commit's lower limit didn't hold"
 limits_passes "the running copy's limit, from the commit itself" HEAD
 git checkout --quiet -- scripts/oby-check.sh
 # An unknown value is still refused.
 said=$(env -u OBY_CHECK_PLAN OBY_CHECK_ONLY=nolimits scripts/oby-check.sh HEAD 2>&1) && status=0 || status=$?
 [[ $status == 2 ]] && grep -qx 'oby-check: invalid OBY_CHECK_ONLY' <<<"$said" ||
     { ran=$said; wrong "CI-35: an unknown OBY_CHECK_ONLY exited $status"; }
+
+# CI-49: the limits report the Rust core's production lines and the change's difference from its
+# base, and never fail on them, on the commit's own copy of the script, committed here as the base as
+# CI-35's are: a commit from 102,000 lines past the line limit it once had, then one that cuts 2,000.
+printf '%s\n' "$committed_script" >scripts/oby-check.sh
+agents_md_at_limit
+rm "$jobs"
+code "$main" 102000
+limits_commit 'the Rust core at 102,000 lines'
+code "$main" 102451
+limits_commit 'past the old line limit'
+scenario=CI-49 limits_passes 'a commit taking the Rust core from 102,000 to 102,451 lines, from its parent' HEAD~1
+grep -qxF 'oby-check: the Rust core has 102451 production lines outside the Sphere, +451 since its base' <<<"$ran" ||
+    wrong "CI-49: a commit taking the Rust core past 102,450 lines didn't report its count and difference"
+git reset --quiet --hard HEAD~1
+code "$main" 100000
+limits_commit 'a 2,000-line cut'
+scenario=CI-49 limits_passes 'a commit cutting the Rust core from 102,000 to 100,000 lines, from its parent' HEAD~1
+grep -qF -- '-2000 since its base' <<<"$ran" && ! grep -q lower <<<"$ran" ||
+    wrong "CI-49: a 2,000-line cut didn't report its difference, or was told to lower something"
+scenario=CI-49 limits_passes 'the same commit, from itself' HEAD
+grep -qxF 'oby-check: the Rust core has 100000 production lines outside the Sphere, +0 since its base' <<<"$ran" ||
+    wrong "CI-49: from the commit itself, the difference wasn't +0"
+# The rust group's plan reports a change to obid's code the same way, never as past a limit.
+code "$main" 102451
+expect 'oby-check: the Rust core has 102451 production lines outside the Sphere, +2451 since its base' \
+    "CI-49: the rust group's plan didn't report the Rust core's lines"
+expect no 'the Rust core has .* past its limit' "CI-49: the rust group's plan held the Rust core to a limit"
+git checkout --quiet -- "$main"
+
+# CI-50: a base whose core/crates git can't read, none in its tree or an object that's gone (as in a
+# partial clone): the count, its difference unknown, never git's error and never a failure.
+unknown="oby-check: the Rust core has 100000 production lines outside the Sphere, the difference from its base unknown (its core/crates can't be read)"
+git rm -r --quiet core/crates
+limits_commit 'no core/crates'
+git checkout --quiet HEAD~1 -- core/crates
+limits_commit 'core/crates back'
+scenario=CI-50 limits_passes 'a base with no core/crates' HEAD~1
+grep -qxF "$unknown" <<<"$ran" && ! grep -q 'fatal:' <<<"$ran" ||
+    wrong "CI-50: a base with no core/crates didn't say its difference is unknown, or said git's error"
+echo '// only the base holds this' >core/crates/obid/src/gone.rs
+limits_commit 'a file only the base holds'
+rm core/crates/obid/src/gone.rs
+limits_commit 'without it'
+gone=$(git rev-parse HEAD~1:core/crates/obid/src/gone.rs)
+rm ".git/objects/${gone:0:2}/${gone:2}"
+scenario=CI-50 limits_passes "a base whose core/crates holds an object git can't read" HEAD~1
+grep -qxF "$unknown" <<<"$ran" && ! grep -q 'fatal:' <<<"$ran" ||
+    wrong "CI-50: a base with an object git can't read didn't say its difference is unknown, or said git's error"
 
 echo 'oby-check-test: passed'
