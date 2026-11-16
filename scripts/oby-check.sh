@@ -179,7 +179,7 @@ cache="${OBY_CHECK_CACHE:-$HOME/Library/Caches/oby-check}"
 # payback: R08-08 deletes the retired limit code (~1,100 lines), which brings the count back under 100,500 (owner, 2026-11-15; raised for A00-70, projects, and A00-77, helpers)
 obid_lines_limit=101800
 # jobs.rs alone may only shrink: past this it fails (the owner's decision of 2026-11-06, "1.3 Both").
-jobs_rs_limit=14967
+jobs_rs_limit=6305
 # obid's tests may only lose sleeps: a test waits for state with support::within (docs/contracts/ci.md, CI-12, CI-13).
 tests_sleep_limit=203
 # AGENTS.md may only shrink: a cut lowers this, and raising it is the owner's word (docs/contracts/ci.md, CI-36 to 38).
