@@ -60,8 +60,10 @@ export default function AgentSheet({ profile, taken, onClose, onMade }: {
   return createPortal(
     <div className="modal-backdrop" onPointerDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <form className="modal is-small agent-sheet" role="dialog" aria-modal="true" aria-labelledby="agent-title" onSubmit={(e) => { e.preventDefault(); void create(); }}>
-        <h2 id="agent-title" className="agent-sheet-title">New agent</h2>
-        <p className="agent-sheet-lede">An agent is an Oby of its own: one conversation with you, one kind of work. It stays in this profile.</p>
+        <header className="modal-head">
+          <h2 id="agent-title">New agent</h2>
+        </header>
+        <p className="modal-lede">An agent is an Oby of its own: one conversation with you, one kind of work. It stays in this profile.</p>
         <span className="modal-label" id="agent-oby">Its Oby</span>
         <div className="agent-swatches" role="radiogroup" aria-labelledby="agent-oby">
           {AGENT_COLORS.map((c) => (

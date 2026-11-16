@@ -2267,7 +2267,7 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 /* Agents beside Projects (docs/contracts/helpers.md, screens 08 to 10): the switch under the profile's
    name, each agent's row with its coloured Oby, its face in the bar, and the New agent sheet */
 .panel-side { flex: none; display: flex; margin: 0 0 12px; padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--chip); }
-.panel-side button { flex: 1; height: 26px; border-radius: 6px; color: var(--muted); font-size: var(--text-md); transition: background-color var(--fade), color var(--fade); }
+.panel-side button { flex: 1; height: 26px; border-radius: 6px; color: var(--text); font-size: var(--text-md); transition: background-color var(--fade), color var(--fade); }
 .panel-side button:hover { color: var(--ink); }
 .panel-side button.is-on { background: rgba(255, 255, 255, 0.12); color: var(--ink); }
 .connector.agent-row { position: relative; height: 52px; cursor: pointer; }
@@ -2278,10 +2278,8 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .sidebar-convo-count { margin-left: auto; font-variant-numeric: tabular-nums; }
 .crumbs > svg { flex: none; margin-right: 8px; }
 .bar-schedule { flex: none; margin-left: 14px; color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
-.agent-sheet-title { margin: 0 0 8px; color: var(--ink); font-size: 17px; font-weight: 600; }
-.agent-sheet-lede { margin: 0 0 20px; color: var(--muted); font-size: var(--text-md); }
 .agent-sheet .modal-label { margin-top: 16px; }
-.agent-sheet .agent-sheet-lede + .modal-label { margin-top: 0; }
+.agent-sheet .modal-lede + .modal-label { margin-top: 0; }
 .agent-swatches { display: flex; flex-wrap: wrap; gap: 8px; }
 .agent-swatch { width: 40px; height: 40px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 10px; background: var(--chip); transition: border-color var(--fade), background-color var(--fade); }
 .agent-swatch:hover { border-color: var(--line-strong); }
