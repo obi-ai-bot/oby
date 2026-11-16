@@ -66,8 +66,9 @@ const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 type Spring = { v: number; vel: number; to: number; k: number; c: number };
 
 // talk: Oby's words coming in (their length; each change is a word); undefined once they stop.
-// While its balloon's up the face talks; at work (working) it's the dots again once that's down
-export default function ObyFaceLive({ live: working, talk: words, size = 22 }: { live: boolean; talk?: number; size?: number }) {
+// While its balloon's up the face talks; at work (working) it's the dots again once that's down.
+// color: an agent's (AGENT_COLORS), its body and dots
+export default function ObyFaceLive({ live: working, talk: words, size = 22, color = '#f1f1ee' }: { live: boolean; talk?: number; size?: number; color?: string }) {
   // no balloon: Oby doesn't talk, its face just comes back from its dots
   const talk = dev.balloon === 'off' ? undefined : words;
   // the balloon: off; in (there, closed, about to grow); open; out (deflating)
@@ -219,9 +220,9 @@ export default function ObyFaceLive({ live: working, talk: words, size = 22 }: {
   const glyphOf = (i: number) => GX[(glyph % 2 === i ? glyph : glyph - 1) % GX.length] ?? '';
   const face = still ? (live ? (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
-      {[-1, 0, 1].map((i) => <circle key={i} cx={CX + i * GAP} cy={CY} r={DOT_R} fill="#f1f1ee" />)}
+      {[-1, 0, 1].map((i) => <circle key={i} cx={CX + i * GAP} cy={CY} r={DOT_R} fill={color} />)}
     </svg>
-  ) : <ObyFace size={size} />) : !active ? <ObyFace size={size} /> : (
+  ) : <ObyFace size={size} color={color} />) : !active ? <ObyFace size={size} color={color} /> : (
     <svg ref={svg} width={size} height={size} viewBox="0 0 24 24" overflow="visible" aria-hidden="true">
       <defs>
         {/* blur, then a hard alpha edge: shapes near each other run together like liquid */}
@@ -230,7 +231,7 @@ export default function ObyFaceLive({ live: working, talk: words, size = 22 }: {
           <feColorMatrix values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -7" />
         </filter>
       </defs>
-      <g data-goo="" fill="#f1f1ee">
+      <g data-goo="" fill={color}>
         <g data-body="">
           <path data-outline="" d={OBY_PATH} transform={OBY_PLACE} />
           <rect data-shape="" x="1.5" y="6" width="21" height="16.5" rx="5" opacity="0" />

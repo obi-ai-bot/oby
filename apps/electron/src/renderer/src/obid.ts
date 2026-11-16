@@ -11,6 +11,7 @@ import type {
   Conversation,
   GitHub,
   GitHubWork,
+  Helper,
   InboxItem,
   Job,
   LimitDecision,
@@ -162,6 +163,9 @@ export const api = {
   // obid only: the profiles on this Mac (docs/api/profiles.md), and a new one; older runners answer 404
   profiles: () => call<Profile[]>('GET', '/v1/profiles'),
   createProfile: (name: string, color: string) => call<Profile>('POST', '/v1/profiles', { name, color }),
+  // obid only: the helpers (docs/api/helpers.md), and a new one; older runners answer 404
+  helpers: () => call<Helper[]>('GET', '/v1/helpers'),
+  createHelper: (body: { name: string; color: string; instructions: string; tool: string; connectors: string[]; profile?: string }) => call<Helper>('POST', '/v1/helpers', body),
   // Settings › Permissions: the mode new jobs get, and the rules Always allow saved
   permissions: () => call<{ mode: string }>('GET', '/v1/settings/permissions'),
   setPermissions: (mode: string) => call<{ mode: string }>('PUT', '/v1/settings/permissions', { mode }),

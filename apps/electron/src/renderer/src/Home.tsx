@@ -28,8 +28,9 @@ import { realId, shownId, useLive } from './live';
 import { WELCOME, setUp, startOnboarding } from './onboarding';
 import { askOby, chatOfTask, latestChat, renameChat, restingChat, tellAbout, useChats } from './chats';
 import { useConvos, useThreads, whoseOby } from './peers';
-import { AvatarStack } from './ObyFace';
-import { convoTitle } from './mock';
+import { AvatarStack, ObyFace } from './ObyFace';
+import { MOCK_SCHEDULE, convoTitle } from './mock';
+import { useHelpers } from './helpers';
 import { hasAttachments, type Attachments } from './view';
 import { box as draftBox } from './drafts';
 import { TYPES, renameTask, tell, countOf, runningCount, firstTab, hasFresh, toDoOf, useTasks, asksWaiting, type Tab } from './tasks';
@@ -150,6 +151,9 @@ export default function Home() {
   // the same for a conversation with Oby
   const shown = top?.kind === 'task' ? tasks.find((t) => t.id === top.id) : undefined;
   const shownTalk = top?.kind === 'talk' ? chats.find((c) => c.id === top.id) : undefined;
+  // an agent's conversation: its face and name in the bar, and no menu (it goes with its agent)
+  const helpers = useHelpers();
+  const shownAgent = shownTalk?.helper ? helpers.find((h) => h.id === shownTalk.helper) : undefined;
   const [barMenu, setBarMenu] = useState<DOMRect | null>(null);
   const [renaming, setRenaming] = useState(false);
   useEffect(() => { setBarMenu(null); setRenaming(false); }, [top?.key]);
@@ -426,7 +430,12 @@ export default function Home() {
                         }}
                         aria-label={shown ? 'Task name' : 'Conversation name'}
                       />
-                    ) : <>
+                    ) : shownAgent && l.kind === 'talk' ? <>
+                      <ObyFace size={20} color={shownAgent.color} />
+                      <Crumb>{shownAgent.name}</Crumb>
+                      {/* when it runs by itself: the mock's only */}
+                      {!onObid && MOCK_SCHEDULE[shownAgent.id] && <span className="bar-schedule">{MOCK_SCHEDULE[shownAgent.id]}</span>}
+                    </> : <>
                       <Crumb>{label(l)}</Crumb>
                       {/* a task's or a conversation's menu, as on its side panel row */}
                       {(shown || shownTalk) && !leavingAll && (

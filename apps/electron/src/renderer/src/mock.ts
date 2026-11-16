@@ -1,6 +1,6 @@
 import { BRANDS, type Brand } from './brands';
 import { everything, onObid } from './lean';
-import type { Profile, RoomPost } from '../../shared/obid-wire';
+import type { Helper, Profile, RoomPost } from '../../shared/obid-wire';
 import { agentOf, type Archived, type GitHubItem, type Job, type Message, type Peer, type PeerConvo, type Place, type Share, type Stage, type StageId, type StageState, type Turn } from './view';
 
 // Mock data until the app talks to Oby's engine. The shapes follow the Mac
@@ -587,6 +587,19 @@ export const MOCK_PROFILES: Profile[] = [
   { id: 'deskree', name: 'Deskree', color: '#2f7a6a', default: false, waiting: true },
   { id: 'acme', name: 'Acme', color: '#8c5a3a', default: false, waiting: false },
 ];
+// The agents on the mock (screen 08), in the default profile, oldest first: each a helper of obid's
+// shape with its own conversation (chats.ts, the mock's helper chats)
+const helper = (id: string, name: string, color: string, instructions: string, connectors: string[], created: string): Helper => ({
+  id, profile: 'default', name, color, instructions, tool: 'claude', connectors, conversation: `c-${id}`, created,
+});
+export const MOCK_HELPERS: Helper[] = [
+  helper('inbox', 'Inbox helper', '#8ee0b8', 'Read my inbox each morning, say which emails need me, and draft the replies for me to send.', ['web'], '2026-10-02T09:00:00Z'),
+  helper('researcher', 'Researcher', '#c2b5fd', 'Look things up on the web and put the numbers side by side.', ['web'], '2026-10-09T10:00:00Z'),
+  helper('release-notes', 'Release notes', '#ffb3c6', 'Draft the release notes from what merged since the last release.', ['github'], '2026-10-16T11:00:00Z'),
+  helper('support', 'Support replies', '#9fd3f0', 'Draft replies to the support questions that came in.', ['github', 'web'], '2026-10-23T12:00:00Z'),
+];
+// the mock's own, not obid's: when an agent runs by itself, beside its name in the bar (screen 09)
+export const MOCK_SCHEDULE: Record<string, string> = { inbox: 'Every weekday at 9:00 AM' };
 
 export const PEER_CONVOS: PeerConvo[] = [
   {
