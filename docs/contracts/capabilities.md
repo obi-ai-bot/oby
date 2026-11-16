@@ -35,9 +35,10 @@ The business behavior contract for `capabilities` on `GET /v1/status`, from [the
 
 ## Interfaces and dependencies
 
-- `GET /v1/status`: `"capabilities": ["events-replay-v1", "folders-v1", "profile-projects-v1", "projects-v1", "revisions-v1"]`, add-only (docs/runner-api.md, `GET /v1/status`, with its Capabilities table: Name, What it means, Since).
+- `GET /v1/status`: `"capabilities": ["events-replay-v1", "folders-v1", "profile-projects-v1", "project-jobs-v1", "projects-v1", "revisions-v1"]`, add-only (docs/runner-api.md, `GET /v1/status`, with its Capabilities table: Name, What it means, Since).
 - `folders-v1`: obid takes working folders (`folders` on `POST /v1/plans`, on conversations and on `PATCH /v1/conversations/{id}`), the behaviour `folders: true` announces, since #1572.
 - `profile-projects-v1`: obid reads the `Oby-Profile` header on the project routes and on `project` in `PATCH /v1/conversations/{id}` and `POST /v1/plans`, and keeps projects per profile ([profiles.md](profiles.md)), since A00-79: an app sends the header only to an obid that lists it.
+- `project-jobs-v1`: obid keeps a job's `project` and answers `GET /v1/jobs?project=<id>` ([projects.md](projects.md)), since A00-73: an older obid ignores `project=` and answers every job, so an app trusts the filter only from an obid that lists it.
 - `projects-v1`: obid keeps projects and a conversation's `project` ([projects.md](projects.md)), since A00-70: an app sends `project` only to an obid that lists it.
 - Older clients ignore the key: the iPhone's `RunnerStatus` (Swift's `Decodable`) and the Electron app's `Status` ignore unknown keys.
 

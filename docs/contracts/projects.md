@@ -1,15 +1,17 @@
 # Projects: a named set of folders a conversation belongs to
 
-The business behavior contract for projects, from [the template](../business-contract-template.md). Task A00-70. Scenarios are numbered `PROJECTS-n`; the tests that prove them are named after them (`projects_<n>_…` in `core/crates/obid/tests/projects_api.rs`, `core/crates/obid/tests/gateway_api.rs` and `core/crates/obid/src/projects.rs`). Its API is [docs/api/projects.md](../api/projects.md).
+The business behavior contract for projects, from [the template](../business-contract-template.md). Tasks A00-70 and A00-73. Scenarios are numbered `PROJECTS-n`; the tests that prove them are named after them (`projects_<n>_…` in `core/crates/obid/tests/projects_api.rs`, `core/crates/obid/tests/gateway_api.rs`, `core/crates/obid/src/projects.rs` and `core/crates/obid/src/job.rs`). Its API is [docs/api/projects.md](../api/projects.md).
 
 ## Feature and status
 
 - **Outcome:** The owner names a set of folders and GitHub repositories once (a project, such as a product made of several repositories) and puts conversations in it. A conversation in a project works in the project's folders, so each one says which product it is for, and a change to the project's folders reaches every conversation in it.
-- **Status:** **Implemented** in obid (A00-70): `home/projects.json`, `GET`/`POST /v1/projects`, `PATCH`/`DELETE /v1/projects/{id}`, a conversation's `project`, `project` on `PATCH /v1/conversations/{id}` and `POST /v1/plans`, the start's reconcile, and `projects-v1` in `capabilities`. No app shows or sends any of it yet.
+- **Status:** **Implemented** in obid (A00-70): `home/projects.json`, `GET`/`POST /v1/projects`, `PATCH`/`DELETE /v1/projects/{id}`, a conversation's `project`, `project` on `PATCH /v1/conversations/{id}` and `POST /v1/plans`, the start's reconcile, and `projects-v1` in `capabilities`. A00-73 added a job's `project`, `GET /v1/jobs?project=<id>` and `project-jobs-v1` in `capabilities`. No app shows or sends any of it yet.
 - **Scope:** a project's store and routes, a conversation's membership, and what happens to a conversation when its project changes or goes.
 - **Out of scope:**
   - Anything on screen: the sidebar, the tags and the project picker are A00-71's, from Sangam's screens. The words a person sees come from them; obid's refusal texts here are placeholders.
-  - A job's project, and `GET /v1/jobs?project=`: A00-73.
+  - Anything on screen of a project's jobs: the factory beside the conversation and in full (Sangam's screens 05 and 06).
+  - The factory's stages or settings: the stages are a job's `pipeline`, as it is.
+  - A project deciding where a job runs, and moving a job between projects: a job's `project` is set by obid alone, as it starts.
   - Moving or copying projects between profiles. Projects are kept per profile ([profiles.md](profiles.md), A00-79): each profile's in `projects.json` under its root, the default profile's still `home/projects.json`, and a request names its profile with `Oby-Profile`. Conversations are still one per Mac, so a conversation of any profile may be in another profile's project, and the start's reconcile reads every profile's projects.
   - `repos` deciding where a job runs, any call to GitHub, or a check that a repository exists: `repos` are kept and answered only.
   - Folders reaching jobs or the brain's briefing, still proposed in [folders.md](folders.md).
@@ -41,6 +43,8 @@ The business behavior contract for projects, from [the template](../business-con
 - **Its project is deleted.** It leaves the project, and the folders it was working in (the project's) become its own list: the folders it answers don't change.
 - The rule for whose folders it answers after each of these is one function, `next` in `core/crates/obid/src/projects.rs`, proven by Kani (PROJECTS-5, PROJECTS-8).
 - Every conversation that changes is written, its revision raised, and sent as a `conversation` event (EVENTS-7).
+- **A job's project.** A job's `project` is set once, as it starts (`Job::start_in`), from the project its conversation is in then, read from that conversation's file; null when the conversation is in none, or there is none. It never changes after: not when the job joins a conversation later, nor when its conversation leaves or changes project, nor when the project is deleted, nor on a restart (PROJECTS-13).
+- **A project's jobs.** `GET /v1/jobs?project=<id>` answers the jobs whose `project` is that id, never a job in no project (`in_project` in `core/crates/obid/src/projects.rs`, proven by Kani), queued and running first, then newest (PROJECTS-14).
 
 ### Failures and recovery
 
@@ -65,6 +69,7 @@ The business behavior contract for projects, from [the template](../business-con
 - One lock holds a project's membership: every project route, and putting a conversation in a project, run under the projects' lock, taken before the conversations' and never while holding it.
 - Only the owner's Mac app creates, changes or deletes a project, or puts a conversation in one: the routes aren't on the gateway's list, and through the gateway or the relay `project` may only be null.
 - The API stays add-only: new routes, a new key on the conversation, a new capability; no closed enum gains a value.
+- A job's `project` is set once as it starts, from its conversation's project then, and never changes.
 
 ## Interfaces and dependencies
 
@@ -72,6 +77,9 @@ The business behavior contract for projects, from [the template](../business-con
 - A conversation's `project` (an id or null, always sent) in `GET /v1/conversations`, search and the `conversation` event; `folders` is the project's while `project` is set ([docs/api/conversations.md](../api/conversations.md)).
 - `project` on `PATCH /v1/conversations/{id}` and on `POST /v1/plans`.
 - `projects-v1` in `capabilities` ([capabilities.md](capabilities.md)): an app sends `project` only to an obid that lists it, since `POST /v1/plans` and `PATCH` refuse unknown keys.
+- A job's `project` (an id or null, always sent) in `GET /v1/jobs`, `GET /v1/jobs/{id}`, a plan's `jobs` and the `job` event ([docs/api/jobs.md](../api/jobs.md)), kept in `home/jobs/<id>.json`.
+- `GET /v1/jobs?project=<id>`: that project's jobs, queued and running first ([docs/api/jobs.md](../api/jobs.md)).
+- `project-jobs-v1` in `capabilities` ([capabilities.md](capabilities.md)): an older obid ignores `project=` and answers every job, so an app trusts the filter only from an obid that lists it.
 - `home/projects.json` (0600), `{"projects": [...]}`, and `project` and `projectFolders` in `home/conversations/<id>.json`.
 - The design is checked by the Quint model `docs/models/projects.qnt` (delete, crash and restart).
 
@@ -89,3 +97,6 @@ The business behavior contract for projects, from [the template](../business-con
 - **PROJECTS-10, Mac only (implemented).** Through the gateway with a paired device's token, and through the relay: the four project routes are `404` "That route isn't available through the gateway."; a conversation `PATCH {"project": <id>}` is `422`; `PATCH {"project": null}` is `200`; `POST /v1/plans` with `project: <id>` is `422`. Tests: `projects_10_a_paired_phone_only_takes_a_conversation_out`, `projects_10_a_phone_on_the_relay_only_takes_a_conversation_out` in `core/crates/obid/tests/gateway_api.rs`.
 - **PROJECTS-11, capability (implemented).** `GET /v1/status` `capabilities` holds `projects-v1` and is still sorted; CAPS-1 still passes. Test: `projects_11_status_lists_projects_v1`.
 - **PROJECTS-12, an unreadable file (implemented).** With `home/projects.json` holding `not json` and a conversation naming a project: after start that conversation is unchanged on disk, every project route is `500`, and `projects.json` still holds `not json`. Tests: `projects_12_an_unreadable_file_changes_nothing`, `projects_12_an_unreadable_file_is_left_as_it_is`.
+- **PROJECTS-13, a job's project (implemented).** Given a project P and a conversation started in it (`POST /v1/plans` with `"new": true, "project": P`) whose turn dispatches a job, that job answers `"project": P` in the plan's `jobs`, `GET /v1/jobs`, `GET /v1/jobs/{id}` and its `job` event. A job dispatched from a conversation in no project answers `"project": null`, and so does a job from `POST /v1/jobs` with no `conversation`. After that conversation is taken out of P, P is deleted and obid restarts on the same home, the first job still answers `"project": P`. Tests: `projects_13_a_job_keeps_the_project_it_started_in` in `core/crates/obid/tests/projects_api.rs`, `projects_13_a_job_takes_its_conversations_project_as_it_starts` and `projects_13_a_job_kept_before_projects_has_none` in `core/crates/obid/src/job.rs`.
+- **PROJECTS-14, a project's jobs (implemented).** Given jobs in P (one queued or running, older than two finished ones), one in Q and one in no project, `GET /v1/jobs?project=P` answers exactly P's three, the active one first, then newest first, and `?project=P&limit=1` answers only the active one; `?project=<an unknown id>` and `?project=` answer `200 []`; `GET /v1/jobs` without `project` answers every job, newest first, as before; `?project=P&limit=x` answers `422` `limit is a number.`. Tests: `projects_14_get_jobs_by_project` in `core/crates/obid/tests/projects_api.rs`, `projects_14_a_projects_jobs_come_running_first` and `projects_14_in_project_only_its_own` in `core/crates/obid/src/projects.rs`, and the Kani harness `projects_14_a_job_is_in_only_its_own_project`.
+- **PROJECTS-15, capability (implemented).** `GET /v1/status` `capabilities` holds `project-jobs-v1` and is still sorted; CAPS-1 and CAPS-2 still pass. Test: `projects_15_status_lists_project_jobs_v1`.

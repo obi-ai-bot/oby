@@ -51,6 +51,28 @@ pub fn answered<T>(own: T, project: T, whose: Whose) -> T {
     }
 }
 
+/// Whether a job whose project is `job` is one of `asked`'s jobs: never a job in no project.
+pub fn in_project<T: PartialEq + ?Sized>(job: Option<&T>, asked: &T) -> bool {
+    job.is_some_and(|project| project == asked)
+}
+
+/// The project `asked`'s jobs of `jobs` (PROJECTS-14): queued and running first, then newest, the
+/// first `limit` of them.
+pub fn listed(jobs: Vec<crate::job::Job>, asked: &str, limit: usize) -> Vec<crate::job::Job> {
+    let mut jobs: Vec<_> = jobs
+        .into_iter()
+        .filter(|job| in_project(job.project.as_deref(), asked))
+        .collect();
+    jobs.sort_by(|a, b| {
+        let active = b.status.is_active().cmp(&a.status.is_active());
+        active
+            .then_with(|| b.created.cmp(&a.created))
+            .then_with(|| b.id.cmp(&a.id))
+    });
+    jobs.truncate(limit);
+    jobs
+}
+
 /// One project as `projects.json` keeps it and the routes answer it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
@@ -388,13 +410,58 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&home);
     }
+
+    /// PROJECTS-14: a job is a project's only when it started in that very project.
+    #[test]
+    fn projects_14_in_project_only_its_own() {
+        assert!(in_project(Some("p"), "p"));
+        assert!(!in_project(Some("q"), "p"));
+        assert!(!in_project(None, "p"));
+        assert!(!in_project(None, ""));
+        assert!(!in_project(Some("p"), ""));
+    }
+
+    /// PROJECTS-14: a project's jobs are its own only, queued and running first, then newest, the
+    /// limit taken after.
+    #[test]
+    fn projects_14_a_projects_jobs_come_running_first() {
+        use crate::job::{Job, Status};
+        let job = |id: &str, project: Option<&str>, status: Status, created: i64| {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "fix".into(),
+                "t".into(),
+                "claude".into(),
+                "default".into(),
+            );
+            job.project = project.map(str::to_owned);
+            job.status = status;
+            job.created = created;
+            job
+        };
+        let jobs = vec![
+            job("a", Some("p"), Status::Running, 1),
+            job("b", Some("p"), Status::Done, 2),
+            job("c", Some("p"), Status::Failed, 3),
+            job("d", Some("q"), Status::Running, 4),
+            job("e", None, Status::Queued, 5),
+            job("f", Some("p"), Status::Queued, 1),
+        ];
+        let ids = |jobs: Vec<Job>| jobs.into_iter().map(|j| j.id).collect::<Vec<_>>();
+        assert_eq!(ids(listed(jobs.clone(), "p", 50)), ["f", "a", "c", "b"]);
+        assert_eq!(ids(listed(jobs.clone(), "p", 1)), ["f"]);
+        assert_eq!(ids(listed(jobs.clone(), "q", 50)), ["d"]);
+        assert!(listed(jobs.clone(), "unknown", 50).is_empty());
+        assert!(listed(jobs, "", 50).is_empty());
+    }
 }
 
 #[cfg(test)]
 mod proofs {
     #![cfg(kani)]
-    //! Kani's proofs of [`next`]: `kani::any()` stands for whose folders a conversation answers,
-    //! and for its two lists, each a number.
+    //! Kani's proofs of [`next`] and [`in_project`]: `kani::any()` stands for whose folders a
+    //! conversation answers, for its two lists, and for project ids, each a number.
 
     use super::*;
 
@@ -431,5 +498,14 @@ mod proofs {
         assert_eq!(whose, Whose::Own);
         assert_eq!(own_after, own);
         assert_eq!(answered(own_after, theirs, whose), own);
+    }
+
+    /// PROOF-1 (A00-73), PROJECTS-14: a job is a project's exactly when it has a project and it is
+    /// that one, so never a job in no project.
+    #[kani::proof]
+    fn projects_14_a_job_is_in_only_its_own_project() {
+        let (id, asked): (u8, u8) = (kani::any(), kani::any());
+        let job = if kani::any::<bool>() { Some(id) } else { None };
+        assert_eq!(in_project(job.as_ref(), &asked), job == Some(asked));
     }
 }

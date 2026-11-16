@@ -510,6 +510,11 @@ pub struct Job {
     /// job's (TASKCONV-26). It keeps the id when that conversation is deleted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
+    /// The project its conversation was in when it started (crate::projects, PROJECTS-13), set
+    /// once ([`Job::start_in`]) and never changed; none when that conversation was in no project,
+    /// or there was none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     /// The user's turn of `conversation` whose words started it, so the conversation shows its
     /// card under them the moment it starts, before Oby's answer lists it; for a job Oby offered
     /// (`oby_offer`), the turn it was offered in, whenever the owner starts it. None for a job no
@@ -1019,6 +1024,15 @@ pub struct OwnersWords {
 }
 
 impl Job {
+    /// It starts in `conversation`, taking the project that conversation is in now, as kept in
+    /// `home` (PROJECTS-13): the only place a job's project is set.
+    pub fn start_in(&mut self, home: &std::path::Path, conversation: Option<String>) {
+        self.project = conversation
+            .as_deref()
+            .and_then(|id| crate::conversation::kept_project(home, id));
+        self.conversation = conversation;
+    }
+
     /// Its branch is one obid made for it, so it may publish it by itself and delete it once
     /// merged: an `oby/` one, or a new one the owner named ([`Job::made_branch`], PUBLISHING-13).
     pub fn own_branch(&self) -> bool {
@@ -1727,6 +1741,7 @@ impl Job {
             value["noReviewer"] = json!(why);
         }
         value["agentVersion"] = json!(self.agent_version);
+        value["project"] = json!(self.project);
         value["teammates"] = json!(self.teammates);
         value["addedTo"] = json!(self.added_to());
         if let Some(context) = &self.context {
@@ -2263,6 +2278,49 @@ mod tests {
         );
     }
 
+    /// PROJECTS-13: a job takes the project its conversation's file keeps as it starts; a file
+    /// with none, a missing file, a non-id and no conversation give none.
+    #[test]
+    fn projects_13_a_job_takes_its_conversations_project_as_it_starts() {
+        let home = std::env::temp_dir().join(format!("obid-projects-13-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(home.join("conversations")).unwrap();
+        let (inside, outside, missing) = (
+            "00000000-0000-4000-8000-000000000001",
+            "00000000-0000-4000-8000-000000000002",
+            "00000000-0000-4000-8000-000000000003",
+        );
+        let kept = |id: &str, body: Value| {
+            let file = home.join("conversations").join(format!("{id}.json"));
+            std::fs::write(file, body.to_string()).unwrap();
+        };
+        kept(inside, json!({"id": inside, "project": "p"}));
+        kept(outside, json!({"id": outside}));
+        std::fs::write(home.join("x.json"), json!({"project": "p"}).to_string()).unwrap();
+        let started = |conversation: Option<&str>| {
+            let mut job = job();
+            job.start_in(&home, conversation.map(str::to_owned));
+            assert_eq!(job.conversation.as_deref(), conversation);
+            job.project
+        };
+        assert_eq!(started(Some(inside)).as_deref(), Some("p"));
+        assert_eq!(started(Some(outside)), None);
+        assert_eq!(started(Some(missing)), None);
+        assert_eq!(started(Some("../x")), None);
+        assert_eq!(started(None), None);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// PROJECTS-13: a job kept before jobs had a project reads as in none, and answers null.
+    #[test]
+    fn projects_13_a_job_kept_before_projects_has_none() {
+        let file = serde_json::to_value(job()).unwrap();
+        assert!(file.get("project").is_none());
+        let read: Job = serde_json::from_value(file).unwrap();
+        assert_eq!(read.project, None);
+        let value = read.to_json();
+        assert_eq!(value.get("project"), Some(&Value::Null));
+    }
+
     fn job() -> Job {
         let mut job = Job::new(
             "9f08fd10".into(),
@@ -2496,6 +2554,7 @@ mod tests {
             "waiting",
             "permission",
             "conversation",
+            "project",
             "turn",
             "followUpOf",
             "reason",
@@ -2510,8 +2569,8 @@ mod tests {
         ] {
             assert_eq!(object.get(key), Some(&Value::Null), "{key}");
         }
-        // The Swift runner's 65 keys, obid's twenty-six, `supervised` and `revision`.
-        assert_eq!(object.len(), 93);
+        // The Swift runner's 65 keys, obid's twenty-seven, `supervised` and `revision`.
+        assert_eq!(object.len(), 94);
         assert_eq!(value["canPublish"], false);
         assert_eq!(value["supervised"], json!([]));
         assert_eq!(value["revision"], 0);

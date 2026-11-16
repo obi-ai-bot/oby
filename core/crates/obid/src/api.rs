@@ -650,6 +650,7 @@ pub const CAPABILITIES: &[&str] = &[
     "events-replay-v1",
     "folders-v1",
     "profile-projects-v1",
+    "project-jobs-v1",
     "projects-v1",
     "revisions-v1",
 ];
