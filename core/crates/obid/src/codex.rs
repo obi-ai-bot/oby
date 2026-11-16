@@ -12,7 +12,7 @@
 //! sandbox as its `-c` settings say (crate::jobs, `own_codex_settings`), with `approvalPolicy`
 //! `never`, once Codex says those settings hold ([`own_config_problem`], [`own_thread_problem`]).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -39,6 +39,9 @@ pub struct Options {
     pub instructions: Option<String>,
     /// A conversation's thread, whose shell is off: a command that runs anyway ends the turn.
     pub no_commands: bool,
+    /// A side call's one command (crate::brain::calls, B00-15): Codex runs the reads it deems safe
+    /// without asking, so any other one, as it starts, ends the turn as [`Options::no_commands`].
+    pub reads: Option<fn(&str) -> bool>,
     /// A job's run: it asks Codex for the account's usage as it starts (crate::usage). The
     /// brain's and conversations' runs don't: nothing keeps it there.
     pub usage: bool,
@@ -130,6 +133,8 @@ pub async fn run_turn(
         files: HashMap::new(),
         calls: HashMap::new(),
         no_commands: options.no_commands,
+        reads: options.reads,
+        read: HashSet::new(),
         limits_read: None,
         account_read: None,
         tokens_before: None,
@@ -271,6 +276,9 @@ struct Run<D, E> {
     /// Codex asks names the tool only in its words.
     calls: HashMap<String, Vec<(String, Value)>>,
     no_commands: bool,
+    /// [`Options::reads`], and the commands it let start, by item id.
+    reads: Option<fn(&str) -> bool>,
+    read: HashSet<String>,
     /// The `account/rateLimits/read` request not answered yet.
     limits_read: Option<u64>,
     /// The `account/read` request not answered yet, and what it said the account pays by.
@@ -482,9 +490,11 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
         }
         let params = &message["params"];
         // Fail closed, in any thread (a helper's too): a conversation's Codex runs no command, no
-        // hook and no tool of another MCP server, whatever its settings did.
-        if self.no_commands
+        // hook and no tool of another MCP server, whatever its settings did; a side call's, none but
+        // its read of the quoted file, asked or not.
+        if (self.no_commands || self.reads.is_some())
             && let Some(what) = ran_outside(&message)
+            && !(self.reads).is_some_and(|reads| only_reads(&message, reads, &mut self.read))
         {
             return self.end_for_good(what).await;
         }
@@ -1061,6 +1071,24 @@ const NOTICES: &[&str] = &[
     "model/verification",
     "model/safetyBuffering/updated",
 ];
+
+/// Whether `message` is only of a command `reads` allows ([`Options::reads`]): its item, kept in
+/// `ok` as it starts, or the news of one in `ok`.
+fn only_reads(message: &Value, reads: fn(&str) -> bool, ok: &mut HashSet<String>) -> bool {
+    let (method, params) = (message["method"].as_str().unwrap_or(""), &message["params"]);
+    let item = &params["item"];
+    if method.starts_with("item/") && item["type"] == "commandExecution" {
+        let allowed = reads(&unwrap_shell(
+            &command_of(&item["command"]).unwrap_or_default(),
+        ));
+        if allowed && let Some(id) = item["id"].as_str() {
+            ok.insert(id.to_owned());
+        }
+        return allowed;
+    }
+    method.starts_with("item/commandExecution/")
+        && (params["itemId"].as_str()).is_some_and(|id| ok.contains(id))
+}
 
 /// What a conversation's Codex did that it never may, from one notification in any thread: a
 /// command (an item of that kind in any `item/*`, or a command's own `item/commandExecution/*`), a
@@ -1725,6 +1753,62 @@ exec sleep 30
         .await
         .unwrap();
         assert_eq!(*tools.lock().unwrap(), ["Agent", "Tool"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// B00-15: a side call's Codex reads its quoted file, but a read Codex deems safe and runs
+    /// without asking, of anything else (its box's login), ends the turn as it starts.
+    #[tokio::test]
+    async fn a_side_calls_unasked_read_of_another_file_ends_its_turn() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("obid-codex-reads-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let bin = root.join("codex");
+        let item = |n: &str, command: &str| {
+            format!(
+                r#"{{"method":"item/{n}","params":{{"threadId":"t1","turnId":"u1","item":{{"type":"commandExecution","id":"{}","command":"/bin/zsh -lc '"'"'{command}'"'"'"}}}}}}"#,
+                &command[4..6]
+            )
+        };
+        let script = format!(
+            "#!/bin/sh\nread l; echo '{{\"id\":1,\"result\":{{}}}}'\nread l\nread l; echo '{{\"id\":2,\"result\":{{\"thread\":{{\"id\":\"t1\"}}}}}}'\nread l; echo '{{\"id\":3,\"result\":{{\"turn\":{{\"id\":\"u1\"}}}}}}'\necho '{}'\necho '{{\"method\":\"item/commandExecution/outputDelta\",\"params\":{{\"threadId\":\"t1\",\"turnId\":\"u1\",\"itemId\":\"wo\",\"delta\":\"x\"}}}}'\necho '{}'\necho '{}'\nexec sleep 30\n",
+            item("started", "cat work.md"),
+            item("completed", "cat work.md"),
+            item("started", "cat login/auth.json"),
+        );
+        std::fs::write(&bin, script).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let launch = Launch {
+            own_sandbox: false,
+            group: None,
+            argv: vec![bin.into_os_string()],
+            env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+            cwd: root.clone(),
+            stderr: root.join("agent.log"),
+        };
+        let (_stop, stop) = watch::channel(process::Signal::Run);
+        let options = Options {
+            reads: Some(|command| command == "cat work.md"),
+            ..Options::default()
+        };
+        let allow = |_: &str, _: &Value| Ruling::Now(Answer::Allow);
+        let turn = run_turn(
+            launch,
+            "Sort.",
+            &options,
+            Duration::from_secs(60),
+            stop,
+            allow,
+            |_| {},
+        )
+        .await
+        .unwrap();
+        let fatal = turn.fatal.unwrap_or_default();
+        assert!(
+            fatal.starts_with("Codex ran a command (cat login/auth.json)"),
+            "{fatal}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

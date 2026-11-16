@@ -7955,6 +7955,7 @@ impl Jobs {
                             },
                             chatgpt,
                             quoted: None,
+                            reads: None,
                         };
                     codex::run_turn(
                         launch,

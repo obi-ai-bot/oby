@@ -400,11 +400,7 @@ impl Quick {
         };
         let name = self.tool.name();
         let turn = if self.tool == Tool::Codex {
-            // No web search, apps or plug-ins: its one way out is OpenAI's model.
-            let mut flags: Vec<OsString> = vec!["-c".into(), r#"web_search="disabled""#.into()];
-            for feature in codex_off(quoted.is_some()) {
-                flags.extend(["-c".into(), format!("features.{feature}=false").into()]);
-            }
+            let mut flags = codex_flags(quoted.is_some());
             // On a ChatGPT login no run holds a token: Codex goes through obid's relay with this
             // call's own token, good only while it runs (crate::chatgpt_relay).
             let (run, token) = (
@@ -436,6 +432,9 @@ impl Quick {
             let options = crate::codex::Options {
                 plan: true,
                 no_commands: quoted.is_none(),
+                reads: quoted
+                    .is_some()
+                    .then_some(reads_only_quoted as fn(&str) -> bool),
                 quoted,
                 chatgpt: self.relay.is_some(),
                 model,
@@ -517,6 +516,20 @@ impl Quick {
 /// its login copy stays in its box, so it gets no shell, as a conversation's Codex doesn't.
 fn codex_off(quoted: bool) -> impl Iterator<Item = &'static str> {
     (super::harness_codex::OFF.iter().copied()).filter(move |f| !quoted || *f != "shell_tool")
+}
+
+/// A side call's Codex settings: [`codex_off`], no web search, apps or plug-ins (its one way out is
+/// OpenAI's model), and its relay token never in a command's environment, as a conversation's.
+fn codex_flags(quoted: bool) -> Vec<OsString> {
+    let mut flags: Vec<OsString> = vec!["-c".into(), r#"web_search="disabled""#.into()];
+    flags.extend([
+        "-c".into(),
+        r#"shell_environment_policy.exclude=["OBY_MCP_TOKEN"]"#.into(),
+    ]);
+    for feature in codex_off(quoted) {
+        flags.extend(["-c".into(), format!("features.{feature}=false").into()]);
+    }
+    flags
 }
 
 /// What the model gets, with the vault's secrets taken out ([`crate::vault::for_agent`]), or why
@@ -914,6 +927,14 @@ mod tests {
         assert_eq!(off(false), super::super::harness_codex::OFF);
         assert!(!off(true).contains(&"shell_tool"));
         assert_eq!(off(true).len(), off(false).len() - 1);
+    }
+
+    /// B00-15: a side call's shell, on with a quoted file, never sees its relay token.
+    #[test]
+    fn a_codex_side_calls_commands_never_hold_its_relay_token() {
+        let flags = codex_flags(true);
+        let exclude = r#"shell_environment_policy.exclude=["OBY_MCP_TOKEN"]"#;
+        assert!(flags.iter().any(|f| f == exclude), "{flags:?}");
     }
 
     /// #642: a quoted file asking a side call to read its login gets nothing from it. Its Read is

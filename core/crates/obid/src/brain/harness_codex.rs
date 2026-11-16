@@ -168,6 +168,7 @@ pub(super) async fn launch(
         priced: None,
         chatgpt,
         quoted: None,
+        reads: None,
     };
     Ok((launch, Some(options)))
 }
