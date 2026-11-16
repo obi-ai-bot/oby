@@ -129,7 +129,8 @@ module oby_feed_approver {
     if (job == "running") moveTo("running")
     else if (pr == "merged") moveTo("merged")
     else if (approver == "asked" or approver == "running") moveTo(st)
-    else if (tip != askedTip or (readTip >= 0 and readTip != askedTip)) moveTo("waiting")
+    // as read_approver(): a gone job reads no commit (obid's 404), so only the pull request's head can have moved
+    else if (tip != askedTip or (approver != "gone" and readTip >= 0 and readTip != askedTip)) moveTo("waiting")
     else if (approver == "approve")
       all { st' = "merging", armed' = true, armedTip' = askedTip, rejectedTip' = rejectedTip, askedTip' = askedTip,
             keepApprover, approvedTips' = approvedTips.union(Set(readTip)), escalatedTips' = escalatedTips,
