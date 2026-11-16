@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """factory/bin/oby-feed [--once | --until-idle] [--max N] [--account ID|any] [--dry-run] [--min-free-gb N] [--idle-every S]
+                      [--same-reason N]
    factory/bin/oby-feed --clean
    factory/bin/oby-feed --status
+   factory/bin/oby-feed --again KEY
 
 Feeds the roadmap's task files to the factory's own obid, with no model in the loop. Oby does the
 work: it builds each task (prepare, work, check, publish) and reviews the pull request twice, by two
@@ -34,6 +36,12 @@ frees the disk afterwards:
   head, once may_arm() and the gate still pass it, asks the approver; a VERDICT: CHANGES holds the head for the owner
   with its findings (shown by --status), and no verdict or a lens that can't be routed holds it too, both for good; a
   head that moved while its lenses read it waits for fresh approvals (docs/contracts/factory.md, FEEDLENS).
+- A lens's VERDICT: CHANGES also sends the build job one fix message in fixed words, never the findings: it names the
+  lenses, the head and their prompts on origin/<base>, so the build reviews its branch as they say. That message and
+  the gate's fix message are follow-ups, each with a reason in fixed words (`the <lens> review asked for changes`,
+  `the gate failed`). Once --same-reason follow-ups in a row (default 3) went out for one reason, the next failure for
+  it sends nothing: the task waits, its head held, and says why once; a new reason is still sent, and
+  `oby-feed --again KEY`, the owner's word, sends the one that wasn't (docs/contracts/factory.md, FEEDSTOP).
 - After its lens reviews the head goes to an approver job, a read-only `review` job on obid following
   .claude/agents/approver.md as origin/<base> has it, against the task file's own acceptance list as origin/<base> has
   it (a task whose file isn't there is held). Only that job's APPROVE for the same head arms the merge, once
@@ -700,6 +708,7 @@ def may_arm(j, pr, refused, key):
 PASSING = re.compile(r"\b(5\d\d|429)\b|timed? ?out|timeout|connect|no such host|dial tcp|unreachable|network|try again|"
                      r"temporar|rate limit|\bEOF\b", re.I)
 TRIES = 3
+SAME_REASON = 3  # follow-ups for one reason in a row before the feeder sends no more (--same-reason, FEEDSTOP)
 
 
 def tried_again(item, head, why):
@@ -1007,7 +1016,8 @@ def post_lenses(item, account):
 def read_lenses(item, j, pr, account):
     """One look at a `lenses` task, `j` its build job: lens jobs still to start are POSTed, then every one is read. Once
     all have ended: a moved head waits unrefused; a lens with no verdict, then any VERDICT: CHANGES, holds the head for
-    good; every lens's VERDICT: PASS asks the approver, through check_again(). Returns True when the task changed."""
+    good, a CHANGES then sending the build its fix round (fix_round); every lens's VERDICT: PASS asks the approver,
+    through check_again(). Returns True when the task changed."""
     posted = post_lenses(item, account)
     if not posted:
         return posted is False
@@ -1037,7 +1047,8 @@ def read_lenses(item, j, pr, account):
     if changes:
         findings = "\n".join(line for lens in changes for line in [f"{lens}:", *answers[lens][1]])[:4000]
         reason = next((line.strip() for line in answers[changes[0]][1] if line.strip()), "")
-        return hold_for_good(item, head, f"{HELD}the {changes[0]} review asked for changes: {reason[:160]}", findings=findings)
+        hold_for_good(item, head, f"{HELD}the {changes[0]} review asked for changes: {reason[:160]}", findings=findings)
+        return fix_round(item, lens_reason(changes), head, lens_fix(item["key"], changes, head))
     return check_again(item, j, pr, head, lambda tools: ask_approver(item, head, tools, account),
                        f"the lens reviews passed {head[:12]}, but it no longer has two approvals: waiting for them")
 
@@ -1113,35 +1124,116 @@ def fix_message(key, head, record):
     return {"text": text + "\n".join(tail) + "\n" + fence, "clientRequestId": f"feed-gate-{key}-{head[:12]}"}
 
 
+GATE_FAILED = "the gate failed"
+
+
+def post_fix(item, message, reason):
+    """POSTs a fix message to the task's job: None when obid didn't answer or gave a 5xx, so it stays owed; True for a
+    2xx, a follow-up for `reason` counted in the task's run (FEEDSTOP); False for a 4xx, added to the note."""
+    code, body = api("POST", f"/v1/jobs/{item['job']}/messages", message)
+    if code is None or code >= 500:
+        return None
+    if code < 300:
+        run = item.get("fixRun") or {}
+        if run.get("reason") == reason:
+            item["fixRun"] = {"reason": reason, "count": run["count"] + 1}
+        else:  # another reason: a run of its own, and the end of a stop
+            item["fixRun"] = {"reason": reason, "count": 1}
+            item.pop("stopped", None)
+        return True
+    refused = f"; the fix message was refused: {(body or {}).get('error', code)}"[:120]
+    item["note"] = item.get("note", "")[:240 - len(refused)] + refused
+    return False
+
+
 def send_fix(item):
     """Sends the fix message owed for the gate's head to the task's job. No answer, or a 5xx, keeps it owed for the
     next pass; a 2xx is recorded as sent and a 4xx in the note, neither sent again."""
     record = item["gate"]
-    code, body = api("POST", f"/v1/jobs/{item['job']}/messages", record["owed"])
-    if code is None or code >= 500:
+    sent = post_fix(item, record["owed"], GATE_FAILED)
+    if sent is None:
         return
     record.pop("owed")
-    if code < 300:
+    if sent:
         record["messaged"] = True
-        return
-    refused = f"; the fix message was refused: {(body or {}).get('error', code)}"[:120]
-    item["note"] = item.get("note", "")[:240 - len(refused)] + refused
+
+
+def send_owed_fix(item):
+    """Sends the fix round's message owed (`fixOwed`) to the task's job, under its saved key: no answer or a 5xx keeps
+    it owed for the next pass, and a 2xx or a 4xx drops it, never sent again."""
+    owed = item["fixOwed"]
+    if post_fix(item, owed["message"], owed["reason"]) is not None:
+        item.pop("fixOwed")
+
+
+def stops(item, reason):
+    """Whether a fix for `reason` is stopped: the last SAME_REASON follow-ups in a row went out for it."""
+    run = item.get("fixRun") or {}
+    return run.get("reason") == reason and run["count"] >= SAME_REASON
+
+
+def stop_fix(item, reason, head, message):
+    """The stop (FEEDSTOP-2): the message for `reason` isn't sent but saved, for the owner's --again, and the note says
+    why, once, as any change of the task is said."""
+    times = item["fixRun"]["count"]
+    item["stopped"] = {"reason": reason, "times": times, "head": head, "message": message}
+    item["note"] = (f"{reason} again on {head[:12]}: {times} follow-ups in a row failed this way, so Oby sends no more. "
+                    f"Fix it on the branch yourself, or run factory/bin/oby-feed --again {item['key']} for one more "
+                    "try")[:240]
+
+
+def lens_reason(lenses):
+    """A lens fix's reason, in fixed words: the lenses that asked for changes, sorted."""
+    names = sorted(lenses)
+    return f"the {' and '.join(names)} review{'s' if len(names) > 1 else ''} asked for changes"
+
+
+def lens_fix(key, lenses, head):
+    """The lens fix round's message: fixed words, the lenses, the head and the base only, never a lens's findings, a
+    job's summary, the task's title or anything GitHub said; at most 2,000 characters."""
+    names, base = sorted(lenses), job.BASE
+    prompts = [f".claude/agents/reviewer-{lens}.md" for lens in names]
+    many = len(names) > 1
+    text = (f"Oby's {' and '.join(names)} review{'s' if many else ''} asked for changes on this pull request's head "
+            f"{head}. Its findings are not in this message: find them by reviewing this branch as "
+            f"{' and '.join(prompts)} say{'' if many else 's'}, reading each with "
+            f"{' and '.join(f'git show origin/{base}:{p}' for p in prompts)}, never this worktree's copy, and comparing "
+            f"with git diff origin/{base}...HEAD. Fix what it asks for on the same branch and commit the fix: Oby "
+            "publishes it onto the same pull request.")
+    return {"text": printable(text)[:2000], "clientRequestId": f"feed-fix-{key}-{head[:12]}"}
+
+
+def fix_round(item, reason, head, message):
+    """A lens asked for changes on the held head: the build job gets one fix message, saved as owed before it is sent,
+    unless the stop applies (FEEDSTOP). Returns True."""
+    if stops(item, reason):
+        stop_fix(item, reason, head, message)
+        return True
+    item["fixOwed"] = {"reason": reason, "head": head, "message": message}
+    save(item)
+    send_owed_fix(item)
+    return True
 
 
 def gated(item, head, branch, verdict, said, green):
     """factory/bin/gate on a head may_arm() would arm, or held only for a security path: run once per head, its record
     saved before anything is done with it. Green calls `green()` (a security path's still waits): asking the approver
     from `reviewing` and `waiting`, arming from read_approver()'s re-check, which reads the same head's record again.
-    Red and no verdict hold it, and red with a failing part sends the job its fix message. Returns True."""
+    Red and no verdict hold it, and red with a failing part sends the job its fix message, unless the stop applies
+    (FEEDSTOP). Returns True."""
     key, short = item["key"], head[:12]
     record = item.get("gate") or {}
+    unsent = None
     if record.get("head") != head:
         record = run_gate(key, head, branch)
         if isinstance(record, Unreached):
             gate_unreached(item, head, record)
             return True
         if record["verdict"] == "FAIL" and record["code"] != 0:
-            record["owed"] = fix_message(key, head, record)
+            if stops(item, GATE_FAILED):
+                unsent = fix_message(key, head, record)
+            else:
+                record["owed"] = fix_message(key, head, record)
         item["gate"] = record
         save(item)
     secure = verdict != "arm"
@@ -1158,6 +1250,8 @@ def gated(item, head, branch, verdict, said, green):
     else:
         why = f"the gate couldn't judge {short}: {record['lines'][0][:120]}"
     item.update(state="waiting", head=head, refused=head, note=(f"{said}; {why}" if secure else HELD + why)[:240])
+    if unsent:
+        stop_fix(item, GATE_FAILED, head, unsent)
     if record.get("owed"):
         send_fix(item)
     return True
@@ -1414,6 +1508,7 @@ def follow(item, jobs, account):
     for other in jobs:
         if other.get("followUpOf") == item["job"] and other.get("kind") == "build":
             (item.get("gate") or {}).pop("owed", None)  # the follow-up has the work: the old head's message is moot
+            item.pop("fixOwed", None)
             item.update(job=other["id"], state="running")
             say(f"{key}: Oby started a follow-up ({other['id']})")
             return True
@@ -1510,6 +1605,13 @@ def follow(item, jobs, account):
                 return True
             record.pop("owed")  # a new head: the old one's message is moot
             save(item)
+        owed = item.get("fixOwed")
+        if owed:  # the fix round's message, the same way (FEEDSTOP)
+            if owed["head"] == head:
+                send_owed_fix(item)
+                return True
+            item.pop("fixOwed")
+            save(item)
         verdict, said = may_arm(j, pr, refused_for(item, head), key)
         if verdict == "arm" or verdict == "wait" and said.startswith(HELD + SECURITY):
             files = [f["path"] for f in pr.get("files", [])]
@@ -1593,10 +1695,39 @@ def ready_tasks(state):
     return out
 
 
+def take_agains(state):
+    """The owner's --again (FEEDSTOP-4), before anything is followed: each feed/<KEY>.again whose task is stopped gives
+    the message that wasn't sent back as owed, under its own key, and starts the run again; the file is deleted once
+    the task is saved, or at once for a task that isn't stopped."""
+    for path in sorted(FEED.glob("*.again")):
+        item = state.get(path.stem)
+        if item and item.get("stopped"):
+            stopped = item.pop("stopped")
+            item.pop("fixRun", None)
+            item.update(fixOwed={"reason": stopped["reason"], "head": stopped["head"], "message": stopped["message"]},
+                        note="the owner asked for one more try: a follow-up is sent")
+            save(item)
+            say(f"{item['key']}: {item['note']}")
+        path.unlink()
+
+
+def again(key):
+    """`--again KEY`: asks the running feeder for one more follow-up of a stopped task, in feed/<KEY>.again, never
+    editing the task's state, which the loop owns. The key is only ever matched against the tasks' own."""
+    item = (load_state() if FEED.is_dir() else {}).get(key)
+    if not item or not item.get("stopped"):
+        print(f"{key} isn't stopped: nothing to start again")
+        sys.exit(1)
+    (FEED / f"{key}.again").write_text("")  # a key load_state() found: the stem of a file in feed/
+    print(f"{key} tries once more at the feeder's next pass")
+
+
 def one_pass(args):
     """One look at everything: (tasks under way, tasks started), or None when obid or GitHub couldn't be reached."""
     subprocess.run(["git", "fetch", "-q", "origin", job.BASE], cwd=REPO)
     state = load_state()
+    if not args.dry_run:
+        take_agains(state)
     jobs = oby_jobs()
     if jobs is None:
         say("obid didn't answer: this pass is skipped, the next one tries again")
@@ -1677,6 +1808,10 @@ def status():
     for item in sorted(state.values(), key=lambda i: i.get("started", "")):
         pr = f" #{item['pr']}" if item.get("pr") else ""
         print(printable(f"{item['state']:<10} {item['key']:<7} {item['job']}{pr}  {item.get('note') or item['title']}")[:160])
+        stopped = item.get("stopped")
+        if stopped:
+            print("  " + printable(f"stopped: {stopped['reason']}, {stopped['times']} follow-ups in a row; "
+                                   f"factory/bin/oby-feed --again {item['key']} tries once more"))
         for line in ((item.get("escalation") or item.get("questions") or "").splitlines()
                      + (item.get("findings") or "").splitlines()):
             print("  " + printable(line))
@@ -1714,7 +1849,15 @@ def clean():
     say(f"removed {gone} ended Oby jobs and their worktrees; {free_gb() - before:+.1f} GB, {free_gb():.0f} GB free now")
 
 
+def at_least_one(text):
+    """--same-reason's number: a whole number of 1 or more, else argparse refuses it."""
+    if not text.isdigit() or int(text) < 1:
+        raise argparse.ArgumentTypeError(f"{text} isn't a whole number of 1 or more")
+    return int(text)
+
+
 def main():
+    global SAME_REASON
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[1])
     ap.add_argument("--once", action="store_true", help="one pass, then stop")
     ap.add_argument("--until-idle", action="store_true", help="stop after a pass with nothing under way and nothing started")
@@ -1727,7 +1870,14 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="say what would start, start nothing")
     ap.add_argument("--clean", action="store_true", help="delete ended Oby jobs and their worktrees, then stop")
     ap.add_argument("--status", action="store_true", help="list what was fed and where it stands, then stop")
+    ap.add_argument("--same-reason", type=at_least_one, default=SAME_REASON, metavar="N",
+                    help=f"follow-ups for the same reason in a row before the feeder sends no more (default {SAME_REASON})")
+    ap.add_argument("--again", metavar="KEY",
+                    help="the owner's word: a task the feeder stopped tries once more at its next pass, then stop")
     args = ap.parse_args()
+    SAME_REASON = args.same_reason
+    if args.again:
+        return again(args.again)
     if args.status:
         return status()
     if args.clean:
