@@ -8,6 +8,8 @@
 // Anyone may push a new head while the pull request is open, or force-push it back to a head it had before, so
 // the approver can read a head other than the one it was asked about while the pull request is back at that one.
 // `refused` holds one head; the heads the approver escalated or gave no verdict on are held for good (`held`).
+// A reviewer may turn its approval into a change request while the approver runs; read_approver() runs may_arm()
+// again before it arms, so an APPROVE then arms nothing and the task waits.
 // Invariants (FEEDAPPROVE-2 to 5):
 // - armedOnlyApproverApproved: an armed tip has two approvals by different tools, touches no security path, and the
 //   feeder read a well-formed APPROVE for it from a done approver whose startCommit was that tip.
@@ -81,6 +83,14 @@ module oby_feed_approver {
           reviews' = reviews.union(Set({ tool: t, tip: tip, ok: ok })),
           job' = job, pr' = pr, tip' = tip, top' = top, rounds' = rounds, security' = security, keepFeeder, keepApprover }
   }
+  // a reviewer turns its approval of the tip into a change request, while nothing is armed (once armed, the merge queue
+  // has it and the feeder reads no review)
+  action reviewAsksChanges = {
+    nondet t = Tools.oneOf()
+    all { not(armed), reviews.contains({ tool: t, tip: tip, ok: true }),
+          reviews' = reviews.exclude(Set({ tool: t, tip: tip, ok: true })).union(Set({ tool: t, tip: tip, ok: false })),
+          job' = job, pr' = pr, tip' = tip, top' = top, rounds' = rounds, security' = security, keepFeeder, keepApprover }
+  }
   action followUp = all { job == "done", pr == "open", not(armed), asked(reviews, tip), rounds < MaxRounds,
                           job' = "running", rounds' = rounds + 1, pr' = pr, tip' = tip, top' = top, reviews' = reviews,
                           security' = security, keepFeeder, keepApprover }
@@ -110,7 +120,7 @@ module oby_feed_approver {
   }
   action approverGone = all { approver != "none", approver != "gone", approver' = "gone", readTip' = readTip,
                               keepWorld, keepFeeder }
-  action world = any { jobEnds, review, followUp, push, queueMerges, queueRefuses, ownerMerges,
+  action world = any { jobEnds, review, reviewAsksChanges, followUp, push, queueMerges, queueRefuses, ownerMerges,
                        approverStarts, approverEnds, approverGone }
 
   // ---- the feeder's pass ----
@@ -131,6 +141,8 @@ module oby_feed_approver {
     else if (approver == "asked" or approver == "running") moveTo(st)
     // as read_approver(): a gone job reads no commit (obid's 404), so only the pull request's head can have moved
     else if (tip != askedTip or (approver != "gone" and readTip >= 0 and readTip != askedTip)) moveTo("waiting")
+    // read_approver() runs may_arm() again before it arms: a change request since sends the task back to waiting
+    else if (approver == "approve" and not(canMerge)) moveTo("waiting")
     else if (approver == "approve")
       all { st' = "merging", armed' = true, armedTip' = askedTip, rejectedTip' = rejectedTip, askedTip' = askedTip,
             keepApprover, approvedTips' = approvedTips.union(Set(readTip)), escalatedTips' = escalatedTips,
