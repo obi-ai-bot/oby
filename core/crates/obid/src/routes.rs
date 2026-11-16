@@ -229,9 +229,11 @@ pub async fn answer_limit_decision(
 #[derive(serde::Deserialize)]
 pub struct Limit {
     limit: Option<String>,
+    project: Option<String>,
 }
 
-/// `GET /v1/jobs?limit=50`: the latest jobs, newest first.
+/// `GET /v1/jobs?limit=50`: the latest jobs, newest first; with `project=<id>`, that project's,
+/// queued and running first (PROJECTS-14).
 pub async fn jobs(
     State(shared): State<Arc<Shared>>,
     Query(query): Query<Limit>,
@@ -242,12 +244,13 @@ pub async fn jobs(
             .parse::<usize>()
             .map_err(|_| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "limit is a number."))?,
     };
-    let list: Vec<Value> = shared
-        .jobs
-        .list(limit.min(1000))
-        .iter()
-        .map(|j| j.to_json())
-        .collect();
+    let jobs = match &query.project {
+        Some(project) => {
+            crate::projects::listed(shared.jobs.list(usize::MAX), project, limit.min(1000))
+        }
+        None => shared.jobs.list(limit.min(1000)),
+    };
+    let list: Vec<Value> = jobs.iter().map(|j| j.to_json()).collect();
     Ok(json(StatusCode::OK, Value::Array(list)))
 }
 
