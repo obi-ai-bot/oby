@@ -130,11 +130,44 @@ pub struct Session {
     pub reader: Reader,
 }
 
-/// Where obid's reader is: the lines it holds, and a wake-up for a waiting call each time it moves.
-#[derive(Default)]
+/// Where obid's reader is: the lines it holds, how long it has held none, and a wake-up for a
+/// waiting call each time it moves.
 pub struct Reader {
-    busy: AtomicUsize,
+    held: Mutex<Held>,
     moved: tokio::sync::Notify,
+}
+
+/// The lines obid's reader holds, and the time it held none: all of it before `since`, and since
+/// then too when it holds none.
+struct Held {
+    lines: usize,
+    idle: Duration,
+    since: tokio::time::Instant,
+}
+
+impl Default for Reader {
+    fn default() -> Self {
+        let held = Held {
+            lines: 0,
+            idle: Duration::ZERO,
+            since: tokio::time::Instant::now(),
+        };
+        Reader {
+            held: Mutex::new(held),
+            moved: tokio::sync::Notify::new(),
+        }
+    }
+}
+
+impl Reader {
+    /// How long the reader has held no line, all told, as of now.
+    fn idle(&self) -> Duration {
+        let held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        match held.lines {
+            0 => held.idle + held.since.elapsed(),
+            _ => held.idle,
+        }
+    }
 }
 
 /// A line obid's reader has read and is handling, until every mark and record of it is made: a
@@ -143,7 +176,13 @@ pub struct Reading<'a>(&'a Reader);
 
 impl Drop for Reading<'_> {
     fn drop(&mut self) {
-        self.0.busy.fetch_sub(1, Ordering::SeqCst);
+        {
+            let mut held = self.0.held.lock().unwrap_or_else(|e| e.into_inner());
+            held.lines -= 1;
+            if held.lines == 0 {
+                held.since = tokio::time::Instant::now();
+            }
+        }
         self.0.moved.notify_waiters();
     }
 }
@@ -151,7 +190,14 @@ impl Drop for Reading<'_> {
 impl Session {
     /// obid's reader has a line of the agent's in hand, until the guard drops.
     pub fn reading(&self) -> Reading<'_> {
-        self.reader.busy.fetch_add(1, Ordering::SeqCst);
+        {
+            let mut held = self.reader.held.lock().unwrap_or_else(|e| e.into_inner());
+            if held.lines == 0 {
+                let since = held.since.elapsed();
+                held.idle += since;
+            }
+            held.lines += 1;
+        }
         self.reader.moved.notify_waiters();
         Reading(&self.reader)
     }
@@ -180,12 +226,13 @@ impl Session {
     /// output, and could otherwise be judged before a read it followed marked the turn. A marked
     /// turn waits for nothing; a call whose line doesn't come within `wait` marks it (fail closed).
     /// The call is woken each time the reader moves, and `wait` runs only while the reader holds no
-    /// line: one it holds (B00-01), its marks still being made, may be this call's. It never starts
-    /// again, so lines that aren't this call's can't put off its end.
+    /// line: one it holds (B00-01), its marks still being made, may be this call's. The reader
+    /// counts that time itself, so it runs whether or not the call looks then, and it never starts
+    /// again: lines that aren't this call's can't put off its end.
     /// A stopped turn's call waits no more and marks nothing: Oby's tools refuse it anyway.
     pub async fn heard(&self, tool: &str, args: &Value, wait: Duration) {
         let args = arguments(args);
-        let mut left = wait;
+        let start = self.reader.idle();
         loop {
             // Listening before looking, so a move in between still wakes it.
             let moved = self.reader.moved.notified();
@@ -201,8 +248,8 @@ impl Session {
                     return;
                 }
             }
-            let busy = self.reader.busy.load(Ordering::SeqCst) > 0;
-            if !busy && left.is_zero() {
+            let left = wait.saturating_sub(self.reader.idle() - start);
+            if left.is_zero() {
                 tracing::warn!(
                     "conversation {}: a call of {tool} waited out its {} s for obid's reader, so the turn counts as having read something untrusted",
                     self.conversation,
@@ -211,12 +258,7 @@ impl Session {
                 self.taint();
                 return;
             }
-            let since = tokio::time::Instant::now();
-            let look = if busy { STOP_LOOK } else { left.min(STOP_LOOK) };
-            let _ = tokio::time::timeout(look, moved).await;
-            if !busy {
-                left = left.saturating_sub(since.elapsed());
-            }
+            let _ = tokio::time::timeout(left.min(STOP_LOOK), moved).await;
         }
     }
 
@@ -3750,6 +3792,34 @@ mod tests {
         let (heard, ()) = tokio::join!(call, reader);
         assert!(session.web.load(Ordering::SeqCst));
         assert!(heard - at < cap * 2, "{:?}", heard - at);
+    }
+
+    /// B00-01: the reader holds an unrelated line each time the call looks, and holds none for
+    /// 10 ms between them: that idle time runs the call's cap all the same, so it runs out and
+    /// the turn is marked (fail closed).
+    #[tokio::test(start_paused = true)]
+    async fn a_reader_held_whenever_the_call_looks_still_runs_its_cap() {
+        use std::future::Future;
+        use std::task::{Context, Waker};
+        let turns = super::super::turn::Turns::default();
+        let session = waiting_session(turns.begin("t1", "c1"));
+        let cap = Duration::from_millis(50);
+        let args = json!({});
+        let mut call = std::pin::pin!(session.heard("oby_jobs", &args, cap));
+        let mut cx = Context::from_waker(Waker::noop());
+        // For a second at most: a line held while the call looks, then 10 ms with none.
+        let mut idle = Duration::ZERO;
+        let heard = loop {
+            let held = session.reading();
+            if call.as_mut().poll(&mut cx).is_ready() || idle >= Duration::from_secs(1) {
+                break idle;
+            }
+            drop(held);
+            tokio::time::advance(Duration::from_millis(10)).await;
+            idle += Duration::from_millis(10);
+        };
+        assert!(session.web.load(Ordering::SeqCst));
+        assert!(heard < cap * 2, "{heard:?}");
     }
 
     /// A turn's session with nothing in it, for [`Session::heard`]'s tests.
