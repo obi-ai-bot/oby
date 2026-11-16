@@ -1471,7 +1471,8 @@ fn taskconv_6_a_signed_turn_that_reads_untrusted_text_makes_confirms() {
 /// #1686: a call of Oby's tools reaches obid apart from the agent's output, and is judged only
 /// once obid's reader has handled the line where the agent wrote it, and every line before: here
 /// the call comes first and the read of repos/ that precedes its line 300 ms later, and the signed
-/// turn's Settings still wait for a Confirm.
+/// turn's Settings still wait for a Confirm. The stand-in times the call from writing its line to
+/// its answer: within 2 s, so it was its line, not obid's 5-second cap, that let it go on.
 #[test]
 fn a_call_waits_for_the_reader_and_sees_the_read_before_it() {
     let (_folder, obid) = obid("harness-late-read", true);
@@ -1482,13 +1483,18 @@ fn a_call_waits_for_the_reader_and_sees_the_read_before_it() {
     let before = running();
     let words = json!({"said": r#"LATEREAD OBY oby_settings {"maxRunning": 20}"#,
                        "conversation": conversation});
-    let at = std::time::Instant::now();
     let answer = call_typed(&obid, "POST", "/v1/plans", &words);
     assert_eq!(answer.status, 200, "{}", answer.text);
-    assert!(oby_said(&answer).contains("waits for"), "{}", answer.text);
+    let text = oby_said(&answer);
+    assert!(text.contains("waits for"), "{}", answer.text);
     assert_eq!(running(), before);
-    // Its own line came, so it never waited out obid's cap (5 s).
-    assert!(at.elapsed() < Duration::from_secs(4), "{:?}", at.elapsed());
+    // Its own line came, so it never waited out obid's cap (5 s): the call's answer came within 2 s
+    // of its line.
+    let heard: u64 = text
+        .split_once("heard-in=")
+        .and_then(|(_, rest)| rest.split_once("ms")?.0.parse().ok())
+        .unwrap_or_else(|| panic!("no heard-in=<n>ms: {text}"));
+    assert!(heard < 2000, "heard-in={heard}ms: {text}");
 }
 
 /// TASKCONV-7: the pull request of a review another Oby asked for never merges from a

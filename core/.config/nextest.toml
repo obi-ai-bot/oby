@@ -20,11 +20,6 @@ path = "junit.xml"
 # shrinks: a new entry comes with its task, factory/queue/tasks/<key>.md, in the same change, and
 # the fix takes its entry out.
 
-# B00-38: a tool call's answer, which load now and then holds past the test's 4-second bound
-[[profile.ci.overrides]]
-filter = 'binary_id(obid::conversation_harness) & test(=a_call_waits_for_the_reader_and_sees_the_read_before_it)'
-retries = 2
-
 # B00-36: a job's outgoing and the room's posts, read one after the other, now and then a post apart
 [[profile.ci.overrides]]
 filter = 'binary_id(obid::rooms) & test(=rooms_11_a_post_read_back_before_its_answer_counts_once)'

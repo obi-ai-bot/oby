@@ -30,7 +30,8 @@
 //   READREPO <w>   reads a file under repos/ (taints the turn), then does <w>
 //   LATEREAD OBY <tool> <json>  calls the oby tool first, and 300 ms later writes a read under
 //                  repos/ and the call's own line (#1686: obid's reader is behind the call); says
-//                  what it answered, as OBY does
+//                  what it answered, as OBY does, then heard-in=<n>ms: the time from writing the
+//                  call's line to the call's answer
 //   MAKEPAGE <w>   writes page/index.html in its room (a list of functions), then does <w>
 //   GREP <w>       searches the room with no path (repos/ in it, taints the turn), then does <w>
 //   TOOLSEARCH     makes a ToolSearch tool call (the deferred-tool lookup), then says "searched"
@@ -311,9 +312,11 @@ async function act(words, prompt = "", before = resumed) {
     use("r1", "Read", { file_path: join(room, "repos/obi-e2e/fixture-app/package.json") });
     used("r1", "{}");
     use("t1", `mcp__oby__${tool}`, args);
+    const lined = Date.now();
     const answer = await answering;
+    const heard = Date.now() - lined;
     used("t1", answer.result?.content?.[0]?.text ?? "", answer.result?.isError);
-    say(`oby: ${answer.result?.isError ? "refused: " : ""}${answer.result?.content?.[0]?.text ?? JSON.stringify(answer)}`);
+    say(`oby: ${answer.result?.isError ? "refused: " : ""}${answer.result?.content?.[0]?.text ?? JSON.stringify(answer)} heard-in=${heard}ms`);
   } else if (words.startsWith("OBY ")) {
     const [, tool, ...rest] = words.split(" ");
     use("t1", `mcp__oby__${tool}`, JSON.parse(rest.join(" ")));
