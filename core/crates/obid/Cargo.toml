@@ -55,3 +55,5 @@ libproc = "0.14.11"
 [dev-dependencies]
 # The channel's tests relay it through a WebSocket server of their own.
 axum = { workspace = true, features = ["ws"] }
+# Tests that need time to pass move tokio's paused clock instead of sleeping (B00-01).
+tokio = { workspace = true, features = ["test-util"] }

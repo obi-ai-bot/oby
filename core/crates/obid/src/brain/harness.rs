@@ -68,8 +68,10 @@ const TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write,Edi
 /// sandbox and has no login copy to read, the owner's skills, and their MCP servers' resources.
 const OWN_TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write,Edit,MultiEdit,NotebookEdit,Task,TodoWrite,Bash,BashOutput,KillShell,Skill,ListMcpResourcesTool,ReadMcpResourceTool,ReadMcpResourceDirTool";
 /// How long a call of Oby's tools waits for obid's reader to reach the line where the agent wrote
-/// it ([`Session::heard`]).
+/// it, counting only while the reader holds no line ([`Session::heard`]).
 pub const READ_WAIT: Duration = Duration::from_secs(5);
+/// How often a waiting call looks whether its turn was stopped: a stop wakes nothing.
+const STOP_LOOK: Duration = Duration::from_millis(100);
 /// The file that gives the session Oby's MCP server ([`mcp_file`]).
 use crate::jobs::CONVERSATION_MCP_FILE as MCP_FILE;
 /// Why a turn couldn't answer when its session failed twice.
@@ -124,9 +126,82 @@ pub struct Session {
     /// arguments)`, that haven't reached Oby's tools yet ([`Session::heard`]); one whose result
     /// came first never will ([`Session::answered`]).
     pub written: Mutex<Vec<(String, String, Value)>>,
+    /// obid's reader of the agent's output, as a call waits on it ([`Session::heard`]).
+    pub reader: Reader,
+}
+
+/// Where obid's reader is: the lines it holds, how long it has held none, and a wake-up for a
+/// waiting call each time it moves.
+pub struct Reader {
+    held: Mutex<Held>,
+    moved: tokio::sync::Notify,
+}
+
+/// The lines obid's reader holds, and the time it held none: all of it before `since`, and since
+/// then too when it holds none.
+struct Held {
+    lines: usize,
+    idle: Duration,
+    since: tokio::time::Instant,
+}
+
+impl Default for Reader {
+    fn default() -> Self {
+        let held = Held {
+            lines: 0,
+            idle: Duration::ZERO,
+            since: tokio::time::Instant::now(),
+        };
+        Reader {
+            held: Mutex::new(held),
+            moved: tokio::sync::Notify::new(),
+        }
+    }
+}
+
+impl Reader {
+    /// How long the reader has held no line, all told, as of now.
+    fn idle(&self) -> Duration {
+        let held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        match held.lines {
+            0 => held.idle + held.since.elapsed(),
+            _ => held.idle,
+        }
+    }
+}
+
+/// A line obid's reader has read and is handling, until every mark and record of it is made: a
+/// waiting call's own line may be this one, so its cap doesn't run out meanwhile.
+pub struct Reading<'a>(&'a Reader);
+
+impl Drop for Reading<'_> {
+    fn drop(&mut self) {
+        {
+            let mut held = self.0.held.lock().unwrap_or_else(|e| e.into_inner());
+            held.lines -= 1;
+            if held.lines == 0 {
+                held.since = tokio::time::Instant::now();
+            }
+        }
+        self.0.moved.notify_waiters();
+    }
 }
 
 impl Session {
+    /// obid's reader has a line of the agent's in hand, until the guard drops.
+    pub fn reading(&self) -> Reading<'_> {
+        {
+            let mut held = self.reader.held.lock().unwrap_or_else(|e| e.into_inner());
+            if held.lines == 0 {
+                let since = held.since.elapsed();
+                held.idle += since;
+            }
+            held.lines += 1;
+        }
+        self.reader.moved.notify_waiters();
+        Reading(&self.reader)
+    }
+
     /// obid's reader saw the agent write call `id` of Oby's tool `tool`: every line before it is
     /// handled, so a read it made first has marked the turn.
     pub fn wrote(&self, id: &str, tool: &str, args: &Value) {
@@ -134,6 +209,7 @@ impl Session {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push((id.to_owned(), tool.to_owned(), arguments(args)));
+        self.reader.moved.notify_waiters();
     }
 
     /// Call `id` has its result: one that never reached Oby's tools (input refused, a declined
@@ -149,12 +225,22 @@ impl Session {
     /// every line it wrote before (#1686): a call reaches Oby's tools apart from the agent's
     /// output, and could otherwise be judged before a read it followed marked the turn. A marked
     /// turn waits for nothing; a call whose line doesn't come within `wait` marks it (fail closed).
+    /// The call is woken each time the reader moves, and `wait` runs only while the reader holds no
+    /// line: one it holds (B00-01), its marks still being made, may be this call's. The reader
+    /// counts that time itself, so it runs whether or not the call looks then, and it never starts
+    /// again: lines that aren't this call's can't put off its end.
     /// A stopped turn's call waits no more and marks nothing: Oby's tools refuse it anyway.
     pub async fn heard(&self, tool: &str, args: &Value, wait: Duration) {
         let args = arguments(args);
-        let until = tokio::time::Instant::now() + wait;
-        // ponytail: polls every 5 ms; the line is almost always there already.
-        while !self.web.load(Ordering::SeqCst) && self.control.live() {
+        let start = self.reader.idle();
+        loop {
+            // Listening before looking, so a move in between still wakes it.
+            let moved = self.reader.moved.notified();
+            let mut moved = std::pin::pin!(moved);
+            moved.as_mut().enable();
+            if self.web.load(Ordering::SeqCst) || !self.control.live() {
+                return;
+            }
             {
                 let mut written = self.written.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(at) = written.iter().position(|(_, t, a)| t == tool && *a == args) {
@@ -162,7 +248,8 @@ impl Session {
                     return;
                 }
             }
-            if tokio::time::Instant::now() >= until {
+            let left = wait.saturating_sub(self.reader.idle() - start);
+            if left.is_zero() {
                 tracing::warn!(
                     "conversation {}: a call of {tool} waited out its {} s for obid's reader, so the turn counts as having read something untrusted",
                     self.conversation,
@@ -171,7 +258,7 @@ impl Session {
                 self.taint();
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            let _ = tokio::time::timeout(left.min(STOP_LOOK), moved).await;
         }
     }
 
@@ -179,6 +266,7 @@ impl Session {
     /// at once, so a crash mid-turn doesn't lose it.
     pub fn taint(&self) {
         if !self.web.swap(true, Ordering::SeqCst) {
+            self.reader.moved.notify_waiters();
             self.keep(None);
             if let Some(shared) = self.shared.upgrade() {
                 shared.conversations.note_read_untrusted(&self.conversation);
@@ -1365,6 +1453,7 @@ async fn session(
         room: place.room.clone(),
         artifacts: Mutex::new(vec![]),
         written: Mutex::default(),
+        reader: Reader::default(),
     });
     // One that read something before the conversation kept that too.
     if session.web.load(Ordering::SeqCst) {
@@ -2264,6 +2353,8 @@ async fn one(
     // What the run used so far, as its agent said (Codex's `tokenUsage`), stopped or not.
     let mut tokens = None;
     let on_event = |event: Event| {
+        // A call waiting for its line waits while this one is handled (B00-01).
+        let _reading = session.reading();
         if let Event::Tokens(used) = &event {
             tokens = Some(used.clone());
         }
@@ -3595,6 +3686,7 @@ mod tests {
             room: place.room.clone(),
             artifacts: Mutex::new(vec![]),
             written: Mutex::default(),
+            reader: Reader::default(),
         };
         // The run names its session: kept at once, unmarked.
         session.keep(Some("c0000000-0000-4000-8000-000000000001"));
@@ -3614,27 +3706,7 @@ mod tests {
     #[tokio::test]
     async fn a_call_waits_for_its_line_at_most_its_cap() {
         let turns = super::super::turn::Turns::default();
-        let session = |control| Session {
-            conversation: "c1".into(),
-            said: String::new(),
-            attachments: vec![],
-            attached_jobs: vec![],
-            repos_note: None,
-            control,
-            jobs: Mutex::new(vec![]),
-            nonce: "n".into(),
-            web: AtomicBool::new(false),
-            shared: std::sync::Weak::new(),
-            dispatched: AtomicUsize::new(0),
-            acted: AtomicBool::new(false),
-            told: AtomicUsize::new(0),
-            asked: AtomicUsize::new(0),
-            kept: PathBuf::from("/nowhere/session.json"),
-            account: "a".into(),
-            room: PathBuf::from("/nowhere/room"),
-            artifacts: Mutex::new(vec![]),
-            written: Mutex::default(),
-        };
+        let session = waiting_session;
         let cap = Duration::from_secs(5);
         let first = session(turns.begin("t1", "c1"));
         // Its line, with no arguments as none: heard at once, unmarked, and taken.
@@ -3661,6 +3733,119 @@ mod tests {
             .heard("oby_jobs", &json!({}), Duration::from_millis(50))
             .await;
         assert!(second.web.load(Ordering::SeqCst));
+    }
+
+    /// B00-01: obid's reader holds a line it read, its marks not made yet, past the call's cap (as
+    /// when another writer holds the conversation's lock): the call waits for the line's record,
+    /// is woken the moment it's made, and goes on unmarked, never on its cap running out.
+    #[tokio::test(start_paused = true)]
+    async fn a_call_waits_for_a_line_the_reader_holds_past_its_cap() {
+        let turns = super::super::turn::Turns::default();
+        let session = waiting_session(turns.begin("t1", "c1"));
+        let cap = Duration::from_millis(50);
+        let held = session.reading();
+        let call = async {
+            session.heard("oby_jobs", &json!({}), cap).await;
+            tokio::time::Instant::now()
+        };
+        // The clock moves past the cap a step at a time, the call looking each time.
+        let reader = async {
+            for _ in 0..6 {
+                tokio::time::advance(cap).await;
+            }
+            session.wrote("u1", "oby_jobs", &json!({}));
+            drop(held);
+            tokio::time::Instant::now()
+        };
+        let (heard, recorded) = tokio::join!(call, reader);
+        assert!(!session.web.load(Ordering::SeqCst));
+        assert!(session.written.lock().unwrap().is_empty());
+        assert!(heard >= recorded);
+        assert!(heard - recorded < cap, "{:?}", heard - recorded);
+    }
+
+    /// B00-01: the agent keeps writing lines that aren't the call's (deltas, usage) all through
+    /// its wait: they don't put off its cap, which runs out in the time between them, and the turn
+    /// is marked (fail closed).
+    #[tokio::test(start_paused = true)]
+    async fn other_lines_never_put_off_a_calls_cap() {
+        let turns = super::super::turn::Turns::default();
+        let session = waiting_session(turns.begin("t1", "c1"));
+        let cap = Duration::from_millis(50);
+        let ended = AtomicBool::new(false);
+        let at = tokio::time::Instant::now();
+        let call = async {
+            session.heard("oby_jobs", &json!({}), cap).await;
+            ended.store(true, Ordering::SeqCst);
+            tokio::time::Instant::now()
+        };
+        // A line every 10 ms, for a second at most.
+        let reader = async {
+            for _ in 0..100 {
+                if ended.load(Ordering::SeqCst) {
+                    break;
+                }
+                drop(session.reading());
+                tokio::time::advance(Duration::from_millis(10)).await;
+            }
+        };
+        let (heard, ()) = tokio::join!(call, reader);
+        assert!(session.web.load(Ordering::SeqCst));
+        assert!(heard - at < cap * 2, "{:?}", heard - at);
+    }
+
+    /// B00-01: the reader holds an unrelated line each time the call looks, and holds none for
+    /// 10 ms between them: that idle time runs the call's cap all the same, so it runs out and
+    /// the turn is marked (fail closed).
+    #[tokio::test(start_paused = true)]
+    async fn a_reader_held_whenever_the_call_looks_still_runs_its_cap() {
+        use std::future::Future;
+        use std::task::{Context, Waker};
+        let turns = super::super::turn::Turns::default();
+        let session = waiting_session(turns.begin("t1", "c1"));
+        let cap = Duration::from_millis(50);
+        let args = json!({});
+        let mut call = std::pin::pin!(session.heard("oby_jobs", &args, cap));
+        let mut cx = Context::from_waker(Waker::noop());
+        // For a second at most: a line held while the call looks, then 10 ms with none.
+        let mut idle = Duration::ZERO;
+        let heard = loop {
+            let held = session.reading();
+            if call.as_mut().poll(&mut cx).is_ready() || idle >= Duration::from_secs(1) {
+                break idle;
+            }
+            drop(held);
+            tokio::time::advance(Duration::from_millis(10)).await;
+            idle += Duration::from_millis(10);
+        };
+        assert!(session.web.load(Ordering::SeqCst));
+        assert!(heard < cap * 2, "{heard:?}");
+    }
+
+    /// A turn's session with nothing in it, for [`Session::heard`]'s tests.
+    fn waiting_session(control: Arc<Control>) -> Session {
+        Session {
+            conversation: "c1".into(),
+            said: String::new(),
+            attachments: vec![],
+            attached_jobs: vec![],
+            repos_note: None,
+            control,
+            jobs: Mutex::new(vec![]),
+            nonce: "n".into(),
+            web: AtomicBool::new(false),
+            shared: std::sync::Weak::new(),
+            dispatched: AtomicUsize::new(0),
+            acted: AtomicBool::new(false),
+            told: AtomicUsize::new(0),
+            asked: AtomicUsize::new(0),
+            kept: PathBuf::from("/nowhere/session.json"),
+            account: "a".into(),
+            room: PathBuf::from("/nowhere/room"),
+            artifacts: Mutex::new(vec![]),
+            written: Mutex::default(),
+            reader: Reader::default(),
+        }
     }
 
     /// Only a session id Claude Code made is resumed: a UUID, never an argument of another kind.
@@ -4237,6 +4422,7 @@ mod tests {
             room: PathBuf::from("/nowhere/room"),
             artifacts: Mutex::new(vec![]),
             written: Mutex::default(),
+            reader: Reader::default(),
         }));
         assert!(sessions.session("conversation-c1", &token).is_some());
         assert!(sessions.session("conversation-c2", &token).is_none());
