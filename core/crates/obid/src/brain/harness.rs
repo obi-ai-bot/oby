@@ -68,7 +68,7 @@ const TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write,Edi
 /// sandbox and has no login copy to read, the owner's skills, and their MCP servers' resources.
 const OWN_TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write,Edit,MultiEdit,NotebookEdit,Task,TodoWrite,Bash,BashOutput,KillShell,Skill,ListMcpResourcesTool,ReadMcpResourceTool,ReadMcpResourceDirTool";
 /// How long a call of Oby's tools waits for obid's reader to reach the line where the agent wrote
-/// it, counted from the reader's last line ([`Session::heard`]).
+/// it, counting only while the reader holds no line ([`Session::heard`]).
 pub const READ_WAIT: Duration = Duration::from_secs(5);
 /// How often a waiting call looks whether its turn was stopped: a stop wakes nothing.
 const STOP_LOOK: Duration = Duration::from_millis(100);
@@ -179,8 +179,9 @@ impl Session {
     /// every line it wrote before (#1686): a call reaches Oby's tools apart from the agent's
     /// output, and could otherwise be judged before a read it followed marked the turn. A marked
     /// turn waits for nothing; a call whose line doesn't come within `wait` marks it (fail closed).
-    /// The call is woken each time the reader moves, and `wait` counts only from its last move: a
-    /// line it holds (B00-01), its marks still being made, may be this call's.
+    /// The call is woken each time the reader moves, and `wait` runs only while the reader holds no
+    /// line: one it holds (B00-01), its marks still being made, may be this call's. It never starts
+    /// again, so lines that aren't this call's can't put off its end.
     /// A stopped turn's call waits no more and marks nothing: Oby's tools refuse it anyway.
     pub async fn heard(&self, tool: &str, args: &Value, wait: Duration) {
         let args = arguments(args);
@@ -212,11 +213,10 @@ impl Session {
             }
             let since = tokio::time::Instant::now();
             let look = if busy { STOP_LOOK } else { left.min(STOP_LOOK) };
-            let woke = tokio::time::timeout(look, moved).await.is_ok();
-            left = match busy || woke {
-                true => wait,
-                false => left.saturating_sub(since.elapsed()),
-            };
+            let _ = tokio::time::timeout(look, moved).await;
+            if !busy {
+                left = left.saturating_sub(since.elapsed());
+            }
         }
     }
 
@@ -3720,6 +3720,36 @@ mod tests {
         assert!(session.written.lock().unwrap().is_empty());
         assert!(heard >= recorded);
         assert!(heard - recorded < cap, "{:?}", heard - recorded);
+    }
+
+    /// B00-01: the agent keeps writing lines that aren't the call's (deltas, usage) all through
+    /// its wait: they don't put off its cap, which runs out in the time between them, and the turn
+    /// is marked (fail closed).
+    #[tokio::test(start_paused = true)]
+    async fn other_lines_never_put_off_a_calls_cap() {
+        let turns = super::super::turn::Turns::default();
+        let session = waiting_session(turns.begin("t1", "c1"));
+        let cap = Duration::from_millis(50);
+        let ended = AtomicBool::new(false);
+        let at = tokio::time::Instant::now();
+        let call = async {
+            session.heard("oby_jobs", &json!({}), cap).await;
+            ended.store(true, Ordering::SeqCst);
+            tokio::time::Instant::now()
+        };
+        // A line every 10 ms, for a second at most.
+        let reader = async {
+            for _ in 0..100 {
+                if ended.load(Ordering::SeqCst) {
+                    break;
+                }
+                drop(session.reading());
+                tokio::time::advance(Duration::from_millis(10)).await;
+            }
+        };
+        let (heard, ()) = tokio::join!(call, reader);
+        assert!(session.web.load(Ordering::SeqCst));
+        assert!(heard - at < cap * 2, "{:?}", heard - at);
     }
 
     /// A turn's session with nothing in it, for [`Session::heard`]'s tests.
