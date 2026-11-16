@@ -1,15 +1,18 @@
-// verify: main=oby_feed_attempts steps=12 invariants=attemptsBounded,endsWithReason,noEndedJobLeft,failsOnlyOutOfAttempts,noSecondPullRequest,blockedOrStoppedNeverRebuilt witnesses=attemptsNeverRunOut,neverFailsOutOfAttempts,neverMergedAfterARebuild,neverEndsForGoodEarly,refusedHeadNeverWaits
+// verify: main=oby_feed_attempts steps=12 invariants=attemptsBounded,endsWithReason,noEndedJobLeft,failsOnlyOutOfAttempts,noSecondPullRequest,blockedOrStoppedNeverRebuilt witnesses=attemptsNeverRunOut,neverFailsOutOfAttempts,neverMergedAfterARebuild,neverEndsForGoodEarly,neverFailsWithAPullRequest,neverResentARebuild,refusedHeadNeverWaits
 //
 // factory/bin/oby-feed's build attempts as built (docs/contracts/factory.md, FEEDLOOP-1, 2, 5 and 6), one task. It
 // models, by function:
 // - after_attempt(): the one rule for a `running` task's job, `afterAttempt` below, word for word: follow while it is
 //   queued or running; end for a STATUS: BLOCKED summary or a stopped job; review for a done job that published a
 //   pull request; end once the task has a pull request; again while attempts are left; else end;
-// - follow()'s `running` branch and its 404 check, with attempt_ended(): `again` builds once more against the saved
-//   spec (attempts + 1, a running job), waits on the job that ended while the disk is under --min-free-gb, and ends
+// - follow()'s `running` branch and its 404 check, with attempt_ended(): `again` saves a build against the saved spec
+//   and sends it at once (post_step(), below), waits on the job that ended while the disk is under --min-free-gb, and ends
 //   the task `failed` when no spec is saved; `end` fails it with its note (the last reason when the attempts ran
 //   out, else the note it had before FEEDLOOP);
-// - post_step()'s `builds`: the attempt count;
+// - post_step()'s `builds`: the attempt count, and its answers to a rebuild's POST: obid makes the job (one attempt
+//   more), gives no answer or a 5xx (the request stays saved, `owed`, the task `running` on the job that ended), or a
+//   4xx (block(): the task is `blocked`, its request dropped);
+// - follow()'s resend: a saved request goes first at the next pass, before anything else is looked at;
 // - follow()'s follow-up loop: a follow-up obid starts from the feeder's fix message takes a reviewing or waiting
 //   task back to `running` on the new job;
 // - follow()'s `reviewing`, `merging` and `waiting` branches, abstracted: the reviews, holds, gate, lenses and
@@ -22,10 +25,12 @@
 // have none).
 // Invariants:
 // - attemptsBounded (FEEDLOOP-5): at most MaxAttempts build jobs for one task.
-// - endsWithReason (FEEDLOOP-5): a failed task carries a note.
+// - endsWithReason (FEEDLOOP-5): a failed task carries a note, and one whose attempts ran out fails at attempt
+//   MaxAttempts with the last attempt's ending (`note == job`, the model's stand-in for attempt_reason()).
 // - noEndedJobLeft (FEEDLOOP-1, 2): right after a pass that judged a `running` task, its job is running, unless the
-//   disk is under the minimum: a job that ended was started again, sent to review or ended the task. A pass that only
-//   followed a follow-up (`switched`) judges it at the next one, as follow()'s loop returns once it switched.
+//   disk is under the minimum or obid hasn't answered the rebuild yet (`owed`, resent at the next pass): a job that
+//   ended was started again, sent to review or ended the task. A pass that only followed a follow-up (`switched`)
+//   judges it at the next one, as follow()'s loop returns once it switched.
 // - failsOnlyOutOfAttempts (FEEDLOOP-2, 5): a task fails on a job that failed, was interrupted, is gone or published
 //   nothing, with no pull request, not blocked and its spec saved, only at attempt MaxAttempts.
 // - noSecondPullRequest (FEEDLOOP-6): no build starts again once the task has a pull request (ghost withPrRebuilds).
@@ -33,8 +38,9 @@
 //   endedRebuilds).
 // Witnesses, each expected VIOLATED so the invariants aren't vacuous: attemptsNeverRunOut (attempt 3 is reached),
 // neverFailsOutOfAttempts (a task fails having run out), neverMergedAfterARebuild (a rebuilt task merges),
-// neverEndsForGoodEarly (a blocked, stopped or pull-request end is reached), refusedHeadNeverWaits (a refused head
-// waits, as the feeder does until FEEDLOOP-3 and 4).
+// neverEndsForGoodEarly (a blocked, stopped or pull-request end is reached), neverFailsWithAPullRequest (a follow-up
+// on an open pull request ends badly and fails the task), neverResentARebuild (obid makes a rebuild's job from a
+// resent request), refusedHeadNeverWaits (a refused head waits, as the feeder does until FEEDLOOP-3 and 4).
 // docs/models/oby_feed_loops.qnt's loops_fixed is the target design, FEEDLOOP-3 and 4 included; this is the code.
 // The limit: a model checks the design, not that the script implements it; nor the brief's words or reason text.
 
@@ -42,7 +48,7 @@ module oby_feed_attempts {
   pure val MaxAttempts = 3
   pure val Ends = Set("done", "failed", "interrupted", "stopped", "gone")
 
-  var st: str             // running, reviewing, merging, waiting, failed, merged
+  var st: str             // running, reviewing, merging, waiting, failed, blocked, merged
   var job: str            // the task's current job: running, done, failed, interrupted, stopped or gone
   var blocked: bool       // its summary's first line starts STATUS: BLOCKED
   var published: bool     // it published a pull request
@@ -58,6 +64,8 @@ module oby_feed_attempts {
   var withPrRebuilds: int // ghost: builds started again while the task had a pull request
   var endedRebuilds: int  // ghost: builds started again after a blocked or stopped job
   var switched: bool      // this pass only followed a follow-up, as follow()'s loop returns at once
+  var owed: bool          // a rebuild's request is saved and obid hasn't made its job (item["request"])
+  var resent: bool        // ghost: obid made a rebuild's job from a request resent at a later pass
   var afterPass: bool
 
   pure def afterAttempt(status: str, blk: bool, pub: bool, hasPr: bool, attempt: int): str =
@@ -73,13 +81,14 @@ module oby_feed_attempts {
     all {
       st' = "running", job' = "running", blocked' = false, published' = false, followUp' = false, pr' = "none",
       refusedHead' = false, security' = false, specSaved' = saved, room' = true, attempts' = 1, note' = "",
-      endKind' = "none", withPrRebuilds' = 0, endedRebuilds' = 0, switched' = false, afterPass' = false
+      endKind' = "none", withPrRebuilds' = 0, endedRebuilds' = 0, switched' = false, owed' = false,
+      resent' = false, afterPass' = false
     }
   }
 
   action keepFeeder = all { st' = st, attempts' = attempts, note' = note, endKind' = endKind,
                             withPrRebuilds' = withPrRebuilds, endedRebuilds' = endedRebuilds, specSaved' = specSaved,
-                            switched' = switched }
+                            switched' = switched, owed' = owed, resent' = resent }
 
   // ---- the world ----
   action jobEnds = {
@@ -120,30 +129,44 @@ module oby_feed_attempts {
   action endFor(why: str, kind: str): bool = all {
     st' = "failed", note' = why, endKind' = kind, attempts' = attempts, job' = job, blocked' = blocked,
     published' = published, pr' = pr, refusedHead' = refusedHead, withPrRebuilds' = withPrRebuilds,
-    endedRebuilds' = endedRebuilds
+    endedRebuilds' = endedRebuilds, owed' = owed, resent' = resent
   }
   action moveTo(target: str, nextPr: str, refused: bool): bool = all {
     st' = target, pr' = nextPr, refusedHead' = refused, note' = note, endKind' = endKind, attempts' = attempts,
     job' = job, blocked' = blocked, published' = published, withPrRebuilds' = withPrRebuilds,
-    endedRebuilds' = endedRebuilds
+    endedRebuilds' = endedRebuilds, owed' = owed, resent' = resent
   }
   action stay = moveTo(st, pr, refusedHead)
 
-  // attempt_ended() on `again`: a new build against the saved spec, or a wait for disk, or no spec to build from
-  action again = if (not(specSaved)) endFor("its spec isn't saved", "nospec")
-    else if (not(room)) stay
-    else all {
+  // post_step() sending a rebuild's saved request: obid makes the job, gives no answer or a 5xx (still owed), or a 4xx
+  action postBuild(answer: str, moreWithPr: int, moreEnded: int, fromResend: bool): bool = all {
+    pr' = pr, refusedHead' = refusedHead, withPrRebuilds' = withPrRebuilds + moreWithPr,
+    endedRebuilds' = endedRebuilds + moreEnded,
+    if (answer == "made") all {
       st' = "running", job' = "running", blocked' = false, published' = false, attempts' = attempts + 1,
-      pr' = pr, refusedHead' = refusedHead, note' = note, endKind' = endKind,
-      withPrRebuilds' = withPrRebuilds + (if (pr != "none") 1 else 0),
-      endedRebuilds' = endedRebuilds + (if (blocked or job == "stopped") 1 else 0)
+      note' = note, endKind' = endKind, owed' = false, resent' = (resent or fromResend)
     }
+    else if (answer == "lost") all {
+      st' = st, job' = job, blocked' = blocked, published' = published, attempts' = attempts, note' = note,
+      endKind' = endKind, owed' = true, resent' = resent
+    }
+    else all {
+      st' = "blocked", job' = job, blocked' = blocked, published' = published, attempts' = attempts,
+      note' = "obid didn't start the build", endKind' = endKind, owed' = false, resent' = resent
+    }
+  }
 
-  action running = {
+  // attempt_ended() on `again`: a new build against the saved spec, its request saved and sent at once, or a wait
+  // for disk, or no spec to build from
+  action again(answer: str): bool = if (not(specSaved)) endFor("its spec isn't saved", "nospec")
+    else if (not(room)) stay
+    else postBuild(answer, if (pr != "none") 1 else 0, if (blocked or job == "stopped") 1 else 0, false)
+
+  action running(answer: str): bool = {
     val verdict = afterAttempt(job, blocked, published, pr != "none", attempts)
     if (verdict == "follow") stay
     else if (verdict == "review") moveTo("reviewing", if (pr == "none") "open" else pr, false)
-    else if (verdict == "again") again
+    else if (verdict == "again") again(answer)
     else if (blocked) endFor("STATUS: BLOCKED", "blocked")
     else if (job == "stopped") endFor("stopped", "stopped")
     else if (pr != "none") endFor(job, "pr")
@@ -152,13 +175,15 @@ module oby_feed_attempts {
 
   action pass = {
     nondet passes = Set(true, false).oneOf()  // the reviews, holds, gate, lenses and approver, for one head
+    nondet answer = Set("made", "lost", "refused").oneOf()  // obid's answer to a build's POST, if one is sent
     all {
       afterPass' = true, room' = room, security' = security, specSaved' = specSaved,
       followUp' = (followUp and not(st.in(Set("reviewing", "waiting")))),
       switched' = (followUp and st.in(Set("reviewing", "waiting"))),
-      if (st == "failed" or st == "merged") stay
+      if (owed) postBuild(answer, 0, 0, true)
+      else if (st == "failed" or st == "blocked" or st == "merged") stay
       else if (followUp and st.in(Set("reviewing", "waiting"))) moveTo("running", pr, refusedHead)
-      else if (st == "running") running
+      else if (st == "running") running(answer)
       else if (pr == "closed") endFor("its pull request was closed", "closed")
       else if (pr == "merged") moveTo(if (st == "reviewing") "merging" else "merged", pr, refusedHead)
       else if (st == "reviewing") moveTo(if (security or not(passes)) "waiting" else "merging", pr, refusedHead)
@@ -170,8 +195,10 @@ module oby_feed_attempts {
   action step = any { world, pass }
 
   val attemptsBounded = attempts <= MaxAttempts
-  val endsWithReason = st == "failed" implies note != ""
-  val noEndedJobLeft = (afterPass and st == "running" and not(switched)) implies (job == "running" or not(room))
+  val endsWithReason = (st == "failed" implies note != "")
+    and ((st == "failed" and endKind == "spent") implies (attempts == MaxAttempts and note == job))
+  val noEndedJobLeft = (afterPass and st == "running" and not(switched))
+    implies (job == "running" or not(room) or owed)
   val failsOnlyOutOfAttempts = (st == "failed" and pr == "none" and not(blocked) and job != "stopped" and specSaved)
     implies attempts == MaxAttempts
   val noSecondPullRequest = withPrRebuilds == 0
@@ -181,5 +208,7 @@ module oby_feed_attempts {
   val neverFailsOutOfAttempts = not(st == "failed" and endKind == "spent")
   val neverMergedAfterARebuild = not(st == "merged" and attempts > 1)
   val neverEndsForGoodEarly = not(st == "failed" and endKind.in(Set("blocked", "stopped", "pr")))
+  val neverFailsWithAPullRequest = not(st == "failed" and endKind == "pr")
+  val neverResentARebuild = not(attempts > 1 and resent)
   val refusedHeadNeverWaits = not(st == "waiting" and refusedHead)
 }
