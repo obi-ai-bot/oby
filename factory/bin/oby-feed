@@ -19,8 +19,7 @@ frees the disk afterwards:
   message parts, saved before the job's POST and sent right after it; a part obid refuses stops that job.
 - NEEDS-INFO, REJECT, an answer that isn't one, a step job that failed or is gone, or a part that didn't land
   leaves the task `blocked`, holding no slot, with a note (and intake's questions or reasons, shown by --status). It
-  is asked again, with a new intake, only once its task text changes. A step job that ended on a usage or account
-  limit or another passing error is started again at the next pass, naming no account, at most 3 times.
+  is asked again, with a new intake, only once its task text changes.
 - A pull request merges when Oby holds two approvals of its exact head by two different tools, it
   touches no security path, and factory/bin/gate passed on that head. It merges through GitHub's merge
   queue, pinned to that head (`gh pr merge --auto --match-head-commit`), whose Check runs on the combined code.
@@ -964,14 +963,11 @@ def gated(item, head, branch, verdict, said, green):
 # ---- intake, spec and build (docs/contracts/factory.md, FEEDSPEC) --------------------------------------------------
 
 DOC_WORDS = {"spec.md": "spec", "intake.md": "intake.md"}  # the word a note uses for a document; else "task"
-# A step job that ended on one of these is started again at the next pass: obid's own passing errors (RECOVERY-1) and
-# an account's limits, with GitHub's passing failures.
-STEP_PASSING = re.compile(PASSING.pattern + r"|usage limit|limit reached|hit (?:your|its|the) limit|quota|overloaded", re.I)
 
 
 def block(item, note, **more):
     """The task is `blocked`: it holds no slot, and only a change to its task text asks again. Returns True."""
-    for field in ("parts", "request", "stops", "stopNote", "retry", "stepTries"):
+    for field in ("parts", "request", "stops", "stopNote"):
         item.pop(field, None)
     item.update(state="blocked", note=note[:240], **more)
     return True
@@ -1097,9 +1093,8 @@ def post_step(item, jobs):
 
 def read_step(item, jobs, account):
     """One look at an `intake` or `speccing` task's job. Its done answer is saved as feed/<KEY>.intake.md or
-    .spec.md and starts the next step only when it is one; anything else blocks the task, but a job obid resumes by
-    itself (a limit's `resumesAt`) is waited for, and one that ended on a passing error is started again at the next
-    pass, naming no account, at most TRIES times. Returns True when the task changed."""
+    .spec.md and starts the next step only when it is one; anything else blocks the task. Returns True when the task
+    changed."""
     key, step = item["key"], STEPS[item["state"]]
     code, j = api("GET", f"/v1/jobs/{item['job']}")
     if code not in (200, 404):
@@ -1110,19 +1105,10 @@ def read_step(item, jobs, account):
     if code == 404:
         return block(item, f"{who}: its job is gone")
     status = j.get("status")
-    if status in ("queued", "running") or status != "done" and (j.get("resumesAt") or j.get("accountLimit")):
+    if status in ("queued", "running"):
         return False
     if status != "done":
-        said = (j.get("reason") or "") + " " + (j.get("summary") or "")
-        if status in ("failed", "interrupted") and STEP_PASSING.search(said):
-            tries = item.get("stepTries", 0) + 1
-            if tries > TRIES:
-                return block(item, f"{who}: its job ended {status}: {said.strip()[:120]}; blocked after {TRIES} tries")
-            item.update(retry=step, stepTries=tries,
-                        note=f"its {step} job ended {status}: {said.strip()[:120]}; tried again at the next pass ({tries} of {TRIES})")
-            return True
         return block(item, f"{who}: its job ended {status}")
-    item.pop("stepTries", None)
     text = printable((j.get("summary") or "").strip())
     if not text:
         return block(item, f"{who}: its answer is empty")
@@ -1149,13 +1135,6 @@ def read_step(item, jobs, account):
                          ("Why", f"intake answered REJECT: change the task file on origin/{job.BASE} to ask again"))
         return block(item, note, decision=decision, questions=(job.section(path, heading) or "")[:4000])
     return block(item, f'intake gave no decision: its answer\'s first line is "{first[:60]}"')
-
-
-def retry_step(item, jobs):
-    """Starts again the step whose job ended on a passing error, under a key of its own and naming no account, so
-    obid gives it the account with the most room. Returns True."""
-    step = item.pop("retry")
-    return ask_step(item, step, "any", f"feed-{step}-{item['key']}-after-{item['job']}", jobs)
 
 
 def asks_again(item, task, on_base):
@@ -1218,8 +1197,6 @@ def follow(item, jobs, account):
         return send_parts(item)
     if item.get("request"):
         return post_step(item, jobs)
-    if item.get("retry"):
-        return retry_step(item, jobs)
     if item["state"] in ("intake", "speccing"):
         return read_step(item, jobs, account)
     code, j = api("GET", f"/v1/jobs/{item['job']}")

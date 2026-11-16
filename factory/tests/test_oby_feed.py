@@ -1993,6 +1993,7 @@ class ObyFeed(unittest.TestCase):
 
     TASK = "KEY: A00-98\nTITLE: another task\n\n## What\nWhat it asks.\n\n### Files\n- y.py\n"
     INTAKE = "DECISION: ACCEPT\nRISK: high\nSURFACES: security\nRESCOPED: no\n\n## Summary\n- It fits.\n\n## Questions\nNone."
+    LIMIT = "You've hit your usage limit"
     SPEC = "# A spec\n\n## Summary\n- It does it.\n\n## Acceptance criteria\n1. It does one thing.\n2. It does another.\n\n## Out of scope\n- More."
 
     def ready(self, key="A00-98", on_base=True, more=()):
@@ -2223,7 +2224,9 @@ class ObyFeed(unittest.TestCase):
                   ("done", "  \n", "its answer is empty")]
         cases += [(status, "the agent stopped before it wrote anything", f"its job ended {status}")
                   for status in ("failed", "stopped", "interrupted")]
-        cases += [("gone", self.INTAKE, "its job is gone")]
+        cases += [("failed", "API Error: 529 overloaded", "its job ended failed"),  # a passing error: still blocked
+                  ("interrupted", self.LIMIT, "its job ended interrupted"),  # at an account limit: still blocked
+                  ("gone", self.INTAKE, "its job is gone")]
         for status, summary, why in cases:
             with self.subTest(status=status, summary=summary):
                 self.feed.FEED = self.dir / f"feed-{len(os.listdir(self.dir))}"
@@ -2231,6 +2234,8 @@ class ObyFeed(unittest.TestCase):
                 self.stand.missed = self.feed.OBID_MISSED
                 self.feed.api = self.stand.api
                 self.stepping("intake", status, summary)
+                if summary == self.LIMIT:
+                    self.stand.jobs["research-1"]["resumesAt"] = "2026-11-16T09:00:00Z"
                 if status == "gone":
                     del self.stand.jobs["research-1"]
                 self.one_pass()
@@ -2246,6 +2251,7 @@ class ObyFeed(unittest.TestCase):
                   "the spec has no numbered acceptance criteria, so no build starts"),
                  ("done", "", "the spec writer gave no spec: its answer is empty"),
                  ("failed", "it couldn't read the task", "the spec writer gave no spec: its job ended failed"),
+                 ("interrupted", self.LIMIT, "the spec writer gave no spec: its job ended interrupted"),
                  ("gone", self.SPEC, "the spec writer gave no spec: its job is gone")]
         for status, summary, why in cases:
             with self.subTest(status=status, summary=summary):
@@ -2254,6 +2260,8 @@ class ObyFeed(unittest.TestCase):
                 self.stand.missed = self.feed.OBID_MISSED
                 self.feed.api = self.stand.api
                 self.stepping("speccing", status, summary, job_id="research-2", decision="ACCEPT")
+                if summary == self.LIMIT:
+                    self.stand.jobs["research-2"]["accountLimit"] = {"decision": "e-1", "state": "pending", "resetAt": None}
                 if status == "gone":
                     del self.stand.jobs["research-2"]
                 self.one_pass()
@@ -2261,51 +2269,6 @@ class ObyFeed(unittest.TestCase):
                 item = self.item()
                 self.assertEqual((item["state"], item["note"]), ("blocked", why))
                 self.assertEqual(self.stand.posts, [])
-
-    def test_feedspec_5_a_step_that_ended_on_a_passing_error_is_started_again_naming_no_account(self):
-        """The owner's rule over the spec's Assumptions: a step job that ended on a usage or account limit or another
-        passing error is started again at the next pass, naming no account, at most 3 times; a job obid resumes by
-        itself at a limit's reset is waited for."""
-        self.stepping("intake", "interrupted", "You've hit your limit")
-        self.stand.jobs["research-1"]["resumesAt"] = "2026-11-16T09:00:00Z"
-        self.one_pass()
-        self.one_pass()
-        self.assertEqual((self.item()["state"], self.stand.posts), ("intake", []))
-        self.stand.jobs["research-1"].update(resumesAt=None, status="failed", summary="API Error: 529 overloaded")
-        self.one_pass()
-        item = self.item()
-        self.assertEqual(item["state"], "intake")
-        self.assertTrue(item["note"].endswith("tried again at the next pass (1 of 3)"), item["note"])
-        self.assertEqual(self.stand.posts, [])
-        self.one_pass()
-        [sent] = self.stand.sent()
-        self.assertEqual((sent["kind"], sent["clientRequestId"]), ("research", "feed-intake-A00-98-after-research-1"))
-        self.assertNotIn("account", sent)
-        item = self.item()
-        self.assertEqual((item["state"], item["job"], item["steps"]), ("intake", "research-2", ["research-1", "research-2"]))
-        self.assertEqual(self.docs(self.parts_of("research-2")), {"factory/queue/tasks/A00-98.md": self.TASK})
-        for n in (3, 4):
-            self.done(f"research-{n - 1}", "You've hit your usage limit", status="interrupted")
-            self.one_pass()
-            self.one_pass()
-        self.done("research-4", "You've hit your usage limit", status="interrupted")
-        self.one_pass()
-        item = self.item()
-        self.assertEqual(item["state"], "blocked")
-        self.assertTrue(item["note"].startswith("intake gave no decision: its job ended interrupted"), item["note"])
-        self.assertTrue(item["note"].endswith("blocked after 3 tries"), item["note"])
-        # a spec job's passing error starts the spec again, with the same documents
-        self.feed.FEED = self.dir / "feed-spec"
-        self.stand = StandIns(self.feed)
-        self.stand.missed = self.feed.OBID_MISSED
-        self.feed.api = self.stand.api
-        self.stepping("speccing", "failed", "Request timed out", job_id="research-2", decision="ACCEPT")
-        self.one_pass()
-        self.one_pass()
-        [sent] = self.stand.sent()
-        self.assertEqual(sent["clientRequestId"], "feed-spec-A00-98-after-research-2")
-        self.assertEqual(self.item()["state"], "speccing")
-        self.assertEqual(list(self.docs(self.parts_of(self.item()["job"]))), ["factory/queue/tasks/A00-98.md", "intake.md"])
 
     # FEEDSPEC-6: a lost answer is resent unchanged, never doubled
     def test_feedspec_6_a_lost_spec_or_build_answer_is_resent_not_doubled(self):
