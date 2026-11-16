@@ -464,6 +464,11 @@ class TestRunRemote(RemoteHarness, unittest.TestCase):
         self.assertEqual(self.run_calls(), [])
         self.assertEqual(self.vm_runs(), [])
 
+    def test_mutants_10_a_mutants_run_naming_a_macos_only_test_stays_on_this_mac_without_a_mac_worker(self):
+        self.assert_on_this_mac(self.run_test_run("cargo", "mutants", "--in-diff", "mutants.diff", "-p", "obid", "-C",
+                                                  "--test=sandbox"),
+                                "on this Mac: its test is macOS-only: core/crates/obid/tests/sandbox.rs")
+
     # ---- REMOTE-50 -------------------------------------------------------------------------------
 
     def test_remote_50_a_quint_run_with_macos_only_changes_goes_to_the_vm(self):

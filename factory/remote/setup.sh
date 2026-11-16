@@ -26,7 +26,8 @@
 # made afresh by root (0755) with a root-owned copy of the ssh user's authorized_keys (0644), rustup
 # with the pinned toolchain, rustfmt and clippy installed by root (--no-modify-path; a toolchain the
 # builder owned any part of is installed afresh), and Kani at its pin (cargo-kani in .cargo, its bundle in
-# .kani, its nightly in .rustup) and cargo-mutants at its own pin (in .cargo), installed by root and given
+# .kani, its nightly in .rustup) and cargo-mutants at factory/remote/pins.sh's pin, shared with setup-mac.sh (in
+# .cargo), installed by root and given
 # to root, tightened with tighten.sh's rule and proven to run for the builder, Kani offline on a scratch
 # harness, cargo-mutants by its version; Quint at its pin, installed by root with `npm ci --ignore-scripts` from
 # factory/remote/quint's committed lockfile (whose Quint must be the pin, or setup stops before it touches the
@@ -72,7 +73,7 @@ node=$(pin node-version)
 gitleaks=$(pin GITLEAKS_VERSION)
 gitleaks_sha=$(pin GITLEAKS_SHA256)
 kani=0.68.0
-mutants=27.1.0
+. "$here/pins.sh"
 quint=0.33.1
 # What Quint 0.33.1 would fetch by itself, unchecked (apalache.js, rust/binaryManager.js), at their SHA-256s.
 quint_apalache=0.62.4
@@ -306,9 +307,9 @@ scratch=$(mktemp -d)
 trap "rm -rf \"\$scratch\"" EXIT
 cd "$scratch"
 export CARGO_HOME="$scratch/cargo" PATH="$HOME/.cargo/bin:$PATH"
-mutants=$(cargo mutants --version)
-printf "%s\n" "$mutants"
-[[ "$mutants" == "cargo-mutants $1" ]] || { echo "setup.sh: cargo mutants is not at $1"; exit 1; }' _ "$MUTANTS"
+found=$(cargo mutants --version)
+printf "%s\n" "$found"
+[[ "$found" == "cargo-mutants $1" ]] || { echo "setup.sh: cargo mutants is not at $1"; exit 1; }' _ "$MUTANTS"
     # Quint and Java work for the builder with no network, its home read-only and only a scratch folder to write: a
     # builder run downloads nothing and writes nothing into its home. This is the one run of Quint setup makes.
     local tiny

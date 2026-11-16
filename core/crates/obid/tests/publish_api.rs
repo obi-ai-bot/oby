@@ -3329,6 +3329,62 @@ fn a_published_job_gets_one_review_on_another_account() {
     assert_eq!(reviews_of(&obid, &id).len(), 1);
 }
 
+/// TASKCONV-26: Oby's review of a task in a conversation is in that conversation, with no turn
+/// of its own and in Plan mode; it puts no card in it, and no conversation is made for it.
+#[test]
+fn taskconv_26_obys_review_joins_its_tasks_conversation() {
+    let folder = Folder::new("taskconv-26");
+    let bin = fake_gh(&folder.0);
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agent());
+    let accounts: Vec<Value> = [("stub", "Stub"), ("second", "Second")]
+        .into_iter()
+        .map(|(id, name)| json!({"id": id, "name": name, "configDir": sign_in(&folder, id)}))
+        .collect();
+    config["agents"]["claude"]["accounts"] = json!(accounts);
+    let obid = start(&folder.0, &config, Some(&bin));
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt",
+                     "check": "test -f hello.txt", "account": "stub"});
+    let answer = call_typed(&obid, "POST", "/v1/jobs", &json!({"job": job}));
+    assert_eq!(answer.status, 201, "{}", answer.text);
+    let id = answer.body["id"].as_str().unwrap().to_owned();
+    let conversation = answer.body["conversation"]
+        .as_str()
+        .expect("a task from the Tasks view has a conversation")
+        .to_owned();
+    let conversations = || {
+        call(&obid, "GET", "/v1/conversations", None)
+            .body
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    let before = conversations();
+    reviewed(&obid, &id, 1);
+    let reviews = reviews_of(&obid, &id);
+    assert_eq!(reviews.len(), 1, "{reviews:?}");
+    let listed = &reviews[0];
+    let review = listed["id"].as_str().unwrap();
+    let got = call(&obid, "GET", &format!("/v1/jobs/{review}"), None).body;
+    for it in [listed, &got] {
+        assert_eq!(it["conversation"], json!(conversation), "{it}");
+        assert_eq!(it["turn"], Value::Null, "{it}");
+        assert_eq!(it["mode"], "plan", "{it}");
+    }
+    let turns = call(
+        &obid,
+        "GET",
+        &format!("/v1/conversation?id={conversation}"),
+        None,
+    );
+    assert_eq!(turns.status, 200, "{}", turns.text);
+    for turn in turns.body.as_array().unwrap() {
+        let jobs = turn["jobs"].as_array().cloned().unwrap_or_default();
+        assert!(!jobs.contains(&json!(review)), "{turn}");
+    }
+    assert_eq!(conversations(), before);
+}
+
 /// Changes Oby's review asks for are the job's next round, in its session and worktree: the
 /// review quoted in `.obi/inputs/review-1.md`, the round's words naming it and holding none of
 /// the review's. Its new commit goes to the same pull request, and that new head is reviewed

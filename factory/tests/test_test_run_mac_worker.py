@@ -240,6 +240,20 @@ class TestRunMacWorker(RemoteHarness, unittest.TestCase):
         self.assertEqual(run["args"], ["mutants", "--in-diff", "mutants.diff", "-p", "obid"])
         self.assertFalse(list(self.builders.glob("builder-*")))
 
+    def test_mutants_10_a_mutants_run_naming_a_macos_only_test_goes_to_the_mac_worker(self):
+        code, out, err, _ = self.run_test_run("cargo", "mutants", "--in-diff", "mutants.diff", "-p", "obid", "-C",
+                                              "--test=sandbox")
+        self.assertEqual(code, 0, out + err)
+        [call] = self.ssh_calls()
+        self.assert_on_the_worker(call)
+        self.assertIn(shlex.join(["--mac", "--run"]), call["argv"][-1])
+        self.assertEqual(self.said(err), ["factory/bin/test-run: to the Mac worker oby-mac-pro: its test is "
+                                          "macOS-only: core/crates/obid/tests/sandbox.rs"])
+        [run] = self.vm_runs()
+        self.assertEqual(run["args"][0], "mutants")
+        self.assertEqual(run["cwd"], str(self.builders / "builder-1" / "worktree" / "core"))
+        self.assertEqual(self.lines("mac-runs"), [])
+
     # ---- REMOTE-50 -------------------------------------------------------------------------------
 
     def test_remote_50_a_quint_run_goes_to_the_vm_not_the_mac_worker(self):
