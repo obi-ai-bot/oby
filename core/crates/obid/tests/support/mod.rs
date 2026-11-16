@@ -213,6 +213,39 @@ pub fn stub_agent() -> PathBuf {
     obi().join("e2e/stub-agent/stub-agent")
 }
 
+/// The test's own home (obid's `HOME` in tests): the person's home its obid checks folders against.
+pub fn home_of(folder: &Folder) -> PathBuf {
+    folder.0.join("env-home")
+}
+
+/// obid with the test's home as the person's only one (`OBID_PERSON_HOMES`), so the folders it
+/// picks there pass wherever the test runs: never this Mac's own home, whose `~/Library` or
+/// `/private/tmp` may hold cargo's folders (as in Oby's own jobs).
+pub fn start_at_home(folder: &Folder, config: &Value) -> Obid {
+    let home = home_of(folder);
+    std::fs::create_dir_all(&home).unwrap();
+    start_with(
+        &folder.0,
+        config,
+        None,
+        &[("OBID_PERSON_HOMES", home.to_str().unwrap())],
+    )
+}
+
+/// Folders the owner picks, in the test's home.
+pub fn picked(folder: &Folder, names: &[&str]) -> Vec<PathBuf> {
+    let root = home_of(folder).join("Projects");
+    let _ = std::fs::remove_dir_all(&root);
+    names
+        .iter()
+        .map(|name| {
+            let path = root.join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            path.canonicalize().unwrap()
+        })
+        .collect()
+}
+
 /// Starts obid with `config`, `PATH` the test's own with `path_first` before it.
 pub fn start(folder: &Path, config: &Value, path_first: Option<&Path>) -> Obid {
     start_with(folder, config, path_first, &[])

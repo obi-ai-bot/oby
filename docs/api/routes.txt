@@ -116,6 +116,10 @@ POST /v1/plans/cancel
 GET /v1/profiles
 POST /v1/profiles
 PATCH /v1/profiles/{id}
+GET /v1/projects
+POST /v1/projects
+DELETE /v1/projects/{id}
+PATCH /v1/projects/{id}
 GET /v1/repos
 POST /v1/repos/check
 GET /v1/routines

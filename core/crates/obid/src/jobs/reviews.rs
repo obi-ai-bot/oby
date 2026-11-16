@@ -143,7 +143,7 @@ impl Jobs {
         review.round = Some(1);
         review.review_of = Some(id.to_owned());
         // In the reviewed job's conversation, adding nothing to it (TASKCONV-26 to 28).
-        review.conversation = author.conversation.clone();
+        review.start_in(&self.config.home, author.conversation.clone());
         // It reads the commit obid pushed, which is in the reviewed job's own clone (crate::secretspec).
         review.apart = author.apart;
         review.clone_root = author.clone_root.clone();

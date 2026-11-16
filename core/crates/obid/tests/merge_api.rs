@@ -3486,6 +3486,117 @@ fn merging_8_an_item_from_before_takes_merge() {
     );
 }
 
+/// The inbox item `id` among those done, or none.
+fn done_item(obid: &Obid, id: &str) -> Option<Value> {
+    let done = call(obid, "GET", "/v1/inbox?state=done", None).body;
+    let mut done = done.as_array().cloned().unwrap_or_default().into_iter();
+    done.find(|i| i["id"] == id)
+}
+
+/// TASKS-27: Oby's review card on a task is settled, with no answer, while a follow-up of it is
+/// at work, and opens again, the same card once, when that follow-up ended carrying nothing; once
+/// the owner answered it with Done it isn't asked again.
+#[test]
+fn tasks_27_a_review_card_comes_back_once_when_the_follow_up_carried_nothing() {
+    let folder = Folder::new("tasks-27-back");
+    let obid = started_with(&folder, false, None, changes_asked(), &[]);
+    let card = within(30, "the review's item", || {
+        review_items(&obid).into_iter().next()
+    });
+    let id = card["id"].as_str().unwrap().to_owned();
+    drop(obid);
+    // Its follow-up, queued for an account's reset an hour away: at work, and it never starts.
+    let mut follow_up = changes_asked();
+    follow_up.id = FOLLOW_UP.into();
+    follow_up.follow_up_of = Some(ID.into());
+    follow_up.status = obid::job::Status::Queued;
+    follow_up.created += 1;
+    follow_up.resumes_at = Some(follow_up.created + 3600);
+    (follow_up.published, follow_up.review, follow_up.outgoing) = (None, None, vec![]);
+    (follow_up.commits, follow_up.pushed, follow_up.finished) = (None, None, None);
+    let home = folder.0.join("home");
+    std::fs::write(
+        home.join(format!("jobs/{FOLLOW_UP}.json")),
+        serde_json::to_vec(&follow_up).unwrap(),
+    )
+    .unwrap();
+    let config = config(
+        &folder.0,
+        &folder.0.join("fixture/remote.git"),
+        &stub_agent(),
+    );
+    let bin = folder.0.join("bin");
+    let obid = start_with(
+        &folder.0,
+        &config,
+        Some(&bin),
+        &[("OBID_FOLLOW_SECONDS", "1")],
+    );
+    let settled = within(
+        30,
+        "the card settled while its follow-up is at work",
+        || done_item(&obid, &id),
+    );
+    assert_eq!(settled["answer"], Value::Null, "{settled}");
+    assert!(review_items(&obid).is_empty());
+    let stopped = call(&obid, "POST", &format!("/v1/jobs/{FOLLOW_UP}/stop"), None);
+    assert_eq!(stopped.status, 200, "{}", stopped.text);
+    let back = within(30, "the card open again", || {
+        review_items(&obid).into_iter().next()
+    });
+    assert_eq!(back["id"], id.as_str());
+    assert_eq!(review_items(&obid).len(), 1);
+    assert!(done_item(&obid, &id).is_none());
+    // Done by the owner: never asked again, through more of obid's reads.
+    let done = call(
+        &obid,
+        "POST",
+        &format!("/v1/inbox/{id}/answer"),
+        Some(&json!({"done": true})),
+    );
+    assert_eq!(done.status, 200, "{}", done.text);
+    let reads = calls(&folder.0).matches("pr view 7").count();
+    within(30, "a few more reads", || {
+        (calls(&folder.0).matches("pr view 7").count() >= reads + 3).then_some(())
+    });
+    assert!(review_items(&obid).is_empty());
+    assert!(done_item(&obid, &id).is_some());
+}
+
+/// TASKS-27: a follow-up whose pull request Oby merged by itself leaves no `merge` card open for
+/// any job of its task, the task's own card from an earlier head among them.
+#[test]
+fn tasks_27_a_merge_oby_makes_by_itself_leaves_no_merge_card() {
+    let folder = Folder::new("tasks-27-merged");
+    let [task, follow_up] = task_and_follow_up();
+    let earlier = obid::sphere::inbox::Item {
+        id: format!("merge-ready-{ID}-{}", "b".repeat(40)),
+        kind: "merge".into(),
+        job: ID.into(),
+        title: "Ready to merge: Fix the thing".into(),
+        text: "Ready to merge into dev.".into(),
+        options: vec!["Merge".into()],
+        created: task.created,
+        ..Default::default()
+    };
+    let inbox = folder.0.join("home/inbox");
+    std::fs::create_dir_all(&inbox).unwrap();
+    std::fs::write(
+        inbox.join(format!("{}.json", earlier.id)),
+        serde_json::to_vec(&earlier).unwrap(),
+    )
+    .unwrap();
+    let obid = started_with_jobs(&folder, true, Some(OBIS), &[task, follow_up], &[]);
+    within(30, "the follow-up to merge it", || {
+        (job_of(&obid, FOLLOW_UP)["mergedBy"]["by"] == "memory").then_some(())
+    });
+    within(30, "no merge card open for the task", || {
+        open_merge_cards(&obid).is_empty().then_some(())
+    });
+    let settled = done_item(&obid, &earlier.id).expect("the earlier card settled");
+    assert_eq!(settled["answer"], Value::Null, "{settled}");
+}
+
 /// MERGING-23: a follow-up's push to its task's pull request is Oby's own: with a workflow the
 /// owner taught Oby, the pull request merges by itself at that head, on the follow-up's record,
 /// and the task it followed up never says its head is a commit Oby didn't push.
@@ -3645,8 +3756,11 @@ fn merging_24_a_follow_ups_push_settles_the_tasks_open_card() {
     assert_eq!(open[0]["id"], card["id"]);
     assert!(!settled["done"].is_null(), "{settled}");
     assert!(settled["answer"].is_null(), "{settled}");
-    let task = job(&obid);
-    assert_eq!(task["mergeNeedsYou"], false, "{task}");
+    // The card settles for its task (TASKS-27) as soon as the follow-up's opens; the task's own
+    // record follows on the follower's next pass over it.
+    let task = within(30, "the task asks nothing", || {
+        Some(job(&obid)).filter(|t| t["mergeNeedsYou"] == false)
+    });
     assert_eq!(task["mergeError"], Value::Null, "{task}");
 }
 

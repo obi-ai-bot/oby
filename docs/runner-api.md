@@ -90,6 +90,7 @@ The runner API is documented per area in `docs/api/<area>.md`. A change to the A
   - [obid only: conversations](api/conversations.md)
   - [obid only: working folders (#1572)](api/folders.md)
   - [obid only: profiles](api/profiles.md)
+  - [obid only: projects](api/projects.md)
   - [obid only: helpers](api/helpers.md)
   - [obid only: memory (#378)](api/memory.md)
   - [obid only: routines (#395)](api/routines.md)

@@ -2348,7 +2348,7 @@ impl Jobs {
         );
         job.files = files;
         job.attachments = new.attachments;
-        job.conversation = new.conversation;
+        job.start_in(&self.config.home, new.conversation);
         job.turn = new.turn.filter(|_| job.conversation.is_some());
         job.brief = new
             .brief
@@ -2743,16 +2743,14 @@ impl Jobs {
     }
 
     /// The owner's one item about a job obid's own bug ended, or obid kept going down with
-    /// (#911, #915): one per such end, made again by no restart.
+    /// (#911, #915): one open per job, none while its task carries on (TASKS-26, 27).
     fn crash_item(&self, id: &str) {
         if let (Some(link), Some(job)) = (
             self.link.get().and_then(std::sync::Weak::upgrade),
             self.get(id),
         ) {
-            link.add_items(vec![crate::sphere::inbox::crash_item(
-                &job,
-                obi_protocol::time::now(),
-            )]);
+            let now = obi_protocol::time::now();
+            link.crash_items(id, crate::sphere::inbox::crash_item(&job, now));
         }
     }
 

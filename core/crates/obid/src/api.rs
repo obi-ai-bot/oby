@@ -51,6 +51,8 @@ pub struct Shared {
     pub events: Events,
     /// The conversations, shared by every device and plan request (#493).
     pub conversations: crate::conversation::Conversations,
+    /// The projects conversations belong to (crate::projects): its lock before the conversations'.
+    pub projects: crate::projects::Projects,
     /// What agents made to be looked at (crate::artifacts).
     pub artifacts: Arc<crate::artifacts::Artifacts>,
     /// The routines, and their runs (crate::routines, #395).
@@ -265,6 +267,14 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route(
             "/v1/profiles/{id}",
             axum::routing::patch(crate::profiles::change_route),
+        )
+        .route(
+            "/v1/projects",
+            get(crate::projects::list).post(crate::projects::create),
+        )
+        .route(
+            "/v1/projects/{id}",
+            axum::routing::patch(crate::projects::change).delete(crate::projects::delete),
         )
         .route(
             "/v1/helpers",
@@ -635,7 +645,13 @@ async fn method_not_allowed() -> ApiError {
 /// The optional features obid serves, by stable name (docs/contracts/capabilities.md): sorted, each
 /// name one behaviour forever (a changed behaviour gets a new name, such as `-v2`). A new optional
 /// feature adds its name here and its row in docs/runner-api.md's Capabilities table together.
-pub const CAPABILITIES: &[&str] = &["events-replay-v1", "folders-v1", "revisions-v1"];
+pub const CAPABILITIES: &[&str] = &[
+    "events-replay-v1",
+    "folders-v1",
+    "project-jobs-v1",
+    "projects-v1",
+    "revisions-v1",
+];
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
