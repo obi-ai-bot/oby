@@ -24,9 +24,9 @@
 // The limit: a model checks the design, not that the code implements it. Nothing here replays a trace against the
 // code (Quint Connect is not used). obid never arms a branch it didn't make (crate::merge::ready's own-branch hold), so
 // a drop off its own branch can't happen in the code; the model lets it, to show the round's guard alone keeps it from
-// a round.
+// a round. The pull request's head is `prHead`, since Quint keeps `head` for its own (lists).
 module queue_drop {
-  var head: int
+  var prHead: int
   var armed: bool
   var held: bool
   var merged: bool
@@ -45,34 +45,34 @@ module queue_drop {
     nondet b = Set(true, false).oneOf()
     nondet o = Set(true, false).oneOf()
     all {
-      head' = 1, armed' = false, held' = false, merged' = false, droppedHeads' = Set(), drops' = 0, rounds' = 0,
+      prHead' = 1, armed' = false, held' = false, merged' = false, droppedHeads' = Set(), drops' = 0, rounds' = 0,
       pending' = false, running' = false, stopped' = false, told' = false, carded' = false, ownBranch' = b, own' = o,
     }
   }
   action arm = all {
-    not(merged), not(running), not(stopped), not(armed), not(droppedHeads.contains(head)),
+    not(merged), not(running), not(stopped), not(armed), not(droppedHeads.contains(prHead)),
     armed' = true, held' = true,
-    head' = head, merged' = merged, droppedHeads' = droppedHeads, drops' = drops, rounds' = rounds, pending' = pending,
+    prHead' = prHead, merged' = merged, droppedHeads' = droppedHeads, drops' = drops, rounds' = rounds, pending' = pending,
     running' = running, stopped' = stopped, told' = told, carded' = carded, ownBranch' = ownBranch, own' = own,
   }
   action queueMerges = all {
     armed, held,
     merged' = true,
-    head' = head, armed' = armed, held' = held, droppedHeads' = droppedHeads, drops' = drops, rounds' = rounds,
+    prHead' = prHead, armed' = armed, held' = held, droppedHeads' = droppedHeads, drops' = drops, rounds' = rounds,
     pending' = pending, running' = running, stopped' = stopped, told' = told, carded' = carded, ownBranch' = ownBranch,
     own' = own,
   }
   action queueDrops = all {
     armed, held,
     held' = false,
-    head' = head, armed' = armed, merged' = merged, droppedHeads' = droppedHeads, drops' = drops, rounds' = rounds,
+    prHead' = prHead, armed' = armed, merged' = merged, droppedHeads' = droppedHeads, drops' = drops, rounds' = rounds,
     pending' = pending, running' = running, stopped' = stopped, told' = told, carded' = carded, ownBranch' = ownBranch,
     own' = own,
   }
   action noteDrop = all {
     armed, not(held), not(merged),
-    armed' = false, droppedHeads' = droppedHeads.union(Set(head)), drops' = drops + 1, pending' = true,
-    head' = head, held' = held, merged' = merged, rounds' = rounds, running' = running, stopped' = stopped,
+    armed' = false, droppedHeads' = droppedHeads.union(Set(prHead)), drops' = drops + 1, pending' = true,
+    prHead' = prHead, held' = held, merged' = merged, rounds' = rounds, running' = running, stopped' = stopped,
     told' = told, carded' = carded, ownBranch' = ownBranch, own' = own,
   }
   // The stop that says why: own work's conversation is told, other work gets a card.
@@ -88,7 +88,7 @@ module queue_drop {
         all { rounds' = rounds + 1, running' = true, stopped' = stopped, told' = told, carded' = carded }
       else
         all { rounds' = rounds, running' = running, stops },
-      head' = head, armed' = armed, held' = held, merged' = merged, droppedHeads' = droppedHeads, drops' = drops,
+      prHead' = prHead, armed' = armed, held' = held, merged' = merged, droppedHeads' = droppedHeads, drops' = drops,
       ownBranch' = ownBranch, own' = own,
     }
   }
@@ -96,27 +96,27 @@ module queue_drop {
     nondet moved = Set(true, false).oneOf()
     all {
       running,
-      running' = false, head' = if (moved) head + 1 else head,
+      running' = false, prHead' = if (moved) prHead + 1 else prHead,
       armed' = armed, held' = held, merged' = merged, droppedHeads' = droppedHeads, drops' = drops, rounds' = rounds,
       pending' = pending, stopped' = stopped, told' = told, carded' = carded, ownBranch' = ownBranch, own' = own,
     }
   }
-  // A round that left the head as it was gets no second round: it stops as decide does.
+  // A round that left the prHead as it was gets no second round: it stops as decide does.
   action passAtDroppedHead = all {
-    not(running), not(pending), not(stopped), not(merged), droppedHeads.contains(head), rounds == 1,
+    not(running), not(pending), not(stopped), not(merged), droppedHeads.contains(prHead), rounds == 1,
     stops,
-    head' = head, armed' = armed, held' = held, merged' = merged, droppedHeads' = droppedHeads, drops' = drops,
+    prHead' = prHead, armed' = armed, held' = held, merged' = merged, droppedHeads' = droppedHeads, drops' = drops,
     rounds' = rounds, pending' = pending, running' = running, ownBranch' = ownBranch, own' = own,
   }
   action stutter = all {
-    head' = head, armed' = armed, held' = held, merged' = merged, droppedHeads' = droppedHeads, drops' = drops,
+    prHead' = prHead, armed' = armed, held' = held, merged' = merged, droppedHeads' = droppedHeads, drops' = drops,
     rounds' = rounds, pending' = pending, running' = running, stopped' = stopped, told' = told, carded' = carded,
     ownBranch' = ownBranch, own' = own,
   }
   action step = any { arm, queueMerges, queueDrops, noteDrop, decide, roundEnds, passAtDroppedHead, stutter }
   val oneDropRound = rounds <= 1
   val noRoundOffOwnBranch = not(ownBranch) implies rounds == 0
-  val droppedHeadNeverArmed = armed implies not(droppedHeads.contains(head))
+  val droppedHeadNeverArmed = armed implies not(droppedHeads.contains(prHead))
   val stopSaysWhy = and {
     stopped implies ((own and told and not(carded)) or (not(own) and carded and not(told))),
     not(stopped) implies (not(told) and not(carded)),
