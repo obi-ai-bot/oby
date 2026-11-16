@@ -142,6 +142,8 @@ impl Jobs {
         review.mode = Some(Mode::Plan.as_str().to_owned());
         review.round = Some(1);
         review.review_of = Some(id.to_owned());
+        // In the reviewed job's conversation, adding nothing to it (TASKCONV-26 to 28).
+        review.conversation = author.conversation.clone();
         // It reads the commit obid pushed, which is in the reviewed job's own clone (crate::secretspec).
         review.apart = author.apart;
         review.clone_root = author.clone_root.clone();
