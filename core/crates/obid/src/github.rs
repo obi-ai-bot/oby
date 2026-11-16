@@ -466,7 +466,7 @@ pub async fn issue_body(gh: &Path, repo: &str, number: u64) -> Option<String> {
 /// What the follower asks of a pull request: its status, and what a merge needs (crate::merge).
 /// Its reviews aren't among them: `latestReviews` has no commit for an approval (cli/cli#14805),
 /// so [`reviews`] reads them from the REST API.
-const FIELDS: &str = "state,reviewDecision,mergedAt,baseRefName,headRefOid,statusCheckRollup,mergeable,mergeStateStatus,author";
+const FIELDS: &str = "state,reviewDecision,mergedAt,baseRefName,headRefOid,statusCheckRollup,mergeable,mergeStateStatus,author,autoMergeRequest";
 
 /// Why a read of the pull request failed: a fixed line, since what `gh` printed could hold a
 /// credential or someone's words.
@@ -726,6 +726,9 @@ pub struct Merging {
     /// Why GitHub refused to show those rules, in its words, when that won't pass by itself
     /// (an organization's SSO not authorized, a token without access): the owner can act on it.
     pub rules_refused: Option<String>,
+    /// Whether GitHub holds an auto-merge request on it (`autoMergeRequest`, MERGING-55): only
+    /// whether it is there; none when GitHub didn't say.
+    pub auto_merge_request: Option<bool>,
 }
 
 /// [`Merging`] from `gh pr view --json` with [`FIELDS`], its reviews not yet read; none when it
@@ -769,6 +772,62 @@ pub fn decode_merging(text: &str) -> Option<Merging> {
         reviews: vec![],
         required_approvals: None,
         rules_refused: None,
+        auto_merge_request: match value.get("autoMergeRequest") {
+            Some(Value::Object(_)) => Some(true),
+            Some(Value::Null) => Some(false),
+            _ => None,
+        },
+    })
+}
+
+/// What [`queue_read`] asks of a pull request: its state, its head, and whether GitHub's merge
+/// queue or its auto-merge holds it.
+const QUEUE_READ: &str = "query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { state headRefOid isInMergeQueue autoMergeRequest { enabledAt } } } }";
+
+/// Whether GitHub's merge queue still holds a pull request ([`queue_read`], MERGING-55 and 58).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Queued {
+    /// `OPEN`, `CLOSED` or `MERGED`; none for any other word.
+    pub state: Option<&'static str>,
+    /// Its head, when it is a sha.
+    pub head: Option<String>,
+    /// Whether it holds an auto-merge request (`autoMergeRequest`).
+    pub request: Option<bool>,
+    /// Whether it is in the merge queue (`isInMergeQueue`).
+    pub entry: Option<bool>,
+}
+
+/// Whether the pull request `number` of `repo` is still in GitHub's merge queue, in one `gh api
+/// graphql` read ([`decode_queue`]); none when it can't be read.
+pub async fn queue_read(gh: &Path, repo: &str, number: u64) -> Option<Queued> {
+    let (holder, name) = repo.split_once('/')?;
+    let (q, n) = (format!("query={QUEUE_READ}"), format!("number={number}"));
+    let (o, r) = (format!("owner={holder}"), format!("name={name}"));
+    let args = ["api", "graphql", "-f", &q, "-f", &o, "-f", &r, "-F", &n];
+    decode_queue(&run(gh, &args).await.ok()?)
+}
+
+/// [`Queued`] from [`QUEUE_READ`]'s answer: nothing else of it is kept. None when it isn't JSON.
+pub fn decode_queue(text: &str) -> Option<Queued> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    let pr = &value["data"]["repository"]["pullRequest"];
+    let held = |key: &str| match pr.get(key)? {
+        Value::Bool(held) => Some(*held),
+        Value::Object(_) => Some(true),
+        Value::Null => Some(false),
+        _ => None,
+    };
+    let state = pr["state"].as_str();
+    Some(Queued {
+        state: ["OPEN", "CLOSED", "MERGED"]
+            .into_iter()
+            .find(|s| state == Some(*s)),
+        head: pr["headRefOid"]
+            .as_str()
+            .filter(|h| crate::git::is_sha(h))
+            .map(str::to_owned),
+        request: held("autoMergeRequest"),
+        entry: held("isInMergeQueue"),
     })
 }
 
@@ -1217,6 +1276,70 @@ mod tests {
             (None, None, None)
         );
         assert_eq!(decode_merging("not json"), None);
+    }
+
+    /// MERGING-55: whether GitHub holds an auto-merge request is only whether it is there: an
+    /// object is, `null` isn't, and a missing key or anything else is unknown.
+    #[test]
+    fn merging_55_the_auto_merge_request_is_only_whether_it_is_there() {
+        let read = |value: Value| {
+            decode_merging(&value.to_string())
+                .unwrap()
+                .auto_merge_request
+        };
+        assert_eq!(read(json!({})), None);
+        assert_eq!(read(json!({"autoMergeRequest": null})), Some(false));
+        let request = json!({"autoMergeRequest": {"enabledAt": "2026-11-16T00:00:00Z"}});
+        assert_eq!(read(request), Some(true));
+        assert_eq!(read(json!({"autoMergeRequest": "yes"})), None);
+    }
+
+    /// MERGING-55 and 58: the queue's read keeps the state, the head, and whether the request and
+    /// the queue's entry are there, each unknown when GitHub said anything else.
+    #[test]
+    fn merging_58_the_queue_read_keeps_only_what_it_asks() {
+        let head = "a".repeat(40);
+        let read = |pr: Value| {
+            decode_queue(&json!({"data": {"repository": {"pullRequest": pr}}}).to_string())
+        };
+        assert_eq!(
+            read(
+                json!({"state": "OPEN", "headRefOid": head, "isInMergeQueue": false,
+                        "autoMergeRequest": null})
+            ),
+            Some(Queued {
+                state: Some("OPEN"),
+                head: Some(head.clone()),
+                request: Some(false),
+                entry: Some(false),
+            })
+        );
+        assert_eq!(
+            read(
+                json!({"state": "MERGED", "headRefOid": head, "isInMergeQueue": true,
+                        "autoMergeRequest": {"enabledAt": "2026-11-16T00:00:00Z"}})
+            ),
+            Some(Queued {
+                state: Some("MERGED"),
+                head: Some(head),
+                request: Some(true),
+                entry: Some(true),
+            })
+        );
+        assert_eq!(
+            read(
+                json!({"state": "DRAFT", "headRefOid": "main", "isInMergeQueue": "no",
+                        "autoMergeRequest": 1})
+            ),
+            Some(Queued {
+                state: None,
+                head: None,
+                request: None,
+                entry: None,
+            })
+        );
+        assert_eq!(read(json!(null)).map(|q| q.state), Some(None));
+        assert_eq!(decode_queue("not json"), None);
     }
 
     /// Classic protection's answers, as gh prints them: only GitHub's own "not required" (and the
