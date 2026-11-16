@@ -1084,7 +1084,8 @@ async fn rooms_11_a_post_read_back_before_its_answer_counts_once() {
         a_job(&obid, "Land the fix")
     });
     tokio::task::block_in_place(|| {
-        // The job's two posts go one at a time, each held: each is read back first.
+        // The job's two posts go one at a time, each held: each is read back first. A post is `sent`
+        // a moment before its job lists it, so the wait ends once both agree.
         let sent = within(40, "its two in outgoing", || {
             let job = call(&obid, "GET", &format!("/v1/jobs/{job}"), None).body;
             let all = posts(&obid);
@@ -1094,7 +1095,7 @@ async fn rooms_11_a_post_read_back_before_its_answer_counts_once() {
                 .iter()
                 .filter(|o| o["action"] == "roomPost")
                 .count();
-            both.then_some(sent)
+            (both && sent >= 2).then_some(sent)
         });
         assert_eq!(sent, 2);
         std::thread::sleep(std::time::Duration::from_secs(10));
