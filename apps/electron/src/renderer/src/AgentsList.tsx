@@ -89,7 +89,7 @@ export default function AgentsList({ needing, working, profile, activeTalk, onOp
   };
 
   return (
-    <div className="sidebar-plain">
+    <div className="sidebar-plain" role="tabpanel" id="panel-side-panel" aria-labelledby="panel-side-agents">
       <button className="sidebar-new" aria-haspopup="dialog" onClick={() => setSheet(true)}>
         <Plus size={16} strokeWidth={1.6} />
         <span className="sidebar-new-label">New agent</span>
@@ -98,6 +98,7 @@ export default function AgentsList({ needing, working, profile, activeTalk, onOp
       {needs.map(row)}
       {rest.length > 0 && <h3 className="sidebar-convo-head">Agents</h3>}
       {rest.map(row)}
+      {!needs.length && !rest.length && <p className="sidebar-empty">No agents yet</p>}
       {sheet && (
         <AgentSheet
           profile={profile}

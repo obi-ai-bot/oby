@@ -140,6 +140,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   });
   const pickSide = (to: 'projects' | 'agents') => {
     setSide(to);
+    if (to === 'agents') { setSearching(false); setQuery(''); }
     try { localStorage.setItem('oby.panelSide', to); } catch { /* not remembered, that's all */ }
   };
   // the Obyspheres you're in (spheres.ts), under the line in the icon strip:
@@ -287,6 +288,8 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     if (!next.delete(name)) next.add(name);
     return next;
   });
+  // the chats are searched, never the agents (Agents has no search)
+  const searchable = SEARCHABLE.includes(section) && !(section === 'oby' && side === 'agents');
   const openSearch = () => {
     if (searching) setQuery('');
     setSearching(!searching);
@@ -471,11 +474,21 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
             </button>
           )}
         </div>
-        {/* chat first: Projects or Agents, under the profile's name (screen 08) */}
+        {/* chat first: Projects or Agents, under the profile's name (screen 08); the arrow keys move between them */}
         {section === 'oby' && (
-          <div className="panel-side" role="tablist" aria-label="Projects or agents">
+          <div
+            className="panel-side"
+            role="tablist"
+            aria-label="Projects or agents"
+            onKeyDown={(e) => {
+              if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+              e.preventDefault();
+              e.currentTarget.querySelector<HTMLButtonElement>('[aria-selected="false"]')?.focus();
+              pickSide(side === 'projects' ? 'agents' : 'projects');
+            }}
+          >
             {(['projects', 'agents'] as const).map((to) => (
-              <button key={to} role="tab" aria-selected={side === to} className={side === to ? 'is-on' : undefined} onClick={() => pickSide(to)}>
+              <button key={to} id={`panel-side-${to}`} role="tab" aria-selected={side === to} aria-controls="panel-side-panel" tabIndex={side === to ? 0 : -1} className={side === to ? 'is-on' : undefined} onClick={() => pickSide(to)}>
                 {to === 'projects' ? 'Projects' : 'Agents'}
               </button>
             ))}
@@ -485,7 +498,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
         {section === 'obysphere' && <p className="sidebar-subtitle">{members} member{members === 1 ? '' : 's'}</p>}
         {/* on the panel icon's row */}
         <div className="sidebar-top">
-          {SEARCHABLE.includes(section) && (
+          {searchable && (
             <button className={`icon-button${searching ? ' is-on' : ''}`} aria-label="Search" aria-expanded={searching} onClick={openSearch}>
               <Search size={17} strokeWidth={1.6} />
             </button>
@@ -542,7 +555,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
           <AgentsList needing={needing} working={working} profile={shownProfile?.id} activeTalk={activeTalk} onOpenTalk={onOpenTalk} />
         )}
         {section === 'oby' && side === 'projects' && (
-          <div className="sidebar-plain">
+          <div className="sidebar-plain" role="tabpanel" id="panel-side-panel" aria-labelledby="panel-side-projects">
             <button className="connector chat-own" onClick={onNewChat}>
               <ObyFace size={32} />
               <span className="connector-text">

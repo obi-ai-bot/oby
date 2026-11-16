@@ -171,13 +171,34 @@ describe('HELPERS-12', () => {
     expect(host.querySelector('.chat-own')).not.toBeNull();
     expect(talks()).toEqual(['Talk one', 'Talk two']);
     expect(button('New agent')).toBeUndefined();
+    // the chosen side is the one tab stop, and its panel is what shows
+    expect(tabs().map((t) => t.tabIndex)).toEqual([0, -1]);
+    expect(host.querySelector('[role="tabpanel"]')!.getAttribute('aria-labelledby')).toBe(tab('Projects').id);
+    expect(button('Search')).toBeDefined();
 
+    // an open search closes on Agents, which has none
+    await click(button('Search')!);
     await toAgents();
     expect(tab('Agents').getAttribute('aria-selected')).toBe('true');
+    expect(host.querySelector('[role="tabpanel"]')!.getAttribute('aria-labelledby')).toBe(tab('Agents').id);
+    expect(button('Search')).toBeUndefined();
+    expect(host.querySelector('.sidebar-search-wrap.is-open')).toBeNull();
     expect(host.querySelector('.chat-own')).toBeNull();
     expect(button('New conversation')).toBeUndefined();
     expect(talks()).toEqual([]);
     await until(() => expect(agentNames()).toEqual(['Inbox helper']));
+    expect(localStorage.getItem('oby.panelSide')).toBe('agents');
+
+    // the arrow keys move between the two, and focus with them
+    const arrow = async (key: string) => { await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })); }); };
+    tab('Agents').focus();
+    await arrow('ArrowLeft');
+    expect(tab('Projects').getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(tab('Projects'));
+    expect(talks()).toEqual(['Talk one', 'Talk two']);
+    await arrow('ArrowRight');
+    expect(tab('Agents').getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(tab('Agents'));
     expect(localStorage.getItem('oby.panelSide')).toBe('agents');
 
     // the app again: still Agents
@@ -465,6 +486,7 @@ describe('HELPERS-20', () => {
       await toAgents();
       expect(agents()).toHaveLength(0);
       expect(heads()).toEqual([]);
+      expect(host.querySelector('.sidebar-empty')!.textContent).toBe('No agents yet');
       expect(host.querySelector('[role="alert"]')).toBeNull();
       await click(tab('Projects'));
       expect(talks()).toEqual(['Talk one', 'Talk two']);
