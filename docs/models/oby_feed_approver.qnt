@@ -5,7 +5,9 @@
 // A head approved twice by different tools, off security paths, goes to `approving`: the feeder starts an approver job
 // and arms the merge only on its verdict. The approver job starts when obid gets to it and reads the pull request's
 // tip as it is then (its startCommit), then ends done with approve, escalate or malformed, or failed, or is gone.
-// Anyone may push a new head while the pull request is open.
+// Anyone may push a new head while the pull request is open, or force-push it back to a head it had before, so
+// the approver can read a head other than the one it was asked about while the pull request is back at that one.
+// `refused` holds one head; the heads the approver escalated or gave no verdict on are held for good (`held`).
 // Invariants (FEEDAPPROVE-2 to 5):
 // - armedOnlyApproverApproved: an armed tip has two approvals by different tools, touches no security path, and the
 //   feeder read a well-formed APPROVE for it from a done approver whose startCommit was that tip.
@@ -16,11 +18,14 @@
 // neverEscalated (an approver escalates), approverNeverBroke (an approver breaks), headNeverMovedUnderApprover (a head
 // is pushed while the approver reads the old one).
 // The limit: a model checks the design, not that the script implements it; nor what the approver's words say, only
-// that the feeder acts on its first line alone.
+// that the feeder acts on its first line alone. Depth 12 reaches a head pushed away and back under a running approver
+// (staleVerdictNeverArms fails without read_approver's startCommit check), but not a held head coming back after
+// another head was refused (about 20 steps): factory/tests/test_oby_feed.py covers that (FEEDAPPROVE-3 and 4).
 
 module oby_feed_approver {
   pure val Tools = Set("claude", "codex")
   pure val MaxRounds = 2
+  pure val MaxTip = 4    // pushes reach at most this head: enough for a head pushed away and back within 12 steps
   type Review = { tool: str, tip: int, ok: bool }
   pure def okTools(rs: Set[Review], t: int): Set[str] = rs.filter(r => r.tip == t and r.ok).map(r => r.tool)
   pure def asked(rs: Set[Review], t: int): bool = rs.exists(r => r.tip == t and not(r.ok))
@@ -28,13 +33,15 @@ module oby_feed_approver {
   var st: str            // open, running, reviewing, approving, merging, waiting, failed, merged
   var job: str           // none, running, done, failed: Oby's newest build job of the task
   var pr: str            // none, open, merged
-  var tip: int           // the pull request's head, counted
+  var tip: int           // the pull request's head: a commit, numbered in the order it was first pushed
+  var top: int           // the newest head ever pushed
   var reviews: Set[Review]
   var armed: bool        // GitHub's auto-merge, pinned to armedTip
   var armedTip: int
   var rounds: int
   var security: bool     // the change touches a security path
-  var rejectedTip: int   // the head the feeder holds (`refused`)
+  var rejectedTip: int   // the head the feeder holds (`refused`): only the last one held
+  var held: Set[int]     // the heads the approver escalated or gave no verdict on, held for good (`held`)
   var askedTip: int      // `approverHead`: the tip the feeder asked its approver about
   var approver: str      // none, asked, running, approve, escalate, malformed, failed, gone
   var readTip: int       // the approver job's startCommit; -1 before it starts
@@ -46,13 +53,14 @@ module oby_feed_approver {
 
   action init = {
     nondet sec = Set(true, false).oneOf()
-    all { st' = "open", job' = "none", pr' = "none", tip' = 0, reviews' = Set(), armed' = false, armedTip' = -1,
-          rounds' = 0, security' = sec, rejectedTip' = -1, askedTip' = -1, approver' = "none", readTip' = -1,
+    all { st' = "open", job' = "none", pr' = "none", tip' = 0, top' = 0, reviews' = Set(), armed' = false, armedTip' = -1,
+          rounds' = 0, security' = sec, rejectedTip' = -1, askedTip' = -1, approver' = "none", readTip' = -1, held' = Set(),
           approvedTips' = Set(), escalatedTips' = Set(), brokenTips' = Set() }
   }
-  action keepWorld = all { job' = job, pr' = pr, tip' = tip, reviews' = reviews, rounds' = rounds, security' = security }
+  action keepWorld = all { job' = job, pr' = pr, tip' = tip, top' = top, reviews' = reviews, rounds' = rounds,
+                           security' = security }
   action keepApprover = all { approver' = approver, readTip' = readTip }
-  action keepGhosts = all { approvedTips' = approvedTips, escalatedTips' = escalatedTips, brokenTips' = brokenTips }
+  action keepGhosts = all { approvedTips' = approvedTips, escalatedTips' = escalatedTips, brokenTips' = brokenTips, held' = held }
   action keepFeeder = all { st' = st, armed' = armed, armedTip' = armedTip, rejectedTip' = rejectedTip, askedTip' = askedTip,
                             keepGhosts }
   // the feeder moves the task to `s` and changes nothing else
@@ -63,7 +71,7 @@ module oby_feed_approver {
   action jobEnds = {
     nondet ok = Set(true, false).oneOf()
     all { job == "running", job' = if (ok) "done" else "failed",
-          pr' = if (ok and pr == "none") "open" else pr, tip' = if (ok) tip + 1 else tip,
+          pr' = if (ok and pr == "none") "open" else pr, tip' = if (ok) top + 1 else tip, top' = if (ok) top + 1 else top,
           reviews' = reviews, rounds' = rounds, security' = security, keepFeeder, keepApprover }
   }
   action review = {
@@ -71,23 +79,27 @@ module oby_feed_approver {
     nondet ok = Set(true, false).oneOf()
     all { job == "done", pr == "open", not(reviews.exists(r => r.tip == tip and r.tool == t)),
           reviews' = reviews.union(Set({ tool: t, tip: tip, ok: ok })),
-          job' = job, pr' = pr, tip' = tip, rounds' = rounds, security' = security, keepFeeder, keepApprover }
+          job' = job, pr' = pr, tip' = tip, top' = top, rounds' = rounds, security' = security, keepFeeder, keepApprover }
   }
   action followUp = all { job == "done", pr == "open", not(armed), asked(reviews, tip), rounds < MaxRounds,
-                          job' = "running", rounds' = rounds + 1, pr' = pr, tip' = tip, reviews' = reviews,
+                          job' = "running", rounds' = rounds + 1, pr' = pr, tip' = tip, top' = top, reviews' = reviews,
                           security' = security, keepFeeder, keepApprover }
-  action push = all { pr == "open", tip' = tip + 1, job' = job, pr' = pr, reviews' = reviews, rounds' = rounds,
-                      security' = security, keepFeeder, keepApprover }
+  // a new head, or a force-push back to one the pull request had before
+  action push = {
+    nondet t = 0.to(MaxTip).oneOf()
+    all { pr == "open", t != tip, t <= top + 1, tip' = t, top' = if (t > top) t else top, job' = job, pr' = pr,
+          reviews' = reviews, rounds' = rounds, security' = security, keepFeeder, keepApprover }
+  }
   action queueMerges = all { armed, pr == "open", tip == armedTip, pr' = "merged", armed' = false,
-                             job' = job, tip' = tip, reviews' = reviews, rounds' = rounds, security' = security,
+                             job' = job, tip' = tip, top' = top, reviews' = reviews, rounds' = rounds, security' = security,
                              st' = st, armedTip' = armedTip, rejectedTip' = rejectedTip, askedTip' = askedTip,
                              keepGhosts, keepApprover }
   action queueRefuses = all { armed, pr == "open", armed' = false, pr' = pr,
-                              job' = job, tip' = tip, reviews' = reviews, rounds' = rounds, security' = security,
+                              job' = job, tip' = tip, top' = top, reviews' = reviews, rounds' = rounds, security' = security,
                               st' = st, armedTip' = armedTip, rejectedTip' = rejectedTip, askedTip' = askedTip,
                               keepGhosts, keepApprover }
   action ownerMerges = all { pr == "open", job != "running", pr' = "merged", armed' = false,
-                             job' = job, tip' = tip, reviews' = reviews, rounds' = rounds, security' = security,
+                             job' = job, tip' = tip, top' = top, reviews' = reviews, rounds' = rounds, security' = security,
                              st' = st, armedTip' = armedTip, rejectedTip' = rejectedTip, askedTip' = askedTip,
                              keepGhosts, keepApprover }
   // the approver job: obid starts it and it reads the tip as it is then; it ends, or obid loses it
@@ -108,7 +120,7 @@ module oby_feed_approver {
   action settle = {
     if (job == "running") moveTo("running")
     else if (pr == "merged") moveTo("merged")
-    else if (pr == "open" and canMerge and tip != rejectedTip) ask
+    else if (pr == "open" and canMerge and tip != rejectedTip and not(held.contains(tip))) ask
     else if (pr == "open" and (asked(reviews, tip) or okTools(reviews, tip).size() >= 2)) moveTo("waiting")
     else moveTo(st)
   }
@@ -121,15 +133,15 @@ module oby_feed_approver {
     else if (approver == "approve")
       all { st' = "merging", armed' = true, armedTip' = askedTip, rejectedTip' = rejectedTip, askedTip' = askedTip,
             keepApprover, approvedTips' = approvedTips.union(Set(readTip)), escalatedTips' = escalatedTips,
-            brokenTips' = brokenTips }
+            brokenTips' = brokenTips, held' = held }
     else if (approver == "escalate")
       all { st' = "waiting", armed' = armed, armedTip' = armedTip, rejectedTip' = askedTip, askedTip' = askedTip,
             keepApprover, approvedTips' = approvedTips, escalatedTips' = escalatedTips.union(Set(askedTip)),
-            brokenTips' = brokenTips }
+            brokenTips' = brokenTips, held' = held.union(Set(askedTip)) }
     else  // malformed, failed or gone
       all { st' = "waiting", armed' = armed, armedTip' = armedTip, rejectedTip' = askedTip, askedTip' = askedTip,
             keepApprover, approvedTips' = approvedTips, escalatedTips' = escalatedTips,
-            brokenTips' = brokenTips.union(Set(askedTip)) }
+            brokenTips' = brokenTips.union(Set(askedTip)), held' = held.union(Set(askedTip)) }
   }
   action pass = all {
     keepWorld,
@@ -147,7 +159,7 @@ module oby_feed_approver {
     }
     else moveTo(st)
   }
-  action start = all { st == "open", job == "none", job' = "running", pr' = pr, tip' = tip, reviews' = reviews,
+  action start = all { st == "open", job == "none", job' = "running", pr' = pr, tip' = tip, top' = top, reviews' = reviews,
                        rounds' = 1, security' = security, st' = "running", armed' = armed, armedTip' = armedTip,
                        rejectedTip' = rejectedTip, askedTip' = askedTip, keepApprover, keepGhosts }
   action step = any { world, start, all { st != "open", pass } }
