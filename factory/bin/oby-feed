@@ -28,8 +28,8 @@ frees the disk afterwards:
   re-check, the merge.
 - A head approved twice that passes the security-path, model and Kani checks and the gate goes first to its lens
   reviews: one read-only `review` job per lens factory/bin/route's rule routes (imported, not copied) from the task's
-  intake (its RISK: and SURFACES: lines) or, for a task with no accepted intake, the task file's RISK: line on
-  origin/<base> (blank is high) and the surfaces the pull request's files touch, each with its lens's model,
+  intake's RISK: line (or, with no accepted intake, the task file's RISK: line on origin/<base>, blank read as high)
+  and from the intake's SURFACES: with every surface the pull request's files touch, each with its lens's model,
   following .claude/agents/reviewer-<lens>.md as origin/<base> has it. Only every lens's VERDICT: PASS for the same
   head, once may_arm() and the gate still pass it, asks the approver; a VERDICT: CHANGES holds the head for the owner
   with its findings (shown by --status), and no verdict or a lens that can't be routed holds it too, both for good; a
@@ -889,19 +889,19 @@ LENS_VERDICTS = ("VERDICT: PASS", "VERDICT: CHANGES")
 
 
 def lens_routing(key, files):
-    """The risk and surfaces a head's lenses are routed by: its task's intake (feed/<KEY>.intake.md, FEEDSPEC), read
-    with job.read_intake() as `route <job-id>` reads a job's intake.md, when the feeder has its ACCEPT; else, for a task
-    the feeder has no accepted intake for, the task file's RISK: line and the pull request's surfaces."""
+    """The risk and surfaces a head's lenses are routed by. The risk is its task's intake's (feed/<KEY>.intake.md,
+    FEEDSPEC, read with job.read_intake() as `route <job-id>` reads a job's intake.md) when the feeder has its ACCEPT,
+    else the task file's RISK: line. The surfaces are that intake's, then those the pull request's changed files touch,
+    each once: what the diff touches can add a lens, never take one away."""
     intake = FEED / f"{key}.intake.md"
-    if intake.is_file():
-        read = job.read_intake(intake)
-        if read["decision"] == "ACCEPT":
-            return read["risk"], read["surfaces"]
-    return lens_risk(key), lens_surfaces(key, files)
+    read = job.read_intake(intake) if intake.is_file() else {}
+    accepted = read.get("decision") == "ACCEPT"
+    surfaces = (read["surfaces"] if accepted else []) + lens_surfaces(key, files)
+    return (read["risk"] if accepted else lens_risk(key)), list(dict.fromkeys(surfaces))
 
 
 def lens_risk(key):
-    """The task's risk for routing when it has no intake: its RISK: header line as origin/<base> has it (task_text),
+    """The task's risk for routing when it has no accepted intake: its RISK: header line as origin/<base> has it (task_text),
     read with job.header(). A blank one, or one that isn't a row of config.json's `routing`, is high."""
     copy = FEED / "lenses" / f"{key}.md"
     copy.parent.mkdir(parents=True, exist_ok=True)
@@ -911,7 +911,7 @@ def lens_risk(key):
 
 
 def lens_surfaces(key, files):
-    """The surfaces route reads, from the pull request's changed files, for a task with no intake."""
+    """The surfaces route reads from the pull request's changed files."""
     low = [f.lower() for f in files]
     surfaces = []
     if any(f.startswith("docs/models/") and f.endswith(".qnt") for f in files):

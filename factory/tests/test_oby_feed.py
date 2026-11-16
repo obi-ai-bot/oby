@@ -2144,13 +2144,10 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual(surfaces("A00-99", ["core/crates/obid/src/jobs/run.rs", "apps/electronic/x"]), [])
 
     def test_feedlens_1_the_tasks_intake_routes_the_lenses_when_the_feeder_has_one(self):
-        """An accepted intake's RISK: and SURFACES: route the lenses, in place of the task file's RISK: line and the
-        pull request's files; with no accepted intake, those are read as before."""
-        electron = "apps/electron/src/renderer/Home.tsx"
+        """An accepted intake's RISK: replaces the task file's, and its SURFACES: route lenses the pull request's files
+        don't call for; with no accepted intake, the task file's RISK: line is read as before."""
         cases = {"intake": ("DECISION: ACCEPT\nRISK: low\nSURFACES: security, model\nRESCOPED: no", ["x.py"],
                             [("code", "haiku"), ("proofs", "opus"), ("security", "opus")]),
-                 "intake, no surfaces": ("DECISION: ACCEPT\nRISK: medium\nSURFACES: none\nRESCOPED: no",
-                                         [self.VAULT, electron], [("code", "sonnet")]),
                  "intake not accepted": ("DECISION: NEEDS-INFO\nRISK: low\nSURFACES: ui\nRESCOPED: no", ["x.py"],
                                          [("code", "sonnet")]),
                  "no intake": (None, [self.VAULT], [("code", "sonnet"), ("security", "opus")])}
@@ -2171,6 +2168,25 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual((item["state"], item["refused"], self.stand.posts), ("waiting", OLD, []))
         self.assertTrue(item["note"].startswith("approved twice, but its lens reviews can't be routed: surface 'database' "
                                                 "isn't in config.json surface_reviewers"), item["note"])
+
+    def test_feedlens_1_a_diff_touching_security_code_gets_the_security_lens_whatever_the_intake_says(self):
+        """The surfaces are the intake's and the diff's together: an intake that said `none` never takes away the
+        security lens from a head that changes SECURITY_SURFACE code, nor ui and ux from one that changes the app."""
+        electron = "apps/electron/src/renderer/Home.tsx"
+        cases = {"vault": ("none", [self.VAULT], [("code", "sonnet"), ("security", "opus")]),
+                 "vault and the app": ("none", [self.VAULT, electron],
+                                       [("code", "sonnet"), ("security", "opus"), ("ui", "haiku"), ("ux", "sonnet")]),
+                 "said security too": ("security", [self.VAULT], [("code", "sonnet"), ("security", "opus")]),
+                 "said model, the diff adds security": ("model", ["core/crates/obid/src/egress.rs"],
+                                                        [("code", "sonnet"), ("proofs", "opus"), ("security", "opus")])}
+        for case, (surfaces, files, lenses) in cases.items():
+            with self.subTest(case=case):
+                self.afresh(case)
+                self.lensed(risk="low", files=files)
+                (self.feed.FEED / "A00-99.intake.md").write_text(
+                    f"DECISION: ACCEPT\nRISK: medium\nSURFACES: {surfaces}\nRESCOPED: no\n\n## Summary\n- It fits.\n")
+                self.one_pass()
+                self.assertEqual([(lens, model) for lens, model, _ in self.lens_posts()], lenses)
 
     # FEEDLENS-2: each lens job, and the task's state while they run
     def test_feedlens_2_each_lens_job_is_a_read_only_review_with_its_model(self):

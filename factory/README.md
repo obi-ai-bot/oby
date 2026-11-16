@@ -146,13 +146,13 @@ or a step that gave nothing usable leaves the task `blocked`, holding no slot, u
 
 It has lens reviews and an approver step too. When a head is approved twice by different tools and passes the
 security-path, model and Kani checks and the gate, it goes first to its lens reviews: one read-only review job on obid
-per lens `bin/route`'s rule gives (its `reviewers()`, imported) for the task intake's `RISK:` and `SURFACES:` lines, as
-`route` reads a job's intake (or, for a task the feeder has no intake for, the task file's `RISK:` line on `dev`, blank
-read as `high`, and the surfaces the pull request touches), each with its lens's model and following
-`.claude/agents/reviewer-<lens>.md` as `dev` has it. A `VERDICT: CHANGES` holds the head for the owner, with the lens's
-findings in `oby-feed --status`; no verdict, or a lens that can't be routed, holds it too. Only when every lens says
-`VERDICT: PASS` for that same head does the feeder start an approver
-job on obid for that head: a read-only review that follows `.claude/agents/approver.md` as `dev` has it. Only its
+per lens `bin/route`'s rule gives (its `reviewers()`, imported) for the task intake's `RISK:` line (or, for a task the
+feeder has no intake for, the task file's `RISK:` line on `dev`, blank read as `high`) and for the intake's `SURFACES:`
+together with every surface the pull request's files touch, so the diff can add a lens but never lose one. Each job
+runs with its lens's model and follows `.claude/agents/reviewer-<lens>.md` as `dev` has it. A `VERDICT: CHANGES` holds
+the head for the owner, with the lens's findings in `oby-feed --status`; no verdict, or a lens that can't be routed,
+holds it too. Only when every lens says `VERDICT: PASS` for that same head does the feeder start an approver job on obid
+for that head: a read-only review that follows `.claude/agents/approver.md` as `dev` has it. Only its
 `APPROVE` for that same head arms the merge. `ESCALATE` holds the head for the owner, with the approver's reasons
 in `oby-feed --status`. No verdict (any other first line, a job that failed or is gone) holds the head too, and a
 head that moved while the approver read it needs two fresh approvals and a fresh `APPROVE`. Before it arms on an
