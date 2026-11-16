@@ -126,9 +126,10 @@ approved twice by different tools and passes the security-path, model and Kani c
 job on obid for that head: a read-only review that follows `.claude/agents/approver.md` as `dev` has it. Only its
 `APPROVE` for that same head arms the merge. `ESCALATE` holds the head for the owner, with the approver's reasons
 in `oby-feed --status`. No verdict (any other first line, a job that failed or is gone) holds the head too, and a
-head that moved while the approver read it needs two fresh approvals and a fresh `APPROVE`. Until Oby's factory
-has a spec step, the approver checks the task file's own acceptance list. Its contract is FEEDAPPROVE in
-`docs/contracts/factory.md`.
+head that moved while the approver read it needs two fresh approvals and a fresh `APPROVE`. Before it arms on an
+`APPROVE`, the feeder checks the approvals, security paths, models and Kani proofs again. Until Oby's factory has a
+spec step, the approver checks the task file's own acceptance list, as `dev` has it, never the pull request's copy;
+a task whose file isn't on `dev` is held for the owner. Its contract is FEEDAPPROVE in `docs/contracts/factory.md`.
 
 ## From AGENTS.md
 

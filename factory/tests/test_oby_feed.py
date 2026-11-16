@@ -89,6 +89,7 @@ class StandIns:
         self.post_answers = []  # answers to the next posts, in order: (code, body), or None for no answer
         self.approver = {"status": "done", "summary": "APPROVE\n1. met: the stand-in read it"}
         self.missed = None  # the feeder's OBID_MISSED, for a post with no answer
+        self.off_base = set()  # task keys whose file origin/<base> doesn't have, as the approver step asks git
 
     def api(self, method, path, body=None, timeout=30):
         self.calls.append(("api", method, path))
@@ -129,6 +130,8 @@ class StandIns:
             out = json.dumps(self.graphql) if self.graphql else ""
         elif cmd[:3] == ["gh", "pr", "merge"]:
             code = self.merge_code
+        elif cmd[:3] == ["git", "cat-file", "-e"]:  # the approver step's question: is the task file on origin/<base>?
+            code = 1 if Path(cmd[3]).stem in self.off_base else 0
         elif cmd[:2] == ["git", "show"]:  # the Kani check's read of the task on origin/<base>: none there
             return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="fatal: path does not exist")
         elif cmd[:2] != ["git", "fetch"]:
@@ -1330,9 +1333,22 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual(text, self.feed.approver_brief(dict(item), OLD))
         self.assertLessEqual(len(text), 2000)
         for said in (OLD, f"#{PR}", f"git show origin/{self.feed.job.BASE}:.claude/agents/approver.md",
-                     "factory/queue/done/A00-99.md", "APPROVE", "ESCALATE", f"git diff origin/{self.feed.job.BASE}...HEAD"):
+                     f"git show origin/{self.feed.job.BASE}:factory/queue/tasks/A00-99.md", "APPROVE", "ESCALATE",
+                     f"git diff origin/{self.feed.job.BASE}...HEAD"):
             self.assertIn(said, text)
+        self.assertNotIn("factory/queue/done/", text)  # never the pull request's own copy, which it may have changed
         self.assertLessEqual(len(self.feed.approver_brief(dict(item, title="t" * 5000), OLD)), 2000)
+
+    def test_feedapprove_1_a_task_whose_file_isnt_on_the_base_is_held_with_no_approver(self):
+        self.approved_twice("reviewing")
+        self.stand.off_base = {"A00-99"}
+        self.one_pass()
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual((item["state"], item["refused"]), ("waiting", OLD))
+        self.assertEqual(item["note"], f"approved twice, but its task file isn't on origin/{self.feed.job.BASE}, so its "
+                                       "approver has no acceptance list to read: merge it yourself")
+        self.assertEqual((self.stand.posts, self.stand.merges()), ([], []))
 
     # FEEDAPPROVE-2: APPROVE arms the exact head
     def test_feedapprove_2_approve_arms_the_head_the_approver_read(self):
@@ -1343,6 +1359,33 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual((item["state"], item["head"], item["approved"]), ("merging", OLD, ["claude", "codex"]))
         self.one_pass()
         self.assertEqual(len(self.stand.merges()), 1)
+
+    def test_feedapprove_2_an_approve_is_not_armed_when_may_arm_no_longer_arms_the_head(self):
+        """While the approver ran, a review asked for changes, a review needs the owner, a model check started to fail
+        or the approvals went: its APPROVE arms nothing, and the task is back in the usual flow, `waiting`."""
+        cases = {"changes": (lambda j: j["approvals"].append({"commit": OLD, "agent": "cursor", "verdict": "changes"}),
+                             "a review asked for changes or needs you: open it in Oby", False),
+                 "needs you": (lambda j: j.update(reviewNeedsYou=True),
+                               "a review asked for changes or needs you: open it in Oby", False),
+                 "model": (None, f"approved twice, but {PATH}: the invariant safe does not hold", True),
+                 "approvals gone": (lambda j: j.update(approvals=[]),
+                                    f"the approver approved {OLD[:12]}, but it no longer has two approvals: waiting for them", False)}
+        for case, (change, note, held) in cases.items():
+            with self.subTest(case=case):
+                self.feed.FEED = self.dir / f"feed-{case}"
+                self.stand = StandIns()
+                self.feed.api = self.stand.api
+                self.feed.subprocess = Namespace(run=self.stand.run)
+                self.approving()
+                if change:
+                    change(self.stand.jobs[JOB])
+                self.feed.check_models = (lambda files, head: f"{PATH}: the invariant safe does not hold") if case == "model" else (lambda files, head: None)
+                self.one_pass()
+                item = self.task_now()
+                self.assertEqual((item["state"], item["note"]), ("waiting", note))
+                self.assertEqual(item.get("refused"), OLD if held else None)
+                self.one_pass()
+                self.assertEqual(self.stand.merges(), [])
 
     # FEEDAPPROVE-3: ESCALATE waits for the owner with its reasons
     def test_feedapprove_3_escalate_waits_with_its_reasons_and_never_merges_that_head(self):
@@ -1376,6 +1419,17 @@ class ObyFeed(unittest.TestCase):
         item = self.task_now()
         self.assertEqual((item["state"], item["approverHead"], item["approvers"]), ("approving", NEW, ["approver-1", "approver-2"]))
         self.assertEqual(self.stand.merges(), [])
+
+    def test_feedapprove_3_status_strips_control_characters_from_the_approvers_words(self):
+        self.approving(summary="ESCALATE\n\x1b[2JIt \x07changes a lane.\x1b]0;owned\x07\n\x9bthe end")
+        self.one_pass()
+        self.feed.free_gb = lambda: 100.0
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            self.feed.status()
+        printed = out.getvalue()
+        self.assertFalse(re.search(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]", printed), repr(printed))
+        self.assertIn("  [2JIt changes a lane.]0;owned\n  the end\n", printed)
 
     def held_head_comes_back(self, summary):
         """OLD's approver answers `summary`; NEW is approved and GitHub refuses its merge, so `refused` is NEW; then OLD
@@ -1730,15 +1784,17 @@ class FeedKani(unittest.TestCase):
 
     # FEEDKANI-1: a passing harness whose broken rule turns it red arms the merge
     def test_feedkani_1_passing_harness_and_red_broken_rule_arm_the_merge(self):
+        self.base_task("A Kani harness over the pure function add: it never panics.")  # the approver reads it there
         head, files = self.proved_head()
         got, item = self.review(head, files)
         self.assertEqual(got, (1, 0))
+        self.assertEqual(self.kani_calls(), [KANI_RUN, KANI_RUN])
         self.assertEqual(item["state"], "approving")  # its approver first, then the merge on its APPROVE
-        self.one_pass()
+        self.one_pass()  # may_arm() again before the merge: the harness and its broken rule run once more
         item = self.feed.load_state()[KEY]
         self.assertEqual(self.stand.merges(), [("gh", "pr", "merge", str(PR), "--repo", REPO, "--auto", "--match-head-commit", head)])
         self.assertEqual(item["state"], "merging")
-        self.assertEqual(self.kani_calls(), [KANI_RUN, KANI_RUN])
+        self.assertEqual(self.kani_calls(), [KANI_RUN] * 4)
         self.assert_no_scratch_copy()
         self.assertEqual(self.git(self.repo, "show", f"{head}:{LIB}"), BASE_LIB + PROOF_MODULE)
         self.assertIn("VERIFICATION:- FAILED", (self.feed.FEED / f"{KEY}.proofs.log").read_text())

@@ -17,7 +17,8 @@ frees the disk afterwards:
   One that touches a security path waits for the owner (AGENTS.md, "Carrying and merging").
 - A head approved twice that passes the security-path, model and Kani checks goes to an approver job first, a
   read-only `review` job on obid following .claude/agents/approver.md as origin/<base> has it, against the task file's
-  own acceptance list. Only that job's APPROVE for the same head arms the merge. ESCALATE waits for the owner with the
+  own acceptance list as origin/<base> has it (a task whose file isn't there is held). Only that job's APPROVE for the
+  same head arms the merge, once may_arm() still arms that head. ESCALATE waits for the owner with the
   approver's reasons (shown by --status), and no verdict (any other first line, a job that failed, was stopped or
   is gone) holds the head, both for good, even when it comes back later; neither, nor a head that moved while the
   approver read it, ever arms it (docs/contracts/factory.md, FEEDAPPROVE).
@@ -588,7 +589,8 @@ def approver_brief(item, head):
             "This is Oby's factory: there is no job folder, intake.md, spec.md, build.md or round file. Two reviews by "
             "different tools already approved this head, and obid's check passed before it published. "
             "In place of the spec's acceptance criteria, check each item of the task file's own acceptance list (its "
-            f"Acceptance, Tests or Done-when items) in factory/queue/done/{key}.md at this head, one at a time; the task's "
+            f"Acceptance, Tests or Done-when items), one at a time, as the base branch has it: read it with git show "
+            f"origin/{base}:factory/queue/tasks/{key}.md, never the pull request's copy, which it may have changed; its "
             "RISK: header line counts as issue.md's first lines. "
             f"Compare with git diff origin/{base}...HEAD. Run only commands that read (git diff, git show, git log, grep, "
             "cat); run no test or build. Write no file and post nothing. "
@@ -596,10 +598,21 @@ def approver_brief(item, head):
             "met or not met and how you know. Then your reasons, and on ESCALATE, the exact decision the owner must make.")
 
 
+def task_on_base(key):
+    """Whether origin/<base> has the task's file, the one the approver reads its acceptance list and RISK: line from."""
+    rel = (job.TASKS / f"{key}.md").relative_to(REPO)
+    return subprocess.run(["git", "cat-file", "-e", f"origin/{job.BASE}:{rel}"], cwd=REPO, capture_output=True).returncode == 0
+
+
 def ask_approver(item, head, tools, account):
     """Starts the approver job for a head may_arm() approved, in place of arming it. Its body is the same at every
-    try for the head, so a resend after a lost answer gets obid's job back (POST /v1/jobs's receipts). Returns True when
-    the task changed."""
+    try for the head, so a resend after a lost answer gets obid's job back (POST /v1/jobs's receipts). A task whose file
+    origin/<base> doesn't have gives the approver nothing it can trust to judge by, so its head is held. Returns True
+    when the task changed."""
+    if not task_on_base(item["key"]):
+        item.update(state="waiting", head=head, refused=head,
+                    note=f"{HELD}its task file isn't on origin/{job.BASE}, so its approver has no acceptance list to read: merge it yourself")
+        return True
     sent = with_account({"repo": GH_REPO, "kind": "review", "pr": item["pr"], "base": job.BASE, "rounds": 1,
                          "title": f"{item['key']} approver"[:60], "task": approver_brief(item, head),
                          "clientRequestId": f"feed-approve-{item['key']}-{head[:12]}"}, account)
@@ -635,9 +648,11 @@ def no_verdict(item, why):
     return hold_for_good(item, f"{HELD}the approver gave no verdict: {why}: merge it yourself or push a new head")
 
 
-def read_approver(item, pr):
-    """One look at an `approving` task's approver job. Only a well-formed APPROVE from a done job that read the head
-    the pull request still has arms it. Returns True when the task changed."""
+def read_approver(item, j, pr):
+    """One look at an `approving` task's approver job, `j` its build job. Only a well-formed APPROVE from a done job
+    that read the head the pull request still has arms it, and only if may_arm() still arms that head: a change request,
+    a security path, a model or a Kani proof that changed while the approver ran sends it back to `waiting`. Returns
+    True when the task changed."""
     head, now = item["approverHead"], pr["headRefOid"]
     code, a = api("GET", f"/v1/jobs/{item['approver']}")
     if code not in (200, 404):
@@ -663,8 +678,21 @@ def read_approver(item, pr):
         return hold_for_good(item, f"{HELD}the approver escalated it to you: {reason[:160]}", escalation=rest)
     if first != "APPROVE":
         return no_verdict(item, f'its answer\'s first line is "{first[:60]}"')
-    arm(item, head, item["approved"])
+    verdict, said = may_arm(j, pr, refused_for(item, head), item["key"])
+    if verdict == "arm":
+        arm(item, head, said)
+    elif verdict == "retry":
+        gate_unreached(item, head, said)
+    else:
+        not_armed(item, head, said or f"the approver approved {head[:12]}, but it no longer has two approvals: waiting for them")
     return True
+
+
+def not_armed(item, head, said):
+    """may_arm() said to wait: the task waits, and a head held after two approvals isn't judged again."""
+    item.update(state="waiting", head=head, note=said)
+    if said.startswith(HELD):
+        item["refused"] = head
 
 
 def refused_for(item, head):
@@ -762,9 +790,7 @@ def follow(item, jobs, account):
             gate_unreached(item, head, said)
             return True
         if verdict == "wait":
-            item.update(state="waiting", head=head, note=said)
-            if said.startswith(HELD):  # a head held after two approvals isn't judged again
-                item["refused"] = head
+            not_armed(item, head, said)
             return True
         return ask_approver(item, head, said, account)
     if item["state"] == "approving":
@@ -777,7 +803,7 @@ def follow(item, jobs, account):
         if pr["state"] == "CLOSED":
             item.update(state="failed", note="its pull request was closed")
             return True
-        return read_approver(item, pr)
+        return read_approver(item, j, pr)
     if item["state"] == "merging":
         owner, name = GH_REPO.split("/", 1)
         got = gh_json("api", "graphql", "-f", f"owner={owner}", "-f", f"name={name}", "-F", f"number={item['pr']}",
@@ -972,13 +998,21 @@ def one_pass(args):
     return len([i for i in state.values() if i["state"] in ACTIVE]), started + resumed
 
 
+CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def printable(text):
+    """An agent's words for the terminal: no control characters, so no escape sequence reaches it."""
+    return CONTROL.sub("", text)
+
+
 def status():
     state = load_state()
     for item in sorted(state.values(), key=lambda i: i.get("started", "")):
         pr = f" #{item['pr']}" if item.get("pr") else ""
-        print(f"{item['state']:<10} {item['key']:<7} {item['job']}{pr}  {item.get('note') or item['title']}"[:160])
+        print(printable(f"{item['state']:<10} {item['key']:<7} {item['job']}{pr}  {item.get('note') or item['title']}")[:160])
         for line in (item.get("escalation") or "").splitlines():
-            print("  " + line)
+            print("  " + printable(line))
     counts = {}
     for item in state.values():
         counts[item["state"]] = counts.get(item["state"], 0) + 1
