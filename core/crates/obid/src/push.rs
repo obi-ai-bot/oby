@@ -633,7 +633,7 @@ fn landed(job: &Job, now: i64) -> Option<(String, (String, String, &'static str)
     let number = job
         .published
         .as_deref()
-        .and_then(|url| crate::github::pull_request_number(url, &job.repo));
+        .and_then(|url| job.pull_request_number(url));
     if job.merged() {
         let pr = job.pull_request.as_ref()?;
         let at = pr.merged_at.filter(|at| now - at < DAY)?;
