@@ -99,6 +99,9 @@ POST /v1/obid/sphere/peers/{owner}/ask
 GET /v1/obid/sphere/pins
 POST /v1/obid/sphere/pins/{owner}
 POST /v1/obid/sphere/requests
+GET /v1/obid/vault
+DELETE /v1/obid/vault/{name}
+PUT /v1/obid/vault/{name}
 GET /v1/pairing/devices
 DELETE /v1/pairing/devices/{id}
 POST /v1/pairing/invite

@@ -176,11 +176,12 @@ fn the_apis_json_has_the_vaults_secrets_taken_out() {
     );
     ended(&obid, &clean);
     // obid saves the job once more after `/wait` may have answered: its cleanup pass, 30 seconds
-    // after obid started or at a job's end, keeps what freeing its builds freed (CLEANUP-1,
-    // `Jobs::clean_worktrees`). That save shows as `buildFreed`, so it's waited for.
-    within(60, "the cleanup pass kept its buildFreed", || {
+    // after obid started or at a job's end, frees its worktree (CLEANUP-3), or the builds of one it
+    // keeps (CLEANUP-1, `Jobs::clean_worktrees`). That save shows as `worktreeFreed` or
+    // `buildFreed`, so it's waited for.
+    within(60, "the cleanup pass kept what it freed", || {
         let job = call(&obid, "GET", &format!("/v1/jobs/{clean}"), None).body;
-        job.get("buildFreed").map(|_| ())
+        (job.get("worktreeFreed").or(job.get("buildFreed"))).map(|_| ())
     });
     let before = call(&obid, "GET", &format!("/v1/jobs/{clean}"), None);
     assert_eq!(before.status, 200, "{}", before.text);
@@ -199,7 +200,7 @@ fn the_apis_json_has_the_vaults_secrets_taken_out() {
     // job's peaks again once its worker is gone, grown or not, and nothing in the answer marks
     // that save's end; waiting for `revision` to stop changing would be a guess about timing. A
     // peak kept for the first time would add `peakRss` too: `metered` runs before the job's end
-    // wakes the cleanup pass, so the wait for `buildFreed` above is what keeps it before `before`,
+    // wakes the cleanup pass, so the wait for its save above is what keeps it before `before`,
     // unless a pass woken otherwise (30 seconds after obid started, or by another job) ran in
     // between, or a reading under way (`Jobs::measure`) keeps its peak late. Adding a vault
     // secret saves no job: answers are redacted as they're written.
@@ -1132,4 +1133,205 @@ fn a_check_run_names_its_failing_tests_and_masks_the_vault() {
     let log = std::fs::read_to_string(obid.home.join(format!("logs/{id}/check.log"))).unwrap();
     assert!(!log.contains("obid-step-"), "{log}");
     assert!(log.contains("---- b stdout ----"), "{log}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// `/v1/obid/vault` (docs/contracts/vault.md, VAULT-1 to 5)
+
+/// A second strong value, for the secret a test removes while it watches the first.
+fn other_secret() -> String {
+    format!(
+        "k9/{}+Second=v?q&r é",
+        std::process::id() % 1_000_000 + 100_000
+    )
+}
+
+/// obid with the stand-in agent, and its configuration's path for `obid vault`.
+fn vault_obid(name: &str) -> (Folder, Obid, PathBuf) {
+    let folder = Folder::new(name);
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &agent());
+    let path = write_config(&folder.0, &config);
+    let obid = start(&folder.0, &config, None);
+    (folder, obid, path)
+}
+
+/// `GET /v1/obid/vault`'s names.
+fn names(obid: &Obid) -> Vec<String> {
+    let answer = call(obid, "GET", "/v1/obid/vault", None);
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    serde_json::from_value(answer.body["names"].clone()).unwrap()
+}
+
+fn put(obid: &Obid, name: &str, value: &str) -> Answer {
+    let target = format!("/v1/obid/vault/{name}");
+    call_signed(obid, "PUT", &target, Some(&json!({"value": value})))
+}
+
+fn delete(obid: &Obid, name: &str) -> Answer {
+    call_signed(obid, "DELETE", &format!("/v1/obid/vault/{name}"), None)
+}
+
+/// VAULT-1: a value put over loopback is listed by name only and taken out of the next answer at
+/// once; a signed DELETE removes it, and a second finds nothing.
+#[test]
+fn vault_1_a_put_value_is_redacted_at_once() {
+    let (_folder, obid, path) = vault_obid("vault-1");
+    add(&path, "oby.example", &other_secret());
+    let value = secret();
+
+    let saved = put(&obid, "staging-key", &value);
+    assert_eq!(saved.status, 204, "{}", saved.text);
+    assert_eq!(saved.text, "");
+    let listed = call(&obid, "GET", "/v1/obid/vault", None);
+    assert_eq!(listed.status, 200, "{}", listed.text);
+    assert_eq!(listed.body, json!({"names": ["staging-key"]}));
+    holds_none(&listed.text, &value, "GET /v1/obid/vault");
+
+    let leaky = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "investigate",
+               "task": format!("Use {value} for the staging tests")}),
+    );
+    let job = ended(&obid, &leaky);
+    assert_eq!(
+        job["request"], "Use [vault: staging-key] for the staging tests",
+        "{job}"
+    );
+    holds_none(&job.to_string(), &value, "the job");
+
+    let removed = delete(&obid, "staging-key");
+    assert_eq!(removed.status, 204, "{}", removed.text);
+    let again = delete(&obid, "staging-key");
+    assert_eq!(again.status, 404, "{}", again.text);
+    assert_eq!(
+        again.body["error"],
+        "The vault has no secret named staging-key."
+    );
+    assert!(names(&obid).is_empty());
+}
+
+/// VAULT-2: a refused value, name or body saves nothing, and its answer never holds the value.
+#[test]
+fn vault_2_a_refused_value_saves_nothing() {
+    let (_folder, obid, path) = vault_obid("vault-2");
+    add(&path, "kept-key", &other_secret());
+    let before = std::fs::read(vault_file(&obid)).unwrap();
+    let listed = names(&obid);
+    let value = secret();
+
+    let refused = [
+        ("weak-key", json!({"value": "changeme123"}), "changeme123"),
+        ("bad%20name!", json!({"value": value}), value.as_str()),
+        ("oby.tetrix.access", json!({"value": value}), value.as_str()),
+        ("extra-key", json!({"value": value, "x": 1}), value.as_str()),
+        (
+            "number-key",
+            json!({"value": 12345678901234u64}),
+            "12345678901234",
+        ),
+    ];
+    for (name, body, held) in refused {
+        let target = format!("/v1/obid/vault/{name}");
+        let answer = call_signed(&obid, "PUT", &target, Some(&body));
+        assert_eq!(answer.status, 422, "{name}: {}", answer.text);
+        let error = answer.body["error"].as_str().unwrap();
+        assert!(!error.contains(held), "{name}: {error}");
+    }
+    // A body past the cap (vault::LONGEST + 4096) is refused before anything reads it.
+    let big = json!({"value": "x".repeat(64 * 1024 + 4096)});
+    let answer = call_signed(&obid, "PUT", "/v1/obid/vault/big-key", Some(&big));
+    assert_eq!(answer.status, 413, "{}", answer.text);
+    let answer = delete(&obid, "oby.tetrix.access");
+    assert_eq!(answer.status, 422, "{}", answer.text);
+
+    assert_eq!(names(&obid), listed);
+    assert_eq!(std::fs::read(vault_file(&obid)).unwrap(), before);
+}
+
+/// VAULT-4: while the event stream is open, no answer, event frame or log line of these routes
+/// holds the value.
+#[test]
+fn vault_4_the_value_is_in_no_log_event_or_answer() {
+    let (_folder, obid, _path) = vault_obid("vault-4");
+    let (value, other) = (secret(), other_secret());
+    let events = follow_events(&obid);
+    let mut texts = Vec::new();
+
+    let saved = put(&obid, "staging-key", &value);
+    assert_eq!(saved.status, 204, "{}", saved.text);
+    texts.push(saved.text);
+    let saved = put(&obid, "other-key", &other);
+    assert_eq!(saved.status, 204, "{}", saved.text);
+    texts.push(call(&obid, "GET", "/v1/obid/vault", None).text);
+    let refused = put(&obid, "oby.mine", &value);
+    assert_eq!(refused.status, 422, "{}", refused.text);
+    texts.push(refused.text);
+    let unsigned = call(
+        &obid,
+        "PUT",
+        "/v1/obid/vault/new-key",
+        Some(&json!({"value": value})),
+    );
+    assert_eq!(unsigned.status, 403, "{}", unsigned.text);
+    texts.push(unsigned.text);
+    let removed = delete(&obid, "other-key");
+    assert_eq!(removed.status, 204, "{}", removed.text);
+    texts.push(removed.text);
+    let leaky = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "investigate",
+               "task": format!("Use {value} for the staging tests")}),
+    );
+    texts.push(ended(&obid, &leaky).to_string());
+    texts.push(call(&obid, "GET", &format!("/v1/jobs/{leaky}"), None).text);
+
+    let mut seen = Vec::new();
+    while let Ok((name, data)) = events.recv_timeout(std::time::Duration::from_secs(1)) {
+        seen.push(format!("{name} {data}"));
+    }
+    assert!(
+        seen.iter().any(|e| e.contains("[vault: staging-key]")),
+        "{seen:?}"
+    );
+    for (text, what) in [
+        (texts.join("\n"), "the answers"),
+        (seen.join("\n"), "the event stream"),
+        (obid.log(), "obid's log"),
+    ] {
+        assert!(!text.contains(&value), "{what} holds the value: {text}");
+        assert!(
+            !text.contains(&other),
+            "{what} holds the other value: {text}"
+        );
+    }
+}
+
+/// VAULT-5: a write without the owner's signed words, or signed for another body, changes nothing.
+#[test]
+fn vault_5_an_unsigned_write_is_refused() {
+    let (_folder, obid, _path) = vault_obid("vault-5");
+    let value = secret();
+    let body = json!({"value": value});
+
+    let unsigned = call(&obid, "PUT", "/v1/obid/vault/staging-key", Some(&body));
+    assert_eq!(unsigned.status, 403, "{}", unsigned.text);
+    let other = json!({"value": other_secret()});
+    let header = words_header(&obid, "PUT", "/v1/obid/vault/staging-key", Some(&other));
+    let mismatched = call_with_headers(
+        &obid,
+        TOKEN,
+        "PUT",
+        "/v1/obid/vault/staging-key",
+        Some(&body),
+        &[("X-Oby-Words", &header)],
+    );
+    assert_eq!(mismatched.status, 403, "{}", mismatched.text);
+    assert!(names(&obid).is_empty());
+
+    let saved = put(&obid, "staging-key", &value);
+    assert_eq!(saved.status, 204, "{}", saved.text);
+    let unsigned = call(&obid, "DELETE", "/v1/obid/vault/staging-key", None);
+    assert_eq!(unsigned.status, 403, "{}", unsigned.text);
+    assert_eq!(names(&obid), ["staging-key"]);
 }

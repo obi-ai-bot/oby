@@ -13,6 +13,7 @@ declare global {
       fullScreen: boolean;
       onFullScreen(fn: (on: boolean) => void): () => void;
       openExternal(url: string): void;
+      renderError?(name: string, message: string, componentStack: string): void;  // a render error the root caught (preload, main/runMarker.ts)
       pickFolders?(from?: string): Promise<string[]>;  // the Mac's folder picker (main), several at once, opening in from
       openLoginItems(): void;
       // Oby's alerts (preload, main/notify.ts)

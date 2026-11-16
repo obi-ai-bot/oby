@@ -108,7 +108,7 @@ describe('SPHERE-15', () => {
     await act(async () => { await vi.waitFor(() => expect(button('demo')).toBeUndefined()); });
     expect(b.sphereLeave).toHaveBeenCalledTimes(1);
     expect(dialog()).toBeNull();
-    expect(title()).toBe('Chats');
+    expect(title()).toBe('Default');
     expect(button('Chats')!.getAttribute('aria-pressed')).toBe('true');
   });
 });

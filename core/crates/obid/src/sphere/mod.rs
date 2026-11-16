@@ -11,6 +11,7 @@ pub mod link;
 pub mod lookalike;
 pub mod membership;
 pub mod pins;
+pub mod review_start;
 pub mod room;
 pub mod routes;
 pub mod sharing;

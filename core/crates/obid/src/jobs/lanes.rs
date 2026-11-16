@@ -31,10 +31,17 @@ impl Jobs {
     /// Bypass (the owner's CODEX-1, "Yes, Bypass only", LANES-18), where Codex never asks to leave
     /// its sandbox ([`own_codex_settings`]), and on macOS, whose sandbox is the one measured; in
     /// Ask, Accept edits, Plan or Sandbox it stays boxed, and on a ChatGPT login ([`launches_own`]).
+    /// One that builds ([`COMMITTING`]) stays boxed too (LANES-19): Codex's profile hides the
+    /// folders above its worktree, so a build can't resolve its path; Oby's box shows them by name.
+    /// So does the rest of a run its plan card's answer resumed ([`codex_plan::resumes_plan`]).
     pub(crate) fn own_lane(job: &Job, tool: Tool) -> bool {
         let lane = match tool {
             Tool::Claude => true,
-            Tool::Codex => Self::codex_own(Self::mode_of(job)),
+            Tool::Codex => {
+                Self::codex_own(Self::mode_of(job))
+                    && !COMMITTING.contains(&job.kind.as_str())
+                    && !codex_plan::resumes_plan(job)
+            }
             Tool::Cursor => false,
         };
         lane && job.obi.is_none()
@@ -926,16 +933,16 @@ mod tests {
     }
 
     /// LANES-18 (the owner's CODEX-1, "Yes, Bypass only"): the owner's Codex job leaves Oby's box
-    /// in Bypass only; in Ask, Accept edits, Plan or Sandbox, as a review, another Oby's or marked
-    /// `untrusted`, it stays boxed.
+    /// in Bypass only; in Ask, Accept edits, Plan or Sandbox, as a review, another Oby's, marked
+    /// `untrusted` or of a kind that builds (LANES-19), it stays boxed.
     #[cfg(target_os = "macos")]
     #[test]
     fn lanes_18_only_an_own_bypass_codex_job_leaves_the_box() {
         let owners = Job::new(
             "j".into(),
             "o/r".into(),
-            "fix".into(),
-            "Fix it".into(),
+            "investigate".into(),
+            "Look into it".into(),
             "codex".into(),
             "a".into(),
         );
@@ -952,6 +959,12 @@ mod tests {
             assert!(!Jobs::own_lane(&job, Tool::Codex), "{mode}");
         }
         assert!(!lane(|job| job.kind = "review".into()));
+        // LANES-19: one that builds stays boxed, where it can resolve its own worktree.
+        for kind in COMMITTING {
+            let mut job = owners.clone();
+            (job.kind, job.mode) = (kind.into(), Some("bypass".into()));
+            assert!(!Jobs::own_lane(&job, Tool::Codex), "{kind}");
+        }
         assert!(!lane(|job| job.untrusted = true));
         assert!(!lane(|job| job.review_of = Some("k".into())));
         assert!(!lane(|job| {
@@ -962,6 +975,32 @@ mod tests {
                 request_id: "r".into(),
             })
         }));
+    }
+
+    /// LANES-18 (PERMISSIONS-18): the run a Codex plan card's answer resumes stays in Oby's box,
+    /// where its thread is, in Bypass too; once that run ended (`parked` cleared), the job's next
+    /// run on macOS leaves the box as any Bypass Codex job's does.
+    #[test]
+    fn lanes_18_the_run_a_codex_plan_resumes_stays_boxed() {
+        let mut job = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "research".into(),
+            "Fix it".into(),
+            "codex".into(),
+            "a".into(),
+        );
+        job.mode = Some("bypass".into());
+        job.parked = Some(permissions::Parked {
+            tool: "ExitPlanMode".into(),
+            input: json!({"plan": "Plan: add plan.txt"}),
+            answered: true,
+            allowed: true,
+            ended_turn: true,
+        });
+        assert!(!Jobs::own_lane(&job, Tool::Codex));
+        job.parked = None;
+        assert_eq!(Jobs::own_lane(&job, Tool::Codex), cfg!(target_os = "macos"));
     }
 
     /// LANES-18: of the owner's login shell's environment, an own Codex run gets everything Claude
@@ -1019,8 +1058,8 @@ mod tests {
         let job = Job::new(
             "own".into(),
             "o/r".into(),
-            "fix".into(),
-            "Fix it".into(),
+            "investigate".into(),
+            "Look into it".into(),
             "codex".into(),
             "a".into(),
         );
@@ -1280,8 +1319,8 @@ mod tests {
         let mut job = Job::new(
             "j".into(),
             "o/r".into(),
-            "fix".into(),
-            "Fix it".into(),
+            "investigate".into(),
+            "Look into it".into(),
             "codex".into(),
             "a".into(),
         );
@@ -1486,8 +1525,8 @@ mod tests {
         let job = Job::new(
             "own".into(),
             "o/r".into(),
-            "fix".into(),
-            "Fix it".into(),
+            "investigate".into(),
+            "Look into it".into(),
             "codex".into(),
             "a".into(),
         );

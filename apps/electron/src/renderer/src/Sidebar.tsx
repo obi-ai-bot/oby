@@ -22,6 +22,9 @@ import { askCardLine, memberOpens, mockConvosWith, plainId, useConvos } from './
 import { roomOpens, useRoom } from './room';
 import { chatOfTask, lastAgo, latestChat, renameChat, useChats, type Chat } from './chats';
 import { chatFirst, everything } from './lean';
+import { useWaitingCount } from './live';
+import { loadProfiles, openProfile, profileChats, useProfiles } from './profiles';
+import ProfileMenu, { NewProfileModal } from './ProfileMenu';
 import { WELCOME, sampleDid, sampleOut, useSetup } from './onboarding';
 import { SAMPLE_TALK } from './Welcome';
 import { plain } from './Said';
@@ -41,8 +44,9 @@ const SECTIONS: { id: Section; label: string; icon: StripIcon }[] = chatFirst ? 
 ];
 // each section's name over it (an Obysphere's is its own)
 const TITLES: Record<Exclude<Section, 'obysphere'>, string> = {
-  // (Chats: proposed, the canvas's word; Sangam's to change)
-  oby: 'Chats', home: chatFirst ? 'Tasks' : 'Home', conversations: 'Conversations', settings: 'Settings',
+  // the chats: the open profile's name, with its menu (screen 07); Default until obid lists them, or
+  // on an obid without
+  oby: 'Default', home: chatFirst ? 'Tasks' : 'Home', conversations: 'Conversations', settings: 'Settings',
 };
 
 // What each tab can start, first thing under its title; and which tabs can be searched.
@@ -68,7 +72,7 @@ const convoAbout = (c: Chat) => {
 // ?home: Home and Conversations, ?everything also + and your account picture),
 // the column beside them shows it. Search, on the tabs that have it, sits by the panel icon.
 // It opens from the left and pushes the view over.
-export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOpenGroup, onOpenTask, onOpenChat, onOpenOby, onOpenMember, onOpenTalk, onOpenArchive, onOpenSetting, onOpenSphereSetting, onOpenKnowledge, onOpenRoom, activeOby = null, activeTalk = null, activeSetting = null, activeSphereSetting = null, activeKnowledge = null, active = null, width, onResize }: {
+export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOpenGroup, onOpenTask, onOpenChat, onOpenOby, onOpenMember, onOpenTalk, onOpenArchive, onOpenSetting, onOpenSphereSetting, onOpenKnowledge, onOpenRoom, onOpenWaiting, activeWaiting = false, activeOby = null, activeTalk = null, activeSetting = null, activeSphereSetting = null, activeKnowledge = null, active = null, width, onResize }: {
   open: boolean;
   onClose: () => void;  // the panel closes (its tab's icon again, while that tab is showing)
   onNewChat: () => void;
@@ -81,6 +85,8 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   onOpenMember: (owner: string) => void;  // a member of the live Obysphere, by owner id: their thread
   onOpenTalk: (id: string) => void;  // a conversation with Oby, from Conversations
   onOpenArchive: () => void;  // the archived tasks, as a page
+  onOpenWaiting?: () => void;  // Waiting for you, as a page
+  activeWaiting?: boolean;  // Waiting for you is showing: its row is highlighted
   activeOby?: string | null;  // the Oby whose page is showing: its row is highlighted
   activeTalk?: string | null;  // the conversation with Oby that's showing: its row is highlighted
   activeSetting?: string | null;  // the Settings page that's showing: its row is highlighted
@@ -114,7 +120,13 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   };
   const tasks = useTasks();
   const convos = useConvos();
-  const chats = useChats();
+  // the open profile's (profiles.ts): on the mock its own conversations, on obid all of them
+  const profiles = useProfiles();
+  const chats = profileChats(useChats(), profiles.list, profiles.kept);
+  const shownProfile = profiles.list?.length ? openProfile(profiles.list, profiles.kept) : undefined;
+  // the title's menu (ProfileMenu), and New profile…'s form
+  const [profileMenu, setProfileMenu] = useState<DOMRect | null>(null);
+  const [newProfile, setNewProfile] = useState(false);
   // Home's dot turns orange while any task needs you
   const needsYou = countOf('needs') + asksWaiting().length > 0;
   // and chat first, with Home's chips gone from sight: GitHub's work waiting on you too (a review
@@ -128,6 +140,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   const working = new Set(tasksWith('running').flatMap((t) => chatOfTask(t.id)?.id ?? []));
   const noRow = tasksWith('needs').some((t) => !t.answer && !chatOfTask(t.id)) || asksWaiting().some((a) => !chats.some((c) => c.id === a.talk));
   const anyWaits = noRow || needing.size > 0 || chats.some((c) => c.needs);
+  const waiting = useWaitingCount();
   const [section, setSection] = useState<Section>(SECTIONS[0].id);
   // the Obyspheres you're in (spheres.ts), under the line in the icon strip:
   // an Obysphere (a focused workspace: your Oby with other people's, sharing
@@ -423,7 +436,18 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
 
         <div className="sidebar-content">
         <div className="sidebar-title-row">
-          <h2 className="sidebar-title">{inSphere ? sphere.name : TITLES[section]}{inSphere && sphere.sample && <span className="sidebar-sample">Sample</span>}</h2>
+          <h2 className="sidebar-title">{inSphere ? sphere.name : section === 'oby' && shownProfile ? (
+            <button
+              className={`sidebar-title-button${profileMenu ? ' is-on' : ''}`}
+              aria-haspopup="menu"
+              aria-expanded={!!profileMenu}
+              // obid's list again as it opens
+              onClick={(e) => { if (!profileMenu) void loadProfiles(); setProfileMenu(profileMenu ? null : e.currentTarget.getBoundingClientRect()); }}
+            >
+              <span className="sidebar-title-name">{shownProfile.name}</span>
+              <ChevronDown size={16} strokeWidth={1.8} />
+            </button>
+          ) : TITLES[section]}{inSphere && sphere.sample && <span className="sidebar-sample">Sample</span>}</h2>
           {section === 'home' && (
             <button
               className={`icon-button${archiveMenu ? ' is-on' : ''}`}
@@ -518,6 +542,14 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
               <Plus size={16} strokeWidth={1.6} />
               <span className="sidebar-new-label">New conversation</span>
             </button>
+            {/* everything across the profile's projects that needs your word (WaitingView), only while there is some */}
+            {waiting > 0 && (
+              <button className={`sidebar-new chat-new${activeWaiting ? ' is-active' : ''}`} aria-current={activeWaiting || undefined} onClick={onOpenWaiting}>
+                <ListChecksIcon size={16} />
+                <span className="sidebar-new-label">Waiting for you</span>
+                <span className="waiting-count">{waiting}</span>
+              </button>
+            )}
             {inOrder.map(convoRow)}
             {!talks.length && <p className="sidebar-empty">{q ? `No conversations match “${query.trim()}”` : 'No conversations yet'}</p>}
           </div>
@@ -745,6 +777,10 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
           <button role="menuitem" onClick={() => setAccountMenu(null)}>Log out</button>
         </Menu>
       )}
+      {profileMenu && !!profiles.list?.length && (
+        <ProfileMenu list={profiles.list} kept={profiles.kept} at={profileMenu} onClose={() => setProfileMenu(null)} onNew={() => setNewProfile(true)} />
+      )}
+      {newProfile && <NewProfileModal taken={(profiles.list ?? []).map((p) => p.color.toLowerCase())} onClose={() => setNewProfile(false)} />}
       {inviting && <InviteModal sphere={{ name: sphere.name, url: urlOf(sphere) }} domain={sphere.domain} onSent={(emails) => invite(sphere.id, emails)} onClose={() => setInviting(false)} />}
       {creating && <CreateSphereModal email={ME.email} onCreated={(id) => { setCreating(false); setSphereId(id); pick('obysphere'); }} onClose={() => setCreating(false)} />}
       {sphereMenu && (

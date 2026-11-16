@@ -1,0 +1,209 @@
+// verify: main=oby_feed_written steps=10 invariants=armedOnlyApproved witnesses=settledAfterPass,noStuckMerge,noLostWaiting,neverMerged
+// verify: main=oby_feed_fixed steps=12 invariants=armedOnlyApproved,settledAfterPass,noStuckMerge,noLostWaiting witnesses=neverMerged
+//
+// factory/bin/oby-feed, one task: what the feeder does at each pass (`follow`) while Oby builds, reviews and
+// GitHub's merge queue takes or refuses the pull request.
+// settledAfterPass: right after a feeder pass, the feeder owes nothing, that is none of these:
+//   - a task in `merging` whose pull request is still open with GitHub's auto-merge off (the merge queue refused
+//     it): it holds a slot and its files for ever;
+//   - a task in `waiting` whose pull request the owner merged by hand: its jobs and worktrees are never removed;
+//   - a task in `waiting` while Oby works on it again (a follow-up round after a review asked for changes);
+//   - a task in `waiting` whose new head has two approvals by two tools and touches no security path.
+// oby_feed_written is follow() as it is on origin/dev: `waiting` is never looked at again, and `merging` only
+//   moves on MERGED or CLOSED. Expected: settledAfterPass is VIOLATED (a witness there).
+// oby_feed_fixed follows `waiting` without holding a slot, and moves a refused `merging` to `waiting` with the
+//   head GitHub refused. Expected: settledAfterPass holds.
+// armedOnlyApproved (both): auto-merge is armed only on a head two different tools approved, off security paths.
+// The limit: a model checks the design, not that the script implements it.
+
+module feed_common {
+  pure val Tools = Set("claude", "codex")
+  pure val MaxRounds = 2
+  type Review = { tool: str, tip: int, ok: bool }
+  pure def okTools(rs: Set[Review], t: int): Set[str] = rs.filter(r => r.tip == t and r.ok).map(r => r.tool)
+  pure def asked(rs: Set[Review], t: int): bool = rs.exists(r => r.tip == t and not(r.ok))
+}
+
+module oby_feed_written {
+  import feed_common.*
+  var st: str            // open, running, reviewing, merging, waiting, failed, merged (the feed file's state)
+  var job: str           // none, running, done, failed: Oby's newest job of the task
+  var pr: str            // none, open, merged, closed
+  var tip: int           // the pull request's head, counted
+  var reviews: Set[Review]
+  var armed: bool        // GitHub's auto-merge, pinned to armedTip
+  var armedTip: int
+  var rounds: int
+  var security: bool     // the change touches a security path
+  var rejectedTip: int   // the fixed feeder's memory of a head the queue refused; -1 here
+  var afterPass: bool    // the last step was a feeder pass
+
+  val canMerge = okTools(reviews, tip).size() >= 2 and not(asked(reviews, tip)) and not(security)
+  val owed = (st == "merging" and pr == "open" and not(armed))
+    or (st == "waiting" and pr == "merged")
+    or (st == "waiting" and job == "running")
+    or (st == "waiting" and pr == "open" and job != "running" and canMerge and tip != rejectedTip)
+
+  action init = {
+    nondet sec = Set(true, false).oneOf()
+    all { st' = "open", job' = "none", pr' = "none", tip' = 0, reviews' = Set(), armed' = false, armedTip' = -1,
+          rounds' = 0, security' = sec, rejectedTip' = -1, afterPass' = false }
+  }
+  action keepWorld = all { job' = job, pr' = pr, tip' = tip, reviews' = reviews, rounds' = rounds, security' = security }
+
+  // ---- the world: Oby, its reviewers, GitHub, the owner ----
+  action jobEnds = {
+    nondet ok = Set(true, false).oneOf()
+    all { job == "running", job' = if (ok) "done" else "failed",
+          pr' = if (ok and pr == "none") "open" else pr, tip' = if (ok) tip + 1 else tip,
+          reviews' = reviews, rounds' = rounds, security' = security,
+          st' = st, armed' = armed, armedTip' = armedTip, rejectedTip' = rejectedTip, afterPass' = false }
+  }
+  action review = {
+    nondet t = Tools.oneOf()
+    nondet ok = Set(true, false).oneOf()
+    all { job == "done", pr == "open", not(reviews.exists(r => r.tip == tip and r.tool == t)),
+          reviews' = reviews.union(Set({ tool: t, tip: tip, ok: ok })),
+          job' = job, pr' = pr, tip' = tip, rounds' = rounds, security' = security,
+          st' = st, armed' = armed, armedTip' = armedTip, rejectedTip' = rejectedTip, afterPass' = false }
+  }
+  // Oby's own next round after a review asked for changes (A00-67): a follow-up on the same branch
+  action followUp = all { job == "done", pr == "open", not(armed), asked(reviews, tip), rounds < MaxRounds,
+                          job' = "running", rounds' = rounds + 1, pr' = pr, tip' = tip, reviews' = reviews,
+                          security' = security, st' = st, armed' = armed, armedTip' = armedTip,
+                          rejectedTip' = rejectedTip, afterPass' = false }
+  action queueMerges = all { armed, pr == "open", tip == armedTip, pr' = "merged", armed' = false,
+                             job' = job, tip' = tip, reviews' = reviews, rounds' = rounds, security' = security,
+                             st' = st, armedTip' = armedTip, rejectedTip' = rejectedTip, afterPass' = false }
+  // the queue's Check fails on the combined code: GitHub turns auto-merge off, the pull request stays open
+  action queueRefuses = all { armed, pr == "open", armed' = false, pr' = pr,
+                              job' = job, tip' = tip, reviews' = reviews, rounds' = rounds, security' = security,
+                              st' = st, armedTip' = armedTip, rejectedTip' = rejectedTip, afterPass' = false }
+  action ownerMerges = all { pr == "open", job != "running", pr' = "merged", armed' = false,
+                             job' = job, tip' = tip, reviews' = reviews, rounds' = rounds, security' = security,
+                             st' = st, armedTip' = armedTip, rejectedTip' = rejectedTip, afterPass' = false }
+  action world = any { jobEnds, review, followUp, queueMerges, queueRefuses, ownerMerges }
+
+  // ---- the feeder's pass, as follow() and one_pass() are written ----
+  action pass = all {
+    keepWorld, rejectedTip' = rejectedTip, afterPass' = true,
+    if (st == "open") all { st' = "running", armed' = armed, armedTip' = armedTip }
+    else if (st == "running")
+      all { armed' = armed, armedTip' = armedTip,
+            st' = if (job == "failed") "failed" else if (job == "done") (if (pr == "open") "reviewing" else "failed") else st }
+    else if (st == "reviewing") {
+      if (job == "running") all { st' = "running", armed' = armed, armedTip' = armedTip }          // a follow-up
+      else if (pr == "merged") all { st' = "merging", armed' = armed, armedTip' = armedTip }
+      else if (asked(reviews, tip)) all { st' = "waiting", armed' = armed, armedTip' = armedTip }
+      else if (okTools(reviews, tip).size() < 2) all { st' = st, armed' = armed, armedTip' = armedTip }
+      else if (security) all { st' = "waiting", armed' = armed, armedTip' = armedTip }
+      else all { st' = "merging", armed' = true, armedTip' = tip }
+    }
+    else if (st == "merging")
+      all { armed' = armed, armedTip' = armedTip, st' = if (pr == "merged") "merged" else st }
+    else all { st' = st, armed' = armed, armedTip' = armedTip }                          // waiting, failed, merged
+  }
+  action start = all { st == "open", job == "none", job' = "running", pr' = pr, tip' = tip, reviews' = reviews,
+                       rounds' = 1, security' = security, st' = "running", armed' = armed, armedTip' = armedTip,
+                       rejectedTip' = rejectedTip, afterPass' = true }
+  action step = any { world, start, all { st != "open", pass } }
+
+  val armedOnlyApproved = armed implies (okTools(reviews, armedTip).size() >= 2 and not(security))
+  val settledAfterPass = afterPass implies not(owed)
+  val noStuckMerge = afterPass implies not(st == "merging" and pr == "open" and not(armed))
+  val noLostWaiting = afterPass implies not(st == "waiting" and (pr == "merged" or job == "running"))
+  val neverMerged = st != "merged"
+}
+
+module oby_feed_fixed {
+  import feed_common.*
+  var st: str
+  var job: str
+  var pr: str
+  var tip: int
+  var reviews: Set[Review]
+  var armed: bool
+  var armedTip: int
+  var rounds: int
+  var security: bool
+  var rejectedTip: int
+  var afterPass: bool
+
+  val canMerge = okTools(reviews, tip).size() >= 2 and not(asked(reviews, tip)) and not(security)
+  val owed = (st == "merging" and pr == "open" and not(armed))
+    or (st == "waiting" and pr == "merged")
+    or (st == "waiting" and job == "running")
+    or (st == "waiting" and pr == "open" and job != "running" and canMerge and tip != rejectedTip)
+
+  action init = {
+    nondet sec = Set(true, false).oneOf()
+    all { st' = "open", job' = "none", pr' = "none", tip' = 0, reviews' = Set(), armed' = false, armedTip' = -1,
+          rounds' = 0, security' = sec, rejectedTip' = -1, afterPass' = false }
+  }
+  action keepWorld = all { job' = job, pr' = pr, tip' = tip, reviews' = reviews, rounds' = rounds, security' = security }
+
+  action jobEnds = {
+    nondet ok = Set(true, false).oneOf()
+    all { job == "running", job' = if (ok) "done" else "failed",
+          pr' = if (ok and pr == "none") "open" else pr, tip' = if (ok) tip + 1 else tip,
+          reviews' = reviews, rounds' = rounds, security' = security,
+          st' = st, armed' = armed, armedTip' = armedTip, rejectedTip' = rejectedTip, afterPass' = false }
+  }
+  action review = {
+    nondet t = Tools.oneOf()
+    nondet ok = Set(true, false).oneOf()
+    all { job == "done", pr == "open", not(reviews.exists(r => r.tip == tip and r.tool == t)),
+          reviews' = reviews.union(Set({ tool: t, tip: tip, ok: ok })),
+          job' = job, pr' = pr, tip' = tip, rounds' = rounds, security' = security,
+          st' = st, armed' = armed, armedTip' = armedTip, rejectedTip' = rejectedTip, afterPass' = false }
+  }
+  action followUp = all { job == "done", pr == "open", not(armed), asked(reviews, tip), rounds < MaxRounds,
+                          job' = "running", rounds' = rounds + 1, pr' = pr, tip' = tip, reviews' = reviews,
+                          security' = security, st' = st, armed' = armed, armedTip' = armedTip,
+                          rejectedTip' = rejectedTip, afterPass' = false }
+  action queueMerges = all { armed, pr == "open", tip == armedTip, pr' = "merged", armed' = false,
+                             job' = job, tip' = tip, reviews' = reviews, rounds' = rounds, security' = security,
+                             st' = st, armedTip' = armedTip, rejectedTip' = rejectedTip, afterPass' = false }
+  action queueRefuses = all { armed, pr == "open", armed' = false, pr' = pr,
+                              job' = job, tip' = tip, reviews' = reviews, rounds' = rounds, security' = security,
+                              st' = st, armedTip' = armedTip, rejectedTip' = rejectedTip, afterPass' = false }
+  action ownerMerges = all { pr == "open", job != "running", pr' = "merged", armed' = false,
+                             job' = job, tip' = tip, reviews' = reviews, rounds' = rounds, security' = security,
+                             st' = st, armedTip' = armedTip, rejectedTip' = rejectedTip, afterPass' = false }
+  action world = any { jobEnds, review, followUp, queueMerges, queueRefuses, ownerMerges }
+
+  // the fixed pass: `waiting` is followed (it holds no slot), and a refused merge goes back to waiting, remembered
+  action settle = {
+    if (job == "running") all { st' = "running", armed' = armed, armedTip' = armedTip, rejectedTip' = rejectedTip }
+    else if (pr == "merged") all { st' = "merged", armed' = armed, armedTip' = armedTip, rejectedTip' = rejectedTip }
+    else if (pr == "open" and canMerge and tip != rejectedTip)
+      all { st' = "merging", armed' = true, armedTip' = tip, rejectedTip' = rejectedTip }
+    else if (pr == "open" and (asked(reviews, tip) or okTools(reviews, tip).size() >= 2))
+      all { st' = "waiting", armed' = armed, armedTip' = armedTip, rejectedTip' = rejectedTip }
+    else all { st' = st, armed' = armed, armedTip' = armedTip, rejectedTip' = rejectedTip }
+  }
+  action pass = all {
+    keepWorld, afterPass' = true,
+    if (st == "open") all { st' = "running", armed' = armed, armedTip' = armedTip, rejectedTip' = rejectedTip }
+    else if (st == "running")
+      all { armed' = armed, armedTip' = armedTip, rejectedTip' = rejectedTip,
+            st' = if (job == "failed") "failed" else if (job == "done") (if (pr == "open") "reviewing" else "failed") else st }
+    else if (st == "reviewing" or st == "waiting") settle
+    else if (st == "merging") {
+      if (pr == "merged") all { st' = "merged", armed' = armed, armedTip' = armedTip, rejectedTip' = rejectedTip }
+      else if (pr == "open" and not(armed)) all { st' = "waiting", armed' = armed, armedTip' = armedTip, rejectedTip' = armedTip }
+      else all { st' = st, armed' = armed, armedTip' = armedTip, rejectedTip' = rejectedTip }
+    }
+    else all { st' = st, armed' = armed, armedTip' = armedTip, rejectedTip' = rejectedTip }
+  }
+  action start = all { st == "open", job == "none", job' = "running", pr' = pr, tip' = tip, reviews' = reviews,
+                       rounds' = 1, security' = security, st' = "running", armed' = armed, armedTip' = armedTip,
+                       rejectedTip' = rejectedTip, afterPass' = true }
+  action step = any { world, start, all { st != "open", pass } }
+
+  val armedOnlyApproved = armed implies (okTools(reviews, armedTip).size() >= 2 and not(security))
+  val settledAfterPass = afterPass implies not(owed)
+  val noStuckMerge = afterPass implies not(st == "merging" and pr == "open" and not(armed))
+  val noLostWaiting = afterPass implies not(st == "waiting" and (pr == "merged" or job == "running"))
+  val neverMerged = st != "merged"
+}

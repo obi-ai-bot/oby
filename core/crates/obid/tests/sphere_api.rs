@@ -3643,3 +3643,148 @@ fn receipts_15_a_confirm_with_its_used_approval_is_409() {
     let again = send(&fresh);
     assert_eq!((again.status, &again.body), (first.status, &first.body));
 }
+
+/// TEAMREVIEW-3: a repository the owner's GitHub login can push to is reviewed though obid doesn't
+/// list it yet, and is kept in `repos` once accepted. GitHub's repository has no check, so the
+/// result is TEAMREVIEW-4's `failed`. (git's `insteadOf` sends the GitHub URL to the fixture.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn teamreview_3_any_repository_the_owner_can_push_to_is_reviewed() {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = Folder::new("pushable");
+    let sphere = FakeSphere::start().await;
+    let remote = fixture(&folder.0.join("fixture"));
+    let bin = folder.0.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(
+        bin.join("gh"),
+        "#!/bin/sh\ncase \"$1 $2\" in\n  \"auth status\") echo '{\"hosts\":{\"github.com\":[{\"state\":\"success\",\"active\":true,\"login\":\"octo-cat\"}]}}' ;;\n  \"api user/repos\"*) printf 'obi-e2e/fixture-app\\tmain\\n' ;;\n  *) exit 1 ;;\nesac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::create_dir_all(folder.0.join("env-home")).unwrap();
+    std::fs::write(
+        folder.0.join("env-home/.gitconfig"),
+        format!(
+            "[url \"file://{}\"]\n\tinsteadOf = https://github.com/obi-e2e/fixture-app.git\n",
+            remote.display()
+        ),
+    )
+    .unwrap();
+    let mut config = config(&folder.0, &remote, &stub_agent());
+    config["repos"] = json!([]);
+    let obid = start(&folder.0, &config, Some(&bin));
+    let wellington = Owner::new("wellington");
+    let joined = tokio::task::block_in_place(|| join_a(&obid, &sphere, &wellington));
+    assert_eq!(joined["state"], "joined");
+    let ernesto = TestObi::join(&sphere, "obi-ernesto", "ernesto").await;
+    tokio::task::block_in_place(|| {
+        within(30, "gh's repositories", || {
+            let repos = get(&obid, "/v1/repos");
+            (repos["repos"][0]["repo"] == "obi-e2e/fixture-app").then_some(())
+        })
+    });
+    let written = || -> Value {
+        serde_json::from_slice(&std::fs::read(folder.0.join("config.json")).unwrap()).unwrap()
+    };
+
+    let request = ernesto.request("obi-wellington", "review_request", brief(), 3600);
+    let cid = request["id"].as_str().unwrap().to_owned();
+    ernesto.send(&request).await;
+    let item = tokio::task::block_in_place(|| wait_item(&obid));
+    assert_eq!(written()["repos"], json!([]), "not kept before the answer");
+    tokio::task::block_in_place(|| answer(&obid, &item, "Accept"));
+
+    let replies = ernesto.receive(2, 90).await;
+    assert_eq!(replies[0]["type"], "accept");
+    assert_eq!(replies[1]["type"], "result");
+    assert_eq!(
+        replies[1]["body"],
+        json!({"for": "review_request", "outcome": "failed", "repo": "obi-e2e/fixture-app",
+               "head_sha": brief()["head_sha"], "findings": [],
+               "summary": "This Oby has no check for obi-e2e/fixture-app, so it can't vouch that the tests pass."})
+    );
+    tokio::task::block_in_place(|| {
+        let done = exchange(&obid, &cid);
+        assert_eq!(done["state"], "failed");
+        assert_eq!(done["publishScan"], json!({"ran": true, "clean": true}));
+        let job = get(
+            &obid,
+            &format!("/v1/jobs/{}", done["job"].as_str().unwrap()),
+        );
+        assert_eq!(job["kind"], "review");
+        assert_eq!(job["repo"], "obi-e2e/fixture-app");
+    });
+    assert_eq!(
+        written()["repos"][0]["repo"],
+        "obi-e2e/fixture-app",
+        "kept once accepted"
+    );
+}
+
+/// TEAMREVIEW-3: a review this Oby can't start is declined with obid's sentence, never accepted
+/// and then failed: from the inbox, and again by the decision remembered there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn teamreview_3_a_review_that_cant_start_is_declined_never_accepted() {
+    const NO_REPOSITORY: &str =
+        "This Oby's owner can't push to that repository, so it can't review it.";
+    let folder = Folder::new("cant-start");
+    let (_sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    let mut body = brief();
+    body["repo"] = json!("obi-e2e/elsewhere");
+    let request = ernesto.request("obi-wellington", "review_request", body.clone(), 3600);
+    let cid = request["id"].as_str().unwrap().to_owned();
+    ernesto.send(&request).await;
+    let item = tokio::task::block_in_place(|| wait_item(&obid));
+    let answered = tokio::task::block_in_place(|| answer(&obid, &item, ACCEPT_REMEMBER));
+    assert_eq!(answered["answer"], ACCEPT_REMEMBER);
+
+    let replies = ernesto.receive(1, 30).await;
+    assert_eq!(replies[0]["type"], "decline");
+    assert_eq!(
+        replies[0]["body"],
+        json!({"reason": "unavailable", "note": NO_REPOSITORY})
+    );
+    assert!(
+        ernesto.waiting_after(2).await.is_empty(),
+        "no accept, no result"
+    );
+    tokio::task::block_in_place(|| {
+        let declined = exchange(&obid, &cid);
+        assert_eq!(declined["state"], "declined");
+        assert_eq!(declined["error"], NO_REPOSITORY);
+        assert_eq!(declined["job"], Value::Null);
+        let settled = get(&obid, "/v1/inbox?state=done");
+        assert_eq!(settled[0]["id"], item["id"]);
+        assert_eq!(settled[0]["answer"], ACCEPT_REMEMBER);
+        assert!(
+            settled[0]["text"]
+                .as_str()
+                .unwrap()
+                .ends_with(NO_REPOSITORY),
+            "{}",
+            settled[0]["text"]
+        );
+        assert_eq!(get(&obid, "/v1/jobs"), json!([]), "no work started");
+        let decisions = get(&obid, "/v1/obid/decisions");
+        assert_eq!(decisions[0]["decision"], "accept");
+    });
+
+    let again = ernesto.request("obi-wellington", "review_request", body, 3600);
+    let cid2 = again["id"].as_str().unwrap().to_owned();
+    ernesto.send(&again).await;
+    let replies = ernesto.receive(1, 30).await;
+    assert_eq!(replies[0]["type"], "decline");
+    assert_eq!(
+        replies[0]["body"],
+        json!({"reason": "unavailable", "note": NO_REPOSITORY})
+    );
+    assert!(ernesto.waiting_after(2).await.is_empty());
+    tokio::task::block_in_place(|| {
+        let second = exchange(&obid, &cid2);
+        assert_eq!(second["state"], "declined");
+        assert_eq!(second["decidedBy"], "rule");
+        assert_eq!(second["inboxItem"], Value::Null);
+        assert_eq!(get(&obid, "/v1/inbox"), json!([]));
+        assert_eq!(get(&obid, "/v1/jobs"), json!([]), "no work started");
+    });
+}

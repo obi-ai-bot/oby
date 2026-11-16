@@ -17,23 +17,39 @@ const shaped = (body: Body, keys: Record<string, (v: unknown) => boolean>) =>
   Object.entries(body).every(([k, v]) => keys[k]?.(v) ?? false);
 // the label of the button that answers a permission (live.ts, DECISIONS)
 export const DECISIONS: Record<string, string> = { allow: 'Allow', always: 'Always allow', deny: 'Deny' };
-// A failed task's another round: this button's label also stands for obid's Try-again words to a
+// Waiting for you's Allow (WAITING, Sangam's screen 17): this label also stands for a permission's allow
+export const ALLOW_ONCE = 'Allow once';
+// The task menu's Try again (TASKS-25): this label also stands for obid's Try-again words to a
 // job, the one message whose words needn't be the text a click held (docs/runner-api.md)
-export const ANOTHER_ROUND = 'Give it another round';
+export const TRY_AGAIN_LABEL = 'Try again';
 export const TRY_AGAIN = 'Try again, picking up where you left off. Finish with a short summary as asked.';
 
 // The yes to work nobody's watching using a ChatGPT login (docs/contracts/chatgpt-sign-in.md): this
 // button's label, its own so a click on any other button (a permission's Allow) can't stand for it.
 export const BACKGROUND_YES = 'Yes, it can';
 
+// A secret put in or removed on Settings › Vault (docs/contracts/vault.md): its buttons' labels,
+// never the value, which sits in a password box the preload never reads. The signature still
+// covers the exact body, the value included; a removal has no body. Remove Secret is its own, so a
+// click on any other Remove can't stand for it.
+export const VAULT_ADD = 'Add Secret';
+export const VAULT_REMOVE = 'Remove Secret';
+
 const MESSAGES = /^\/v1\/jobs\/[^/]+\/messages$/;
 const ROOM = /^\/v1\/spheres\/[^/]+\/room$/;
 const PEER_ASK = /^\/v1\/obid\/sphere\/peers\/[^/]+\/ask$/;
+const VAULT = /^\/v1\/obid\/vault\/[^/]+$/;
+const PERMISSION = /^\/v1\/jobs\/[^/]+\/permission$/;
 
 // The words a request carries, for the requests the app sends obid with the owner's words in
 // them; null for any other request, or any other shape (main never signs it). A key the app
 // doesn't send (a job's check, mode or repository, say) is never signed along with the words.
 export function wordsOf(method: string, path: string, body: unknown): string[] | null {
+  // the vault's removal, the one request signed with no body
+  if (VAULT.test(path.split('?')[0])) {
+    if (method === 'DELETE') return body === undefined ? [VAULT_REMOVE] : null;
+    if (method === 'PUT') return isBody(body) && text(body.value) && shaped(body, { value: text }) ? [VAULT_ADD] : null;
+  }
   if (!isBody(body)) return null;
   const p = path.split('?')[0];
   const id = text, flag = (v: unknown) => v === true;
@@ -84,7 +100,8 @@ export function owners(method: string, path: string, body: unknown, held: string
     if (!n) return null;
     if (answers && i === 0 && earlier.some((e) => norm(e) === n)) continue;
     const round = w === TRY_AGAIN && MESSAGES.test(path.split('?')[0]);
-    const at = held.findIndex((h, j) => !used.includes(j) && (norm(h) === n || (round && norm(h) === norm(ANOTHER_ROUND))));
+    const once = i === 0 && w === DECISIONS.allow && PERMISSION.test(path.split('?')[0]);
+    const at = held.findIndex((h, j) => !used.includes(j) && (norm(h) === n || (round && norm(h) === norm(TRY_AGAIN_LABEL)) || (once && norm(h) === ALLOW_ONCE)));
     if (at < 0) return null;
     used.push(at);
   }

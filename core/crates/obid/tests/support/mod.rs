@@ -808,8 +808,8 @@ pub fn ended_within(obid: &Obid, id: &str, seconds: u64) -> Value {
 }
 
 /// Follows `GET /v1/events`: every event, `(name, data)`, as it comes.
-pub fn follow_events(obid: &Obid) -> std::sync::mpsc::Receiver<(String, Value)> {
-    let mut stream = TcpStream::connect(("127.0.0.1", obid.port)).unwrap();
+pub fn follow_events(obid: &impl Listens) -> std::sync::mpsc::Receiver<(String, Value)> {
+    let mut stream = TcpStream::connect(("127.0.0.1", obid.port())).unwrap();
     stream
         .write_all(
             format!("GET /v1/events HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}\r\n\r\n")
@@ -863,6 +863,39 @@ pub fn events_named(
         }
     }
     got
+}
+
+/// TASKS-25: job `id`, which ends `status`, raises no inbox item: no `inbox` event `events` brought
+/// (followed before it was posted) carries an open one about it, up to its own event that it ended
+/// and what came by then; nor does `inbox` (`GET /v1/inbox`, asked after) list one.
+pub fn no_inbox_item_for(
+    events: &std::sync::mpsc::Receiver<(String, Value)>,
+    id: &str,
+    status: &str,
+    inbox: impl FnOnce() -> Value,
+) {
+    let give_up_at = Instant::now() + Duration::from_secs(60);
+    let mut heard = Vec::new();
+    loop {
+        let left = give_up_at.saturating_duration_since(Instant::now());
+        let Ok((name, data)) = events.recv_timeout(left) else {
+            panic!("no event of job {id} ending {status}: {heard:?}")
+        };
+        let ended = name == "job" && data["id"] == id && data["status"] == status;
+        heard.push((name, data));
+        if ended {
+            break;
+        }
+    }
+    heard.extend(std::iter::from_fn(|| events.try_recv().ok()));
+    let open: Vec<_> = heard
+        .iter()
+        .filter(|(name, item)| name == "inbox" && item["job"] == id && item["state"] == "open")
+        .collect();
+    assert!(open.is_empty(), "{open:?}");
+    let inbox = inbox();
+    let items = inbox.as_array().unwrap();
+    assert!(items.iter().all(|item| item["job"] != id), "{inbox}");
 }
 
 // ---------------------------------------------------------------------------------------------
