@@ -5,7 +5,8 @@
 //   gives every conversation in the project its new folders (changeFolders, one step here);
 // - Conversations::change with Event::Assign, under the projects' lock (conversation::update), and
 //   Conversations::begin with a project (brain::plan), in conversation.rs (assignProject: `assign` is a name Quint keeps);
-// - Conversations::change with Event::TakeOff, which takes no projects' lock (takeOff);
+// - Conversations::change with Event::TakeOff, under the projects' lock too, as conversation::update takes it on
+//   every PATCH, so no take-off runs while a delete holds it (takeOff);
 // - projects::delete in projects.rs: it takes the projects' lock (deleteStart), applies Event::ProjectGone to
 //   each conversation still in the project through Conversations::regroup and Thread::moved, which makes the
 //   project's folders its own (deleteStep), then removes the project from projects.json and lets the lock go
@@ -13,18 +14,24 @@
 // - obid stopping at any point, which lets every lock go and changes nothing kept (crash);
 // - projects::reconcile, run by lib.rs at start before obid serves: every conversation whose project isn't kept
 //   gets Event::ProjectGone (restart). Its other half, giving a conversation in a kept project that project's
-//   folders as they are now, changes nothing here, where changeFolders is one step, so it isn't modelled.
+//   folders as they are now, changes nothing here, where changeFolders is one step, so it isn't modelled. Its
+//   first half has nothing to do here either: a delete takes every conversation out before the project goes, so
+//   oneProjectOrNone rests on that order; a conversation naming a project projects.json lacks (the file removed
+//   between runs, PROJECTS-9 (a)) is tested in tests/projects_api.rs, not modelled.
 // A conversation answers its copy of its project's folders while it has a project, else its own list
 // (projects::answered, Thread::summary).
 // oneProjectOrNone (PROJECTS-9): every conversation's project is "none" or a kept project. deleteKeepsConversations
 // (PROJECTS-8): every conversation answers the folders the owner last set for it (seen): a delete never changes
 // them. Both are expected to hold in every sequence up to 12 steps.
-// neverDeleted is deleteKeepsConversations' witness: a project with conversations in it is deleted. neverRestartedMidDelete
-// is oneProjectOrNone's: obid crashes while a delete holds the lock, and starts again. Both are expected to be
-// violated, so a pass of the invariants is not vacuous.
+// neverDeleted is deleteKeepsConversations' witness: a project with conversations in it is deleted, each taken
+// out by deleteStep, as no take-off runs during a delete. neverRestartedMidDelete is oneProjectOrNone's: obid
+// crashes while a delete holds the lock, after it took at least one conversation out and before the project
+// goes, and starts again. Both are expected to be violated, so a pass of the invariants is not vacuous.
 // The limit: a model checks the design, not that projects.rs and conversation.rs implement it, and changeFolders is
 // one step here where the code writes projects.json first (the start's reconcile refreshes a copy a stop left
-// behind). Nothing here replays a trace against the code (Quint Connect is not used).
+// behind). A conversation's own folders change only at init here (PATCH folders and begin with folders, outside a
+// project, aren't modelled): init picks them freely. Nothing here replays a trace against the code (Quint Connect
+// is not used).
 // verify: main=projects steps=12 invariants=oneProjectOrNone,deleteKeepsConversations witnesses=neverDeleted,neverRestartedMidDelete
 module projects {
   pure val PROJECTS = Set("p1", "p2")
@@ -42,6 +49,7 @@ module projects {
   // Ghosts: what the owner last set each conversation to answer, and the flags the witnesses read.
   var seen: str -> Set[str]
   var hadConversations: bool
+  var tookOneOut: bool
   var deletedWithConversations: bool
   var crashedMidDelete: bool
   var restartedMidDelete: bool
@@ -60,6 +68,7 @@ module projects {
       up' = true,
       seen' = owns,
       hadConversations' = false,
+      tookOneOut' = false,
       deletedWithConversations' = false,
       crashedMidDelete' = false,
       restartedMidDelete' = false,
@@ -68,6 +77,7 @@ module projects {
 
   action keepFlags = all {
     hadConversations' = hadConversations,
+    tookOneOut' = tookOneOut,
     deletedWithConversations' = deletedWithConversations,
     crashedMidDelete' = crashedMidDelete,
     restartedMidDelete' = restartedMidDelete,
@@ -117,7 +127,7 @@ module projects {
   action takeOff = {
     nondet c = CONVERSATIONS.oneOf()
     all {
-      up,
+      up, deleting == NONE,
       kept' = kept, projectFolders' = projectFolders,
       project' = project.set(c, NONE), own' = own,
       copy' = copy.set(c, Set()),
@@ -135,6 +145,7 @@ module projects {
       project' = project, own' = own, copy' = copy, seen' = seen,
       deleting' = p, up' = up,
       hadConversations' = CONVERSATIONS.exists(c => project.get(c) == p),
+      tookOneOut' = false,
       deletedWithConversations' = deletedWithConversations,
       crashedMidDelete' = crashedMidDelete,
       restartedMidDelete' = restartedMidDelete,
@@ -151,7 +162,11 @@ module projects {
       own' = own.set(c, copy.get(c)),
       copy' = copy.set(c, Set()),
       seen' = seen, deleting' = deleting, up' = up,
-      keepFlags,
+      hadConversations' = hadConversations,
+      tookOneOut' = true,
+      deletedWithConversations' = deletedWithConversations,
+      crashedMidDelete' = crashedMidDelete,
+      restartedMidDelete' = restartedMidDelete,
     }
   }
 
@@ -162,6 +177,7 @@ module projects {
     project' = project, own' = own, copy' = copy, seen' = seen,
     deleting' = NONE, up' = up,
     hadConversations' = hadConversations,
+    tookOneOut' = tookOneOut,
     deletedWithConversations' = (deletedWithConversations or hadConversations),
     crashedMidDelete' = crashedMidDelete,
     restartedMidDelete' = restartedMidDelete,
@@ -172,8 +188,9 @@ module projects {
     project' = project, own' = own, copy' = copy, seen' = seen,
     deleting' = NONE, up' = false,
     hadConversations' = hadConversations,
+    tookOneOut' = tookOneOut,
     deletedWithConversations' = deletedWithConversations,
-    crashedMidDelete' = (crashedMidDelete or deleting != NONE),
+    crashedMidDelete' = (crashedMidDelete or (deleting != NONE and tookOneOut)),
     restartedMidDelete' = restartedMidDelete,
   }
 
@@ -188,6 +205,7 @@ module projects {
       copy' = CONVERSATIONS.mapBy(c => if (gone.contains(c)) Set() else copy.get(c)),
       seen' = seen, deleting' = NONE, up' = true,
       hadConversations' = hadConversations,
+      tookOneOut' = tookOneOut,
       deletedWithConversations' = deletedWithConversations,
       crashedMidDelete' = crashedMidDelete,
       restartedMidDelete' = (restartedMidDelete or crashedMidDelete),
