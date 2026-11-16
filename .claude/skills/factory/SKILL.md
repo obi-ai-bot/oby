@@ -370,7 +370,9 @@ new task, ask.
   budget. Go to **build** with
   `The user gave feedback: read feedback-<k>.md and address it, push, and update build.md for round <N>.`
   and continue like any job.
-- **Rejecting or benching a `needs-info` or `needs-human` job**: pass their
+- **Rejecting or benching a job** at any stage but `queued`: first stop
+  every agent still running for the job, and its round's mutants
+  (**Stopping mutants**), since the script stops none; then pass their
   reason verbatim on stdin:
 
   ```bash
@@ -382,6 +384,8 @@ new task, ask.
   It saves `rejection.md`, closes the job's PR if it has one (with the reason
   on it), and moves the job to Done. The task file stays in
   `factory/queue/tasks`; to bring it back, delete `factory/jobs/<id>`.
+  A `queued` job's PR is in GitHub's merge queue: tell the user to take
+  the PR out of the queue first, then reject the job.
 - **A new task** outside the roadmap: write its file, then do
   **/factory run <task>** with the key it prints:
 

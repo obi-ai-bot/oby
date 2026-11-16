@@ -21,7 +21,8 @@ Usage:
   job merge <job>                APPROVE → mark the PR ready and auto-merge its approved head: merged or queued
   job answer <job>               needs-info → intake, with your answer (stdin) as answer-<k>.md
   job feedback <job>             needs-human → build, with your feedback (stdin) as feedback-<k>.md
-  job reject <job>               needs-info or needs-human → rejected, with your reason (stdin) as rejection.md
+  job reject <job>               any stage but queued, merged and rejected → rejected, with your reason (stdin)
+                                 as rejection.md
   job agents <job> <json>        record the routed agent set (called by factory/bin/route)
   job sync <job>                 refresh reviews, gate, proofs and cost from the job's files
   job summary [<job>...]         table of jobs: task, stage, PR, cost, time
@@ -74,6 +75,8 @@ TERMINAL = {"merged", "rejected"}
 # Any unfinished job can move to merged once its PR is merged on GitHub,
 # whether the factory merged it or a person did mid-round.
 WAITING = {"needs-info", "needs-human", "queued"}
+# The stages `job reject` takes on the owner's word: all but queued, whose PR is in GitHub's merge queue.
+REJECTABLE = set(TRANSITIONS) - {"queued"}
 CONCURRENCY = CONFIG["concurrency"]
 
 
@@ -546,9 +549,12 @@ def next_round(job):
     job["reviews"] = {}
 
 
-def advance(job, stage):
+def advance(job, stage, by_owner=False, pr=None):
+    """`by_owner` is only `job reject`'s: the owner's reason rejects a job in any REJECTABLE stage, and `pr` is
+    its one read of the job's PR (queue_state)."""
     old = job["stage"]
-    require(stage in TRANSITIONS.get(old, set()) or (stage == "merged" and old not in TERMINAL),
+    require(stage in TRANSITIONS.get(old, set()) or (stage == "merged" and old not in TERMINAL)
+            or (by_owner and stage == "rejected" and old in REJECTABLE),
             f"{job['id']}: {old} → {stage} is not a legal transition")
     d = job_dir(job["id"])
     decision = header(d / "intake.md").get("DECISION") if (d / "intake.md").exists() else None
@@ -556,12 +562,17 @@ def advance(job, stage):
     if stage == "merged":
         require(job["pr"] and pr_state(job) == "MERGED", "the PR isn't merged")
 
-    elif stage == "rejected" and old in WAITING:
+    elif stage == "rejected" and (old in WAITING or by_owner):
         require((d / "rejection.md").exists(), "use `job reject` to reject a waiting job")
         if job["pr"]:
             reason = (d / "rejection.md").read_text().split("\n", 1)[1].strip()
+            if pr:
+                disarm(job, pr)
             comment(job["pr"], f"### Factory: rejected\n\n{reason}")
-            gh("pr", "close", str(job["pr"]))
+            if not pr or pr["state"] != "CLOSED":
+                gh("pr", "close", str(job["pr"]))
+        # From spec on, the builder may have pushed the branch, with or without a PR.
+        if job["pr"] or old not in {"intake", "needs-info"}:
             run(["git", "push", "origin", "--delete", job["branch"]], check=False)
 
     elif old == "intake":
@@ -1168,13 +1179,32 @@ def cmd_feedback(job, text):
     print(f"{job['id']}: feedback-{k}.md, round {job['round']}")
 
 
+def in_merge_queue(job):
+    return (f"{job['id']}'s PR #{job['pr']} is in GitHub's merge queue: take PR #{job['pr']} out of the queue "
+            "first, then reject the job")
+
+
 def cmd_reject(job, text):
-    if job["stage"] not in {"needs-info", "needs-human"}:
-        die(f"{job['id']} is in {job['stage']}, not needs-info or needs-human")
+    """The owner rejects a job at any stage but queued (docs/contracts/factory.md, JOBREJECT). Every refusal comes
+    before rejection.md is written. The run stops the job's agents first: this stops none."""
+    if job["stage"] == "queued":
+        die(in_merge_queue(job))
+    if job["stage"] not in REJECTABLE:
+        die(f"{job['id']} is {job['stage']}: it has already finished")
     if not text.strip():
         die("no reason on stdin")
+    pr = None
+    if job["pr"]:
+        try:
+            pr = queue_state(job)
+        except (Refused, ValueError, KeyError, TypeError) as e:
+            die(f"couldn't read PR #{job['pr']}, so nothing changed: {e}")
+        if pr["isInMergeQueue"]:
+            die(in_merge_queue(job))
+        if pr["state"] == "MERGED":
+            die(f"PR #{job['pr']} is already merged: `job queue` moves {job['id']} to merged")
     (job_dir(job["id"]) / "rejection.md").write_text(f"REJECTED\n\nBy @{operator()} while the job was {job['stage']}.\n\n{text.strip()}\n")
-    save(advance(sync(job), "rejected"))
+    save(advance(sync(job), "rejected", by_owner=True, pr=pr))
     print(f"{job['id']}: rejected")
 
 

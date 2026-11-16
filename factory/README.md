@@ -124,7 +124,8 @@ decision of 2026-11-12). A task runs only in the active sprint (`sprint` in `con
 its `DEPENDS` line names are in `queue/done`. Intake's questions and the owner's answers stay in the job's
 folder (`/factory <answer>`), and nothing reads or writes a GitHub issue or the project board. A pull request
 stays a draft until the approver says APPROVE; then GitHub merges it, and the job waits in the stage `queued`
-while GitHub's merge queue holds it.
+while GitHub's merge queue holds it. The owner can reject a job at any stage but `queued` with `bin/job reject`,
+which closes its PR and moves it to Done; the run stops the job's agents first.
 
 Reading a job takes no lock (`bin/job` writes `job.json` whole, by renaming a temporary file), so `job queue`,
 the slot count and a long-running importer such as `bin/oby-feed` never hold one. Every write of `job.json` holds
