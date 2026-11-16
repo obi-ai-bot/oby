@@ -2348,7 +2348,7 @@ impl Jobs {
         );
         job.files = files;
         job.attachments = new.attachments;
-        job.conversation = new.conversation;
+        job.start_in(&self.config.home, new.conversation);
         job.turn = new.turn.filter(|_| job.conversation.is_some());
         job.brief = new
             .brief

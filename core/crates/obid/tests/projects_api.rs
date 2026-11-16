@@ -475,3 +475,171 @@ fn projects_12_an_unreadable_file_changes_nothing() {
     let read = std::fs::read(folder.0.join("home/projects.json")).unwrap();
     assert_eq!(read, b"not json");
 }
+
+/// `oby_dispatch` of one job, as the harness stand-in reads a turn's words.
+const DISPATCH: &str = r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build"}"#;
+
+/// `POST /v1/plans` with `body`, and the one job its turn dispatched.
+fn dispatched(obid: &Obid, body: Value) -> Value {
+    let answer = call(obid, "POST", "/v1/plans", Some(&body));
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    let jobs = answer.body["jobs"].as_array().unwrap();
+    assert_eq!(jobs.len(), 1, "{}", answer.text);
+    jobs[0].clone()
+}
+
+/// Job `id` as `GET /v1/jobs` lists it.
+fn listed_job(obid: &Obid, id: &str) -> Value {
+    let answer = call(obid, "GET", "/v1/jobs", None);
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    let list = answer.body.as_array().unwrap();
+    let found = list.iter().find(|j| j["id"] == id);
+    found
+        .unwrap_or_else(|| panic!("no job {id} in {}", answer.text))
+        .clone()
+}
+
+#[test]
+fn projects_13_a_job_keeps_the_project_it_started_in() {
+    let folder = Folder::new("projects-13");
+    let config = harness_config(&folder);
+    let mut obid = start_at_home(&folder, &config);
+    let project = made(&obid, json!({"name": "Oby"}))["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let events = follow_events(&obid);
+
+    let words = json!({"said": DISPATCH, "new": true, "project": project});
+    let inside = dispatched(&obid, words);
+    let id = inside["id"].as_str().unwrap().to_owned();
+    assert_eq!(inside["project"], project.as_str(), "{inside}");
+    assert_eq!(listed_job(&obid, &id)["project"], project.as_str());
+    let detail = call(&obid, "GET", &format!("/v1/jobs/{id}"), None);
+    assert_eq!(detail.body["project"], project.as_str(), "{}", detail.text);
+    let heard = events_named(&events, "job", 30, |got| {
+        got.iter().any(|j| j["id"] == id.as_str())
+    });
+    let theirs: Vec<&Value> = heard.iter().filter(|j| j["id"] == id.as_str()).collect();
+    assert!(
+        theirs.iter().all(|j| j["project"] == project.as_str()),
+        "{theirs:?}"
+    );
+
+    // From a conversation in no project, and dispatched whole: in none.
+    let outside = dispatched(&obid, json!({"said": DISPATCH, "new": true}));
+    assert_eq!(outside["project"], Value::Null, "{outside}");
+    let outside = outside["id"].as_str().unwrap().to_owned();
+    assert_eq!(listed_job(&obid, &outside)["project"], Value::Null);
+    let whole = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Look around"}}),
+        ),
+    );
+    assert!(whole.status < 300, "{}", whole.text);
+    let whole = whole.body["id"].as_str().unwrap().to_owned();
+    assert_eq!(listed_job(&obid, &whole)["project"], Value::Null);
+    for job in [&id, &outside, &whole] {
+        ended_within(&obid, job, 60);
+    }
+
+    // Its conversation taken out, the project deleted and obid restarted: still the project.
+    let conversation = inside["conversation"].as_str().unwrap().to_owned();
+    let path = format!("/v1/conversations/{conversation}");
+    assert_eq!(patch(&obid, &path, json!({"project": null})).status, 200);
+    let gone = call(&obid, "DELETE", &format!("/v1/projects/{project}"), None);
+    assert_eq!(gone.status, 204, "{}", gone.text);
+    assert_eq!(listed_job(&obid, &id)["project"], project.as_str());
+    obid.stop();
+    let obid = start_at_home(&folder, &config);
+    assert_eq!(listed_job(&obid, &id)["project"], project.as_str());
+    let detail = call(&obid, "GET", &format!("/v1/jobs/{id}"), None);
+    assert_eq!(detail.body["project"], project.as_str(), "{}", detail.text);
+}
+
+#[test]
+fn projects_14_get_jobs_by_project() {
+    let folder = Folder::new("projects-14");
+    let config = harness_config(&folder);
+    let (p, q) = (ONE, TWO);
+    let dir = folder.0.join("home/jobs");
+    std::fs::create_dir_all(&dir).unwrap();
+    let kept = |id: &str, project: Option<&str>, status: &str, created: i64| {
+        let mut job = obid::job::Job::new(
+            id.into(),
+            "obi-e2e/fixture-app".into(),
+            "fix".into(),
+            "A task".into(),
+            "claude".into(),
+            "stub".into(),
+        );
+        job.project = project.map(str::to_owned);
+        job.status = serde_json::from_value(json!(status)).unwrap();
+        job.created = created;
+        if status == "queued" {
+            // Queued for an account's reset a day away, so obid starts it no sooner.
+            job.resumes_at = Some(obi_protocol::time::now() + 86_400);
+        } else {
+            job.finished = Some(created + 1);
+        }
+        let file = dir.join(format!("{id}.json"));
+        std::fs::write(file, serde_json::to_vec(&job).unwrap()).unwrap();
+    };
+    let now = obi_protocol::time::now();
+    kept("aaaa0001", Some(p), "queued", now - 500);
+    kept("aaaa0002", Some(p), "done", now - 400);
+    kept("aaaa0003", Some(p), "failed", now - 300);
+    kept("aaaa0004", Some(q), "done", now - 200);
+    kept("aaaa0005", None, "done", now - 100);
+    let obid = start_at_home(&folder, &config);
+    let ids = |query: &str| {
+        let answer = call(&obid, "GET", &format!("/v1/jobs{query}"), None);
+        assert_eq!(answer.status, 200, "{query}: {}", answer.text);
+        let list = answer.body.as_array().unwrap().clone();
+        list.iter()
+            .map(|j| j["id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+
+    let active = call(&obid, "GET", "/v1/jobs/aaaa0001", None).body;
+    assert_eq!(active["status"], "queued", "{active}");
+    assert_eq!(
+        ids(&format!("?project={p}")),
+        ["aaaa0001", "aaaa0003", "aaaa0002"]
+    );
+    assert_eq!(ids(&format!("?project={p}&limit=1")), ["aaaa0001"]);
+    assert_eq!(ids(&format!("?project={q}")), ["aaaa0004"]);
+    assert!(ids("?project=33333333-3333-4333-8333-333333333333").is_empty());
+    assert!(ids("?project=").is_empty());
+    assert_eq!(
+        ids(""),
+        ["aaaa0005", "aaaa0004", "aaaa0003", "aaaa0002", "aaaa0001"]
+    );
+    let refused = call(&obid, "GET", &format!("/v1/jobs?project={p}&limit=x"), None);
+    assert_eq!(refused.status, 422, "{}", refused.text);
+    assert_eq!(
+        refused.body["error"], "limit is a number.",
+        "{}",
+        refused.text
+    );
+}
+
+#[test]
+fn projects_15_status_lists_project_jobs_v1() {
+    let folder = Folder::new("projects-15");
+    let obid = start_at_home(&folder, &harness_config(&folder));
+    let status = call(&obid, "GET", "/v1/status", None).body;
+    let names: Vec<&str> = status["capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n.as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"project-jobs-v1"), "{status}");
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted);
+}

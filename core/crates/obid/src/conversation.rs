@@ -2002,6 +2002,21 @@ pub fn is_id(id: &str) -> bool {
             .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f' | b'-'))
 }
 
+/// The project the conversation `id` is in, as kept in `home/conversations/<id>.json`: none for a
+/// non-id, a file missing or unreadable, or no project. It only reads, without the conversations'
+/// lock: the file is written whole ([`crate::store::write_private`]), so a read sees one project.
+pub fn kept_project(home: &Path, id: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Kept {
+        project: Option<String>,
+    }
+    if !is_id(id) {
+        return None;
+    }
+    let bytes = std::fs::read(home.join("conversations").join(format!("{id}.json"))).ok()?;
+    serde_json::from_slice::<Kept>(&bytes).ok()?.project
+}
+
 /// Writes the folder's own entries (the names in it) to the disk.
 fn sync_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::File::open(dir)?.sync_all()
