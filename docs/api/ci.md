@@ -48,10 +48,11 @@ on stderr (exit 1), or, with nothing failed and something not judged, a `couldn'
 is not judged; nothing passes unless `secret-scan` passed.
 
 `OBY_CHECK_ONLY=limits` is GitHub's: its `limits` job in `ci.yml` runs
-`OBY_CHECK_ONLY=limits scripts/oby-check.sh <base>`, which judges only obid's line limits (the Rust
-core's and `jobs.rs`'s lines, the tests' sleeps and the flaky list's guard) on the checked commit,
-whatever changed, with no `oby-check-blok` (CI-35, [ci](contracts/ci.md)). It isn't a group
-`oby-check-blok` plans or runs: its `rust` group judges the same limits when a change reaches them.
+`OBY_CHECK_ONLY=limits scripts/oby-check.sh <base>`, which reports obid's line count and its
+difference from the base and judges only `jobs.rs`'s lines, the tests' sleeps, `AGENTS.md`'s bytes
+and the flaky list's guard on the checked commit, whatever changed, with no `oby-check-blok` (CI-35,
+CI-49, [ci](contracts/ci.md)). It isn't a group `oby-check-blok` plans or runs: its `rust` group
+reports and judges the same when a change reaches them.
 
 Each step's limit is its `maxDuration` in the workflow file, enforced by the node itself (CI-33,
 [ci](contracts/ci.md)): past it, the node sends SIGTERM to the group's script and every process

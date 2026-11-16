@@ -16,6 +16,7 @@ use std::ffi::OsString;
 use super::harness::{NO_SHELL, Place, orientation};
 use crate::agent::{Launch, Tool};
 use crate::api::Shared;
+use crate::helpers::Told;
 
 /// The features a conversation's Codex runs without (codex-cli 0.162.1, `codex features list`),
 /// each set off and required off before every run ([`features_off`]). No shell (`shell_tool`):
@@ -74,7 +75,8 @@ const SETTINGS: &[&str] = &[
 
 /// The `app-server` to run for one attempt of the turn, and what its thread is started with:
 /// `resume`'s thread when there is one, the conversation's orientation, the configured model;
-/// obid's Tetrix server at `tetrix` when it's given; web search live.
+/// obid's Tetrix server at `tetrix` when it's given; web search live but for a `helper` not
+/// granted it.
 /// Refuses, saying why, a Codex that keeps a feature of [`OFF`] on and a login copy near its end
 /// ([`crate::jobs::codex_copy_ready`]). An `own` one (LANES-13) runs on the account's own folder,
 /// its shell on, and Codex runs no turn on settings that aren't obid's (crate::codex).
@@ -88,6 +90,7 @@ pub(super) async fn launch(
     token: &str,
     resume: &Option<String>,
     own: bool,
+    helper: Option<&Told>,
 ) -> Result<(Launch, Option<crate::codex::Options>), String> {
     // Oby's server and Tetrix's as a job's are given ([`crate::codex::argv`]: its `-c` settings).
     let argv = crate::codex::argv(Default::default(), Some((url, token)), tetrix);
@@ -106,7 +109,11 @@ pub(super) async fn launch(
             &url.replace("/v1/agent/mcp/", "/v1/agent/chatgpt/"),
         ));
     }
-    flags.extend(["-c".into(), r#"web_search="live""#.into()]);
+    let web = match super::harness::web(helper) {
+        true => r#"web_search="live""#,
+        false => r#"web_search="disabled""#,
+    };
+    flags.extend(["-c".into(), web.into()]);
     // Whatever repeats the turn's token (a tool's answer, the agent) is redacted.
     crate::secrets::known().learn(
         &format!("conversation {} MCP token", place.folder.display()),
@@ -160,8 +167,8 @@ pub(super) async fn launch(
         effort: None,
         plan: false,
         instructions: Some(match own {
-            true => orientation(shared, tetrix.is_some()).replacen(NO_SHELL, OWN_SHELL, 1),
-            false => orientation(shared, tetrix.is_some()),
+            true => orientation(shared, tetrix.is_some(), helper).replacen(NO_SHELL, OWN_SHELL, 1),
+            false => orientation(shared, tetrix.is_some(), helper),
         }),
         no_commands: !own,
         usage: false,

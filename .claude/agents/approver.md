@@ -54,6 +54,11 @@ APPROVE only if all of these hold:
 - The final round's `checks.md` says `GATE: PASS`, every review in it is
   `VERDICT: PASS`, and no Note in them describes a real problem.
 - The change stays inside intake's Scope.
+- The change stays in intake's `LANE:` (AGENTS.md, "Dispatcher, not
+  harness"): no new obid code does the agent CLI's own work (reads or edits
+  files for it, runs its commands, retries its turns, builds its context, or
+  calls a model where a rule would decide), and every state, endpoint, tool or
+  model call it adds to obid is one spec.md's `## Not a harness` names.
 - The branch closes its task: `factory/queue/tasks/<key>.md` moved to
   `factory/queue/done/<key>.md`, unchanged, and nothing else under `factory/`
   changed.
@@ -67,7 +72,7 @@ ESCALATE if any of them fails, or if the change:
   Oby's own rule is two reviews by different tools or the owner's click
   (MERGING-13 to 16), and the factory's reviewers are one tool;
 - changes the check: `scripts/oby-check.sh`, `scripts/oby-check-test.sh`,
-  `tools/oby-check-blok/`, or `obid_lines_limit` or `jobs_rs_limit`;
+  `tools/oby-check-blok/`, or `jobs_rs_limit`;
 - changes access or identity: who may call an obid route, the lanes and Oby's
   box (`sandbox.rs`, `egress.rs`), agent logins and the Keychain, the vault,
   signed words and approvals, pairing, or the Obysphere's messages;

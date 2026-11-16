@@ -1242,9 +1242,14 @@ impl Tetrix {
     ) -> Option<Value> {
         let (method, rpc_id, params) = crate::mcp::read(&body)?;
         let connections = &shared.connections;
+        // A helper's conversation reaches Tetrix only while its helper, as kept now, is granted it.
+        let conversation = endpoint.strip_prefix("conversation-").unwrap_or(endpoint);
+        let granted = (shared.helpers).allows(conversation, crate::helpers::Connector::Tetrix);
         let result = match (method, session) {
             ("initialize", _) => crate::mcp::hello(&params, "tetrix", CONVERSATION_INSTRUCTIONS),
             ("ping", _) => crate::mcp::ping(),
+            ("tools/list", _) if !granted => json!({"tools": []}),
+            ("tools/call", Some(_)) if !granted => failure(crate::helpers::NOT_GRANTED),
             // Tetrix's own listing, already only the tools with an [`entry`].
             ("tools/list", _) => {
                 let tools = self.tools(connections, CONVERSATIONS).await;

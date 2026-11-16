@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """factory/bin/oby-feed's own tests (docs/contracts/factory.md, FEEDMODEL-1 to 5, FEEDALIVE-1 to 6, FEEDKANI-1 to 9,
-FEEDAPPROVE-1 to 8, FEEDSPEC-1 to 9 and FEEDLENS-1 to 9; task A00-80, FEED-1 to FEED-6), never obid, GitHub, ssh,
-Quint, Kani, the gate VM or the network.
+FEEDAPPROVE-1 to 8, FEEDSPEC-1 to 9, FEEDLENS-1 to 9 and NOTHARNESS-4; task A00-80, FEED-1 to FEED-6), never obid,
+GitHub, ssh, Quint, Kani, the gate VM or the network.
 
 FEED-1 to FEED-6: the feeder's state is a temporary folder; obid's API and every `gh` call are stand-ins that log
 what they were asked and answer as each test sets.
@@ -18,9 +18,10 @@ sets one; so a head approved twice gets its lens jobs at one pass, its approver 
 after. `git cat-file -e` finds every task file and lens prompt on the base but those in `off_base` (by stem, so
 `reviewer-security` for a prompt), and `git show` of a task file gives the text a test put in `base_tasks`, else none.
 
-FEEDSPEC-1 to 9: the same stand-in obid makes the intake and spec (`research-<n>`) and build (`build-<n>`) jobs under
-their keys, each `running` until the test ends it; it logs the parts sent as messages and the stops, and answers them
-as the test sets. Its log of `POST /v1/jobs` refuses a build for a task with no saved spec in every test of this file.
+FEEDSPEC-1 to 9 and NOTHARNESS-4: the same stand-in obid makes the intake and spec (`research-<n>`) and build
+(`build-<n>`) jobs under their keys, each `running` until the test ends it; it logs the parts sent as messages and the
+stops, and answers them as the test sets. Its log of `POST /v1/jobs` refuses a build for a task with no saved spec in
+every test of this file.
 
 FEEDMODEL-1 to 4: check_models() runs with subprocess.run stubbed: `gh api` returns a model whose first line is a
 `// verify:` line, the `ssh … cat >` and `ssh … rm -f` calls succeed, and each `ssh … quint verify … --invariant=<name> …`
@@ -2503,7 +2504,8 @@ class ObyFeed(unittest.TestCase):
     # ---- FEEDSPEC: oby-feed runs intake and a spec before each build, and builds against the spec ------------------
 
     TASK = "KEY: A00-98\nTITLE: another task\n\n## What\nWhat it asks.\n\n### Files\n- y.py\n"
-    INTAKE = "DECISION: ACCEPT\nRISK: high\nSURFACES: security\nRESCOPED: no\n\n## Summary\n- It fits.\n\n## Questions\nNone."
+    INTAKE = ("DECISION: ACCEPT\nRISK: high\nSURFACES: security\nRESCOPED: no\nLANE: dispatcher\n\n## Summary\n- It fits.\n\n"
+              "## Questions\nNone.")
     LIMIT = "You've hit your usage limit"
     SPEC = "# A spec\n\n## Summary\n- It does it.\n\n## Acceptance criteria\n1. It does one thing.\n2. It does another.\n\n## Out of scope\n- More."
 
@@ -3004,6 +3006,43 @@ class ObyFeed(unittest.TestCase):
                 else:
                     self.assertEqual((item["state"], [s["kind"] for s in self.stand.sent()]), ("intake", ["research"]))
                 self.assertEqual(self.build_posts(), [])
+
+    # NOTHARNESS-4: the feeder holds job advance's lane rule, imported, before its spec job
+    def test_notharness_4_the_feeder_starts_no_spec_for_an_accept_with_no_valid_lane(self):
+        accept = "DECISION: ACCEPT\nRISK: high\nSURFACES: security\nRESCOPED: no\n"
+        why = "\n## Summary\n- It fits.\n\n## Why\n"
+        refused = {"no LANE line": accept + why + "It is the factory's own.",
+                   "LANE only below the blank line": accept + why + "LANE: dispatcher. It is the factory's own.",
+                   "LANE: harness": accept + "LANE: harness\n" + why + "It is the factory's own.",
+                   "LANE: agent": accept + "LANE: agent\n" + why + "It is the CLI's own."}
+        for case, summary in refused.items():
+            with self.subTest(case=case):
+                self.feed.FEED = self.dir / f"feed-{len(os.listdir(self.dir))}"
+                self.stand = StandIns(self.feed)
+                self.stand.missed = self.feed.OBID_MISSED
+                self.feed.api = self.stand.api
+                self.stepping("intake", "done", summary)
+                self.one_pass()
+                item = self.item()
+                self.assertEqual((item["state"], item.get("note"), item["decision"]),
+                                 ("blocked", "intake gave no decision: its ACCEPT has no valid LANE line", None))
+                self.one_pass()
+                self.assertEqual((self.stand.posts, self.stand.messages), ([], []))
+        for lane in ("dispatcher", "between-owners"):
+            with self.subTest(lane=lane):
+                self.feed.FEED = self.dir / f"feed-{len(os.listdir(self.dir))}"
+                self.stand = StandIns(self.feed)
+                self.stand.missed = self.feed.OBID_MISSED
+                self.feed.api = self.stand.api
+                summary = accept + f"LANE: {lane}\n" + why + "It is the dispatcher's."
+                self.stepping("intake", "done", summary)
+                self.one_pass()
+                [sent] = self.stand.sent()
+                self.assertEqual((sent["kind"], sent["clientRequestId"], sent["title"]),
+                                 ("research", "feed-spec-A00-98-research-1", "A00-98 spec"))
+                self.assertEqual(self.docs(self.parts_of("research-2"))["intake.md"], summary)
+                item = self.item()
+                self.assertEqual((item["state"], item["job"], item["decision"]), ("speccing", "research-2", "ACCEPT"))
 
 
 KEY = "A00-99"

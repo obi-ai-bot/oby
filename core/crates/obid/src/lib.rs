@@ -40,6 +40,7 @@ pub mod github;
 pub mod github_login;
 pub mod github_work;
 pub mod groups;
+pub mod helpers;
 pub mod job;
 pub mod jobs;
 pub mod limits;
@@ -452,6 +453,7 @@ pub async fn serve(
     let cleared = clear::Cleared::open(&config.home);
     let devices = devices::Devices::open(&config.mac_home);
     let profiles = profiles::Profiles::open(&config.home);
+    let helpers = helpers::Helpers::open(&config.home);
     let paired = gateway::Gateway::open(&config.mac_home);
     let relay = relay::Relay::open(&config.mac_home);
     link.use_relay(relay.clone());
@@ -521,6 +523,7 @@ pub async fn serve(
         cleared,
         devices,
         profiles,
+        helpers,
         gateway: paired,
         gateway_state,
         relay,

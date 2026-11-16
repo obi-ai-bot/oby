@@ -114,6 +114,14 @@ impl Profiles {
             .collect()
     }
 
+    /// `id` when a profile has it, or with none the default profile's id (crate::helpers).
+    pub fn id_of(&self, id: Option<&str>) -> Option<String> {
+        let saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
+        let mut profiles = saved.profiles.iter();
+        let found = profiles.find(|p| id.map_or(p.default, |id| p.id == id));
+        found.map(|p| p.id.clone())
+    }
+
     /// A new profile, not the default, with its own empty folder under `home` (0700), kept.
     pub fn create(&self, home: &Path, name: String, color: String) -> Result<Profile, Refused> {
         let profile = Profile {

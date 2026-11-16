@@ -124,7 +124,8 @@ decision of 2026-11-12). A task runs only in the active sprint (`sprint` in `con
 its `DEPENDS` line names are in `queue/done`. Intake's questions and the owner's answers stay in the job's
 folder (`/factory <answer>`), and nothing reads or writes a GitHub issue or the project board. A pull request
 stays a draft until the approver says APPROVE; then GitHub merges it, and the job waits in the stage `queued`
-while GitHub's merge queue holds it.
+while GitHub's merge queue holds it. The owner can reject a job at any stage but `queued` with `bin/job reject`,
+which closes its PR and moves it to Done; the run stops the job's agents first.
 
 Reading a job takes no lock (`bin/job` writes `job.json` whole, by renaming a temporary file), so `job queue`,
 the slot count and a long-running importer such as `bin/oby-feed` never hold one. Every write of `job.json` holds
@@ -142,7 +143,9 @@ Oby's factory (`bin/oby-feed`, building on the factory's own obid) starts each t
 does: an intake job first, then a spec job, then the build, told to build against that spec (FEEDSPEC in
 `docs/contracts/factory.md`). Intake and spec are read-only `research` jobs following `.claude/agents/intake.md` and
 `spec-writer.md` as `dev` has them; their documents reach the next job as fenced message parts. NEEDS-INFO, REJECT
-or a step that gave nothing usable leaves the task `blocked`, holding no slot, until its task file changes.
+or a step that gave nothing usable leaves the task `blocked`, holding no slot, until its task file changes. Both
+factories refuse to spec an intake with no valid `LANE:` line, or an ACCEPT in the `agent` lane (`job advance <job>
+spec`, and the feeder before its spec job; NOTHARNESS in `docs/contracts/factory.md`).
 
 It has lens reviews and an approver step too. When a head is approved twice by different tools and passes the
 security-path, model and Kani checks and the gate, it goes first to its lens reviews: one read-only review job on obid

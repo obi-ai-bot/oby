@@ -179,7 +179,7 @@ fn checked(shared: &Shared, body: &Bytes) -> Result<Body, ApiError> {
         )
     })?;
     let name = body.name.map(|n| n.trim().to_owned());
-    if !name.as_deref().is_none_or(crate::conversation::is_title) {
+    if !name.as_deref().is_none_or(crate::conversation::one_line) {
         return Err(refused(NAME));
     }
     let places = crate::folders::Places::of(shared);
