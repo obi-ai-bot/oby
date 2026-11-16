@@ -73,8 +73,8 @@ folder. That is
   obid's API, and no new value in an enum the Swift apps decode as closed
   (`apps/shared`).
 - **Dispatcher, not harness**: nothing added to obid that is the agent CLI's
-  own work (AGENTS.md), and neither `obid_lines_limit` nor `jobs_rs_limit` in
-  `scripts/oby-check.sh` is raised. Check intake's `LANE:` line and spec.md's
+  own work (AGENTS.md), and `jobs_rs_limit` in `scripts/oby-check.sh` isn't
+  raised. Check intake's `LANE:` line and spec.md's
   `## Not a harness` against the diff, where the job has them. Two things are
   `VERDICT: CHANGES`, each finding naming what the CLI already does there:
   new obid code that does an agent's work (reads or edits files for it, runs

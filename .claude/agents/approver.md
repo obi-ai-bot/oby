@@ -72,7 +72,7 @@ ESCALATE if any of them fails, or if the change:
   Oby's own rule is two reviews by different tools or the owner's click
   (MERGING-13 to 16), and the factory's reviewers are one tool;
 - changes the check: `scripts/oby-check.sh`, `scripts/oby-check-test.sh`,
-  `tools/oby-check-blok/`, or `obid_lines_limit` or `jobs_rs_limit`;
+  `tools/oby-check-blok/`, or `jobs_rs_limit`;
 - changes access or identity: who may call an obid route, the lanes and Oby's
   box (`sandbox.rs`, `egress.rs`), agent logins and the Keychain, the vault,
   signed words and approvals, pairing, or the Obysphere's messages;

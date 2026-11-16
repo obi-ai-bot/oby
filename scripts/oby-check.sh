@@ -15,9 +15,9 @@
 #                                  most first (ties by path), are dealt round-robin over the n shards (the
 #                                  gate's, docs/contracts/remote-gate.md, REMOTE-58 to 60); any other value
 #                                  ends 2 with nothing run;
-#                                  with OBY_CHECK_ONLY=limits, only the line limits below and
-#                                  AGENTS.md's bytes, whatever changed (GitHub's `limits` job,
-#                                  docs/contracts/ci.md, CI-35);
+#                                  with OBY_CHECK_ONLY=limits, only the limits below, obid's line
+#                                  count reported and AGENTS.md's bytes judged, whatever changed
+#                                  (GitHub's `limits` job, docs/contracts/ci.md, CI-35, CI-49);
 #                                  with OBY_CHECK_PATHS (one a line), runs what those paths reach:
 #                                  obid sets it when it runs this on a job's base, which changed
 #                                  nothing, to see whether the base fails as the job does
@@ -25,7 +25,7 @@
 #                                  OBY_CHECK_PLAN nor OBY_CHECK_ONLY, the installed
 #                                  `oby-check-blok check [base]` runs it, group by group (below)
 #
-#   core/                 the line limit below; cargo fmt --check; clippy -D warnings on the touched
+#   core/                 the limits below (obid's lines reported); cargo fmt --check; clippy -D warnings on the touched
 #                         crates; obid's lib tests of each touched module (src/a/b.rs: `a::b::`; all of them for
 #                         lib.rs, main.rs, build.rs, a file under src/ that isn't Rust, its
 #                         Cargo.toml, or the workspace's Cargo.toml or Cargo.lock), its touched
@@ -42,7 +42,7 @@
 #   apps/ios/, apps/watch/, apps/shared/, apps/Oby.xcodeproj, character/
 #                         the touched iOSTests suites on a Simulator, else a build-for-testing
 #   apps/electron/        npm run typecheck, npm test and npm run build there (its node_modules from npm install)
-#   scripts/oby-check*    scripts/oby-check-test.sh and the line limit below
+#   scripts/oby-check*    scripts/oby-check-test.sh and the limits below
 #   AGENTS.md             the limits below, AGENTS.md's bytes among them (the root's only; CI-36 to 38)
 #   AGENTS.md, core/AGENTS.md, core/CLAUDE.md, docs/agents-rules-manifest.md and the files it names
 #                         AGENTS.md's rules: each line the manifest lists is in its home, with no cargo
@@ -171,13 +171,10 @@ fi
 # Xcode's and SwiftPM's builds, kept between runs (in a job, in its HOME).
 cache="${OBY_CHECK_CACHE:-$HOME/Library/Caches/oby-check}"
 
-# Dispatcher, not harness (AGENTS.md): how many production lines the Rust core may have outside the
-# Sphere. A cut lowers it. Raising it is the owner's word: this is the check, so a job's own change
-# to it is checked by the base's copy and merges as a change to the check does (docs/contracts/merging.md).
-# A raise of it or jobs_rs_limit comes in a pull request that changes only this script, with a
-# `# payback: #<issue>` or `# payback: <task key>` line directly above it (docs/contracts/ci.md, CI-39 to 41).
-# payback: R08-08 deletes the retired limit code (~1,100 lines) (owner, 2026-11-15); raised in steps of up to 1,000 on the owner's word (2026-11-16) for A00-59, A00-70, A00-77, A00-93, A00-94 and the Home tasks A00-71 to A00-87
-obid_lines_limit=102450
+# Raising jobs_rs_limit is the owner's word: this is the check, so a job's own change to it is
+# checked by the base's copy and merges as a change to the check does (docs/contracts/merging.md). A
+# raise of it comes in a pull request that changes only this script, with a `# payback: #<issue>` or
+# `# payback: <task key>` line directly above it (docs/contracts/ci.md, CI-39 to 41).
 # jobs.rs alone may only shrink: past this it fails (the owner's decision of 2026-11-06, "1.3 Both").
 jobs_rs_limit=6305
 # obid's tests may only lose sleeps: a test waits for state with support::within (docs/contracts/ci.md, CI-12, CI-13).
@@ -205,7 +202,6 @@ pick_limit() { # name: sets it from the commit's copy where the branch changed i
         limit_moved+=("$1")
     fi
 }
-pick_limit obid_lines_limit
 pick_limit jobs_rs_limit
 pick_limit tests_sleep_limit
 pick_limit agents_md_bytes_limit
@@ -240,6 +236,21 @@ obid_lines() {
         -o -path core/crates/obid/src/sphere/link/inbox_actions.rs \) \
         -exec awk "$production_lines" {} + |
         awk '{ total += $1 } END { print total + 0 }'
+}
+# obid_lines at the merge base, by the same rule, on the base's core/crates taken out of git; it fails
+# when git can't give them (none in the base's tree, or an object it can't read).
+base_obid_lines() {
+    local dir status=0
+    # In TMPDIR, named: macOS's `mktemp -d` alone ignores TMPDIR, and a job's box can't write the
+    # Mac's own temporary folder.
+    dir=$(mktemp -d "${TMPDIR:-/tmp}/oby-check.XXXXXX") || return 1
+    if git archive "$base" core/crates 2>/dev/null | tar -x -C "$dir" 2>/dev/null; then
+        (cd "$dir" && obid_lines) || status=1
+    else
+        status=1
+    fi
+    rm -rf "$dir"
+    return "$status"
 }
 jobs_rs_lines() {
     if [[ -f core/crates/obid/src/jobs.rs ]]; then awk "$production_lines" core/crates/obid/src/jobs.rs; else echo 0; fi
@@ -561,17 +572,14 @@ if { selected && first_shard && [[ -n "$rust$check_script$agents_md" ]]; } || [[
         echo "oby-check: this commit has no scripts/oby-check.sh, this repository's check and its line limits: put it back" >&2
         failed+=("scripts/oby-check.sh is gone")
     fi
+    # Dispatcher, not harness (AGENTS.md): the Rust core's lines and the change's difference from its
+    # base are reported, never judged (docs/contracts/ci.md, CI-49, CI-50).
     lines=$(obid_lines)
-    if ((lines > obid_lines_limit)); then
-        echo "oby-check: the Rust core has $lines production lines outside the Sphere, past its limit of $obid_lines_limit (AGENTS.md, \"Dispatcher, not harness\"): cut as much elsewhere, or ask the owner to raise obid_lines_limit in this script$(moved obid_lines_limit)" >&2
-        failed+=("the Rust core's line limit")
-    elif ((lines + 1000 < obid_lines_limit)); then
-        echo "oby-check: the Rust core has $lines production lines outside the Sphere, more than 1,000 under its limit: lower obid_lines_limit in this script from $obid_lines_limit to $(((lines + 499) / 500 * 500)), so the cut stays cut$(moved obid_lines_limit)" >&2
-        failed+=("the Rust core's line limit")
+    if base_lines=$(base_obid_lines); then
+        echo "oby-check: the Rust core has $lines production lines outside the Sphere, $(printf '%+d' "$((lines - base_lines))") since its base"
     else
-        echo "oby-check: the Rust core has $lines production lines outside the Sphere, within its limit of $obid_lines_limit"
+        echo "oby-check: the Rust core has $lines production lines outside the Sphere, the difference from its base unknown (its core/crates can't be read)"
     fi
-    paid obid_lines_limit
     jobs_lines=$(jobs_rs_lines)
     if ((jobs_lines > jobs_rs_limit)); then
         echo "oby-check: jobs.rs has $jobs_lines production lines, past its limit of $jobs_rs_limit: it may only shrink: put new code in a module of its own, and lower jobs_rs_limit in this script when jobs.rs shrinks$(moved jobs_rs_limit)" >&2
@@ -608,12 +616,12 @@ if { selected && first_shard && [[ -n "$rust$check_script$agents_md" ]]; } || [[
         fi
     fi
     paid agents_md_bytes_limit
-    # A raise of a line limit since the branch started names its payback (CI-39) and comes alone, in
+    # A raise of jobs_rs_limit since the branch started names its payback (CI-39) and comes alone, in
     # a committed change to this script only (CI-40). Not on the combined code GitHub's `limits` job
     # checks (CI-35), where a raise shares its diff with the pull requests queued beside it.
     if [[ "${OBY_CHECK_ONLY:-}" != limits ]]; then
         raise_others=$(git diff --name-only "$base" HEAD | grep -vxF scripts/oby-check.sh || true)
-        for raised in obid_lines_limit jobs_rs_limit; do
+        for raised in jobs_rs_limit; do
             raised_from=$(limit_in "$base" "$raised")
             raised_to=$(limit_in HEAD "$raised")
             [[ -n "$raised_from" && -n "$raised_to" ]] && ((raised_to > raised_from)) || continue

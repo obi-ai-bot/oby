@@ -440,7 +440,7 @@ def brief(task, on_base, parts):
             f"Each numbered acceptance criterion gets its test, and every numbered scenario a test named after it. {kani}"
             "Run only the tests and lints your change touches "
             "(Rust: CARGO_TARGET_DIR=$PWD/core/target and --manifest-path core/Cargo.toml), never the whole check. "
-            "Never raise obid_lines_limit or jobs_rs_limit in scripts/oby-check.sh: if the change can't fit, stop and say by how many lines. "
+            "Never raise jobs_rs_limit in scripts/oby-check.sh: if the change can't fit, stop and say by how many lines. "
             f"Commit with Conventional Commits; the first commit's subject is the task's title. {close} "
             "Stage explicit paths and leave git status clean. Never push and never open a pull request: Oby publishes. "
             "Your last message starts with STATUS: READY or STATUS: BLOCKED: <why>, then what you changed and one line of "
