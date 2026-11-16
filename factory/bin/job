@@ -406,18 +406,23 @@ def cost_usd(job):
 # ---- Sync: fields derived from files ---------------------------------------
 
 
+def read_intake(path):
+    """An intake.md's decision, rescope, risk and surfaces, from its header lines."""
+    h = header(path)
+    return {
+        "decision": h.get("DECISION"),
+        "rescoped": h.get("RESCOPED") == "yes",
+        "risk": h.get("RISK"),
+        "surfaces": [s.strip() for s in h.get("SURFACES", "").split(",")
+                     if s.strip() and s.strip() != "none"],
+    }
+
+
 def sync(job):
     d = job_dir(job["id"])
     intake = d / "intake.md"
     if intake.exists():
-        h = header(intake)
-        job["intake"] = {
-            "decision": h.get("DECISION"),
-            "rescoped": h.get("RESCOPED") == "yes",
-            "risk": h.get("RISK"),
-            "surfaces": [s.strip() for s in h.get("SURFACES", "").split(",")
-                         if s.strip() and s.strip() != "none"],
-        }
+        job["intake"] = read_intake(intake)
     if job["round"]:
         rd = round_dir(job)
         gate = header(rd / "checks.md").get("GATE") if (rd / "checks.md").exists() else None

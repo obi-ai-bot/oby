@@ -27,13 +27,13 @@ frees the disk afterwards:
 - The order is: two approvals, the holds (security path, models, Kani), the gate, the lens reviews, the approver, the
   re-check, the merge.
 - A head approved twice that passes the security-path, model and Kani checks and the gate goes first to its lens
-  reviews: one read-only `review` job per lens factory/bin/route's rule routes (imported, not copied) from the task
-  file's RISK: line on origin/<base> (blank is high) and the surfaces the pull request's files touch, each with its
-  lens's model, following .claude/agents/reviewer-<lens>.md as origin/<base> has it. Only every lens's VERDICT: PASS
-  for the same head, once may_arm() and the gate still pass it, asks the approver; a VERDICT: CHANGES holds the head
-  for the owner with its findings (shown by --status), and no verdict or a lens that can't be routed holds it too,
-  both for good; a head that moved while its lenses read it waits for fresh approvals (docs/contracts/factory.md,
-  FEEDLENS).
+  reviews: one read-only `review` job per lens factory/bin/route's rule routes (imported, not copied) from the task's
+  intake (its RISK: and SURFACES: lines) or, for a task with no accepted intake, the task file's RISK: line on
+  origin/<base> (blank is high) and the surfaces the pull request's files touch, each with its lens's model,
+  following .claude/agents/reviewer-<lens>.md as origin/<base> has it. Only every lens's VERDICT: PASS for the same
+  head, once may_arm() and the gate still pass it, asks the approver; a VERDICT: CHANGES holds the head for the owner
+  with its findings (shown by --status), and no verdict or a lens that can't be routed holds it too, both for good; a
+  head that moved while its lenses read it waits for fresh approvals (docs/contracts/factory.md, FEEDLENS).
 - After its lens reviews the head goes to an approver job, a read-only `review` job on obid following
   .claude/agents/approver.md as origin/<base> has it, against the task file's own acceptance list as origin/<base> has
   it (a task whose file isn't there is held). Only that job's APPROVE for the same head arms the merge, once
@@ -888,9 +888,21 @@ LENS_MODELS = ("haiku", "sonnet", "opus")
 LENS_VERDICTS = ("VERDICT: PASS", "VERDICT: CHANGES")
 
 
+def lens_routing(key, files):
+    """The risk and surfaces a head's lenses are routed by: its task's intake (feed/<KEY>.intake.md, FEEDSPEC), read
+    with job.read_intake() as `route <job-id>` reads a job's intake.md, when the feeder has its ACCEPT; else, for a task
+    the feeder has no accepted intake for, the task file's RISK: line and the pull request's surfaces."""
+    intake = FEED / f"{key}.intake.md"
+    if intake.is_file():
+        read = job.read_intake(intake)
+        if read["decision"] == "ACCEPT":
+            return read["risk"], read["surfaces"]
+    return lens_risk(key), lens_surfaces(key, files)
+
+
 def lens_risk(key):
-    """The task's risk for routing: its RISK: header line as origin/<base> has it (task_text), read with job.header().
-    A blank one, or one that isn't a row of config.json's `routing`, is high."""
+    """The task's risk for routing when it has no intake: its RISK: header line as origin/<base> has it (task_text),
+    read with job.header(). A blank one, or one that isn't a row of config.json's `routing`, is high."""
     copy = FEED / "lenses" / f"{key}.md"
     copy.parent.mkdir(parents=True, exist_ok=True)
     copy.write_text(task_text(key) or "")
@@ -899,7 +911,7 @@ def lens_risk(key):
 
 
 def lens_surfaces(key, files):
-    """The surfaces route reads, from the pull request's changed files."""
+    """The surfaces route reads, from the pull request's changed files, for a task with no intake."""
     low = [f.lower() for f in files]
     surfaces = []
     if any(f.startswith("docs/models/") and f.endswith(".qnt") for f in files):
@@ -938,14 +950,14 @@ def lens_job(item, lens, account):
 
 def ask_lenses(item, head, tools, files, account):
     """Starts the lens reviews of a head may_arm() and the gate passed, in place of asking its approver: one review job
-    per lens route.reviewers() gives for the task's risk and the pull request's surfaces. A task whose file isn't on
+    per lens route.reviewers() gives for the risk and surfaces lens_routing() reads. A task whose file isn't on
     origin/<base>, or a lens that can't be routed (an unknown risk or surface, a model that isn't haiku, sonnet or opus,
     a prompt origin/<base> doesn't have), holds the head with no lens job. Returns True."""
     key = item["key"]
     if held_off_base(item, head):
         return True
     try:
-        routed = route.reviewers(lens_risk(key), lens_surfaces(key, files))
+        routed = route.reviewers(*lens_routing(key, files))
         for lens, model in sorted(routed.items()):
             prompt = f".claude/agents/reviewer-{lens}.md"
             if model not in LENS_MODELS:
