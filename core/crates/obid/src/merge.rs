@@ -211,6 +211,25 @@ pub fn merged_past(job: &Job) -> Option<(&str, &str)> {
     (own_work(job) && merged && by_itself && flagged && !told).then_some((conversation, head))
 }
 
+/// The owner's own work whose head GitHub's merge queue dropped, past what obid tries by itself
+/// (MERGING-57), its conversation not yet told of that head: the conversation and the head.
+pub fn queue_stopped(job: &Job) -> Option<(&str, &str)> {
+    let conversation = job.conversation.as_deref()?;
+    let last = job.queue_drops.last().filter(|d| d.stopped && !d.told)?;
+    let merged = (job.pull_request.as_ref()).is_some_and(|pr| pr.state == "MERGED");
+    (own_work(job) && !merged).then_some((conversation, last.head.as_str()))
+}
+
+/// What the owner's own work's conversation is told once GitHub's merge queue dropped it into
+/// `base` and nothing more happens by itself, `title` its task's, `twice` when it was the second
+/// drop (MERGING-57).
+pub fn queue_dropped_line(title: &str, base: &str, twice: bool) -> String {
+    let twice = if twice { " twice" } else { "" };
+    format!(
+        "{title}: not merged into {base}. GitHub's merge queue dropped it{twice}. Look at why on GitHub, or ask Oby to try again."
+    )
+}
+
 /// Why a pull request didn't merge, in obid's words.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Blocked {
@@ -452,6 +471,71 @@ pub const AUTO_REFUSED: &str = "Not merged: GitHub didn't take it for its auto-m
 /// Handed to GitHub's auto-merge: it waits with no card (MERGING-41).
 pub fn handed() -> Blocked {
     wait(GITHUB_MERGES)
+}
+
+/// A pull request's state, as GitHub's merge queue read says it ([`queue_state`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrState {
+    Open,
+    Closed,
+    Merged,
+}
+
+/// What became of a head obid handed to GitHub's auto-merge on a base with a merge queue
+/// ([`queue_state`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Queue {
+    /// GitHub still holds it: its auto-merge request, or its merge queue's entry.
+    InQueue,
+    Merged,
+    /// GitHub let it go without merging it: its merge queue dropped it.
+    Dropped,
+    /// Not the head obid armed, or not open: nothing of obid's to settle.
+    NotArmed,
+}
+
+/// Whether the head obid armed (`armed`; `same_head`, the pull request's head now) was dropped by
+/// GitHub's merge queue (MERGING-55): open, at that head, with neither an auto-merge `request` nor
+/// a queue `entry`. A head GitHub said anything else of, or didn't say, never is (MERGING-58).
+pub fn queue_state(
+    armed: bool,
+    same_head: bool,
+    state: PrState,
+    request: Option<bool>,
+    entry: Option<bool>,
+) -> Queue {
+    match state {
+        _ if !armed => Queue::NotArmed,
+        PrState::Merged => Queue::Merged,
+        PrState::Closed => Queue::NotArmed,
+        PrState::Open if !same_head => Queue::NotArmed,
+        PrState::Open if request == Some(false) && entry == Some(false) => Queue::Dropped,
+        PrState::Open => Queue::InQueue,
+    }
+}
+
+/// Why it didn't merge once GitHub's merge queue dropped its head (MERGING-57): once, then twice.
+pub const QUEUE_DROPPED: &str =
+    "Not merged: GitHub's merge queue dropped it. Look at why on GitHub, or ask Oby to try again.";
+pub const QUEUE_DROPPED_TWICE: &str = "Not merged: GitHub's merge queue dropped it twice. Look at why on GitHub, or ask Oby to try again.";
+
+/// The stop of a head GitHub's merge queue dropped (MERGING-55 to 57): a card for work that isn't
+/// the owner's own, a quiet wait for theirs, whose conversation hears it ([`queue_stopped`]).
+pub fn dropped(job: &Job) -> Blocked {
+    let why = match job.queue_drops.len() {
+        0 | 1 => QUEUE_DROPPED,
+        _ => QUEUE_DROPPED_TWICE,
+    };
+    if own_work(job) {
+        wait(why)
+    } else {
+        needs_you(why)
+    }
+}
+
+/// Whether `blocked` is a dropped head's stop ([`dropped`]).
+pub fn is_dropped(blocked: &Blocked) -> bool {
+    matches!(blocked.why.as_str(), QUEUE_DROPPED | QUEUE_DROPPED_TWICE)
 }
 
 /// What GitHub alone still holds of the job's pull request under the learned `workflow`, as the
@@ -4268,6 +4352,80 @@ mod tests {
         );
     }
 
+    /// MERGING-55 and 58: only the armed head, open, with neither an auto-merge request nor a queue
+    /// entry, was dropped; a merged one is merged; anything unknown is still in the queue.
+    #[test]
+    fn merging_58_queue_state_cases() {
+        use PrState::{Closed, Merged, Open};
+        let (no, yes) = (Some(false), Some(true));
+        for (armed, same, state, request, entry, queue) in [
+            (true, true, Open, no, no, Queue::Dropped),
+            (true, true, Open, yes, no, Queue::InQueue),
+            (true, true, Open, no, yes, Queue::InQueue),
+            (true, true, Open, None, no, Queue::InQueue),
+            (true, true, Open, no, None, Queue::InQueue),
+            (true, false, Open, no, no, Queue::NotArmed),
+            (false, true, Open, no, no, Queue::NotArmed),
+            (true, true, Merged, no, no, Queue::Merged),
+            (true, false, Merged, yes, yes, Queue::Merged),
+            (false, true, Merged, no, no, Queue::NotArmed),
+            (true, true, Closed, no, no, Queue::NotArmed),
+        ] {
+            let case = (armed, same, state, request, entry);
+            assert_eq!(
+                queue_state(armed, same, state, request, entry),
+                queue,
+                "{case:?}"
+            );
+        }
+    }
+
+    /// MERGING-57: a dropped head's stop is a card for other work and a quiet wait for the owner's
+    /// own, saying twice from the second drop; the own work's line names its base.
+    #[test]
+    fn merging_57_a_dropped_heads_stop_and_line() {
+        let drop = |head: &str| crate::job::QueueDrop {
+            head: head.into(),
+            state: Some("CLEAN".into()),
+            round: true,
+            stopped: false,
+            told: false,
+        };
+        let mut job = Job {
+            queue_drops: vec![drop("a")],
+            ..Job::default()
+        };
+        assert_eq!(dropped(&job), needs_you(QUEUE_DROPPED));
+        job.own_conversation = true;
+        let own = dropped(&job);
+        assert_eq!(
+            (own.needs_you, own.yours, own.rebase),
+            (false, false, false)
+        );
+        assert_eq!(own.why, QUEUE_DROPPED);
+        job.queue_drops.push(drop("b"));
+        assert_eq!(dropped(&job).why, QUEUE_DROPPED_TWICE);
+        assert!(is_dropped(&dropped(&job)) && !is_dropped(&handed()));
+        assert_eq!(queue_stopped(&job), None, "not stopped");
+        job.queue_drops[1].stopped = true;
+        assert_eq!(queue_stopped(&job), None, "no conversation");
+        job.conversation = Some("c".into());
+        assert_eq!(queue_stopped(&job), Some(("c", "b")));
+        job.queue_drops[1].told = true;
+        assert_eq!(queue_stopped(&job), None, "told");
+        job.queue_drops[1].told = false;
+        job.own_conversation = false;
+        assert_eq!(queue_stopped(&job), None, "not own work");
+        assert_eq!(
+            queue_dropped_line("Fix the thing", "dev", true),
+            "Fix the thing: not merged into dev. GitHub's merge queue dropped it twice. Look at why on GitHub, or ask Oby to try again."
+        );
+        assert_eq!(
+            queue_dropped_line("Fix the thing", "main", false),
+            "Fix the thing: not merged into main. GitHub's merge queue dropped it. Look at why on GitHub, or ask Oby to try again."
+        );
+    }
+
     /// MERGING-50: own work whose head needs two approving reviews (untrusted, a security path,
     /// changes Oby couldn't read) never merges past a review that asks for changes: the owner's
     /// Merge, on the review's item.
@@ -5869,6 +6027,61 @@ mod proofs {
         }
         let signed: bool = kani::any();
         assert_eq!(own_work_of(signed, false, !signed), signed);
+    }
+
+    /// A pull request's state, from a number.
+    fn any_pr_state() -> PrState {
+        match kani::any::<u8>() {
+            0 => PrState::Open,
+            1 => PrState::Closed,
+            _ => PrState::Merged,
+        }
+    }
+
+    /// What GitHub says it holds (a request, an entry), from a number: unknown, no or yes.
+    fn any_held() -> Option<bool> {
+        match kani::any::<u8>() {
+            0 => None,
+            1 => Some(false),
+            _ => Some(true),
+        }
+    }
+
+    /// MERGING-58: an armed head is never dropped unless the pull request is open, at that head,
+    /// and GitHub says it holds neither an auto-merge request nor a queue entry; a merged one is
+    /// merged.
+    #[kani::proof]
+    fn merging_58_a_queued_merged_or_unknown_head_is_never_dropped() {
+        let (same_head, state) = (kani::any::<bool>(), any_pr_state());
+        let (request, entry) = (any_held(), any_held());
+        let queue = queue_state(true, same_head, state, request, entry);
+        if queue == Queue::Dropped {
+            assert!(state == PrState::Open && same_head);
+            assert!(request == Some(false) && entry == Some(false));
+        }
+        if state == PrState::Merged {
+            assert_eq!(queue, Queue::Merged);
+        }
+    }
+
+    /// MERGING-58: a head obid didn't arm, or any head but the armed one, is never dropped,
+    /// whatever GitHub says of its request and queue entry.
+    #[kani::proof]
+    fn merging_58_a_new_head_or_one_never_armed_is_never_dropped() {
+        let (armed, same_head) = (kani::any::<bool>(), kani::any::<bool>());
+        let queue = queue_state(armed, same_head, any_pr_state(), any_held(), any_held());
+        if !armed || !same_head {
+            assert_ne!(queue, Queue::Dropped);
+        }
+    }
+
+    /// MERGING-55: the armed head, open, with GitHub saying it holds neither an auto-merge request
+    /// nor a queue entry, is always dropped.
+    #[kani::proof]
+    fn merging_55_the_armed_open_head_with_no_request_or_entry_is_dropped() {
+        let (no_request, no_entry) = (Some(false), Some(false));
+        let queue = queue_state(true, true, PrState::Open, no_request, no_entry);
+        assert_eq!(queue, Queue::Dropped);
     }
 
     /// Any fit at all.

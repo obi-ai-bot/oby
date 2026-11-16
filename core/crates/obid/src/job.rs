@@ -897,6 +897,10 @@ pub struct Job {
     /// that head. Never in the API.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_merge_refused: Option<(String, String)>,
+    /// The heads GitHub's merge queue dropped once obid armed its auto-merge on them, oldest first
+    /// (MERGING-55 to 57): never armed again by itself. Kept in its file, never in the API.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queue_drops: Vec<QueueDrop>,
     /// Keys this obid doesn't know (a newer one's), kept as they were when it saves, never shown.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -915,6 +919,25 @@ pub struct Sending {
     /// For an approval: the reviewer account's login it goes as.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub login: Option<String>,
+}
+
+/// A head GitHub's merge queue dropped, as the job keeps it (MERGING-55 to 57).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueDrop {
+    pub head: String,
+    /// GitHub's `mergeStateStatus` on the pass that saw the drop, one of the words obid knows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// obid's one round by itself for it started (MERGING-56).
+    #[serde(default)]
+    pub round: bool,
+    /// None could: nothing more happens by itself for it (MERGING-57).
+    #[serde(default)]
+    pub stopped: bool,
+    /// The owner's own work's conversation was told so (MERGING-57).
+    #[serde(default)]
+    pub told: bool,
 }
 
 /// Who had obid merge a job's pull request (crate::merge): the owner, with a tap, the

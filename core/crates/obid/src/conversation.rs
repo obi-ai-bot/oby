@@ -1766,8 +1766,10 @@ fn summary_foreign(job: Option<&crate::job::Job>, id: &str) -> Option<String> {
 
 /// Follows obid's job events (MERGING-49): the owner's own work that merged by itself past Oby's
 /// review still asking for changes tells its conversation so, with the job's card, once per merged
-/// head ([`crate::merge::merged_past`]). Every job obid has is looked at once at start, and again
-/// when events were missed, so a merge made meanwhile is told too.
+/// head ([`crate::merge::merged_past`]); the owner's own work GitHub's merge queue dropped past what
+/// obid tries by itself tells it why, once per head (MERGING-57, [`crate::merge::queue_stopped`]).
+/// Every job obid has is looked at once at start, and again when events were missed, so a merge or
+/// a drop meanwhile is told too.
 pub fn report_merges_past_review(shared: std::sync::Arc<Shared>) {
     use tokio::sync::broadcast::error::RecvError;
     let mut bus = shared.events.subscribe();
@@ -1775,6 +1777,7 @@ pub fn report_merges_past_review(shared: std::sync::Arc<Shared>) {
     let sweep = |shared: &Shared| {
         for job in shared.jobs.list(usize::MAX) {
             tell_merged_past(shared, &job);
+            tell_queue_stopped(shared, &job);
         }
     };
     tokio::spawn(async move {
@@ -1793,10 +1796,13 @@ pub fn report_merges_past_review(shared: std::sync::Arc<Shared>) {
             };
             let merged = event.data["pullRequest"]["state"] == "MERGED";
             if let Some(job) = (event.data["id"].as_str())
-                .filter(|_| event.name == "job" && merged)
+                .filter(|_| event.name == "job")
                 .and_then(|id| shared.jobs.get(id))
             {
-                tell_merged_past(&shared, &job);
+                if merged {
+                    tell_merged_past(&shared, &job);
+                }
+                tell_queue_stopped(&shared, &job);
             }
         }
     });
@@ -1830,6 +1836,36 @@ fn tell_merged_past(shared: &Shared, job: &crate::job::Job) {
         Ok(_) => {}
     }
     shared.jobs.mark_told_merged_past(id, head);
+}
+
+/// Tells `job`'s conversation GitHub's merge queue dropped it and nothing more happens by itself
+/// (crate::merge::queue_dropped_line), once for that head: the mark goes on with the turn. A turn
+/// that couldn't be written is tried again; a conversation that's gone never will be. A report of
+/// the job's (`Turn::ended`), obid's own words only (MERGING-57).
+fn tell_queue_stopped(shared: &Shared, job: &crate::job::Job) {
+    let Some((conversation, head)) = crate::merge::queue_stopped(job) else {
+        return;
+    };
+    let title = crate::brain::briefing::line(&job.short_title(), 80);
+    let base = (job.base.as_deref())
+        .or(job.pull_request.as_ref().map(|pr| pr.base.as_str()))
+        .unwrap_or("its base");
+    let twice = job.queue_drops.len() >= 2;
+    let text = crate::merge::queue_dropped_line(&title, base, twice);
+    let (id, foreign) = (job.id.as_str(), summary_foreign(Some(job), &job.id));
+    match (shared.conversations).job_ended(conversation, text, id.to_owned(), foreign) {
+        Err(Error::Io(e)) => {
+            tracing::warn!(
+                "job {id}: conversation {conversation} couldn't be told of its drop: {e}"
+            );
+            return;
+        }
+        Err(e) => {
+            tracing::info!("job {id}: conversation {conversation} wasn't told of its drop: {e:?}")
+        }
+        Ok(_) => {}
+    }
+    shared.jobs.mark_told_queue_stopped(id, head);
 }
 
 /// The conversations as the list orders them, after `after` (or from the first): the pinned
