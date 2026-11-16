@@ -429,7 +429,7 @@ mod tests {
                 memory_from_others, foreign, foreign_by_api, withheld, check_withheld,
                 check_withheld_was, reached, made, apart, clone_root, vetted, own_conversation,
                 merge_error, told, told_merged_past, merge_needs_you, merged_by, sending,
-                auto_merge, auto_merge_refused, queue_drops, extra,
+                auto_merge, auto_merge_refused, queue_drops, auto_merge_off, extra,
             ],
         }
     }

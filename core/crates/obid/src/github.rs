@@ -780,9 +780,20 @@ pub fn decode_merging(text: &str) -> Option<Merging> {
     })
 }
 
-/// What [`queue_read`] asks of a pull request: its state, its head, and whether GitHub's merge
-/// queue or its auto-merge holds it.
-const QUEUE_READ: &str = "query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { state headRefOid isInMergeQueue autoMergeRequest { enabledAt } } } }";
+/// What [`queue_read`] asks of a pull request: its state, its head, whether GitHub's merge queue
+/// or its auto-merge holds it, and the last time either let it go (MERGING-60).
+const QUEUE_READ: &str = "query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { state headRefOid isInMergeQueue autoMergeRequest { enabledAt } timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT, AUTO_MERGE_DISABLED_EVENT]) { nodes { __typename ... on RemovedFromMergeQueueEvent { createdAt actor { __typename login } } ... on AutoMergeDisabledEvent { createdAt } } } } } }";
+
+/// Who GitHub says last let a pull request go ([`Queued::taken_out`], MERGING-60): the merge queue
+/// itself (`by_queue`), else a person or anything else; and when.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TakenOut {
+    /// Its merge queue's own removal (`RemovedFromMergeQueueEvent` by the `github-merge-queue`
+    /// bot); not a removal by someone, nor auto-merge turned off (`AutoMergeDisabledEvent`).
+    pub by_queue: bool,
+    /// Seconds since the epoch.
+    pub at: i64,
+}
 
 /// Whether GitHub's merge queue still holds a pull request ([`queue_read`], MERGING-55 and 58).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -795,6 +806,9 @@ pub struct Queued {
     pub request: Option<bool>,
     /// Whether it is in the merge queue (`isInMergeQueue`).
     pub entry: Option<bool>,
+    /// The last time its merge queue took it out or its auto-merge was turned off; none when
+    /// neither ever was, or GitHub's answer doesn't read.
+    pub taken_out: Option<TakenOut>,
 }
 
 /// Whether the pull request `number` of `repo` is still in GitHub's merge queue, in one `gh api
@@ -828,7 +842,21 @@ pub fn decode_queue(text: &str) -> Option<Queued> {
             .map(str::to_owned),
         request: held("autoMergeRequest"),
         entry: held("isInMergeQueue"),
+        taken_out: taken_out(&pr["timelineItems"]["nodes"][0]),
     })
+}
+
+/// [`TakenOut`] from [`QUEUE_READ`]'s last timeline item: none when it isn't one of the two.
+fn taken_out(item: &Value) -> Option<TakenOut> {
+    let at = obi_protocol::time::parse(item["createdAt"].as_str()?)?;
+    let by_queue = match item["__typename"].as_str()? {
+        "RemovedFromMergeQueueEvent" => {
+            item["actor"]["__typename"] == "Bot" && item["actor"]["login"] == "github-merge-queue"
+        }
+        "AutoMergeDisabledEvent" => false,
+        _ => return None,
+    };
+    Some(TakenOut { by_queue, at })
 }
 
 /// What GitHub logged of the runs that failed at `head` in `repo` (`gh run list --commit … --status
@@ -837,8 +865,6 @@ pub fn decode_queue(text: &str) -> Option<Queued> {
 /// words and a run's output: an agent gets it only with the secrets taken out, quoted
 /// (crate::jobs::after_pr, MERGING-39).
 pub async fn failed_logs(gh: &Path, repo: &str, head: &str, failed: &[String]) -> String {
-    const LOGGED_RUNS: usize = 3;
-    const LOG_LINES: usize = 300;
     let args = [
         "run",
         "list",
@@ -853,12 +879,60 @@ pub async fn failed_logs(gh: &Path, repo: &str, head: &str, failed: &[String]) -
     ];
     let listed = run(gh, &args).await.unwrap_or_default();
     let runs: Vec<Value> = serde_json::from_str(&listed).unwrap_or_default();
-    let mut logs = vec![];
-    for id in runs
-        .iter()
+    let ids = runs.iter().filter_map(|r| r["databaseId"].as_u64());
+    logs_of(gh, repo, ids.collect(), failed).await
+}
+
+/// What GitHub logged of the runs that failed in `repo`'s merge queue for pull request `number`
+/// into `base` (MERGING-56): its merge group's latest failed runs (`gh run list --event
+/// merge_group --status failure`, on `gh-readonly-queue/<base>/pr-<number>-…`), as
+/// [`failed_logs`] reads them. Someone's words and a run's output: an agent gets it only with the
+/// secrets taken out, quoted.
+pub async fn queue_logs(gh: &Path, repo: &str, base: &str, number: u64) -> String {
+    let args = [
+        "run",
+        "list",
+        "--repo",
+        repo,
+        "--event",
+        "merge_group",
+        "--status",
+        "failure",
+        "--json",
+        "databaseId,headBranch",
+        "--limit",
+        "20",
+    ];
+    let listed = run(gh, &args).await.unwrap_or_default();
+    let runs: Vec<Value> = serde_json::from_str(&listed).unwrap_or_default();
+    logs_of(gh, repo, queue_runs(&runs, base, number), &[]).await
+}
+
+/// The ids of `runs` (newest first) on the latest of pull request `number`'s merge groups into
+/// `base`; nothing else of them is kept.
+fn queue_runs(runs: &[Value], base: &str, number: u64) -> Vec<u64> {
+    let group = format!("gh-readonly-queue/{base}/pr-{number}-");
+    let ours: Vec<&Value> = (runs.iter())
+        .filter(|r| {
+            r["headBranch"]
+                .as_str()
+                .is_some_and(|b| b.starts_with(&group))
+        })
+        .collect();
+    let latest = ours.first().map(|r| &r["headBranch"]);
+    (ours.iter())
+        .filter(|r| Some(&r["headBranch"]) == latest)
         .filter_map(|r| r["databaseId"].as_u64())
-        .take(LOGGED_RUNS)
-    {
+        .collect()
+}
+
+/// The last [`LOG_LINES`] lines of the failed log of each of the first [`LOGGED_RUNS`] of `runs`;
+/// when none can be read, only the names of the checks that `failed`.
+async fn logs_of(gh: &Path, repo: &str, runs: Vec<u64>, failed: &[String]) -> String {
+    const LOGGED_RUNS: usize = 3;
+    const LOG_LINES: usize = 300;
+    let mut logs = vec![];
+    for id in runs.into_iter().take(LOGGED_RUNS) {
         let id = id.to_string();
         let args = ["run", "view", &id, "--repo", repo, "--log-failed"];
         let Ok(log) = run_bounded(gh, &args, 16 << 20, Duration::from_secs(60)).await else {
@@ -1312,6 +1386,7 @@ mod tests {
                 head: Some(head.clone()),
                 request: Some(false),
                 entry: Some(false),
+                taken_out: None,
             })
         );
         assert_eq!(
@@ -1324,6 +1399,7 @@ mod tests {
                 head: Some(head),
                 request: Some(true),
                 entry: Some(true),
+                taken_out: None,
             })
         );
         assert_eq!(
@@ -1336,10 +1412,69 @@ mod tests {
                 head: None,
                 request: None,
                 entry: None,
+                taken_out: None,
             })
         );
         assert_eq!(read(json!(null)).map(|q| q.state), Some(None));
         assert_eq!(decode_queue("not json"), None);
+    }
+
+    /// MERGING-60: who last let the pull request go is the merge queue only for its own removal,
+    /// by its bot; a removal by someone, or auto-merge turned off, is anyone else's.
+    #[test]
+    fn merging_60_only_the_queues_own_removal_is_the_queues() {
+        let taken = |item: Value| {
+            let pr = json!({"state": "OPEN", "timelineItems": {"nodes": [item]}});
+            let text = json!({"data": {"repository": {"pullRequest": pr}}}).to_string();
+            decode_queue(&text).unwrap().taken_out
+        };
+        let at = "2026-11-16T16:13:00Z";
+        let when = obi_protocol::time::parse(at).unwrap();
+        let removed = |kind: &str, login: &str| {
+            json!({"__typename": "RemovedFromMergeQueueEvent", "createdAt": at,
+                   "actor": {"__typename": kind, "login": login}})
+        };
+        assert_eq!(
+            taken(removed("Bot", "github-merge-queue")),
+            Some(TakenOut {
+                by_queue: true,
+                at: when
+            })
+        );
+        for (item, name) in [
+            (removed("User", "octo-cat"), "removed by someone"),
+            (removed("Bot", "other-bot"), "removed by another bot"),
+            (
+                json!({"__typename": "AutoMergeDisabledEvent", "createdAt": at,
+                       "actor": {"__typename": "User", "login": "octo-cat"}}),
+                "turned off",
+            ),
+        ] {
+            let by_queue = false;
+            assert_eq!(taken(item), Some(TakenOut { by_queue, at: when }), "{name}");
+        }
+        assert_eq!(
+            taken(json!({"__typename": "ClosedEvent", "createdAt": at})),
+            None
+        );
+        assert_eq!(taken(json!({"__typename": "AutoMergeDisabledEvent"})), None);
+    }
+
+    /// MERGING-56: the merge queue's runs read for a pull request are its latest merge group's
+    /// into its base, never another pull request's nor another base's.
+    #[test]
+    fn merging_56_the_queues_runs_are_its_latest_groups() {
+        let run = |id: u64, branch: &str| json!({"databaseId": id, "headBranch": branch});
+        let runs = [
+            run(1, "gh-readonly-queue/dev/pr-70-aaa"),
+            run(2, "gh-readonly-queue/dev/pr-7-bbb"),
+            run(3, "gh-readonly-queue/dev/pr-7-bbb"),
+            run(4, "gh-readonly-queue/main/pr-7-ccc"),
+            run(5, "gh-readonly-queue/dev/pr-7-ddd"),
+        ];
+        assert_eq!(queue_runs(&runs, "dev", 7), [2, 3]);
+        assert_eq!(queue_runs(&runs, "main", 7), [4]);
+        assert!(queue_runs(&runs, "dev", 8).is_empty());
     }
 
     /// Classic protection's answers, as gh prints them: only GitHub's own "not required" (and the

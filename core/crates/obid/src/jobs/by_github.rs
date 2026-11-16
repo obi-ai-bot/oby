@@ -5,7 +5,7 @@
 
 use super::*;
 
-use crate::merge::{Blocked, Merged, Reviewers};
+use crate::merge::{Blocked, Merged, Reviewers, TakenBy};
 
 /// How long a read of the job's pull request stands ([`follow_interval`]): at most 30 seconds in
 /// the 10 minutes after obid armed GitHub's auto-merge on it, so a hold or a head someone else
@@ -134,7 +134,7 @@ impl Jobs {
         let outcome = self.by_github(gh, job, workflow, seen, &by, outcome).await;
         // A head GitHub's merge queue dropped gets one round by itself, else stops (MERGING-56, 57).
         let dropped = matches!(&outcome, Err(b) if crate::merge::is_dropped(b));
-        let round = dropped && self.drop_round(id, head);
+        let round = dropped && self.drop_round(id, gh, head, &pr.base).await;
         if dropped && !round {
             self.stop_drop(id, head);
         }
@@ -189,10 +189,19 @@ impl Jobs {
         }
         let id = job.id.as_str();
         if job.auto_merge.as_ref().is_some_and(|a| a.head == head) {
-            if queue && self.dropped(gh, job, head, merging).await {
-                return Err(self
-                    .get(id)
-                    .map_or_else(crate::merge::handed, |j| crate::merge::dropped(&j)));
+            let taken = match queue {
+                true => self.taken_out(gh, job, head, merging).await,
+                false => TakenBy::Unknown,
+            };
+            match taken {
+                TakenBy::Queue => {
+                    let job = self.get(id);
+                    return Err(
+                        job.map_or_else(crate::merge::handed, |j| crate::merge::dropped(&j))
+                    );
+                }
+                TakenBy::Hand => return Err(crate::merge::off_by_hand()),
+                TakenBy::Unknown => {}
             }
             self.lock().handed.insert(id.to_owned());
             return Err(crate::merge::handed());
@@ -206,9 +215,13 @@ impl Jobs {
                 outcome
             };
         }
-        // A head GitHub's merge queue dropped is never armed again by itself (MERGING-56, 57).
+        // A head GitHub's merge queue dropped is never armed again by itself (MERGING-56, 57), nor
+        // one whose auto-merge someone turned off on GitHub (MERGING-60).
         if job.queue_drops.iter().any(|d| d.head == head) {
             return Err(crate::merge::dropped(job));
+        }
+        if job.auto_merge_off.as_deref() == Some(head) {
+            return Err(crate::merge::off_by_hand());
         }
         let go = |action: &str| self.about_to_send(id, head, action, Some(by.clone()), None);
         let home = self.config.home.clone();
@@ -245,53 +258,66 @@ impl Jobs {
         }
     }
 
-    /// Whether GitHub's merge queue dropped `head`, which obid armed on the job's pull request
-    /// (MERGING-55, 58): its read (`merging`) has no auto-merge request at least [`QUEUE_GRACE`]
-    /// after obid armed it, and one read of the queue ([`crate::github::queue_read`]) finds it
-    /// open at that head, neither requested nor queued ([`crate::merge::queue_state`]). Then
-    /// `autoMerge` is gone and the drop is noted on the job, with GitHub's `mergeStateStatus`.
-    async fn dropped(
+    /// Who took out `head`, which obid armed on the job's pull request (MERGING-55, 58, 60): its
+    /// read (`merging`) has no auto-merge request at least [`QUEUE_GRACE`] after obid armed it, and
+    /// one read of the queue ([`crate::github::queue_read`]) finds it open at that head, neither
+    /// requested nor queued ([`crate::merge::queue_state`]); then the last time GitHub let it go,
+    /// after obid armed it, says who ([`crate::merge::taken_by`]). The queue's own drop: `autoMerge`
+    /// is gone and the drop is noted on the job, with GitHub's `mergeStateStatus`. Someone's hand:
+    /// `autoMerge` is gone and that head stays off (`Job::auto_merge_off`). Anything else is
+    /// [`TakenBy::Unknown`]: it stays handed, and is read again.
+    async fn taken_out(
         &self,
         gh: &Path,
         job: &Job,
         head: &str,
         merging: &crate::github::Merging,
-    ) -> bool {
+    ) -> TakenBy {
         use crate::merge::PrState;
         let now = obi_protocol::time::now();
-        let graced = armed_at(job).is_some_and(|at| now - at >= QUEUE_GRACE);
+        let armed = armed_at(job).filter(|at| now - at >= QUEUE_GRACE);
         let number = (job.published.as_deref()).and_then(|url| job.pull_request_number(url));
-        let (Some(number), true, Some(false)) = (number, graced, merging.auto_merge_request) else {
-            return false;
+        let (Some(number), Some(armed), Some(false)) = (number, armed, merging.auto_merge_request)
+        else {
+            return TakenBy::Unknown;
         };
         let Some(read) = crate::github::queue_read(gh, &job.repo, number).await else {
-            return false;
+            return TakenBy::Unknown;
         };
         let state = match read.state {
             Some("OPEN") => PrState::Open,
             Some("CLOSED") => PrState::Closed,
             Some("MERGED") => PrState::Merged,
-            _ => return false,
+            _ => return TakenBy::Unknown,
         };
         let same_head = read.head.as_deref() == Some(head);
         let queue = crate::merge::queue_state(true, same_head, state, read.request, read.entry);
         if queue != crate::merge::Queue::Dropped {
-            return false;
+            return TakenBy::Unknown;
         }
-        tracing::info!("job {}: GitHub's merge queue dropped {head}", job.id);
+        let last = read.taken_out.map(|t| (t.by_queue, t.at));
+        let by = crate::merge::taken_by(last, armed);
+        match by {
+            TakenBy::Queue => tracing::info!("job {}: GitHub's merge queue dropped {head}", job.id),
+            TakenBy::Hand => tracing::info!("job {}: auto-merge turned off at {head}", job.id),
+            TakenBy::Unknown => return by,
+        }
         self.update(&job.id, |job| {
             if job.auto_merge.as_ref().is_some_and(|a| a.head == head) {
                 job.auto_merge = None;
             }
-            job.queue_drops.push(crate::job::QueueDrop {
-                head: head.into(),
-                state: merging.merge_state.clone(),
-                round: false,
-                stopped: false,
-                told: false,
-            });
+            match by {
+                TakenBy::Queue => job.queue_drops.push(crate::job::QueueDrop {
+                    head: head.into(),
+                    state: merging.merge_state.clone(),
+                    round: false,
+                    stopped: false,
+                    told: false,
+                }),
+                _ => job.auto_merge_off = Some(head.into()),
+            }
         });
-        true
+        by
     }
 
     /// The job `id`'s drop at `head` got no round (MERGING-57): nothing more happens by itself for

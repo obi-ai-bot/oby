@@ -538,6 +538,37 @@ pub fn is_dropped(blocked: &Blocked) -> bool {
     matches!(blocked.why.as_str(), QUEUE_DROPPED | QUEUE_DROPPED_TWICE)
 }
 
+/// Who took out a head [`queue_state`] says is gone ([`taken_by`], MERGING-60).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TakenBy {
+    /// GitHub's merge queue dropped it: MERGING-55 to 57.
+    Queue,
+    /// Someone turned its auto-merge off, or took it out of the queue, by hand: it stays off.
+    Hand,
+    /// GitHub doesn't say yet: it stays handed, and is read again.
+    Unknown,
+}
+
+/// Who took out a head obid armed at `armed_at`, from the last time GitHub let it go (`last`:
+/// whether its merge queue did itself, and when; MERGING-60): only what came after obid armed it.
+pub fn taken_by(last: Option<(bool, i64)>, armed_at: i64) -> TakenBy {
+    match last {
+        Some((true, at)) if at >= armed_at => TakenBy::Queue,
+        Some((false, at)) if at >= armed_at => TakenBy::Hand,
+        _ => TakenBy::Unknown,
+    }
+}
+
+/// Why a head whose auto-merge someone turned off on GitHub waits (MERGING-60): quietly, never
+/// armed again by itself.
+pub const AUTO_MERGE_OFF: &str =
+    "Not merged yet: its auto-merge was turned off on GitHub, so Oby leaves it as it is.";
+
+/// The stop of a head whose auto-merge someone turned off on GitHub (MERGING-60).
+pub fn off_by_hand() -> Blocked {
+    wait(AUTO_MERGE_OFF)
+}
+
 /// What GitHub alone still holds of the job's pull request under the learned `workflow`, as the
 /// view its merge goes by once GitHub lets go; none when anything else holds it (MERGING-41). Its
 /// checks still running, within the hour after obid pushed its head (MERGING-5 asks after that),
@@ -4378,6 +4409,23 @@ mod tests {
                 "{case:?}"
             );
         }
+    }
+
+    /// MERGING-60: only the queue's own removal after obid armed the head is a drop; anyone else's
+    /// after it is by hand, and anything before it, or nothing, is unknown yet.
+    #[test]
+    fn merging_60_taken_by_cases() {
+        assert_eq!(taken_by(Some((true, 10)), 10), TakenBy::Queue);
+        assert_eq!(taken_by(Some((false, 11)), 10), TakenBy::Hand);
+        assert_eq!(taken_by(Some((true, 9)), 10), TakenBy::Unknown);
+        assert_eq!(taken_by(Some((false, 9)), 10), TakenBy::Unknown);
+        assert_eq!(taken_by(None, 10), TakenBy::Unknown);
+        let off = off_by_hand();
+        assert_eq!(
+            (off.needs_you, off.yours, off.rebase),
+            (false, false, false)
+        );
+        assert!(!is_dropped(&off));
     }
 
     /// MERGING-57: a dropped head's stop is a card for other work and a quiet wait for the owner's

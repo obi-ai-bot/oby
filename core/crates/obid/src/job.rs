@@ -901,6 +901,10 @@ pub struct Job {
     /// (MERGING-55 to 57): never armed again by itself. Kept in its file, never in the API.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queue_drops: Vec<QueueDrop>,
+    /// The head whose auto-merge someone turned off on GitHub after obid armed it (MERGING-60): it
+    /// stays off, never armed again by itself. Kept in its file, never in the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_merge_off: Option<String>,
     /// Keys this obid doesn't know (a newer one's), kept as they were when it saves, never shown.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
