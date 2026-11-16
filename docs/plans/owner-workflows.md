@@ -195,7 +195,13 @@ Each task is the dispatcher's lane: which rules hold a job, which step runs next
 
 ### 7. For the owner to decide
 
-1. **Approve B00-27 first.** It's small, and every later task builds on its file.
-2. **The file's name: `oby.json`** at the repository's root, as T3 Code has `t3.json`. `.obi/` is obid's own folder inside a worktree, so a repository's file shouldn't live there.
-3. **Two defaults change for other repositories** (§2): the Mac-only and two-review paths shrink to the general ones, and agents are told no commit style unless the repository or the owner names one. This repository keeps all of it.
-4. **One change to B00-06 before it's built**: its `steps` take the ids the project's workflow names instead of a fixed list; its `when` (which lens runs for which surface) moves to the workflow's steps; and its `rounds` moves to the rules (`reviews.rounds`). Then each fact lives in one place: the workflow says which steps run and when, `factory.json` who runs them, the rules what must hold before a merge. B00-31 and B00-32 rely on it.
+1. ~~**Approve B00-27 first.**~~ Approved (§8).
+2. ~~**The file's name: `oby.json`**~~ at the repository's root, as T3 Code has `t3.json`. `.obi/` is obid's own folder inside a worktree, so a repository's file shouldn't live there. Approved with B00-27, which names it (§8).
+3. **Two defaults change for other repositories** (§2): the Mac-only and two-review paths shrink to the general ones (approved with B00-27, §8), and agents are told no commit style unless the repository or the owner names one (B00-29, still open). This repository keeps all of it.
+4. **One change to B00-06 before it's built** (still open): its `steps` take the ids the project's workflow names instead of a fixed list; its `when` (which lens runs for which surface) moves to the workflow's steps; and its `rounds` moves to the rules (`reviews.rounds`). Then each fact lives in one place: the workflow says which steps run and when, `factory.json` who runs them, the rules what must hold before a merge. B00-31 and B00-32 rely on it.
+
+### 8. The owner's decisions
+
+| Date | Question | The owner's answer | What it settles |
+|---|---|---|---|
+| 2026-11-16 | Approve B00-27 as the first step? | "Approve B00-27" | B00-27 as written: the file is `oby.json` at the repository's root (§7, item 2), and other repositories stop inheriting this repository's protected paths and Mac-only folders (§7, item 3, first half). B00-28 to B00-32, the commit-style default and the change to B00-06 are still open. |
