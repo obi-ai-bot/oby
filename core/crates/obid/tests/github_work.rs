@@ -44,6 +44,19 @@ fn id_of(feed: &Value, list: &str, number: u64) -> String {
         .to_owned()
 }
 
+/// Turns `githubEveryRepo` on or off (`PUT /v1/settings/jobs`): with it on, the feed keeps work in
+/// every repository, not only the listed ones (docs/contracts/github-work.md).
+fn every_repo(obid: &Obid, on: bool) {
+    let set = call(
+        obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"githubEveryRepo": on})),
+    );
+    assert_eq!(set.status, 200, "{}", set.text);
+    assert_eq!(set.body["githubEveryRepo"], on);
+}
+
 fn graphql_calls(dir: &Path) -> usize {
     std::fs::read_to_string(dir.join("calls"))
         .unwrap_or_default()
@@ -74,6 +87,7 @@ fn the_feed_lists_offers_new_work_once_and_starts_it_on_a_tap() {
         call_with_token(&obid, "wrong", "GET", "/v1/github/work", None).status,
         401
     );
+    every_repo(&obid, true);
 
     // The first read on record notes what's there and offers nothing.
     serve(
@@ -478,12 +492,13 @@ fn a_burst_of_review_requests_is_offered_five_a_read_until_all_are() {
     assert!(github_items(&obid, "done").is_empty(), "none twice");
 }
 
-/// A review request on a repository obid doesn't work in (#1118): offered with obid's words. Only
-/// the owner's signed Confirm adds the repository: a tap on the feed or the inbox offer's Review it
-/// with obid's API token alone only makes the confirm item, and no body changes that. It's added
-/// only once the review starts, its remote obid's own, and stays one of obid's after a restart.
+/// GITHUBWORK-3 (docs/contracts/github-work.md): with `githubEveryRepo` on, a review request on a
+/// repository obid doesn't work in (#1118) is kept and offered with obid's words. Only the owner's
+/// signed Confirm adds the repository: a tap on the feed or the inbox offer's Review it with obid's
+/// API token alone only makes the confirm item, and no body changes that. It's added only once the
+/// review starts, its remote obid's own, and stays one of obid's after a restart.
 #[test]
-fn reviewing_on_an_unknown_repository_adds_it_only_on_the_owners_tap() {
+fn githubwork_3_reviewing_on_an_unknown_repository_adds_it_only_on_the_owners_tap() {
     const OTHER: &str = "obi-e2e/other";
     const THIRD: &str = "obi-e2e/third";
     let folder = Folder::new("github-work-add");
@@ -521,6 +536,7 @@ fn reviewing_on_an_unknown_repository_adds_it_only_on_the_owners_tap() {
             .collect::<Vec<_>>()
     };
     names(OTHER);
+    every_repo(&obid, true);
     serve(&gh, &[], &[], &[]);
     refresh(&obid);
     serve(&gh, &[(OTHER, 12)], &[(OTHER, 13)], &[]);
@@ -683,6 +699,196 @@ fn reviewing_on_an_unknown_repository_adds_it_only_on_the_owners_tap() {
     assert_eq!(feed["reviews"][0]["known"], true, "{feed}");
     assert_eq!(feed["reviews"][1]["known"], true, "{feed}");
     assert_eq!(feed["assigned"][0]["known"], true, "{feed}");
+}
+
+const ELSE: &str = "someone/else";
+
+/// obid on the fixture repository with `githubEveryRepo` left unset, after its first read on
+/// record and a second one that serves work in `someone/else` beside new work in the fixture: a
+/// review request (#9 there, #703 here), an assigned issue (#13, #641) and an own pull request
+/// whose checks failed (#5, #6). Answers the second read's feed.
+fn read_beside_someone_else(folder: &Folder) -> (Obid, PathBuf, Value) {
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &agents().join("fake-claude"));
+    let obid = start(&folder.0, &config, Some(&agents()));
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&gh).unwrap();
+    serve(&gh, &[(REPO, 702)], &[(REPO, 640)], &[]);
+    refresh(&obid);
+    let head = "a".repeat(40);
+    let mut red = mine(5, &head, "FAILURE");
+    red["repository"]["nameWithOwner"] = json!(ELSE);
+    write_work(
+        &gh,
+        "wellington",
+        vec![node(REPO, 702), node(REPO, 703), node(ELSE, 9)],
+        vec![node(REPO, 640), node(REPO, 641), node(ELSE, 13)],
+        vec![mine(6, &head, "FAILURE"), red],
+    );
+    let feed = refresh(&obid);
+    (obid, gh, feed)
+}
+
+/// Every repository an item of `list` in `feed` is in.
+fn repos_in(feed: &Value, list: &str) -> Vec<String> {
+    feed[list]
+        .as_array()
+        .unwrap_or_else(|| panic!("no {list} in {feed}"))
+        .iter()
+        .map(|i| i["repo"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// GITHUBWORK-1 (docs/contracts/github-work.md, #2402): with `githubEveryRepo` unset, work in a
+/// repository obid isn't connected to is left out of the feed, its counts and the inbox, and
+/// can't be started even with the id an earlier every-repository read gave it.
+#[test]
+fn githubwork_1_work_outside_the_connected_repositories_is_left_out() {
+    let folder = Folder::new("githubwork-1");
+    let (obid, _gh, feed) = read_beside_someone_else(&folder);
+    for list in ["reviews", "assigned", "mine"] {
+        assert!(
+            !repos_in(&feed, list).is_empty() && !repos_in(&feed, list).contains(&ELSE.into()),
+            "{list}: {feed}"
+        );
+    }
+    assert_eq!(
+        feed["counts"]["reviews"], 2,
+        "#702 and #703, not #9: {feed}"
+    );
+    assert_eq!(feed["counts"]["assigned"], 2, "{feed}");
+    assert_eq!(feed["counts"]["mine"], 1, "{feed}");
+    let open = github_items(&obid, "open");
+    assert!(!open.is_empty(), "the fixture's new work is offered");
+    assert!(open.iter().all(|i| i["github"]["repo"] != ELSE), "{open:?}");
+
+    // An id an every-repository read gave #9 starts nothing once the read leaves it out.
+    every_repo(&obid, true);
+    let feed = refresh(&obid);
+    let nine = id_of(&feed, "reviews", 9);
+    every_repo(&obid, false);
+    let feed = refresh(&obid);
+    assert!(!repos_in(&feed, "reviews").contains(&ELSE.into()), "{feed}");
+    let start = format!("/v1/github/work/{nine}/start");
+    assert_eq!(call(&obid, "POST", &start, None).status, 404);
+}
+
+/// GITHUBWORK-2: in the same reads, a new review request in the connected repository is in the
+/// feed, known, and offered with Review it.
+#[test]
+fn githubwork_2_work_in_a_connected_repository_is_offered() {
+    let folder = Folder::new("githubwork-2");
+    let (obid, _gh, feed) = read_beside_someone_else(&folder);
+    let review = feed["reviews"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["number"] == 703)
+        .unwrap_or_else(|| panic!("no #703 in {feed}"));
+    assert_eq!(
+        (&review["repo"], &review["known"]),
+        (&json!(REPO), &json!(true))
+    );
+    let open = github_items(&obid, "open");
+    let offer = open
+        .iter()
+        .find(|i| i["title"] == "Review requested: fixture-app #703")
+        .unwrap_or_else(|| panic!("no offer for #703: {open:?}"));
+    assert_eq!(offer["options"][0], "Review it");
+}
+
+/// GITHUBWORK-4: an open offer for a repository obid isn't connected to, made while
+/// `githubEveryRepo` was on, is settled by itself (no answer) at the next whole read once it's off,
+/// and its item leaves the feed.
+#[test]
+fn githubwork_4_turning_every_repository_off_settles_its_open_offers() {
+    let folder = Folder::new("githubwork-4");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &agents().join("fake-claude"));
+    let obid = start(&folder.0, &config, Some(&agents()));
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&gh).unwrap();
+    every_repo(&obid, true);
+    serve(&gh, &[(REPO, 702)], &[], &[]);
+    refresh(&obid);
+    serve(&gh, &[(REPO, 702), (ELSE, 9)], &[], &[]);
+    refresh(&obid);
+    let elsewhere = |items: &[Value]| {
+        items
+            .iter()
+            .find(|i| i["github"]["repo"] == ELSE && i["github"]["number"] == 9)
+            .cloned()
+    };
+    let offer = elsewhere(&github_items(&obid, "open")).expect("offered while on");
+    refresh(&obid);
+    assert!(
+        elsewhere(&github_items(&obid, "open")).is_some(),
+        "it stays open"
+    );
+
+    every_repo(&obid, false);
+    let feed = refresh(&obid);
+    assert!(elsewhere(&github_items(&obid, "open")).is_none());
+    let settled = elsewhere(&github_items(&obid, "done")).expect("settled");
+    assert_eq!(settled["id"], offer["id"]);
+    assert_eq!(settled["answer"], Value::Null, "settled by itself");
+    assert_eq!(repos_in(&feed, "reviews"), [REPO], "{feed}");
+}
+
+/// GITHUBWORK-6: `githubEveryRepo` on `GET`/`PUT /v1/settings/jobs`: off on a fresh obid, kept
+/// across a restart, and anything but true or false is refused, changing nothing.
+#[test]
+fn githubwork_6_every_repository_is_a_setting_kept_across_restarts() {
+    let folder = Folder::new("githubwork-6");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &agents().join("fake-claude"));
+    let obid = start(&folder.0, &config, Some(&agents()));
+    let get =
+        |obid: &Obid| call(obid, "GET", "/v1/settings/jobs", None).body["githubEveryRepo"].clone();
+    assert_eq!(get(&obid), false);
+    every_repo(&obid, true);
+    let refused = call(
+        &obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"githubEveryRepo": "yes"})),
+    );
+    assert_eq!(refused.status, 422, "{}", refused.text);
+    assert!(refused.text.contains("githubEveryRepo"), "{}", refused.text);
+    assert_eq!(get(&obid), true, "a 422 changes nothing");
+    drop(obid);
+    let obid = start(&folder.0, &config, Some(&agents()));
+    assert_eq!(get(&obid), true, "kept across a restart");
+}
+
+/// GITHUBWORK-7: a repository connected later. With `githubEveryRepo` off, a review request there
+/// makes no offer; once obid restarts with it in `repos`, the next read offers it.
+#[test]
+fn githubwork_7_a_repository_connected_later_is_offered_at_the_next_read() {
+    const OTHER: &str = "obi-e2e/other";
+    let folder = Folder::new("githubwork-7");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agents().join("fake-claude"));
+    let obid = start(&folder.0, &config, Some(&agents()));
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&gh).unwrap();
+    serve(&gh, &[(REPO, 702)], &[], &[]);
+    refresh(&obid);
+    serve(&gh, &[(REPO, 702), (OTHER, 12)], &[], &[]);
+    let feed = refresh(&obid);
+    assert_eq!(repos_in(&feed, "reviews"), [REPO], "{feed}");
+    assert!(github_items(&obid, "open").is_empty(), "no offer");
+
+    drop(obid);
+    config["repos"].as_array_mut().unwrap().push(json!({
+        "repo": OTHER, "remote": format!("file://{}", remote.display()), "defaultBranch": "main"}));
+    let obid = start(&folder.0, &config, Some(&agents()));
+    refresh(&obid);
+    let titles: Vec<Value> = github_items(&obid, "open")
+        .iter()
+        .map(|i| i["title"].clone())
+        .collect();
+    assert_eq!(titles, [json!("Review requested: other #12")]);
 }
 
 /// Red checks on the owner's own pull request (#1119): one `CI failed` offer per red head, settled
