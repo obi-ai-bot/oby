@@ -28,6 +28,10 @@ import ProfileMenu, { NewProfileModal } from './ProfileMenu';
 import { useProjects, useProjectsOn } from './projects';
 import ProjectSheet from './ProjectSheet';
 import AgentsList, { convoAbout } from './AgentsList';
+
+// The Agents side of the panel (screens 08–10) is hidden until it works end to end: the owner's word, 2026-11-16.
+// Turn it back on here.
+const AGENTS_SHOWN = false;
 import { WELCOME, sampleDid, sampleOut, useSetup } from './onboarding';
 import { SAMPLE_TALK } from './Welcome';
 
@@ -136,8 +140,10 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   const anyWaits = noRow || needing.size > 0 || withAgents.some((c) => c.needs);
   const waiting = useWaitingCount();
   const [section, setSection] = useState<Section>(SECTIONS[0].id);
-  // chat first, under the title: Projects (Oby and the chats) or Agents (AgentsList); remembered
+  // chat first, under the title: Projects (Oby and the chats) or Agents (AgentsList); remembered.
+  // Agents is hidden while AGENTS_SHOWN is false (the owner's word, 2026-11-16): Projects only
   const [side, setSide] = useState<'projects' | 'agents'>(() => {
+    if (!AGENTS_SHOWN) return 'projects';
     try { return localStorage.getItem('oby.panelSide') === 'agents' ? 'agents' : 'projects'; } catch { return 'projects'; }
   });
   const pickSide = (to: 'projects' | 'agents') => {
@@ -498,7 +504,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
           )}
         </div>
         {/* chat first: Projects or Agents, under the profile's name (screen 08); the arrow keys move between them */}
-        {section === 'oby' && (
+        {section === 'oby' && AGENTS_SHOWN && (
           <div
             className="panel-side"
             role="tablist"
