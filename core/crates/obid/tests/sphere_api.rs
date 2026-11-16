@@ -1717,6 +1717,7 @@ async fn the_inbox_lists_answers_and_tells_every_app() {
                 "text",
                 "title",
                 "triage",
+                "triageWhy",
                 "why"
             ]
         );

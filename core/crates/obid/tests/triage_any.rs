@@ -87,7 +87,7 @@ fn triage_any_2_none_says_why() {
     );
     let issue = an_issue_is_assigned(&folder, &obid);
     let id = issue["id"].as_str().unwrap().to_owned();
-    let created = issue["created"].as_i64().unwrap();
+    let created = obi_protocol::time::parse(issue["created"].as_str().unwrap()).unwrap();
     let shown = within(
         30,
         "the item says why it isn't sorted, past its time",
