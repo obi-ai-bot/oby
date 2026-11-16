@@ -870,6 +870,63 @@ class ObyFeed(unittest.TestCase):
         self.one_pass()
         self.assertEqual(len(self.messages()), 1)
 
+    def held_retry(self, kind):
+        """A task whose retry (`build` after an interrupted job, `message` after a refused head) waits for disk.
+        Returns the free-disk switch."""
+        self.no_ready()
+        disk = {"gb": 5.0}
+        self.feed.free_gb = lambda: disk["gb"]
+        if kind == "build":
+            self.task("running", attempt=1, pr=None)
+            self.stand.jobs[JOB].update(status="interrupted")
+        else:
+            self.task("merging", head=OLD, attempt=1, armedAt="2026-11-15T10:00:00Z")
+            self.stand.graphql = queue(removed={"createdAt": "2026-11-15T10:05:00Z", "reason": GITHUB})
+        self.one_pass(min_free_gb=10)
+        self.assertEqual((self.task_now()["state"], self.task_now()["retry"]), ("retrying", kind))
+        return disk
+
+    # FEEDLOOP-18: a held retry whose job the owner resumed, and which then ended stopped or STATUS: BLOCKED, is never sent
+    def test_feedloop_18_a_held_retry_whose_resumed_job_ends_blocked_or_stopped_is_never_sent(self):
+        blocked = "STATUS: BLOCKED: the task can't be done as written"
+        for kind in ("build", "message"):
+            for status, summary, note in (("done", blocked, blocked), ("stopped", "", "the owner stopped its job")):
+                with self.subTest(kind=kind, status=status):
+                    self.setUp()
+                    disk = self.held_retry(kind)
+                    self.stand.jobs[JOB].update(status=status, summary=summary)  # resumed, it ended before the next pass
+                    disk["gb"] = 100.0
+                    self.one_pass(min_free_gb=10)
+                    item = self.task_now()
+                    self.assertEqual(self.stand.sent, [])
+                    self.assertEqual((item["state"], item["note"]), ("failed", note))
+                    self.assertNotIn("retry", item)
+                    self.one_pass(min_free_gb=10)
+                    self.assertEqual(self.stand.sent, [])
+
+    # FEEDLOOP-19: a held retry reads the pull request its resumed job published while it waited, before sending anything
+    def test_feedloop_19_a_held_retry_reads_the_pull_request_its_resumed_job_published(self):
+        disk = self.held_retry("build")
+        self.stand.jobs[JOB].update(status="failed", published=f"https://github.com/{REPO}/pull/{PR}")
+        self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "AGENTS.md"}]}
+        disk["gb"] = 100.0
+        self.one_pass(min_free_gb=10)
+        item = self.task_now()
+        self.assertEqual(self.stand.sent, [])
+        self.assertEqual((item["state"], item["pr"]), ("waiting", PR))
+        self.assertTrue(item["note"].startswith(self.feed.SECURITY_HOLD + " (AGENTS.md)"), item["note"])
+        self.one_pass(min_free_gb=10)
+        self.assertEqual(self.stand.sent, [])
+        # merged by hand while it waited: the task ends `merged`, nothing sent
+        self.setUp()
+        disk = self.held_retry("build")
+        self.stand.jobs[JOB].update(status="failed", published=f"https://github.com/{REPO}/pull/{PR}")
+        self.stand.view = {"headRefOid": OLD, "state": "MERGED", "files": [{"path": "x.py"}]}
+        disk["gb"] = 100.0
+        self.one_pass(min_free_gb=10)
+        self.assertEqual(self.stand.sent, [])
+        self.assertEqual(self.task_now()["state"], "merged")
+
     # FEEDLOOP-16: a task merged after a rebuild deletes every attempt's jobs, not only its last job's
     def test_feedloop_16_a_merged_task_deletes_the_jobs_of_every_attempt(self):
         self.no_ready()
