@@ -39,7 +39,7 @@ bin/child_session.py  runs a command in a session of its own and stops its lefto
                 and nightly
 bin/nightly     the nightly full Mac check: checks.sh with OBY_CHECK_ALL=1 on origin/dev, when no gate waits →
                 jobs/nightly/<stamp>.md, and a fix task on a failure
-remote/         the gate VM's and the Mac worker's side: setup.sh provisions the gate VM over SSH, setup-mac.sh the Mac worker; tighten.sh is what each runs last on its host, to leave the check's path writable only by its owner; oby-remote-gate runs a commit's Linux check groups in one of four slots on the VM (or `slots`), with --run a builder's command in one of the builder slots, as the no-sudo user oby-builder, and with --mac the macOS groups it is given in one of two slots on the Mac worker
+remote/         the gate VM's and the Mac worker's side: setup.sh provisions the gate VM over SSH, setup-mac.sh the Mac worker; pins.sh holds the cargo-mutants pin both setup scripts read; tighten.sh is what each runs last on its host, to leave the check's path writable only by its owner; oby-remote-gate runs a commit's Linux check groups in one of four slots on the VM (or `slots`), with --run a builder's command in one of the builder slots, as the no-sudo user oby-builder, and with --mac the macOS groups it is given in one of two slots on the Mac worker
 tests/          the factory's own tests, stdlib only, from the repository root: python3 -m unittest discover -s factory/tests;
                 the check runs them when bin/, checks.sh, tests/ or config.json change
 queue/tasks/    open tasks, one file each (R01-02.md)

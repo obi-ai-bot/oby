@@ -1443,7 +1443,7 @@ class Tighten(unittest.TestCase):
 
 
 class SetupMac(unittest.TestCase):
-    """REMOTE-18: setup-mac.sh, with a stand-in ssh that keeps what it sends and runs nothing."""
+    """REMOTE-18 and MUTANTS-17: setup-mac.sh, with a stand-in ssh that keeps what it sends and runs nothing."""
 
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
@@ -1482,7 +1482,11 @@ class SetupMac(unittest.TestCase):
         self.assertIn('dev=$(git -C "$root/repo.git" rev-parse refs/remotes/origin/dev)', sent)
         self.assertIn('git -C "$root/repo.git" archive "$dev" tools/oby-check-blok | tar -x -C "$tmp"', sent)
         self.assertIn('cargo install --locked --quiet --path "$tmp/tools/oby-check-blok"', sent)
-        self.assertEqual(len(re.findall(r"cargo install", sent)), 1, sent)
+        # Beside it, only install_mutants' calls (MUTANTS-17).
+        installs = [found.strip() for found in re.findall(r"cargo install[^)|\n]*", sent)]
+        self.assertEqual(sorted(installs), sorted(['cargo install --locked --quiet --path "$tmp/tools/oby-check-blok"',
+                                                   "cargo install --list",
+                                                   'cargo install --locked cargo-mutants --version "$MUTANTS"']), sent)
         # The one tighten.sh, run last with origin/dev's own check script on the two-slot root.
         self.assertIn(TIGHTEN.read_text(), sent)
         self.assertIn('tighten "$HOME" "$root" "$root/bin/oby-remote-gate" "$tmp/vet/scripts/oby-check.sh" "$tmp"',
@@ -1516,6 +1520,111 @@ class SetupMac(unittest.TestCase):
         self.assertIn("setup-mac.sh: nothing was written", done.stdout)
         self.assertEqual(list(home.iterdir()), [])
         self.assertFalse((self.dir / "ran").exists(), "a tool ran before the checks passed")
+
+
+    def install_mutants(self):
+        """The sent script's install_mutants, under macOS's bash 3.2 where it is, against a temporary home and a
+        stand-in cargo: `install --list` prints $dir/installed; `install --locked ...` is recorded in $dir/installs,
+        fails when $dir/install-fails exists, and otherwise writes its version into $dir/installed; `mutants
+        --version` prints $dir/version when it exists, and otherwise the version $dir/installed holds."""
+        if not self.sent.exists():
+            self.assertEqual(self.setup_mac().returncode, 0)
+        text = self.sent.read_text()
+        self.assertTrue(text.endswith("\nsetup </dev/null\n"), text[-200:])
+        functions = self.dir / "functions.sh"
+        functions.write_text(text.removesuffix("setup </dev/null\n"))
+        host = self.dir / "host-bin"
+        host.mkdir(exist_ok=True)
+        self.tool("cargo", f'''case "$1 $2" in
+"install --list") cat "{self.dir}/installed" 2>/dev/null; exit 0;;
+"install --locked") echo "$*" >>"{self.dir}/installs"
+    [ ! -e "{self.dir}/install-fails" ] || exit 1
+    echo "cargo-mutants v$5:" >"{self.dir}/installed";;
+"mutants --version") if [ -e "{self.dir}/version" ]; then cat "{self.dir}/version"; exit 0; fi
+    sed -n "s/^cargo-mutants v\\(.*\\):$/cargo-mutants \\1/p" "{self.dir}/installed" 2>/dev/null | grep . ||
+        {{ echo "error: no such command: \\`mutants\\`" >&2; exit 101; }};;
+*) exit 2;;
+esac''', host)
+        home = self.dir / "home"
+        home.mkdir(exist_ok=True)
+        bash = "/bin/bash" if Path("/bin/bash").exists() else "bash"
+        return subprocess.run([bash, "-c", 'set -euo pipefail; . "$0"; install_mutants', str(functions)], cwd=home,
+                              env=dict(os.environ, HOME=str(home), PATH=f"{host}:/usr/bin:/bin"),
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
+
+    def installs(self):
+        path = self.dir / "installs"
+        return path.read_text().splitlines() if path.exists() else []
+
+    def test_mutants_17_setup_mac_installs_cargo_mutants_once_at_the_pin(self):
+        done = self.setup_mac()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        sent = self.sent.read_text()
+        self.assertIn("\nMUTANTS=27.1.0\n", sent)
+        self.assertNotRegex(sent, r"\bsudo\b")
+        # After the checks and oby-check-blok, before tighten, so tighten covers it and a failed check writes nothing.
+        self.assertIn("\n    install_mutants\n", sent)
+        call = sent.index("\n    install_mutants\n")
+        self.assertLess(sent.index('say "nothing was written"'), call)
+        self.assertLess(sent.index('cargo install --locked --quiet --path "$tmp/tools/oby-check-blok"'), call)
+        self.assertLess(call, sent.index('tighten "$HOME"'))
+        self.assertIn("\n    cargo mutants --version\n", sent[sent.index('say "versions:"'):])
+        done = self.install_mutants()
+        self.assertEqual(done.returncode, 0, done.stdout)
+        self.assertEqual(self.installs(), ["install --locked cargo-mutants --version 27.1.0"])
+        self.assertIn("setup-mac.sh: installing cargo-mutants 27.1.0", done.stdout.splitlines())
+        again = self.install_mutants()
+        self.assertEqual(again.returncode, 0, again.stdout)
+        self.assertEqual(self.installs(), ["install --locked cargo-mutants --version 27.1.0"])
+        self.assertIn("setup-mac.sh: cargo-mutants 27.1.0 already installed", again.stdout.splitlines())
+        self.assertNotIn("installing", again.stdout)
+
+    def test_mutants_17_setup_mac_replaces_another_version_with_the_pin(self):
+        (self.dir / "installed").write_text("cargo-mutants v26.0.0:\n    cargo-mutants\n")
+        done = self.install_mutants()
+        self.assertEqual(done.returncode, 0, done.stdout)
+        self.assertEqual(self.installs(), ["install --locked cargo-mutants --version 27.1.0"])
+        self.assertIn("setup-mac.sh: installing cargo-mutants 27.1.0", done.stdout.splitlines())
+
+    def test_mutants_17_setup_mac_stops_when_cargo_mutants_is_not_at_the_pin(self):
+        (self.dir / "install-fails").touch()
+        done = self.install_mutants()
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        self.assertEqual(self.installs(), ["install --locked cargo-mutants --version 27.1.0"])
+        self.assertNotIn("already installed", done.stdout)
+        (self.dir / "install-fails").unlink()
+        (self.dir / "installed").write_text("cargo-mutants v27.1.0:\n    cargo-mutants\n")
+        (self.dir / "version").write_text("cargo-mutants 26.0.0\n")
+        done = self.install_mutants()
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        self.assertIn("setup-mac.sh: cargo mutants is not at 27.1.0: cargo-mutants 26.0.0", done.stdout.splitlines())
+
+    def test_mutants_17_setup_and_setup_mac_read_the_pin_from_pins_sh(self):
+        pins = FACTORY / "remote" / "pins.sh"
+        [line] = [line for line in pins.read_text().splitlines() if line.startswith("mutants=")]
+        value = line.removeprefix("mutants=")
+        self.assertEqual(value, "27.1.0")
+        for script in (SETUP, SETUP_MAC):
+            text = script.read_text()
+            self.assertIn('\n. "$here/pins.sh"\n', text, script)
+            self.assertNotIn(value, text, script)
+            self.assertNotRegex(text, r"(?m)^\s*mutants=", script)
+        # A copy of factory/remote/ (ci.yml where setup.sh looks) whose pins.sh says another version: both scripts
+        # send it, through a stand-in ssh that keeps each host script and reaches no host.
+        root = self.dir / "copy"
+        shutil.copytree(FACTORY / "remote", root / "factory" / "remote")
+        (root / ".github" / "workflows").mkdir(parents=True)
+        shutil.copy(CI, root / ".github" / "workflows" / "ci.yml")
+        (root / "factory" / "remote" / "pins.sh").write_text(pins.read_text().replace(line, "mutants=9.9.9"))
+        ssh = root / "bin"
+        ssh.mkdir()
+        self.tool("ssh", 'if [ "$2 $3" = "bash -s" ]; then cat >"$SENT"; else cat >/dev/null; fi', ssh)
+        for name in ("setup.sh", "setup-mac.sh"):
+            sent = self.dir / f"{name}.sent"
+            done = subprocess.run([str(root / "factory" / "remote" / name)], capture_output=True, text=True, timeout=60,
+                                  env=dict(self.env, SENT=str(sent), PATH=f"{ssh}{os.pathsep}{self.env['PATH']}"))
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("\nMUTANTS=9.9.9\n", sent.read_text(), name)
 
 
 if __name__ == "__main__":
