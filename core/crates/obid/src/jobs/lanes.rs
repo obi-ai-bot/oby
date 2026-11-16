@@ -33,11 +33,14 @@ impl Jobs {
     /// Ask, Accept edits, Plan or Sandbox it stays boxed, and on a ChatGPT login ([`launches_own`]).
     /// One that builds ([`COMMITTING`]) stays boxed too (LANES-19): Codex's profile hides the
     /// folders above its worktree, so a build can't resolve its path; Oby's box shows them by name.
+    /// So does the rest of a run its plan card's answer resumed ([`codex_plan::resumes_plan`]).
     pub(crate) fn own_lane(job: &Job, tool: Tool) -> bool {
         let lane = match tool {
             Tool::Claude => true,
             Tool::Codex => {
-                Self::codex_own(Self::mode_of(job)) && !COMMITTING.contains(&job.kind.as_str())
+                Self::codex_own(Self::mode_of(job))
+                    && !COMMITTING.contains(&job.kind.as_str())
+                    && !codex_plan::resumes_plan(job)
             }
             Tool::Cursor => false,
         };
@@ -972,6 +975,32 @@ mod tests {
                 request_id: "r".into(),
             })
         }));
+    }
+
+    /// LANES-18 (PERMISSIONS-18): the run a Codex plan card's answer resumes stays in Oby's box,
+    /// where its thread is, in Bypass too; once that run ended (`parked` cleared), the job's next
+    /// run on macOS leaves the box as any Bypass Codex job's does.
+    #[test]
+    fn lanes_18_the_run_a_codex_plan_resumes_stays_boxed() {
+        let mut job = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "research".into(),
+            "Fix it".into(),
+            "codex".into(),
+            "a".into(),
+        );
+        job.mode = Some("bypass".into());
+        job.parked = Some(permissions::Parked {
+            tool: "ExitPlanMode".into(),
+            input: json!({"plan": "Plan: add plan.txt"}),
+            answered: true,
+            allowed: true,
+            ended_turn: true,
+        });
+        assert!(!Jobs::own_lane(&job, Tool::Codex));
+        job.parked = None;
+        assert_eq!(Jobs::own_lane(&job, Tool::Codex), cfg!(target_os = "macos"));
     }
 
     /// LANES-18: of the owner's login shell's environment, an own Codex run gets everything Claude

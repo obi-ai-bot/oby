@@ -366,7 +366,7 @@ Every line of the root `AGENTS.md` at `3ff84b79` that states a rule (each bullet
 - `core/AGENTS.md`: Codex ([why](docs/decisions/2026-11-11-codex-1-bypass-only.md)):
 
 ### L182
-- `core/AGENTS.md`: CODEX-1 (docs/contracts/lanes.md, LANES-18): every Codex job of the owner's own in Bypass on a `codex login`, on macOS (not another Oby's, not `untrusted`, not a review, not one that builds: LANES-19), runs unboxed by obid, on its account's own folder as `CODEX_HOME` (its own `auth.json`, `config.toml`, skills and MCP servers, refreshed by Codex) and the person's own `HOME`, with no copy and no egress proxy.
+- `core/AGENTS.md`: CODEX-1 (docs/contracts/lanes.md, LANES-18): every Codex job of the owner's own in Bypass on a `codex login`, on macOS (not another Oby's, not `untrusted`, not a review, not one that builds: LANES-19, nor the rest of a run its approved Plan card resumed, whose thread is in the box's `CODEX_HOME`), runs unboxed by obid, on its account's own folder as `CODEX_HOME` (its own `auth.json`, `config.toml`, skills and MCP servers, refreshed by Codex) and the person's own `HOME`, with no copy and no egress proxy.
 
 ### L183
 - `core/AGENTS.md`: From its first such launch its check gets none of the declared secrets, whatever its mode, tool or account becomes, nor does its follow-up's (LANE-3a): obid saves that in the job's file before the run starts, starts none if it can't, and no later save of the job undoes it.
