@@ -3696,7 +3696,7 @@ mod tests {
     /// B00-01: obid's reader holds a line it read, its marks not made yet, past the call's cap (as
     /// when another writer holds the conversation's lock): the call waits for the line's record,
     /// is woken the moment it's made, and goes on unmarked, never on its cap running out.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_call_waits_for_a_line_the_reader_holds_past_its_cap() {
         let turns = super::super::turn::Turns::default();
         let session = waiting_session(turns.begin("t1", "c1"));
@@ -3704,13 +3704,16 @@ mod tests {
         let held = session.reading();
         let call = async {
             session.heard("oby_jobs", &json!({}), cap).await;
-            Instant::now()
+            tokio::time::Instant::now()
         };
+        // The clock moves past the cap a step at a time, the call looking each time.
         let reader = async {
-            tokio::time::sleep(cap * 6).await;
+            for _ in 0..6 {
+                tokio::time::advance(cap).await;
+            }
             session.wrote("u1", "oby_jobs", &json!({}));
             drop(held);
-            Instant::now()
+            tokio::time::Instant::now()
         };
         let (heard, recorded) = tokio::join!(call, reader);
         assert!(!session.web.load(Ordering::SeqCst));
