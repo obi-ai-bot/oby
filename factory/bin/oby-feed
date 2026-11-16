@@ -306,12 +306,14 @@ LAST = {"conflict": "its pull request conflicts with dev or is behind it",
 
 
 def obid_reason(j):
-    """Why an attempt ended, in obid's own words: its status and its nextStep or waiting text. A publishError can hold
-    the GitHub CLI's output, so it only ever gives fixed words (AGENTS.md, "From outside")."""
+    """Why an attempt ended, for the task's note only: its status, its nextStep or waiting text, and a publishError as
+    obid gave it, which the owner needs to fix it. A publishError can hold the GitHub CLI's output, so it never reaches
+    a brief or message: those take retry_words() (AGENTS.md, "From outside")."""
     if j is None:
         return "lost: obid no longer has its job"
     waiting = j.get("waiting")
-    said = (j.get("nextStep") or ("obid couldn't publish it" if j.get("publishError") else None)
+    publish = " ".join(str(j.get("publishError") or "").split())
+    said = ("; ".join(x for x in (j.get("nextStep"), publish and f"obid couldn't publish it: {publish}") if x)
             or (waiting.get("text") if isinstance(waiting, dict) else waiting)
             or ("it ended with nothing published" if j.get("status") == "done" else ""))
     return (f"{j.get('status')}: {said}" if said else str(j.get("status")))[:300]

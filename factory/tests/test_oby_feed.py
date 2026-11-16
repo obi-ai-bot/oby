@@ -456,11 +456,22 @@ class ObyFeed(unittest.TestCase):
         self.one_pass()
         item = self.task_now()
         self.assertEqual(item["state"], "failed")
-        self.assertEqual(item["note"], "attempt 3 of 3 ended: failed: obid couldn't publish it")
+        # the note keeps obid's publish error, which the owner needs; no brief or message ever carries it
+        self.assertEqual(item["note"], "attempt 3 of 3 ended: failed: obid couldn't publish it: GitHub says: the push was refused")
         self.assertEqual(self.stand.sent, [])
         with mock.patch("builtins.print") as printed:
             self.feed.status()
         self.assertIn("attempt 3 of 3", printed.call_args_list[0].args[0])
+        # with a nextStep too, and an error over several lines
+        self.setUp()
+        self.no_ready()
+        self.task("running", attempt=3)
+        self.stand.jobs[JOB].update(status="failed", nextStep="Publish again",
+                                    publishError="git push failed:\n  permission denied")
+        self.one_pass()
+        self.assertEqual(self.task_now()["note"], "attempt 3 of 3 ended: failed: Publish again; "
+                         "obid couldn't publish it: git push failed: permission denied")
+        self.assertEqual(self.stand.sent, [])
 
     def test_feedloop_5_a_refused_head_at_the_third_attempt_ends_it(self):
         self.no_ready()
