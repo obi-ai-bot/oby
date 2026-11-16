@@ -40,7 +40,13 @@ function fill() {
   const s = live.liveState();
   s.jobs = {
     j1: job('j1', 'obi-ai-bot/oby', 'Fix the live panel’s queue order'),
-    j2: job('j2', 'deskree-inc/tetrix', 'Retry jitter for the collector'),
+    j2: job('j2', 'deskree-inc/tetrix', 'Retry jitter for the collector', {
+      summary: 'Backoff gets ±20% jitter so a fleet doesn’t retry at once.',
+      pipeline: { number: 6, total: 6, stages: [
+        { id: 'check', title: 'Check', state: 'done', detail: 'npm test' },
+        { id: 'review', title: 'Review', state: 'done', detail: 'Approved by Oby' },
+      ] },
+    }),
     j3: job('j3', 'obi-ai-bot/oby', 'Fix the iOS signing step', { status: 'running', permission: { id: 'p1', tool: 'Bash', title: 'Run', detail: 'xcodebuild -exportArchive', rule: null, always: null } }),
   };
   s.inbox = [
@@ -77,6 +83,10 @@ describe('Waiting for you', () => {
     expect(rows()).toEqual(['Retry jitter for the collector', 'Fix the live panel’s queue order', 'Fix the iOS signing step']);
     expect(host.querySelector('.waiting-counts')?.textContent).toBe('2 to merge · 1 permission');
     expect(host.textContent).toContain('tetrix · 40m');
+    // a merge's row: Oby's summary, its check and who approved it
+    const first = host.querySelector('.waiting-row')!;
+    expect(first.querySelector('.waiting-summary')?.textContent).toBe('Backoff gets ±20% jitter so a fleet doesn’t retry at once.');
+    expect([...first.querySelectorAll('.waiting-tag')].map((t) => t.textContent)).toEqual(['Check passed', 'Approved by Oby']);
     // All projects narrows to one
     const select = host.querySelector('select')!;
     expect([...select.options].map((o) => o.textContent)).toEqual(['All projects', 'tetrix', 'oby']);

@@ -79,7 +79,12 @@ function WaitingRow({ item: i, onOpenTask, onOpenTalk }: { item: InboxItem; onOp
   const kind = kindOf(i);
   const project = projectOf(s, i);
   const talk = i.conversation ?? j?.conversation;
-  const review = j?.pipeline?.stages.find((st) => st.id === 'review' && st.detail)?.detail;
+  // a merge's: Oby's summary of the work, its check as it ended, and who approved it (the Review
+  // stage, in obid's words: "Approved by Oby"). obid sends no lines changed for a job yet.
+  const stage = (id: string) => j?.pipeline?.stages.find((st) => st.id === id);
+  const check = stage('check')?.state === 'done' ? 'Check passed' : stage('check')?.state === 'failed' ? 'Check failed' : undefined;
+  const review = stage('review')?.detail;
+  const summary = kind === 'merge' ? j?.summary : undefined;
   const meta = [project ? name(project) : 'No project', ago((Date.now() - Date.parse(i.created)) / 60_000)].join(' · ');
   return (
     <li className="waiting-row" aria-label={j?.title ?? i.title}>
@@ -88,9 +93,11 @@ function WaitingRow({ item: i, onOpenTask, onOpenTalk }: { item: InboxItem; onOp
         <h2 className="waiting-title">{j?.title ?? i.title}</h2>
         <p className="waiting-meta">{meta}</p>
         <p className="waiting-about">{ask.headline}{ask.text ? ` ${ask.text}` : ''}</p>
+        {summary && <p className="waiting-summary">{summary}</p>}
         {kind === 'permission' && j?.permission?.detail && <code className="waiting-detail">{j.permission.detail}</code>}
         <p className="waiting-chips">
           <span className={`waiting-kind is-${kind}`}>{ask.label ?? (kind === 'permission' ? 'Permission' : kind === 'merge' ? 'Merge' : 'Question')}</span>
+          {check && <span className={`waiting-tag${check === 'Check failed' ? ' is-failed' : ''}`}>{check}</span>}
           {review && <span className="waiting-tag">{review}</span>}
         </p>
       </div>

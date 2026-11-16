@@ -371,6 +371,8 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .waiting-title { margin: 0; color: var(--ink); font-size: var(--text-base); font-weight: 500; }
 .waiting-meta, .waiting-about { margin: 0; color: var(--muted); font-size: var(--text-sm); }
 .waiting-about { color: var(--text); }
+.waiting-summary { margin: 0; color: var(--muted); font-size: var(--text-sm); }
+.waiting-tag.is-failed { color: var(--danger); }
 .waiting-detail { align-self: flex-start; color: var(--danger); font-size: var(--text-sm); }
 .waiting-chips { margin: 4px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
 .waiting-kind, .waiting-tag { padding: 2px 8px; border-radius: 6px; background: var(--hover); color: var(--muted); font-size: var(--text-sm); }
