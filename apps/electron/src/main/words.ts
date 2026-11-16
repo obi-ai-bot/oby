@@ -5,9 +5,10 @@ import { WITHIN_MS, wordsOf } from '../shared/words';
 // <signedAt> <signature>`, ECDSA P-256 with SHA-256 over obid's sentence for exactly this request,
 // its body as send() sends it (JSON, or empty with none), signed to the millisecond. Null for a
 // request that isn't one of the app's words requests in exactly its shape (wordsOf): main signs
-// nothing else.
-export function wordsHeader(key: KeyObject, device: string, method: string, path: string, body: unknown, signedAt = new Date().toISOString()): string | null {
-  if (!wordsOf(method, path, body) || !ownFolders(body)) return null;
+// nothing else. project: the folders of the project the words carry, as main itself read them
+// from obid for this request (device.ts); none when it couldn't
+export function wordsHeader(key: KeyObject, device: string, method: string, path: string, body: unknown, signedAt = new Date().toISOString(), project?: string[]): string | null {
+  if (!wordsOf(method, path, body) || !ownFolders(body, project)) return null;
   const digest = createHash('sha256').update(body === undefined ? '' : JSON.stringify(body)).digest('hex');
   const signature = sign('sha256', Buffer.from(`oby-words\n${method}\n${path.split('?')[0]}\n${digest}\n${signedAt}`, 'utf8'), key).toString('base64');
   return `${device} ${signedAt} ${signature}`;
@@ -15,12 +16,15 @@ export function wordsHeader(key: KeyObject, device: string, method: string, path
 
 // The folders the owner chose in main's own dialog this run (index.ts, pick-folders): words that
 // carry any other folder (a recent one from an earlier run, or one the page made up) go unsigned,
-// so the page can't put a vetted conversation in a folder the owner never picked.
+// so the page can't put a vetted conversation in a folder the owner never picked. Words that carry
+// a project go by its folders, as main read them (WORDS-18), each chosen so too; a project main
+// couldn't read, unsigned.
 const chosen = new Set<string>();
 export const picked = (paths: string[]) => { for (const p of paths) chosen.add(p); };
-const ownFolders = (body: unknown) => {
-  const folders = (body as { folders?: unknown } | undefined)?.folders;
-  return folders === undefined || (Array.isArray(folders) && folders.every((f) => chosen.has(f)));
+const allChosen = (folders: unknown) => Array.isArray(folders) && folders.every((f) => chosen.has(f));
+const ownFolders = (body: unknown, project?: string[]) => {
+  const words = body as { folders?: unknown; project?: unknown } | undefined;
+  return (words?.folders === undefined || allChosen(words.folders)) && (words?.project === undefined || allChosen(project));
 };
 
 // The owner's real keystrokes (Enter) and clicks, as main itself saw them reach the window

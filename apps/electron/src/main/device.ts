@@ -125,6 +125,22 @@ const AGAIN_MS = 10_000, AGAIN = 2, KEPT = 8;
 let unanswered: { request: string; at: number; again: number }[] = [];
 const keyOf = (body: unknown) => typeof (body as { clientRequestId?: unknown } | null)?.clientRequestId === 'string';
 
+// The folders of the project words start a conversation in (POST /v1/plans with `project`), as main
+// itself reads them from obid for this request, never the page's (WORDS-18): none for other words,
+// or when obid doesn't answer, doesn't list it or answers what doesn't parse (then they go unsigned)
+async function projectFolders(method: string, path: string, body: unknown): Promise<string[] | undefined> {
+  const id = (body as { project?: unknown } | undefined)?.project;
+  if (method !== 'POST' || path.split('?')[0] !== '/v1/plans' || typeof id !== 'string') return undefined;
+  try {
+    const r = await obid('GET', '/v1/projects');
+    if (r.status !== 200) return undefined;
+    const folders = (JSON.parse(r.text) as { id?: unknown; folders?: unknown }[]).find((p) => p.id === id)?.folders;
+    return Array.isArray(folders) && folders.every((f) => typeof f === 'string') ? folders : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // owners: the preload saw the owner's own keystroke or click hold its words
 export async function ownersWords(method: string, path: string, body: unknown, owners = true): Promise<Answer> {
   const at = Date.now();
@@ -133,9 +149,10 @@ export async function ownersWords(method: string, path: string, body: unknown, o
   const kept = request === null ? undefined : unanswered.find((u) => u.request === request && u.again < AGAIN);
   if (kept) kept.again++;
   let words: string | null = null;
+  const sign = async () => wordsHeader(deviceKey(), (device ??= await register()), method, path, body, undefined, await projectFolders(method, path, body));
   try {
-    if (kept && await takesKeys()) words = wordsHeader(deviceKey(), (device ??= await register()), method, path, body);
-    else if (owners && takeInput()) words = wordsHeader(deviceKey(), (device ??= await register()), method, path, body);
+    if (kept && await takesKeys()) words = await sign();
+    else if (owners && takeInput()) words = await sign();
   } catch (err) {
     console.error(`Oby couldn’t sign the owner’s words, so they go unsigned: ${err instanceof Error ? err.message : String(err)}`);
   }

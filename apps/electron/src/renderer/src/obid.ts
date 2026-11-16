@@ -17,6 +17,7 @@ import type {
   LimitDecision,
   PlanAnswer,
   Profile,
+  Project,
   Repo,
   RoomAnswer,
   RoomPost,
@@ -146,10 +147,11 @@ export const api = {
   // words to Oby: in a conversation, or starting a new one. with: the words' id (sent again with
   // the same id, nothing happens twice), the files uploaded for them and the tasks attached
   plan: (said: string, answer: { question: string; option: string } | undefined, where: { conversation: string } | { new: true }, folders?: string[],
-    with_: { id?: string; attachments?: string[]; jobs?: string[] } = {}) =>
+    with_: { id?: string; attachments?: string[]; jobs?: string[]; project?: string } = {}) =>
     call<PlanAnswer>('POST', '/v1/plans', {
       said, ...(answer ? { answer } : {}), ...where, ...(folders?.length ? { folders } : {}), ...(with_.id ? { id: with_.id } : {}),
       ...(with_.attachments?.length ? { attachments: with_.attachments } : {}), ...(with_.jobs?.length ? { jobs: with_.jobs } : {}),
+      ...(with_.project ? { project: with_.project } : {}),
     }),
   // a file picked or pasted, kept by obid for the words it goes with: its path there; one over
   // obid's 25 MB isn't read at all, and says so in obid's words
@@ -163,6 +165,9 @@ export const api = {
   // obid only: the profiles on this Mac (docs/api/profiles.md), and a new one; older runners answer 404
   profiles: () => call<Profile[]>('GET', '/v1/profiles'),
   createProfile: (name: string, color: string) => call<Profile>('POST', '/v1/profiles', { name, color }),
+  // obid only: the projects (docs/api/projects.md), and a new one
+  projects: () => call<Project[]>('GET', '/v1/projects'),
+  createProject: ({ name, folders, repos }: { name: string; folders: string[]; repos: string[] }) => call<Project>('POST', '/v1/projects', { name, folders, repos }),
   // obid only: the helpers (docs/api/helpers.md), and a new one; older runners answer 404
   helpers: () => call<Helper[]>('GET', '/v1/helpers'),
   createHelper: (body: { name: string; color: string; instructions: string; tool: string; connectors: string[]; profile?: string }) => call<Helper>('POST', '/v1/helpers', body),
@@ -220,7 +225,7 @@ export const api = {
   // the owner's own question: main signs it on their keystroke or click (shared/words.ts, WORDS-12)
   peerAsk: (owner: string, text: string) => call<unknown>('POST', `/v1/obid/sphere/peers/${id(owner)}/ask`, { text }),
   conversations: (opts: { after?: string; limit?: number } = {}) => call<Conversation[]>('GET', `/v1/conversations${q(opts)}`),
-  editConversation: (c: string, change: { title?: string; pinned?: boolean; folders?: string[]; talkAccount?: string | null }) => call<Conversation>('PATCH', `/v1/conversations/${id(c)}`, change),
+  editConversation: (c: string, change: { title?: string; pinned?: boolean; folders?: string[]; talkAccount?: string | null; project?: string | null }) => call<Conversation>('PATCH', `/v1/conversations/${id(c)}`, change),
   deleteConversation: (c: string) => call<null>('DELETE', `/v1/conversations/${id(c)}`),
   // Stop: the turn under way in this conversation ends at once, its answer what Oby said until then
   stopConversation: (c: string) => call<{ stopped: true }>('POST', '/v1/conversation/stop', { conversation: c }),

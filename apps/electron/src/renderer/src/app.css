@@ -2291,6 +2291,31 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .agent-chip.is-on { background: rgba(255, 255, 255, 0.12); border-color: transparent; color: var(--ink); }
 .agent-chip:disabled { cursor: default; }
 
+/* Projects (docs/contracts/projects.md, screens 01 to 03): a group's folder mark in the side panel,
+   the chip in Home's box and a conversation's title bar, its menu, and the New project sheet */
+.project-mark { color: var(--label); }
+.sidebar-new.project-new { margin-top: 8px; }
+.project-chip { flex: none; height: 26px; max-width: 220px; padding: 0 8px; display: inline-flex; align-items: center; gap: 6px; border-radius: var(--radius-pill); background: var(--chip-hover); color: var(--text); font-size: var(--text-sm); transition: background-color var(--fade), color var(--fade); }
+.project-chip:hover, .project-chip.is-on { background: #29292c; color: var(--ink); }
+.project-chip > svg { flex: none; color: var(--muted); }
+.project-chip-name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.project-chip.bar-project { margin-left: 14px; }
+.row-menu button.project-choice { height: 36px; padding: 0 10px; gap: 10px; }
+.row-menu button.project-choice > svg:first-child { flex: none; color: var(--muted); }
+.row-menu button.project-choice.is-none { padding-left: 35px; }
+.project-choice-name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.project-choice-repos { margin-left: auto; color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
+.project-choice-repos + .menu-check { margin-left: 8px; }
+.project-sheet .modal-label { margin-top: 16px; }
+.project-sheet .modal-lede + .modal-label { margin-top: 0; }
+.project-row { height: 40px; margin-bottom: 8px; padding: 0 8px 0 14px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--field); color: var(--ink); font-size: var(--text-base); }
+.project-row > svg { flex: none; color: var(--muted); }
+.project-row-name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.project-row-where { margin-left: auto; color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
+.project-row-remove { flex: none; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; color: var(--muted); transition: color var(--fade), background-color var(--fade); }
+.project-row-remove:hover { color: var(--ink); background: var(--hover); }
+.project-adds { display: flex; gap: 8px; }
+
 /* Continue with ChatGPT (docs/contracts/chatgpt-sign-in.md): its mark in its button, OpenAI's links */
 .chatgpt-logo { vertical-align: -2px; margin-right: 6px; }
 .chatgpt-link { padding: 0; background: none; border: 0; color: var(--muted); font: inherit; text-decoration: underline; cursor: pointer; }

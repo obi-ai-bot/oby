@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { BookOpen, Check, Mail, UserPlus, ChevronDown, EllipsisVertical, Plus, Search, type LucideIcon } from 'lucide-react';
+import { BookOpen, Check, Mail, UserPlus, ChevronDown, EllipsisVertical, Folder, FolderPlus, Plus, Search, type LucideIcon } from 'lucide-react';
 // the icon strip uses Phosphor: it has outline and filled versions of each icon
 import { ChatsCircleIcon, GearSixIcon, HouseIcon, ListChecksIcon, PlusIcon } from '@phosphor-icons/react';
 import { BrandMark } from './brands';
@@ -25,6 +25,8 @@ import { chatFirst, everything } from './lean';
 import { useWaitingCount } from './live';
 import { loadProfiles, openProfile, profileChats, useProfiles } from './profiles';
 import ProfileMenu, { NewProfileModal } from './ProfileMenu';
+import { useProjects, useProjectsOn } from './projects';
+import ProjectSheet from './ProjectSheet';
 import AgentsList, { convoAbout } from './AgentsList';
 import { WELCOME, sampleDid, sampleOut, useSetup } from './onboarding';
 import { SAMPLE_TALK } from './Welcome';
@@ -288,6 +290,21 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     if (!next.delete(name)) next.add(name);
     return next;
   });
+  // The Projects side's groups (docs/contracts/projects.md, PROJECTS-16 to 18): one per project, then
+  // No project. Which are folded is kept (oby.projectsFolded: their ids, "" for No project), the one
+  // thing the app keeps of projects
+  const projectsOn = useProjectsOn();
+  const projects = useProjects();
+  const [projectsFolded, setProjectsFolded] = useState<Set<string>>(() => {
+    try { const kept: unknown = JSON.parse(localStorage.getItem('oby.projectsFolded') ?? '[]'); return new Set(Array.isArray(kept) ? kept.filter((k) => typeof k === 'string') : []); } catch { return new Set(); }
+  });
+  const toggleProject = (id: string) => setProjectsFolded((f) => {
+    const next = new Set(f);
+    if (!next.delete(id)) next.add(id);
+    try { localStorage.setItem('oby.projectsFolded', JSON.stringify([...next])); } catch { /* not remembered, that's all */ }
+    return next;
+  });
+  const [newProject, setNewProject] = useState(false);
   // the chats are searched, never the agents (Agents has no search)
   const searchable = SEARCHABLE.includes(section) && !(section === 'oby' && side === 'agents');
   const openSearch = () => {
@@ -304,6 +321,12 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   // chat first, under your Oby: all of them, in one list
   const latest = latestChat(chats);
   const inOrder = [...pinned, ...talks.filter((c) => !c.pinned)];
+  // each project's rows in that order, then those in none (or in one obid doesn't list); a project
+  // with none still shows, but not while searching, and No project only with rows. None listed: no groups
+  const projectGroups = !projectsOn || !projects.length ? [] : [
+    ...projects.map((p) => ({ id: p.id, name: p.name, rows: inOrder.filter((c) => c.project === p.id) })),
+    { id: '', name: 'No project', rows: inOrder.filter((c) => !projects.some((p) => p.id === c.project)) },
+  ].filter((g) => g.rows.length || (g.id && !q));
   const convoRow = (c: Chat) => (
     // a row with its own menu button, so the row itself isn't a <button>
     <div
@@ -576,8 +599,27 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
                 <span className="waiting-count">{waiting}</span>
               </button>
             )}
-            {inOrder.map(convoRow)}
+            {projectGroups.length ? projectGroups.map((g) => {
+              // while searching, a group with a match opens
+              const shut = !q && projectsFolded.has(g.id);
+              return (
+                <section key={g.id || 'none'} className={`sidebar-group project-group${shut ? ' is-folded' : ''}`}>
+                  <button className="sidebar-group-head" aria-expanded={!shut} onClick={() => toggleProject(g.id)}>
+                    {g.id && <Folder size={14} strokeWidth={1.6} className="project-mark" />}
+                    <h3>{g.name}</h3>
+                    <ChevronDown size={12} strokeWidth={1.8} className="sidebar-chevron" />
+                  </button>
+                  <div className="sidebar-group-body"><div>{g.rows.map(convoRow)}</div></div>
+                </section>
+              );
+            }) : inOrder.map(convoRow)}
             {!talks.length && <p className="sidebar-empty">{q ? `No conversations match “${query.trim()}”` : 'No conversations yet'}</p>}
+            {projectsOn && (
+              <button className="sidebar-new chat-new project-new" aria-haspopup="dialog" onClick={() => setNewProject(true)}>
+                <FolderPlus size={16} strokeWidth={1.6} />
+                <span className="sidebar-new-label">New project</span>
+              </button>
+            )}
           </div>
         )}
         {/* chat first: the kinds of work, Home's chips, first thing under Tasks */}
@@ -806,6 +848,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
       {profileMenu && !!profiles.list?.length && (
         <ProfileMenu list={profiles.list} kept={profiles.kept} at={profileMenu} onClose={() => setProfileMenu(null)} onNew={() => setNewProfile(true)} />
       )}
+      {newProject && <ProjectSheet onClose={() => setNewProject(false)} onMade={() => setNewProject(false)} />}
       {newProfile && <NewProfileModal taken={(profiles.list ?? []).map((p) => p.color.toLowerCase())} onClose={() => setNewProfile(false)} />}
       {inviting && <InviteModal sphere={{ name: sphere.name, url: urlOf(sphere) }} domain={sphere.domain} onSent={(emails) => invite(sphere.id, emails)} onClose={() => setInviting(false)} />}
       {creating && <CreateSphereModal email={ME.email} onCreated={(id) => { setCreating(false); setSphereId(id); pick('obysphere'); }} onClose={() => setCreating(false)} />}
