@@ -602,12 +602,35 @@ pub fn with_owners(env: &mut Vec<(OsString, OsString)>, owners: &[(OsString, OsS
 
 /// Whether an own run takes `name` from the owner (their login shell, their user settings' `env`)
 /// as Claude Code's (the owner's decision LANES-4a, "Allow-list"): any `ANTHROPIC_*` (its gateway,
-/// its key, its models), or one of [`CLAUDE_GATEWAY`]. No other `CLAUDE*` name: they name its
-/// folders, settings and policy sources, permissions, extra directories, its sandbox and its
-/// session, any of which could outrank obid's `--settings` or widen the run (LANES-5).
+/// its key, its models), or one of [`CLAUDE_GATEWAY`] or [`CLAUDE_TUNING`]. No other `CLAUDE*`
+/// name: they name its folders, settings and policy sources, permissions, extra directories, its
+/// sandbox and its session, any of which could outrank obid's `--settings` or widen the run
+/// (LANES-5).
 pub fn claude_gateway(name: &str) -> bool {
-    name.starts_with("ANTHROPIC_") || CLAUDE_GATEWAY.contains(&name)
+    name.starts_with("ANTHROPIC_")
+        || CLAUDE_GATEWAY.contains(&name)
+        || CLAUDE_TUNING.contains(&name)
 }
+
+/// The `CLAUDE*` tuning switches an own run also takes from the owner (LANES-4a, #2423): how many
+/// subagents and tools run at once, retries, compaction, thinking, context size, fast mode and the
+/// terminal's title, measured in Claude Code 2.1.325. Each only tunes or turns off what Claude Code
+/// does; none names a path, a settings source, permissions, directories, the sandbox, hooks, MCP
+/// or a session.
+pub const CLAUDE_TUNING: [&str; 12] = [
+    "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS",
+    "CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY",
+    "CLAUDE_CODE_MAX_RETRIES",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE",
+    "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+    "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING",
+    "CLAUDE_CODE_DISABLE_THINKING",
+    "CLAUDE_CODE_DISABLE_1M_CONTEXT",
+    "CLAUDE_CODE_DISABLE_FAST_MODE",
+];
 
 /// The `CLAUDE_CODE_*` switches an own run takes from the owner (LANES-4a): which provider Claude
 /// Code calls (2.1.302's Bedrock, Vertex, Foundry, Anthropic on AWS or Google Cloud, Mantle), how

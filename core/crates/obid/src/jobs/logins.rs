@@ -304,7 +304,7 @@ pub(crate) fn own_settings_file(account: &crate::config::Account) -> Result<Path
 /// `allowUnixSockets`, `allowAllUnixSockets`, `allowMachLookup` or `sandbox.allowAppleEvents`
 /// (ways out of it), `permissions.additionalDirectories`, a file tool's allow rule naming a path
 /// outside the worktree or none ([`FILE_TOOLS`]), an `env` key obid sets (`ours`:
-/// [`own_sandbox_env`]'s), a `CLAUDE*` one that isn't Claude Code's gateway's
+/// [`own_sandbox_env`]'s), a `CLAUDE*` one that isn't Claude Code's gateway's or tuning's
 /// ([`process::claude_gateway`], the owner's "Allow-list", LANES-4a), or one [`env_refused`] names
 /// (but `ANTHROPIC_*`), or a `sandbox.filesystem.allowRead` or `allowWrite` path in, or holding, one of
 /// obid's hidden folders ([`Spec::hidden`]: obid's home, the person's, the accounts'). One that's
@@ -321,23 +321,19 @@ pub(crate) fn own_settings_allowed(
     let tree = spec.worktree.clone();
     let spec = spec.canonical();
     let home = login_home();
+    let shown = home_shown(file, home.as_deref());
     let refused = |key: &str| {
         format!(
-            "{} sets {key}, which would let a job's Claude Code out of what obid keeps it in: take it out, then try again.",
-            file.display()
+            "{shown} sets {key}, which would let a job's Claude Code out of what obid keeps it in: take it out, then try again."
         )
     };
     let text = match std::fs::read(file) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(format!("obid can't read {}: {e}", file.display())),
+        Err(e) => return Err(format!("obid can't read {shown}: {e}")),
     };
-    let set: Value = serde_json::from_slice(&text).map_err(|e| {
-        format!(
-            "obid can't read {} ({e}), so it can't tell what it sets.",
-            file.display()
-        )
-    })?;
+    let set: Value = serde_json::from_slice(&text)
+        .map_err(|e| format!("obid can't read {shown} ({e}), so it can't tell what it sets."))?;
     let sandbox = &set["sandbox"];
     let (excluded, more) = (
         &sandbox["excludedCommands"],
@@ -420,6 +416,15 @@ pub(crate) fn own_settings_allowed(
         }
     }
     Ok(())
+}
+
+/// `file` as a card shows it: `~/…` under the person's `home`, so their home folder's name (often
+/// theirs) never shows (#2423); else as it is.
+fn home_shown(file: &Path, home: Option<&Path>) -> String {
+    match home.and_then(|h| file.strip_prefix(h).ok()) {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => file.display().to_string(),
+    }
 }
 
 /// Where Claude Code 2.1.302 reads its managed settings: `managed-settings.json` and the `.json`
@@ -2648,7 +2653,27 @@ mod tests {
         let gateway = r#"{"env":{"CLAUDE_CODE_USE_BEDROCK":"1","ANTHROPIC_MODEL":"m"}}"#;
         std::fs::write(&file, gateway).unwrap();
         assert!(own_settings_allowed(&file, &spec, &[]).is_ok());
+        // #2423: Claude Code's tuning switches are the owner's too, and run.
+        for name in process::CLAUDE_TUNING {
+            std::fs::write(&file, json!({"env": {name: "30"}}).to_string()).unwrap();
+            let allowed = own_settings_allowed(&file, &spec, &[]);
+            assert!(allowed.is_ok(), "{name}: {allowed:?}");
+        }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// #2423: a refusal names a settings file under the person's home as `~/…`, never with their
+    /// home folder's name; one elsewhere as it is.
+    #[test]
+    fn lanes_5_a_refusal_shows_the_home_as_a_tilde() {
+        let home = Path::new("/Users/someone");
+        let file = home.join(".claude/settings.json");
+        assert_eq!(home_shown(&file, Some(home)), "~/.claude/settings.json");
+        assert_eq!(
+            home_shown(Path::new("/opt/s.json"), Some(home)),
+            "/opt/s.json"
+        );
+        assert_eq!(home_shown(&file, None), file.display().to_string());
     }
 
     /// KEYCHAIN-8: what a usage read takes of a login file: its access token and only that, not one
