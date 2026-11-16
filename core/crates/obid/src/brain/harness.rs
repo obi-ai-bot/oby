@@ -27,6 +27,7 @@ use super::turn::{self, Answered, Control, End, State};
 use crate::agent::{self, Answer, Event, Ruling, Tool};
 use crate::api::Shared;
 use crate::conversation::Turn;
+use crate::helpers::{Connector, Told, may_use};
 use crate::permissions::{self, Bounds, Call, Mode, Reach};
 
 /// A boxed session runs no commands (CONVO-2): it reads the room, and work goes to a job. An own
@@ -68,8 +69,10 @@ const TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write,Edi
 /// sandbox and has no login copy to read, the owner's skills, and their MCP servers' resources.
 const OWN_TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write,Edit,MultiEdit,NotebookEdit,Task,TodoWrite,Bash,BashOutput,KillShell,Skill,ListMcpResourcesTool,ReadMcpResourceTool,ReadMcpResourceDirTool";
 /// How long a call of Oby's tools waits for obid's reader to reach the line where the agent wrote
-/// it ([`Session::heard`]).
+/// it, counting only while the reader holds no line ([`Session::heard`]).
 pub const READ_WAIT: Duration = Duration::from_secs(5);
+/// How often a waiting call looks whether its turn was stopped: a stop wakes nothing.
+const STOP_LOOK: Duration = Duration::from_millis(100);
 /// The file that gives the session Oby's MCP server ([`mcp_file`]).
 use crate::jobs::CONVERSATION_MCP_FILE as MCP_FILE;
 /// Why a turn couldn't answer when its session failed twice.
@@ -124,9 +127,82 @@ pub struct Session {
     /// arguments)`, that haven't reached Oby's tools yet ([`Session::heard`]); one whose result
     /// came first never will ([`Session::answered`]).
     pub written: Mutex<Vec<(String, String, Value)>>,
+    /// obid's reader of the agent's output, as a call waits on it ([`Session::heard`]).
+    pub reader: Reader,
+}
+
+/// Where obid's reader is: the lines it holds, how long it has held none, and a wake-up for a
+/// waiting call each time it moves.
+pub struct Reader {
+    held: Mutex<Held>,
+    moved: tokio::sync::Notify,
+}
+
+/// The lines obid's reader holds, and the time it held none: all of it before `since`, and since
+/// then too when it holds none.
+struct Held {
+    lines: usize,
+    idle: Duration,
+    since: tokio::time::Instant,
+}
+
+impl Default for Reader {
+    fn default() -> Self {
+        let held = Held {
+            lines: 0,
+            idle: Duration::ZERO,
+            since: tokio::time::Instant::now(),
+        };
+        Reader {
+            held: Mutex::new(held),
+            moved: tokio::sync::Notify::new(),
+        }
+    }
+}
+
+impl Reader {
+    /// How long the reader has held no line, all told, as of now.
+    fn idle(&self) -> Duration {
+        let held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        match held.lines {
+            0 => held.idle + held.since.elapsed(),
+            _ => held.idle,
+        }
+    }
+}
+
+/// A line obid's reader has read and is handling, until every mark and record of it is made: a
+/// waiting call's own line may be this one, so its cap doesn't run out meanwhile.
+pub struct Reading<'a>(&'a Reader);
+
+impl Drop for Reading<'_> {
+    fn drop(&mut self) {
+        {
+            let mut held = self.0.held.lock().unwrap_or_else(|e| e.into_inner());
+            held.lines -= 1;
+            if held.lines == 0 {
+                held.since = tokio::time::Instant::now();
+            }
+        }
+        self.0.moved.notify_waiters();
+    }
 }
 
 impl Session {
+    /// obid's reader has a line of the agent's in hand, until the guard drops.
+    pub fn reading(&self) -> Reading<'_> {
+        {
+            let mut held = self.reader.held.lock().unwrap_or_else(|e| e.into_inner());
+            if held.lines == 0 {
+                let since = held.since.elapsed();
+                held.idle += since;
+            }
+            held.lines += 1;
+        }
+        self.reader.moved.notify_waiters();
+        Reading(&self.reader)
+    }
+
     /// obid's reader saw the agent write call `id` of Oby's tool `tool`: every line before it is
     /// handled, so a read it made first has marked the turn.
     pub fn wrote(&self, id: &str, tool: &str, args: &Value) {
@@ -134,6 +210,7 @@ impl Session {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push((id.to_owned(), tool.to_owned(), arguments(args)));
+        self.reader.moved.notify_waiters();
     }
 
     /// Call `id` has its result: one that never reached Oby's tools (input refused, a declined
@@ -149,12 +226,22 @@ impl Session {
     /// every line it wrote before (#1686): a call reaches Oby's tools apart from the agent's
     /// output, and could otherwise be judged before a read it followed marked the turn. A marked
     /// turn waits for nothing; a call whose line doesn't come within `wait` marks it (fail closed).
+    /// The call is woken each time the reader moves, and `wait` runs only while the reader holds no
+    /// line: one it holds (B00-01), its marks still being made, may be this call's. The reader
+    /// counts that time itself, so it runs whether or not the call looks then, and it never starts
+    /// again: lines that aren't this call's can't put off its end.
     /// A stopped turn's call waits no more and marks nothing: Oby's tools refuse it anyway.
     pub async fn heard(&self, tool: &str, args: &Value, wait: Duration) {
         let args = arguments(args);
-        let until = tokio::time::Instant::now() + wait;
-        // ponytail: polls every 5 ms; the line is almost always there already.
-        while !self.web.load(Ordering::SeqCst) && self.control.live() {
+        let start = self.reader.idle();
+        loop {
+            // Listening before looking, so a move in between still wakes it.
+            let moved = self.reader.moved.notified();
+            let mut moved = std::pin::pin!(moved);
+            moved.as_mut().enable();
+            if self.web.load(Ordering::SeqCst) || !self.control.live() {
+                return;
+            }
             {
                 let mut written = self.written.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(at) = written.iter().position(|(_, t, a)| t == tool && *a == args) {
@@ -162,7 +249,8 @@ impl Session {
                     return;
                 }
             }
-            if tokio::time::Instant::now() >= until {
+            let left = wait.saturating_sub(self.reader.idle() - start);
+            if left.is_zero() {
                 tracing::warn!(
                     "conversation {}: a call of {tool} waited out its {} s for obid's reader, so the turn counts as having read something untrusted",
                     self.conversation,
@@ -171,7 +259,7 @@ impl Session {
                 self.taint();
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            let _ = tokio::time::timeout(left.min(STOP_LOOK), moved).await;
         }
     }
 
@@ -179,6 +267,7 @@ impl Session {
     /// at once, so a crash mid-turn doesn't lose it.
     pub fn taint(&self) {
         if !self.web.swap(true, Ordering::SeqCst) {
+            self.reader.moved.notify_waiters();
             self.keep(None);
             if let Some(shared) = self.shared.upgrade() {
                 shared.conversations.note_read_untrusted(&self.conversation);
@@ -501,7 +590,7 @@ async fn start_next(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
     let chosen = crate::settings::load(&shared.config.home)
         .talk_account
         .filter(|id| id != super::talk::AUTO);
-    let account = match super::talk::accounts(shared, chosen.as_deref(), None)
+    let account = match super::talk::accounts(shared, chosen.as_deref(), None, None)
         .into_iter()
         .next()
     {
@@ -524,9 +613,9 @@ async fn start_next(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
     }
     place.scrub();
     let token = new_token();
-    let (mcp, url, tetrix) = mcp_config(shared, &place, id, own)?;
+    let (mcp, url, tetrix) = mcp_config(shared, &place, id, own, None)?;
     write_mcp(&mcp, &url, tetrix.as_deref(), &token)?;
-    let mut flags = claude_flags(shared, &account.id, tetrix.is_some(), own);
+    let mut flags = claude_flags(shared, &account.id, tetrix.is_some(), own, None);
     let key = flags_key(&flags);
     flags.extend(["--mcp-config".into(), mcp.into_os_string()]);
     let launch = claude_launch(shared, &account, &place, flags, own)?;
@@ -644,12 +733,24 @@ fn own_conversation(macos: bool, tool: Tool, from_obys: bool, codex: bool) -> bo
 }
 
 /// A conversation's Claude Code's flags, before `--resume` and `--mcp-config`; `tetrix` when its
-/// session gets Tetrix's server. An `own` one loads the owner's settings and MCP servers.
-fn claude_flags(shared: &Shared, account: &str, tetrix: bool, own: bool) -> Vec<OsString> {
+/// session gets Tetrix's server. An `own` one loads the owner's settings and MCP servers. A
+/// `helper`'s turn has the web's tools only when granted.
+fn claude_flags(
+    shared: &Shared,
+    account: &str,
+    tetrix: bool,
+    own: bool,
+    helper: Option<&Told>,
+) -> Vec<OsString> {
     let offered = shared.jobs.model_lists.for_account(Tool::Claude, account);
     let model =
         crate::settings::account_model(&shared.config.home, Tool::Claude, account, &offered);
-    let mut orientation = orientation(shared, tetrix);
+    let mut orientation = orientation(shared, tetrix, helper);
+    let tools = if own { OWN_TOOLS } else { TOOLS };
+    let tools = match web(helper) {
+        true => tools.to_owned(),
+        false => tools.replace("WebSearch,WebFetch,", ""),
+    };
     if own {
         orientation = orientation.replacen(NO_SHELL, OWN_SHELL, 1);
     }
@@ -686,7 +787,7 @@ fn claude_flags(shared: &Shared, account: &str, tetrix: bool, own: bool) -> Vec<
         // The room's path out of the prompt's cached part: every conversation's prefix is one.
         "--exclude-dynamic-system-prompt-sections",
         "--tools",
-        if own { OWN_TOOLS } else { TOOLS },
+        &tools,
         "--max-turns",
         MAX_TURNS,
         "--model",
@@ -736,18 +837,18 @@ fn claude_launch(
 }
 
 /// Where a conversation's MCP configuration is ([`mcp_file`]), the URL of Oby's tools for it, and
-/// of obid's Tetrix server for it while Oby is signed in to Tetrix (crate::tetrix): the one place a
-/// turn asks, so its server and its orientation always agree.
+/// of obid's Tetrix server for it while Oby is signed in to Tetrix (crate::tetrix) and a `helper`'s
+/// turn was granted it: the one place a turn asks, so its server and its orientation always agree.
 fn mcp_config(
     shared: &Shared,
     place: &Place,
     conversation: &str,
     own: bool,
+    helper: Option<&Told>,
 ) -> Result<(PathBuf, String, Option<String>), String> {
     let api = shared.connections.api_url();
-    let tetrix = shared
-        .tetrix
-        .usable()
+    let granted = helper.is_none_or(|h| may_use(h.granted, Connector::Tetrix));
+    let tetrix = (shared.tetrix.usable() && granted)
         .then(|| format!("{api}/v1/agent/tetrix/conversation-{conversation}"));
     Ok((
         mcp_file(place, own)?,
@@ -811,15 +912,21 @@ pub async fn run(
     // The account the owner chose (super::talk), else whichever has room; the one its session is
     // on first while that one has room, so it keeps its session. Another, of any tool, is tried
     // only when a turn's account can't run: at most three in one turn.
+    // A helper's conversation talks only through its tool's accounts (crate::helpers).
     let place = Place::of(&shared.config.home, &control.conversation);
-    let chosen = super::talk::chosen(shared, &control.conversation);
+    let only = shared.helpers.of(&control.conversation).map(|h| h.tool);
+    let only = only.as_deref();
+    let agents = shared.config.agents.get();
+    let tool_of = |id: &str| crate::accounts::find(&agents, id).map(|(t, _)| t.id());
+    let chosen = super::talk::chosen(shared, &control.conversation)
+        .filter(|id| only.is_none_or(|only| tool_of(id) == Some(only)));
     let on = kept_on(&place);
-    let accounts = super::talk::accounts(shared, chosen.as_deref(), on.as_deref());
+    let accounts = super::talk::accounts(shared, chosen.as_deref(), on.as_deref(), only);
     let mut full = Vec::new();
     let mut failed: Option<String> = None;
     let mut why = String::new();
     if accounts.is_empty() {
-        why = super::talk::why_none(shared, chosen.as_deref());
+        why = super::talk::why_none(shared, chosen.as_deref(), only);
     }
     for (tool, account) in &accounts {
         match session(shared, *tool, account, said, given, asked, control).await {
@@ -1365,6 +1472,7 @@ async fn session(
         room: place.room.clone(),
         artifacts: Mutex::new(vec![]),
         written: Mutex::default(),
+        reader: Reader::default(),
     });
     // One that read something before the conversation kept that too.
     if session.web.load(Ordering::SeqCst) {
@@ -1507,7 +1615,11 @@ async fn attempts(
     let own = own_lane(shared, tool, account, &control.conversation);
     // The budget is the turn's, both runs together.
     let deadline = Instant::now() + config.budget;
-    let (mcp, url, tetrix) = mcp_config(shared, place, &control.conversation, own)?;
+    // A helper's turn (crate::helpers): its grants as it starts, and what it's told of it.
+    let helper = (shared.helpers.of(&control.conversation)).map(|h| h.told());
+    let helper = helper.transpose()?;
+    let helper = helper.as_ref();
+    let (mcp, url, tetrix) = mcp_config(shared, place, &control.conversation, own, helper)?;
     // What reaches the agent has the vault's secrets taken out; a vault that can't be read sends
     // nothing.
     // The files the owner attached, in the room, named before their words (quoted).
@@ -1605,7 +1717,7 @@ async fn attempts(
     let words = crate::vault::for_agent(&with(words))?;
     let first = crate::vault::for_agent(&with(first_prompt(shared, said.trim(), given)))?;
     let first = if tool == Tool::Cursor {
-        super::harness_cursor::first_prompt(shared, tetrix.is_some(), &first)?
+        super::harness_cursor::first_prompt(shared, tetrix.is_some(), helper, &first)?
     } else {
         first
     };
@@ -1636,7 +1748,7 @@ async fn attempts(
             (Some(_), None) => words.clone(),
             (None, _) => first.clone(),
         };
-        let mut flags = claude_flags(shared, &account.id, tetrix.is_some(), own);
+        let mut flags = claude_flags(shared, &account.id, tetrix.is_some(), own, helper);
         let key = flags_key(&flags);
         if let Some(session) = &resume {
             flags.extend(["--resume".into(), session.into()]);
@@ -1692,6 +1804,7 @@ async fn attempts(
                         token,
                         &resume,
                         own,
+                        helper,
                     )
                     .await
                     .map_err(Unanswered::moves)?;
@@ -2162,9 +2275,9 @@ fn first_prompt(shared: &Shared, words: &str, given: &[Turn]) -> String {
     )
 }
 
-/// [`ORIENTATION`], with the repositories the room holds, and [`TETRIX`] when the session gets
-/// Tetrix's server (`tetrix`).
-pub(super) fn orientation(shared: &Shared, tetrix: bool) -> String {
+/// [`ORIENTATION`], with the repositories the room holds, [`TETRIX`] when the session gets
+/// Tetrix's server (`tetrix`), and a `helper`'s section (crate::helpers).
+pub(super) fn orientation(shared: &Shared, tetrix: bool, helper: Option<&Told>) -> String {
     let repos: Vec<String> = shared
         .config
         .repos
@@ -2202,7 +2315,16 @@ pub(super) fn orientation(shared: &Shared, tetrix: bool) -> String {
         orientation += TETRIX;
     }
     orientation += &super::ask::orientation(shared);
+    // A helper's own section, last, so every other conversation's prefix stays one.
+    if let Some(helper) = helper {
+        orientation += &helper.section;
+    }
     orientation
+}
+
+/// Whether a turn may use the web: any but a `helper`'s not granted it.
+pub(super) fn web(helper: Option<&Told>) -> bool {
+    helper.is_none_or(|h| may_use(h.granted, Connector::Web))
 }
 
 /// Repositories as the orientation names them, in an order no push changes: the prompt's cached part
@@ -2264,6 +2386,8 @@ async fn one(
     // What the run used so far, as its agent said (Codex's `tokenUsage`), stopped or not.
     let mut tokens = None;
     let on_event = |event: Event| {
+        // A call waiting for its line waits while this one is handled (B00-01).
+        let _reading = session.reading();
         if let Event::Tokens(used) = &event {
             tokens = Some(used.clone());
         }
@@ -3218,7 +3342,7 @@ mod tests {
             ("tetrix", TETRIX.len()),
             (
                 "oby_tools",
-                serde_json::to_vec(&super::super::tools::list())
+                serde_json::to_vec(&super::super::tools::list(true))
                     .unwrap()
                     .len(),
             ),
@@ -3595,6 +3719,7 @@ mod tests {
             room: place.room.clone(),
             artifacts: Mutex::new(vec![]),
             written: Mutex::default(),
+            reader: Reader::default(),
         };
         // The run names its session: kept at once, unmarked.
         session.keep(Some("c0000000-0000-4000-8000-000000000001"));
@@ -3614,27 +3739,7 @@ mod tests {
     #[tokio::test]
     async fn a_call_waits_for_its_line_at_most_its_cap() {
         let turns = super::super::turn::Turns::default();
-        let session = |control| Session {
-            conversation: "c1".into(),
-            said: String::new(),
-            attachments: vec![],
-            attached_jobs: vec![],
-            repos_note: None,
-            control,
-            jobs: Mutex::new(vec![]),
-            nonce: "n".into(),
-            web: AtomicBool::new(false),
-            shared: std::sync::Weak::new(),
-            dispatched: AtomicUsize::new(0),
-            acted: AtomicBool::new(false),
-            told: AtomicUsize::new(0),
-            asked: AtomicUsize::new(0),
-            kept: PathBuf::from("/nowhere/session.json"),
-            account: "a".into(),
-            room: PathBuf::from("/nowhere/room"),
-            artifacts: Mutex::new(vec![]),
-            written: Mutex::default(),
-        };
+        let session = waiting_session;
         let cap = Duration::from_secs(5);
         let first = session(turns.begin("t1", "c1"));
         // Its line, with no arguments as none: heard at once, unmarked, and taken.
@@ -3661,6 +3766,119 @@ mod tests {
             .heard("oby_jobs", &json!({}), Duration::from_millis(50))
             .await;
         assert!(second.web.load(Ordering::SeqCst));
+    }
+
+    /// B00-01: obid's reader holds a line it read, its marks not made yet, past the call's cap (as
+    /// when another writer holds the conversation's lock): the call waits for the line's record,
+    /// is woken the moment it's made, and goes on unmarked, never on its cap running out.
+    #[tokio::test(start_paused = true)]
+    async fn a_call_waits_for_a_line_the_reader_holds_past_its_cap() {
+        let turns = super::super::turn::Turns::default();
+        let session = waiting_session(turns.begin("t1", "c1"));
+        let cap = Duration::from_millis(50);
+        let held = session.reading();
+        let call = async {
+            session.heard("oby_jobs", &json!({}), cap).await;
+            tokio::time::Instant::now()
+        };
+        // The clock moves past the cap a step at a time, the call looking each time.
+        let reader = async {
+            for _ in 0..6 {
+                tokio::time::advance(cap).await;
+            }
+            session.wrote("u1", "oby_jobs", &json!({}));
+            drop(held);
+            tokio::time::Instant::now()
+        };
+        let (heard, recorded) = tokio::join!(call, reader);
+        assert!(!session.web.load(Ordering::SeqCst));
+        assert!(session.written.lock().unwrap().is_empty());
+        assert!(heard >= recorded);
+        assert!(heard - recorded < cap, "{:?}", heard - recorded);
+    }
+
+    /// B00-01: the agent keeps writing lines that aren't the call's (deltas, usage) all through
+    /// its wait: they don't put off its cap, which runs out in the time between them, and the turn
+    /// is marked (fail closed).
+    #[tokio::test(start_paused = true)]
+    async fn other_lines_never_put_off_a_calls_cap() {
+        let turns = super::super::turn::Turns::default();
+        let session = waiting_session(turns.begin("t1", "c1"));
+        let cap = Duration::from_millis(50);
+        let ended = AtomicBool::new(false);
+        let at = tokio::time::Instant::now();
+        let call = async {
+            session.heard("oby_jobs", &json!({}), cap).await;
+            ended.store(true, Ordering::SeqCst);
+            tokio::time::Instant::now()
+        };
+        // A line every 10 ms, for a second at most.
+        let reader = async {
+            for _ in 0..100 {
+                if ended.load(Ordering::SeqCst) {
+                    break;
+                }
+                drop(session.reading());
+                tokio::time::advance(Duration::from_millis(10)).await;
+            }
+        };
+        let (heard, ()) = tokio::join!(call, reader);
+        assert!(session.web.load(Ordering::SeqCst));
+        assert!(heard - at < cap * 2, "{:?}", heard - at);
+    }
+
+    /// B00-01: the reader holds an unrelated line each time the call looks, and holds none for
+    /// 10 ms between them: that idle time runs the call's cap all the same, so it runs out and
+    /// the turn is marked (fail closed).
+    #[tokio::test(start_paused = true)]
+    async fn a_reader_held_whenever_the_call_looks_still_runs_its_cap() {
+        use std::future::Future;
+        use std::task::{Context, Waker};
+        let turns = super::super::turn::Turns::default();
+        let session = waiting_session(turns.begin("t1", "c1"));
+        let cap = Duration::from_millis(50);
+        let args = json!({});
+        let mut call = std::pin::pin!(session.heard("oby_jobs", &args, cap));
+        let mut cx = Context::from_waker(Waker::noop());
+        // For a second at most: a line held while the call looks, then 10 ms with none.
+        let mut idle = Duration::ZERO;
+        let heard = loop {
+            let held = session.reading();
+            if call.as_mut().poll(&mut cx).is_ready() || idle >= Duration::from_secs(1) {
+                break idle;
+            }
+            drop(held);
+            tokio::time::advance(Duration::from_millis(10)).await;
+            idle += Duration::from_millis(10);
+        };
+        assert!(session.web.load(Ordering::SeqCst));
+        assert!(heard < cap * 2, "{heard:?}");
+    }
+
+    /// A turn's session with nothing in it, for [`Session::heard`]'s tests.
+    fn waiting_session(control: Arc<Control>) -> Session {
+        Session {
+            conversation: "c1".into(),
+            said: String::new(),
+            attachments: vec![],
+            attached_jobs: vec![],
+            repos_note: None,
+            control,
+            jobs: Mutex::new(vec![]),
+            nonce: "n".into(),
+            web: AtomicBool::new(false),
+            shared: std::sync::Weak::new(),
+            dispatched: AtomicUsize::new(0),
+            acted: AtomicBool::new(false),
+            told: AtomicUsize::new(0),
+            asked: AtomicUsize::new(0),
+            kept: PathBuf::from("/nowhere/session.json"),
+            account: "a".into(),
+            room: PathBuf::from("/nowhere/room"),
+            artifacts: Mutex::new(vec![]),
+            written: Mutex::default(),
+            reader: Reader::default(),
+        }
     }
 
     /// Only a session id Claude Code made is resumed: a UUID, never an argument of another kind.
@@ -3948,7 +4166,7 @@ mod tests {
             "REPL",
             "JavaScript",
         ];
-        let oby: Vec<String> = super::super::tools::list()
+        let oby: Vec<String> = super::super::tools::list(true)
             .as_array()
             .unwrap()
             .iter()
@@ -4237,6 +4455,7 @@ mod tests {
             room: PathBuf::from("/nowhere/room"),
             artifacts: Mutex::new(vec![]),
             written: Mutex::default(),
+            reader: Reader::default(),
         }));
         assert!(sessions.session("conversation-c1", &token).is_some());
         assert!(sessions.session("conversation-c2", &token).is_none());

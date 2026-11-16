@@ -40,6 +40,7 @@ pub mod github;
 pub mod github_login;
 pub mod github_work;
 pub mod groups;
+pub mod helpers;
 pub mod job;
 pub mod jobs;
 pub mod limits;
@@ -54,6 +55,7 @@ pub mod policy;
 pub mod power;
 pub mod process;
 pub mod profiles;
+pub mod projects;
 pub mod providers;
 pub mod publish;
 pub mod push;
@@ -451,6 +453,7 @@ pub async fn serve(
     let cleared = clear::Cleared::open(&config.home);
     let devices = devices::Devices::open(&config.mac_home);
     let profiles = profiles::Profiles::open(&config.home);
+    let helpers = helpers::Helpers::open(&config.home);
     let paired = gateway::Gateway::open(&config.mac_home);
     let relay = relay::Relay::open(&config.mac_home);
     link.use_relay(relay.clone());
@@ -490,6 +493,8 @@ pub async fn serve(
     // A login copy a crash left in a conversation's folder goes before anything runs.
     brain::harness::forget_logins_left(&config.home);
     let conversations = conversation::Conversations::open(&config.home, events.clone());
+    let projects = projects::Projects::open(&config.home);
+    projects::reconcile(&projects, &conversations);
     let artifacts = artifacts::Artifacts::open(&config.home, events.clone());
     jobs.use_artifacts(artifacts.clone());
     let routines = Arc::new(routines::Routines::open(&config.home, events.clone()));
@@ -518,6 +523,7 @@ pub async fn serve(
         cleared,
         devices,
         profiles,
+        helpers,
         gateway: paired,
         gateway_state,
         relay,
@@ -525,6 +531,7 @@ pub async fn serve(
         jobs: jobs.clone(),
         events,
         conversations,
+        projects,
         artifacts,
         routines,
         turns: brain::turn::Turns::default(),
@@ -1008,7 +1015,7 @@ fn settle_stale_items(shared: Arc<api::Shared>) {
                 got = bus.recv() => match got {
                     Ok(event) => match event.name {
                         "inbox" => true,
-                        "job" => !matches!(event.data["status"].as_str(), Some("queued" | "running")),
+                        "job" => event.data["status"] != "running",
                         _ => false,
                     },
                     Err(RecvError::Lagged(_)) => true,

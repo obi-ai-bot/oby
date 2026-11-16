@@ -10,7 +10,7 @@ Checks run in two places: GitHub's `CI` workflow (`.github/workflows/ci.yml`) an
 | --- | --- |
 | `plan` | Which lanes the change reaches (below), and gitleaks with `.gitleaks.toml` over the commits the run brings: a pull request's from its merge base, the merge queue's from the group's base. A nightly or on-demand run on `dev` has no earlier commit and scans its head commit alone. A finding fails `plan`. |
 | `lint` | In `core/`: `cargo fmt --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings`. |
-| `limits` | `OBY_CHECK_ONLY=limits scripts/oby-check.sh <base>` on the checked commit, with full history: obid's line limits, `jobs.rs`'s and the tests' sleeps, `AGENTS.md`'s bytes, and the flaky list's guard, judged by the script's own counting (docs/contracts/ci.md, CI-35). The base is `merge_group.base_sha` in the queue, `pull_request.base.sha` on a pull request, and the commit itself nightly and on demand. It installs nothing. |
+| `limits` | `OBY_CHECK_ONLY=limits scripts/oby-check.sh <base>` on the checked commit, with full history: it reports obid's production line count and its difference from the base (CI-49), and judges `jobs.rs`'s lines, the tests' sleeps, `AGENTS.md`'s bytes and the flaky list's guard by the script's own counting (docs/contracts/ci.md, CI-35). The base is `merge_group.base_sha` in the queue, `pull_request.base.sha` on a pull request, and the commit itself nightly and on demand. It installs nothing. |
 | `rust-build` | One `cargo nextest archive --workspace --locked` of `core/`, uploaded and kept 1 day. |
 | `rust-test` (1/4 to 4/4) | The archive's tests, a quarter each (`--partition slice:k/4`), with `--profile ci --no-fail-fast`, bubblewrap and gitleaks set up. Each uploads its JUnit report, pass or fail, kept 14 days. |
 | `e2e` | `make e2e`: stub agents, against the oby-sphere commit in `e2e/oby-sphere.ref`. |
@@ -120,7 +120,7 @@ A merge into `dev` goes through GitHub's merge queue and needs its `Check` (docs
 
 Oby (MERGING-41) and the factory (`job merge`, CI-23) hand an approved pull request to GitHub with `gh pr merge --auto --match-head-commit <head>`, which queues it pinned to the head that was reviewed. A pull request into `main` needs `Check` green, with no queue.
 
-The queue's `limits` job judges obid's line limits on the group's combined code (CI-35), so two pull requests that each fit can't put `dev` past a limit together. The script's other rules come along on that code too, but for a raise's payback line and its pull request of its own (CI-39, CI-40), which the pull request's own check judges against its merge base. So a group more than 1,000 lines under the line limit, or under the sleep limit, fails until a pull request lowers the limit.
+The queue's `limits` job judges `jobs.rs`'s line limit on the group's combined code (CI-35), so two pull requests that each fit can't put `dev` past it together. The script's other rules come along on that code too, but for a raise's payback line and its pull request of its own (CI-39, CI-40), which the pull request's own check judges against its merge base. So a group under the sleep limit fails until a pull request lowers the limit.
 
 The Mac's check still gates each pull request before approval, and the nightly full Mac run (CI-29) checks `dev` as merged.
 

@@ -359,6 +359,29 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .archive-who { margin-right: 6px; color: var(--text); }
 .archive-about, .archive-ago { color: var(--muted); font-size: var(--text-sm); }
 .archive-ago { flex: none; }
+/* Waiting for you (WaitingView.tsx, Sangam's screen 17): one card per thing that needs your word */
+.waiting-head { width: 100%; margin-bottom: 12px; display: flex; align-items: center; gap: 12px; }
+.waiting-head .group-title { margin: 0; }
+.waiting-chip { height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: none; color: var(--text); font-size: var(--text-sm); }
+.waiting-counts { color: var(--muted); font-size: var(--text-sm); }
+.waiting-list { width: 100%; margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.waiting-row { padding: 16px; display: flex; align-items: flex-start; gap: 12px; border: 1px solid var(--line); border-radius: 12px; }
+.waiting-row > svg { flex: none; margin-top: 2px; }
+.waiting-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.waiting-title { margin: 0; color: var(--ink); font-size: var(--text-base); font-weight: 500; }
+.waiting-meta, .waiting-about { margin: 0; color: var(--muted); font-size: var(--text-sm); }
+.waiting-about { color: var(--text); }
+.waiting-summary { margin: 0; color: var(--muted); font-size: var(--text-sm); }
+.waiting-tag.is-failed { color: var(--danger); }
+.waiting-tag { display: inline-flex; align-items: center; gap: 4px; }
+.waiting-diff .is-added { color: #30d158; }  /* lines added: macOS's green */
+.waiting-diff .is-removed { color: var(--danger); }
+.waiting-detail { align-self: flex-start; color: var(--danger); font-size: var(--text-sm); }
+.waiting-chips { margin: 4px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.waiting-kind, .waiting-tag { padding: 2px 8px; border-radius: 6px; background: var(--hover); color: var(--muted); font-size: var(--text-sm); }
+.waiting-kind.is-permission, .waiting-kind.is-question { color: var(--needs); }
+.waiting-actions { flex: none; display: flex; gap: 8px; }
+.waiting-count { margin-left: auto; padding: 0 7px; border-radius: 6px; background: var(--hover); color: var(--needs); font-size: var(--text-sm); }
 .group-cards { width: 100%; display: flex; flex-direction: column; gap: 8px; }
 .group-empty { margin: 8px 4px; color: var(--muted); font-size: var(--text-base); }
 /* a tab with nothing in it: its words in the middle of the window's height (the view starts under
@@ -2240,6 +2263,33 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .asks-over { position: absolute; z-index: 5; top: var(--bar); left: 0; right: 0; max-height: calc(100% - var(--bar)); overflow-y: auto; scrollbar-width: none; padding: 8px var(--gutter) 0; display: flex; justify-content: center; pointer-events: none; }
 .asks-over .asks { pointer-events: auto; }
 .asks-over .ask-card { background: var(--surface); box-shadow: 0 0 0 1px var(--surface-edge); }
+
+/* Agents beside Projects (docs/contracts/helpers.md, screens 08 to 10): the switch under the profile's
+   name, each agent's row with its coloured Oby, its face in the bar, and the New agent sheet */
+.panel-side { flex: none; display: flex; margin: 0 0 12px; padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--chip); }
+.panel-side button { flex: 1; height: 26px; border-radius: 6px; color: var(--text); font-size: var(--text-md); transition: background-color var(--fade), color var(--fade); }
+.panel-side button:hover { color: var(--ink); }
+.panel-side button.is-on { background: rgba(255, 255, 255, 0.12); color: var(--ink); }
+.connector.agent-row { position: relative; height: 52px; cursor: pointer; }
+.agent-row .connector-name { white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
+.agent-row > .sidebar-item-ago, .agent-row > .status-dot { flex: none; align-self: flex-start; margin-top: 12px; }
+.agent-row > .status-dot { margin: 16px 2px 0; }
+.agent-row:has(.connector-about:empty) > :is(.sidebar-item-ago, .status-dot) { align-self: center; margin-top: 0; }  /* a line of its own, beside its name */
+.sidebar-convo-count { margin-left: auto; font-variant-numeric: tabular-nums; }
+.crumbs > svg { flex: none; margin-right: 8px; }
+.bar-schedule { flex: none; margin-left: 14px; color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
+.agent-sheet .modal-label { margin-top: 16px; }
+.agent-sheet .modal-lede + .modal-label { margin-top: 0; }
+.agent-swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+.agent-swatch { width: 40px; height: 40px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 10px; background: var(--chip); transition: border-color var(--fade), background-color var(--fade); }
+.agent-swatch:hover { border-color: var(--line-strong); }
+.agent-swatch.is-on { border-color: var(--ink); background: var(--chip-hover); }
+.agent-instructions { height: auto; min-height: 76px; padding: 10px 14px; resize: none; line-height: 1.45; }
+.agent-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.agent-chip { height: 30px; padding: 0 12px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 15px; color: var(--text); font-size: var(--text-md); transition: background-color var(--fade), border-color var(--fade), color var(--fade); }
+.agent-chip:hover:not(:disabled) { border-color: var(--line-strong); color: var(--ink); }
+.agent-chip.is-on { background: rgba(255, 255, 255, 0.12); border-color: transparent; color: var(--ink); }
+.agent-chip:disabled { cursor: default; }
 
 /* Continue with ChatGPT (docs/contracts/chatgpt-sign-in.md): its mark in its button, OpenAI's links */
 .chatgpt-logo { vertical-align: -2px; margin-right: 6px; }

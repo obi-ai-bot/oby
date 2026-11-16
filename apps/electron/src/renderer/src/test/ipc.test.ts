@@ -106,6 +106,7 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   showing: { args: [{ job: 'j1' }], refusal: undefined },
   opened: { args: [], refusal: null },
   notifications: { args: [false], refusal: null },
+  'notification-kinds': { args: [{ merged: false }], refusal: null },
   'open-notification-settings': { args: [], refusal: undefined },
   updates: { args: ['check'], refusal: null },
   'local-settings': { args: [], refusal: null },

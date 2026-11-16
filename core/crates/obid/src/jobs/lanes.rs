@@ -33,11 +33,14 @@ impl Jobs {
     /// Ask, Accept edits, Plan or Sandbox it stays boxed, and on a ChatGPT login ([`launches_own`]).
     /// One that builds ([`COMMITTING`]) stays boxed too (LANES-19): Codex's profile hides the
     /// folders above its worktree, so a build can't resolve its path; Oby's box shows them by name.
+    /// So does the rest of a run its plan card's answer resumed ([`codex_plan::resumes_plan`]).
     pub(crate) fn own_lane(job: &Job, tool: Tool) -> bool {
         let lane = match tool {
             Tool::Claude => true,
             Tool::Codex => {
-                Self::codex_own(Self::mode_of(job)) && !COMMITTING.contains(&job.kind.as_str())
+                Self::codex_own(Self::mode_of(job))
+                    && !COMMITTING.contains(&job.kind.as_str())
+                    && !codex_plan::resumes_plan(job)
             }
             Tool::Cursor => false,
         };
@@ -839,6 +842,77 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// LANES-20 (docs/contracts/lanes.md): an own Claude Code job's commands, and an own
+    /// conversation's, may bind, accept and connect on loopback; nothing else in their sandbox's
+    /// network changes, the code hosts still denied, and the sandbox stays on and required.
+    #[test]
+    fn lanes_20_an_own_runs_commands_have_loopback() {
+        let root = std::env::temp_dir().join(format!("obid-lanes-20-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let jobs = own_jobs(&root);
+        let [worktree, admin, common, temp, login] =
+            ["worktree", "admin", "common", "temp", "login"].map(|d| root.join(d));
+        let place = jobs.config.home.join("conversations/c");
+        let [room, room_temp] = ["room", "home"].map(|d| place.join(d));
+        for dir in [&worktree, &admin, &common, &temp, &login, &room, &room_temp] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let env: Vec<(&'static str, OsString)> = PINNED_ENV
+            .into_iter()
+            .map(|name| (name, OsString::from("/x")))
+            .collect();
+        let job = jobs.spec(&worktree, &admin, &common, &temp, true, Tool::Claude);
+        let job: Value =
+            serde_json::from_str(&own_sandbox_settings(&job, &login, &env).unwrap()).unwrap();
+        // A conversation's gitless room, as its own launch builds it (LANES-12).
+        let claude = jobs.accounts(Tool::Claude).remove(0);
+        let launch = jobs
+            .conversation_own_launch(
+                &claude,
+                &room,
+                &room_temp,
+                &place.join("login"),
+                Vec::new(),
+                vec!["-p".into()],
+                place.join("agent.log"),
+            )
+            .unwrap();
+        let argv: Vec<&str> = launch.argv.iter().filter_map(|a| a.to_str()).collect();
+        let at = argv.iter().position(|a| *a == "--settings").unwrap();
+        let conversation: Value = serde_json::from_str(argv[at + 1]).unwrap();
+        for settings in [&job, &conversation] {
+            let sandbox = &settings["sandbox"];
+            assert_eq!(sandbox["network"]["allowLocalBinding"], true, "{settings}");
+            let network = sandbox["network"].as_object().unwrap();
+            let mut keys: Vec<&str> = network.keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            assert_eq!(keys, ["allowLocalBinding", "deniedDomains"], "{settings}");
+            for host in CODE_HOSTS {
+                assert!(
+                    network["deniedDomains"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|v| v.as_str() == Some(host)),
+                    "{host}: {settings}"
+                );
+            }
+            for (flag, want) in [
+                ("enabled", true),
+                ("failIfUnavailable", true),
+                ("allowUnsandboxedCommands", false),
+                ("autoAllowBashIfSandboxed", false),
+                ("enableWeakerNestedSandbox", false),
+                ("enableWeakerNetworkIsolation", false),
+            ] {
+                assert_eq!(sandbox[flag], want, "{flag}: {settings}");
+            }
+            assert_eq!(sandbox["filesystem"]["disabled"], false, "{settings}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// LANES-6 (docs/contracts/lanes.md): an own Claude Code job runs with no proxy of obid's,
     /// and its check is still Oby's box with no network, no account's folder and only loopback.
     #[cfg(target_os = "macos")]
@@ -972,6 +1046,32 @@ mod tests {
                 request_id: "r".into(),
             })
         }));
+    }
+
+    /// LANES-18 (PERMISSIONS-18): the run a Codex plan card's answer resumes stays in Oby's box,
+    /// where its thread is, in Bypass too; once that run ended (`parked` cleared), the job's next
+    /// run on macOS leaves the box as any Bypass Codex job's does.
+    #[test]
+    fn lanes_18_the_run_a_codex_plan_resumes_stays_boxed() {
+        let mut job = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "research".into(),
+            "Fix it".into(),
+            "codex".into(),
+            "a".into(),
+        );
+        job.mode = Some("bypass".into());
+        job.parked = Some(permissions::Parked {
+            tool: "ExitPlanMode".into(),
+            input: json!({"plan": "Plan: add plan.txt"}),
+            answered: true,
+            allowed: true,
+            ended_turn: true,
+        });
+        assert!(!Jobs::own_lane(&job, Tool::Codex));
+        job.parked = None;
+        assert_eq!(Jobs::own_lane(&job, Tool::Codex), cfg!(target_os = "macos"));
     }
 
     /// LANES-18: of the owner's login shell's environment, an own Codex run gets everything Claude

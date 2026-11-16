@@ -144,9 +144,14 @@ pub async fn limit_decisions(State(shared): State<Arc<Shared>>) -> Response {
 }
 
 /// `GET /v1/alerts` (ALERTS-1, loopback only): what waits on the owner now, as the phones are
-/// told it (`crate::push::listed`). `503` while the vault can't be read.
-pub async fn alerts(State(shared): State<Arc<Shared>>) -> Result<Response, ApiError> {
-    let list = crate::push::listed(&shared)
+/// told it, and with `fyi` the Mac's news its switches turn on (ALERTS-12 to 17,
+/// `crate::push::listed`). `503` while the vault can't be read.
+pub async fn alerts(
+    State(shared): State<Arc<Shared>>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Response, ApiError> {
+    let on = crate::push::Switches::parse(query.get("fyi").map(String::as_str));
+    let list = crate::push::listed(&shared, on)
         .await
         .map_err(|why| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, why))?;
     Ok(json(StatusCode::OK, Value::Array(list)))
@@ -224,9 +229,11 @@ pub async fn answer_limit_decision(
 #[derive(serde::Deserialize)]
 pub struct Limit {
     limit: Option<String>,
+    project: Option<String>,
 }
 
-/// `GET /v1/jobs?limit=50`: the latest jobs, newest first.
+/// `GET /v1/jobs?limit=50`: the latest jobs, newest first; with `project=<id>`, that project's,
+/// queued and running first (PROJECTS-14).
 pub async fn jobs(
     State(shared): State<Arc<Shared>>,
     Query(query): Query<Limit>,
@@ -237,12 +244,13 @@ pub async fn jobs(
             .parse::<usize>()
             .map_err(|_| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "limit is a number."))?,
     };
-    let list: Vec<Value> = shared
-        .jobs
-        .list(limit.min(1000))
-        .iter()
-        .map(|j| j.to_json())
-        .collect();
+    let jobs = match &query.project {
+        Some(project) => {
+            crate::projects::listed(shared.jobs.list(usize::MAX), project, limit.min(1000))
+        }
+        None => shared.jobs.list(limit.min(1000)),
+    };
+    let list: Vec<Value> = jobs.iter().map(|j| j.to_json()).collect();
     Ok(json(StatusCode::OK, Value::Array(list)))
 }
 
@@ -1048,6 +1056,7 @@ fn job_settings_json(shared: &Shared) -> Value {
     json!({
         "maxRunning": shared.jobs.max_running(),
         "accountFailover": shared.jobs.account_failover(),
+        "githubEveryRepo": crate::settings::load(&shared.config.home).github_every_repo(),
         "defaultAccount": crate::settings::load(&shared.config.home).default_account,
         "talkAccount": crate::settings::load(&shared.config.home).talk_account,
         "limits": crate::settings::limits().to_json(),
@@ -1060,7 +1069,8 @@ pub async fn job_settings(State(shared): State<Arc<Shared>>) -> Response {
     json(StatusCode::OK, job_settings_json(&shared))
 }
 
-/// `PUT /v1/settings/jobs`: `{"maxRunning": 1…20, "accountFailover": true|false, "defaultAccount":
+/// `PUT /v1/settings/jobs`: `{"maxRunning": 1…20, "accountFailover": true|false,
+/// "githubEveryRepo": true|false (docs/contracts/github-work.md), "defaultAccount":
 /// "<account id>"|null, "talkAccount": "<account id>"|null (null is Auto), "limits": {"rounds", "maxRunning", "folders", "routines", "accounts"}}`,
 /// any of them, kept across restarts. Each limit is a whole number from 1, or null for its
 /// default (crate::settings::Limits); a lower `limits.maxRunning` lowers `maxRunning` with it.
@@ -1074,7 +1084,7 @@ pub async fn set_job_settings(
     let bad = || {
         ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
-            "The body is {\"maxRunning\": 1 to 20, \"accountFailover\": true or false, \"defaultAccount\": an account's id or null, \"talkAccount\": an account's id or null, \"limits\": {\"rounds\", \"maxRunning\", \"folders\", \"routines\", \"accounts\"}, each 1 or more, or null}, any of them.",
+            "The body is {\"maxRunning\": 1 to 20, \"accountFailover\": true or false, \"githubEveryRepo\": true or false, \"defaultAccount\": an account's id or null, \"talkAccount\": an account's id or null, \"limits\": {\"rounds\", \"maxRunning\", \"folders\", \"routines\", \"accounts\"}, each 1 or more, or null}, any of them.",
         )
     };
     let max = match value.get("maxRunning") {
@@ -1086,6 +1096,10 @@ pub async fn set_job_settings(
         ),
     };
     let failover = match value.get("accountFailover") {
+        None => None,
+        Some(on) => Some(on.as_bool().ok_or_else(bad)?),
+    };
+    let every_repo = match value.get("githubEveryRepo") {
         None => None,
         Some(on) => Some(on.as_bool().ok_or_else(bad)?),
     };
@@ -1154,6 +1168,7 @@ pub async fn set_job_settings(
     };
     if max.is_none()
         && failover.is_none()
+        && every_repo.is_none()
         && default_account.is_none()
         && talk_account.is_none()
         && limits.is_none()
@@ -1196,6 +1211,13 @@ pub async fn set_job_settings(
     .and_then(|()| match failover {
         Some(on) => crate::settings::update(&shared.config.home, |s| s.account_failover = Some(on))
             .map_err(SettingsError::Unkept),
+        None => Ok(()),
+    })
+    .and_then(|()| match every_repo {
+        Some(on) => {
+            crate::settings::update(&shared.config.home, |s| s.github_every_repo = Some(on))
+                .map_err(SettingsError::Unkept)
+        }
         None => Ok(()),
     })
     .and_then(|()| match default_account {

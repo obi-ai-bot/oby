@@ -113,6 +113,17 @@ describe('LIVE-26', () => {
   });
 });
 
+describe('WORDS-17', () => {
+  it('words_17: Settings › Vault removes a secret by its own Remove Secret button, never a bare Remove', async () => {
+    const { view, answer } = await start();
+    await act(async () => root!.render(<view.default page="vault" leaving={false} onClose={() => {}} onGone={() => {}} />));
+    await answer({ vault: ['staging-key'] });
+    const labels = Array.from(host.querySelectorAll('button')).map((b) => b.textContent);
+    expect(labels).toContain('Remove Secret');
+    expect(labels).not.toContain('Remove');
+  });
+});
+
 describe('LIVE-27', () => {
   it('live_27: turning the switch keeps the row and asks main to apply it', async () => {
     const loginItem = vi.fn(async (_on?: boolean) => true as boolean | null).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
@@ -179,5 +190,32 @@ describe('no bridge', () => {
     await general(view);
     await act(async () => login().click());
     expect(login().getAttribute('aria-checked')).toBe('false');
+  });
+});
+
+describe('ALERTS-18', () => {
+  it('alerts_18_settings_notifications_shows_the_three_switches_under_alerts', async () => {
+    // on obid, main's bridge for the alerts and their kinds (main/notify.ts)
+    const kinds = vi.fn(async (change?: object) => ({ finished: true, merged: true, limit: true, ...change }));
+    (window as { app?: unknown }).app = {
+      obid: async () => ({ status: 503, text: '{}' }),
+      settings: { local: async () => ({}), keep: async () => true },
+      notifications: { alerts: async () => true, kinds, openSystemSettings: () => {} },
+    };
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    vi.stubGlobal('location', { search: '' });
+    const view = await import('../SettingsView');
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    await general(view);
+    const group = [...host.querySelectorAll('.set-label')].map((l) => l.textContent);
+    const from = group.indexOf('Alerts');
+    expect(group.slice(from, from + 5)).toEqual(['Alerts', 'Finished tasks', 'Merged pull requests', 'Accounts at their limit', 'Banners, sounds and Focus']);
+    const merged = host.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Merged pull requests"]')!;
+    expect(merged.getAttribute('aria-checked')).toBe('true');
+    await act(async () => merged.click());
+    expect(kinds).toHaveBeenLastCalledWith({ merged: false });
+    expect(merged.getAttribute('aria-checked')).toBe('false');
   });
 });

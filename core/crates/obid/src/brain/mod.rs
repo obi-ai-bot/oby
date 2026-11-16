@@ -72,6 +72,9 @@ struct Request {
     /// Folders on this Mac the conversation works in from now on (crate::folders): absolute paths,
     /// added to those it has. Only from the owner's Mac app: refused through the gateway or relay.
     folders: Option<Vec<String>>,
+    /// The project a new conversation starts in (crate::projects), by id; only with `new`, and
+    /// only from the owner's Mac app.
+    project: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -130,6 +133,15 @@ pub async fn plan(
         }
         Some(asked) => crate::folders::checked(&crate::folders::Places::of(&shared), &asked),
     };
+    if req.project.is_some() && (paired.is_some() || relayed.is_some()) {
+        return Err(crate::projects::chosen_on_the_mac());
+    }
+    if req.project.is_some() && req.new != Some(true) {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "A project is chosen when a conversation starts: send project with new.",
+        ));
+    }
     // Left out, a request joins the latest conversation, as it did when there was only one: the
     // apps from before #493 send none and show one thread.
     let target = match (req.conversation, req.new.unwrap_or(false)) {
@@ -209,16 +221,22 @@ pub async fn plan(
         None
     };
     // The files go with the conversation; their names on the turn, for the tags under the words.
-    let begun = shared.conversations.begin(
-        target,
-        said.clone(),
-        jobs.clone(),
-        attachments.clone(),
-        id,
-        foreign,
-        folders,
-        signed,
-    )?;
+    // The projects' lock first, so the project can't go before the conversation is in it.
+    let begun = {
+        let projects = shared.projects.lock();
+        let project = req.project.map(|p| crate::projects::joined(&projects, &p));
+        shared.conversations.begin(
+            target,
+            said.clone(),
+            jobs.clone(),
+            attachments.clone(),
+            id,
+            foreign,
+            folders,
+            signed,
+            project.transpose(),
+        )?
+    };
     drop_uploads(&shared, begun.forgotten.clone()).await;
     // An answer to a question Oby asked elsewhere (the Watch answers in the latest conversation)
     // brings that conversation's words here.

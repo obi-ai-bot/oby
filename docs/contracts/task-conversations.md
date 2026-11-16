@@ -1,6 +1,6 @@
 # Task conversations: every task has one
 
-The business behavior contract for where a task's words go ([#1631](https://github.com/obi-ai-bot/oby/issues/1631)), from [the template](../business-contract-template.md). Scenarios are numbered `TASKCONV-n`; the tests that prove them are named after them (`core/crates/obid/tests/plans_api.rs`, `github_work.rs`, `conversation_harness.rs`, `src/brain/`, `apps/electron/src/renderer/src/test/taskActions.test.ts`).
+The business behavior contract for where a task's words go ([#1631](https://github.com/obi-ai-bot/oby/issues/1631)), from [the template](../business-contract-template.md). Scenarios are numbered `TASKCONV-n`; the tests that prove them are named after them (`core/crates/obid/tests/plans_api.rs`, `github_work.rs`, `conversation_harness.rs`, `publish_api.rs`, `src/brain/`, `src/jobs.rs`, `src/conversation.rs`, `apps/electron/src/renderer/src/test/taskActions.test.ts`).
 
 ## Feature and status
 
@@ -13,6 +13,7 @@ The business behavior contract for where a task's words go ([#1631](https://gith
 ### Actors and ownership
 
 - **obid** decides a task's conversation and writes its turns: `crate::task_conversation`, with `Jobs::join_conversation`.
+- **obid** decides that Oby's own review of a task is in the task's conversation: `jobs/reviews.rs` (`Jobs::start_review`).
 - **The app** sends a task page's words with `"conversation": true` and opens the conversation obid names. It decides nothing.
 
 ### Rules
@@ -20,6 +21,7 @@ The business behavior contract for where a task's words go ([#1631](https://gith
 - **A task started on its own gets a conversation** (`POST /v1/jobs`, `POST /v1/github/work/{id}/start`), named after the task. Its first turn is the owner's words when the task's words are theirs (`POST /v1/jobs`'s `task`), with the task's card under them. Then comes Oby's line saying it started, in Oby's existing words (`On it. Claude Code is investigating …`), with the card.
 - **Words from GitHub are never the owner's.** A task from GitHub gets no owner turn, and its conversation counts as having read something from outside, because its title is GitHub's.
 - **A follow-up is in its task's conversation.** obid's follow-up carries its job's conversation on (`jobs::follow_up`), so every task started from the first one is in the same conversation.
+- **Oby's own review of a task is in the task's conversation, and adds nothing to it.** The review (`reviewOf`) carries the reviewed job's conversation, with no turn of its own; its end puts no turn, card or notification there (`conversation::job_report`).
 - **A task started in a conversation keeps it.** It never gets a second conversation.
 - **A task with none gets one when the owner writes to it.** This covers a task kept from before this change, or one whose conversation was deleted. The first time its page's words reach obid, its whole chain gets the conversation: the first task, the follow-ups and theirs. It is named after the first task, opens with Oby's line and that task's card, and then has the words and Oby's answer.
 - **Starting the task matters more.** When a conversation can't be made, the task starts without one, and the log says so.
@@ -36,6 +38,9 @@ The business behavior contract for where a task's words go ([#1631](https://gith
 - **TASKCONV-3:** Words to a finished task from its page start a follow-up in the same conversation, with the words and Oby's answer, which carries the follow-up's card, on its end. No other conversation is made. (`taskconv_3_a_follow_up_joins_its_tasks_conversation`)
 - **TASKCONV-4:** A task whose conversation is gone gets a new one the first time its page's words reach it, and so does the follow-up they start. The app sends those words with `conversation: true` and takes the task back in the conversation. (`taskconv_4_a_task_with_no_conversation_gets_one_when_told_something`; the vitest `TASKCONV-4: …`)
 - **TASKCONV-5:** A task started in a conversation stays in it, with no second conversation. (`taskconv_5_a_task_from_a_conversation_keeps_it`)
+- **TASKCONV-26:** Oby's review of a job in a conversation, every round and every start again, is in that conversation. It has no `turn`, isn't the owner's own work, and is in Plan mode. (`taskconv_26_obys_review_joins_its_tasks_conversation`, publish_api.rs; `jobs::tests::taskconv_26_a_review_started_again_joins_too`)
+- **TASKCONV-27:** A job with no conversation stays as it is. Its review and its follow-up have none, and no conversation is made for them. (`jobs::tests::taskconv_27_a_job_with_no_conversation_keeps_none`)
+- **TASKCONV-28:** Oby's review adds no turn, card or notification to its conversation when it ends. The session hears none of its words. A review the owner dispatched in a conversation (no `reviewOf`) still tells its end. (`conversation::tests::taskconv_28_obys_review_tells_its_conversation_nothing`; `taskconv_26_obys_review_joins_its_tasks_conversation`, publish_api.rs)
 
 ## The owner's word in a conversation (#1668, "Oby forbids nothing")
 

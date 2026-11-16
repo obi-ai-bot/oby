@@ -591,23 +591,155 @@ fn codex_hears_what_obid_declined_and_why() {
 }
 
 /// Plan mode: Codex reads and plans, and obid declines its file changes.
-#[test]
-fn codex_in_plan_mode_changes_no_file() {
-    let folder = Folder::new("codex-plan");
-    let obid = obid(&folder, false);
+/// The job once its Codex plan waits on the owner's card, `running` (PERMISSIONS-17): a card other
+/// than `before`'s, when that one was answered.
+fn plan_waits(obid: &Obid, id: &str, before: Option<&Value>) -> Value {
+    within(120, "the plan waits on the owner's card", || {
+        let job = call(obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        assert_ne!(job["status"], "done", "{job}");
+        let card = &job["permission"];
+        (job["status"] == "running"
+            && card["title"] == "Approve the plan?"
+            && before.is_none_or(|b| b["id"] != card["id"]))
+        .then_some(job)
+    })
+}
+
+/// What the fake Codex of job `id` logged in its worktree's `.obi/<name>`.
+fn logged(obid: &Obid, id: &str, name: &str) -> String {
+    let path = obid.home.join("worktrees").join(id).join(".obi").join(name);
+    std::fs::read_to_string(path).unwrap_or_default()
+}
+
+/// Every turn of the job's Codex ran on one thread.
+fn one_thread(obid: &Obid, id: &str) {
+    let threads = logged(obid, id, "threads.log");
+    let lines: Vec<&str> = threads.lines().collect();
+    assert!(lines.len() > 1, "{threads}");
+    assert!(lines.iter().all(|t| *t == lines[0]), "{threads}");
+}
+
+/// The job's Codex plan in Plan mode, waiting on the owner's card.
+fn codex_plan(obid: &Obid) -> (String, Value) {
     let id = dispatch(
-        &obid,
-        json!({"agent": "codex", "kind": "build", "task": "COMMIT: plan.txt", "mode": "plan"}),
+        obid,
+        json!({"agent": "codex", "task": "PLAN: plan.txt", "mode": "plan"}),
     );
-    let job = ended(&obid, &id);
-    // Nothing committed: done, and the agent's summary says why.
-    assert_eq!(job["status"], "done", "{job}");
-    assert_eq!(job["commits"], 0);
-    assert_eq!(
-        job["reason"], "Nothing committed, so nothing was published.",
+    let job = plan_waits(obid, &id, None);
+    (id, job)
+}
+
+/// PERMISSIONS-17: a Codex job of the owner's in Plan whose turn changed no file (its change
+/// declined) and said something waits `running` on the plan card holding that text, in the inbox,
+/// never `done`; a restart of obid keeps it.
+#[test]
+fn permissions_17_a_codex_plan_waits_on_the_owners_card() {
+    let folder = Folder::new("codex-plan");
+    let mut obid = obid(&folder, false);
+    let (id, job) = codex_plan(&obid);
+    assert_eq!(job["step"], "Waiting for your OK on the plan", "{job}");
+    let card = job["permission"].clone();
+    assert!(
+        card["detail"]
+            .as_str()
+            .unwrap()
+            .contains("Plan: add plan.txt"),
         "{job}"
     );
-    assert!(summary(&job).contains("edit: decline"), "{job}");
+    let item = format!("{id}-permission-{}", card["id"].as_str().unwrap());
+    let open = |obid: &Obid| {
+        call(obid, "GET", "/v1/inbox", None)
+            .body
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["id"] == item.as_str() && i["done"].is_null() && i["kind"] == "plan")
+    };
+    assert!(open(&obid));
+    assert_eq!(logged(&obid, &id, "answers.log"), "decline\n");
+    let plan = obid.home.join("worktrees").join(&id).join("plan.txt");
+    assert!(!plan.exists());
+
+    obid.stop();
+    let config: Value =
+        serde_json::from_str(&std::fs::read_to_string(folder.0.join("config.json")).unwrap())
+            .unwrap();
+    drop(obid);
+    let obid = start(&folder.0, &config, None);
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(job["status"], "running", "{job}");
+    assert_eq!(job["permission"], card, "{job}");
+    assert!(open(&obid));
+    assert!(!plan.exists());
+}
+
+/// PERMISSIONS-18: the owner's signed Approve resumes the same thread in their default mode
+/// (Accept edits here), told to carry the plan out, and the file change it then asks for goes
+/// ahead; an unsigned one is refused and the card stays.
+#[test]
+fn permissions_18_approve_resumes_the_same_codex_thread_out_of_plan() {
+    let folder = Folder::new("codex-plan-yes");
+    let obid = obid(&folder, false);
+    let set = call_signed(
+        &obid,
+        "PUT",
+        "/v1/settings/permissions",
+        Some(&json!({"mode": "acceptEdits"})),
+    );
+    assert_eq!(set.status, 200, "{}", set.text);
+    let (id, job) = codex_plan(&obid);
+    let target = format!("/v1/jobs/{id}/permission");
+    let allow = json!({"id": job["permission"]["id"], "decision": "allow"});
+    let refused = call(&obid, "POST", &target, Some(&allow));
+    assert_eq!(refused.status, 403, "{}", refused.text);
+    let still = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(still["permission"], job["permission"], "{still}");
+    assert_eq!(still["mode"], "plan", "{still}");
+
+    let approved = call_signed(&obid, "POST", &target, Some(&allow));
+    assert_eq!(approved.status, 200, "{}", approved.text);
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(summary(&job), "Added plan.txt.", "{job}");
+    assert_eq!(job["mode"], "acceptEdits", "{job}");
+    assert!(job["permission"].is_null(), "{job}");
+    assert!(
+        obid.home
+            .join("worktrees")
+            .join(&id)
+            .join("plan.txt")
+            .exists()
+    );
+    assert!(
+        logged(&obid, &id, "answers.log").ends_with("accept\n"),
+        "{job}"
+    );
+    one_thread(&obid, &id);
+}
+
+/// PERMISSIONS-19: a no with the owner's words resumes the same thread in Plan with them: its
+/// file change is declined again, and its next plan is a new card.
+#[test]
+fn permissions_19_a_no_resumes_the_codex_thread_in_plan() {
+    let folder = Folder::new("codex-plan-no");
+    let obid = obid(&folder, false);
+    let (id, job) = codex_plan(&obid);
+    let card = job["permission"].clone();
+    let denied = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/permission"),
+        Some(&json!({"id": card["id"], "decision": "deny", "message": "Split it in two."})),
+    );
+    assert_eq!(denied.status, 200, "{}", denied.text);
+    let job = plan_waits(&obid, &id, Some(&card));
+    assert_eq!(job["mode"], "plan", "{job}");
+    let heard = logged(&obid, &id, "heard.log");
+    assert!(
+        heard.contains("Split it in two.") && heard.contains("still in Plan mode"),
+        "{heard}"
+    );
+    assert_eq!(logged(&obid, &id, "answers.log"), "decline\ndecline\n");
     assert!(
         !obid
             .home
@@ -616,6 +748,37 @@ fn codex_in_plan_mode_changes_no_file() {
             .join("plan.txt")
             .exists()
     );
+    one_thread(&obid, &id);
+}
+
+/// PERMISSIONS-21: a Codex review in Plan, a Plan turn that committed a change and one that
+/// failed end as before, with no card.
+#[test]
+fn permissions_21_other_codex_plan_turns_end_as_before() {
+    let folder = Folder::new("codex-plan-before");
+    // A quiet window of 3 seconds: the failing turn's one try waits that long (RECOVERY-1).
+    let (obid, _) = obid_with(&folder, false, json!({"stallAfter": 3}));
+    let new = |kind: &str, task: &str| {
+        dispatch(
+            &obid,
+            json!({"agent": "codex", "kind": kind, "task": task, "mode": "plan"}),
+        )
+    };
+    let review = new("review", "PLAN: plan.txt");
+    let sneak = new("build", "SNEAK: x.txt");
+    let fail = new("research", "FAIL");
+    let job = ended(&obid, &review);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(summary(&job), "Plan: add plan.txt", "{job}");
+    let job = ended(&obid, &sneak);
+    assert_eq!(job["commits"], 1, "{job}");
+    let job = ended(&obid, &fail);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    for id in [&review, &sneak, &fail] {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        assert_ne!(job["status"], "running", "{job}");
+        assert!(job["permission"].is_null(), "{job}");
+    }
 }
 
 /// Review jobs only read (#630): Plan mode whatever they ask for or the default says, so Codex's

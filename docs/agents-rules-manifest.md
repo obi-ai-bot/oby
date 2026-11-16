@@ -81,7 +81,7 @@ Every line of the root `AGENTS.md` at `3ff84b79` that states a rule (each bullet
 - `AGENTS.md`: `claudeOwnSandbox` is accepted and ignored (LANE-9). Each step changes those rules in the same pull request.
 
 ### L48
-- `AGENTS.md`: The Rust core's production lines outside the Sphere stay under `obid_lines_limit` in `scripts/oby-check.sh`, or the check fails. A cut lowers the limit, and the owner's word raises it. A raise of it or `jobs_rs_limit` comes in a pull request of its own, a `# payback:` line directly above it naming the issue or task whose cut repays it (docs/contracts/ci.md, CI-39 to 41).
+- `AGENTS.md`: `jobs.rs` may only shrink (`jobs_rs_limit` in `scripts/oby-check.sh`); a raise of it comes in a pull request of its own, a `# payback:` line directly above it naming the issue or task whose cut repays it (docs/contracts/ci.md, CI-39 to 41). The Rust core's total lines are reported, never limited ([why](docs/decisions/2026-11-16-obid-lines-reported.md)).
 
 ### L49
 - `AGENTS.md`: obid's tests may only lose `thread::sleep`/`time::sleep` calls (`tests_sleep_limit` in `scripts/oby-check.sh`, docs/contracts/ci.md): a test waits for state with `support::within`.
@@ -366,7 +366,7 @@ Every line of the root `AGENTS.md` at `3ff84b79` that states a rule (each bullet
 - `core/AGENTS.md`: Codex ([why](docs/decisions/2026-11-11-codex-1-bypass-only.md)):
 
 ### L182
-- `core/AGENTS.md`: CODEX-1 (docs/contracts/lanes.md, LANES-18): every Codex job of the owner's own in Bypass on a `codex login`, on macOS (not another Oby's, not `untrusted`, not a review, not one that builds: LANES-19), runs unboxed by obid, on its account's own folder as `CODEX_HOME` (its own `auth.json`, `config.toml`, skills and MCP servers, refreshed by Codex) and the person's own `HOME`, with no copy and no egress proxy.
+- `core/AGENTS.md`: CODEX-1 (docs/contracts/lanes.md, LANES-18): every Codex job of the owner's own in Bypass on a `codex login`, on macOS (not another Oby's, not `untrusted`, not a review, not one that builds: LANES-19, nor the rest of a run its approved Plan card resumed, whose thread is in the box's `CODEX_HOME`), runs unboxed by obid, on its account's own folder as `CODEX_HOME` (its own `auth.json`, `config.toml`, skills and MCP servers, refreshed by Codex) and the person's own `HOME`, with no copy and no egress proxy.
 
 ### L183
 - `core/AGENTS.md`: From its first such launch its check gets none of the declared secrets, whatever its mode, tool or account becomes, nor does its follow-up's (LANE-3a): obid saves that in the job's file before the run starts, starts none if it can't, and no later save of the job undoes it.

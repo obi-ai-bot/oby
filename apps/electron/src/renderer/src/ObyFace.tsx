@@ -20,16 +20,19 @@ export function ObyIcon({ size = 20 }: { size?: number }) {
   );
 }
 
+// The agents' colours (screen 10, the new agent's Its Oby), each a helper's Oby; the last is Oby's own
+export const AGENT_COLORS = ['#8ee0b8', '#c2b5fd', '#ffb3c6', '#9fd3f0', '#ffe089', '#f1f1ee'];
+
 // badge: the small one on an owner's picture, the same shape a little higher,
-// its eyes a little closer together so they still read
-export function ObyFace({ size = 24, badge = false }: { size?: number; badge?: boolean }) {
+// its eyes a little closer together so they still read. color: an agent's (AGENT_COLORS), its body
+export function ObyFace({ size = 24, badge = false, color = '#f1f1ee' }: { size?: number; badge?: boolean; color?: string }) {
   if (badge) {
     return (
       <svg width={size} height={size} viewBox="0 0 24 24" overflow="visible" aria-hidden="true">
         {/* the cutout in the picture under it: the same shape, a little bigger,
             in the window's colour (its width is set in app.css) */}
         <path className="oby-badge-cut" d={OBY_PATH} transform="translate(1.5 2.5) scale(0.2)" strokeLinejoin="round" />
-        <path d={OBY_PATH} transform="translate(1.5 2.5) scale(0.2)" fill="#f1f1ee" />
+        <path d={OBY_PATH} transform="translate(1.5 2.5) scale(0.2)" fill={color} />
         <rect x="7.4" y="10" width="2.6" height="5" rx="1.3" fill="#0d0d0e" />
         <rect x="14" y="10" width="2.6" height="5" rx="1.3" fill="#0d0d0e" />
       </svg>
@@ -37,7 +40,7 @@ export function ObyFace({ size = 24, badge = false }: { size?: number; badge?: b
   }
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
-      <path d={OBY_PATH} transform={OBY_PLACE} fill="#f1f1ee" />
+      <path d={OBY_PATH} transform={OBY_PLACE} fill={color} />
       {/* the eyes, as one (they blink together when Oby stops talking: ObyFaceLive) */}
       <g className="oby-eyes" fill="#0d0d0e">
         <rect x="6" y="10.6" width="2.8" height="5" rx="1.4" />

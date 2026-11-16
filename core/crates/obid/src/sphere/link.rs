@@ -36,6 +36,7 @@ use crate::api::ApiError;
 use crate::config::Config;
 use crate::events::Events;
 use crate::job::Job;
+use crate::job::chain::{self, CardKind, ChainCard};
 use crate::jobs::{Jobs, ObiReview};
 use crate::sandbox::Sandbox;
 use crate::scan;
@@ -1167,7 +1168,8 @@ impl Link {
 
     /// The job `job`'s item about Oby's review that couldn't run now (`inbox::review_item`): `item`,
     /// when there is one, added, and the job's other open ones done, with no answer. One still open
-    /// from an obid before takes its options (Merge, #1658), and keeps the rest.
+    /// from an obid before takes its options (Merge, #1658), and keeps the rest. None while it
+    /// settles for its task, and one settled so opens again (TASKS-26, 27).
     pub fn review_items(&self, job: &str, item: Option<Item>) {
         let keep = item.as_ref().map(|i| i.id.clone());
         let stale: Vec<String> = self
@@ -1186,12 +1188,22 @@ impl Link {
             self.settle(&id);
         }
         let Some(item) = item else { return };
+        if self.settles_for_its_task(&item) {
+            return;
+        }
         let older = {
             let mut state = self.lock();
             match state.inbox.get_mut(&item.id) {
                 Some(kept) if kept.done.is_none() && kept.options != item.options => {
                     kept.options = item.options.clone();
                     kept.details = item.details.clone();
+                    Some(kept.clone())
+                }
+                // Settled while its task carried on, and nothing of it does now: open again, once
+                // (TASKS-27).
+                Some(kept) if kept.done.is_some() && kept.carried_on => {
+                    kept.done = None;
+                    kept.carried_on = false;
                     Some(kept.clone())
                 }
                 _ => None,
@@ -1206,7 +1218,7 @@ impl Link {
     /// The job `job`'s merge card now (crate::merge): `card`, added unless the owner answered it
     /// before (they aren't asked again about that head and reason); one the follower settled by
     /// itself is offered again. Every other open `merge` item of the job is done, with no answer:
-    /// what it asked about is gone, for now.
+    /// what it asked about is gone, for now. None while it settles for its task (TASKS-26, 27).
     pub fn merge_items(&self, job: &str, card: Option<Item>) {
         let keep = card.as_ref().map(|c| c.id.clone());
         let stale: Vec<String> = self
@@ -1224,7 +1236,7 @@ impl Link {
         for id in stale {
             self.settle(&id);
         }
-        if let Some(card) = card {
+        if let Some(card) = card.filter(|c| !self.settles_for_its_task(c)) {
             let settled = self
                 .lock()
                 .inbox
@@ -1235,6 +1247,77 @@ impl Link {
                 self.save_item(&card);
             } else {
                 self.add_items(vec![card]);
+            }
+        }
+    }
+
+    /// The job `job`'s crash card now (`inbox::crash_item`), one per job: its other open ones done,
+    /// with no answer, and `item` added unless it settles for its task (TASKS-26, 27).
+    pub fn crash_items(&self, job: &str, item: Item) {
+        let stale: Vec<String> = self
+            .lock()
+            .inbox
+            .values()
+            .filter(|i| {
+                inbox::is_crash_item(i) && i.job == job && i.done.is_none() && i.id != item.id
+            })
+            .map(|i| i.id.clone())
+            .collect();
+        for id in stale {
+            self.settle(&id);
+        }
+        if !self.settles_for_its_task(&item) {
+            self.add_items(vec![item]);
+        }
+    }
+
+    /// Whether `item` settles for its task now ([`chain::card_settles`] on [`chain_card`]), from
+    /// every job obid has and the open items. Never with this Link's state locked.
+    fn settles_for_its_task(&self, item: &Item) -> bool {
+        let jobs = self.all_jobs();
+        let open: Vec<Item> = (self.lock().inbox.values())
+            .filter(|i| i.done.is_none())
+            .cloned()
+            .collect();
+        let open: Vec<&Item> = open.iter().collect();
+        chain::card_settles(chain_card(item, &jobs, &open))
+    }
+
+    /// Every job obid has, by id.
+    fn all_jobs(&self) -> HashMap<String, Job> {
+        let jobs = self.jobs.list(usize::MAX).into_iter();
+        jobs.map(|j| (j.id.clone(), j)).collect()
+    }
+
+    /// Settles, with no answer, each of the `open` items that settles for its task
+    /// ([`chain::card_settles`], TASKS-26, 27), marked [`Item::carried_on`]: one answered meanwhile
+    /// stays answered. Never with this Link's state locked.
+    pub(crate) fn settle_carried_on(&self, open: &[Item]) {
+        // Only obid's crash, review and merge cards can: nothing else needs the jobs read.
+        let cards: Vec<&Item> = open
+            .iter()
+            .filter(|i| card_kind(i) != CardKind::Other)
+            .collect();
+        if cards.is_empty() {
+            return;
+        }
+        let jobs = self.all_jobs();
+        let settles: Vec<&str> = (cards.iter())
+            .filter(|i| chain::card_settles(chain_card(i, &jobs, &cards)))
+            .map(|i| i.id.as_str())
+            .collect();
+        for id in settles {
+            let settled = {
+                let mut state = self.lock();
+                let open = state.inbox.get_mut(id).filter(|i| i.done.is_none());
+                open.map(|item| {
+                    item.done = Some(time::now());
+                    item.carried_on = true;
+                    item.clone()
+                })
+            };
+            if let Some(item) = settled {
+                self.save_item(&item);
             }
         }
     }
@@ -3143,7 +3226,8 @@ fn closed_start(mut item: Item, why: &str, now: i64) -> Item {
 /// and that job is gone, or ended let go or with its pull request merged or closed (an Oby review's
 /// is the one it reviewed, `reviewed`'s); or it's Oby's
 /// own escalation (`inbox::ESCALATION`, only Done) on an ended job with an open merge card,
-/// crash or review failure or limit, where obid offers the decision now (MERGING-8's). A queued or running job's items stay,
+/// crash or review failure or limit, where obid offers the decision now (MERGING-8's). A queued or running job's items stay
+/// here (its crash, review and merge cards follow their task's rule instead: [`chain_card`], TASKS-26),
 /// as does everything not about a job: confirms, offers, GitHub's, another Obi's, a teammate
 /// approval to remove on GitHub. `open`: every open item.
 pub(crate) fn is_stale(
@@ -3182,6 +3266,44 @@ pub(crate) fn is_stale(
         || pr_ended
         || (item.id.starts_with(inbox::ESCALATION)
             && open.iter().any(|o| o.job == item.job && offers(o)))
+}
+
+/// Which of obid's cards `item` is ([`chain::card_settles`]): its crash or review card, a merge
+/// card, or anything else.
+fn card_kind(item: &Item) -> CardKind {
+    if inbox::is_crash_item(item) || inbox::is_review_item(item) {
+        CardKind::Failed
+    } else if item.kind == "merge" {
+        CardKind::Merge
+    } else {
+        CardKind::Other
+    }
+}
+
+/// What [`chain::card_settles`] reads of `item` (TASKS-26 to 28), from every job obid has (`jobs`)
+/// and the open items (`open`). Its task is its job and the owner's own jobs that follow it up at
+/// any depth ([`chain::follows_up`]): the later ones are those but its job.
+pub(crate) fn chain_card(item: &Item, jobs: &HashMap<String, Job>, open: &[&Item]) -> ChainCard {
+    let kind = card_kind(item);
+    let Some(job) = jobs.get(&item.job).filter(|j| j.obi.is_none()) else {
+        return ChainCard {
+            kind,
+            own: false,
+            at_work: false,
+            later_card: false,
+        };
+    };
+    let later: Vec<&Job> = (jobs.values())
+        .filter(|j| j.obi.is_none() && j.id != job.id && chain::follows_up(jobs, j, &job.id))
+        .collect();
+    ChainCard {
+        kind,
+        own: true,
+        at_work: job.status.is_active() || later.iter().any(|j| j.status.is_active()),
+        later_card: open.iter().any(|o| {
+            o.id != item.id && card_kind(o) == kind && later.iter().any(|j| j.id == o.job)
+        }),
+    }
 }
 
 /// What an open Confirm settles with once what it does can't happen any more (TASKS-13).
@@ -3581,6 +3703,7 @@ mod tests {
             ),
             plugin: None,
             arrived: None,
+            carried_on: false,
             answered_by: None,
             confirm: None,
             start: None,
@@ -3700,6 +3823,79 @@ mod tests {
             Teammate::NeedsYou("No teammate's Oby could approve it on GitHub. Invite a teammate who can push to acme/app to your Obysphere, or get their approval on GitHub yourself.".into()),
             "zoe couldn't, and nobody else can"
         );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// TEAMREVIEW-4: a teammate whose Oby has no check answers `failed`, saying so: that request
+    /// is spent, and the next teammate's Oby is asked, never the owner.
+    #[tokio::test]
+    async fn teamreview_4_the_sender_asks_the_next_teammate_after_no_check() {
+        use approval::Teammate;
+        let home = std::env::temp_dir().join(format!("obid-link-no-check-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let config = Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "wellington"}).to_string(),
+        )
+        .unwrap();
+        let events = Events::new();
+        let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
+        let (_stop, stopping) = watch::channel(false);
+        let link = Link::open(config, jobs, events, stopping);
+        let head = "6d20146f366b9fac8907b5066c30ee39aaec09b3";
+        let change = approval::Change {
+            repo: "acme/app",
+            pr: 12,
+            base: "dev",
+            head_branch: "oby/fix-12",
+            head,
+            goal: "Fix the thing",
+        };
+        let member = |owner: &str| Member {
+            name: None,
+            owner: owner.into(),
+            active: true,
+            accepts: vec!["review_request".into()],
+            seal: None,
+            sealed_since: None,
+        };
+        let request = json!({"id": "c-zoe", "correlation_id": "c-zoe", "type": "review_request",
+                             "expires_at": time::format(time::now() + 3600),
+                             "body": approval::request_body(&change)});
+        let mut zoe = Exchange::new("outgoing", request, "obi-zoe".into(), Some("zoe".into()));
+        zoe.state = "done".into();
+        let no_check = "This Oby has no check for acme/app, so it can't vouch that the tests pass.";
+        let failed = json!({"for": "review_request", "outcome": "failed", "repo": "acme/app",
+                            "head_sha": head, "findings": [], "summary": no_check});
+        zoe.result = Some(failed);
+        {
+            let mut state = link.lock();
+            state.membership = Some(Membership {
+                state: "joined".into(),
+                url: "http://127.0.0.1:1".into(),
+                sphere: "team".into(),
+                obi_id: "obi-wellington".into(),
+                card: json!({}),
+                joined_at: 0,
+            });
+            for (obi, owner) in [
+                ("obi-wellington", "wellington"),
+                ("obi-zoe", "zoe"),
+                ("obi-yuri", "yuri"),
+            ] {
+                state.directory.members.insert(obi.into(), member(owner));
+            }
+            state.exchanges.insert(zoe.correlation_id.clone(), zoe);
+        }
+        let asked = link.ask_teammate(&change).await;
+        let Teammate::Waiting(said) = &asked else {
+            panic!("the owner was asked: {asked:?}");
+        };
+        assert!(
+            said.starts_with("Asked yuri's Oby")
+                || said.starts_with("Oby couldn't reach the Obysphere to ask yuri's Oby"),
+            "{said}"
+        );
+        assert!(!said.contains("zoe"), "{said}");
         let _ = std::fs::remove_dir_all(&home);
     }
 

@@ -6,6 +6,7 @@
 use crate::api::{ApiError, Shared};
 use crate::delivery::{Delivery, Move, Replay};
 use crate::events::Events;
+use crate::projects::{Event, Whose, answered, next};
 use axum::body::Bytes;
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::StatusCode;
@@ -144,9 +145,19 @@ struct Thread {
     /// never opens on it, and no owner's words go to it unless they name it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     from_obys: bool,
-    /// The folders its work is in (crate::folders): canonical paths, in the order picked.
+    /// The helper whose one conversation it is (crate::helpers): kept aside as [`Self::from_obys`]'s.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    helper: Option<String>,
+    /// The folders its work is in (crate::folders): canonical paths, in the order picked. Its own
+    /// list: while it's in a project it answers the project's, and this waits underneath.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     folders: Vec<String>,
+    /// The project it belongs to (crate::projects), by id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    project: Option<String>,
+    /// obid's copy of its project's folders, what it answers while in one: never answered alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    project_folders: Vec<String>,
     /// The files attached to its words, as obid keeps them (`attachments` on `POST /v1/plans`):
     /// they go when it does ([`Conversations::delete`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -316,7 +327,8 @@ impl Thread {
             "lastActivity": self.last_activity(),
             "cursor": self.key().to_string(),
             "tasks": shown(&self.tasks),
-            "folders": self.folders,
+            "folders": answered(&self.folders, &self.project_folders, self.whose()),
+            "project": self.project,
             "revision": self.revision,
         });
         // Only once there's something to say.
@@ -332,7 +344,36 @@ impl Thread {
         if self.from_obys {
             summary["fromObys"] = json!(true);
         }
+        if let Some(helper) = &self.helper {
+            summary["helper"] = json!(helper);
+        }
         summary
+    }
+
+    fn whose(&self) -> Whose {
+        if self.project.is_some() {
+            Whose::Project
+        } else {
+            Whose::Own
+        }
+    }
+
+    /// Its project after `event` (crate::projects::next): `to`, with its folders, on `Assign`.
+    fn moved(&mut self, event: Event, to: Option<(String, Vec<String>)>) {
+        let (whose, keeps) = next(self.whose(), event);
+        if keeps {
+            self.folders = std::mem::take(&mut self.project_folders);
+        }
+        (self.project, self.project_folders) = match (whose, to) {
+            (Whose::Project, Some((id, folders))) => (Some(id), folders),
+            _ => (None, vec![]),
+        };
+    }
+
+    /// Kept aside from the owner's: never counted or forgotten by [`Conversations::prune`], never
+    /// the latest.
+    fn aside(&self) -> bool {
+        self.from_obys || self.helper.is_some()
     }
 
     /// Its summary to send, one revision on: taken under the lock it changed under, before the
@@ -428,6 +469,10 @@ pub enum Error {
     Folder(String),
     /// A paired device's change would add a folder: only the owner's Mac app adds one.
     AddsFolders,
+    /// It's in a project, whose folders it works in: none of its own are set.
+    InProject,
+    /// It's a helper's: it goes with its helper (crate::helpers).
+    HelperConversation,
 }
 
 /// The folders a `PATCH` asks a conversation to work in: each path as sent, with its check
@@ -484,6 +529,15 @@ impl From<Error> for ApiError {
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "Folders are added only on the Mac: from here you can take one off.",
             ),
+            Error::InProject => ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "This conversation works in its project's folders: change the project, or take the conversation out of it.",
+            ),
+            Error::HelperConversation => ApiError::new(
+                StatusCode::CONFLICT,
+                "It's a helper's conversation: it goes when its helper is deleted.",
+            )
+            .because("helper-conversation"),
             Error::TooManyFolders => ApiError::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 format!(
@@ -655,7 +709,9 @@ impl Conversations {
     /// their folders were, and add none; otherwise a refusal is `Folder`, and nothing is added.
     /// `attachments`: the files' paths (checked: crate::brain::validate_attachments), kept with the
     /// conversation; the turn shows their names. The turn is `queued`, and what a replay needs
-    /// (the paths, `signed`) is kept with it in the same write (crate::delivery).
+    /// (the paths, `signed`) is kept with it in the same write (crate::delivery). `project`: the
+    /// project a new conversation starts in (crate::projects::joined), or why it's refused, as
+    /// `folders`; folders sent to one in a project are `InProject`.
     #[allow(clippy::too_many_arguments)]
     pub fn begin(
         &self,
@@ -667,6 +723,7 @@ impl Conversations {
         foreign: Option<String>,
         folders: Result<Vec<String>, String>,
         signed: bool,
+        project: Result<Option<(String, Vec<String>)>, String>,
     ) -> Result<Begun, Error> {
         let mut threads = self.lock();
         if let Some(id) = id.as_deref()
@@ -696,11 +753,15 @@ impl Conversations {
             });
         }
         let folders = folders.map_err(Error::Folder)?;
+        let project = project.map_err(Error::Folder)?;
         let found = match target {
             Target::Id(id) => Some(index_of(&threads, &id)?),
             Target::Latest => latest(&threads),
             Target::New => None,
         };
+        if found.is_some_and(|at| threads[at].project.is_some()) && !folders.is_empty() {
+            return Err(Error::InProject);
+        }
         let names: Vec<String> = attachments
             .iter()
             .map(|p| {
@@ -738,6 +799,9 @@ impl Conversations {
             return Err(Error::TooManyFolders);
         }
         threads[index].folders = more;
+        if let Some(project) = project.filter(|_| found.is_none()) {
+            threads[index].moved(Event::Assign, Some(project));
+        }
         for path in &attachments {
             if !threads[index].uploads.contains(path) {
                 threads[index].uploads.push(path.clone());
@@ -907,12 +971,23 @@ impl Conversations {
     /// A new conversation titled `title`, with no turn yet: the one a routine's runs go to
     /// (crate::routines). Its first turn follows at once.
     pub fn start_for(&self, title: &str) -> Result<String, Error> {
+        self.start(title, None)
+    }
+
+    /// [`Self::start_for`], the one conversation of the helper `helper` (crate::helpers): kept
+    /// aside, so it forgets none of the owner's.
+    pub fn start_helper(&self, title: &str, helper: &str) -> Result<String, Error> {
+        self.start(title, Some(helper.to_owned()))
+    }
+
+    fn start(&self, title: &str, helper: Option<String>) -> Result<String, Error> {
         let mut threads = self.lock();
         let mut thread = Thread {
             id: new_id(),
             title: titled(title),
             created: obi_protocol::time::format(obi_protocol::time::now()),
             sequence: next_sequence(&threads),
+            helper,
             ..Thread::default()
         };
         let summary = thread.revised();
@@ -1139,12 +1214,12 @@ impl Conversations {
     /// latest. [`Self::from_obys`]'s doesn't count and isn't forgotten: it takes no room of theirs.
     fn prune(&self, threads: &mut Vec<Thread>) -> Vec<String> {
         let mut uploads = vec![];
-        while threads.iter().filter(|t| !t.from_obys).count() > CONVERSATIONS {
+        while threads.iter().filter(|t| !t.aside()).count() > CONVERSATIONS {
             let newest = threads.iter().map(|t| t.sequence).max().unwrap_or(0);
             let Some(oldest) = threads
                 .iter()
                 .enumerate()
-                .filter(|(_, t)| !t.pinned && !t.from_obys && t.sequence != newest)
+                .filter(|(_, t)| !t.pinned && !t.aside() && t.sequence != newest)
                 .min_by_key(|(_, t)| t.sequence)
                 .map(|(i, _)| i)
             else {
@@ -1251,6 +1326,8 @@ impl Conversations {
 
     /// Renames or pins the conversation `id`, or changes its folders: merged with those it has
     /// under the same lock that writes them, so a change can't put back one just taken off.
+    /// `project`: the project it joins (crate::projects::joined), or none to take it out; its own
+    /// folders aren't set while it's in one.
     fn change(
         &self,
         id: &str,
@@ -1258,12 +1335,24 @@ impl Conversations {
         pinned: Option<bool>,
         folders: Option<FolderChange>,
         talk_account: Option<Option<String>>,
+        project: Option<Option<(String, Vec<String>)>>,
     ) -> Result<Value, Error> {
         let mut threads = self.lock();
         let index = index_of(&threads, id)?;
         let thread = &mut threads[index];
+        let in_project = project
+            .as_ref()
+            .map_or(thread.project.is_some(), Option::is_some);
+        if folders.is_some() && in_project {
+            return Err(Error::InProject);
+        }
         let folders = folders.map(|f| f.apply(&thread.folders)).transpose()?;
         let kept = thread.clone();
+        match project {
+            Some(Some(to)) => thread.moved(Event::Assign, Some(to)),
+            Some(None) => thread.moved(Event::TakeOff, None),
+            None => {}
+        }
         if let Some(title) = title {
             thread.title = title;
         }
@@ -1285,6 +1374,33 @@ impl Conversations {
         }
         self.events.send("conversation", summary.clone());
         Ok(summary)
+    }
+
+    /// Each conversation in a project whose `change` (its project's id, the copy of its folders)
+    /// says so: `Some(Some(folders))`, its project's folders now; `Some(None)`, its project is gone
+    /// ([`Event::ProjectGone`]). Each is kept and announced; one not written is put back, and `Io`.
+    pub fn regroup(
+        &self,
+        change: impl Fn(&str, &[String]) -> Option<Option<Vec<String>>>,
+    ) -> Result<(), Error> {
+        let mut threads = self.lock();
+        for thread in threads.iter_mut() {
+            let asked = thread.project.as_deref();
+            let asked = asked.and_then(|p| change(p, &thread.project_folders));
+            let Some(folders) = asked else { continue };
+            let kept = thread.clone();
+            match folders {
+                Some(folders) => thread.project_folders = folders,
+                None => thread.moved(Event::ProjectGone, None),
+            }
+            let summary = thread.revised();
+            if let Err(e) = self.write(thread) {
+                *thread = kept;
+                return Err(Error::Io(e));
+            }
+            self.events.send("conversation", summary);
+        }
+        Ok(())
     }
 
     /// The task list of the conversation `id`, and whether a turn that read something untrusted
@@ -1363,8 +1479,16 @@ impl Conversations {
     /// Forgets the conversation `id` and its turns. The jobs it started stay, with its id. Answers
     /// the files attached to its words, for the caller to remove ([`crate::brain::drop_uploads`]).
     pub fn delete(&self, id: &str) -> Result<Vec<String>, Error> {
+        self.delete_any(id, false)
+    }
+
+    /// [`Self::delete`], that deletes a helper's only when `helper` (crate::helpers).
+    pub fn delete_any(&self, id: &str, helper: bool) -> Result<Vec<String>, Error> {
         let mut threads = self.lock();
         let index = index_of(&threads, id)?;
+        if threads[index].helper.is_some() && !helper {
+            return Err(Error::HelperConversation);
+        }
         let gone = self.forget(&mut threads, index);
         drop(threads);
         self.end_forgotten();
@@ -1481,13 +1605,13 @@ impl Conversations {
 
 /// What Oby tells a conversation when a job its plan started ends (#351), from the job as its
 /// `job` event sends it: the conversation and the turn's text, or none for a job no conversation
-/// started, one that was dismissed, or one that hasn't ended. The first line is obid's own words:
-/// the job's title, how it ended, its pull request or why it wasn't published. The first line of
-/// its summary, which its agent may have written, follows on a line of its own. Every secret obid
-/// holds is taken out.
+/// started, one that was dismissed, Oby's own review (TASKCONV-28), or one that hasn't ended. The
+/// first line is obid's own words: the job's title, how it ended, its pull request or why it
+/// wasn't published. The first line of its summary, which its agent may have written, follows on
+/// a line of its own. Every secret obid holds is taken out.
 pub fn job_report(job: &Value) -> Option<(String, String)> {
     let conversation = job["conversation"].as_str()?;
-    if !job["dismissed"].is_null() {
+    if !job["dismissed"].is_null() || !job["reviewOf"].is_null() {
         return None;
     }
     let first_line = |key: &str| {
@@ -1858,7 +1982,7 @@ fn index_of(threads: &[Thread], id: &str) -> Result<usize, Error> {
 /// The conversation with the latest turn.
 fn latest(threads: &[Thread]) -> Option<usize> {
     (0..threads.len())
-        .filter(|&i| !threads[i].from_obys)
+        .filter(|&i| !threads[i].aside())
         .max_by_key(|&i| threads[i].sequence)
 }
 
@@ -1876,6 +2000,21 @@ pub fn is_id(id: &str) -> bool {
         && id
             .bytes()
             .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f' | b'-'))
+}
+
+/// The project the conversation `id` is in, as kept in `home/conversations/<id>.json`: none for a
+/// non-id, a file missing or unreadable, or no project. It only reads, without the conversations'
+/// lock: the file is written whole ([`crate::store::write_private`]), so a read sees one project.
+pub fn kept_project(home: &Path, id: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Kept {
+        project: Option<String>,
+    }
+    if !is_id(id) {
+        return None;
+    }
+    let bytes = std::fs::read(home.join("conversations").join(format!("{id}.json"))).ok()?;
+    serde_json::from_slice::<Kept>(&bytes).ok()?.project
 }
 
 /// Writes the folder's own entries (the names in it) to the disk.
@@ -2012,6 +2151,9 @@ struct Change {
     /// An account's id, `auto`, or null to follow the setting again.
     #[serde(default, rename = "talkAccount", deserialize_with = "present")]
     talk_account: Option<Option<String>>,
+    /// A project's id, or null to take it out of its project (crate::projects).
+    #[serde(default, deserialize_with = "present")]
+    project: Option<Option<String>>,
 }
 
 /// A key that's there, null too, as `Some`.
@@ -2021,8 +2163,9 @@ fn present<'de, D: serde::Deserializer<'de>>(to: D) -> Result<Option<Option<Stri
 
 /// `PATCH /v1/conversations/{id}`: a new title, pinned or not, the account it talks through from its
 /// next turn (`talkAccount`: an id, `auto`, or null to follow the setting), or the folders it works
-/// in from now on (an empty list clears them). Through the gateway or the phone relay, `folders` may only leave
-/// out folders the conversation has: only the owner's Mac app adds one (crate::folders).
+/// in from now on (an empty list clears them), or its `project` (an id, or null to take it out).
+/// Through the gateway or the phone relay, `folders` may only leave out folders the conversation
+/// has, and `project` may only be null: only the owner's Mac app adds one (crate::folders).
 pub async fn update(
     State(shared): State<std::sync::Arc<Shared>>,
     UrlPath(id): UrlPath<String>,
@@ -2033,17 +2176,18 @@ pub async fn update(
     let change: Change = serde_json::from_slice(&body).map_err(|_| {
         ApiError::new(
             StatusCode::BAD_REQUEST,
-            "The body is {\"title\": \"…\", \"pinned\": true or false, \"folders\": [\"/path\"], \"talkAccount\": an account's id, \"auto\" or null}.",
+            "The body is {\"title\": \"…\", \"pinned\": true or false, \"folders\": [\"/path\"], \"talkAccount\": an account's id, \"auto\" or null, \"project\": a project's id or null}.",
         )
     })?;
     if change.title.is_none()
         && change.pinned.is_none()
         && change.folders.is_none()
         && change.talk_account.is_none()
+        && change.project.is_none()
     {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
-            "Send a title, pinned, folders, talkAccount, or more than one.",
+            "Send a title, pinned, folders, talkAccount, project, or more than one.",
         ));
     }
     if let Some(Some(account)) = &change.talk_account {
@@ -2051,6 +2195,9 @@ pub async fn update(
     }
     // Checked here, outside the conversations' lock; merged with those it has under it.
     let remote = paired.is_some() || relayed.is_some();
+    if remote && matches!(change.project, Some(Some(_))) {
+        return Err(crate::projects::chosen_on_the_mac());
+    }
     let places = crate::folders::Places::of(&shared);
     let folders = change.folders.map(|asked| FolderChange {
         asked: asked
@@ -2068,37 +2215,51 @@ pub async fn update(
         remote,
     });
     let title = change.title.map(|t| t.trim().to_owned());
-    if title.as_ref().is_some_and(|t| {
-        t.is_empty()
-            || t.chars().count() > TITLE
-            || t.chars().any(|c| c.is_control() || breaks_line(c))
-    }) {
+    if title.as_ref().is_some_and(|t| !one_line(t)) {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
             "title is one line of 1 to 100 characters.",
         ));
     }
-    let summary =
-        shared
-            .conversations
-            .change(&id, title, change.pinned, folders, change.talk_account)?;
+    // The projects' lock first, then the conversations': the project can't go meanwhile.
+    let projects = shared.projects.lock();
+    let project = match change.project {
+        Some(Some(asked)) => Some(Some(
+            crate::projects::joined(&projects, &asked).map_err(Error::Folder)?,
+        )),
+        other => other.map(|_| None),
+    };
+    let summary = shared.conversations.change(
+        &id,
+        title,
+        change.pinned,
+        folders,
+        change.talk_account,
+        project,
+    )?;
     Ok((StatusCode::OK, axum::Json(summary)).into_response())
 }
 
+/// Whether `text` is a title a rename may set: one line of 1 to [`TITLE`] characters.
+pub(crate) fn one_line(text: &str) -> bool {
+    let length = text.chars().count();
+    (1..=TITLE).contains(&length) && !text.chars().any(|c| c.is_control() || breaks_line(c))
+}
+
 /// `DELETE /v1/conversations/{id}`: the conversation goes, and the offers made in it close; the
-/// jobs it started stay.
+/// jobs it started stay; a helper's stays, `409`.
 pub async fn remove(
     State(shared): State<std::sync::Arc<Shared>>,
     UrlPath(id): UrlPath<String>,
 ) -> Result<Response, ApiError> {
-    forget(&shared, &id).await?;
+    forget(&shared, &id, false).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// The conversation `id` goes, with the files attached to its words, and the offers made in it
-/// close.
-async fn forget(shared: &Shared, id: &str) -> Result<(), Error> {
-    let uploads = shared.conversations.delete(id)?;
+/// close; a helper's only when `helper`.
+pub(crate) async fn forget(shared: &Shared, id: &str, helper: bool) -> Result<(), Error> {
+    let uploads = shared.conversations.delete_any(id, helper)?;
     crate::brain::drop_uploads(shared, uploads).await;
     // What Oby offered there can't be started from it any more.
     shared.link.close_offers(id);
@@ -2128,7 +2289,7 @@ pub async fn confirmed(shared: &Shared, item: &crate::sphere::inbox::Item) {
             .iter()
             .any(|c| c["id"] == named["id"] && c["cursor"] == named["cursor"]);
         if let Some(id) = named["id"].as_str().filter(|_| unchanged)
-            && let Err(why) = forget(shared, id).await
+            && let Err(why) = forget(shared, id, false).await
         {
             tracing::warn!("conversation {id} wasn't deleted: {why:?}");
         }
@@ -2391,6 +2552,18 @@ mod tests {
         dismissed["dismissed"] = json!("2026-10-17T00:00:00Z");
         assert_eq!(job_report(&dismissed), None);
         crate::secrets::known().forget("vault TEST_351");
+    }
+
+    /// TASKCONV-28: Oby's own review tells its conversation nothing as it ends; a review the
+    /// owner dispatched there (no `reviewOf`) still does.
+    #[test]
+    fn taskconv_28_obys_review_tells_its_conversation_nothing() {
+        let mut review = json!({"id": "r1", "kind": "review", "title": "Oby review: Fix",
+            "status": "done", "conversation": "c1", "summary": "VERDICT: PASS", "published": null,
+            "publishError": null, "dismissed": null, "reviewOf": "a"});
+        assert_eq!(job_report(&review), None);
+        review["reviewOf"] = json!(null);
+        assert_eq!(job_report(&review).map(|(c, _)| c).as_deref(), Some("c1"));
     }
 
     /// HOME-13: a conversation whose file doesn't read is kept aside in `home/unreadable`, and its
@@ -2694,7 +2867,7 @@ mod tests {
         std::fs::write(&file, kept.to_string()).unwrap();
         let conversations = super::Conversations::open(&home, crate::events::Events::new());
         let summary = conversations
-            .change(&id, None, Some(true), None, None)
+            .change(&id, None, Some(true), None, None, None)
             .unwrap();
         let saved: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
@@ -2728,6 +2901,7 @@ mod tests {
                     None,
                     Ok(vec![]),
                     false,
+                    Ok(None),
                 )
                 .unwrap()
                 .conversation
@@ -2784,6 +2958,7 @@ mod tests {
                 None,
                 Ok(vec![]),
                 false,
+                Ok(None),
             )
             .unwrap()
             .conversation;
@@ -2824,6 +2999,7 @@ mod tests {
                 Some("words no app of the owner's signed".into()),
                 Ok(vec![]),
                 false,
+                Ok(None),
             )
             .unwrap()
             .conversation;
@@ -2903,6 +3079,7 @@ mod tests {
                 None,
                 Ok(vec![]),
                 false,
+                Ok(None),
             )
             .unwrap()
             .conversation;
@@ -2970,6 +3147,7 @@ mod tests {
                 None,
                 Ok(vec![]),
                 true,
+                Ok(None),
             )
             .unwrap();
         let file = conversations
@@ -3050,7 +3228,7 @@ mod tests {
         let conversations = super::Conversations::open(&home, events.clone());
         let id = conversations.start_for("Talk").unwrap();
         conversations
-            .change(&id, None, None, None, Some(Some("gone".into())))
+            .change(&id, None, None, None, Some(Some("gone".into())), None)
             .unwrap();
         let saved = home.join("saved");
         std::fs::rename(&conversations.dir, &saved).unwrap();

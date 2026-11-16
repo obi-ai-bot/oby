@@ -4737,6 +4737,277 @@ fn tasks_13_a_let_go_tasks_crash_card_settles() {
     assert_eq!(settled["answer"], Value::Null, "{settled}");
 }
 
+/// A job of the owner's own that ended failed, `at` seconds after the others' start, following up
+/// `of`: one attempt of a task, kept for obid's start.
+fn attempt(id: &str, of: Option<&str>, at: i64) -> obid::job::Job {
+    let mut job = obid::job::Job::new(
+        id.into(),
+        "obi-e2e/fixture-app".into(),
+        "fix".into(),
+        "Look around".into(),
+        "claude".into(),
+        "stub".into(),
+    );
+    job.status = obid::job::Status::Failed;
+    job.follow_up_of = of.map(str::to_owned);
+    job.branch = format!("oby/fix-{id}");
+    job.reason = Some("It broke.".into());
+    job.created += at;
+    job.finished = Some(job.created);
+    job
+}
+
+/// An inbox item of `kind` about the job `job`, as obid keeps it.
+fn item_about(id: &str, kind: &str, job: &str) -> obid::sphere::inbox::Item {
+    obid::sphere::inbox::Item {
+        id: id.into(),
+        kind: kind.into(),
+        job: job.into(),
+        title: "Look around".into(),
+        text: "Pick one.".into(),
+        options: vec!["Go on".into()],
+        created: 1,
+        ..Default::default()
+    }
+}
+
+/// A `merge` card about the job `job`, as `merge::card` makes it.
+fn merge_card_of(job: &str) -> obid::sphere::inbox::Item {
+    obid::sphere::inbox::Item {
+        title: "Ready to merge: Look around".into(),
+        options: vec!["Merge".into()],
+        ..item_about(
+            &format!("merge-ready-{job}-{}", "a".repeat(40)),
+            "merge",
+            job,
+        )
+    }
+}
+
+/// obid started on `jobs` and `items`, kept where it finds them.
+fn start_on(folder: &Path, jobs: &[obid::job::Job], items: &[obid::sphere::inbox::Item]) -> Obid {
+    let remote = fixture(&folder.join("fixture"));
+    let config = config(folder, &remote);
+    let home = folder.join("home");
+    for dir in ["jobs", "inbox"] {
+        std::fs::create_dir_all(home.join(dir)).unwrap();
+    }
+    for job in jobs {
+        let file = home.join(format!("jobs/{}.json", job.id));
+        std::fs::write(file, serde_json::to_vec(job).unwrap()).unwrap();
+    }
+    for item in items {
+        let file = home.join(format!("inbox/{}.json", item.id));
+        std::fs::write(file, serde_json::to_vec(item).unwrap()).unwrap();
+    }
+    start(folder, &config)
+}
+
+/// The ids of the open items of `kind` about any of `jobs`, sorted.
+fn open_of(obid: &Obid, kind: &str, jobs: &[&str]) -> Vec<String> {
+    let mut ids: Vec<String> = (inbox(obid).as_array().unwrap().iter())
+        .filter(|i| i["kind"] == kind && jobs.iter().any(|j| i["job"] == *j))
+        .map(|i| i["id"].as_str().unwrap().to_owned())
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// The done item `id`, with its answer, or none.
+fn done_item(obid: &Obid, id: &str) -> Option<Value> {
+    let done = request(obid, "GET", "/v1/inbox?state=done", None).body;
+    done.as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == id)
+        .cloned()
+}
+
+/// TASKS-26: while a task's newest follow-up is queued or running, the task shows no `failed`
+/// card of obid's for any of its attempts: each earlier one is settled, with no answer, and the
+/// newest job's own line says where the task stands.
+#[test]
+fn tasks_26_a_task_at_work_shows_no_failed_card_per_attempt() {
+    let folder = Folder::new("tasks-26");
+    let jobs = [
+        attempt("a2600001", None, 0),
+        attempt("a2600002", Some("a2600001"), 1),
+        attempt("a2600003", Some("a2600002"), 2),
+    ];
+    let cards = [
+        obid::sphere::inbox::crash_item(&jobs[0], 1),
+        obid::sphere::inbox::reviews_ran_out_item(&jobs[1], "r2600002"),
+        obid::sphere::inbox::crash_item(&jobs[2], 3),
+    ];
+    let obid = start_on(&folder.0, &jobs, &cards);
+    let chain = ["a2600001", "a2600002", "a2600003"];
+    // Before it carries on, the task has one: its newest attempt's (TASKS-27).
+    support::within(30, "only the newest attempt's card", || {
+        (open_of(&obid, "failed", &chain) == [cards[2].id.as_str()]).then_some(())
+    });
+    let told = request(
+        &obid,
+        "POST",
+        "/v1/jobs/a2600003/messages",
+        Some(&json!({"text": "SLEEP"}).to_string()),
+    );
+    assert_eq!(told.status, 201, "{}", told.text);
+    let newest = told.body["id"].as_str().unwrap().to_owned();
+    let mut chain = chain.to_vec();
+    chain.push(&newest);
+    support::within(30, "no failed card while the task carries on", || {
+        open_of(&obid, "failed", &chain).is_empty().then_some(())
+    });
+    for card in &cards {
+        let settled = done_item(&obid, &card.id).unwrap_or_else(|| panic!("{}", card.id));
+        assert_eq!(settled["answer"], Value::Null, "{settled}");
+    }
+    let line = request(&obid, "GET", &format!("/v1/jobs/{newest}"), None).body;
+    assert!(
+        matches!(line["status"].as_str(), Some("queued" | "running")),
+        "{line}"
+    );
+    assert!(
+        !line["step"].as_str().unwrap_or_default().is_empty(),
+        "{line}"
+    );
+    request(&obid, "POST", &format!("/v1/jobs/{newest}/stop"), None);
+    wait(&obid, &newest);
+}
+
+/// TASKS-27: a task of three ended attempts, each with its review and merge card, keeps one of
+/// each open, the newest attempt's; and a job whose crash card is made again at start (obid kept
+/// going down with it, another end) keeps one open crash card.
+#[test]
+fn tasks_27_one_failed_and_one_merge_card_per_task() {
+    let folder = Folder::new("tasks-27");
+    let mut jobs = vec![
+        attempt("a2700001", None, 0),
+        attempt("a2700002", Some("a2700001"), 1),
+        attempt("a2700003", Some("a2700002"), 2),
+    ];
+    let mut items: Vec<_> = jobs
+        .iter()
+        .flat_map(|j| {
+            [
+                obid::sphere::inbox::reviews_ran_out_item(j, &format!("r{}", &j.id[1..])),
+                merge_card_of(&j.id),
+            ]
+        })
+        .collect();
+    let mut looped = attempt("a2700009", None, 3);
+    looped.reason = Some(obid::job::LOOPED.into());
+    // Its card from an earlier end, still open.
+    items.push(obid::sphere::inbox::Item {
+        id: "a2700009-crash-1".into(),
+        ..obid::sphere::inbox::crash_item(&looped, 1)
+    });
+    jobs.push(looped);
+    let obid = start_on(&folder.0, &jobs, &items);
+    let chain = ["a2700001", "a2700002", "a2700003"];
+    support::within(30, "one failed and one merge card for the task", || {
+        let failed = open_of(&obid, "failed", &chain);
+        let merge = open_of(&obid, "merge", &chain);
+        (failed == [items[4].id.as_str()] && merge == [items[5].id.as_str()]).then_some(())
+    });
+    for item in &items[..4] {
+        let settled = done_item(&obid, &item.id).unwrap_or_else(|| panic!("{}", item.id));
+        assert_eq!(settled["answer"], Value::Null, "{settled}");
+    }
+    let made = format!("a2700009-crash-{}", jobs[3].finished.unwrap());
+    let crashes = support::within(30, "the crash card made again", || {
+        let open = open_of(&obid, "failed", &["a2700009"]);
+        (open == [made.as_str()]).then_some(open)
+    });
+    assert_eq!(crashes.len(), 1);
+    assert!(
+        done_item(&obid, &items[6].id).is_some(),
+        "the older one settled"
+    );
+}
+
+/// TASKS-28: the task rule touches only obid's crash, review and merge cards about the owner's
+/// own jobs. On an older job of a task whose newest job is at work, a question, a permission and
+/// a limit stay open; the newest card of a task, one that asks for the owner's click, stays, one;
+/// and another Obi's job's card stays though a follow-up of it is at work.
+#[test]
+fn tasks_28_what_needs_the_owner_still_shows() {
+    let folder = Folder::new("tasks-28");
+    // At work: queued for an account's reset an hour away, so it never starts here.
+    let held = |id: &str, of: &str| {
+        let mut job = attempt(id, Some(of), 5);
+        job.status = obid::job::Status::Queued;
+        job.finished = None;
+        job.resumes_at = Some(job.created + 3600);
+        job
+    };
+    let mut theirs = attempt("a2800021", None, 0);
+    theirs.obi = Some(obid::job::ObiRef {
+        correlation_id: "c".into(),
+        from: "obi-ernesto".into(),
+        from_owner: "ernesto".into(),
+        request_id: "q".into(),
+    });
+    // Parked on its agent's ask, which its permission item shows: kept through a restart (#858).
+    let mut asking = attempt("a2800001", None, 0);
+    asking.status = obid::job::Status::Running;
+    asking.finished = None;
+    asking.parked = Some(
+        serde_json::from_value(json!({"tool": "Bash", "input": {"command": "make"}})).unwrap(),
+    );
+    asking.permission = Some(
+        serde_json::from_value(json!({"id": "p1", "tool": "Bash", "title": "Run make",
+            "detail": "make", "rule": null, "always": null}))
+        .unwrap(),
+    );
+    let jobs = [
+        asking,
+        held("a2800002", "a2800001"),
+        attempt("a2800011", None, 0),
+        attempt("a2800012", Some("a2800011"), 1),
+        theirs.clone(),
+        held("a2800022", "a2800021"),
+    ];
+    let untrusted = |job: &str| obid::sphere::inbox::Item {
+        title: "Not merged: Look around".into(),
+        text: "It needs two approving reviews of its head, or your click.".into(),
+        ..merge_card_of(job)
+    };
+    let asks = [
+        item_about("a2800001-question", "question", "a2800001"),
+        item_about("a2800001-permission-p1", "permission", "a2800001"),
+        item_about("a2800001-limit", "limit", "a2800001"),
+    ];
+    let mut items = asks.to_vec();
+    items.extend([
+        untrusted("a2800011"),
+        untrusted("a2800012"),
+        obid::sphere::inbox::crash_item(&theirs, 1),
+    ]);
+    let obid = start_on(&folder.0, &jobs, &items);
+    let line = request(&obid, "GET", "/v1/jobs/a2800002", None).body;
+    assert_eq!(line["status"], "queued", "{line}");
+    support::within(30, "the older click card settled", || {
+        done_item(&obid, &items[3].id).map(|_| ())
+    });
+    assert_eq!(
+        open_of(&obid, "merge", &["a2800011", "a2800012"]),
+        [items[4].id.as_str()]
+    );
+    for ask in &asks {
+        assert_eq!(
+            open_of(&obid, &ask.kind, &["a2800001"]),
+            [ask.id.as_str()],
+            "{}",
+            ask.kind
+        );
+    }
+    assert_eq!(
+        open_of(&obid, "failed", &["a2800021"]),
+        [items[5].id.as_str()]
+    );
+}
+
 /// A job in the default mode asks the owner nothing about what stays inside its sandbox (edits in
 /// its worktree, commands, tests, reads): obid answers by its rules, and the job lists what it
 /// answered, the refused ones too. Nothing reaches the inbox (#586).

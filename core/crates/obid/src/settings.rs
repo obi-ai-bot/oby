@@ -101,6 +101,10 @@ pub fn use_limits(limits: Limits) {
 /// when the owner didn't say (`accountFailover`, #871): on, the owner's decision of 2026-10-24.
 pub const ACCOUNT_FAILOVER: bool = true;
 
+/// Whether the GitHub work feed keeps items in every repository, not only the listed ones, when
+/// the owner didn't say (`githubEveryRepo`, docs/contracts/github-work.md): off.
+pub const GITHUB_EVERY_REPO: bool = false;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -134,6 +138,10 @@ pub struct Settings {
     /// account of the tool with room by itself (#871, #874); [`ACCOUNT_FAILOVER`] when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_failover: Option<bool>,
+    /// Whether the GitHub work feed keeps items in every repository the `gh` login sees, not only
+    /// the listed ones (#2402); [`GITHUB_EVERY_REPO`] when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_every_repo: Option<bool>,
     /// The repositories the owner answered No check for when Oby asked for one (#1062): it never
     /// asks there again, until the owner says to (`POST /v1/repos/check`). The `checksOffered` an
     /// older obid kept listed every repository it had asked about, answered or not, so it isn't
@@ -247,6 +255,10 @@ pub fn valid_model(model: &str) -> bool {
 impl Settings {
     pub fn account_failover(&self) -> bool {
         self.account_failover.unwrap_or(ACCOUNT_FAILOVER)
+    }
+
+    pub fn github_every_repo(&self) -> bool {
+        self.github_every_repo.unwrap_or(GITHUB_EVERY_REPO)
     }
 }
 

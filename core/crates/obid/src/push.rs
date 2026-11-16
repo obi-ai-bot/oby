@@ -132,13 +132,17 @@ pub fn notice(job: &Job) -> Option<Notice> {
 // ponytail: the vault's only, like an answer's. obid's own secrets (the API token, a push key) still
 // rely on the scan, which knows them whole only; give `known()` a walk over the JSON if that matters.
 pub fn for_alerts(jobs: &[Job], inbox: &[Value]) -> Result<(Vec<Job>, Vec<Value>), String> {
-    let as_they_are = || (jobs.to_vec(), inbox.to_vec());
+    taken_out((jobs.to_vec(), inbox.to_vec()))
+}
+
+/// `value` with the vault's secrets taken out of every string, as [`for_alerts`] says.
+fn taken_out<T: Serialize + serde::de::DeserializeOwned>(value: T) -> Result<T, String> {
     let Some(vault) = crate::vault::shared() else {
-        return Ok(as_they_are());
+        return Ok(value);
     };
-    let bytes = serde_json::to_vec(&(jobs, inbox)).map_err(|e| e.to_string())?;
+    let bytes = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
     match vault.scrubbed(&bytes)? {
-        None => Ok(as_they_are()),
+        None => Ok(value),
         Some(clean) => serde_json::from_slice(&clean).map_err(|e| e.to_string()),
     }
 }
@@ -279,6 +283,12 @@ pub struct Alert {
     /// Its buttons' answers ([`answers`]): `GET /v1/alerts` serves them, the phones' seal doesn't.
     #[serde(skip)]
     pub answers: Vec<&'static str>,
+    /// The account at its limit (ALERTS-14): only `GET /v1/alerts` serves it.
+    #[serde(skip)]
+    pub account: Option<String>,
+    /// When that account's limit resets, when its tool said (ALERTS-14): only `GET /v1/alerts`.
+    #[serde(skip)]
+    pub resets: Option<i64>,
 }
 
 /// The relay's `collapse` for the thing `id`: `id` itself when it's at most [`ID`] printable ASCII
@@ -327,6 +337,25 @@ pub enum Need {
     /// Nothing to decide: a result that needs nothing, progress, Oby's own words. The app shows
     /// it; a push never says it.
     Fyi,
+    /// A task of the owner's that ended done with nothing to decide (ALERTS-12): FYI the Mac
+    /// shows when its switch is on.
+    Finished,
+    /// A task's pull request that merged (ALERTS-13): FYI the Mac shows when its switch is on.
+    Merged,
+    /// An account at its usage limit (ALERTS-14): FYI the Mac shows when its switch is on.
+    Limit,
+}
+
+impl Need {
+    /// Its `fyi` on `GET /v1/alerts`: the kind a Mac's switch turns on, or none.
+    fn fyi(self) -> Option<&'static str> {
+        match self {
+            Need::Finished => Some("finished"),
+            Need::Merged => Some("merged"),
+            Need::Limit => Some("limit"),
+            Need::Owner | Need::Fyi => None,
+        }
+    }
 }
 
 /// The gate every push passes (the owner's rule of 2026-10-28): an alert goes out only when the
@@ -334,6 +363,43 @@ pub enum Need {
 /// needs is decided where it's built ([`wanted`], `look_relay`'s messages).
 pub fn notifies(need: Need) -> bool {
     need == Need::Owner
+}
+
+/// The Mac's switches for news that needs nothing (Settings › Notifications): off unless asked.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Switches {
+    pub finished: bool,
+    pub merged: bool,
+    pub limit: bool,
+}
+
+impl Switches {
+    /// The switches `GET /v1/alerts`' `fyi` turns on, comma-separated: `finished`, `merged` and
+    /// `limit` each turn on theirs, any other word is ignored, and none is all off.
+    pub fn parse(fyi: Option<&str>) -> Self {
+        let mut on = Self::default();
+        for word in fyi.unwrap_or_default().split(',') {
+            match word {
+                "finished" => on.finished = true,
+                "merged" => on.merged = true,
+                "limit" => on.limit = true,
+                _ => {}
+            }
+        }
+        on
+    }
+}
+
+/// Whether an alert of `need` is raised on the Mac's list (A00-94): what needs the owner always,
+/// each FYI kind exactly when its switch is on, anything else never.
+pub fn raises(need: Need, on: Switches) -> bool {
+    match need {
+        Need::Owner => true,
+        Need::Finished => on.finished,
+        Need::Merged => on.merged,
+        Need::Limit => on.limit,
+        Need::Fyi => false,
+    }
 }
 
 /// What the relay should be saying now, each with what it says (an alert is sent again only when
@@ -345,15 +411,16 @@ pub fn notifies(need: Need) -> bool {
 /// (urgent). Progress, FYI and unsorted items are never alerts. A job's permission item is its
 /// job's alert.
 pub fn wanted(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert)> {
-    candidates(jobs, inbox)
+    candidates(jobs, inbox, obi_protocol::time::now())
         .into_iter()
         .filter(|(_, _, need)| notifies(*need))
         .map(|(key, alert, _)| (key, alert))
         .collect()
 }
 
-/// Everything the relay could say, each with what it needs of the owner, before the gate.
-fn candidates(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert, Need)> {
+/// Everything the relay or the Mac could say at `now` (seconds since the epoch), each with what it
+/// needs of the owner, before the gate.
+fn candidates(jobs: &[Job], inbox: &[Value], now: i64) -> Vec<(String, Alert, Need)> {
     let mut wanted = Vec::new();
     // Jobs whose review alerts as the job: their review item is the same news (RECOVERY-15).
     let mut reviewed: HashSet<&str> = HashSet::new();
@@ -372,6 +439,8 @@ fn candidates(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert, Need)> {
             item: None,
             urgent,
             answers: Vec::new(),
+            account: None,
+            resets: None,
         };
         if let (Some(Notice::Permission), Some(permission)) = (notice(job), &job.permission) {
             let mut asks = alert(self::alert(job, Notice::Permission), true);
@@ -443,8 +512,9 @@ fn candidates(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert, Need)> {
             continue;
         }
         // How it ended: Publish, or what failed, waits on the owner; done with nothing to decide
-        // is FYI (the job's page says it), as is Publish after 24 hours of checks that judged
-        // nothing (PUBLISHING-31). At a limit it moves or waits by itself (ALERTS-6).
+        // is news the Mac tells with its switch on, for a day (ALERTS-12, 13); Publish after 24
+        // hours of checks that judged nothing (PUBLISHING-31) and Oby's own review are FYI. At a
+        // limit it moves or waits by itself (ALERTS-6).
         let (said, need) = match job.status {
             Status::Done if job.can_publish() && job.unjudged.is_none() => {
                 (self::alert(job, Notice::Ready), Need::Owner)
@@ -452,6 +522,15 @@ fn candidates(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert, Need)> {
             Status::Failed => (self::alert(job, Notice::Failed), Need::Owner),
             Status::Interrupted if job.account_limit_blocked => continue,
             Status::Interrupted => (self::alert(job, Notice::Interrupted), Need::Owner),
+            Status::Done if job.unjudged.is_none() && job.kind != "review" => {
+                let Some((what, said, need)) = landed(job, now) else {
+                    continue;
+                };
+                let mut told = alert(said, false);
+                told.conversation = job.conversation.clone();
+                wanted.push((what, told, need));
+                continue;
+            }
             Status::Done => (
                 (
                     format!("Done: {}", job.short_title()),
@@ -535,9 +614,84 @@ fn candidates(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert, Need)> {
                 conversation,
                 item: Some(id.to_owned()),
                 urgent: true,
+                account: None,
+                resets: None,
             },
             Need::Owner,
         ));
+    }
+    wanted
+}
+
+/// How long a task's finished or merged alert stays on the Mac's list (ALERTS-12, 13).
+const DAY: i64 = 86_400;
+
+/// What a done job of the owner's with nothing to decide tells the Mac within a day of it: its
+/// pull request merged (ALERTS-13), else it finished (ALERTS-12); its `what`, words and need.
+fn landed(job: &Job, now: i64) -> Option<(String, (String, String, &'static str), Need)> {
+    let title = job.short_title();
+    let number = job
+        .published
+        .as_deref()
+        .and_then(|url| job.pull_request_number(url));
+    if job.merged() {
+        let pr = job.pull_request.as_ref()?;
+        let at = pr.merged_at.filter(|at| now - at < DAY)?;
+        let body = match number {
+            Some(n) => format!("Pull request #{n} merged into {}.", pr.base),
+            None => format!("Its pull request merged into {}.", pr.base),
+        };
+        let said = (format!("Merged: {title}"), body, "job");
+        return Some((format!("merged:{at}"), said, Need::Merged));
+    }
+    let ended = Some(job.finished.unwrap_or(job.created)).filter(|at| now - at < DAY)?;
+    let summary = first_line(&job.summary).unwrap_or("Done");
+    let body = match number {
+        Some(n) => format!("Pull request #{n}: {summary}"),
+        None => summary.to_owned(),
+    };
+    let said = (format!("Done: {title}"), body, "job");
+    Some((format!("end:{ended}"), said, Need::Finished))
+}
+
+/// Each account in `accounts` at its limit at `now`, once per limit whatever the jobs it holds
+/// (ALERTS-14): its reset as `usage` has it, unknown when that is obid's inferred hold, never
+/// presented as the provider's.
+pub fn limits(
+    accounts: &[crate::config::Account],
+    usage: impl Fn(&str) -> crate::usage::Usage,
+    now: i64,
+) -> Vec<(String, Alert, Need)> {
+    let mut wanted = Vec::new();
+    for account in accounts {
+        let usage = usage(&account.id);
+        if usage.full_until_at(now).is_none() && !usage.window_full(now) {
+            continue;
+        }
+        let inferred = |at: &i64| usage.full_until_inferred && usage.full_until == Some(*at);
+        let reset = usage.free_at(now, false).filter(|at| !inferred(at));
+        let (what, body) = match reset {
+            Some(at) => (
+                format!("limit:{at}"),
+                format!("It resets {}.", obi_protocol::time::format(at)),
+            ),
+            None => ("limit:unknown".into(), "Its reset time is unknown.".into()),
+        };
+        let alert = Alert {
+            collapse: collapse_id(&format!("account:{}", account.id)),
+            title: clipped(&format!("{} reached its limit", account.name), 100),
+            body,
+            thread: "accounts".into(),
+            category: "job".into(),
+            job: None,
+            conversation: None,
+            item: None,
+            urgent: false,
+            answers: Vec::new(),
+            account: Some(account.id.clone()),
+            resets: reset,
+        };
+        wanted.push((what, alert, Need::Limit));
     }
     wanted
 }
@@ -593,6 +747,8 @@ fn message_alert(conversation: &str, text: &str) -> Alert {
         item: None,
         urgent: false,
         answers: Vec::new(),
+        account: None,
+        resets: None,
     }
 }
 
@@ -1576,22 +1732,39 @@ fn looked_at(shared: &Shared) -> (Vec<Job>, Vec<Value>) {
 }
 
 /// `GET /v1/alerts`' list (ALERTS-1): what the look reads, the vault's secrets out
-/// ([`for_alerts`]), through the gate ([`wanted`]); one the secret scan stops isn't listed.
-pub async fn listed(shared: &Shared) -> Result<Vec<Value>, String> {
+/// ([`for_alerts`]), with each account at its limit when the Mac's `on` asks (ALERTS-14), through
+/// the Mac's gate ([`raises`]); one the secret scan stops isn't listed.
+pub async fn listed(shared: &Shared, on: Switches) -> Result<Vec<Value>, String> {
     let (jobs, inbox) = looked_at(shared);
     let (jobs, inbox) = for_alerts(&jobs, &inbox)?;
+    let now = obi_protocol::time::now();
+    let mut all = candidates(&jobs, &inbox, now);
+    if on.limit {
+        use crate::agent::Tool;
+        let tools = [Tool::Claude, Tool::Codex, Tool::Cursor];
+        let mut accounts: Vec<_> = tools.map(|t| shared.jobs.accounts(t)).concat();
+        let names = taken_out(accounts.iter().map(|a| a.name.clone()).collect::<Vec<_>>())?;
+        for (account, name) in accounts.iter_mut().zip(names) {
+            account.name = name;
+        }
+        all.extend(limits(&accounts, |id| shared.jobs.usage.get(id), now));
+    }
     let mut list = Vec::new();
-    for (what, a) in wanted(&jobs, &inbox) {
+    for (what, a, need) in all.into_iter().filter(|(_, _, need)| raises(*need, on)) {
         if let Err(why) = scanned(&a.title, &a.body, &shared.config.home.join("tmp")).await {
             tracing::warn!(alert = %a.collapse, "not listed: {why}");
             continue;
         }
         let mut entry = json!({"key": a.collapse, "what": what, "title": a.title, "body": a.body,
             "category": a.category, "thread": a.thread, "urgent": a.urgent, "answers": a.answers});
+        // The Mac's news (ALERTS-12 to 14): its kind, and an account's id and reset.
         let ids = [
             ("job", a.job),
             ("conversation", a.conversation),
             ("item", a.item),
+            ("fyi", need.fyi().map(str::to_owned)),
+            ("account", a.account),
+            ("resets", a.resets.map(obi_protocol::time::format)),
         ];
         for (key, id) in ids.into_iter().filter_map(|(key, id)| Some((key, id?))) {
             entry[key] = json!(id);
@@ -2495,6 +2668,8 @@ mod tests {
             )),
             urgent: true,
             answers: vec!["Allow", "Deny"],
+            account: None,
+            resets: None,
         };
         let sealed = seal(
             &key,
@@ -2692,6 +2867,8 @@ mod tests {
                 item: Some("asks-permission-p1".into()),
                 urgent: true,
                 answers: vec!["Allow", "Deny"],
+                account: None,
+                resets: None,
             }
         );
         // Plan mode's plan is answered on its page; a Start item offering no Start gets none.
@@ -2761,12 +2938,12 @@ mod tests {
         let mut failed = job("failed");
         failed.status = Status::Failed;
         failed.finished = Some(10);
-        let all = candidates(&[done.clone(), failed.clone()], &[]);
+        let all = candidates(&[done.clone(), failed.clone()], &[], 30);
         assert_eq!(
             all.iter()
                 .map(|(_, a, need)| (a.collapse.as_str(), *need))
                 .collect::<Vec<_>>(),
-            [("done", Need::Fyi), ("failed", Need::Owner)]
+            [("done", Need::Finished), ("failed", Need::Owner)]
         );
         assert_eq!(all[0].1.title, "Done: Android push");
         assert_eq!(all[0].1.body, "Fixed the push.");
@@ -2776,6 +2953,244 @@ mod tests {
                 .map(|(_, a)| a.collapse.as_str())
                 .collect::<Vec<_>>(),
             ["failed"]
+        );
+    }
+
+    /// A done job of the owner's with nothing to decide, `ago` seconds before `now`.
+    fn finished(id: &str, now: i64, ago: i64) -> Job {
+        let mut done = job(id);
+        done.status = Status::Done;
+        done.finished = Some(now - ago);
+        done.summary = "Fixed the push.\nAnd the rest.".into();
+        done.conversation = Some("c1".into());
+        done
+    }
+
+    /// `job`'s pull request #7 into dev, merged `ago` seconds before `now`.
+    fn merged(mut job: Job, now: i64, ago: i64) -> Job {
+        job.published = Some("https://github.com/deskree-inc/oby/pull/7".into());
+        job.pull_request = Some(crate::github::PullRequest {
+            state: "MERGED".into(),
+            review_decision: None,
+            base: "dev".into(),
+            merged_at: Some(now - ago),
+            checked_at: now,
+            head: None,
+        });
+        job
+    }
+
+    /// ALERTS-12: a task of the owner's that ended done with nothing to decide is the Mac's
+    /// Finished news for a day, naming its pull request; Oby's review and a check that judged
+    /// nothing stay FYI, and a done job that can publish says only Ready to publish.
+    #[test]
+    fn alerts_12_a_finished_task_alerts() {
+        let now = 1_900_000_000;
+        let done = finished("f1", now, 600);
+        let all = candidates(std::slice::from_ref(&done), &[], now);
+        assert_eq!(all.len(), 1, "{all:?}");
+        let (what, alert, need) = &all[0];
+        assert_eq!(*need, Need::Finished);
+        assert_eq!(*what, format!("end:{}", now - 600));
+        assert_eq!(alert.collapse, "f1");
+        assert_eq!(alert.title, "Done: Android push");
+        assert_eq!(alert.body, "Fixed the push.");
+        assert_eq!(alert.job.as_deref(), Some("f1"));
+        assert_eq!(alert.conversation.as_deref(), Some("c1"));
+        assert!(!alert.urgent && alert.answers.is_empty());
+        let mut published = done.clone();
+        published.published = Some("https://github.com/deskree-inc/oby/pull/7".into());
+        let all = candidates(std::slice::from_ref(&published), &[], now);
+        assert_eq!(all[0].1.body, "Pull request #7: Fixed the push.");
+        let old = finished("f2", now, 25 * 3600);
+        assert!(candidates(&[old], &[], now).is_empty());
+        let mut review = done.clone();
+        review.kind = "review".into();
+        let mut unjudged = done.clone();
+        unjudged.unjudged = Some(crate::job::Unjudged {
+            tries: 3,
+            next: None,
+            why: "the check ran past its limit of 2 hours".into(),
+        });
+        for fyi in [review, unjudged] {
+            let all = candidates(&[fyi], &[], now);
+            assert_eq!(all.len(), 1, "{all:?}");
+            assert_eq!(all[0].2, Need::Fyi);
+        }
+        let mut ready = done;
+        ready.base = Some("dev".into());
+        ready.commits = Some(1);
+        ready.checked_head = Some("a".repeat(40));
+        assert!(ready.can_publish());
+        let all = candidates(&[ready], &[], now);
+        assert_eq!(all.len(), 1, "{all:?}");
+        assert_eq!(all[0].1.title, "Ready to publish: Android push");
+        assert_eq!(all[0].2, Need::Owner);
+    }
+
+    /// ALERTS-13: a task's pull request that merged within the day replaces its Finished alert
+    /// (the same key) with the Mac's Merged news.
+    #[test]
+    fn alerts_13_a_merged_pull_request_alerts() {
+        let now = 1_900_000_000;
+        let done = finished("m1", now, 7200);
+        let landed = merged(done.clone(), now, 600);
+        assert!(landed.merged());
+        let all = candidates(std::slice::from_ref(&landed), &[], now);
+        assert_eq!(all.len(), 1, "{all:?}");
+        let (what, alert, need) = &all[0];
+        assert_eq!(*need, Need::Merged);
+        assert_eq!(*what, format!("merged:{}", now - 600));
+        assert_eq!(alert.title, "Merged: Android push");
+        assert_eq!(alert.body, "Pull request #7 merged into dev.");
+        let finished = candidates(&[done], &[], now);
+        assert_eq!(alert.collapse, finished[0].1.collapse);
+        assert_eq!(alert.conversation.as_deref(), Some("c1"));
+        assert!(!alert.urgent && alert.answers.is_empty());
+        let mut unnumbered = landed.clone();
+        unnumbered.published = None;
+        let all = candidates(&[unnumbered], &[], now);
+        assert_eq!(all[0].1.body, "Its pull request merged into dev.");
+        assert!(candidates(&[merged(landed, now, 25 * 3600)], &[], now).is_empty());
+    }
+
+    /// ALERTS-14: an account at its limit is told once, with the reset its tool said; obid's own
+    /// inferred hold is no reset, and an account with room says nothing.
+    #[test]
+    fn alerts_14_an_account_at_its_limit_alerts_with_its_reset_time() {
+        let now = 1_900_000_000;
+        let account = |id: &str, name: &str| crate::config::Account {
+            id: id.into(),
+            name: name.into(),
+            config_dir: None,
+            payer: None,
+        };
+        let accounts = [
+            account("work", "Work"),
+            account("guess", "Guessed"),
+            account("room", "Room"),
+        ];
+        let usage = |id: &str| crate::usage::Usage {
+            full_until: (id != "room").then_some(now + 3600),
+            full_until_inferred: id == "guess",
+            ..Default::default()
+        };
+        let all = limits(&accounts, usage, now);
+        assert_eq!(all.len(), 2, "{all:?}");
+        let (what, alert, need) = &all[0];
+        assert_eq!(*need, Need::Limit);
+        assert_eq!(*what, format!("limit:{}", now + 3600));
+        assert_eq!(alert.collapse, "account:work");
+        assert_eq!(alert.title, "Work reached its limit");
+        assert_eq!(
+            alert.body,
+            format!("It resets {}.", obi_protocol::time::format(now + 3600))
+        );
+        assert_eq!(alert.account.as_deref(), Some("work"));
+        assert_eq!(alert.resets, Some(now + 3600));
+        assert_eq!(
+            (alert.thread.as_str(), alert.category.as_str()),
+            ("accounts", "job")
+        );
+        assert!(!alert.urgent && alert.answers.is_empty() && alert.job.is_none());
+        let (what, alert, _) = &all[1];
+        assert_eq!(what, "limit:unknown");
+        assert_eq!(alert.body, "Its reset time is unknown.");
+        assert_eq!(alert.resets, None);
+        // Two jobs it holds are no more news: the account's alert alone.
+        let mut held = [job("h1"), job("h2")];
+        for job in &mut held {
+            job.status = Status::Interrupted;
+            job.account = "work".into();
+            job.account_limit_blocked = true;
+        }
+        let mut both = candidates(&held, &[], now);
+        both.extend(limits(&accounts[..1], usage, now));
+        assert_eq!(both.len(), 1, "{both:?}");
+        assert_eq!(both[0].2, Need::Limit);
+    }
+
+    /// ALERTS-15: each of the Mac's switches raises its own kind alone; `fyi` turns on the words
+    /// it names and ignores the rest.
+    #[test]
+    fn alerts_15_each_switch_off_silences_only_its_kind() {
+        for bits in 0..8u8 {
+            let on = Switches {
+                finished: bits & 1 != 0,
+                merged: bits & 2 != 0,
+                limit: bits & 4 != 0,
+            };
+            let raised = [Need::Finished, Need::Merged, Need::Limit].map(|need| raises(need, on));
+            assert_eq!(raised, [on.finished, on.merged, on.limit], "{on:?}");
+            assert!(raises(Need::Owner, on) && !raises(Need::Fyi, on), "{on:?}");
+        }
+        for nothing in [None, Some(""), Some("nonsense"), Some("Finished")] {
+            assert_eq!(Switches::parse(nothing), Switches::default());
+        }
+        assert_eq!(
+            Switches::parse(Some("limit,x,finished")),
+            Switches {
+                finished: true,
+                merged: false,
+                limit: true
+            }
+        );
+    }
+
+    /// ALERTS-16: what needs the owner alerts on the Mac with every switch off.
+    #[test]
+    fn alerts_16_a_decision_alerts_with_every_switch_off() {
+        let now = 1_900_000_000;
+        assert!(raises(Need::Owner, Switches::default()));
+        let mut failed = job("failed");
+        failed.status = Status::Failed;
+        let jobs = [finished("done", now, 60), failed];
+        let listed: Vec<_> = candidates(&jobs, &[], now)
+            .into_iter()
+            .filter(|(_, _, need)| raises(*need, Switches::default()))
+            .map(|(_, a, _)| a.collapse)
+            .collect();
+        assert_eq!(listed, ["failed"]);
+    }
+
+    /// ALERTS-17: the phones are told none of the Mac's news, and a limit's account and reset
+    /// are never sealed.
+    #[test]
+    fn alerts_17_the_phones_get_none_of_the_new_kinds() {
+        let now = obi_protocol::time::now();
+        let mut failed = job("failed");
+        failed.status = Status::Failed;
+        let jobs = [
+            finished("done", now, 60),
+            merged(finished("merged", now, 120), now, 60),
+            failed,
+        ];
+        assert_eq!(candidates(&jobs, &[], now).len(), 3);
+        let said: Vec<_> = wanted(&jobs, &[])
+            .into_iter()
+            .map(|(_, a)| a.collapse)
+            .collect();
+        assert_eq!(said, ["failed"]);
+        assert!(
+            [Need::Finished, Need::Merged, Need::Limit]
+                .iter()
+                .all(|n| !notifies(*n))
+        );
+        let account = crate::config::Account {
+            id: "work".into(),
+            name: "Work".into(),
+            config_dir: None,
+            payer: None,
+        };
+        let full = |_: &str| crate::usage::Usage {
+            full_until: Some(now + 60),
+            ..Default::default()
+        };
+        let (_, limit, _) = limits(&[account], full, now).remove(0);
+        let sealed = sealed_alert(&limit, now);
+        assert!(
+            sealed.get("account").is_none() && sealed.get("resets").is_none(),
+            "{sealed}"
         );
     }
 
@@ -3174,5 +3589,43 @@ mod tests {
             .await;
         assert_eq!(heard.lock().unwrap().len(), 1);
         std::fs::remove_dir_all(&home).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod proofs {
+    #![cfg(kani)]
+    //! Kani's proofs of the Mac's gate (ALERTS-15, 16): `kani::any()` stands for every setting of
+    //! the three switches and every [`Need`].
+
+    use super::*;
+
+    /// ALERTS-15: a Finished, Merged or Limit alert is raised exactly when its own switch is on,
+    /// and Oby's other FYI never is.
+    #[kani::proof]
+    fn alerts_15_raises_exactly_its_kinds_switch() {
+        let s = Switches {
+            finished: kani::any(),
+            merged: kani::any(),
+            limit: kani::any(),
+        };
+        match kani::any::<u8>() {
+            0 => assert_eq!(raises(Need::Owner, s), true),
+            1 => assert_eq!(raises(Need::Finished, s), s.finished),
+            2 => assert_eq!(raises(Need::Merged, s), s.merged),
+            3 => assert_eq!(raises(Need::Limit, s), s.limit),
+            _ => assert_eq!(raises(Need::Fyi, s), false),
+        }
+    }
+
+    /// ALERTS-16: whatever the switches, what needs the owner is raised.
+    #[kani::proof]
+    fn alerts_16_a_need_of_the_owners_raises_whatever_the_switches() {
+        let s = Switches {
+            finished: kani::any(),
+            merged: kani::any(),
+            limit: kani::any(),
+        };
+        assert!(raises(Need::Owner, s));
     }
 }

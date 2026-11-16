@@ -69,4 +69,5 @@ Every date that appeared in AGENTS.md at `3ed5099c`, with its files, and the fil
 | 2026-11-12 | [2026-11-12-codex-2.md](2026-11-12-codex-2.md)<br>[2026-11-12-roadmap-is-the-task-files.md](2026-11-12-roadmap-is-the-task-files.md) |
 | 2026-11-13 | [2026-11-13-apple-watch-app-removed.md](2026-11-13-apple-watch-app-removed.md)<br>[2026-11-13-drop-the-mac-merge-gate.md](2026-11-13-drop-the-mac-merge-gate.md)<br>[2026-11-13-roadmap-answers.md](2026-11-13-roadmap-answers.md) (a batch of answers) |
 | 2026-11-14 | [2026-11-14-own-work-merges-itself.md](2026-11-14-own-work-merges-itself.md) |
-| 2026-11-15 | [2026-11-15-codex-builds-in-the-box.md](2026-11-15-codex-builds-in-the-box.md) |
+| 2026-11-15 | [2026-11-15-codex-builds-in-the-box.md](2026-11-15-codex-builds-in-the-box.md)<br>[2026-11-15-mac-alerts-when-work-lands.md](2026-11-15-mac-alerts-when-work-lands.md) |
+| 2026-11-16 | [2026-11-16-follow-ups-stop-after-the-same-failure.md](2026-11-16-follow-ups-stop-after-the-same-failure.md)<br>[2026-11-16-obid-lines-reported.md](2026-11-16-obid-lines-reported.md) |

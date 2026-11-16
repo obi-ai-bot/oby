@@ -84,6 +84,12 @@ impl Repos {
         self.read().listed.clone()
     }
 
+    /// Whether `name` is one of the listed repositories, letter case aside: not one only in
+    /// GitHub's push list (docs/contracts/github-work.md, GITHUBWORK-1).
+    pub fn listed(&self, name: &str) -> bool {
+        self.read().listed.iter().any(|r| same(&r.repo, name))
+    }
+
     /// GitHub's repositories gh can push to that aren't listed yet, newest push first.
     pub fn github(&self) -> Vec<Repo> {
         let state = self.read();

@@ -239,11 +239,14 @@ async fn the_stub_agent_reviews_the_fixture_in_the_sandbox() {
     assert_eq!(last.unwrap()["status"], "done");
 }
 
+/// TEAMREVIEW-4: a receiver with no check can't vouch that the tests pass, so it runs no agent
+/// and answers `failed` with obid's sentence saying so, never `changes_requested`.
 #[tokio::test(flavor = "multi_thread")]
-async fn without_a_check_tests_pass_is_not_met() {
+async fn teamreview_4_a_reviewer_with_no_check_fails_saying_it_cant_vouch() {
     let folder = Folder::new("nocheck");
     let remote = fixture(&folder.0.join("fixture"));
     let config = config(&folder.0, &remote, None);
+    let home = config.home.clone();
     obid::prepare_home(&config).unwrap();
     let jobs = Jobs::open(
         config,
@@ -257,13 +260,83 @@ async fn without_a_check_tests_pass_is_not_met() {
         .unwrap()
         .unwrap();
     assert_eq!(ended.status, Status::Done, "{}", ended.summary);
-    let result = ended.review_result.unwrap();
-    assert_eq!(result["outcome"], "changes_requested");
     assert_eq!(
-        result["acceptance"][0],
-        json!({"index": 0, "kind": "tests_pass", "met": false})
+        ended.review_result.unwrap(),
+        json!({"for": "review_request", "outcome": "failed", "repo": "obi-e2e/fixture-app",
+               "head_sha": HEAD_SHA, "findings": [],
+               "summary": "This Oby has no check for obi-e2e/fixture-app, so it can't vouch that the tests pass."})
     );
-    assert_eq!(result["findings"], expected_result()["findings"]);
+    assert!(
+        ended.summary.contains("no check to run"),
+        "{}",
+        ended.summary
+    );
+    // No agent turn: no worktree was made for it.
+    assert!(!home.join("worktrees").join(&job.id).exists());
+}
+
+/// TEAMREVIEW-3: what a review needs is read from obid's own state before anything is accepted:
+/// a repository the owner's jobs take, an account that can review, and the job sandbox.
+#[tokio::test(flavor = "multi_thread")]
+async fn teamreview_3_what_a_review_needs_is_read_before_accepting() {
+    use obid::sphere::review_start::Can;
+    let folder = Folder::new("can-review");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, Some("node --test"));
+    obid::prepare_home(&config).unwrap();
+    let jobs = Jobs::open(
+        config,
+        Events::new(),
+        Sandbox::detect(Path::new(env!("CARGO_BIN_EXE_obid"))),
+    )
+    .unwrap();
+    let all = Can {
+        pushable: true,
+        account: true,
+        sandbox: true,
+    };
+    assert_eq!(jobs.can_review("obi-e2e/fixture-app"), all);
+    assert!(!jobs.can_review("obi-e2e/elsewhere").pushable);
+
+    let config = self::config(&folder.0.join("boxless"), &remote, Some("node --test"));
+    obid::prepare_home(&config).unwrap();
+    let boxless = Jobs::open(config, Events::new(), Err("no bubblewrap here".into())).unwrap();
+    assert_eq!(
+        boxless.can_review("obi-e2e/fixture-app"),
+        Can {
+            sandbox: false,
+            ..all
+        }
+    );
+
+    let home = folder.0.join("accountless/home");
+    let no_claude = Config::parse(
+        &json!({
+            "listen": "127.0.0.1:0",
+            "home": home,
+            "owner": "wellington",
+            "agents": {"cursor": {"bin": obi().join("e2e/stub-agent/stub-agent"), "accounts": []}},
+            "repos": [{"repo": "obi-e2e/fixture-app", "remote": format!("file://{}", remote.display()),
+                       "defaultBranch": "main", "check": "node --test"}],
+            "allowFileRemotes": true
+        })
+        .to_string(),
+    )
+    .unwrap();
+    obid::prepare_home(&no_claude).unwrap();
+    let accountless = Jobs::open(
+        no_claude,
+        Events::new(),
+        Sandbox::detect(Path::new(env!("CARGO_BIN_EXE_obid"))),
+    )
+    .unwrap();
+    assert_eq!(
+        accountless.can_review("obi-e2e/fixture-app"),
+        Can {
+            account: false,
+            ..all
+        }
+    );
 }
 
 /// The check runs with no network at all: one that passes only when it reaches a listener on

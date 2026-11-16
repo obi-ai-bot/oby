@@ -5,6 +5,9 @@ Usage:
   gate <job-id>            write round-N/checks.md; exit 0 on PASS, 1 on FAIL
   gate <job-id> --merge    same, as round-N/merge-checks.md (job merge runs it)
   gate --idle              deallocate the gate VM 30 minutes after its last gate ended (job queue runs it)
+  gate --checkout <worktree> <commit> <branch> <out-dir>
+                           the same gate with no job folder: <out-dir>/checks.md and checks.log; exit 0 on PASS,
+                           1 on FAIL, 2 when it couldn't run (check_commit(), which factory/bin/oby-feed imports)
 
 The gate runs the main checkout's factory/checks.sh inside the job's worktree,
 so a branch can't change the checks it is judged by. It also fails when the
@@ -883,6 +886,20 @@ def gate(job_id, merge):
     commit = git(worktree, "rev-parse", "HEAD").strip()
     if reuse(round_dir, commit, merge):
         sys.exit(0)
+    result = check_commit(worktree, commit, job.get("branch"), round_dir, f"{job_id} round {job['round']}", merge)
+    sys.exit(0 if result["verdict"] == "PASS" else 1)
+
+
+def check_commit(worktree, commit, branch, out_dir, label, merge=False):
+    """The gate on a checkout at a commit of a branch, with no factory job folder: writes <out_dir>/checks.md and
+    checks.log (merge-checks.* with merge), prints the GATE line with label, and returns the verdict, the check's code,
+    each part's describe() line, those that failed and those that didn't report, the fallback lines, the protected
+    changes, the hosts and both files' paths. gate <job-id> runs it; so do `gate --checkout` and factory/bin/oby-feed."""
+    head = git(worktree, "rev-parse", "HEAD").strip()
+    if head != commit:
+        die(f"{worktree} is at {head}, not {commit}")
+    round_dir = Path(out_dir)
+    round_dir.mkdir(parents=True, exist_ok=True)
     protected = protected_changes(worktree)
     remote, invalid = remote_config()
     sharded = False
@@ -893,7 +910,8 @@ def gate(job_id, merge):
             # This Mac's shards deal the worktree's test files, the other hosts' the commit's (REMOTE-65).
             shards, unsharded = None, f"the worktree has changes its commit doesn't: {named(changed)}"
         started = time.monotonic()
-        parts, fell_back, moves, log, sharded = remote_parts(remote, invalid, job, worktree, commit, shards)
+        parts, fell_back, moves, log, sharded = remote_parts(remote, invalid, {"branch": branch}, worktree, commit,
+                                                             shards)
         if unsharded:
             fell_back.append(f"Ran unsharded: {unsharded}")
         ran = [p for p in parts if "seconds" in p]
@@ -903,6 +921,7 @@ def gate(job_id, merge):
         host = ", ".join(hosts)
         seconds = int(time.monotonic() - started) if sharded else sum(p["seconds"] for p in ran)
     else:
+        parts, fell_back, host = [], [], "mac"
         code, log, seconds = run_checks(worktree)
     verdict = "PASS" if code == 0 and not protected else "FAIL"
     name = "merge-checks" if merge else "checks"
@@ -931,11 +950,15 @@ def gate(job_id, merge):
         + ("\n".join(f"- {p}" for p in protected) if protected else "None changed.")
         + f"\n\n## checks.sh\nExit {code} in {seconds}s. Last {TAIL} lines of {name}.log:\n\n```\n{tail}\n```\n"
     )
-    print(f"GATE: {verdict} ({job_id} round {job['round']}, "
+    print(f"GATE: {verdict} ({label}, "
           + (f"on {host}, exit {code} in {seconds}s" + "".join(f", {line[0].lower()}{line[1:]}" for line in fell_back)
              if remote or invalid else f"checks.sh exit {code} in {seconds}s")
           + (f", protected paths changed: {', '.join(protected)}" if protected else "") + ")")
-    sys.exit(0 if verdict == "PASS" else 1)
+    failed = [describe(p) for p in parts if p.get("code", 0) != 0] or (checked[:1] if code and not parts else [])
+    return {"verdict": verdict, "code": code, "parts": [describe(p) for p in parts], "failed": failed,
+            "unreported": [describe(p) for p in parts if p.get("note", "").startswith("didn't report")],
+            "fell_back": fell_back, "protected": protected, "host": host,
+            "md": str(round_dir / f"{name}.md"), "log": str(round_dir / f"{name}.log")}
 
 
 def idle():
@@ -990,6 +1013,10 @@ def main(argv):
         gate(argv[0], merge=False)
     elif len(argv) == 2 and argv[1] == "--merge":
         gate(argv[0], merge=True)
+    elif len(argv) == 5 and argv[0] == "--checkout":
+        _, worktree, commit, branch, out_dir = argv
+        result = check_commit(worktree, commit, branch, out_dir, f"{branch} at {commit[:7]}")
+        sys.exit(0 if result["verdict"] == "PASS" else 1)
     else:
         die(__doc__.strip())
 

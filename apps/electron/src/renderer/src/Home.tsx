@@ -18,6 +18,7 @@ import ObyView from './ObyView';
 import RoomView from './RoomView';
 import PeerThreadView from './PeerThread';
 import ArchiveView from './ArchiveView';
+import WaitingView from './WaitingView';
 import SettingsView, { settingsLabel } from './SettingsView';
 import SphereSettings, { sphereSettingsLabel } from './SphereSettings';
 import KnowledgeView, { knowledgeLabel } from './KnowledgeView';
@@ -27,8 +28,9 @@ import { realId, shownId, useLive } from './live';
 import { WELCOME, setUp, startOnboarding } from './onboarding';
 import { askOby, chatOfTask, latestChat, renameChat, restingChat, tellAbout, useChats } from './chats';
 import { useConvos, useThreads, whoseOby } from './peers';
-import { AvatarStack } from './ObyFace';
-import { convoTitle } from './mock';
+import { AvatarStack, ObyFace } from './ObyFace';
+import { MOCK_SCHEDULE, convoTitle } from './mock';
+import { useHelpers } from './helpers';
 import { hasAttachments, type Attachments } from './view';
 import { box as draftBox } from './drafts';
 import { TYPES, renameTask, tell, countOf, runningCount, firstTab, hasFresh, toDoOf, useTasks, asksWaiting, type Tab } from './tasks';
@@ -79,7 +81,8 @@ type Step =
   | { kind: 'task' | 'thread' | 'talk' | 'oby' | 'peer' | 'member' | 'settings' | 'session'; id: string }
   // an Obysphere's settings, its knowledge or its room: which one
   | { kind: 'sphere' | 'knowledge' | 'room'; id: string }
-  | { kind: 'archive'; id?: undefined };
+  | { kind: 'archive'; id?: undefined }
+  | { kind: 'waiting'; id?: undefined };
 // a step on screen; leaving: on its way out (gone once its animation ends)
 type Layer = Step & { key: string; leaving?: boolean };
 const same = (a: Step, b: Step) => a.kind === b.kind && a.id === b.id;
@@ -148,6 +151,9 @@ export default function Home() {
   // the same for a conversation with Oby
   const shown = top?.kind === 'task' ? tasks.find((t) => t.id === top.id) : undefined;
   const shownTalk = top?.kind === 'talk' ? chats.find((c) => c.id === top.id) : undefined;
+  // an agent's conversation: its face and name in the bar, and no menu (it goes with its agent)
+  const helpers = useHelpers();
+  const shownAgent = shownTalk?.helper ? helpers.find((h) => h.id === shownTalk.helper) : undefined;
   const [barMenu, setBarMenu] = useState<DOMRect | null>(null);
   const [renaming, setRenaming] = useState(false);
   useEffect(() => { setBarMenu(null); setRenaming(false); }, [top?.key]);
@@ -217,18 +223,19 @@ export default function Home() {
   }, [fresh]);
 
   // Oby's alerts (main/notify.ts): main hears what's on top (a task's page, a conversation, or Home),
-  // so nothing alerts for it; a clicked alert opens its task, its conversation, or Home, once
-  // that's here (a closed window opens again first)
+  // so nothing alerts for it; a clicked alert opens its task, its conversation, a Settings page,
+  // or Home, once that's here (a closed window opens again first)
   useEffect(() => {
     window.app?.showing?.(!top ? {} : top.kind === 'task' || top.kind === 'thread' ? { job: top.id } : top.kind === 'talk' ? { conversation: realId(top.id) } : null);
   }, [top?.kind, top?.id]);
-  const [opening, setOpening] = useState<{ job?: string; conversation?: string } | null>(null);
+  const [opening, setOpening] = useState<{ job?: string; conversation?: string; settings?: string } | null>(null);
   useEffect(() => window.app?.onOpen?.(setOpening), []);
   useEffect(() => {
     if (!opening) return;
     const talk = opening.conversation && shownId(opening.conversation);
     if (opening.job) { if (!tasks.some((t) => t.id === opening.job)) return; start({ kind: 'task', id: opening.job }); }
     else if (talk) { if (!chats.some((c) => c.id === talk)) return; start({ kind: 'talk', id: talk }); }
+    else if (opening.settings) start({ kind: 'settings', id: opening.settings });
     else home();
     setOpening(null);
   }, [opening, tasks, chats]);
@@ -336,6 +343,7 @@ export default function Home() {
     if (l.kind === 'thread') { const t = tasks.find((k) => k.id === l.id); return t ? convoTitle(t.job) : ''; }
     if (l.kind === 'talk') return chats.find((c) => c.id === l.id)?.title ?? '';
     if (l.kind === 'archive') return 'Archived';
+    if (l.kind === 'waiting') return 'Waiting for you';
     if (l.kind === 'session') return 'Session';
     if (l.kind === 'settings') return settingsLabel(l.id);
     if (l.kind === 'sphere') return sphereSettingsLabel(l.id, spheres);
@@ -369,6 +377,8 @@ export default function Home() {
         onOpenMember={(owner) => start({ kind: 'member', id: owner })}
         onOpenTalk={(id) => start({ kind: 'talk', id })}
         onOpenArchive={() => start({ kind: 'archive' })}
+        onOpenWaiting={() => start({ kind: 'waiting' })}
+        activeWaiting={top?.kind === 'waiting'}
         onOpenSetting={(id) => start({ kind: 'settings', id })}
         activeSetting={top?.kind === 'settings' ? top.id : null}
         onOpenSphereSetting={(id) => start({ kind: 'sphere', id })}
@@ -420,7 +430,12 @@ export default function Home() {
                         }}
                         aria-label={shown ? 'Task name' : 'Conversation name'}
                       />
-                    ) : <>
+                    ) : shownAgent && l.kind === 'talk' ? <>
+                      <ObyFace size={20} color={shownAgent.color} />
+                      <Crumb>{shownAgent.name}</Crumb>
+                      {/* when it runs by itself: the mock's only */}
+                      {!onObid && MOCK_SCHEDULE[shownAgent.id] && <span className="bar-schedule">{MOCK_SCHEDULE[shownAgent.id]}</span>}
+                    </> : <>
                       <Crumb>{label(l)}</Crumb>
                       {/* a task's or a conversation's menu, as on its side panel row */}
                       {(shown || shownTalk) && !leavingAll && (
@@ -545,6 +560,7 @@ export default function Home() {
         if (l.kind === 'task') return <TaskView key={l.key} id={l.id} leaving={leaving} covered={covered} onBack={back} onHome={home} onGone={onGone} onTell={tellFromTask} onSession={(id) => push({ kind: 'session', id })} />;
         if (l.kind === 'session') return <SessionView key={l.key} id={l.id} leaving={leaving} covered={covered} onBack={back} onGone={onGone} onTell={tellFromTask} />;
         if (l.kind === 'archive') return <ArchiveView key={l.key} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenTask={openTask} />;
+        if (l.kind === 'waiting') return <WaitingView key={l.key} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenTask={openTask} onOpenTalk={(id) => push({ kind: 'talk', id })} />;
         if (l.kind === 'settings') return <SettingsView key={l.key} page={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;
         if (l.kind === 'sphere') return <SphereSettings key={l.key} id={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;
         if (l.kind === 'knowledge') return <KnowledgeView key={l.key} id={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;

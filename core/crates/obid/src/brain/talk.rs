@@ -28,7 +28,7 @@ pub fn check(shared: &Shared, account: &str) -> Result<(), ApiError> {
     let unprocessable = |why: String| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why);
     let (tool, found) = crate::accounts::find(&shared.config.agents.get(), account)
         .ok_or_else(|| unprocessable(format!("There's no account {account}.")))?;
-    if !tools(shared).contains(&tool) {
+    if !tools(shared, None).contains(&tool) {
         return Err(unprocessable(format!(
             "{} · {} can't talk here: obid can't hold {} to its egress proxy on this machine.",
             tool.name(),
@@ -41,15 +41,16 @@ pub fn check(shared: &Shared, account: &str) -> Result<(), ApiError> {
 }
 
 /// The tools that can talk here, in the order Auto looks at them: the configured one, then the
-/// others. Cursor comes last, whatever its usage reads, and only where the box holds it to obid's
-/// egress proxy (crate::brain::harness_cursor).
-fn tools(shared: &Shared) -> Vec<Tool> {
+/// others, or only the one `only` names. Cursor comes last, whatever its usage reads, and only
+/// where the box holds it to obid's egress proxy (crate::brain::harness_cursor).
+fn tools(shared: &Shared, only: Option<&str>) -> Vec<Tool> {
     let first = shared.config.conversation.agent;
     let mut tools = vec![first];
     tools.extend(Tool::ALL.into_iter().filter(|t| *t != first));
     if !shared.jobs.confines_egress() {
         tools.retain(|t| *t != Tool::Cursor);
     }
+    tools.retain(|t| only.is_none_or(|id| t.id() == id));
     tools
 }
 
@@ -64,13 +65,15 @@ pub(super) fn chosen(shared: &Shared, conversation: &str) -> Option<String> {
 }
 
 /// The accounts a turn tries, in order: [`order`] over those signed in and not full, of every tool
-/// that can talk. `on`: the account the conversation's session is on, while it has room.
+/// that can talk, or only the tool `only` names (a helper's, crate::helpers). `on`: the account the
+/// conversation's session is on, while it has room.
 pub(super) fn accounts(
     shared: &Shared,
     chosen: Option<&str>,
     on: Option<&str>,
+    only: Option<&str>,
 ) -> Vec<(Tool, Account)> {
-    let mut tools = tools(shared);
+    let mut tools = tools(shared, only);
     // Moving off the chosen account, one of its own tool comes first.
     if let Some((tool, _)) =
         chosen.and_then(|id| crate::accounts::find(&shared.config.agents.get(), id))
@@ -211,7 +214,7 @@ pub fn next(shared: &Shared) -> Option<String> {
     let chosen = chosen.filter(|id| {
         id != AUTO && crate::accounts::find(&shared.config.agents.get(), id).is_some()
     });
-    accounts(shared, chosen.as_deref(), None)
+    accounts(shared, chosen.as_deref(), None, None)
         .into_iter()
         .next()
         .map(|(_, account)| account.id)
@@ -240,8 +243,9 @@ pub(super) const ON_CURSOR_UNASKED: &str =
     "On Cursor, what you ask through my tools needs your OK from now on in this conversation.";
 
 /// Why a turn has no account to try, in one line: with failover off, why the chosen one can't run;
-/// else what holds each signed-in account back, every tool's; none signed in, why the first has none.
-pub(super) fn why_none(shared: &Shared, chosen: Option<&str>) -> String {
+/// else what holds each signed-in account back, every tool's or `only`'s; none signed in, why the
+/// first has none.
+pub(super) fn why_none(shared: &Shared, chosen: Option<&str>, only: Option<&str>) -> String {
     let now = obi_protocol::time::now();
     let held = |tool: Tool, account: &Account| {
         // OpenAI's limit names no time, and the hour obid inferred isn't one to say.
@@ -283,7 +287,7 @@ pub(super) fn why_none(shared: &Shared, chosen: Option<&str>) -> String {
             format!("{} · {} isn't signed in", tool.name(), account.name)
         };
     }
-    let tools = tools(shared);
+    let tools = tools(shared, only);
     let said: Vec<String> = tools
         .iter()
         .flat_map(|tool| {
@@ -294,8 +298,10 @@ pub(super) fn why_none(shared: &Shared, chosen: Option<&str>) -> String {
                 .collect::<Vec<_>>()
         })
         .collect();
-    if said.is_empty() {
-        return shared.jobs.none_signed_in(tools[0]);
+    match tools.first() {
+        Some(first) if said.is_empty() => return shared.jobs.none_signed_in(*first),
+        None => return format!("{} can't talk here", only.unwrap_or_default()),
+        Some(_) => {}
     }
     said.join("; ")
 }

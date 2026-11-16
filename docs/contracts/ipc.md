@@ -34,7 +34,7 @@ A decoder answers `{ value }` or `undefined` when it can't read the value, so `o
 - `method` (exactly `GET`, `POST`, `PUT`, `PATCH` or `DELETE`) and `v1Path` (a string starting `/v1/`), for `obid`.
 - `loadWhat`, for `obid-load`: an object with exactly one key, `{ conversation: <non-empty string> }`, `{ job: <non-empty string> }` or `{ limits: true }`; anything else (`{}`, an empty id, `limits` that isn't `true`, two keys) fails.
 - Lenient, never failing, for arguments that were lenient before: `flag` (true only for exactly `true`), `orUndefined(d)` (d's value, or `undefined`) and `anything` (as it came: `obid`'s body).
-- Built from them in their own files: `publishChoices` (`device.ts`), `showing`'s place (`notify.ts`), `pick-folders`' folder (`index.ts`: an absolute path, else none), and a Settings row's `rowKey` (a string matching `^[A-Za-z][A-Za-z0-9._-]{0,63}$`) and `rowValue` (plain JSON of at most 65,536 characters, read back as `JSON.parse` of it) (`settings.ts`, [live-state.md](live-state.md), LIVE-25).
+- Built from them in their own files: `publishChoices` (`device.ts`), `showing`'s place and `kindsChange` (`notify.ts`), `pick-folders`' folder (`index.ts`: an absolute path, else none), and a Settings row's `rowKey` (a string matching `^[A-Za-z][A-Za-z0-9._-]{0,63}$`) and `rowValue` (plain JSON of at most 65,536 characters, read back as `JSON.parse` of it) (`settings.ts`, [live-state.md](live-state.md), LIVE-25).
 
 ### The channels
 
@@ -57,6 +57,7 @@ A decoder answers `{ value }` or `undefined` when it can't read the value, so `o
 | `notify.ts` | `showing` | `on` | the place: an object gives `{ job, conversation }` (non-strings `undefined`), else `null` (never fails) | nothing |
 | `notify.ts` | `opened` | `handle` | none | `null` |
 | `notify.ts` | `notifications` | `handle` | `orUndefined(boolean)` | `null` |
+| `notify.ts` | `notification-kinds` | `handle` | `optional(kindsChange)`: an object whose keys are only `finished`, `merged` and `limit`, each a boolean ([alerts.md](alerts.md), ALERTS-18) | `null` |
 | `notify.ts` | `open-notification-settings` | `on` | none | nothing |
 | `updates.ts` | `updates` | `handle` | `orUndefined(oneOf('check', 'install', true, false))` | `null` |
 | `settings.ts` | `local-settings` | `handle` | none | `null` |

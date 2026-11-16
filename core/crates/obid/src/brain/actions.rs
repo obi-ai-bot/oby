@@ -1358,6 +1358,7 @@ mod tests {
             obi: None,
             plugin: None,
             arrived: None,
+            carried_on: false,
             answered_by: None,
             confirm: None,
             start: None,

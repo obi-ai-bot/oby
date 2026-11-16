@@ -19,39 +19,6 @@ fn harness_obid(folder: &Folder) -> Obid {
     start_at_home(folder, &config)
 }
 
-/// The test's own home (obid's `HOME` in tests): the person's home its obid checks folders against.
-fn home_of(folder: &Folder) -> PathBuf {
-    folder.0.join("env-home")
-}
-
-/// obid with the test's home as the person's only one (`OBID_PERSON_HOMES`), so the folders it
-/// picks there pass wherever the test runs: never this Mac's own home, whose `~/Library` or
-/// `/private/tmp` may hold cargo's folders (as in Oby's own jobs).
-fn start_at_home(folder: &Folder, config: &Value) -> Obid {
-    let home = home_of(folder);
-    std::fs::create_dir_all(&home).unwrap();
-    start_with(
-        &folder.0,
-        config,
-        None,
-        &[("OBID_PERSON_HOMES", home.to_str().unwrap())],
-    )
-}
-
-/// Folders the owner picks, in the test's home.
-fn picked(folder: &Folder, names: &[&str]) -> Vec<PathBuf> {
-    let root = home_of(folder).join("Projects");
-    let _ = std::fs::remove_dir_all(&root);
-    names
-        .iter()
-        .map(|name| {
-            let path = root.join(name);
-            std::fs::create_dir_all(&path).unwrap();
-            path.canonicalize().unwrap()
-        })
-        .collect()
-}
-
 fn text(path: &Path) -> String {
     path.to_str().unwrap().to_owned()
 }

@@ -46,6 +46,10 @@ POST /v1/github/sign-in
 GET /v1/github/work
 POST /v1/github/work/refresh
 POST /v1/github/work/{id}/start
+GET /v1/helpers
+POST /v1/helpers
+DELETE /v1/helpers/{id}
+PATCH /v1/helpers/{id}
 GET /v1/inbox
 POST /v1/inbox/{id}/answer
 GET /v1/jobs
@@ -100,6 +104,9 @@ POST /v1/obid/sphere/peers/{owner}/ask
 GET /v1/obid/sphere/pins
 POST /v1/obid/sphere/pins/{owner}
 POST /v1/obid/sphere/requests
+GET /v1/obid/vault
+DELETE /v1/obid/vault/{name}
+PUT /v1/obid/vault/{name}
 GET /v1/pairing/devices
 DELETE /v1/pairing/devices/{id}
 POST /v1/pairing/invite
@@ -110,6 +117,10 @@ POST /v1/plans/cancel
 GET /v1/profiles
 POST /v1/profiles
 PATCH /v1/profiles/{id}
+GET /v1/projects
+POST /v1/projects
+DELETE /v1/projects/{id}
+PATCH /v1/projects/{id}
 GET /v1/repos
 POST /v1/repos/check
 GET /v1/routines

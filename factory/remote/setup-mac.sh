@@ -18,16 +18,20 @@
 #      installed copy first;
 #   d. oby-check-blok, built from origin/dev's commit (git archive in the clone), never from one being
 #      checked, and again only when origin/dev's tools/oby-check-blok changed;
-#   e. tighten (tighten.sh) with origin/dev's own scripts/oby-check.sh, so nothing on the check's path is
+#   e. cargo-mutants at factory/remote/pins.sh's pin, setup.sh's too, into ~/.cargo/bin as the ssh user, unless
+#      `cargo install --list` shows it at the pin, then `cargo mutants --version` checked against the pin
+#      (MUTANTS-17): a failed install or another version stops it;
+#   f. tighten (tighten.sh) with origin/dev's own scripts/oby-check.sh, so nothing on the check's path is
 #      writable by group or others;
-#   f. the versions it found.
-# Run it again whenever: what is already there is left as it is. It installs nothing else, runs nothing as
-# root, writes no secret, token, key or login to the host, and changes no system setting. The host part
-# runs under umask 022.
+#   g. the versions it found.
+# Run it again whenever: what is already there is left as it is. It installs only oby-check-blok and
+# cargo-mutants, runs nothing as root, writes no secret, token, key or login to the host, and changes no
+# system setting. The host part runs under umask 022.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 host=${1:-oby-mac-pro}
+. "$here/pins.sh"
 
 # This Mac's versions, read from its home so no folder's toolchain file picks another.
 rust=$(cd && rustc --version)
@@ -38,10 +42,28 @@ echo "setup-mac.sh: setting up $host to match this Mac: $rust, $xcode"
 
 # One function, read whole before it starts, with no standard input, so nothing it runs reads the script.
 {
-    printf '%s=%q\n' RUST "$rust" XCODE "$xcode" NODE "$node" GITLEAKS "$gitleaks" \
+    printf '%s=%q\n' RUST "$rust" XCODE "$xcode" NODE "$node" GITLEAKS "$gitleaks" MUTANTS "$mutants" \
         GATE_B64 "$(base64 <"$here/oby-remote-gate" | tr -d '\n')"
     cat "$here/tighten.sh"
     cat <<'REMOTE'
+# cargo-mutants for factory/bin/mutants' runs test-run sends here (MUTANTS-10), into ~/.cargo/bin as the ssh user, at
+# $MUTANTS. Left as it is at its pin; another version is replaced.
+install_mutants() {
+    local installed found
+    installed=$(cargo install --list) || return 1
+    if grep -qxF "cargo-mutants v$MUTANTS:" <<<"$installed"; then
+        printf 'setup-mac.sh: cargo-mutants %s already installed\n' "$MUTANTS"
+    else
+        printf 'setup-mac.sh: installing cargo-mutants %s\n' "$MUTANTS"
+        cargo install --locked cargo-mutants --version "$MUTANTS" || return 1
+    fi
+    found=$(cargo mutants --version 2>&1) || true
+    if [[ "$found" != "cargo-mutants $MUTANTS" ]]; then
+        printf 'setup-mac.sh: cargo mutants is not at %s: %s\n' "$MUTANTS" "$found"
+        return 1
+    fi
+}
+
 setup() {
     set -euo pipefail
     umask 022
@@ -117,6 +139,7 @@ setup() {
         echo "$dev $tree" >"$stamp"
         say "oby-check-blok built from origin/dev $dev"
     fi
+    install_mutants
 
     # origin/dev's own check script, in a folder that isn't a checkout, judges the tool (tighten.sh).
     mkdir "$tmp/vet"
@@ -130,6 +153,7 @@ setup() {
     cargo --version
     cargo fmt --version
     cargo clippy --version
+    cargo mutants --version
     xcodebuild -version | sed -n 1p
     echo "node $(node --version)"
     echo "gitleaks $(gitleaks version)"
