@@ -672,11 +672,33 @@ pub fn stands(item: &Item) -> bool {
     item.list != "mine" || (item.head.is_some() && item.checks.as_deref() != Some("SUCCESS"))
 }
 
+/// Whether a read keeps an item (docs/contracts/github-work.md, GITHUBWORK-1 and 3): every item
+/// with `every_repo` (`githubEveryRepo`), else only one in a `connected` repository, one of obid's
+/// listed ones.
+pub fn keeps(every_repo: bool, connected: bool) -> bool {
+    every_repo || connected
+}
+
+/// Leaves out of `lists` each item a read doesn't keep ([`keeps`]), `connected` saying whether its
+/// repository is, and takes them off each list's count: a list that was whole stays whole.
+pub fn keep_connected(lists: &mut Lists, every_repo: bool, connected: impl Fn(&str) -> bool) {
+    let counts = &mut lists.counts;
+    for (list, count) in [
+        (&mut lists.reviews, &mut counts.reviews),
+        (&mut lists.assigned, &mut counts.assigned),
+        (&mut lists.mine, &mut counts.mine),
+    ] {
+        let had = list.len();
+        list.retain(|item| keeps(every_repo, connected(&item.repo)));
+        *count = count.saturating_sub((had - list.len()) as u64);
+    }
+}
+
 /// What one read offers in the inbox, the newest first and at most [`OFFERS_PER_READ`], and the
 /// offers left waiting for the next reads (their inbox ids, at most [`MOST`]): of `now`'s items,
 /// those whose offer is new since `before` and those `waiting` from earlier reads, while they're
-/// still in the feed. Every review request is offered; an assigned issue only on a repository obid
-/// `knows`; one of the owner's own pull requests once per head whose checks failed, unless it's a
+/// still in the feed. Every review request the read kept ([`keep_connected`]) is offered; an
+/// assigned issue only on a repository obid `knows`; one of the owner's own pull requests once per head whose checks failed, unless it's a
 /// draft, a fork's, on a repository obid doesn't know, or one an obid job opened (that job follows
 /// it). None while a job it would start is queued or running already.
 pub fn offers(
@@ -935,6 +957,7 @@ impl Feed {
             return self.to_json();
         }
         let before = self.shown();
+        let every = crate::settings::load(&self.config.home).github_every_repo();
         let board = now >= self.lock().no_board_until;
         let got = fetch(board).await;
         // Whose words are the owner's: read for the login GitHub said the work is, else nobody's.
@@ -986,6 +1009,9 @@ impl Feed {
                     partial,
                     no_board,
                 } => {
+                    // Only work in the repositories obid is connected to, unless the owner said
+                    // every repository (GITHUBWORK-1, 3): nothing after this sees the rest.
+                    keep_connected(&mut lists, every, |repo| self.config.repos.listed(repo));
                     mark(&mut lists, owner.as_ref(), &jobs);
                     // The first read on record, or the first as another login (`gh auth
                     // switch`), only notes what's there: no flood of offers.
@@ -2424,5 +2450,74 @@ mod tests {
         assert!(is_login("well-prado"));
         assert!(!is_login("me is:closed"));
         assert!(!is_login(""));
+    }
+
+    /// GITHUBWORK-5 (docs/contracts/github-work.md): a read keeps an item in a connected
+    /// repository, or any with every repository on; the rest leave each list and its count.
+    #[test]
+    fn githubwork_5_a_read_keeps_only_the_connected_unless_every_repository() {
+        assert!(!keeps(false, false));
+        assert!(keeps(false, true));
+        assert!(keeps(true, false));
+        assert!(keeps(true, true));
+        const ELSE: &str = "someone/else";
+        let at = "2026-10-18T08:00:00Z";
+        let mut red = mine(6, &"a".repeat(40), "FAILURE");
+        red["repository"]["nameWithOwner"] = json!(ELSE);
+        let mut read = lists(
+            vec![node(OBI, 1, at), node(ELSE, 2, at), node(ELSE, 3, at)],
+            vec![node(OBI, 4, at), node(ELSE, 5, at)],
+            vec![mine(7, &"b".repeat(40), "FAILURE"), red],
+        );
+        read.counts.assigned = 2;
+        assert!(!read.cut());
+        let mut every = read.clone();
+        keep_connected(&mut every, true, knows);
+        assert_eq!(every, read, "every repository: nothing left out");
+        let mut kept = read.clone();
+        keep_connected(&mut kept, false, knows);
+        assert_eq!(numbers(&kept.reviews), [1]);
+        assert_eq!(numbers(&kept.assigned), [4]);
+        assert_eq!(numbers(&kept.mine), [7]);
+        assert_eq!(
+            kept.counts,
+            Counts {
+                reviews: 1,
+                assigned: 1,
+                mine: 1
+            }
+        );
+        assert!(!kept.cut(), "a whole read stays whole");
+        // A cut list stays cut: GitHub found more than it gave.
+        let mut cut = read.clone();
+        cut.counts.reviews = 150;
+        keep_connected(&mut cut, false, knows);
+        assert_eq!(cut.counts.reviews, 148);
+        assert!(cut.cut());
+    }
+}
+
+#[cfg(test)]
+mod proofs {
+    #![cfg(kani)]
+    //! Kani's proofs of what a read keeps (docs/contracts/github-work.md): `kani::any()` stands
+    //! for both settings of every-repository and both of whether an item's repository is
+    //! connected.
+
+    use super::*;
+
+    /// GITHUBWORK-1: with every-repository off, a read keeps an item exactly when its repository
+    /// is connected.
+    #[kani::proof]
+    fn githubwork_1_off_keeps_exactly_the_connected() {
+        let connected: bool = kani::any();
+        assert_eq!(keeps(false, connected), connected);
+    }
+
+    /// GITHUBWORK-3: with every-repository on, a read keeps every item, connected or not.
+    #[kani::proof]
+    fn githubwork_3_on_keeps_every_item() {
+        let connected: bool = kani::any();
+        assert!(keeps(true, connected));
     }
 }
