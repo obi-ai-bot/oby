@@ -142,13 +142,13 @@ The business behavior contract for Settings rows whose choice obid doesn't keep 
 
 - **Outcome:** A Settings choice that obid doesn't keep yet, such as Open at login, survives a restart of the app, in one file main owns, instead of looking saved and coming back on its default.
 - **Status:** **Implemented** in the Electron app (`apps/electron`): the file in `src/main/settings.ts`, the page's half in `useSetting` (`src/renderer/src/SettingsView.tsx`), the bridge as `window.app.settings` (`src/preload/index.ts`).
-- **Scope:** every row `useSetting` holds, the demo rows `?everything` shows included, but `accounts`. **Out of scope:** making a row do anything (nothing ties Open at login to the Mac's login item), moving a row into obid, any change to how a row looks, reads or defaults, the choices `useKeptSetting` keeps in the page's `localStorage` (`models.mine`, `agent.default`, `talk.default`, outside this channel), and obid and its API ([runner-api.md](../runner-api.md) is unchanged).
+- **Scope:** every row `useSetting` holds, the demo rows `?everything` shows included, but `accounts`. **Out of scope:** making a row do anything (Open at login's tie to the Mac's login item is [Open at login (A00-90)](#open-at-login-a00-90)), moving a row into obid, any change to how a row looks, reads or defaults, the choices `useKeptSetting` keeps in the page's `localStorage` (`models.mine`, `agent.default`, `talk.default`, outside this channel), and obid and its API ([runner-api.md](../runner-api.md) is unchanged).
 
 ### Actors and ownership
 
 - **The owner** turns a row in Settings.
 - **The page** shows each row: the value set in this launch, else the kept one when it has the type of the row's default (the same `typeof`, an array only for an array default, `null` only for a `null` default), else the default. It reads what main kept once, as it starts, and sends each change to main. Until main's answer comes the row shows its default, and a change made before then isn't replaced by it.
-- **Main** owns `settings.json` in the app's own folder (`src/main/settings.ts`): its `local` section holds the rows, an object of row key to JSON value, beside main's own keys (`notifications`, `notifyFinished`, `notifyMerged`, `notifyLimit`, `updatesAuto`). Every write reads the file, sets its keys and writes it whole, owner-only (0600) and never through a link (`writeOwn`), so a row keeps main's keys and main's keys keep `local`.
+- **Main** owns `settings.json` in the app's own folder (`src/main/settings.ts`): its `local` section holds the rows, an object of row key to JSON value, beside main's own keys (`notifications`, `notifyFinished`, `notifyMerged`, `notifyLimit`, `updatesAuto`, `loginApplied`). Every write reads the file, sets its keys and writes it whole, owner-only (0600) and never through a link (`writeOwn`), so a row keeps main's keys and main's keys keep `local`.
 - **obid** owns nothing here.
 
 ### The channels
@@ -177,7 +177,7 @@ What each row holds, where it shows and what stands in its place on obid. None h
 
 | Key | Page | Who sees it | On obid today | Task |
 |---|---|---|---|---|
-| `login` | General, Open at login | everyone | The same switch. Its value is now kept, but nothing yet ties it to the Mac's login item: it opens nothing at login. | no task yet |
+| `login` | General, Open at login | everyone | The same switch. Its value is kept, and the Mac's login item for the app follows it (a packaged Oby in Applications), shown as macOS has it ([Open at login](#open-at-login-a00-90)). | A00-90 |
 | `voice.speaks` | General, Voice | `?everything`, a browser | Nothing: the Mac has no voice yet. | no task yet |
 | `mac.mode` | General, Permissions on this Mac (the mock) | `?everything`, a browser | obid's `/v1/settings/permissions` (`MacPermissions`). | no task yet |
 | `mac.rules` | General, Permissions on this Mac (the mock's rules) | `?everything`, a browser | obid's saved rules, on the same page. | no task yet |
@@ -198,6 +198,64 @@ Kept outside this channel, in the page's `localStorage` (`useKeptSetting`): `mod
 #### Test it when it's done (on a real Mac)
 
 1. `npm run dev`: turn Open at login off in Settings › General, quit Oby and open it again: it shows off. Notifications and Update automatically keep their own choices.
+
+## Open at login (A00-90)
+
+The business behavior contract for Settings › General's Open at login, from [the template](../business-contract-template.md). Roadmap task A00-90 (`factory/queue/done/A00-90.md`); it builds on R06-13's `local.login` row (above) and adds a channel ([ipc.md](ipc.md)). Scenarios LIVE-27 to LIVE-29; the tests that prove them are named after them (`live_27_…`, `live_28_…`, `live_29_…`, `apps/electron/src/renderer/src/test/localSettings.test.ts` for main and `.tsx` for the page).
+
+### Feature and status
+
+- **Outcome:** Open at login opens Oby when the owner logs in to the Mac, and turning it off stops it. The switch shows what macOS has, so a change made in System Settings › Login Items shows too.
+- **Status:** **Implemented** in the Electron app: main's half in `src/main/settings.ts` (`login-item`, `loginDefault`), called from `src/main/index.ts`; the bridge as `window.app.loginItem` (`src/preload/index.ts`); the page's half in `General()` (`src/renderer/src/SettingsView.tsx`).
+- **Scope:** the app's own macOS login item, for a packaged Oby in Applications, and what the switch shows. **Out of scope:** starting the window hidden at login (`wasOpenedAtLogin`, `openAsHidden`), or any change to the `--background` start, `createWindow()`'s conditions or the ALERTS-3 activation rule: a login start opens the window like any other start; obid's launch agent (its registration, `startObid`, `register`, `status`, the approval prompt and `open-login-items`), which starts obid at login as before; any change to the row's label, look, place, footer or default, and any new words, including a message when macOS wants the owner's approval; moving `login` out of `local` or into obid, and obid and its API; registering from `npm run dev`, tests, a copy on the disk image or a translocated copy, or on Windows or Linux; applying the default again at later starts, or "repairing" macOS's state to match the saved row; watching System Settings live while General is open.
+
+### Actors and ownership
+
+- **The owner** turns the switch in Settings › General, or removes or adds Oby in System Settings › General › Login Items.
+- **Main** owns the app's own login item (`app.setLoginItemSettings({ openAtLogin })`, `app.getLoginItemSettings()`, Electron's `mainAppService`), apart from obid's `agentService` entry (`src/main/obid.ts`), which nothing here reads or changes. It keeps `loginApplied: true` in `settings.json`, one of its own keys, once the default was applied or the owner turned the switch.
+- **The page** shows macOS's answer when it has one, else the kept `local.login` (LIVE-25 and 26), and keeps each turn through `local-setting` as before.
+- **obid** owns nothing here.
+
+### Triggers
+
+- **Main starts** (`loginDefault()`, in `app.whenReady()` right after `localSettings`): on a packaged copy in Applications whose `settings.json` has no `loginApplied: true`, it registers the app's login item unless `local.login` is `false` (missing, or of another type, counts as the default, on), then writes `loginApplied: true`. With `loginApplied` already `true` it does nothing, so removing Oby in System Settings sticks.
+- **Settings › General opens:** the page asks `login-item` with no value and shows the answer.
+- **The owner turns the switch:** the page keeps the row (`local-setting('login', on)`), shows `on` at once, asks `login-item(on)` and shows its answer.
+
+### The channel
+
+- `login-item` (`orUndefined(boolean)`), refused (`null`) to anything but the window's own page ([ipc.md](ipc.md)).
+- With no value it answers macOS's state, `getLoginItemSettings().openAtLogin`. With a boolean it calls `setLoginItemSettings({ openAtLogin })`, writes `loginApplied: true` and answers macOS's state as read after the call. It never writes `local`.
+- Only a copy for which `app.isPackaged && app.isInApplicationsFolder()` holds (asked in that order) touches a login item: `npm run dev`, tests and a copy outside Applications (a disk image, a translocated copy) get `null`, with no login-item call and nothing written, and the switch shows the kept row as before. In a browser there is no bridge and the row behaves as R06-13 says.
+
+### Failures and recovery
+
+- **macOS refuses a turn** (`setLoginItemSettings` throws): main logs it and answers macOS's state as read afterwards; the switch shows that.
+- **macOS answers otherwise** (an item that needs the owner's approval answers off): the switch shows macOS's answer, with no new words.
+- **The write of `loginApplied` fails:** main logs it and still answers.
+- **The default fails at start:** main logs it, writes nothing, and tries again at the next start.
+- **Main's answer is `null` or fails:** the switch shows the kept row.
+
+### Invariants and boundaries
+
+- Every call for the app's item has no `type` but `mainAppService` and no `serviceName`; obid's `agentService` entry is never touched here, and `src/main/obid.ts` is unchanged.
+- The default is applied once per install and never over the owner's own turn.
+- No row's look, words or default changes.
+
+### Acceptance scenarios
+
+- **LIVE-27** Given a packaged Oby in Applications with its login item on and obid's entry enabled, when the owner turns Open at login off, then the app's item goes and obid's stays; turned on, it comes back. Main: `login-item(false)` from the window's own page makes one `setLoginItemSettings({ openAtLogin: false })`, with no `agentService` type and no `serviceName`, answers `false` and leaves obid's entry enabled with no call for it; `login-item(true)` answers `true`. In development, and from a copy outside Applications, `login-item()` and `login-item(false)` answer `null`, call nothing and write nothing. The page: turning the switch keeps `login` and calls `loginItem(false)`, and the switch shows off. `live_27_turning_open_at_login_off_removes_the_apps_login_item_and_leaves_obids_entry`, `live_27: in development nothing is registered` (main), `live_27: turning the switch keeps the row and asks main to apply it` (page).
+- **LIVE-28** Given a fresh install, when Oby starts, then it registers the app's login item once. `loginDefault()` makes one `setLoginItemSettings({ openAtLogin: true })` and writes `loginApplied: true`; after a restart, with the item removed, it makes no call. A saved `false` registers nothing and still writes `loginApplied: true`; a saved value of another type counts as on; after the owner's turn the next start makes no call; in development or outside Applications it calls and writes nothing; a set that throws writes nothing and is tried again at the next start. `live_28_a_fresh_install_registers_the_apps_login_item_once_at_start`, `live_28: a saved off is never registered`, `live_28: a saved value of the wrong type counts as on`, `live_28: an owner's turn is never overridden`, `live_28: nothing at start in development`, `live_28: a default macOS doesn't take is tried again at the next start`.
+- **LIVE-29** Given macOS's state differs from the kept row, when Settings › General opens, then the switch shows macOS's state. Main: with `local.login` `true` and the item off, `login-item()` answers `false` and sets nothing; a throwing set answers macOS's state and logs once, and a failed write is logged too. The page: kept `{ login: true }` with `loginItem()` answering `false` shows off, kept `{ login: false }` with `true` shows on; `loginItem(true)` answering `false` leaves the switch off; a failed or `null` answer shows the kept row. `live_29_the_switch_shows_macos_state_when_it_differs_from_the_saved_value` (both files), `live_29: a change macOS doesn't take goes back to what macOS says` (both files), `live_29: no answer from main shows the kept row` (page).
+
+#### Test it when it's done (on a real Mac)
+
+With a packaged Oby copied into /Applications on a Mac where it never ran:
+
+1. Open it once. Oby is listed in System Settings › General › Login Items › Open at Login, and Settings › General shows Open at login on. obid's own entry is listed as before.
+2. Turn the switch off. Oby leaves that list, obid's entry stays, and after logging out and in, the window doesn't open.
+3. Turn it back on and log out and in. The window opens.
+4. Remove Oby in System Settings, then reopen Settings › General. The switch shows off. Quit and open Oby: it stays out of the list.
 
 ## The live path without the mock (R06-12)
 

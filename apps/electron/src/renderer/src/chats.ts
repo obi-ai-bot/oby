@@ -21,7 +21,8 @@ type Ask = { question: string; options: string[] };
 // at: when it last moved (minutes ago), when that's known apart from what's loaded of it (obid's)
 // about: its line in Conversations while none of it is loaded (obid's)
 // local: the app's own, not obid's (Oby's first conversation, onboarding.ts): kept as obid's change
-export type Chat = { id: string; title: string; said: Message[]; typing?: boolean; step?: string; waiting?: Ask; needs?: boolean; pinned?: boolean; fromObys?: boolean; at?: number; about?: string; local?: boolean; talkAccount?: string | null; talkedOn?: string | null; movedOff?: string | null };
+// profile: the mock's only, the profile it's in (none: the default; profiles.ts)
+export type Chat = { id: string; title: string; said: Message[]; typing?: boolean; step?: string; waiting?: Ask; needs?: boolean; pinned?: boolean; fromObys?: boolean; at?: number; about?: string; local?: boolean; talkAccount?: string | null; talkedOn?: string | null; movedOff?: string | null; profile?: string };
 
 // named after its first line, as Oby would title it
 const titled = (text: string) => {
@@ -44,9 +45,10 @@ const seeded: Chat[] = LOG.flatMap((t, i) => {
   return [{ id: `c-${t.id}`, title: first ? convoTitle(first) : titled(t.text), said }];
 });
 // Older ones, over the last five weeks: questions Oby answered on the spot,
-// nothing started (most of what you ask it is like this; a task is the exception)
+// nothing started (most of what you ask it is like this; a task is the exception); a few in the
+// mock's other profiles (MOCK_PROFILES)
 const H = 60, D = 24 * H;
-const PAST: [title: string, asked: string, answer: string, ago: number][] = [
+const PAST: [title: string, asked: string, answer: string, ago: number, profile?: string][] = [
   // Oby writes GitHub's Markdown (Said): every kind it uses, in one answer
   ['Cursor usage in Oby', 'can Oby show Cursor’s usage? research it', `I researched Cursor’s usage data. The design is open as https://github.com/obi-ai-bot/oby/pull/1531, and #130 tracks it.
 Committed \`de87563\`, with *no code changes* and ~~no scraping~~.
@@ -83,14 +85,14 @@ const spend = await fetch('https://api.cursor.com/teams/spend', { method: 'POST'
 A raw <b>tag</b> and <script>alert(1)</script> stay text.
 
 Sources: [Cursor forum](https://forum.cursor.com/t/how-to-get-cost-and-usage-data-using-cursor-api/172967), [an http link](http://example.com)`, 1 * D + 2 * H],
-  ['Who owns the Vault migration?', 'who owns the vault migration now that Ernesto moved teams?', 'Dima took it over on Monday. Ernesto is still the reviewer for anything touching Engine/Vault.swift.', 2 * D + 3 * H],
+  ['Who owns the Vault migration?', 'who owns the vault migration now that Ernesto moved teams?', 'Dima took it over on Monday. Ernesto is still the reviewer for anything touching Engine/Vault.swift.', 2 * D + 3 * H, 'deskree'],
   ['Why is oberon’s build slow', 'why did oberon’s build go from 4 to 11 minutes?', 'The Swift package cache stopped hitting after the CI image update on the 3rd. Daniel has a fix in review (#412); it brings the build back to about 5 minutes.', 2 * D + 6 * H],
   ['Standup notes for Wellington', 'what did I tell Wellington I’d do this week?', 'Three things: review the notch PR (#33, done), send the 0.9 release checklist (not yet), and pair on the settings layout Thursday.', 3 * D + 2 * H],
-  ['Avenga contract renewal date', 'when does the Avenga contract renew?', 'March 31. The notice period is 60 days, so anything you want changed needs to reach them by January 30.', 3 * D + 9 * H],
-  ['Rate limits on the Tetrix API', 'what are our rate limits on the tetrix api?', '600 requests a minute per org, 60 per connector. The graph queries count double. You hit 70% of it last Tuesday during the backfill.', 4 * D + 1 * H],
-  ['Summarize #398 discussion', 'summarize the discussion on #398', 'Dima wants the graph tests split per collector; Ernesto prefers one suite with fixtures. They agreed on fixtures first, split later. Nothing’s blocking it except the shared fixture.', 4 * D + 5 * H],
+  ['Avenga contract renewal date', 'when does the Avenga contract renew?', 'March 31. The notice period is 60 days, so anything you want changed needs to reach them by January 30.', 3 * D + 9 * H, 'acme'],
+  ['Rate limits on the Tetrix API', 'what are our rate limits on the tetrix api?', '600 requests a minute per org, 60 per connector. The graph queries count double. You hit 70% of it last Tuesday during the backfill.', 4 * D + 1 * H, 'deskree'],
+  ['Summarize #398 discussion', 'summarize the discussion on #398', 'Dima wants the graph tests split per collector; Ernesto prefers one suite with fixtures. They agreed on fixtures first, split later. Nothing’s blocking it except the shared fixture.', 4 * D + 5 * H, 'deskree'],
   ['Is Codex cheaper for reviews?', 'is codex cheaper than claude for PR reviews?', 'For us, yes: about 40% less per review last month, but its reviews got 2x more “not useful” reactions. Claude is still the default for anything over 300 lines.', 5 * D + 4 * H],
-  ['Draft reply to Avenga security', 'help me reply to Avenga’s security questionnaire, section 4', 'Here’s a draft for section 4: encryption at rest (AES-256 via the Vault), in transit (TLS 1.3), keys rotated every 90 days. I left 4.3 for you, it asks about subprocessors.', 6 * D + 2 * H],
+  ['Draft reply to Avenga security', 'help me reply to Avenga’s security questionnaire, section 4', 'Here’s a draft for section 4: encryption at rest (AES-256 via the Vault), in transit (TLS 1.3), keys rotated every 90 days. I left 4.3 for you, it asks about subprocessors.', 6 * D + 2 * H, 'acme'],
   ['What changed in Lexical 0.52', 'anything in lexical 0.52 that affects us?', 'One thing: selection is kept after blur now, which is why the message box re-focused itself. The rest is fixes. MessageEditor already handles it.', 7 * D + 3 * H],
   ['Daniel’s PTO next week', 'is Daniel out next week?', 'Wednesday to Friday. His Oby will hand #405 to Ernesto if it isn’t merged by Tuesday.', 8 * D + 1 * H],
   ['Explain the queue order bug', 'explain the live panel queue order bug like I’m new', 'The live panel sorts by when a task started, the inbox by when it last changed. A task that’s been waiting on you for a day shows at the bottom of one and the top of the other.', 9 * D + 6 * H],
@@ -104,8 +106,8 @@ Sources: [Cursor forum](https://forum.cursor.com/t/how-to-get-cost-and-usage-dat
   ['Ideas for the Obysphere name', 'any better names than Obysphere?', 'A few: Oby Space, the Den, the Pack. Obysphere tested best with the five people you asked, mostly because it says it’s a place.', 31 * D + 6 * H],
   ['Set up Oby on the Mac mini', 'how do I set up oby on the office mac mini?', 'Install from the 0.7 dmg, sign in with the Deskree account, and turn on Remote access in Settings so you can reach it from your laptop. It needs Full Disk Access for the repos.', 35 * D],
 ];
-const past: Chat[] = PAST.map(([title, asked, answer, at], i) => ({
-  id: `p${i + 1}`, title, said: [{ who: 'you', text: asked, ago: at }, { who: 'oby', text: answer, ago: at - 1 }],
+const past: Chat[] = PAST.map(([title, asked, answer, at, profile], i) => ({
+  id: `p${i + 1}`, title, said: [{ who: 'you', text: asked, ago: at }, { who: 'oby', text: answer, ago: at - 1 }], ...(profile ? { profile } : {}),
 }));
 
 // when it last moved (minutes ago): its latest message

@@ -31,6 +31,8 @@ Something only the user can answer (docs/pipeline-cases.md, "Your inbox"). Like 
   | `watch` | obid only, from before the cut of Slack and its watcher (docs/trim.md): an item the watcher made then, still listed until dismissed | `Dmitry wrote in #tetrix-avenga-testing.` | `Dismiss` |
   | `listen` | obid only: the owner's review of a pull request is ready to post (`GET /v1/github/work`, "Posting it"); older items from the Slack channel listener stay listed until dismissed | `Post this review on pull request #835 in obi-ai-bot/obi as you? Approve posts the review shown here with Oby's verdict, from your GitHub login.` | a review's: `Approve`, `Dismiss` |
 
+  obid sends no `failed` item for an ordinary failed or interrupted job (only its crash item and its review item, `<job>-review-<review job>`), and the Electron app no longer draws a failed card of its own (docs/contracts/tasks.md, TASKS-25); no key or value is removed.
+
   A `confirm` item (obid only) also carries `confirm`, what its `Confirm` carries out: `{"action": "always_allow", "target": "ab12cd34", "payload": {"permission": "p1a2b3c"}}`. `action` is a typed name, `target` what it acts on (a job's id or an inbox item's id, as the action says) and `payload` what else it needs (`null` when nothing). obid carries every action out through one dispatcher, so a new action is a new name with its own `target` and `payload`, the shape unchanged. The actions so far:
 
   | `action` | `target` | `payload` | `Confirm` does |

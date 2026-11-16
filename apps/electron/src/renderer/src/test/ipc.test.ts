@@ -111,9 +111,11 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   updates: { args: ['check'], refusal: null },
   'local-settings': { args: [], refusal: null },
   'local-setting': { args: ['login', false], refusal: null },
+  'login-item': { args: [false], refusal: null },
   'sphere-leave': { args: [], refusal: 'Not this app’s page.' },
   'sphere-policy': { args: [], refusal: null },
   'sphere-set-policy': { args: [0], refusal: null },
+  'render-error': { args: ['TypeError', 'm', ''], refusal: undefined },
 };
 
 const UNSET = Symbol('unset');
@@ -157,6 +159,7 @@ describe('IPC-1', () => {
     expect(the.dialogs).toBe(0);
     expect(the.opened).toEqual([]);
     expect(existsSync(join(the.userData, 'settings.json'))).toBe(false);
+    expect(existsSync(join(the.userData, 'crashes.jsonl'))).toBe(false);
     the.windows[0].fullScreen = false;
   });
 
@@ -249,6 +252,9 @@ describe('IPC-3', () => {
     expect(the.opened).toEqual([]);
     await call('open-external', own(), 'https://example.com');
     expect(the.opened).toEqual(['https://example.com']);
+    // a render error's report: strings only, else no crash line
+    await call('render-error', own(), 'TypeError', { secret: 1 }, '');
+    expect(existsSync(join(the.userData, 'crashes.jsonl'))).toBe(false);
   });
 
   it('ipc_3: the decoders', () => {

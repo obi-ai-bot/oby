@@ -14,7 +14,7 @@
   - **Your conversation:** where you come to rest, its box focused. It's the one that moved last by obid's `lastActivity` when the app opens, then whichever you're in. Esc and the back arrow have nothing to leave it for.
   - **The empty chat:** no conversation open: Oby's character, its line, "What do you want me to work on?" with no name and whatever is running, what Oby is asking you, and the box (Home's stage, without the chips). Words sent there start a conversation, which opens. It's a resting place too, reached from Oby's row or New conversation.
   - **A page over it:** a task, a kind of work, Settings, an Obysphere, a teammate's Oby. Back returns to where you were resting.
-- **The side panel** (the canvas's Chats and Sphere boards, the owner's decision of 2026-11-03; no profiles yet, so no circle, no name under Chats, and no Connectors or Automations until their pages exist):
+- **The side panel** (the canvas's Chats and Sphere boards, the owner's decision of 2026-11-03; its title is the open profile's name with its menu, docs/contracts/profiles.md PROFILES-19 to 25, and there is still no profile circle in the icons; no Connectors or Automations until their pages exist):
   - **The icons:** Chats; a line and each Obysphere's tile, with no line when there's none; Settings at the foot. They only open: the panel's toggle closes it. Chats from a page (a thread, Settings) also brings your conversation back. A tile opens its column (Knowledge, Invite member, Members), and its room when it has one.
   - **Chats:** Oby's row, which opens the empty chat, New conversation, then every conversation in one scrolling list, pinned ones first. Search on the panel's top row covers all of it: titles, and the words of those loaded.
 - **Where each thing went:**
@@ -44,7 +44,7 @@
 
 None in obid. A member of a live Obysphere shows in the panel and opens their thread (docs/contracts/peer-thread.md).
 
-Proposed words, Sangam's to change: "Chats" (the panel's title, from the canvas), "Back" (the arrow's label). The rest are his or the canvas's: Oby, New conversation, No conversations yet, Tasks, "Ernesto's Oby", "Accounts and how much of each is used". The canvas's "Bring your team in" row isn't here: it asks for a field to paste an invite, which the app doesn't have yet.
+Proposed words, Sangam's to change: "Chats" (the icon's label, from the canvas; the panel's title is the profile's name), "Back" (the arrow's label). The rest are his or the canvas's: Oby, New conversation, No conversations yet, Tasks, "Ernesto's Oby", "Accounts and how much of each is used". The canvas's "Bring your team in" row isn't here: it asks for a field to paste an invite, which the app doesn't have yet.
 
 ## Acceptance scenarios
 

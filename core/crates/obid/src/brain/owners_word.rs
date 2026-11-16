@@ -109,7 +109,7 @@ fn pick(jobs: Vec<crate::job::Job>, asked: &Merge) -> Option<crate::job::Job> {
             && (j
                 .published
                 .as_deref()
-                .and_then(|url| github::pull_request_number(url, &j.repo))
+                .and_then(|url| j.pull_request_number(url))
                 == Some(asked.pr)
                 || (j.obi.is_some() && j.pr == Some(asked.pr)))
     });

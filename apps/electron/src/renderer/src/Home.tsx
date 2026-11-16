@@ -18,6 +18,7 @@ import ObyView from './ObyView';
 import RoomView from './RoomView';
 import PeerThreadView from './PeerThread';
 import ArchiveView from './ArchiveView';
+import WaitingView from './WaitingView';
 import SettingsView, { settingsLabel } from './SettingsView';
 import SphereSettings, { sphereSettingsLabel } from './SphereSettings';
 import KnowledgeView, { knowledgeLabel } from './KnowledgeView';
@@ -79,7 +80,8 @@ type Step =
   | { kind: 'task' | 'thread' | 'talk' | 'oby' | 'peer' | 'member' | 'settings' | 'session'; id: string }
   // an Obysphere's settings, its knowledge or its room: which one
   | { kind: 'sphere' | 'knowledge' | 'room'; id: string }
-  | { kind: 'archive'; id?: undefined };
+  | { kind: 'archive'; id?: undefined }
+  | { kind: 'waiting'; id?: undefined };
 // a step on screen; leaving: on its way out (gone once its animation ends)
 type Layer = Step & { key: string; leaving?: boolean };
 const same = (a: Step, b: Step) => a.kind === b.kind && a.id === b.id;
@@ -337,6 +339,7 @@ export default function Home() {
     if (l.kind === 'thread') { const t = tasks.find((k) => k.id === l.id); return t ? convoTitle(t.job) : ''; }
     if (l.kind === 'talk') return chats.find((c) => c.id === l.id)?.title ?? '';
     if (l.kind === 'archive') return 'Archived';
+    if (l.kind === 'waiting') return 'Waiting for you';
     if (l.kind === 'session') return 'Session';
     if (l.kind === 'settings') return settingsLabel(l.id);
     if (l.kind === 'sphere') return sphereSettingsLabel(l.id, spheres);
@@ -370,6 +373,8 @@ export default function Home() {
         onOpenMember={(owner) => start({ kind: 'member', id: owner })}
         onOpenTalk={(id) => start({ kind: 'talk', id })}
         onOpenArchive={() => start({ kind: 'archive' })}
+        onOpenWaiting={() => start({ kind: 'waiting' })}
+        activeWaiting={top?.kind === 'waiting'}
         onOpenSetting={(id) => start({ kind: 'settings', id })}
         activeSetting={top?.kind === 'settings' ? top.id : null}
         onOpenSphereSetting={(id) => start({ kind: 'sphere', id })}
@@ -546,6 +551,7 @@ export default function Home() {
         if (l.kind === 'task') return <TaskView key={l.key} id={l.id} leaving={leaving} covered={covered} onBack={back} onHome={home} onGone={onGone} onTell={tellFromTask} onSession={(id) => push({ kind: 'session', id })} />;
         if (l.kind === 'session') return <SessionView key={l.key} id={l.id} leaving={leaving} covered={covered} onBack={back} onGone={onGone} onTell={tellFromTask} />;
         if (l.kind === 'archive') return <ArchiveView key={l.key} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenTask={openTask} />;
+        if (l.kind === 'waiting') return <WaitingView key={l.key} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenTask={openTask} onOpenTalk={(id) => push({ kind: 'talk', id })} />;
         if (l.kind === 'settings') return <SettingsView key={l.key} page={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;
         if (l.kind === 'sphere') return <SphereSettings key={l.key} id={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;
         if (l.kind === 'knowledge') return <KnowledgeView key={l.key} id={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;

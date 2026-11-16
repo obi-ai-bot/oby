@@ -17,7 +17,7 @@ import Composer, { typingIn } from './Composer';
 import Formatted from './Formatted';
 import Said from './Said';
 import { convoTitle, threadOf } from './mock';
-import { agentOf, type Message } from './view';
+import { ENDED, agentOf, type Message } from './view';
 import { markSeen, tell, tellPlaceholder, useTasks, type Task } from './tasks';
 import { obys, ofObid, stopChat, tellChat, useChats, type Chat } from './chats';
 import SetupCard from './SetupCard';
@@ -371,7 +371,6 @@ const Face = ({ live = false, talk }: { live?: boolean; talk?: number }) => <Oby
 // and a right-click opens its menu (onMenu, at the pointer); in a task's own thread, its own card
 // just shows where it stands. A status this build doesn't know says no word and shows StatusDot's
 // neutral mark (docs/contracts/wire.md, WIRE-3).
-const ENDED: Partial<Record<Task['job']['status'], string>> = { failed: 'Failed', stopped: 'Stopped', interrupted: 'Stopped' };
 export function ThreadTask({ task, current, opened = false, onOpen, onMenu, onFollowUp }: {
   task: Task;
   current: boolean;

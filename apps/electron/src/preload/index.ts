@@ -85,6 +85,8 @@ contextBridge.exposeInMainWorld('app', {
   },
   // a sign-in page in the person's browser (https only)
   openExternal: (url: string) => ipcRenderer.send('open-external', url),
+  // a render error the page's root boundary caught (RenderError.tsx): kept by main, which reloads once
+  renderError: (name: string, message: string, componentStack: string) => ipcRenderer.send('render-error', name, message, componentStack),
   // the Mac's folder picker, several folders at once, opening in from: their paths (none: cancelled)
   pickFolders: (from?: string) => ipcRenderer.invoke('pick-folders', from) as Promise<string[]>,
   // setting up (the page's FirstRun.tsx): the window narrower and held at its size, or its own
@@ -124,6 +126,8 @@ contextBridge.exposeInMainWorld('app', {
     local: () => ipcRenderer.invoke('local-settings') as Promise<Record<string, unknown> | null>,
     keep: (key: string, value: unknown) => ipcRenderer.invoke('local-setting', key, value) as Promise<boolean | null>,
   },
+  // Open at login: the app's login item as macOS has it; with a value, turned to it (main/settings.ts; null: none here)
+  loginItem: (on?: boolean) => ipcRenderer.invoke('login-item', on) as Promise<boolean | null>,
   // an Obysphere joined by its invite link (main/sphere.ts), and Leave from its settings: main
   // holds the owner key; Leave answers why the Obysphere wasn't told, or null
   onSphere(fn: (joined: { sphere: string; name: string }) => void) {
