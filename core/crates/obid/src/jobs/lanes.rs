@@ -842,6 +842,77 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// LANES-20 (docs/contracts/lanes.md): an own Claude Code job's commands, and an own
+    /// conversation's, may bind, accept and connect on loopback; nothing else in their sandbox's
+    /// network changes, the code hosts still denied, and the sandbox stays on and required.
+    #[test]
+    fn lanes_20_an_own_runs_commands_have_loopback() {
+        let root = std::env::temp_dir().join(format!("obid-lanes-20-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let jobs = own_jobs(&root);
+        let [worktree, admin, common, temp, login] =
+            ["worktree", "admin", "common", "temp", "login"].map(|d| root.join(d));
+        let place = jobs.config.home.join("conversations/c");
+        let [room, room_temp] = ["room", "home"].map(|d| place.join(d));
+        for dir in [&worktree, &admin, &common, &temp, &login, &room, &room_temp] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let env: Vec<(&'static str, OsString)> = PINNED_ENV
+            .into_iter()
+            .map(|name| (name, OsString::from("/x")))
+            .collect();
+        let job = jobs.spec(&worktree, &admin, &common, &temp, true, Tool::Claude);
+        let job: Value =
+            serde_json::from_str(&own_sandbox_settings(&job, &login, &env).unwrap()).unwrap();
+        // A conversation's gitless room, as its own launch builds it (LANES-12).
+        let claude = jobs.accounts(Tool::Claude).remove(0);
+        let launch = jobs
+            .conversation_own_launch(
+                &claude,
+                &room,
+                &room_temp,
+                &place.join("login"),
+                Vec::new(),
+                vec!["-p".into()],
+                place.join("agent.log"),
+            )
+            .unwrap();
+        let argv: Vec<&str> = launch.argv.iter().filter_map(|a| a.to_str()).collect();
+        let at = argv.iter().position(|a| *a == "--settings").unwrap();
+        let conversation: Value = serde_json::from_str(argv[at + 1]).unwrap();
+        for settings in [&job, &conversation] {
+            let sandbox = &settings["sandbox"];
+            assert_eq!(sandbox["network"]["allowLocalBinding"], true, "{settings}");
+            let network = sandbox["network"].as_object().unwrap();
+            let mut keys: Vec<&str> = network.keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            assert_eq!(keys, ["allowLocalBinding", "deniedDomains"], "{settings}");
+            for host in CODE_HOSTS {
+                assert!(
+                    network["deniedDomains"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|v| v.as_str() == Some(host)),
+                    "{host}: {settings}"
+                );
+            }
+            for (flag, want) in [
+                ("enabled", true),
+                ("failIfUnavailable", true),
+                ("allowUnsandboxedCommands", false),
+                ("autoAllowBashIfSandboxed", false),
+                ("enableWeakerNestedSandbox", false),
+                ("enableWeakerNetworkIsolation", false),
+            ] {
+                assert_eq!(sandbox[flag], want, "{flag}: {settings}");
+            }
+            assert_eq!(sandbox["filesystem"]["disabled"], false, "{settings}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// LANES-6 (docs/contracts/lanes.md): an own Claude Code job runs with no proxy of obid's,
     /// and its check is still Oby's box with no network, no account's folder and only loopback.
     #[cfg(target_os = "macos")]
