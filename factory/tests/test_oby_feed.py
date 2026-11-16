@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """factory/bin/oby-feed's own tests (docs/contracts/factory.md, FEEDMODEL-1 to 5, FEEDALIVE-1 to 6, FEEDKANI-1 to 9,
-FEEDAPPROVE-1 to 8, FEEDSPEC-1 to 9, FEEDLENS-1 to 9 and NOTHARNESS-4; task A00-80, FEED-1 to FEED-6), never obid,
-GitHub, ssh, Quint, Kani, the gate VM or the network.
+FEEDAPPROVE-1 to 8, FEEDSPEC-1 to 9, FEEDLENS-1 to 9, FEEDLOOP-1, 2, 5 to 7 and NOTHARNESS-4; task A00-80, FEED-1 to
+FEED-6), never obid, GitHub, ssh, Quint, Kani, the gate VM or the network.
 
 FEED-1 to FEED-6: the feeder's state is a temporary folder; obid's API and every `gh` call are stand-ins that log
 what they were asked and answer as each test sets.
@@ -22,6 +22,10 @@ FEEDSPEC-1 to 9 and NOTHARNESS-4: the same stand-in obid makes the intake and sp
 (`build-<n>`) jobs under their keys, each `running` until the test ends it; it logs the parts sent as messages and the
 stops, and answers them as the test sets. Its log of `POST /v1/jobs` refuses a build for a task with no saved spec in
 every test of this file.
+
+FEEDLOOP-1, 2 and 5 to 7: FEEDSPEC's stand-ins, a build job ended by the test as `failed`, `interrupted`, `stopped`,
+gone (removed from the stand-in, so its GET is a 404) or `done` with nothing published; the summary, `publishError`
+past its first ": " and `gh`'s output carry markers, and no_marks() checks every POST and message for them.
 
 FEEDMODEL-1 to 4: check_models() runs with subprocess.run stubbed: `gh api` returns a model whose first line is a
 `// verify:` line, the `ssh … cat >` and `ssh … rm -f` calls succeed, and each `ssh … quint verify … --invariant=<name> …`
@@ -981,7 +985,7 @@ class ObyFeed(unittest.TestCase):
                 self.feed.FEED = self.dir / f"feed-{case}"
                 if case != "unanswered":
                     self.task("running")
-                    self.feed.follow = lambda item, jobs, account: False
+                    self.feed.follow = lambda item, jobs, account, **pass_args: False
                 _, first = self.saved_start("A00-96")
                 self.saved_start("A00-97")
                 new = {"key": "A00-98", "title": "a new task", "body": ""}
@@ -3043,6 +3047,236 @@ class ObyFeed(unittest.TestCase):
                 self.assertEqual(self.docs(self.parts_of("research-2"))["intake.md"], summary)
                 item = self.item()
                 self.assertEqual((item["state"], item["job"], item["decision"]), ("speccing", "research-2", "ACCEPT"))
+
+    # FEEDLOOP: a build that ended with nothing to review starts again, up to three attempts. MARKS are planted in the
+    # agent's summary, in publishError after its first ": " and in `gh`'s output, and no brief or message carries one.
+    MARKS = ("MARK-summary", "MARK-publish", "MARK-gh")
+
+    def no_marks(self):
+        """FEEDLOOP-7: no `POST /v1/jobs` body and no message holds a marker."""
+        for sent in self.stand.posts + [json.dumps(body) for _, body in self.stand.messages]:
+            for mark in self.MARKS:
+                self.assertNotIn(mark, sent)
+
+    def afresh_loop(self, name):
+        """A feed folder and stand-ins for obid and `gh` of their own, for one subtest."""
+        self.feed.FEED = self.dir / f"feed-{name}"
+        self.stand = StandIns(self.feed)
+        self.stand.missed = self.feed.OBID_MISSED
+        self.feed.api = self.stand.api
+        self.feed.subprocess = Namespace(run=self.stand.run)
+
+    def end_build(self, job_id, how):
+        """Ends `job_id` as `how` says: failed, interrupted, gone (obid no longer has it) or done with nothing
+        published; its summary always holds a marker."""
+        if how == "gone":
+            del self.stand.jobs[job_id]
+        elif how == "done":
+            self.done(job_id, "STATUS: READY MARK-summary", publishError="Not published: couldn't fetch dev: MARK-publish")
+        elif how == "interrupted":
+            self.done(job_id, "I stopped MARK-summary", status="interrupted", nextStep="Try again")
+        else:
+            self.done(job_id, "it broke MARK-summary", status=how)
+
+    def test_feedloop_1_an_interrupted_build_starts_again_with_obids_reason(self):
+        _, _, build_id = self.to_build()
+        self.done(build_id, "I ran out of turns MARK-summary", status="interrupted", nextStep="One more round")
+        before = len(self.stand.posts)
+        self.spec_pass()
+        self.assertEqual(len(self.stand.posts), before + 1)
+        [again] = self.stand.sent()[before:]
+        self.assertEqual((again["kind"], again["clientRequestId"], again["rounds"], again["account"]),
+                         ("build", f"feed-build-A00-98-{build_id}", 3, "acct"))
+        self.assertIn("This is attempt 2 of 3; the last ended: interrupted: One more round. ", again["task"])
+        self.assertEqual(self.docs(self.parts_of("build-2")), {"spec.md": self.SPEC})
+        item = self.item()
+        self.assertEqual((item["state"], item["job"], item["builds"]), ("running", "build-2", [build_id, "build-2"]))
+        self.assertNotIn("request", item)
+        first = self.printed_status().splitlines()[0]
+        self.assertTrue(first.startswith("running    A00-98  build-2  attempt 2 of 3  "), first)
+        self.spec_pass()  # the new build still running: nothing more
+        self.assertEqual(len(self.stand.posts), before + 1)
+        self.no_marks()
+
+    def test_feedloop_1_the_brief_names_the_attempt_and_stays_bounded(self):
+        kani = {"key": "A00-98", "title": "t" * 300, "body": "### Formal verification\nA Kani harness over add.\n"}
+        for on_base in (True, False):
+            plain = self.feed.brief(kani, on_base, 40)
+            self.assertNotIn("This is attempt", plain)
+            long = self.feed.brief(kani, on_base, 40, reason="r" * 5000, attempt=2)
+            self.assertLessEqual(len(long), 2000)
+            self.assertIn("This is attempt 2 of 3; the last ended: ", long)
+        short = {"key": "A00-98", "title": "a task", "body": ""}
+        said = self.feed.brief(short, True, 3, reason="interrupted: One more round", attempt=3)
+        self.assertEqual(said.replace("This is attempt 3 of 3; the last ended: interrupted: One more round. ", ""),
+                         self.feed.brief(short, True, 3))
+
+    def test_feedloop_1_a_rebuild_waits_for_disk_skips_a_dry_run_and_resends_a_lost_answer(self):
+        _, _, build_id = self.to_build()
+        self.done(build_id, "MARK-summary", status="interrupted", nextStep="One more round")
+        before = len(self.stand.posts)
+        self.feed.free_gb = lambda: 5.0
+        self.feed.one_pass(Namespace(max=3, min_free_gb=10, dry_run=False, account="acct"))
+        item = self.item()
+        self.assertEqual(len(self.stand.posts), before)
+        self.assertEqual((item["state"], item["job"], item["builds"]), ("running", build_id, [build_id]))
+        self.assertNotIn("request", item)
+        self.assertTrue(item["note"].startswith("waiting to build again: 5 GB free, under 10 GB"), item["note"])
+        self.feed.free_gb = lambda: 100.0
+        self.spec_pass(dry_run=True)
+        self.assertEqual(len(self.stand.posts), before)
+        self.assertNotIn("request", self.item())
+        self.stand.post_answers = ["lost"]
+        self.assertIsNone(self.spec_pass())
+        self.assertEqual(self.item()["request"]["step"], "build")
+        self.spec_pass(dry_run=True)  # a saved request isn't sent by a dry run either
+        self.assertEqual(len(self.stand.posts), before + 1)
+        self.feed.oby_jobs = lambda: []  # obid's list doesn't show it: the saved body goes again, and its receipt answers
+        self.spec_pass()
+        self.assertEqual(len(self.stand.posts), before + 2)
+        self.assertEqual(self.stand.posts[-1], self.stand.posts[-2])
+        self.assertEqual(self.stand.made["build"], 2)
+        item = self.item()
+        self.assertEqual((item["state"], item["job"], item["builds"]), ("running", "build-2", [build_id, "build-2"]))
+        self.no_marks()
+
+    def test_feedloop_1_every_attempts_job_is_kept_until_the_merge_deletes_it(self):
+        _, _, build_id = self.to_build()
+        self.done(build_id, "MARK-summary", status="failed")
+        self.spec_pass()
+        self.assertEqual(self.item()["job"], "build-2")
+        self.feed.oby_jobs = lambda: list(self.stand.jobs.values())
+        self.feed.clean()
+        deleted = [c[2] for c in self.stand.calls if c[:2] == ("api", "DELETE")]
+        self.assertNotIn(f"/v1/jobs/{build_id}", deleted)
+        self.done("build-2", "STATUS: READY", published=f"https://github.com/{REPO}/pull/{PR}")
+        self.spec_pass()
+        self.assertEqual(self.item()["state"], "reviewing")
+        self.stand.view = {"headRefOid": OLD, "state": "MERGED", "files": []}
+        self.stand.graphql = queue("MERGED")
+        saved = []
+        real_save = self.feed.save
+        self.feed.save = lambda item: (saved.append(dict(item)), real_save(item))
+        self.spec_pass()
+        self.spec_pass()
+        self.assertEqual(self.item()["state"], "merged")
+        cleanup = next(s["cleanup"] for s in saved if s.get("cleanup"))
+        self.assertTrue({build_id, "build-2"} <= set(cleanup), cleanup)
+        deleted = [c[2] for c in self.stand.calls if c[:2] == ("api", "DELETE")]
+        for i in (build_id, "build-2"):
+            self.assertIn(f"/v1/jobs/{i}", deleted)
+        self.no_marks()
+
+    def test_feedloop_2_a_lost_or_unpublished_build_starts_again(self):
+        for how, said in (("gone", "This is attempt 2 of 3; the last ended: obid no longer has its job. "),
+                          ("done", "This is attempt 2 of 3; the last ended: done, nothing published: Not published. ")):
+            with self.subTest(how=how):
+                self.afresh_loop(how)
+                _, _, build_id = self.to_build()
+                self.end_build(build_id, how)
+                self.spec_pass()
+                [first, again] = self.build_posts()
+                self.assertEqual(again["clientRequestId"], f"feed-build-A00-98-{build_id}")
+                self.assertIn(said, again["task"])
+                self.assertEqual(self.docs(self.parts_of("build-2")), {"spec.md": self.SPEC})
+                self.assertEqual((self.item()["state"], self.item()["builds"]), ("running", [build_id, "build-2"]))
+                self.no_marks()
+        self.assertEqual(self.feed.after_attempt("gone", False, False, False, 1), "again")
+        self.assertEqual(self.feed.after_attempt("done", False, False, False, 2), "again")
+
+    def test_feedloop_5_the_third_attempt_ends_the_task_with_its_reason(self):
+        for how, reason in (("failed", "failed"), ("interrupted", "interrupted: Try again"),
+                            ("gone", "obid no longer has its job"), ("done", "done, nothing published: Not published")):
+            with self.subTest(how=how):
+                self.afresh_loop(how)
+                _, _, build_id = self.to_build()
+                self.end_build(build_id, "failed")
+                self.spec_pass()
+                self.end_build("build-2", "interrupted")
+                self.spec_pass()
+                self.assertEqual((self.item()["job"], len(self.item()["builds"])), ("build-3", 3))
+                self.assertIn("This is attempt 3 of 3; the last ended: interrupted: Try again. ", self.build_posts()[-1]["task"])
+                self.end_build("build-3", how)
+                posts = len(self.stand.posts)
+                for _ in range(3):
+                    self.spec_pass()
+                self.assertEqual(len(self.stand.posts), posts)
+                item = self.item()
+                self.assertEqual(item["state"], "failed")
+                self.assertEqual(item["note"], f"{reason}; attempt 3 of 3, none started again")
+                self.assertTrue(self.printed_status().splitlines()[0].startswith("failed     A00-98  build-3  attempt 3 of 3  "))
+                self.no_marks()
+                self.assertEqual(self.feed.after_attempt(how, False, False, False, 3), "end")
+        long = self.feed.attempt_reason({"status": "failed", "nextStep": "n" * 400})
+        self.assertEqual(len(long), 300)
+        tail = "; attempt 3 of 3, none started again"
+        self.assertEqual(self.feed.none_again(long, 3), long[:240 - len(tail)] + tail)
+
+    def test_feedloop_6_blocked_stopped_or_a_pull_request_is_never_built_again(self):
+        cases = [("blocked done", "done", "STATUS: BLOCKED: the spec contradicts itself", None,
+                  "STATUS: BLOCKED: the spec contradicts itself"),
+                 ("blocked failed", "failed", "STATUS: BLOCKED: no room", None, "STATUS: BLOCKED: no room"),
+                 ("stopped", "stopped", None, None, "stopped"),
+                 ("build with a pull request", "failed", None, PR, "failed"),
+                 ("follow-up with a pull request", "interrupted", "it broke MARK-summary", PR, "it broke MARK-summary")]
+        for name, status, summary, pr, note in cases:
+            with self.subTest(name=name):
+                self.afresh_loop(name.replace(" ", "-"))
+                _, _, build_id = self.to_build()
+                if pr:
+                    self.feed.save({**self.item(), "pr": pr})
+                self.done(build_id, summary, status=status)
+                posts = len(self.stand.posts)
+                for _ in range(3):
+                    self.spec_pass()
+                self.assertEqual(len(self.stand.posts), posts)
+                item = self.item()
+                self.assertEqual((item["state"], item["note"]), ("failed", note))
+                if "MARK" not in note:
+                    self.no_marks()
+        self.afresh_loop("gone-with-a-pull-request")
+        _, _, build_id = self.to_build()
+        self.feed.save({**self.item(), "pr": PR})
+        del self.stand.jobs[build_id]
+        self.spec_pass()
+        self.assertEqual((self.item()["state"], self.item()["note"]), ("failed", "obid no longer has its job"))
+        self.assertEqual(len(self.build_posts()), 1)
+        self.afresh_loop("security")
+        self.no_ready()
+        self.task("reviewing")
+        (self.feed.FEED / "A00-99.spec.md").write_text(self.SPEC)
+        self.stand.jobs[JOB]["approvals"] = approvals(OLD, "claude", "codex")
+        self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "AGENTS.md"}]}
+        for _ in range(3):
+            self.one_pass()
+        item = self.task_now()
+        self.assertEqual(item["state"], "waiting")
+        self.assertTrue(item["note"].startswith(self.feed.HELD + self.feed.SECURITY), item["note"])
+        self.assertEqual([s for s in self.stand.sent() if s["kind"] == "build"], [])
+        for status, blocked, has_pr in (("done", True, False), ("failed", True, False), ("stopped", False, False),
+                                        ("failed", False, True), ("interrupted", False, True), ("gone", False, True)):
+            self.assertEqual(self.feed.after_attempt(status, blocked, False, has_pr, 1), "end")
+        self.assertEqual([self.feed.after_attempt(s, False, False, False, 1) for s in ("queued", "running")],
+                         ["follow", "follow"])
+        self.assertEqual(self.feed.after_attempt("done", False, True, True, 3), "review")
+
+    def test_feedloop_7_the_reason_is_obids_words_only(self):
+        self.assertEqual(self.feed.attempt_reason(None), "obid no longer has its job")
+        j = {"status": "done", "summary": "MARK-summary", "nextStep": "One more\tround",
+             "publishError": "Pushed, but couldn't look for the open pull request: MARK-gh\nMARK-publish",
+             "waiting": {"kind": "account", "text": "the account\nis at its limit", "job": "x"}}
+        self.assertEqual(self.feed.attempt_reason(j), "done, nothing published: One moreround; Pushed, but couldn't "
+                                                      "look for the open pull request; the accountis at its limit")
+        self.assertEqual(self.feed.attempt_reason({"status": "failed", "waiting": "held\x1b[31m\nMARK-gh",
+                                                   "publishError": "Not published"}),
+                         "failed: Not published; held[31m")
+        self.assertEqual(self.feed.attempt_reason({"status": "interrupted", "summary": "MARK-summary"}), "interrupted")
+        _, _, build_id = self.to_build()
+        self.done(build_id, "STATUS: READY MARK-summary", publishError="Not published: gh said: MARK-gh MARK-publish")
+        self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [], "title": "MARK-gh"}
+        self.spec_pass()
+        self.assertEqual(len(self.build_posts()), 2)
+        self.no_marks()
 
 
 KEY = "A00-99"
