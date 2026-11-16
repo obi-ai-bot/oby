@@ -425,6 +425,10 @@ pub struct Item {
     /// made in the same second. Kept, never shown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arrived: Option<u64>,
+    /// Settled by Oby while its task carried on (TASKS-26, 27), not by the owner: a review card
+    /// so settled opens again once nothing of its task is at work. Kept, never shown.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub carried_on: bool,
     /// The device whose signature came with the answer that settled it (#1825): a merge can be
     /// traced afterwards. None for an answer no app of the owner's signed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -952,7 +956,8 @@ pub fn is_crash_item(item: &Item) -> bool {
 }
 
 /// The `failed` item on a job obid's own bug ended, or obid kept going down with (#911, #915):
-/// one per such end (its id names when it ended). Try again runs it again; Dismiss lets it go.
+/// its id names when it ended, and a newer one settles the job's older (`Link::crash_items`,
+/// TASKS-27). Try again runs it again; Dismiss lets it go.
 pub fn crash_item(job: &crate::job::Job, now: i64) -> Item {
     Item {
         id: format!("{}-crash-{}", job.id, job.finished.unwrap_or(now)),
