@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """factory/bin/oby-feed's own tests (docs/contracts/factory.md, FEEDMODEL-1 to 5, FEEDALIVE-1 to 6, FEEDKANI-1 to 9,
-FEEDAPPROVE-1 to 8, FEEDSPEC-1 to 9, FEEDLENS-1 to 9 and NOTHARNESS-4; task A00-80, FEED-1 to FEED-6), never obid,
-GitHub, ssh, Quint, Kani, the gate VM or the network.
+FEEDAPPROVE-1 to 8, FEEDSPEC-1 to 9, FEEDLENS-1 to 9, FEEDSTOP-1 to 7 and NOTHARNESS-4; task A00-80, FEED-1 to FEED-6),
+never obid, GitHub, ssh, Quint, Kani, the gate VM or the network.
 
 FEED-1 to FEED-6: the feeder's state is a temporary folder; obid's API and every `gh` call are stand-ins that log
 what they were asked and answer as each test sets.
@@ -17,6 +17,9 @@ its `status` and `summary` are the stand-in's answer for that lens (`lens`), `do
 sets one; so a head approved twice gets its lens jobs at one pass, its approver at the next and its merge at the one
 after. `git cat-file -e` finds every task file and lens prompt on the base but those in `off_base` (by stem, so
 `reviewer-security` for a prompt), and `git show` of a task file gives the text a test put in `base_tasks`, else none.
+
+FEEDSTOP-1 to 7: the same stand-ins; with following_up(), obid answers each fix message 201 with a follow-up of the job
+it went to, done, that published the next head, which two tools approved, as a build's follow-up does.
 
 FEEDSPEC-1 to 9 and NOTHARNESS-4: the same stand-in obid makes the intake and spec (`research-<n>`) and build
 (`build-<n>`) jobs under their keys, each `running` until the test ends it; it logs the parts sent as messages and the
@@ -2289,6 +2292,9 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual(item["note"], "approved twice, but the security review asked for changes: The vault logs a secret (vault.rs:12).")
         self.assertEqual(item["findings"], "security:\n\nThe vault logs a secret (vault.rs:12).\n"
                                            "\x1b[31mIt reads\x07 the key twice.\x1b]0;owned\x07")
+        [(to, body)] = self.stand.messages  # the one fix message, with no findings in it (FEEDSTOP-1)
+        self.assertEqual((to, body["clientRequestId"]), (JOB, f"feed-fix-A00-99-{OLD[:12]}"))
+        self.assertNotIn("vault logs a secret", body["text"])
         self.one_pass()
         self.assertEqual((self.stand.sent_to("feed-approve-"), self.stand.merges(), len(self.stand.sent_to("feed-lens-"))), ([], [], 2))
         printed = self.printed_status()
@@ -2332,6 +2338,7 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual([s["clientRequestId"] for s in self.stand.sent_to("feed-approve-")], [f"feed-approve-A00-99-{NEW[:12]}"])
         self.assertEqual([m[-1] for m in self.stand.merges()], [NEW])
         self.assertEqual(self.task_now()["state"], "waiting")
+        self.assertEqual([body["clientRequestId"] for _, body in self.stand.messages], [f"feed-fix-A00-99-{OLD[:12]}"])
 
     # FEEDLENS-5: a lens with no verdict holds the head for good
     def test_feedlens_5_a_malformed_answer_or_a_broken_lens_job_holds_the_head(self):
@@ -2500,6 +2507,350 @@ class ObyFeed(unittest.TestCase):
         self.feed.clean()
         deleted = sorted(c[2] for c in self.stand.calls if c[:2] == ("api", "DELETE"))
         self.assertEqual(deleted, ["/v1/jobs/lens-3"])
+
+    # ---- FEEDSTOP: the feeder's fix rounds stop after the same failure ---------------------------------------------
+
+    HEADS = [c * 40 for c in "abcdef"]
+    CODE = "the code review asked for changes"
+    CHANGES = {"code": {"status": "done", "summary": "VERDICT: CHANGES\nMARK-findings: it breaks a rule."}}
+
+    def fixes(self, prefix="feed-fix-"):
+        """Each message's (job id, body) whose clientRequestId starts with `prefix`."""
+        return [(to, body) for to, body in self.stand.messages if body["clientRequestId"].startswith(prefix)]
+
+    def following_up(self, heads, summary="STATUS: READY\nbuilt it"):
+        """obid answers each fix message 201, while no answer is set, with a follow-up of the job it went to: a done
+        build job that published the next of `heads`, which two tools approved, the pull request moving to that head."""
+        nexts, api = list(heads), self.stand.api
+        self.feed.oby_jobs = lambda: list(self.stand.jobs.values())
+
+        def answer(method, path, body=None, timeout=30):
+            if method == "POST" and path.endswith("/messages") and nexts and not self.stand.message_answers:
+                parent, head = path.split("/")[3], nexts.pop(0)
+                self.stand.messages.append((parent, body))
+                made = {"id": f"job-{len([j for j in self.stand.jobs if j.startswith('job-')]) + 1}", "kind": "build",
+                        "status": "done", "followUpOf": parent, "summary": summary,
+                        "approvals": approvals(head, "claude", "codex"), "published": f"https://github.com/{REPO}/pull/{PR}"}
+                self.stand.jobs[made["id"]] = made
+                self.stand.view = dict(self.stand.view, headRefOid=head)
+                return 201, made
+            return api(method, path, body, timeout)
+
+        self.feed.api = answer
+
+    def until(self, done, most=40):
+        for _ in range(most):
+            self.one_pass()
+            if done():
+                return
+        self.fail(f"not there after {most} passes: {self.task_now()}")
+
+    def stopped_task(self, reason=CODE, times=3, head=OLD):
+        """A task the feeder stopped for `reason` on `head`, which waits held, its unsent fix message saved."""
+        self.lensed()
+        message = self.feed.lens_fix("A00-99", ["code"], head)
+        item = self.task_now()
+        item.update(state="waiting", head=head, refused=head, held=[head], note="stopped", findings="code:\nIt breaks.",
+                    fixRun={"reason": reason, "count": times},
+                    stopped={"reason": reason, "times": times, "head": head, "message": message})
+        self.feed.save(item)
+        return message
+
+    def template(self, head, lenses=("code",)):
+        """FEEDSTOP-1's message text, word for word."""
+        base = self.feed.job.BASE
+        prompts = [f".claude/agents/reviewer-{lens}.md" for lens in lenses]
+        return (f"Oby's {' and '.join(lenses)} review{'s' if len(lenses) > 1 else ''} asked for changes on this pull "
+                f"request's head {head}. Its findings are not in this message: find them by reviewing this branch as "
+                f"{' and '.join(prompts)} say{'' if len(lenses) > 1 else 's'}, reading each with "
+                + " and ".join(f"git show origin/{base}:{p}" for p in prompts)
+                + f", never this worktree's copy, and comparing with git diff origin/{base}...HEAD. Fix what it asks for "
+                "on the same branch and commit the fix: Oby publishes it onto the same pull request.")
+
+    # FEEDSTOP-1: a lens's CHANGES sends the build one fix message, in fixed words
+    def test_feedstop_1_changes_sends_one_fix_message_with_no_findings(self):
+        self.lensed()
+        self.stand.lens = self.CHANGES
+        self.one_pass()
+        self.one_pass()
+        [(to, body)] = self.stand.messages
+        self.assertEqual((to, set(body), body["clientRequestId"]), (JOB, {"text", "clientRequestId"}, f"feed-fix-A00-99-{OLD[:12]}"))
+        text = body["text"]
+        self.assertLessEqual(len(text), 2000)
+        for said in ("Oby's code review", OLD, f"git show origin/{self.feed.job.BASE}:.claude/agents/reviewer-code.md"):
+            self.assertIn(said, text)
+        self.assertNotIn("MARK-findings", text)
+        item = self.task_now()
+        self.assertEqual((item["state"], item["refused"], item["held"]), ("waiting", OLD, [OLD]))
+        self.assertEqual(item["note"], "approved twice, but the code review asked for changes: MARK-findings: it breaks a rule.")
+        self.assertEqual(item["fixRun"], {"reason": self.CODE, "count": 1})
+        self.assertNotIn("fixOwed", item)
+        self.one_pass()
+        self.assertEqual(len(self.stand.messages), 1)
+        follow_up = {"id": "job-2", "kind": "build", "status": "running", "followUpOf": JOB}
+        self.stand.jobs["job-2"] = follow_up
+        self.feed.oby_jobs = lambda: [self.stand.jobs[JOB], follow_up]
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual((item["state"], item["job"]), ("running", "job-2"))
+        self.assertEqual(len(self.stand.messages), 1)
+
+    def test_feedstop_1_an_unanswered_fix_message_is_sent_again_with_its_key(self):
+        self.lensed()
+        self.stand.lens = self.CHANGES
+        self.one_pass()
+        self.stand.message_answers = [None]
+        self.assertIsNone(self.one_pass())
+        owed = self.task_now()["fixOwed"]
+        self.assertEqual((owed["reason"], owed["head"]), (self.CODE, OLD))
+        self.stand.message_answers = [(503, {"error": "obid is restarting"})]
+        self.one_pass()
+        self.assertIn("fixOwed", self.task_now())
+        self.one_pass()
+        bodies = [json.dumps(body, sort_keys=True) for _, body in self.stand.messages]
+        self.assertEqual(len(bodies), 3)
+        self.assertEqual(len(set(bodies)), 1)
+        self.assertEqual(self.stand.messages[0][1]["clientRequestId"], f"feed-fix-A00-99-{OLD[:12]}")
+        item = self.task_now()
+        self.assertNotIn("fixOwed", item)
+        self.assertEqual(item["fixRun"], {"reason": self.CODE, "count": 1})
+        self.one_pass()
+        self.assertEqual(len(self.stand.messages), 3)
+        # a refusal goes into the note and is never sent again
+        self.afresh("refused")
+        self.lensed()
+        self.stand.lens = self.CHANGES
+        self.one_pass()
+        self.stand.message_answers = [(422, {"error": "the job can't take words now"})]
+        self.one_pass()
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual(len(self.stand.messages), 1)
+        self.assertIn("the fix message was refused", item["note"])
+        self.assertTrue(item["note"].startswith("approved twice, but the code review asked for changes"), item["note"])
+        self.assertNotIn("fixOwed", item)
+        self.assertNotIn("fixRun", item)
+        # a new head drops the owed message unsent
+        self.afresh("new head")
+        self.lensed()
+        self.stand.lens = self.CHANGES
+        self.one_pass()
+        self.stand.message_answers = [None]
+        self.assertIsNone(self.one_pass())
+        self.stand.view = dict(self.stand.view, headRefOid=NEW)
+        self.one_pass()
+        self.one_pass()
+        self.assertEqual(len(self.stand.messages), 1)
+        self.assertNotIn("fixOwed", self.task_now())
+
+    # FEEDSTOP-2: three follow-ups for the same reason in a row, and no fourth
+    def test_feedstop_2_three_lens_follow_ups_failing_alike_get_no_fourth(self):
+        heads = self.HEADS[:4]
+        self.lensed()
+        self.stand.lens = self.CHANGES
+        self.following_up(heads[1:])
+        said = []
+        self.feed.say = said.append
+        self.until(lambda: "stopped" in self.task_now())
+        sent = self.fixes()
+        self.assertEqual([(to, body["clientRequestId"]) for to, body in sent],
+                         [(job, f"feed-fix-A00-99-{head[:12]}") for job, head in zip((JOB, "job-2", "job-3"), heads)])
+        item = self.task_now()
+        self.assertEqual((item["state"], item["head"], item["refused"], item["job"]), ("waiting", heads[3], heads[3], "job-4"))
+        self.assertTrue(item["note"].startswith(f"{self.CODE} again on {heads[3][:12]}: 3 follow-ups in a row failed this "
+                                                "way, so Oby sends no more"), item["note"])
+        self.assertIn("factory/bin/oby-feed --again A00-99", item["note"])
+        self.assertLessEqual(len(item["note"]), 240)
+        self.assertEqual({k: item["stopped"][k] for k in ("reason", "times", "head")}, {"reason": self.CODE, "times": 3, "head": heads[3]})
+        self.assertEqual(item["stopped"]["message"], self.feed.lens_fix("A00-99", ["code"], heads[3]))
+        self.assertEqual(len([line for line in said if line.startswith("A00-99: waiting") and "sends no more" in line]), 1)
+        said.clear()
+        self.one_pass()
+        self.one_pass()
+        self.assertEqual((len(self.stand.messages), said), (3, []))
+        self.assertEqual(self.task_now(), item)
+
+    def test_feedstop_2_three_gate_follow_ups_failing_alike_get_no_fourth(self):
+        heads = self.HEADS[:4]
+        self.approved()
+        self.red()
+        self.following_up(heads[1:])
+        said = []
+        self.feed.say = said.append
+        self.until(lambda: "stopped" in self.task_now())
+        self.assertEqual([body["clientRequestId"] for _, body in self.fixes("feed-gate-")],
+                         [f"feed-gate-A00-99-{head[:12]}" for head in heads[:3]])
+        item = self.task_now()
+        self.assertEqual((item["state"], item["refused"], item["job"]), ("waiting", heads[3], "job-4"))
+        self.assertTrue(item["note"].startswith(f"the gate failed again on {heads[3][:12]}: 3 follow-ups in a row failed "
+                                                "this way, so Oby sends no more"), item["note"])
+        self.assertIn("factory/bin/oby-feed --again A00-99", item["note"])
+        self.assertEqual({k: item["stopped"][k] for k in ("reason", "times", "head")},
+                         {"reason": "the gate failed", "times": 3, "head": heads[3]})
+        self.assertEqual(item["stopped"]["message"]["clientRequestId"], f"feed-gate-A00-99-{heads[3][:12]}")
+        self.assertNotIn("owed", item["gate"])
+        said.clear()
+        self.one_pass()
+        self.one_pass()
+        self.assertEqual((len(self.stand.messages), said), (3, []))
+        self.assertEqual(len(self.feed.gate.check_commit.calls), 4)
+
+    # FEEDSTOP-3: a new reason is still tried, and starts a run of its own
+    def test_feedstop_3_a_new_reason_is_still_tried_and_resets_the_run(self):
+        self.stopped_task()
+        self.stand.jobs[JOB]["approvals"] += approvals(NEW, "claude", "codex")
+        self.stand.view = dict(self.stand.view, headRefOid=NEW)
+        self.red()
+        self.one_pass()
+        self.assertEqual([body["clientRequestId"] for _, body in self.stand.messages], [f"feed-gate-A00-99-{NEW[:12]}"])
+        item = self.task_now()
+        self.assertNotIn("stopped", item)
+        self.assertEqual(item["fixRun"], {"reason": "the gate failed", "count": 1})
+        head = self.HEADS[2]
+        self.stand.jobs[JOB]["approvals"] += approvals(head, "claude", "codex")
+        self.stand.view = dict(self.stand.view, headRefOid=head)
+        self.feed.gate.check_commit = gate_result()
+        self.stand.lens = self.CHANGES
+        self.one_pass()
+        self.one_pass()
+        self.assertEqual([body["clientRequestId"] for _, body in self.fixes()], [f"feed-fix-A00-99-{head[:12]}"])
+        self.assertEqual(self.task_now()["fixRun"], {"reason": self.CODE, "count": 1})
+        # two code CHANGES, then one security CHANGES: the third is sent
+        self.afresh("security")
+        self.feed.SAME_REASON = 2
+        heads = self.HEADS[:3]
+        self.lensed(files=(self.VAULT,))
+        changes, passes = "VERDICT: CHANGES\nIt breaks a rule.", "VERDICT: PASS\nnothing to change"
+        self.stand.lens = {"code": {"status": "done", "summary": changes}, "security": {"status": "done", "summary": passes}}
+        self.following_up(heads[1:])
+        self.until(lambda: len(self.fixes()) == 2)
+        self.stand.lens = {"code": {"status": "done", "summary": passes}, "security": {"status": "done", "summary": changes}}
+        self.until(lambda: self.task_now().get("fixRun", {}).get("reason") == "the security review asked for changes")
+        self.assertEqual([body["clientRequestId"] for _, body in self.fixes()],
+                         [f"feed-fix-A00-99-{head[:12]}" for head in heads])
+        self.assertEqual(self.fixes()[2][1]["text"], self.template(heads[2], ("security",)))
+        self.assertNotIn("stopped", self.task_now())
+
+    # FEEDSTOP-4: only the owner's --again sends one more
+    def test_feedstop_4_again_sends_one_more_and_nothing_else_does(self):
+        message = self.stopped_task()
+        saved = (self.feed.FEED / "A00-99.json").read_bytes()
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            self.main("--again", "A00-99")
+        self.assertEqual(out.getvalue(), "A00-99 tries once more at the feeder's next pass\n")
+        self.assertEqual((self.feed.FEED / "A00-99.again").read_text(), "")
+        self.assertEqual((self.feed.FEED / "A00-99.json").read_bytes(), saved)
+        self.feed.one_pass(Namespace(max=3, min_free_gb=0, dry_run=True, account="acct"))
+        self.assertTrue((self.feed.FEED / "A00-99.again").exists())  # --dry-run leaves it
+        self.one_pass()
+        self.assertEqual(self.stand.messages, [(JOB, message)])
+        item = self.task_now()
+        self.assertNotIn("stopped", item)
+        self.assertNotIn("fixOwed", item)
+        self.assertEqual(item["fixRun"], {"reason": self.CODE, "count": 1})
+        self.assertFalse((self.feed.FEED / "A00-99.again").exists())
+        self.one_pass()
+        self.assertEqual(len(self.stand.messages), 1)
+        # a task that isn't stopped, or a key no task has, is refused, and nothing is written
+        for key in ("A00-99", "A00-42", "../A00-99"):
+            with self.subTest(key=key):
+                out, files = io.StringIO(), sorted(os.listdir(self.feed.FEED))
+                with mock.patch("sys.stdout", out), self.assertRaises(SystemExit) as stop:
+                    self.main("--again", key)
+                self.assertEqual(stop.exception.code, 1)
+                self.assertEqual(out.getvalue(), f"{key} isn't stopped: nothing to start again\n")
+                self.assertEqual(sorted(os.listdir(self.feed.FEED)), files)
+        # an again waits for another fix message still owed, which it never replaces: once that one is refused, the
+        # saved message goes; once it is heard, the stop is over and the again is just deleted
+        security = "the security review asked for changes"
+        for answer, sent in (((422, {"error": "no"}), True), ((201, {"id": "job-2"}), False)):
+            with self.subTest(answer=answer[0]):
+                self.afresh(f"again waits {answer[0]}")
+                message = self.stopped_task()
+                other = self.feed.lens_fix("A00-99", ["security"], OLD)
+                item = self.task_now()
+                item["fixOwed"] = {"reason": security, "head": OLD, "message": other}
+                self.feed.save(item)
+                with mock.patch("sys.stdout", io.StringIO()):
+                    self.main("--again", "A00-99")
+                self.stand.message_answers = [answer]
+                self.one_pass()
+                self.assertEqual(self.stand.messages, [(JOB, other)])
+                self.assertTrue((self.feed.FEED / "A00-99.again").exists())
+                self.one_pass()
+                self.assertEqual(self.stand.messages, [(JOB, other)] + [(JOB, message)] * sent)
+                self.assertFalse((self.feed.FEED / "A00-99.again").exists())
+                item = self.task_now()
+                self.assertNotIn("stopped", item)
+                self.assertEqual(item["fixRun"], {"reason": self.CODE if sent else security, "count": 1})
+        # a stopped task with no word from the owner gets nothing
+        self.afresh("no again")
+        self.stopped_task()
+        for _ in range(10):
+            self.one_pass()
+        self.assertEqual(self.stand.messages, [])
+        self.assertIn("stopped", self.task_now())
+
+    # FEEDSTOP-5: the number is the owner's, given by --same-reason
+    def test_feedstop_5_the_limit_is_the_flags(self):
+        for limit, sent in ((1, 1), (5, 5)):
+            with self.subTest(limit=limit):
+                self.afresh(f"limit {limit}")
+                self.feed.SAME_REASON = limit
+                heads = self.HEADS[:sent + 1]
+                self.approved()
+                self.red()
+                self.following_up(heads[1:])
+                self.until(lambda: "stopped" in self.task_now())
+                self.assertEqual([body["clientRequestId"] for _, body in self.fixes("feed-gate-")],
+                                 [f"feed-gate-A00-99-{head[:12]}" for head in heads[:-1]])
+                self.assertEqual(self.task_now()["stopped"]["head"], heads[-1])
+        self.feed.one_pass = lambda args: self.fail("a pass ran with --same-reason 0")
+        err = io.StringIO()
+        with mock.patch("sys.stderr", err), self.assertRaises(SystemExit) as stop:
+            self.main("--same-reason", "0", "--once")
+        self.assertEqual(stop.exception.code, 2)
+        self.assertIn("--same-reason", err.getvalue())
+        self.feed.free_gb = lambda: 100.0
+        with mock.patch("sys.stdout", io.StringIO()):
+            self.main("--same-reason", "2", "--status")
+        self.assertEqual(self.feed.SAME_REASON, 2)
+
+    # FEEDSTOP-6: a fix round's message never carries a review's, GitHub's or an agent's words
+    def test_feedstop_6_fix_messages_carry_no_review_github_or_agent_text(self):
+        heads = self.HEADS[:4]
+        marks = ("MARK-findings", "MARK-lens", "MARK-build", "MARK-title", "MARK-gh")
+        self.lensed(title="a task MARK-title")
+        self.stand.view = dict(self.stand.view, title="MARK-gh", body="MARK-gh")
+        self.stand.jobs[JOB]["summary"] = "STATUS: READY\nMARK-build"
+        self.stand.lens = {"code": {"status": "done", "summary": "VERDICT: CHANGES\nMARK-findings\nMARK-lens"}}
+        self.following_up(heads[1:], summary="STATUS: READY\nMARK-build")
+        self.until(lambda: "stopped" in self.task_now())
+        with mock.patch("sys.stdout", io.StringIO()):
+            self.main("--again", "A00-99")
+        self.one_pass()
+        sent = self.fixes()
+        self.assertEqual([body["clientRequestId"] for _, body in sent],
+                         [f"feed-fix-A00-99-{head[:12]}" for head in heads])
+        for (_, body), head in zip(sent, heads):
+            self.assertEqual(body["text"], self.template(head))
+            for mark in marks:
+                self.assertNotIn(mark, json.dumps(body))
+        self.assertEqual(self.feed.lens_fix("A00-99", ["security", "code"], OLD)["text"],
+                         self.template(OLD, ("code", "security")))
+        self.assertLessEqual(len(self.feed.lens_fix("A00-99", ["code", "proofs", "security", "ui", "ux"], OLD)["text"]), 2000)
+
+    # FEEDSTOP-7: --status says why the task stopped, and how to start it again
+    def test_feedstop_7_status_shows_the_stop(self):
+        self.stopped_task()
+        printed = self.printed_status()
+        self.assertFalse(re.search(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]", printed), repr(printed))
+        lines = printed.splitlines()
+        self.assertTrue(lines[0].startswith("waiting    A00-99"), lines)
+        self.assertEqual(lines[1], f"  stopped: {self.CODE}, 3 follow-ups in a row; factory/bin/oby-feed --again A00-99 "
+                                   "tries once more")
+        self.assertEqual(lines[2:4], ["  code:", "  It breaks."])
 
     # ---- FEEDSPEC: oby-feed runs intake and a spec before each build, and builds against the spec ------------------
 

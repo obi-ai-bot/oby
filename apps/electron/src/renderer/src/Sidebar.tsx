@@ -25,9 +25,9 @@ import { chatFirst, everything } from './lean';
 import { useWaitingCount } from './live';
 import { loadProfiles, openProfile, profileChats, useProfiles } from './profiles';
 import ProfileMenu, { NewProfileModal } from './ProfileMenu';
+import AgentsList, { convoAbout } from './AgentsList';
 import { WELCOME, sampleDid, sampleOut, useSetup } from './onboarding';
 import { SAMPLE_TALK } from './Welcome';
-import { plain } from './Said';
 
 type Section = 'oby' | 'home' | 'conversations' | 'obysphere' | 'settings';
 type StripIcon = (p: { size?: number; weight?: 'regular' | 'fill' }) => React.ReactNode;
@@ -55,17 +55,6 @@ const NEW_ACTION: Partial<Record<Section, { label: string; icon: LucideIcon }>> 
   ...(everything ? {} : { conversations: { label: 'New conversation', icon: Plus } }),
 };
 const SEARCHABLE: Section[] = ['oby', 'conversations'];
-// a conversation's line under its name: the tasks it started, else Oby's last words
-const convoAbout = (c: Chat) => {
-  if (!c.said.length && c.about !== undefined) return c.about;
-  const said = [...c.said].reverse().find((m) => m.who === 'oby' && (m.text || m.askCard));
-  const n = c.said.flatMap((m) => m.jobs ?? []).length;
-  // its tasks' count while nothing newer was said; once one reports, what it said
-  if (n && !said?.text) return `Started ${n} task${n === 1 ? '' : 's'}`;
-  // a question's card: what it says, which is all its turns are now
-  if (said?.askCard) return askCardLine(said.askCard, Date.now()) ?? said.askCard.question;
-  return said ? plain(said.text) : 'Oby is on it';
-};
 
 // The side panel, in two columns: icons on the far left pick a section
 // (chat first: Chats, then each Obysphere you're in, with Settings at the foot;
@@ -122,7 +111,9 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   const convos = useConvos();
   // the open profile's (profiles.ts): on the mock its own conversations, on obid all of them
   const profiles = useProfiles();
-  const chats = profileChats(useChats(), profiles.list, profiles.kept);
+  const withAgents = profileChats(useChats(), profiles.list, profiles.kept);
+  // a helper's conversation is under Agents only (AgentsList), never among the chats
+  const chats = withAgents.filter((c) => !c.helper);
   const shownProfile = profiles.list?.length ? openProfile(profiles.list, profiles.kept) : undefined;
   // the title's menu (ProfileMenu), and New profile…'s form
   const [profileMenu, setProfileMenu] = useState<DOMRect | null>(null);
@@ -138,10 +129,20 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   // any row has one
   const needing = new Set(tasksWith('needs').flatMap((t) => chatOfTask(t.id)?.id ?? []));
   const working = new Set(tasksWith('running').flatMap((t) => chatOfTask(t.id)?.id ?? []));
-  const noRow = tasksWith('needs').some((t) => !t.answer && !chatOfTask(t.id)) || asksWaiting().some((a) => !chats.some((c) => c.id === a.talk));
-  const anyWaits = noRow || needing.size > 0 || chats.some((c) => c.needs);
+  // (an agent's row is a row: what waits in its conversation lights it, and the icon)
+  const noRow = tasksWith('needs').some((t) => !t.answer && !chatOfTask(t.id)) || asksWaiting().some((a) => !withAgents.some((c) => c.id === a.talk));
+  const anyWaits = noRow || needing.size > 0 || withAgents.some((c) => c.needs);
   const waiting = useWaitingCount();
   const [section, setSection] = useState<Section>(SECTIONS[0].id);
+  // chat first, under the title: Projects (Oby and the chats) or Agents (AgentsList); remembered
+  const [side, setSide] = useState<'projects' | 'agents'>(() => {
+    try { return localStorage.getItem('oby.panelSide') === 'agents' ? 'agents' : 'projects'; } catch { return 'projects'; }
+  });
+  const pickSide = (to: 'projects' | 'agents') => {
+    setSide(to);
+    if (to === 'agents') { setSearching(false); setQuery(''); }
+    try { localStorage.setItem('oby.panelSide', to); } catch { /* not remembered, that's all */ }
+  };
   // the Obyspheres you're in (spheres.ts), under the line in the icon strip:
   // an Obysphere (a focused workspace: your Oby with other people's, sharing
   // what the org knows) by its name, under its own logo. Which one is showing
@@ -287,6 +288,8 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     if (!next.delete(name)) next.add(name);
     return next;
   });
+  // the chats are searched, never the agents (Agents has no search)
+  const searchable = SEARCHABLE.includes(section) && !(section === 'oby' && side === 'agents');
   const openSearch = () => {
     if (searching) setQuery('');
     setSearching(!searching);
@@ -471,11 +474,31 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
             </button>
           )}
         </div>
+        {/* chat first: Projects or Agents, under the profile's name (screen 08); the arrow keys move between them */}
+        {section === 'oby' && (
+          <div
+            className="panel-side"
+            role="tablist"
+            aria-label="Projects or agents"
+            onKeyDown={(e) => {
+              if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+              e.preventDefault();
+              e.currentTarget.querySelector<HTMLButtonElement>('[aria-selected="false"]')?.focus();
+              pickSide(side === 'projects' ? 'agents' : 'projects');
+            }}
+          >
+            {(['projects', 'agents'] as const).map((to) => (
+              <button key={to} id={`panel-side-${to}`} role="tab" aria-selected={side === to} aria-controls="panel-side-panel" tabIndex={side === to ? 0 : -1} className={side === to ? 'is-on' : undefined} onClick={() => pickSide(to)}>
+                {to === 'projects' ? 'Projects' : 'Agents'}
+              </button>
+            ))}
+          </div>
+        )}
         {/* how many members it has, you included */}
         {section === 'obysphere' && <p className="sidebar-subtitle">{members} member{members === 1 ? '' : 's'}</p>}
         {/* on the panel icon's row */}
         <div className="sidebar-top">
-          {SEARCHABLE.includes(section) && (
+          {searchable && (
             <button className={`icon-button${searching ? ' is-on' : ''}`} aria-label="Search" aria-expanded={searching} onClick={openSearch}>
               <Search size={17} strokeWidth={1.6} />
             </button>
@@ -528,8 +551,11 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
 
         {/* chat first: Oby first (the empty chat, and all that waits with no row of its own), then
             every conversation with it */}
-        {section === 'oby' && (
-          <div className="sidebar-plain">
+        {section === 'oby' && side === 'agents' && (
+          <AgentsList needing={needing} working={working} profile={shownProfile?.id} activeTalk={activeTalk} onOpenTalk={onOpenTalk} />
+        )}
+        {section === 'oby' && side === 'projects' && (
+          <div className="sidebar-plain" role="tabpanel" id="panel-side-panel" aria-labelledby="panel-side-projects">
             <button className="connector chat-own" onClick={onNewChat}>
               <ObyFace size={32} />
               <span className="connector-text">

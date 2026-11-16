@@ -673,7 +673,8 @@ pub(super) fn shell_quoted(text: &str) -> String {
 /// stays on, its filesystem rules too (`filesystem.disabled`, a key Claude Code 2.1.302 reads),
 /// neither weaker mode, and the [`PINNED_ENV`] values are `env`'s (the run's own), whatever that
 /// file says. What it could add that this can't take back is refused before the run
-/// ([`own_settings_allowed`]).
+/// ([`own_settings_allowed`]). Its commands may bind, accept and connect on loopback (LANES-20), and
+/// Claude Code's setting lets them listen on any address of this Mac, as Oby's box does.
 pub(super) fn own_sandbox_settings(
     spec: &Spec,
     login: &Path,
@@ -739,7 +740,7 @@ pub(super) fn own_sandbox_settings(
                 "allowWrite": names(&writes)?,
                 "denyWrite": names(&kept)?,
             },
-            "network": {"deniedDomains": CODE_HOSTS},
+            "network": {"deniedDomains": CODE_HOSTS, "allowLocalBinding": true},
         },
     })
     .to_string())

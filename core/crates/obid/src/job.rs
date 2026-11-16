@@ -506,8 +506,8 @@ pub struct Job {
     /// The job's worktree, an absolute path, once it exists.
     pub worktree: Option<String>,
     pub obi: Option<ObiRef>,
-    /// The conversation whose plan started it, or none (#493). It keeps the id when that
-    /// conversation is deleted.
+    /// The conversation whose plan started it, or none (#493); for Oby's own review, the reviewed
+    /// job's (TASKCONV-26). It keeps the id when that conversation is deleted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
     /// The user's turn of `conversation` whose words started it, so the conversation shows its

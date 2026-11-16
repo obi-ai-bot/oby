@@ -26,6 +26,7 @@ import { WELCOME, typedFirst } from './onboarding';
 import { openConversation, talkReady, useLimitAsks } from './live';
 import { onObid } from './lean';
 import { box as draftBox } from './drafts';
+import { useHelpers } from './helpers';
 
 // how long the way out takes (the sink animation in app.css)
 const LEAVE_MS = 220;
@@ -74,6 +75,9 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   const convo = kind === 'peer' ? convos.find((c) => c.id === id)! : null;
   if (task) keptTask.current = task;
   if (talk) keptChat.current = talk;
+  // an agent's conversation (helpers.ts): its Oby, in its colour, speaks; the box names it
+  const helpers = useHelpers();
+  const helper = talk?.helper ? helpers.find((h) => h.id === talk.helper) : undefined;
   const limitsOf = useLimitAsks(talk?.id, task?.id), limits = talk || task ? limitsOf : [];
   const name = task ? convoTitle(task.job) : talk ? talk.title : convo!.title;
   const j = task?.job;
@@ -248,7 +252,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                       ? <PeerByline name={(m as Message).by!} />
                       // yours among other people's Obys: named, as theirs are
                       : mine ? <span className="peer-by"><ObyFace size={22} /><span>Your Oby</span></span>
-                      : <span className="msg-face"><Face live={working && i === head && !covered} talk={i === head && !covered ? talking?.text.length : undefined} /></span>)}
+                      : <span className="msg-face"><Face live={working && i === head && !covered} talk={i === head && !covered ? talking?.text.length : undefined} color={helper?.color} /></span>)}
                     {parts}
                     {last && !(m as Message).streaming && !(typing && i === thread.length - 1 && side === 'oby') ? (
                       <div className={`msg-end${end?.type === ThreadTask || end?.type === SetupCard || end?.type === OfferCard || end?.type === AskCard || 'ask' in m || (m as Message).confirm ? ' is-wide' : ''}`}>
@@ -268,7 +272,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                 const cont = writer ? runOf(thread.at(-1) ?? { who: 'you', text: '', ago: 0 }) === `oby:${writer}` : working;
                 return (
                   <div role="listitem" key={thread.length} className={`msg is-oby is-new${cont ? ' is-cont' : ''}`}>
-                    {!cont && (writer ? <PeerByline name={writer} /> : <span className="msg-face"><Face live={!covered} /></span>)}
+                    {!cont && (writer ? <PeerByline name={writer} /> : <span className="msg-face"><Face live={!covered} color={helper?.color} /></span>)}
                     {step && <p className="msg-step" role="status">{step}</p>}
                   </div>
                 );
@@ -308,8 +312,8 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
       )}
       <Composer
         style={{ '--i': 2 } as React.CSSProperties}
-        placeholder={convo ? `Message ${convo.with.length > 1 ? 'the group' : `${writer}’s Oby`}…` : !task ? 'Reply to Oby…' : tellPlaceholder(task, agent)}
-        label={convo ? `Message ${convo.title}` : task ? `Tell the agent about ${task.title}` : 'Reply to Oby'}
+        placeholder={convo ? `Message ${convo.with.length > 1 ? 'the group' : `${writer}’s Oby`}…` : helper ? `Message ${helper.name}…` : !task ? 'Reply to Oby…' : tellPlaceholder(task, agent)}
+        label={convo ? `Message ${convo.title}` : helper ? `Message ${helper.name}` : task ? `Tell the agent about ${task.title}` : 'Reply to Oby'}
         onSend={sendFoot}
         repos={!!talk && !talk.local}
         conversation={talk?.id}
@@ -362,7 +366,8 @@ function Attached({ files = [] }: { files?: { name: string; preview?: string }[]
 // bouncing dots; once its words are in, they run back together into the face
 // live: at work, and in sight (under a page opened over it, it rests: the power budget).
 // talk: its words coming in (their length), while the face has its speech balloon
-const Face = ({ live = false, talk }: { live?: boolean; talk?: number }) => <ObyFaceLive live={live} talk={talk} />;
+// color: an agent's, in its own conversation
+const Face = ({ live = false, talk, color }: { live?: boolean; talk?: number; color?: string }) => <ObyFaceLive live={live} talk={talk} color={color} />;
 
 // A task started in the conversation, as a small card under Oby's message: its title, how it stands
 // and who has it, and its status mark (as in the side panel). While it works, under that, its to-dos

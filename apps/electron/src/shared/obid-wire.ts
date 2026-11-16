@@ -189,6 +189,8 @@ export type Conversation = { id: string; title: string; pinned: boolean; created
   talkAccount?: string | null; talkedOn?: string | null; movedOff?: string | null;
   // what other Obys ask you: never where the app opens (docs/contracts/ask-an-oby.md, ASK-18)
   fromObys?: boolean;
+  // a helper's own conversation: that helper's id (docs/api/helpers.md)
+  helper?: string;
   // one more each time obid sends it changed, as a job's: the higher is the newer; none from an older obid
   revision?: number };
 
@@ -272,6 +274,11 @@ export type Repo = { repo: string; defaultBranch: string; listed: boolean; check
 // obid only: "GET /v1/profiles" (docs/api/profiles.md), a local profile on this Mac: its name and
 // colour, the one obid made first (default), and whether something in it waits on the owner
 export type Profile = { id: string; name: string; color: string; default: boolean; waiting: boolean };
+
+// obid only: "GET /v1/helpers" (docs/api/helpers.md), an assistant of the owner's for one kind of
+// general work, in one profile, with one conversation of its own; the app calls them Agents.
+// tool and connectors are open: a value this build doesn't know is shown as nothing
+export type Helper = { id: string; profile: string; name: string; color: string; instructions: string; tool: string; connectors: string[]; conversation: string; created: string };
 
 // A rule Always allow saved (or a deny), for a repository or `conversations` ("GET /v1/permissions/rules")
 export type SavedRule = { id: string; rule: string; repo: string; decision: 'allow' | 'deny' | (string & {}) };
