@@ -9250,6 +9250,47 @@ mod tests {
         assert_eq!(jobs.get(&next).unwrap().account, "stub");
     }
 
+    /// The review CHATGPT-23's flow starts again for the author `a` in `conversation`.
+    fn review_started_again(conversation: Option<&str>) -> Job {
+        let jobs = jobs_on_a_plan(true, &["stub"]);
+        reviewed_on_the_plan(&jobs, Status::Running);
+        jobs.update("a", |job| {
+            job.conversation = conversation.map(str::to_owned);
+            job.own_conversation = true;
+        });
+        let (sender, _receiver) = watch::channel(Signal::Run);
+        jobs.lock().workers.insert("r1".into(), sender);
+        jobs.background_answered("plan", false);
+        jobs.reviewed("r1");
+        let next = jobs.get("a").unwrap().reviewing.expect("a new review");
+        assert_ne!(next, "r1");
+        jobs.get(&next).unwrap()
+    }
+
+    /// TASKCONV-26: Oby's review started again is in the reviewed job's conversation, with no
+    /// turn of its own, and isn't the owner's own work.
+    #[tokio::test]
+    async fn taskconv_26_a_review_started_again_joins_too() {
+        let review = review_started_again(Some("c1"));
+        assert_eq!(review.review_of.as_deref(), Some("a"));
+        assert_eq!(review.conversation.as_deref(), Some("c1"));
+        assert_eq!(review.turn, None);
+        assert!(!review.own_conversation);
+    }
+
+    /// TASKCONV-27: a job with no conversation stays as it is: its review and its follow-up have
+    /// none, and a follow-up of a job in one is in it.
+    #[tokio::test]
+    async fn taskconv_27_a_job_with_no_conversation_keeps_none() {
+        let review = review_started_again(None);
+        assert_eq!(review.review_of.as_deref(), Some("a"));
+        assert_eq!(review.conversation, None);
+        let mut job = on("j", "fix", "claude", "stub", Status::Done);
+        assert_eq!(follow_up(&job, "w").conversation, None);
+        job.conversation = Some("c1".into());
+        assert_eq!(follow_up(&job, "w").conversation.as_deref(), Some("c1"));
+    }
+
     /// CHATGPT-23: nothing else can take it: the task says what its review waits for.
     #[tokio::test]
     async fn chatgpt_23_a_review_with_nowhere_to_go_says_what_it_waits_for() {

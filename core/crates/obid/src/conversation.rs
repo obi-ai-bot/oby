@@ -1519,13 +1519,13 @@ impl Conversations {
 
 /// What Oby tells a conversation when a job its plan started ends (#351), from the job as its
 /// `job` event sends it: the conversation and the turn's text, or none for a job no conversation
-/// started, one that was dismissed, or one that hasn't ended. The first line is obid's own words:
-/// the job's title, how it ended, its pull request or why it wasn't published. The first line of
-/// its summary, which its agent may have written, follows on a line of its own. Every secret obid
-/// holds is taken out.
+/// started, one that was dismissed, Oby's own review (TASKCONV-28), or one that hasn't ended. The
+/// first line is obid's own words: the job's title, how it ended, its pull request or why it
+/// wasn't published. The first line of its summary, which its agent may have written, follows on
+/// a line of its own. Every secret obid holds is taken out.
 pub fn job_report(job: &Value) -> Option<(String, String)> {
     let conversation = job["conversation"].as_str()?;
-    if !job["dismissed"].is_null() {
+    if !job["dismissed"].is_null() || !job["reviewOf"].is_null() {
         return None;
     }
     let first_line = |key: &str| {
@@ -2431,6 +2431,18 @@ mod tests {
         dismissed["dismissed"] = json!("2026-10-17T00:00:00Z");
         assert_eq!(job_report(&dismissed), None);
         crate::secrets::known().forget("vault TEST_351");
+    }
+
+    /// TASKCONV-28: Oby's own review tells its conversation nothing as it ends; a review the
+    /// owner dispatched there (no `reviewOf`) still does.
+    #[test]
+    fn taskconv_28_obys_review_tells_its_conversation_nothing() {
+        let mut review = json!({"id": "r1", "kind": "review", "title": "Oby review: Fix",
+            "status": "done", "conversation": "c1", "summary": "VERDICT: PASS", "published": null,
+            "publishError": null, "dismissed": null, "reviewOf": "a"});
+        assert_eq!(job_report(&review), None);
+        review["reviewOf"] = json!(null);
+        assert_eq!(job_report(&review).map(|(c, _)| c).as_deref(), Some("c1"));
     }
 
     /// HOME-13: a conversation whose file doesn't read is kept aside in `home/unreadable`, and its
