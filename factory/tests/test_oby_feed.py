@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""factory/bin/oby-feed's own tests (docs/contracts/factory.md, FEEDMODEL-1 to 5; task A00-80, FEED-1 to FEED-6),
-never obid, GitHub, ssh, Quint, the gate VM or the network.
+"""factory/bin/oby-feed's own tests (docs/contracts/factory.md, FEEDMODEL-1 to 5, FEEDALIVE-1 to 6 and FEEDAPPROVE-1
+to 8; task A00-80, FEED-1 to FEED-6), never obid, GitHub, ssh, Quint, the gate VM or the network.
 
 FEED-1 to FEED-6: the feeder's state is a temporary folder; obid's API and every `gh` call are stand-ins that log
 what they were asked and answer as each test sets.
+
+FEEDAPPROVE-1 to 8: the stand-in obid answers `POST /v1/jobs` with an approver job, `approver-<n>`, or gives back the
+one it made under the same clientRequestId (200), as obid's receipts do. The job's `startCommit` is the pull request's
+head when it was asked, and its `status` and `summary` are the stand-in's `approver` until a test sets them; that is
+`done` with `APPROVE`, so a test that merges after two approvals reaches the merge one pass later.
 
 FEEDMODEL-1 to 4: check_models() runs with subprocess.run stubbed: `gh api` returns a model whose first line is a
 `// verify:` line, the `ssh … cat >` and `ssh … rm -f` calls succeed, and each `ssh … quint verify … --invariant=<name> …`
@@ -76,6 +81,10 @@ class StandIns:
         self.graphql = None  # `gh api graphql` with job.QUEUE_READ
         self.merge_code = 0
         self.merge_err = "refused"
+        self.posts = []  # each `POST /v1/jobs` body
+        self.post_answers = []  # answers to the next posts, in order: (code, body), or None for no answer
+        self.approver = {"status": "done", "summary": "APPROVE\n1. met: the stand-in read it"}
+        self.missed = None  # the feeder's OBID_MISSED, for a post with no answer
 
     def api(self, method, path, body=None, timeout=30):
         self.calls.append(("api", method, path))
@@ -84,7 +93,28 @@ class StandIns:
             return (200, found) if found else (404, {"error": "no such job"})
         if method == "DELETE":
             return 204, None
+        if method == "POST" and path == "/v1/jobs":
+            self.posts.append(json.dumps(body, sort_keys=True))
+            if self.post_answers:
+                answer = self.post_answers.pop(0)
+                if answer is None:
+                    self.missed.append(path)
+                    return None, None
+                return answer
+            sent = body["job"]
+            for j in self.jobs.values():
+                if j.get("clientRequestId") == sent["clientRequestId"]:
+                    return 200, j
+            made = {"id": f"approver-{len([j for j in self.jobs if j.startswith('approver-')]) + 1}", "kind": "review",
+                    "pr": sent["pr"], "clientRequestId": sent["clientRequestId"],
+                    "startCommit": (self.view or {}).get("headRefOid"), **self.approver}
+            self.jobs[made["id"]] = made
+            return 201, made
         return 500, {"error": "unexpected"}
+
+    def sent(self):
+        """The `job` of each `POST /v1/jobs`."""
+        return [json.loads(body)["job"] for body in self.posts]
 
     def run(self, cmd, **kwargs):
         self.calls.append(("run", *cmd))
@@ -114,6 +144,7 @@ class ObyFeed(unittest.TestCase):
         self.feed.GH_REPO = REPO
         self.real_api = self.feed.api
         self.feed.api = self.stand.api
+        self.stand.missed = self.feed.OBID_MISSED
         self.feed.subprocess = Namespace(run=self.stand.run)
         self.feed.say = lambda msg: None
 
@@ -198,6 +229,7 @@ class ObyFeed(unittest.TestCase):
         self.task("waiting", head=OLD, refused=OLD)
         self.stand.jobs[JOB]["approvals"] = approvals(OLD, "claude", "codex") + approvals(NEW, "claude", "codex")
         self.stand.view = {"headRefOid": NEW, "state": "OPEN", "files": [{"path": "x.py"}]}
+        self.one_pass()  # its approver first, then the merge on its APPROVE
         self.one_pass()
         item = self.task_now()
         self.assertEqual(self.stand.merges(), [("gh", "pr", "merge", str(PR), "--repo", REPO, "--auto", "--match-head-commit", NEW)])
@@ -221,6 +253,7 @@ class ObyFeed(unittest.TestCase):
         self.stand.jobs[JOB]["approvals"] = approvals(NEW, "claude", "codex")
         self.stand.view = {"headRefOid": NEW, "state": "OPEN", "files": [{"path": "x.py"}]}
         self.stand.merge_code = 1
+        self.one_pass()  # its approver first, then the merge on its APPROVE
         self.one_pass()
         item = self.task_now()
         self.assertEqual(item["state"], "waiting")
@@ -567,6 +600,14 @@ class ObyFeed(unittest.TestCase):
         self.feed.start = lambda task, account, on_base: (started.append(task["key"]) or "job-9", None)
         return started
 
+    def ask_approvers_first(self):
+        """One pass that starts no new task, in which each head approved twice gets its approver, answering APPROVE:
+        the next pass is the one that merges."""
+        ready = self.feed.ready_tasks
+        self.feed.ready_tasks = lambda state: []
+        self.assertIsNotNone(self.one_pass())
+        self.feed.ready_tasks = ready
+
     def test_feedalive_1_github_gone_mid_pass_follows_and_starts_nothing_more(self):
         started = self.two_waiting_and_one_ready()
 
@@ -587,6 +628,7 @@ class ObyFeed(unittest.TestCase):
         self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "x.py"}]}
         self.stand.merge_code = 1
         self.stand.merge_err = "HTTP 502: Bad Gateway (https://api.github.com/graphql)"
+        self.ask_approvers_first()
         self.assertIsNone(self.one_pass())
         self.assertEqual(len(self.stand.merges()), 1)
         self.assertEqual(started, [])
@@ -598,6 +640,7 @@ class ObyFeed(unittest.TestCase):
         self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "x.py"}]}
         self.stand.merge_code = 1
         self.stand.merge_err = 'Post "https://api.github.com/graphql": dial tcp: lookup api.github.com: no such host'
+        self.ask_approvers_first()
         self.assertIsNone(self.one_pass())
         self.assertEqual(len(self.stand.merges()), 1)
         self.assertEqual(started, [])
@@ -816,7 +859,7 @@ class ObyFeed(unittest.TestCase):
                 self.feed.FEED = self.dir / f"feed-{case}"
                 if case != "unanswered":
                     self.task("running")
-                    self.feed.follow = lambda item, jobs: False
+                    self.feed.follow = lambda item, jobs, account: False
                 _, first = self.saved_start("A00-96")
                 self.saved_start("A00-97")
                 new = {"key": "A00-98", "title": "a new task", "body": ""}
@@ -1043,12 +1086,14 @@ class ObyFeed(unittest.TestCase):
         self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "x.py"}]}
         self.stand.merge_code = 1
         self.stand.merge_err = "HTTP 502: Bad Gateway (https://api.github.com/graphql)"
+        self.one_pass()  # its approver first, then the merge on its APPROVE
         self.one_pass()
         item = self.task_now()
         self.assertEqual(item["state"], "waiting")
         self.assertNotIn("refused", item)
         self.assertIn("502", item["note"])
         self.stand.merge_err = "GraphQL: Pull request is not mergeable (enablePullRequestAutoMerge)"
+        self.one_pass()  # its approver's job, given back under the same key, then the merge
         self.one_pass()
         item = self.task_now()
         self.assertEqual(len(self.stand.merges()), 2)
@@ -1064,7 +1109,7 @@ class ObyFeed(unittest.TestCase):
         self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "x.py"}]}
         self.stand.merge_code = 1
         self.stand.merge_err = "error connecting to api.github.com: connection reset"
-        for _ in range(6):
+        for _ in range(12):  # each try is a pass at the approver's job, given back under the same key, then the merge
             self.one_pass()
         self.assertEqual(len(self.stand.merges()), 4)
         self.assertEqual(self.task_now()["refused"], OLD)
@@ -1202,6 +1247,7 @@ class ObyFeed(unittest.TestCase):
             self.assertNotIn("does not hold", item["note"])
             self.assertEqual(self.stand.merges(), [])
             verdict[0] = HOLDS
+            self.assertIsNotNone(self.one_pass())  # its approver first, then the merge on its APPROVE
             self.assertIsNotNone(self.one_pass())
         self.assertEqual(self.task_now()["state"], "merging")
         self.assertEqual(len(self.stand.merges()), 1)
@@ -1219,6 +1265,266 @@ class ObyFeed(unittest.TestCase):
         self.feed.FEED = self.dir / "feed-2"
         self.main("--once")
         self.assertEqual(sent[1]["account"], "deskree-team")
+
+    def approved_twice(self, state, head=OLD, files=("x.py",), **more):
+        """A task whose pull request's head `head` two tools approved."""
+        self.no_ready()
+        self.task(state, **more)
+        self.stand.jobs[JOB]["approvals"] += approvals(head, "claude", "codex")
+        self.stand.view = {"headRefOid": head, "state": "OPEN", "files": [{"path": f} for f in files]}
+
+    def approving(self, head=OLD, status="done", summary="APPROVE\n1. met: it does", start=None, view=None):
+        """A task whose approver job `approver-1`, asked about `head`, is `status` with `summary`, having read `start`."""
+        self.no_ready()
+        self.task("approving", head=head, approver="approver-1", approverHead=head, approved=["claude", "codex"],
+                  approvers=["approver-1"])
+        self.stand.jobs[JOB]["approvals"] = approvals(head, "claude", "codex")
+        self.stand.jobs["approver-1"] = {"id": "approver-1", "kind": "review", "pr": PR, "status": status,
+                                         "summary": summary, "startCommit": head if start is None else start}
+        self.stand.view = {"headRefOid": view or head, "state": "OPEN", "files": [{"path": "x.py"}]}
+
+    # FEEDAPPROVE-1: a head approved twice starts its approver instead of the merge
+    def test_feedapprove_1_a_reviewing_head_approved_twice_starts_the_approver_not_the_merge(self):
+        self.approved_twice("reviewing")
+        self.stand.approver = {"status": "running", "summary": None}
+        self.one_pass()
+        self.assertEqual(len(self.stand.posts), 1)
+        sent = self.stand.sent()[0]
+        self.assertEqual({k: sent[k] for k in ("repo", "kind", "pr", "base", "rounds", "title", "clientRequestId", "account")},
+                         {"repo": REPO, "kind": "review", "pr": PR, "base": self.feed.job.BASE, "rounds": 1,
+                          "title": "A00-99 approver", "clientRequestId": f"feed-approve-A00-99-{OLD[:12]}", "account": "acct"})
+        for absent in ("check", "branch", "model", "agent"):
+            self.assertNotIn(absent, sent)
+        item = self.task_now()
+        self.assertEqual((item["state"], item["approver"], item["approverHead"], item["approved"], item["approvers"]),
+                         ("approving", "approver-1", OLD, ["claude", "codex"], ["approver-1"]))
+        self.assertEqual(self.stand.merges(), [])
+        self.one_pass()
+        self.assertEqual(len(self.stand.posts), 1)
+        self.assertEqual(self.stand.merges(), [])
+        self.assertEqual(self.task_now()["state"], "approving")
+
+    def test_feedapprove_1_a_waiting_task_with_a_new_head_approved_twice_starts_the_approver(self):
+        self.approved_twice("waiting", head=NEW, refused=OLD)
+        self.stand.approver = {"status": "running", "summary": None}
+        self.one_pass()
+        self.assertEqual([s["clientRequestId"] for s in self.stand.sent()], [f"feed-approve-A00-99-{NEW[:12]}"])
+        item = self.task_now()
+        self.assertEqual((item["state"], item["approverHead"], item["approved"]), ("approving", NEW, ["claude", "codex"]))
+        self.assertEqual(self.stand.merges(), [])
+
+    def test_feedapprove_1_account_any_names_no_account_on_the_approver(self):
+        self.approved_twice("reviewing")
+        self.feed.one_pass(Namespace(max=3, min_free_gb=0, dry_run=False, account="any"))
+        self.assertNotIn("account", self.stand.sent()[0])
+
+    def test_feedapprove_1_the_brief_names_the_head_the_base_definition_and_the_task_file(self):
+        item = {"key": "A00-99", "title": "t" * 300, "pr": PR}
+        text = self.feed.approver_brief(item, OLD)
+        self.assertEqual(text, self.feed.approver_brief(dict(item), OLD))
+        self.assertLessEqual(len(text), 2000)
+        for said in (OLD, f"#{PR}", f"git show origin/{self.feed.job.BASE}:.claude/agents/approver.md",
+                     "factory/queue/done/A00-99.md", "APPROVE", "ESCALATE", f"git diff origin/{self.feed.job.BASE}...HEAD"):
+            self.assertIn(said, text)
+        self.assertLessEqual(len(self.feed.approver_brief(dict(item, title="t" * 5000), OLD)), 2000)
+
+    # FEEDAPPROVE-2: APPROVE arms the exact head
+    def test_feedapprove_2_approve_arms_the_head_the_approver_read(self):
+        self.approving(summary="  APPROVE  \n1. met: it does\n2. met: it says so")
+        self.one_pass()
+        self.assertEqual(self.stand.merges(), [("gh", "pr", "merge", str(PR), "--repo", REPO, "--auto", "--match-head-commit", OLD)])
+        item = self.task_now()
+        self.assertEqual((item["state"], item["head"], item["approved"]), ("merging", OLD, ["claude", "codex"]))
+        self.one_pass()
+        self.assertEqual(len(self.stand.merges()), 1)
+
+    # FEEDAPPROVE-3: ESCALATE waits for the owner with its reasons
+    def test_feedapprove_3_escalate_waits_with_its_reasons_and_never_merges_that_head(self):
+        reasons = ["1. met: the feeder asks its approver first", "",
+                   "It adds words a person sees that no Sangam screen shows: \"Ask the owner\".",
+                   "It changes an AGENTS.md rule (Software factory).",
+                   "Decide: whether the factory may merge this by itself."]
+        self.approving(summary="ESCALATE\n" + "\n".join(reasons))
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual((item["state"], item["refused"]), ("waiting", OLD))
+        self.assertEqual(item["escalation"], "\n".join(reasons))
+        self.assertEqual(item["note"], "approved twice, but the approver escalated it to you: " + reasons[0])
+        self.one_pass()
+        self.one_pass()
+        self.assertEqual(self.stand.merges(), [])
+        self.assertEqual(self.stand.posts, [])
+        self.feed.free_gb = lambda: 100.0
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            self.feed.status()
+        lines = out.getvalue().splitlines()
+        self.assertTrue(lines[0].startswith("waiting    A00-99"), lines)
+        self.assertEqual(lines[1:1 + len(reasons)], ["  " + line for line in reasons])
+        self.assertEqual(lines[-1], "# 1 waiting; 100 GB free")
+        self.stand.jobs[JOB]["approvals"] += approvals(NEW, "claude", "codex")
+        self.stand.view = {"headRefOid": NEW, "state": "OPEN", "files": [{"path": "x.py"}]}
+        self.stand.approver = {"status": "running", "summary": None}
+        self.one_pass()
+        self.assertEqual([s["clientRequestId"] for s in self.stand.sent()], [f"feed-approve-A00-99-{NEW[:12]}"])
+        item = self.task_now()
+        self.assertEqual((item["state"], item["approverHead"], item["approvers"]), ("approving", NEW, ["approver-1", "approver-2"]))
+        self.assertEqual(self.stand.merges(), [])
+
+    # FEEDAPPROVE-4: a malformed answer or a broken approver never merges
+    def test_feedapprove_4_a_malformed_answer_or_a_broken_approver_holds_the_head(self):
+        cases = [("done", first, f'its answer\'s first line is "{first}"')
+                 for first in ("Approve", "**APPROVE**", "APPROVE.", "STATUS: READY", "")]
+        cases += [(status, "APPROVE", f"its job ended {status}") for status in ("failed", "stopped", "interrupted")]
+        cases += [("gone", "APPROVE", "its job is gone")]
+        for status, first, why in cases:
+            with self.subTest(status=status, first=first):
+                self.feed.FEED = self.dir / f"feed-{status}-{len(first)}-{first[:2]}"
+                self.stand = StandIns()
+                self.stand.missed = self.feed.OBID_MISSED
+                self.feed.api = self.stand.api
+                self.feed.subprocess = Namespace(run=self.stand.run)
+                self.approving(status=status, summary=first + ("\n1. met: it does" if first else ""))
+                if status == "gone":
+                    del self.stand.jobs["approver-1"]
+                self.one_pass()
+                item = self.task_now()
+                self.assertEqual((item["state"], item["refused"]), ("waiting", OLD))
+                self.assertEqual(item["note"], f"approved twice, but the approver gave no verdict: {why}: merge it yourself or push a new head")
+                self.one_pass()
+                self.assertEqual(self.stand.merges(), [])
+                self.assertEqual(self.stand.posts, [])
+
+    # FEEDAPPROVE-5: a moved head never merges on an old verdict
+    def test_feedapprove_5_an_approve_for_a_head_that_moved_never_merges(self):
+        self.approving(head=OLD, view=NEW)
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual(item["state"], "waiting")
+        self.assertNotIn("refused", item)
+        self.assertTrue(item["note"].startswith("the head moved while the approver read it"), item["note"])
+        self.one_pass()  # approvals of OLD only
+        self.assertEqual((self.stand.posts, self.stand.merges()), ([], []))
+        self.stand.jobs[JOB]["approvals"] += approvals(NEW, "claude", "codex")
+        self.stand.approver = {"status": "running", "summary": None}
+        self.one_pass()
+        self.assertEqual([s["clientRequestId"] for s in self.stand.sent()], [f"feed-approve-A00-99-{NEW[:12]}"])
+        self.assertEqual(self.task_now()["approverHead"], NEW)
+        self.one_pass()
+        self.assertEqual(self.stand.merges(), [])
+        self.stand.jobs["approver-2"].update(status="done", summary="APPROVE\n1. met: it does")
+        self.one_pass()
+        self.assertEqual(self.stand.merges(), [("gh", "pr", "merge", str(PR), "--repo", REPO, "--auto", "--match-head-commit", NEW)])
+
+    def test_feedapprove_5_an_approver_that_read_another_head_never_merges(self):
+        self.approving(head=OLD, start=NEW)
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual(item["state"], "waiting")
+        self.assertNotIn("refused", item)
+        self.assertTrue(item["note"].startswith("the head moved while the approver read it"), item["note"])
+        self.assertEqual(self.stand.merges(), [])
+
+    # FEEDAPPROVE-6: the existing holds come first
+    def test_feedapprove_6_a_security_path_a_failing_model_one_tool_or_a_refused_head_starts_no_approver(self):
+        for case in ("security", "model", "one tool", "refused"):
+            with self.subTest(case=case):
+                self.feed.FEED = self.dir / f"feed-{case}"
+                self.stand = StandIns()
+                self.stand.missed = self.feed.OBID_MISSED
+                self.feed.api = self.stand.api
+                files = {"security": ["x.py", "AGENTS.md"], "model": [PATH]}.get(case, ["x.py"])
+                self.approved_twice("reviewing", files=files, **({"refused": OLD} if case == "refused" else {}))
+                if case == "one tool":
+                    self.stand.jobs[JOB]["approvals"] = approvals(OLD, "claude")
+
+                def run(cmd, **kwargs):
+                    if cmd[:2] == ["gh", "api"] and "contents" in cmd[2]:
+                        return subprocess.CompletedProcess(cmd, 0, "// verify: main=m invariants=safe\n", "")
+                    if cmd[0] == "ssh":
+                        return subprocess.CompletedProcess(cmd, *(VIOLATED[::-1] if VERIFY.search(cmd[-1]) else (0, "")), "")
+                    return self.stand.run(cmd, **kwargs)
+
+                self.feed.subprocess = Namespace(run=run)
+                config = dict(self.feed.job.CONFIG, remote_gate={"ssh_host": "oby-gate"})
+                with mock.patch.object(self.feed.job, "CONFIG", config):
+                    self.one_pass()
+                    self.one_pass()
+                self.assertEqual((self.stand.posts, self.stand.merges()), ([], []))
+                item = self.task_now()
+                if case == "security":
+                    self.assertEqual(item["note"], "approved twice, but it touches a security path (AGENTS.md): merge it yourself")
+                if case == "model":
+                    self.assertEqual(item["note"], f"approved twice, but {PATH}: the invariant safe does not hold")
+                self.assertEqual(item["state"], "reviewing" if case == "one tool" else "waiting")
+
+    # FEEDAPPROVE-7: approver jobs are deleted with the task, and kept while it matters
+    def test_feedapprove_7_a_merged_task_deletes_its_approver_jobs_with_the_rest(self):
+        self.approving(head=NEW)
+        item = self.task_now()
+        item["approvers"] = ["approver-0", "approver-1"]
+        self.feed.save(item)
+        self.stand.view = {"headRefOid": NEW, "state": "MERGED", "files": []}
+        self.feed.oby_jobs = lambda: [{"id": JOB, "kind": "build"}, {"id": "review-1", "reviewOf": JOB},
+                                      {"id": "approver-0", "kind": "review"}, {"id": "approver-1", "kind": "review"},
+                                      {"id": "other", "kind": "build"}]
+        cleanup, api = [], self.feed.api
+
+        def first_delete(method, path, body=None, timeout=30):
+            if method == "DELETE" and not cleanup:
+                cleanup.append(self.task_now()["cleanup"])
+            return api(method, path, body, timeout)
+
+        self.feed.api = first_delete
+        self.one_pass()
+        self.assertEqual(cleanup, [sorted([JOB, "review-1", "approver-0", "approver-1"])])
+        deleted = sorted(c[2] for c in self.stand.calls if c[:2] == ("api", "DELETE"))
+        self.assertEqual(deleted, [f"/v1/jobs/{i}" for i in sorted([JOB, "review-1", "approver-0", "approver-1"])])
+        self.assertEqual(self.task_now()["state"], "merged")
+
+    def test_feedapprove_7_clean_keeps_the_approvers_of_approving_and_waiting_tasks(self):
+        self.task("approving", approver="approver-1", approverHead=OLD, approvers=["approver-1"])
+        self.feed.save({"key": "A00-97", "title": "another", "job": "job-3", "state": "waiting", "pr": 42, "head": OLD,
+                        "refused": OLD, "escalation": "It changes a lane.", "approver": "approver-2", "approvers": ["approver-2"]})
+        self.feed.save({"key": "A00-96", "title": "merged", "job": "job-4", "state": "merged", "pr": 43,
+                        "approvers": ["approver-3"]})
+        self.feed.oby_jobs = lambda: [{"id": i, "kind": k, "status": "done"} for i, k in
+                                      ((JOB, "build"), ("job-3", "build"), ("approver-1", "review"),
+                                       ("approver-2", "review"), ("approver-3", "review"))]
+        self.feed.free_gb = lambda: 100.0
+        self.feed.clean()
+        deleted = sorted(c[2] for c in self.stand.calls if c[:2] == ("api", "DELETE"))
+        self.assertEqual(deleted, ["/v1/jobs/approver-3"])
+
+    # FEEDAPPROVE-8: obid not starting the approver never merges
+    def test_feedapprove_8_an_approver_start_with_no_answer_is_sent_again_unchanged(self):
+        self.approved_twice("reviewing")
+        self.stand.post_answers = [None]
+        self.assertIsNone(self.one_pass())
+        self.assertEqual(self.task_now()["state"], "reviewing")
+        self.one_pass()
+        self.assertEqual(len(self.stand.posts), 2)
+        self.assertEqual(self.stand.posts[0], self.stand.posts[1])
+        self.assertEqual(self.stand.sent()[0]["clientRequestId"], f"feed-approve-A00-99-{OLD[:12]}")
+        item = self.task_now()
+        self.assertEqual((item["state"], item["approver"]), ("approving", "approver-1"))
+        self.assertEqual(self.stand.merges(), [])
+
+    def test_feedapprove_8_a_5xx_keeps_the_task_and_a_4xx_holds_the_head(self):
+        self.approved_twice("reviewing")
+        self.stand.post_answers = [(503, {"error": "obid is restarting"})]
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual(item["state"], "reviewing")
+        self.assertTrue(item["note"].endswith("tried again at the next pass"), item["note"])
+        self.stand.post_answers = [(422, {"error": "pr: no such pull request"})]
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual((item["state"], item["refused"]), ("waiting", OLD))
+        self.assertTrue(item["note"].startswith("approved twice, but obid didn't start the approver: "), item["note"])
+        self.one_pass()
+        self.assertEqual(len(self.stand.posts), 2)
+        self.assertEqual(self.stand.merges(), [])
 
 
 class Stop(Exception):
@@ -1322,7 +1628,7 @@ class CheckModels(unittest.TestCase):
         with mock.patch.object(feed.subprocess, "run", side_effect=run), mock.patch.object(feed.job, "CONFIG", config), \
                 mock.patch.object(feed, "api", return_value=(200, {"approvals": approvals})), \
                 mock.patch.object(feed, "gh_json", return_value=pr), mock.patch.object(feed, "touches_security", return_value=[]):
-            self.assertTrue(feed.follow(item, []))
+            self.assertTrue(feed.follow(item, [], "acct"))
         self.assertEqual(item["state"], "waiting")
         self.assertIn(f"{bad} gave no verdict", item["note"])
         self.assertFalse([cmd for cmd in sent if "touch x" in " ".join(cmd) and cmd[0] == "ssh"], sent)

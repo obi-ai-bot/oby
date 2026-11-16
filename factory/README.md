@@ -121,6 +121,15 @@ that can't run, refuses the advance and pushes nothing. An unpushed branch keeps
 refused as unpushed, for the builder to push. A branch with no `done/` copy, or one whose
 `tasks/` file differs from `dev`'s, is refused as before.
 
+Oby's factory (`bin/oby-feed`, building on the factory's own obid) has an approver step too. When a head is
+approved twice by different tools and passes the security-path and model checks, the feeder starts an approver
+job on obid for that head: a read-only review that follows `.claude/agents/approver.md` as `dev` has it. Only its
+`APPROVE` for that same head arms the merge. `ESCALATE` holds the head for the owner, with the approver's reasons
+in `oby-feed --status`. No verdict (any other first line, a job that failed or is gone) holds the head too, and a
+head that moved while the approver read it needs two fresh approvals and a fresh `APPROVE`. Until Oby's factory
+has a spec step, the approver checks the task file's own acceptance list. Its contract is FEEDAPPROVE in
+`docs/contracts/factory.md`.
+
 ## From AGENTS.md
 
 From the root [AGENTS.md](../AGENTS.md)'s "Software factory".
