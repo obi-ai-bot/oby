@@ -652,6 +652,24 @@ impl Jobs {
         self.by_room(accounts, first.as_deref())
     }
 
+    /// When a signed-in account a usage limit holds from side calls takes them again, the soonest
+    /// as far as obid knows ([`crate::limits::holds::Holds::held`]), so triage tries again then
+    /// (B00-15); `None` when no such account says when.
+    pub fn quick_free_at(&self, now: i64) -> Option<i64> {
+        let (home, any) = (login_home(), Work::new(None, None, true));
+        Tool::ALL
+            .into_iter()
+            .filter(|tool| self.agent_bin(*tool).is_some())
+            .flat_map(|tool| self.accounts(tool).into_iter().map(move |a| (tool, a)))
+            .filter(|(tool, a)| {
+                !self.being_changed(&a.id)
+                    && signed_in(*tool, a, home.as_deref())
+                    && self.takes_background(a)
+            })
+            .filter_map(|(_, a)| self.holds().held(&a.id, &any, now)?.1)
+            .min()
+    }
+
     /// `accounts` the most room first, for a move (LIMITS-15, 19) and a new job (USAGE-11): `first`
     /// (the owner's default) while it's there, then the fullest window each reports now (one reset
     /// since reads empty, USAGE-10) emptiest, those reporting none (an API key, a ChatGPT login,
@@ -1144,6 +1162,18 @@ mod tests {
         assert_eq!(ids(), ["x"], "the held default neither leads nor is taken");
         jobs.usage.record("x", &read(0.97));
         assert!(ids().is_empty(), "no account with room: none");
+        // Triage tries again at the soonest reset a held account reports.
+        let now = obi_protocol::time::now();
+        assert_eq!(jobs.quick_free_at(now), None, "no reset known");
+        let resets = |five, at| crate::usage::Usage {
+            five_hour_resets: Some(at),
+            ..read(five)
+        };
+        jobs.usage.record("c1", &resets(0.96, now + 900));
+        jobs.usage.record("x", &resets(0.97, now + 600));
+        assert_eq!(jobs.quick_free_at(now), Some(now + 600));
+        jobs.usage.record("x", &resets(0.5, now + 600));
+        assert_eq!(ids(), ["x"]);
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -485,6 +485,15 @@ where
     (items.iter().map(|i| i.id.clone()).zip(out).collect(), asked)
 }
 
+/// How often triage, with no account to sort, looks again when none says when it takes work.
+const RECHECK: i64 = 300;
+
+/// When triage, with no account to sort, tries again: when the soonest held one is `free` (B00-15),
+/// at most [`RECHECK`] from `now`.
+fn retry_at(free: Option<i64>, now: i64) -> i64 {
+    free.map_or(now + RECHECK, |at| at.min(now + RECHECK))
+}
+
 /// Sorts what no rule can, in the background, with the brain's quick model: soon after such an item
 /// comes, at most one call a minute and [`PER_HOUR`] an hour, on any tool's signed-in account with
 /// the most room (B00-15). With none, nothing is scanned or sent: the items stay `pending`, saying
@@ -562,8 +571,13 @@ pub fn spawn(shared: Arc<Shared>) {
             {
                 next = Some(next.map_or(due, |at: i64| at.min(due)));
             }
-            // Nothing to do until then, a new item to sort, or (with none to sort it) an account.
+            // Nothing to do until then, a new item to sort, or (with none to sort it) an account,
+            // or one a usage limit held taking work again, which no event tells.
             let stuck = !waiting.is_empty() && brain.is_none();
+            if stuck {
+                let again = retry_at(shared.jobs.quick_free_at(now), now);
+                next = Some(next.map_or(again, |at: i64| at.min(again)));
+            }
             let until = next.map(|at| {
                 tokio::time::Instant::now() + Duration::from_secs((at - now).max(0) as u64)
             });
@@ -912,6 +926,15 @@ mod tests {
             (sorts.get(&assigned), sorts.why(&assigned)),
             (NEEDS_YOU, None)
         );
+    }
+
+    /// B00-15: with every account held by a usage limit, triage tries again at the soonest reset
+    /// one reports, and within [`RECHECK`] when none says when, since no event tells of a reset.
+    #[test]
+    fn with_every_account_held_triage_tries_again_at_its_reset() {
+        assert_eq!(retry_at(Some(1060), 1000), 1060);
+        assert_eq!(retry_at(None, 1000), 1000 + RECHECK);
+        assert_eq!(retry_at(Some(1000 + 18_000), 1000), 1000 + RECHECK);
     }
 
     /// An item only the model can sort is `pending` until it has, at most `pending_seconds`; then
