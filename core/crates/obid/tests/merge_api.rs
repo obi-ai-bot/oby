@@ -3560,8 +3560,11 @@ fn merging_24_a_follow_ups_push_settles_the_tasks_open_card() {
     assert_eq!(open[0]["id"], card["id"]);
     assert!(!settled["done"].is_null(), "{settled}");
     assert!(settled["answer"].is_null(), "{settled}");
-    let task = job(&obid);
-    assert_eq!(task["mergeNeedsYou"], false, "{task}");
+    // The card settles for its task (TASKS-27) as soon as the follow-up's opens; the task's own
+    // record follows on the follower's next pass over it.
+    let task = within(30, "the task asks nothing", || {
+        Some(job(&obid)).filter(|t| t["mergeNeedsYou"] == false)
+    });
     assert_eq!(task["mergeError"], Value::Null, "{task}");
 }
 
