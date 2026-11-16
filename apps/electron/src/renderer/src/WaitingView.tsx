@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { BrandMark } from './brands';
 import { useScrollThumb } from './useScrollThumb';
 import { agentOf, ago } from './view';
-import { allowWaiting, answerWaiting, approvingTools, homeAsk, itemAsk, mergeWaiting, projectOf, questionOf, shownId, useLive, waitingOf } from './live';
+import { allowWaiting, answerWaiting, approvingTools, homeAsk, itemAsk, mergeWaiting, projectOf, questionOf, reviewOf, shownId, useLive, waitingOf } from './live';
+import { ReviewBlock } from './AskStack';
 import { QuestionBlock } from './QuestionCard';
 import { AskBlock } from './TaskCard';
 import { ALLOW_ONCE } from '../../shared/words';
@@ -97,6 +98,8 @@ function WaitingRow({ item: i, onOpenTask, onOpenTalk }: { item: InboxItem; onOp
   const merges = kind === 'merge' && i.options.includes('Merge');
   const card = kind !== 'merge' && !permits && !opens;
   const question = card ? questionOf(i) : undefined;
+  // another Oby's review request: all it quotes (goal, summary, conditions) before its answers
+  const request = card ? reviewOf(i) : undefined;
   const answers = kind === 'merge' && !merges ? i.options : [];
   const meta = [project ? name(project) : 'No project', ago((Date.now() - Date.parse(i.created)) / 60_000)].join(' · ');
   return (
@@ -105,7 +108,7 @@ function WaitingRow({ item: i, onOpenTask, onOpenTalk }: { item: InboxItem; onOp
       <div className="waiting-text">
         <h2 className="waiting-title">{j?.title ?? i.title}</h2>
         <p className="waiting-meta">{meta}</p>
-        {card && (question ? <QuestionBlock question={question} /> : <AskBlock task={{ id: i.id, job: { ask: homeAsk(i) } }} />)}
+        {card && (question ? <QuestionBlock question={question} /> : request ? <ReviewBlock review={request} /> : <AskBlock task={{ id: i.id, job: { ask: homeAsk(i) } }} />)}
         {!card && <>
         <p className="waiting-about">{ask.headline}{ask.text ? ` ${ask.text}` : ''}</p>
         {summary && <p className="waiting-summary">{summary}</p>}

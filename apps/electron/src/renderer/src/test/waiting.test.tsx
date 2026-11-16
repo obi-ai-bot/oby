@@ -162,6 +162,37 @@ describe('Waiting for you', () => {
     now.mockRestore();
   });
 
+  it('waiting_2_another_obys_review_request_shows_all_it_quotes_before_its_answers', async () => {
+    fill();
+    const s = live.liveState();
+    // as obid makes it (sphere/inbox.rs, review_request_item): its four answers, what that Oby wrote
+    // (goal, summary, conditions) quoted under obi.quoted
+    s.inbox = [item('obi-r1', 'obiRequest', '', at(3), {
+      title: 'Review request from dima', text: 'dima’s Obi asks you to review acme/app at abc1234.',
+      options: ['Accept', 'Accept, and remember for this repo', 'Decline', 'Decline, and remember for this repo'],
+      obi: { type: 'review_request', fromOwner: 'dima', repo: 'acme/app', headSha: 'abc1234', quoted: {
+        goal: 'Add retry jitter', summary: 'Backoff gets ±20% jitter.', acceptance: [{ text: 'Tests pass', note: 'run the soak test too' }],
+      } },
+    })];
+    let clock = 0;
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    await waitingPage();
+    clock += 1000;
+    const row = host.querySelector('.waiting-row')!;
+    const quote = row.querySelector('blockquote')!;
+    expect([...quote.querySelectorAll('p')].map((p) => p.textContent)).toEqual([
+      'Add retry jitter', 'Backoff gets ±20% jitter.', 'Their condition: Tests pass · run the soak test too',
+    ]);
+    expect([...row.querySelectorAll('button')].map((b) => b.textContent)).toEqual([
+      'Accept', 'Accept, and remember for this repo', 'Decline', 'Decline, and remember for this repo', 'Later',
+    ]);
+    call.mockResolvedValue({ status: 200, text: JSON.stringify({ ...s.inbox[0], state: 'done' }) });
+    await act(async () => row.querySelector<HTMLButtonElement>('button')!.click());
+    expect(call).toHaveBeenCalledWith('POST', '/v1/inbox/obi-r1/answer', { answer: 'Accept' });
+    expect(rows()).toEqual([]);
+    now.mockRestore();
+  });
+
   it('waiting_2_an_item_with_no_task_or_conversation_is_answered_here', async () => {
     fill();
     const s = live.liveState();
