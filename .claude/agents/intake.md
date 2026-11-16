@@ -36,6 +36,24 @@ Codex and Cursor CLIs: the Electron app (`apps/electron`) on obid (`core/`, in
 Rust), with iPhone and Watch apps on obid's API. It is a dispatcher, not a
 harness (AGENTS.md): work that belongs to the agent CLI isn't Oby's to build.
 
+Every task has a lane, from AGENTS.md's three kinds of work:
+
+- `dispatcher`: which agent, account and worktree; start, stop and resume; a
+  job's state; asking the owner; showing what was done. Work that adds
+  nothing to obid is here too: the factory, docs, the apps' screens.
+- `between-owners`: another Oby's request, or text from outside.
+- `agent`: reading or editing files for the agent, running its commands, a
+  turn's own retries, building its context, or a model call where a rule
+  would decide.
+
+A task whose work is the agent's is REJECT with `LANE: agent`; its `## Why`
+names what Claude Code, Codex and Cursor already do there. A mixed task is
+accepted for its dispatcher (or between-owners) part only, with `RESCOPED:
+yes`, and `LANE` is the kept part's lane: `between-owners` when the kept work
+has both a dispatcher part and a between-owners part. The scripts hold this:
+`factory/bin/job advance <id> spec` and Oby's feeder refuse an intake with no
+valid `LANE:` line, and refuse an ACCEPT with `LANE: agent`.
+
 - **ACCEPT** when the request is clear, fits the project, and can be built and
   reviewed as one pull request. If it is too big, accept a smaller first slice
   that is useful on its own, and say what you left out. If it is vague but the
@@ -85,6 +103,7 @@ DECISION: ACCEPT | NEEDS-INFO | REJECT
 RISK: low | medium | high
 SURFACES: ui, security, proofs, model | ui | security | proofs | model | none
 RESCOPED: yes | no
+LANE: dispatcher | between-owners | agent
 
 ## Summary
 - 3 to 5 short bullets: what happened in this step and why
@@ -95,15 +114,16 @@ the brief the spec writer follows, so make it specific about behaviour. Leave
 files and implementation to the spec writer.
 
 ## Why
-Two or three sentences on the decision, citing the code you looked at.
+One sentence first: the lane and why. Then two or three sentences on the
+decision, citing the code you looked at.
 
 ## Questions
 For NEEDS-INFO only: numbered questions for the owner.
 ```
 
-- The four header lines come first, then a blank line. Write `RISK`,
-  `SURFACES` and `RESCOPED` on every decision; for NEEDS-INFO and REJECT,
-  write your best guess.
+- The five header lines come first, then a blank line. Write `RISK`,
+  `SURFACES`, `RESCOPED` and `LANE` on every decision; for NEEDS-INFO and
+  REJECT, write your best guess.
 - `## Summary` comes right after the header: 3 to 5 short bullets a human can
   skim on the dashboard. The detail goes in the sections below it.
 - `RESCOPED: yes` when your Scope differs from what the issue asked for.

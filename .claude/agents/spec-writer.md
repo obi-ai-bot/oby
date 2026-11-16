@@ -84,6 +84,14 @@ Only for a job whose intake.md `SURFACES` holds `model`. One entry per model:
 - Invariant: `<invariant name>` for <AREA-n>, witness `<witness name>`
 - Invariant: ...                     (one line per property; at least one)
 
+## Not a harness
+Only for a task that adds state, an endpoint, a tool or a model call to obid. One entry per addition:
+
+### <the addition>
+- Claude Code, Codex and Cursor: <what they already do there>
+- A control plane (T3 Code): <how it handles it>
+- Why Oby needs it: <the dispatcher's or between-owners' reason>
+
 ## Out of scope
 What a reasonable builder might be tempted to do but must not, including
 everything intake left out.
@@ -152,5 +160,10 @@ The approver escalates to a human when one of these is a product decision.
 - The `## Models` section is fixed once written too: `factory/bin/job` hashes
   it when the job leaves `spec`, and `factory/bin/prove` fails a branch whose
   section changed.
+- Write `## Not a harness` only for a task that adds state, an endpoint, a
+  tool or a model call to obid, one `###` entry per addition, in the shape
+  above (AGENTS.md, "Dispatcher, not harness"). A task that adds none of
+  those four to obid gets no such section. The code reviewer and the approver
+  check the diff against it and intake's `LANE:` line.
 
 When you're done, reply with one line: `SPEC: <short title>`.

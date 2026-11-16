@@ -20,6 +20,10 @@
 - [ ] stored job and config files on disk
 - [ ] the check (`scripts/oby-check.sh`, `tools/oby-check-blok`, `factory/checks.sh`)
 
+## Dispatcher, not harness
+
+<!-- The lane: `dispatcher`, `between-owners` or `agent` (AGENTS.md, "Dispatcher, not harness"). Then, for each state, endpoint, tool or model call this adds to obid, what Claude Code, Codex and Cursor already do there and why Oby still needs it; "none" when it adds nothing to obid. -->
+
 ## Checks run
 
 <!-- The commands you actually ran and what they printed (AGENTS.md, "How we work"). -->
