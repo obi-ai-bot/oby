@@ -164,6 +164,15 @@ approver still checks the task file's own acceptance list, not the spec's, as `d
 a task whose file isn't on `dev` is held for the owner. Their contracts are FEEDLENS and FEEDAPPROVE in
 `docs/contracts/factory.md`.
 
+A lens's `VERDICT: CHANGES` also sends the build job one fix message, its fix round, in fixed words: the lenses, the
+head and their prompts on `dev`, never the findings, so the build reviews its own branch as those lenses would. That
+message and the gate's fix message are the feeder's follow-ups, each with its reason (`the code review asked for
+changes`, `the gate failed`). Once the last three follow-ups in a row went out for the same reason (`oby-feed
+--same-reason N` changes the three), the next failure for it sends nothing: the task waits, its head held, and its note
+says once why and what would start it again, as `oby-feed --status` does. A failure for another reason is still sent,
+and `oby-feed --again KEY`, the owner's word, sends the one message the stop held back at the feeder's next pass. Its
+contract is FEEDSTOP in `docs/contracts/factory.md`.
+
 ## From AGENTS.md
 
 From the root [AGENTS.md](../AGENTS.md)'s "Software factory".
