@@ -81,7 +81,7 @@ Every line of the root `AGENTS.md` at `3ff84b79` that states a rule (each bullet
 - `AGENTS.md`: `claudeOwnSandbox` is accepted and ignored (LANE-9). Each step changes those rules in the same pull request.
 
 ### L48
-- `AGENTS.md`: The Rust core's production lines outside the Sphere stay under `obid_lines_limit` in `scripts/oby-check.sh`, or the check fails. A cut lowers the limit, and the owner's word raises it. A raise of it or `jobs_rs_limit` comes in a pull request of its own, a `# payback:` line directly above it naming the issue or task whose cut repays it (docs/contracts/ci.md, CI-39 to 41).
+- `AGENTS.md`: `jobs.rs` may only shrink (`jobs_rs_limit` in `scripts/oby-check.sh`); a raise of it comes in a pull request of its own, a `# payback:` line directly above it naming the issue or task whose cut repays it (docs/contracts/ci.md, CI-39 to 41). The Rust core's total lines are reported, never limited ([why](docs/decisions/2026-11-16-obid-lines-reported.md)).
 
 ### L49
 - `AGENTS.md`: obid's tests may only lose `thread::sleep`/`time::sleep` calls (`tests_sleep_limit` in `scripts/oby-check.sh`, docs/contracts/ci.md): a test waits for state with `support::within`.
