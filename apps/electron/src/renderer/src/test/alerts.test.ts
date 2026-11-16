@@ -9,6 +9,7 @@ import { fresh, launch, mac, served, titles } from './macAlerts';
 // quit and launched again over the same app folder, drawing what obid's GET /v1/alerts serves.
 
 const SAID = () => join(mac.userData, 'alerts-said-v2.json');
+const SETTINGS = () => join(mac.userData, 'settings.json');
 const permission = served('p1', { title: 'Run npm test?', category: 'permission', item: 'p1', answers: ['Allow', 'Deny'] });
 
 beforeEach(fresh);
@@ -263,5 +264,103 @@ describe('ALERTS-10', () => {
     expect(page.inbox).toEqual([]);
     await vi.waitFor(() => expect(mac.posted[0].closed).toBe(true), { timeout: 5000 });
     expect(mac.badge).toBe('');
+  });
+});
+
+describe('ALERTS-15', () => {
+  it('alerts_15_a_switch_off_leaves_its_kind_out_of_the_read', async () => {
+    // on by default: every kind asked for, in order
+    await launch();
+    expect(mac.alertPaths.at(-1)).toBe('/v1/alerts?fyi=finished,merged,limit');
+    // merged turned off, as settings.json keeps it
+    writeFileSync(SETTINGS(), JSON.stringify({ notifyMerged: false }));
+    await launch();
+    expect(mac.alertPaths.at(-1)).toBe('/v1/alerts?fyi=finished,limit');
+    // all three off: the plain list, as obid serves it to the phones
+    writeFileSync(SETTINGS(), JSON.stringify({ notifyFinished: false, notifyMerged: false, notifyLimit: false }));
+    await launch();
+    expect(mac.alertPaths.at(-1)).toBe('/v1/alerts');
+  });
+});
+
+describe('ALERTS-18', () => {
+  const finished = served('j1', { what: 'end:1900000000', title: 'Done: Fix it', body: 'Fixed it.', category: 'job', thread: 'jobs', job: 'j1',
+    conversation: 'c1', urgent: false, answers: ['Allow'], fyi: 'finished' });
+  const resets = '2030-03-14T15:30:00Z';
+  const limit = served('account:work', { what: `limit:${Date.parse(resets) / 1000}`, title: 'Work reached its limit', body: `It resets ${resets}.`,
+    category: 'job', thread: 'accounts', urgent: false, fyi: 'limit', account: 'work', resets });
+
+  it('alerts_18_a_finished_task_alerts_with_no_button_and_no_badge', async () => {
+    await launch();
+    mac.served = [finished];
+    await launch();
+    expect(mac.posted).toHaveLength(1);
+    expect(mac.posted[0]).toMatchObject({ title: 'Done: Fix it', body: 'Fixed it.', groupId: 'jobs', actions: [] });
+    expect(mac.badge).toBe('');
+  });
+
+  it('alerts_18_a_click_opens_its_conversation_or_settings_agents', async () => {
+    await launch();
+    mac.served = [finished, limit];
+    await launch();
+    expect(titles()).toEqual(['Done: Fix it', 'Work reached its limit']);
+    mac.posted[0].click();
+    mac.posted[1].click();
+    expect(mac.opened).toEqual([{ conversation: 'c1' }, { settings: 'agents' }]);
+  });
+
+  it('alerts_18_a_limit_alert_shows_its_reset_in_local_time', async () => {
+    await launch();
+    mac.served = [limit];
+    await launch();
+    const local = new Date(resets).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+    expect(mac.posted[0].body).toBe(`It resets ${local}.`);
+    // a reset it can't read: obid's own words
+    mac.served = [{ ...limit, what: 'limit:unknown', body: 'Its reset time is unknown.', resets: 'soon' }];
+    await launch();
+    expect(mac.posted[0].body).toBe('Its reset time is unknown.');
+  });
+
+  it('alerts_18_fyi_in_front_never_alerts_later', async () => {
+    await launch();
+    // served while the window is in front: on screen, so said with no banner
+    mac.front = true;
+    mac.served = [finished];
+    const notify = await launch();
+    expect(mac.posted).toEqual([]);
+    mac.front = false;
+    notify.windowLeft();
+    expect(mac.posted).toEqual([]);
+    // it was said, so no later look posts it
+    expect(JSON.parse(readFileSync(SAID(), 'utf8'))).toEqual({ j1: 'end:1900000000' });
+  });
+
+  it('alerts_18_turning_a_kind_on_alerts_nothing_already_there', async () => {
+    writeFileSync(SETTINGS(), JSON.stringify({ notifyFinished: false }));
+    await launch();
+    mac.served = [];
+    await launch();
+    // turned on: the list read next already holds a finished task, which is no news
+    mac.served = [finished];
+    expect(mac.ask('notification-kinds', { finished: true })).toEqual({ finished: true, merged: true, limit: true });
+    await vi.waitFor(() => expect(mac.alertPaths.at(-1)).toBe('/v1/alerts?fyi=finished,merged,limit'));
+    await vi.waitFor(() => expect(JSON.parse(readFileSync(SAID(), 'utf8'))).toEqual({ j1: 'end:1900000000' }));
+    expect(mac.posted).toEqual([]);
+    // what comes later alerts
+    mac.served = [finished, { ...finished, key: 'j2', what: 'end:1900000100', title: 'Done: Ship it' }];
+    mac.event('job', { id: 'j2', title: 'Ship it', status: 'done' });
+    await vi.waitFor(() => expect(titles()).toEqual(['Done: Ship it']), { timeout: 5000 });
+  });
+
+  it('alerts_18_the_three_switches_are_kept_and_on_by_default', async () => {
+    await launch();
+    expect(mac.ask('notification-kinds')).toEqual({ finished: true, merged: true, limit: true });
+    expect(mac.ask('notification-kinds', { merged: false })).toEqual({ finished: true, merged: false, limit: true });
+    expect(JSON.parse(readFileSync(SETTINGS(), 'utf8'))).toMatchObject({ notifyMerged: false });
+    // anything else is refused
+    for (const bad of [{ merged: 'no' }, { sound: true }, [true], 'merged', null]) expect(mac.ask('notification-kinds', bad)).toBe(null);
+    // and kept for the next launch
+    await launch();
+    expect(mac.ask('notification-kinds')).toEqual({ finished: true, merged: false, limit: true });
   });
 });

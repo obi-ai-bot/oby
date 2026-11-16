@@ -35,7 +35,7 @@ The business behavior contract for the MCP protocol plumbing that obid's servers
 
 ### Tools and their gates
 
-Every tool an agent can call on the three servers is one entry (`mcp::Tool`): its name, its server and four gates, each written out on every entry (no default, no entry built from another). A conversation's and the broker's entries also carry the tool's description, input schema and handler; Tetrix's tools are described by Tetrix's own listing and forwarded.
+Every tool an agent can call on the three servers is one entry (`mcp::Tool`): its name, its server and four gates, each written out on every entry (no default, no entry built from another). A conversation's and the broker's entries also carry the tool's description, input schema and handler; Tetrix's tools are described by Tetrix's own listing and forwarded. A helper's conversation is offered and allowed only its granted connectors' tools ([helpers.md](helpers.md)).
 
 - **`confirm_unless_owners_word`:** on a turn that isn't the owner's own word (their words this turn signed by an app of theirs, nothing untrusted read, someone watching), the turn asks for the owner's OK at most 10 times; past that the call answers `Oby asks for the owner's OK at most 10 times in one turn: …`. The Confirm card itself is the handler's, with its own title and text.
 - **`owner_only`:** the tool is given only to the owner's own work. The broker lists and answers `oby_ask_owner` only for a job whose agent asks the owner through Oby (the owner's own job, not a review, a Codex or Cursor job); Tetrix's tools are given only to the owner's own jobs (`Jobs::tetrix_for`, and the route refuses another Oby's job).

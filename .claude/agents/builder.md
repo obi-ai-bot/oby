@@ -59,8 +59,8 @@ other jobs.
   conflicts.
 - Make the simplest change that fully meets the spec. No fallbacks, hidden
   defaults or extras the spec doesn't ask for.
-- Never raise `obid_lines_limit` or `jobs_rs_limit` in `scripts/oby-check.sh`:
-  raising one is the owner's word. If the change can't fit, write a BLOCKED
+- Never raise `jobs_rs_limit` in `scripts/oby-check.sh`:
+  raising it is the owner's word. If the change can't fit, write a BLOCKED
   build.md that says by how many lines.
 - Never modify or delete an existing file that matches `protected_paths` in
   `factory/config.json`; the gate fails the branch if you do. If the spec

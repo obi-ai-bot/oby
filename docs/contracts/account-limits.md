@@ -10,7 +10,7 @@ The business behavior contract for what happens when an account reaches its usag
 
 ## The owner's decisions of 2026-11-10
 
-Wellington, the owner, decided on 2026-11-10, replacing #1563's ask for jobs: "If the limit is reached it should just send it to another available account with limits." And, correcting the first brief: "It should wait when there is no room on any other account." So no job asks about a limit: it moves where there's room, else waits for room. `accountFailover` (`PUT /v1/settings/jobs`, on by default) turns the move off; the wait stays. The same day he raised the Rust core's line limit (`obid_lines_limit` in `scripts/oby-check.sh`) from 95,000 to 95,500 for this change.
+Wellington, the owner, decided on 2026-11-10, replacing #1563's ask for jobs: "If the limit is reached it should just send it to another available account with limits." And, correcting the first brief: "It should wait when there is no room on any other account." So no job asks about a limit: it moves where there's room, else waits for room. `accountFailover` (`PUT /v1/settings/jobs`, on by default) turns the move off; the wait stays.
 
 ## The owner's decision of 2026-11-02
 

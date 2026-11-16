@@ -2567,10 +2567,62 @@ fn titled_asking(obid: &Obid, calls: Value) -> String {
 
 /// `GET /v1/alerts`' entries about job `id`.
 fn alerts_of(obid: &Obid, id: &str) -> Vec<Value> {
-    let answer = call(obid, "GET", "/v1/alerts", None);
+    alerts_at(obid, "/v1/alerts", id)
+}
+
+/// The entries about job `id` that `path`, a form of `GET /v1/alerts`, lists.
+fn alerts_at(obid: &Obid, path: &str, id: &str) -> Vec<Value> {
+    let answer = call(obid, "GET", path, None);
     assert_eq!(answer.status, 200, "{}", answer.text);
     let all = answer.body.as_array().unwrap().clone();
     all.into_iter().filter(|a| a["job"] == id).collect()
+}
+
+/// A job whose agent asked, denied, then ended done with nothing to decide: its id.
+fn denied_and_done(obid: &Obid) -> String {
+    let id = titled_asking(obid, json!([bash("swift test")]));
+    let waiting = waiting_for(obid, &id, "Run swift test");
+    let permission = waiting["permission"]["id"].as_str().unwrap();
+    let deny = call(
+        obid,
+        "POST",
+        &format!("/v1/jobs/{id}/permission"),
+        Some(&json!({"id": permission, "decision": "deny"})),
+    );
+    assert_eq!(deny.status, 200, "{}", deny.text);
+    ended_ok(obid, &id);
+    id
+}
+
+/// ALERTS-15: the Mac's Finished switch, `fyi=finished`, lists a task that ended done with
+/// nothing to decide, as FYI with no answers; the other two switches don't.
+#[test]
+fn alerts_15_the_finished_switch_brings_a_done_task() {
+    let folder = Folder::new("alerts-finished");
+    let (obid, _) = obid(&folder);
+    let id = denied_and_done(&obid);
+    let listed = alerts_at(&obid, "/v1/alerts?fyi=finished", &id);
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0]["fyi"], "finished");
+    assert_eq!(listed[0]["key"], id.as_str());
+    assert_eq!(listed[0]["title"], "Done: Alerts as data");
+    assert_eq!(listed[0]["urgent"], false);
+    assert_eq!(listed[0]["answers"], json!([]));
+    assert!(listed[0]["what"].as_str().unwrap().starts_with("end:"));
+    let others = alerts_at(&obid, "/v1/alerts?fyi=merged,limit", &id);
+    assert_eq!(others, Vec::<Value>::new());
+}
+
+/// ALERTS-17: without `fyi`, or with none of its words, `GET /v1/alerts` lists what it always
+/// did: nothing for a task done with nothing to decide.
+#[test]
+fn alerts_17_the_list_without_fyi_is_unchanged() {
+    let folder = Folder::new("alerts-no-fyi");
+    let (obid, _) = obid(&folder);
+    let id = denied_and_done(&obid);
+    for path in ["/v1/alerts", "/v1/alerts?fyi=", "/v1/alerts?fyi=nonsense"] {
+        assert_eq!(alerts_at(&obid, path, &id), Vec::<Value>::new(), "{path}");
+    }
 }
 
 /// ALERTS-1: `GET /v1/alerts` is obid's gate as data: a job's agent waiting for an OK is one

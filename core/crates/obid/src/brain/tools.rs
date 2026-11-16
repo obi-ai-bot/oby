@@ -21,6 +21,7 @@ use super::actions::{self, Asked, Outcome, Talk};
 use super::harness::{Place, Session};
 use super::plan::{Action, Dispatch, Plan};
 use crate::api::Shared;
+use crate::helpers::{Connector, GITHUB_TOOLS, NOT_GRANTED};
 use crate::mcp::{self, Does, Server, Tool};
 
 const SERVER: &str = "Oby's tools server";
@@ -34,11 +35,12 @@ fn at_once<'a>(answer: Result<String, String>) -> Answer<'a> {
     Box::pin(std::future::ready(answer))
 }
 
-/// Oby's tools, as `tools/list` gives them.
-pub(super) fn list() -> Value {
-    let ours = mcp::every()
-        .iter()
-        .filter(|t| t.server == Server::Conversation);
+/// Oby's tools, as `tools/list` gives them: GitHub's only to a turn that may use it
+/// (crate::helpers).
+pub(super) fn list(github: bool) -> Value {
+    let ours = mcp::every().iter().filter(|t| {
+        t.server == Server::Conversation && (github || !GITHUB_TOOLS.contains(&t.name))
+    });
     ours.filter_map(Tool::listed).collect()
 }
 
@@ -190,8 +192,8 @@ pub(crate) fn table() -> Vec<Tool> {
 /// One JSON-RPC message from a conversation's Claude Code waiting for a turn
 /// (crate::brain::harness::Sessions::waiting_with), or any but a tool call during one: it connects
 /// and lists the tools, and calls none, since no turn is under way for a call to act for. None for
-/// a notification.
-pub fn handshake(body: &Value) -> Option<Value> {
+/// a notification. `conversation`'s helper, if it has one, lists only its granted tools.
+pub fn handshake(shared: &Shared, conversation: &str, body: &Value) -> Option<Value> {
     let (method, id, params) = mcp::read(body)?;
     let result = match method {
         "initialize" => mcp::hello(
@@ -200,7 +202,9 @@ pub fn handshake(body: &Value) -> Option<Value> {
             "Oby's own tools: your room's files, jobs and managing them, your task list, the inbox and past conversations. obid checks every call by its rules.",
         ),
         "ping" => mcp::ping(),
-        "tools/list" => json!({"tools": list()}),
+        "tools/list" => {
+            json!({"tools": list(shared.helpers.allows(conversation, Connector::Github))})
+        }
         "tools/call" => return Some(mcp::refused(id, -32600, mcp::NO_TURN)),
         _ => return Some(mcp::unknown(id, method, SERVER)),
     };
@@ -211,7 +215,7 @@ pub fn handshake(body: &Value) -> Option<Value> {
 pub async fn handle(shared: &Arc<Shared>, session: &Session, body: Value) -> Option<Value> {
     let (method, id, params) = mcp::read(&body)?;
     if method != "tools/call" {
-        return handshake(&body);
+        return handshake(shared, &session.conversation, &body);
     }
     let (name, args) = mcp::called(&params);
     session.heard(name, &args, super::harness::READ_WAIT).await;
@@ -235,6 +239,11 @@ async fn call(
 ) -> Result<String, String> {
     if !session.control.live() {
         return Err("The turn was stopped: nothing more happens for it.".into());
+    }
+    // A helper's turn calls GitHub only while its helper, as kept now, is granted it.
+    let helpers = &shared.helpers;
+    if GITHUB_TOOLS.contains(&name) && !helpers.allows(&session.conversation, Connector::Github) {
+        return Err(NOT_GRANTED.into());
     }
     let tool = mcp::tool(Server::Conversation, name);
     if !tool.is_some_and(|t| t.read_only) {

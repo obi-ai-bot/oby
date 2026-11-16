@@ -7,7 +7,7 @@ import { answerLimit, notificationWords, writeOwn } from './device';
 import { ipc } from './ipc';
 import { limitDecisions, obidState, onLive } from './live';
 import { settings, writeSettings } from './settings';
-import { boolean, orUndefined, type Decoder } from '../shared/decode';
+import { boolean, optional, orUndefined, type Decoder } from '../shared/decode';
 import type { LiveMessage } from '../shared/live-wire';
 import { plainId, type Event, type InboxItem, type Turn } from '../shared/obid-wire';
 
@@ -18,13 +18,17 @@ import { plainId, type Event, type InboxItem, type Turn } from '../shared/obid-w
 // page (ALERTS-8). And what only the Mac says: the answer to a question the owner asked another
 // Oby, which its card promises (`pingOf`), and Oby's answer in a conversation, FYI the gate keeps
 // in. One alert per thing (obid's `key`), replaced when what it needs (`what`) changes, gone once
-// it's settled anywhere; nothing that was there when Oby first opened with this.
+// it's settled anywhere; nothing that was there when Oby first opened with this. The owner's
+// word of 2026-11-15 adds three kinds of news that need nothing, each with its switch in Settings ›
+// Notifications (ALERTS-12 to 18): obid serves them only when the read names them (`fyi`), and the
+// Mac shows them quietly: no buttons, not on the badge, never later for what the window showed.
 // What obid has (its inbox, limit decisions and conversations' titles) is main's one follower's
 // (live.ts), from launch until Oby quits, with the window closed too: the alerts take its
 // messages in the order it applied them, and read the list again after each sync and each burst.
 
-// Where an alert's click opens the window: a job's page, else a conversation, else Home
-type Place = { job?: string; conversation?: string };
+// Where an alert's click opens the window: a job's page, else a conversation, else a Settings page
+// (an account at its limit: the one listing accounts), else Home
+type Place = { job?: string; conversation?: string; settings?: string };
 // A button: obid's answer, as the same tap in the window gives it
 type Button = { text: string; does: () => Promise<Answer> };
 type Alert = {
@@ -40,10 +44,19 @@ type Alert = {
   buttons: Button[];
 };
 
+// The news that needs nothing obid serves when asked (`fyi`), in the order the read names them
+const KINDS = ['finished', 'merged', 'limit'] as const;
+type Kind = typeof KINDS[number];
+type Kinds = Record<Kind, boolean>;
+// each kind's switch in settings.json, on unless it's false
+const SWITCH: Record<Kind, string> = { finished: 'notifyFinished', merged: 'notifyMerged', limit: 'notifyLimit' };
+
 // One alert of `GET /v1/alerts` (docs/runner-api.md)
 type Served = {
   key: string; what: string; title: string; body: string; category: string; thread: string;
   job?: string; conversation?: string; item?: string; answers: string[];
+  // news that needs nothing (ALERTS-12 to 14), and an account's reset
+  fyi?: string; resets?: string;
 };
 const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
 const servedOf = (v: unknown): Served | null => {
@@ -51,7 +64,7 @@ const servedOf = (v: unknown): Served | null => {
   const [key, what, title, body, category, thread] = [a.key, a.what, a.title, a.body, a.category, a.thread].map(str);
   if (!key || what === undefined || title === undefined || body === undefined || !category || !Array.isArray(a.answers)) return null;
   return { key, what, title, body, category, thread: thread ?? 'oby', job: str(a.job), conversation: str(a.conversation), item: str(a.item),
-    answers: a.answers.filter((w): w is string => typeof w === 'string') };
+    answers: a.answers.filter((w): w is string => typeof w === 'string'), fyi: str(a.fyi), resets: str(a.resets) };
 };
 
 // --- words: obid's text is data, shown as plain text
@@ -67,16 +80,25 @@ const cut = (text: string, most: number) => { const c = [...text]; return c.leng
 // obid's list as last read; null: not read yet, or obid couldn't serve it (nothing changes then)
 let served: Served[] | null = null;
 let servedRequest = 0;
-const readServed = async () => json<unknown[]>(await obid('GET', '/v1/alerts'))?.map(servedOf).filter((a): a is Served => !!a) ?? null;
+// the kinds of news switched on, and those just turned on: their first list is no news (ALERTS-18)
+let kinds: Kinds = { finished: true, merged: true, limit: true };
+const turnedOn = new Set<string>();
+// obid's list, with the news switched on; plain when none is (ALERTS-15)
+const alertsPath = () => {
+  const fyi = KINDS.filter((k) => kinds[k]);
+  return fyi.length ? `/v1/alerts?fyi=${fyi.join(',')}` : '/v1/alerts';
+};
+const readServed = async () => json<unknown[]>(await obid('GET', alertsPath()))?.map(servedOf).filter((a): a is Served => !!a) ?? null;
 // The list again, then a look; an older read that answers last changes nothing
 async function refresh() {
   const request = ++servedRequest;
+  const quiet = new Set(turnedOn);
   const list = await readServed();
   if (request !== servedRequest) return;
   if (!list) return again();
   failures = 0;
   served = list;
-  look();
+  look(quiet);
 }
 // obid couldn't serve its list (its vault unreadable, a request lost): the last one stands, and
 // it's read again by itself, 2 seconds later, then twice as long each time, at most a minute apart,
@@ -113,6 +135,12 @@ const questionOf = ({ kind, obi: o }: InboxItem) => (kind === 'obiRequest' && o?
   ? { title: `Question from ${plainId(o.fromOwner)}`, body: plain(o.quoted.text) } : null);
 const id = encodeURIComponent;
 
+// a limit's reset as the window's limit card says it, in this Mac's time (live.ts)
+const resetsAt = (at: string | undefined) => {
+  const t = at ? Date.parse(at) : NaN;
+  return Number.isNaN(t) ? null : `It resets ${new Date(t).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}.`;
+};
+
 export const waiting = (want: Map<string, { needs: boolean }>) => {
   const n = [...want.values()].filter((a) => a.needs).length;
   return n ? String(n) : '';
@@ -141,8 +169,14 @@ function buttonsOf(a: Served): Button[] {
 
 // One alert of obid's as the Mac draws it: obid's words as plain text, another Oby's question as
 // its card shows it (`questionOf`, answered on its card), and a click that opens its job or
-// conversation
+// conversation. News that needs nothing has no buttons and opens its conversation, else its job,
+// or for an account the Settings page listing accounts, its reset in this Mac's time.
 function drawn(a: Served): Alert {
+  if (a.fyi) {
+    const place = a.fyi === 'limit' ? { settings: 'agents' } : a.conversation ? { conversation: a.conversation } : { job: a.job };
+    const body = (a.fyi === 'limit' && resetsAt(a.resets)) || plain(a.body);
+    return { needs: false, title: plain(a.title), body, place, thread: a.thread, buttons: [] };
+  }
   const item = a.item ? obidState().inbox.find((i) => i.id === a.item) : undefined;
   const question = item ? questionOf(item) : null;
   return {
@@ -208,6 +242,8 @@ function focused() {
 
 // Whether what the window's page shows has that place on it
 export function onPage(showing: Place, p: Place) {
+  // a Settings page is no page alerts know: its alert goes once obid stops serving it
+  if (p.settings) return false;
   if (p.job && showing.job === p.job) return true;
   if (p.conversation) return showing.conversation === p.conversation;
   // the stack shows what has no task: on Home, and chat first over a conversation too
@@ -250,9 +286,10 @@ function post(key: string, a: Alert) {
 }
 
 // What obid serves now against what was said: the alerts that are new or say something else, and
-// the ones whose thing is settled go
+// the ones whose thing is settled go. `quiet`: kinds just turned on, whose news in this first list
+// is said without a banner
 let ready = false;
-function look() {
+function look(quiet = new Set<string>()) {
   if (!ready || !served) return;
   const want = new Map(served.map((a) => [a.key, a]));
   // nothing kept: what's there isn't news, and the badge still counts it
@@ -263,12 +300,14 @@ function look() {
   const next = new Map<string, string>();
   for (const [key, a] of want) {
     if (said.get(key) !== a.what) {
-      // the window in front: nothing now, and it alerts once the window leaves (windowLeft)
-      if (!notifies(true, focused())) continue;
-      post(key, drawn(a));
+      // the window in front: nothing now, and it alerts once the window leaves (windowLeft); news
+      // that needs nothing was on screen, so it's said with no banner, as in its kind's first list
+      if (!a.fyi && !notifies(true, focused())) continue;
+      if (!a.fyi || (!focused() && !quiet.has(a.fyi))) post(key, drawn(a));
     }
     next.set(key, a.what);
   }
+  for (const k of quiet) turnedOn.delete(k);
   for (const key of said.keys()) if (!next.has(key)) withdraw(key);
   said = next;
   const text = JSON.stringify(Object.fromEntries(said));
@@ -276,7 +315,7 @@ function look() {
     try { writeOwn(SAID(), text, constants.O_TRUNC); kept = text; } catch (e) { console.error(`Oby: couldn’t keep what alerts said: ${e}`); }
   }
   // How many things wait on the owner, on the Dock's icon, whether or not macOS lets alerts through
-  app.dock?.setBadge(waiting(new Map([...want.keys()].map((key) => [key, { needs: true }]))));
+  app.dock?.setBadge(waiting(new Map([...want].map(([key, a]) => [key, { needs: !a.fyi }]))));
   for (const [c, p] of pings) {
     if (notifies(true, focused())) post(`ask:${p.id}`, { needs: true, title: p.title, subtitle: titleOf(c), body: plain(p.body), place: { conversation: c }, thread: c, buttons: [] });
   }
@@ -353,12 +392,14 @@ function heardLive(m: LiveMessage) {
 }
 async function synced() {
   const request = ++servedRequest;
+  const quiet = new Set(turnedOn);
   const list = await readServed();
-  if (request === servedRequest) {
+  const current = request === servedRequest;
+  if (current) {
     if (list) { failures = 0; served = list; } else again();
   }
   ready = true;
-  look();
+  look(current && list ? quiet : undefined);
 }
 
 // --- the window
@@ -390,10 +431,19 @@ const place: Decoder<Place | null> = (p) => {
   return { value: s && { job: str(s.job), conversation: str(s.conversation) } };
 };
 
+// A change of the kinds of news switched on: some of the three, each a boolean, nothing else
+const kindsChange: Decoder<Partial<Kinds>> = (v) => {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
+  const ok = Object.entries(v).every(([k, on]) => (KINDS as readonly string[]).includes(k) && typeof on === 'boolean');
+  return ok ? { value: v as Partial<Kinds> } : undefined;
+};
+
 export function notifying(trusted: Trusted, window: () => BrowserWindow | null, bringUp: () => BrowserWindow) {
   current = window;
   show = bringUp;
-  on = settings().notifications !== false;
+  const kept = settings();
+  on = kept.notifications !== false;
+  kinds = Object.fromEntries(KINDS.map((k) => [k, kept[SWITCH[k]] !== false])) as Kinds;
   said = keptSaid();
   powerMonitor.on('lock-screen', () => { locked = true; });
   powerMonitor.on('unlock-screen', () => { locked = false; });
@@ -414,6 +464,20 @@ export function notifying(trusted: Trusted, window: () => BrowserWindow | null, 
       if (!on) [...shown.keys()].forEach(withdraw);
     }
     return on;
+  }, null);
+  // Settings › Notifications' three switches (ALERTS-15, 18): a kind turned on alerts only what
+  // comes after its first list
+  channels.handle('notification-kinds', [optional(kindsChange)], (_e, change) => {
+    const turned = KINDS.filter((k) => change?.[k] !== undefined && change[k] !== kinds[k]);
+    for (const k of turned) {
+      kinds[k] = !kinds[k];
+      if (kinds[k]) turnedOn.add(k); else turnedOn.delete(k);
+    }
+    if (turned.length) {
+      writeSettings(Object.fromEntries(turned.map((k) => [SWITCH[k], kinds[k]])));
+      void refresh();
+    }
+    return { ...kinds };
   }, null);
   channels.on('open-notification-settings', [], () => { void shell.openExternal(SYSTEM); });
   onLive(heardLive);

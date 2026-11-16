@@ -24,15 +24,25 @@ frees the disk afterwards:
   touches no security path, and factory/bin/gate passed on that head. It merges through GitHub's merge
   queue, pinned to that head (`gh pr merge --auto --match-head-commit`), whose Check runs on the combined code.
   One that touches a security path waits for the owner (AGENTS.md, "Carrying and merging").
-- A head approved twice that passes the security-path, model and Kani checks and the gate goes to an approver job, a
-  read-only `review` job on obid following .claude/agents/approver.md as origin/<base> has it, against the task file's
-  own acceptance list as origin/<base> has it (a task whose file isn't there is held). Only that job's APPROVE for the
-  same head arms the merge, once may_arm() and the gate still pass that head. ESCALATE waits for the owner with the
-  approver's reasons (shown by --status), and no verdict (any other first line, a job that failed, was stopped or
-  is gone) holds the head, both for good, even when it comes back later; neither, nor a head that moved while the
-  approver read it, ever arms it (docs/contracts/factory.md, FEEDAPPROVE).
+- The order is: two approvals, the holds (security path, models, Kani), the gate, the lens reviews, the approver, the
+  re-check, the merge.
+- A head approved twice that passes the security-path, model and Kani checks and the gate goes first to its lens
+  reviews: one read-only `review` job per lens factory/bin/route's rule routes (imported, not copied) from the task's
+  intake's RISK: line (or, with no accepted intake, the task file's RISK: line on origin/<base>, blank read as high)
+  and from the intake's SURFACES: with every surface the pull request's files touch, each with its lens's model,
+  following .claude/agents/reviewer-<lens>.md as origin/<base> has it. Only every lens's VERDICT: PASS for the same
+  head, once may_arm() and the gate still pass it, asks the approver; a VERDICT: CHANGES holds the head for the owner
+  with its findings (shown by --status), and no verdict or a lens that can't be routed holds it too, both for good; a
+  head that moved while its lenses read it waits for fresh approvals (docs/contracts/factory.md, FEEDLENS).
+- After its lens reviews the head goes to an approver job, a read-only `review` job on obid following
+  .claude/agents/approver.md as origin/<base> has it, against the task file's own acceptance list as origin/<base> has
+  it (a task whose file isn't there is held). Only that job's APPROVE for the same head arms the merge, once
+  may_arm() and the gate still pass that head. ESCALATE waits for the owner with the approver's reasons (shown by
+  --status), and no verdict (any other first line, a job that failed, was stopped or is gone) holds the head, both
+  for good, even when it comes back later; neither, nor a head that moved while the approver read it, ever arms it
+  (docs/contracts/factory.md, FEEDAPPROVE).
 - A `waiting` task is looked at again at every pass, without holding a slot: Oby's follow-up takes it back to
-  `running`, a merge by anyone to `merged`, and two approvals of a new head ask its approver again.
+  `running`, a merge by anyone to `merged`, and two approvals of a new head start its lens reviews again.
 - A merge GitHub's queue refused (the pull request open, out of the queue, auto-merge off) goes back to
   `waiting`, remembering the refused head: that head is never armed again, a new one can be.
 - A Quint model the pull request adds or changes (docs/models/*.qnt) is verified first, on the gate VM, as its
@@ -60,8 +70,8 @@ frees the disk afterwards:
   skipped with one line, and the wait doubles, up to 10 minutes, until a pass gets through.
 - A build's own build folders (core/target, node_modules) are removed as soon as its pull request is open:
   reviews and follow-ups have worktrees of their own.
-- When the pull request is merged, the task's Oby jobs (the build, its follow-ups, its reviews, its approvers) are
-  deleted, which removes their worktrees and local branches. A task that failed keeps its job for
+- When the pull request is merged, the task's Oby jobs (the build, its follow-ups, its reviews, its lens reviews, its
+  approvers) are deleted, which removes their worktrees and local branches. A task that failed keeps its job for
   the owner to read, but its build folders (core/target, node_modules) are removed.
 
 State is one file per task in ~/.oby-factory/feed/. obid is the factory's own (OBY_FACTORY_HOME,
@@ -99,13 +109,17 @@ _loader = importlib.machinery.SourceFileLoader("factory_gate", str(HERE / "gate"
 _spec = importlib.util.spec_from_loader("factory_gate", _loader)
 gate = importlib.util.module_from_spec(_spec)
 _loader.exec_module(gate)
+_loader = importlib.machinery.SourceFileLoader("factory_route", str(HERE / "route"))
+_spec = importlib.util.spec_from_loader("factory_route", _loader)
+route = importlib.util.module_from_spec(_spec)
+_loader.exec_module(route)
 
 REPO = job.REPO
 HOME = Path(os.environ.get("OBY_FACTORY_HOME", Path.home() / ".oby-factory"))
 URL = os.environ.get("OBY_FACTORY_URL", "http://127.0.0.1:7811")
 GH_REPO = os.environ.get("OBY_FACTORY_REPO", "obi-ai-bot/oby")
 FEED = HOME / "feed"
-ACTIVE = {"intake", "speccing", "running", "reviewing", "approving", "merging"}
+ACTIVE = {"intake", "speccing", "running", "reviewing", "lenses", "approving", "merging"}
 STEPS = {"intake": "intake", "speccing": "spec", "running": "build"}  # a task's state: the step its job is
 SAID = set()
 GH_MISSED = []  # this pass's `gh` calls that exited non-zero
@@ -178,6 +192,15 @@ def touches_security(files):
         if any(low.startswith(m) or ("/" + m) in ("/" + low) or name == m for m in marks):
             hit.append(f)
     return hit
+
+
+# What deserves the security lens beyond touches_security(), whose heads never reach a lens: obid's merge, API,
+# approval, device, token, vault, secret, scan, egress, sandbox, policy, lane, login, Sphere and relay code, and the
+# factory. Matched as path prefixes, letter case ignored.
+SECURITY_SURFACE = tuple(f"core/crates/obid/src/{name}" for name in (
+    "merge.rs", "routes.rs", "approval.rs", "devices.rs", "token.rs", "vault.rs", "secrets.rs", "scan.rs", "egress.rs",
+    "sandbox.rs", "policy.rs", "permissions.rs", "jobs/lanes.rs", "jobs/logins.rs", "jobs/secrets.rs", "sphere/",
+    "relay/")) + ("factory/",)
 
 
 VERIFY = re.compile(r"^// verify: (.+)$", re.M)
@@ -409,7 +432,7 @@ def brief(task, on_base, parts):
             f"Each numbered acceptance criterion gets its test, and every numbered scenario a test named after it. {kani}"
             "Run only the tests and lints your change touches "
             "(Rust: CARGO_TARGET_DIR=$PWD/core/target and --manifest-path core/Cargo.toml), never the whole check. "
-            "Never raise obid_lines_limit or jobs_rs_limit in scripts/oby-check.sh: if the change can't fit, stop and say by how many lines. "
+            "Never raise jobs_rs_limit in scripts/oby-check.sh: if the change can't fit, stop and say by how many lines. "
             f"Commit with Conventional Commits; the first commit's subject is the task's title. {close} "
             "Stage explicit paths and leave git status clean. Never push and never open a pull request: Oby publishes. "
             "Your last message starts with STATUS: READY or STATUS: BLOCKED: <why>, then what you changed and one line of "
@@ -743,14 +766,22 @@ def task_on_base(key):
     return subprocess.run(["git", "cat-file", "-e", f"origin/{job.BASE}:{rel}"], cwd=REPO, capture_output=True).returncode == 0
 
 
+def held_off_base(item, head):
+    """Holds the head of a task whose file origin/<base> doesn't have, before its lens reviews and its approver: they
+    would have no task text they can trust to judge by. Returns True when it held it."""
+    if task_on_base(item["key"]):
+        return False
+    item.update(state="waiting", head=head, refused=head,
+                note=f"{HELD}its task file isn't on origin/{job.BASE}, so its approver has no acceptance list to read: merge it yourself")
+    return True
+
+
 def ask_approver(item, head, tools, account):
     """Starts the approver job for a head may_arm() approved, in place of arming it. Its body is the same at every
     try for the head, so a resend after a lost answer gets obid's job back (POST /v1/jobs's receipts). A task whose file
     origin/<base> doesn't have gives the approver nothing it can trust to judge by, so its head is held. Returns True
     when the task changed."""
-    if not task_on_base(item["key"]):
-        item.update(state="waiting", head=head, refused=head,
-                    note=f"{HELD}its task file isn't on origin/{job.BASE}, so its approver has no acceptance list to read: merge it yourself")
+    if held_off_base(item, head):
         return True
     sent = with_account({"repo": GH_REPO, "kind": "review", "pr": item["pr"], "base": job.BASE, "rounds": 1,
                          "title": f"{item['key']} approver"[:60], "task": approver_brief(item, head),
@@ -773,10 +804,10 @@ def ask_approver(item, head, tools, account):
     return True
 
 
-def hold_for_good(item, note, **more):
-    """The approver escalated its head or gave no verdict: the head is held for good, never asked about again or
-    armed, even when it comes back after another head was refused (`held`; `refused` keeps only the last one)."""
-    head = item["approverHead"]
+def hold_for_good(item, head, note, **more):
+    """The approver escalated its head or gave no verdict, or a lens asked for changes or gave none: the head is held
+    for good, never reviewed, asked about again or armed, even when it comes back after another head was refused
+    (`held`; `refused` keeps only the last one)."""
     item.update(state="waiting", head=head, refused=head, held=sorted(set(item.get("held", [])) | {head}), note=note,
                 **more)
     return True
@@ -784,7 +815,7 @@ def hold_for_good(item, note, **more):
 
 def no_verdict(item, why):
     """The approver gave no verdict: its head is held for good."""
-    return hold_for_good(item, f"{HELD}the approver gave no verdict: {why}: merge it yourself or push a new head")
+    return hold_for_good(item, item["approverHead"], f"{HELD}the approver gave no verdict: {why}: merge it yourself or push a new head")
 
 
 def read_approver(item, j, pr):
@@ -799,9 +830,7 @@ def read_approver(item, j, pr):
     status, read = (a["status"], a.get("startCommit")) if code == 200 else ("gone", None)
     if status in ("queued", "running"):
         return False
-    # a job that is gone, or ended before it read any head (startCommit null), read nothing: a broken approver, not a
-    # moved head; a done job always read one
-    if now != head or (read != head and (read is not None or status == "done")):
+    if now != head or read_another(status, read, head):
         item.update(state="waiting", head=now, note=f"the head moved while the approver read it: it was asked about "
                                                     f"{head[:12]}, read {(read or 'nothing')[:12]}, and the pull request is at {now[:12]}")
         return True
@@ -814,16 +843,31 @@ def read_approver(item, j, pr):
     if first == "ESCALATE":
         rest = "\n".join(lines[1:])[:4000]
         reason = next((line.strip() for line in rest.splitlines() if line.strip()), "")
-        return hold_for_good(item, f"{HELD}the approver escalated it to you: {reason[:160]}", escalation=rest)
+        return hold_for_good(item, head, f"{HELD}the approver escalated it to you: {reason[:160]}", escalation=rest)
     if first != "APPROVE":
         return no_verdict(item, f'its answer\'s first line is "{first[:60]}"')
+    return check_again(item, j, pr, head, lambda tools: arm(item, head, tools),
+                       f"the approver approved {head[:12]}, but it no longer has two approvals: waiting for them")
+
+
+def read_another(status, read, head):
+    """Whether a review job that ended read a head other than `head`: one that is gone, or ended before it read any head
+    (startCommit null), read nothing, a broken job, not a moved head; a done job always read one."""
+    return read != head and (read is not None or status == "done")
+
+
+def check_again(item, j, pr, head, green, unapproved):
+    """may_arm() again for a head a review step passed, since a change request, a security path, a model, a Kani proof
+    or the gate's verdict may have changed while it ran: on `arm`, or a wait for a security path alone, gated(), which
+    reuses the head's saved gate record, calling `green(tools)` on its PASS; on `retry` gate_unreached(); otherwise
+    not_armed(), `unapproved` its note when no two approvals are left. Returns True."""
     verdict, said = may_arm(j, pr, refused_for(item, head), item["key"])
     if verdict == "arm" or verdict == "wait" and said.startswith(HELD + SECURITY):
-        gated(item, head, pr["headRefName"], verdict, said, lambda: arm(item, head, said))
+        gated(item, head, pr["headRefName"], verdict, said, lambda: green(said))
     elif verdict == "retry":
         gate_unreached(item, head, said)
     else:
-        not_armed(item, head, said or f"the approver approved {head[:12]}, but it no longer has two approvals: waiting for them")
+        not_armed(item, head, said or unapproved)
     return True
 
 
@@ -837,6 +881,165 @@ def not_armed(item, head, said):
 def refused_for(item, head):
     """The head may_arm() reads as refused: this head when it is held for good (hold_for_good), else `refused`."""
     return head if head in item.get("held", []) else item.get("refused")
+
+
+# The models a lens job may name: Claude Code's own aliases, sent as they are with `agent: claude`.
+LENS_MODELS = ("haiku", "sonnet", "opus")
+LENS_VERDICTS = ("VERDICT: PASS", "VERDICT: CHANGES")
+
+
+def lens_routing(key, files):
+    """The risk and surfaces a head's lenses are routed by. The risk is its task's intake's (feed/<KEY>.intake.md,
+    FEEDSPEC, read with job.read_intake() as `route <job-id>` reads a job's intake.md) when the feeder has its ACCEPT,
+    else the task file's RISK: line. The surfaces are that intake's, then those the pull request's changed files touch,
+    each once: what the diff touches can add a lens, never take one away."""
+    intake = FEED / f"{key}.intake.md"
+    read = job.read_intake(intake) if intake.is_file() else {}
+    accepted = read.get("decision") == "ACCEPT"
+    surfaces = (read["surfaces"] if accepted else []) + lens_surfaces(key, files)
+    return (read["risk"] if accepted else lens_risk(key)), list(dict.fromkeys(surfaces))
+
+
+def lens_risk(key):
+    """The task's risk for routing when it has no accepted intake: its RISK: header line as origin/<base> has it
+    (task_text), read with job.header(). A blank one, or one that isn't a row of config.json's `routing`, is high."""
+    copy = FEED / "lenses" / f"{key}.md"
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    copy.write_text(task_text(key) or "")
+    risk = job.header(copy).get("RISK", "").strip().lower()
+    return risk if risk in route.CONFIG["routing"] else "high"
+
+
+def lens_surfaces(key, files):
+    """The surfaces route reads from the pull request's changed files."""
+    low = [f.lower() for f in files]
+    surfaces = []
+    if any(f.startswith("docs/models/") and f.endswith(".qnt") for f in files):
+        surfaces.append("model")
+    if f"docs/proofs/{key}.md" in files:
+        surfaces.append("proofs")
+    if touches_security(files) or any(f.startswith(s.lower()) for f in low for s in SECURITY_SURFACE):
+        surfaces.append("security")
+    if any(f.startswith("apps/electron/") for f in files):
+        surfaces.append("ui")
+    return surfaces
+
+
+def lens_brief(item, head, lens):
+    """A lens job's task: the same text for the same task, pull request, head, lens and base, under 2,000 characters."""
+    key, base, prompt = item["key"], job.BASE, f".claude/agents/reviewer-{lens}.md"
+    return (f"You are the {lens} reviewer for task {key} ({item.get('title', key)[:300]}), pull request #{item['pr']}, "
+            f"head {head}, lens {lens}. Follow {prompt} as the base branch has it: read it with "
+            f"git show origin/{base}:{prompt}, never the copy in this worktree. "
+            "This is Oby's factory: there is no job folder, issue.md, intake.md, spec.md, build.md, round file or port. "
+            "Write no file: your review is your last message. In place of the spec, read the task file with "
+            f"git show origin/{base}:factory/queue/tasks/{key}.md, never the pull request's copy, which it may have changed. "
+            f"Compare with git diff origin/{base}...HEAD. Run only commands that read (git diff, git show, git log, grep, "
+            "cat); run no test, build or server, and post nothing. "
+            "Your last message's first line is exactly VERDICT: PASS or VERDICT: CHANGES, followed by your findings.")
+
+
+def lens_job(item, lens, account):
+    """A lens job's body: the same at every try for the same task, lens, pull request, head and base."""
+    head = item["lensHead"]
+    return with_account({"repo": GH_REPO, "kind": "review", "pr": item["pr"], "base": job.BASE, "rounds": 1,
+                         "title": f"{item['key']} {lens} review"[:60], "agent": "claude",
+                         "model": item["lenses"][lens]["model"], "task": lens_brief(item, head, lens),
+                         "clientRequestId": f"feed-lens-{item['key']}-{lens}-{head[:12]}"}, account)
+
+
+def ask_lenses(item, head, tools, files, account):
+    """Starts the lens reviews of a head may_arm() and the gate passed, in place of asking its approver: one review job
+    per lens route.reviewers() gives for the risk and surfaces lens_routing() reads. A task whose file isn't on
+    origin/<base>, or a lens that can't be routed (an unknown risk or surface, a model that isn't haiku, sonnet or opus,
+    a prompt origin/<base> doesn't have), holds the head with no lens job. Returns True."""
+    key = item["key"]
+    if held_off_base(item, head):
+        return True
+    try:
+        routed = route.reviewers(*lens_routing(key, files))
+        for lens, model in sorted(routed.items()):
+            prompt = f".claude/agents/reviewer-{lens}.md"
+            if model not in LENS_MODELS:
+                raise ValueError(f"the {lens} lens's model {model} isn't haiku, sonnet or opus")
+            if subprocess.run(["git", "cat-file", "-e", f"origin/{job.BASE}:{prompt}"], cwd=REPO,
+                              capture_output=True).returncode != 0:
+                raise ValueError(f"{prompt} isn't on origin/{job.BASE}")
+    except ValueError as e:
+        item.update(state="waiting", head=head, refused=head,
+                    note=f"{HELD}its lens reviews can't be routed: {e}: merge it yourself"[:240])
+        return True
+    item.pop("note", None)
+    item.pop("findings", None)
+    item.update(state="lenses", head=head, lensHead=head, approved=tools,
+                lenses={lens: {"model": model, "job": None} for lens, model in sorted(routed.items())})
+    save(item)  # before any lens POST: a lost answer is sent again, unchanged, at the next pass
+    post_lenses(item, account)
+    return True
+
+
+def post_lenses(item, account):
+    """POSTs each lens that has no job yet, in sorted order, saving each id obid answers with. Returns True once every
+    lens has its job, None when obid didn't answer (the pass ends and the next sends the same body), and False when it
+    refused one: a 5xx leaves the task in `lenses`, tried again at the next pass, and a 4xx holds the head."""
+    for lens in sorted(item["lenses"]):
+        if item["lenses"][lens]["job"]:
+            continue
+        code, body = api("POST", "/v1/jobs", {"job": lens_job(item, lens, account)})
+        if code is None:
+            return None
+        if code in (200, 201) and (body or {}).get("id"):
+            item["lenses"][lens]["job"] = body["id"]
+            made = item.get("lensJobs", [])
+            item["lensJobs"] = made + [body["id"]] if body["id"] not in made else made
+            save(item)
+            continue
+        said = (body or {}).get("error", code)
+        if 400 <= code < 500:
+            head = item["lensHead"]
+            item.update(state="waiting", head=head, refused=head, note=f"{HELD}obid didn't start the {lens} review: {said}"[:240])
+        else:
+            item.update(note=f"obid didn't start the {lens} review: {str(said)[:160]}; tried again at the next pass")
+        return False
+    return True
+
+
+def read_lenses(item, j, pr, account):
+    """One look at a `lenses` task, `j` its build job: lens jobs still to start are POSTed, then every one is read. Once
+    all have ended: a moved head waits unrefused; a lens with no verdict, then any VERDICT: CHANGES, holds the head for
+    good; every lens's VERDICT: PASS asks the approver, through check_again(). Returns True when the task changed."""
+    posted = post_lenses(item, account)
+    if not posted:
+        return posted is False
+    head, now, ended = item["lensHead"], pr["headRefOid"], {}
+    for lens in sorted(item["lenses"]):
+        code, a = api("GET", f"/v1/jobs/{item['lenses'][lens]['job']}")
+        if code not in (200, 404):
+            return False
+        status, read = (a["status"], a.get("startCommit")) if code == 200 else ("gone", None)
+        if status in ("queued", "running"):
+            return False
+        ended[lens] = (status, read, (a or {}).get("summary") if code == 200 else None)
+    if now != head or any(read_another(status, read, head) for status, read, _ in ended.values()):
+        item.update(state="waiting", head=now, note=f"the head moved while its lens reviews read it: they were asked "
+                                                    f"about {head[:12]}, and the pull request is at {now[:12]}")
+        return True
+    answers = {}
+    for lens, (status, _, summary) in ended.items():
+        lines = (summary or "").strip().splitlines()
+        first = lines[0].strip() if lines else ""
+        why = ("its job is gone" if status == "gone" else f"its job ended {status}" if status != "done"
+               else None if first in LENS_VERDICTS else f'its answer\'s first line is "{first[:60]}"')
+        if why:
+            return hold_for_good(item, head, f"{HELD}the {lens} review gave no verdict: {why}: merge it yourself or push a new head")
+        answers[lens] = (first, lines[1:])
+    changes = [lens for lens, (first, _) in answers.items() if first == "VERDICT: CHANGES"]
+    if changes:
+        findings = "\n".join(line for lens in changes for line in [f"{lens}:", *answers[lens][1]])[:4000]
+        reason = next((line.strip() for line in answers[changes[0]][1] if line.strip()), "")
+        return hold_for_good(item, head, f"{HELD}the {changes[0]} review asked for changes: {reason[:160]}", findings=findings)
+    return check_again(item, j, pr, head, lambda tools: ask_approver(item, head, tools, account),
+                       f"the lens reviews passed {head[:12]}, but it no longer has two approvals: waiting for them")
 
 
 def drop_tree(tree):
@@ -1126,6 +1329,8 @@ def read_step(item, jobs, account):
             value = fields.get(name, "")
             if not value or ok and value not in ok:
                 return block(item, f"intake gave no decision: its ACCEPT has no valid {name} line")
+        if job.lane_problem(fields):  # NOTHARNESS: `job advance <id> spec`'s own rule
+            return block(item, "intake gave no decision: its ACCEPT has no valid LANE line")
         item["decision"] = "ACCEPT"
         return ask_step(item, "spec", account, f"feed-spec-{key}-{item['job']}", jobs)
     if first in ("DECISION: NEEDS-INFO", "DECISION: REJECT"):
@@ -1159,7 +1364,7 @@ def merged(item, jobs):
     gone, so a cleanup cut short is finished, never read as a task whose job obid lost."""
     if "cleanup" not in item:
         item.update(mergeSeen=True, cleanup=sorted(task_jobs(item, jobs) | set(item.get("approvers", []))
-                                                   | set(item.get("steps", []))))
+                                                   | set(item.get("steps", [])) | set(item.get("lensJobs", []))))
         item["left"] = list(item["cleanup"])
         item.pop("removed", None)
         save(item)
@@ -1184,7 +1389,7 @@ def merged(item, jobs):
 
 
 def follow(item, jobs, account):
-    """One look at a task that is under way or waiting; `account` is the feeder's, for an approver it starts.
+    """One look at a task that is under way or waiting; `account` is the feeder's, for a lens or approver it starts.
     Returns True when it changed."""
     key = item["key"]
     if item.get("mergeSeen"):  # merged, its cleanup cut short: finish it, whether or not the build job is left
@@ -1246,10 +1451,11 @@ def follow(item, jobs, account):
             gate_unreached(item, head, said)
             return True
         if verdict == "arm" or said.startswith(HELD + SECURITY):
-            return gated(item, head, pr["headRefName"], verdict, said, lambda: ask_approver(item, head, said, account))
+            files = [f["path"] for f in pr.get("files", [])]
+            return gated(item, head, pr["headRefName"], verdict, said, lambda: ask_lenses(item, head, said, files, account))
         not_armed(item, head, said)
         return True
-    if item["state"] == "approving":
+    if item["state"] in ("lenses", "approving"):
         pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", "headRefOid,headRefName,state,files")
         if not pr:
             return False
@@ -1259,7 +1465,7 @@ def follow(item, jobs, account):
         if pr["state"] == "CLOSED":
             item.update(state="failed", note="its pull request was closed")
             return True
-        return read_approver(item, j, pr)
+        return read_lenses(item, j, pr, account) if item["state"] == "lenses" else read_approver(item, j, pr)
     if item["state"] == "merging":
         owner, name = GH_REPO.split("/", 1)
         got = gh_json("api", "graphql", "-f", f"owner={owner}", "-f", f"name={name}", "-F", f"number={item['pr']}",
@@ -1306,7 +1512,8 @@ def follow(item, jobs, account):
             save(item)
         verdict, said = may_arm(j, pr, refused_for(item, head), key)
         if verdict == "arm" or verdict == "wait" and said.startswith(HELD + SECURITY):
-            return gated(item, head, pr["headRefName"], verdict, said, lambda: ask_approver(item, head, said, account))
+            files = [f["path"] for f in pr.get("files", [])]
+            return gated(item, head, pr["headRefName"], verdict, said, lambda: ask_lenses(item, head, said, files, account))
         if verdict == "retry":
             gate_unreached(item, head, said)
             return True
@@ -1470,7 +1677,8 @@ def status():
     for item in sorted(state.values(), key=lambda i: i.get("started", "")):
         pr = f" #{item['pr']}" if item.get("pr") else ""
         print(printable(f"{item['state']:<10} {item['key']:<7} {item['job']}{pr}  {item.get('note') or item['title']}")[:160])
-        for line in (item.get("escalation") or item.get("questions") or "").splitlines():
+        for line in ((item.get("escalation") or item.get("questions") or "").splitlines()
+                     + (item.get("findings") or "").splitlines()):
             print("  " + printable(line))
     counts = {}
     for item in state.values():
@@ -1486,7 +1694,7 @@ def clean():
     keep = set()
     for item in state.values():
         if item["state"] in ACTIVE or item["state"] == "waiting":
-            keep |= family(item["job"], jobs) | set(item.get("approvers", []))
+            keep |= family(item["job"], jobs) | set(item.get("approvers", [])) | set(item.get("lensJobs", []))
     before = free_gb()
     # a job whose pull request is still open stays, with its follow-ups and reviews; so does anything running
     for j in jobs:

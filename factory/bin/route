@@ -22,6 +22,21 @@ def die(msg):
     sys.exit(1)
 
 
+def reviewers(risk, surfaces, config=CONFIG):
+    """The {lens: model} set: the risk's row of config.json's `routing`, then each surface's row of `surface_reviewers`,
+    merged in order. Raises ValueError for a risk or a surface config.json doesn't route."""
+    row = config["routing"].get(risk)
+    if not row:
+        raise ValueError(f"risk {risk!r} isn't in config.json routing ({', '.join(config['routing'])})")
+    routed = dict(row)
+    for surface in surfaces:
+        extra = config["surface_reviewers"].get(surface)
+        if extra is None:
+            raise ValueError(f"surface {surface!r} isn't in config.json surface_reviewers ({', '.join(config['surface_reviewers'])})")
+        routed.update(extra)
+    return routed
+
+
 def main(argv):
     if len(argv) != 1:
         die("usage: route <job-id>")
@@ -32,19 +47,15 @@ def main(argv):
         die(res.stderr.strip())
     job = json.loads((FACTORY / "jobs" / job_id / "job.json").read_text())
     intake = job["intake"] or die(f"{job_id} has no intake.md")
-    risk = CONFIG["routing"].get(intake["risk"]) or die(
-        f"risk {intake['risk']!r} isn't in config.json routing ({', '.join(CONFIG['routing'])})")
-    reviewers = dict(risk)
-    for surface in intake["surfaces"]:
-        extra = CONFIG["surface_reviewers"].get(surface)
-        if extra is None:
-            die(f"surface {surface!r} isn't in config.json surface_reviewers ({', '.join(CONFIG['surface_reviewers'])})")
-        reviewers.update(extra)
-    agents = {"reviewers": reviewers}
+    try:
+        routed = reviewers(intake["risk"], intake["surfaces"])
+    except ValueError as e:
+        die(str(e))
+    agents = {"reviewers": routed}
     res = subprocess.run([job_bin, "agents", job_id, json.dumps(agents)], capture_output=True, text=True)
     if res.returncode != 0:
         die(res.stderr.strip())
-    print(f"{job_id}: reviewers " + ", ".join(f"{k} {v}" for k, v in reviewers.items()))
+    print(f"{job_id}: reviewers " + ", ".join(f"{k} {v}" for k, v in routed.items()))
 
 
 if __name__ == "__main__":

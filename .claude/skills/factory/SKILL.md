@@ -73,7 +73,7 @@ through the scripts. `factory/jobs/` is gitignored runtime state.
 <repo>/factory/queue/done/<KEY>.md             a finished task; its own PR moved it here
 <repo>/factory/jobs/<job-id>/job.json          the job's state; the dashboard reads it
 <repo>/factory/jobs/<job-id>/issue.md          the task, quoted as data, with the owner's answers
-<repo>/factory/jobs/<job-id>/intake.md         intake's decision, scope, risk, surfaces
+<repo>/factory/jobs/<job-id>/intake.md         intake's decision, lane, scope, risk, surfaces
 <repo>/factory/jobs/<job-id>/answer-<k>.md     the owner's answer to intake's questions
 <repo>/factory/jobs/<job-id>/spec.md
 <repo>/factory/jobs/<job-id>/build.md
@@ -136,7 +136,10 @@ decision:
 - `ACCEPT`: run `factory/bin/route <id>`, then `factory/bin/job advance <id> spec`
   (it creates the worktree). Go to **spec**. Until `config.json`'s
   `surface_reviewers` has a `model` entry (the orchestrator adds it by hand,
-  on the owner's word), `route` refuses a `model` job: tell the user so.
+  on the owner's word), `route` refuses a `model` job: tell the user so. If
+  `advance` refuses for intake.md's `LANE:` line (none, not a lane, or an
+  ACCEPT in the `agent` lane), spawn `intake` once more with the refusal. If
+  it is refused again, stop this job and tell the user.
 - `NEEDS-INFO`: `factory/bin/job advance <id> needs-info`. The job parks until
   the owner answers. Tell the user the job has questions; they are under
   `## Questions` in its `intake.md`.
@@ -367,7 +370,9 @@ new task, ask.
   budget. Go to **build** with
   `The user gave feedback: read feedback-<k>.md and address it, push, and update build.md for round <N>.`
   and continue like any job.
-- **Rejecting or benching a `needs-info` or `needs-human` job**: pass their
+- **Rejecting or benching a job** at any stage but `queued`: first stop
+  every agent still running for the job, and its round's mutants
+  (**Stopping mutants**), since the script stops none; then pass their
   reason verbatim on stdin:
 
   ```bash
@@ -379,6 +384,8 @@ new task, ask.
   It saves `rejection.md`, closes the job's PR if it has one (with the reason
   on it), and moves the job to Done. The task file stays in
   `factory/queue/tasks`; to bring it back, delete `factory/jobs/<id>`.
+  A `queued` job's PR is in GitHub's merge queue: tell the user to take
+  the PR out of the queue first, then reject the job.
 - **A new task** outside the roadmap: write its file, then do
   **/factory run <task>** with the key it prints:
 
