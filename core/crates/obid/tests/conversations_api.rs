@@ -104,9 +104,9 @@ fn conversations_are_listed_paged_renamed_pinned_and_deleted() {
             .keys()
             .map(String::as_str)
             .collect();
-        // With `talkedOn`, once it has answered (docs/contracts/conversation-agent.md), and
-        // `revision` (EVENTS-7).
-        assert_eq!(keys.len(), 10, "{conversation}");
+        // With `talkedOn`, once it has answered (docs/contracts/conversation-agent.md),
+        // `revision` (EVENTS-7) and `project` (PROJECTS-4).
+        assert_eq!(keys.len(), 11, "{conversation}");
         assert_eq!(conversation["talkedOn"], "stub");
         assert_eq!(conversation["tasks"], json!([]));
         assert_eq!(conversation["folders"], json!([]));
@@ -532,7 +532,7 @@ fn the_single_thread_from_before_becomes_the_first_conversation() {
         [
             json!({"id": id, "title": "Review oby PR #33", "pinned": false,
                 "created": "2026-10-11T09:12:00Z", "lastActivity": "2026-10-11T09:13:00Z",
-                "cursor": "0-1", "tasks": [], "folders": [], "revision": 0})
+                "cursor": "0-1", "tasks": [], "folders": [], "project": null, "revision": 0})
         ]
     );
     let moved = turns(&obid, "");

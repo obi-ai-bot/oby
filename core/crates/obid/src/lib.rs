@@ -55,6 +55,7 @@ pub mod policy;
 pub mod power;
 pub mod process;
 pub mod profiles;
+pub mod projects;
 pub mod providers;
 pub mod publish;
 pub mod push;
@@ -492,6 +493,8 @@ pub async fn serve(
     // A login copy a crash left in a conversation's folder goes before anything runs.
     brain::harness::forget_logins_left(&config.home);
     let conversations = conversation::Conversations::open(&config.home, events.clone());
+    let projects = projects::Projects::open(&config.home);
+    projects::reconcile(&projects, &conversations);
     let artifacts = artifacts::Artifacts::open(&config.home, events.clone());
     jobs.use_artifacts(artifacts.clone());
     let routines = Arc::new(routines::Routines::open(&config.home, events.clone()));
@@ -528,6 +531,7 @@ pub async fn serve(
         jobs: jobs.clone(),
         events,
         conversations,
+        projects,
         artifacts,
         routines,
         turns: brain::turn::Turns::default(),
