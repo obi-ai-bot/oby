@@ -2156,6 +2156,7 @@ pub async fn update(
     UrlPath(id): UrlPath<String>,
     paired: Option<axum::Extension<crate::gateway::PairedDevice>>,
     relayed: Option<axum::Extension<crate::gateway::Relayed>>,
+    headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let change: Change = serde_json::from_slice(&body).map_err(|_| {
@@ -2206,11 +2207,16 @@ pub async fn update(
             "title is one line of 1 to 100 characters.",
         ));
     }
+    // A project put in is one of the profile the request names, found before any lock is taken.
+    let asked = match change.project {
+        Some(Some(id)) => Some(Some((crate::profiles::root_of(&shared, &headers)?, id))),
+        other => other.map(|_| None),
+    };
     // The projects' lock first, then the conversations': the project can't go meanwhile.
-    let projects = shared.projects.lock();
-    let project = match change.project {
-        Some(Some(asked)) => Some(Some(
-            crate::projects::joined(&projects, &asked).map_err(Error::Folder)?,
+    let mut projects = shared.projects.lock();
+    let project = match asked {
+        Some(Some((root, id))) => Some(Some(
+            crate::projects::joined(projects.at(&root), &id).map_err(Error::Folder)?,
         )),
         other => other.map(|_| None),
     };

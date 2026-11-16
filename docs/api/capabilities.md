@@ -7,7 +7,7 @@
  "maxRunning": 6, "running": 4, "defaultAgent": "auto", "defaultAccount": null,
  "clearedAt": "2026-10-10T08:12:00Z",
  "github": "app", "checks": "ok", "permissions": {"mode": "sandbox"},
- "scanner": {"gitleaks": true}, "receipts": true, "capabilities": ["events-replay-v1", "folders-v1", "projects-v1", "revisions-v1"],
+ "scanner": {"gitleaks": true}, "receipts": true, "capabilities": ["events-replay-v1", "folders-v1", "profile-projects-v1", "projects-v1", "revisions-v1"],
  "tools": [{"agent": "claude", "path": "/Users/me/.local/bin/claude", "version": "2.1.317"},
            {"agent": "codex", "path": "/opt/homebrew/bin/codex", "version": "0.163.0"},
            {"agent": "cursor", "path": null, "version": null}],
@@ -48,6 +48,7 @@
 |---|---|---|
 | `events-replay-v1` | `GET /v1/events` numbers its events with an `id: <epoch>-<seq>` line, and resumes a client that sends the last one it had (`?after=` or the `Last-Event-ID` header): it replays what the client missed, or sends one `resync` when it can't. | R06-02 |
 | `folders-v1` | obid takes working folders: `folders` on `POST /v1/plans`, on conversations and on `PATCH /v1/conversations/{id}`, the same behaviour `folders: true` announces. | The behaviour since #1572, listed since R06-01 |
+| `profile-projects-v1` | obid reads the `Oby-Profile` header on `GET`/`POST /v1/projects`, `PATCH`/`DELETE /v1/projects/{id}` and on `project` in `PATCH /v1/conversations/{id}` and `POST /v1/plans`, and keeps projects per profile ([profiles.md](profiles.md)). An app sends the header only to an obid that lists it. | A00-79 |
 | `projects-v1` | obid keeps projects: `GET`/`POST /v1/projects`, `PATCH`/`DELETE /v1/projects/{id}`, a conversation's `project`, and `project` on `PATCH /v1/conversations/{id}` and `POST /v1/plans` ([projects.md](projects.md)). | A00-70 |
 | `revisions-v1` | Conversations, their turns and inbox items carry `revision`, as jobs do: one more each time obid sends the object changed, kept across restarts, so of an event and an answer that crossed it the higher is the newer; a deleted conversation's event carries the revision after its last ([events.md](../contracts/events.md), EVENTS-7 to 10). | R06-03 |
 

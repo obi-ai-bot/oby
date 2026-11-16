@@ -35,7 +35,8 @@ pub struct Shared {
     pub cleared: crate::clear::Cleared,
     /// The devices that may approve publishing (`POST /v1/devices`).
     pub devices: crate::devices::Devices,
-    /// Chrome-style profiles on this Mac (`/v1/profiles`); nothing else reads them yet.
+    /// Chrome-style profiles on this Mac (`/v1/profiles`): crate::profiles::root_of reads them for
+    /// the profile a request names, and the start's reconcile for every profile's projects.
     pub profiles: crate::profiles::Profiles,
     /// The owner's helpers (`/v1/helpers`).
     pub helpers: crate::helpers::Helpers,
@@ -648,6 +649,7 @@ async fn method_not_allowed() -> ApiError {
 pub const CAPABILITIES: &[&str] = &[
     "events-replay-v1",
     "folders-v1",
+    "profile-projects-v1",
     "projects-v1",
     "revisions-v1",
 ];

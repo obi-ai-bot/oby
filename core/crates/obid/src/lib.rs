@@ -494,7 +494,7 @@ pub async fn serve(
     brain::harness::forget_logins_left(&config.home);
     let conversations = conversation::Conversations::open(&config.home, events.clone());
     let projects = projects::Projects::open(&config.home);
-    projects::reconcile(&projects, &conversations);
+    projects::reconcile(&projects, &profiles.roots(&config.home), &conversations);
     let artifacts = artifacts::Artifacts::open(&config.home, events.clone());
     jobs.use_artifacts(artifacts.clone());
     let routines = Arc::new(routines::Routines::open(&config.home, events.clone()));

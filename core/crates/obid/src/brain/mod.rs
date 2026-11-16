@@ -142,6 +142,10 @@ pub async fn plan(
             "A project is chosen when a conversation starts: send project with new.",
         ));
     }
+    // The project is one of the profile the request names (crate::profiles::root_of).
+    let root = (req.project.as_ref())
+        .map(|_| crate::profiles::root_of(&shared, &headers))
+        .transpose()?;
     // Left out, a request joins the latest conversation, as it did when there was only one: the
     // apps from before #493 send none and show one thread.
     let target = match (req.conversation, req.new.unwrap_or(false)) {
@@ -223,8 +227,9 @@ pub async fn plan(
     // The files go with the conversation; their names on the turn, for the tags under the words.
     // The projects' lock first, so the project can't go before the conversation is in it.
     let begun = {
-        let projects = shared.projects.lock();
-        let project = req.project.map(|p| crate::projects::joined(&projects, &p));
+        let mut projects = shared.projects.lock();
+        let project = (req.project.zip(root))
+            .map(|(p, root)| crate::projects::joined(projects.at(&root), &p));
         shared.conversations.begin(
             target,
             said.clone(),
