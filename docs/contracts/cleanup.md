@@ -21,6 +21,7 @@ The business behavior contract for what obid frees by itself on the Mac's disk, 
 - What a job's **builds** are, in its worktree and in its HOME (`home/tmp/<job id>`): a folder with a `CACHEDIR.TAG` (cargo's target folders have one), Xcode's `DerivedData`, cargo's and npm's caches (`.cargo`, `.npm`) and a `node_modules`'s `.cache`. In the worktree, only folders git ignores: never the job's commits or uncommitted files. In the HOME, only its own folders: its login copies (`.claude`, `.claude.json`, `.codex`) and everything else stay. A Python virtual environment, a `node_modules`'s packages, `.obi/` and anything reached through a link stay.
 - The worktree and the HOME stay, but for a job CLEANUP-3 frees: a follow-up, a fix round or Try again builds again.
 - A check runs without the network in the job's HOME. After its `.cargo` or `.npm` went, a check that runs with no agent run before it (Publish by hand) has no cached packages to build with; a job that runs again fetches them with its agent.
+- **The test-only first pass.** In a debug build only, `OBID_TEST_CLEAN_FIRST_SECONDS` may push the first cleanup pass later than 30 seconds after obid starts, for a test that must check a put-away job's worktree before a pass; a value of 30 or less, or not a whole number of seconds, is ignored. A release build never reads it, and it is never read from `config.json`.
 
 ## Acceptance scenarios
 

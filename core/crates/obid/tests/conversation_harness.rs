@@ -3990,7 +3990,14 @@ fn oby_continue_job_continues_a_job_in_its_session() {
 /// and its open items, and the REST routes do the same for the apps.
 #[test]
 fn archive_is_at_once_and_delete_waits_for_confirm() {
-    let (_folder, obid) = obid_failing_jobs("harness-archive");
+    // The first cleanup pass would free the dismissed job's worktree before the check (B00-41).
+    let (_folder, obid) = obid_env(
+        "harness-archive",
+        true,
+        json!({"agent": "claude"}),
+        &[("OBID_TEST_CLEAN_FIRST_SECONDS", "3600")],
+        json!({"stallAfter": 3}),
+    );
     let (id, conversation) = ended_job(&obid, None);
     let archive = format!(r#"OBY oby_archive_job {{"id": "{id}"}}"#);
     let needs = said(
