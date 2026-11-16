@@ -33,6 +33,8 @@ Something only the user can answer (docs/pipeline-cases.md, "Your inbox"). Like 
 
   obid sends no `failed` item for an ordinary failed or interrupted job (only its crash item and its review item, `<job>-review-<review job>`), and the Electron app no longer draws a failed card of its own (docs/contracts/tasks.md, TASKS-25); no key or value is removed.
 
+  obid's crash item (`<job>-crash-<finished>`) is one per job: a newer one settles the job's older open one. A task (a job and the owner's own jobs that follow it up) has at most one open crash or review `failed` item of obid's and one `merge` item, the newest job's, and none while any job of it is queued or running (docs/contracts/tasks.md, TASKS-26 to 28; docs/api/recovery.md, "Stale items settle"). Every other kind is untouched by that rule.
+
   A `confirm` item (obid only) also carries `confirm`, what its `Confirm` carries out: `{"action": "always_allow", "target": "ab12cd34", "payload": {"permission": "p1a2b3c"}}`. `action` is a typed name, `target` what it acts on (a job's id or an inbox item's id, as the action says) and `payload` what else it needs (`null` when nothing). obid carries every action out through one dispatcher, so a new action is a new name with its own `target` and `payload`, the shape unchanged. The actions so far:
 
   | `action` | `target` | `payload` | `Confirm` does |

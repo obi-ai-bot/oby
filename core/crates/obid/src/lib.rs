@@ -1011,7 +1011,7 @@ fn settle_stale_items(shared: Arc<api::Shared>) {
                 got = bus.recv() => match got {
                     Ok(event) => match event.name {
                         "inbox" => true,
-                        "job" => !matches!(event.data["status"].as_str(), Some("queued" | "running")),
+                        "job" => event.data["status"] != "running",
                         _ => false,
                     },
                     Err(RecvError::Lagged(_)) => true,
