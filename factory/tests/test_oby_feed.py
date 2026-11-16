@@ -469,7 +469,18 @@ class ObyFeed(unittest.TestCase):
         self.one_pass()
         item = self.task_now()
         self.assertEqual(item["state"], "failed")
-        self.assertTrue(item["note"].startswith(f"attempt 3 of 3 ended: GitHub's merge queue didn't merge {OLD}"))
+        # it ends with GitHub's own reason, never the follow-up's instructions to rebase
+        self.assertEqual(item["note"], f"attempt 3 of 3 ended: GitHub's queue didn't merge {OLD}: {GITHUB}")
+        self.assertEqual(self.stand.sent, [])
+        # a pull request that conflicts at the third attempt ends with fixed words of its own, not the rebase sentence
+        self.setUp()
+        self.no_ready()
+        self.task("reviewing", head=OLD, attempt=3)
+        self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "x.py"}], "mergeable": "CONFLICTING"}
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual((item["state"], item["note"]),
+                         ("failed", "attempt 3 of 3 ended: its pull request conflicts with dev or is behind it"))
         self.assertEqual(self.stand.sent, [])
 
     # FEEDLOOP-6: STATUS: BLOCKED, a stopped job and a security-path hold are never retried
@@ -806,6 +817,27 @@ class ObyFeed(unittest.TestCase):
                 self.assertEqual(self.stand.sent, [])
                 self.assertEqual((item["state"], item["job"], item["attempt"]), ("running", "job-9", 1))
                 self.assertNotIn("retry", item)
+
+    # FEEDLOOP-16: a task merged after a rebuild deletes every attempt's jobs, not only its last job's
+    def test_feedloop_16_a_merged_task_deletes_the_jobs_of_every_attempt(self):
+        self.no_ready()
+        self.feed.free_gb = lambda: 100.0
+        self.task("running", attempt=1, pr=None)
+        self.stand.jobs[JOB].update(status="failed")
+        self.one_pass()  # attempt 2 starts as a new build, job-2
+        self.assertEqual((self.task_now()["job"], self.task_now()["attempt"]), ("job-2", 2))
+        self.stand.jobs["job-2"].update(status="done", published=f"https://github.com/{REPO}/pull/{PR}")
+        self.one_pass()
+        self.assertEqual(self.task_now()["state"], "reviewing")
+        self.feed.oby_jobs = lambda: [self.stand.jobs[JOB], {"id": "review-1", "reviewOf": JOB}, self.stand.jobs["job-2"],
+                                      {"id": "review-2", "reviewOf": "job-2"}, {"id": "other", "kind": "build"}]
+        self.stand.view = {"headRefOid": OLD, "state": "MERGED", "files": [{"path": "x.py"}]}
+        self.stand.graphql = queue(state="MERGED")
+        self.one_pass()
+        self.one_pass()
+        self.assertEqual(self.task_now()["state"], "merged")
+        deleted = sorted(c[2] for c in self.stand.calls if c[:2] == ("api", "DELETE"))
+        self.assertEqual(deleted, [f"/v1/jobs/{i}" for i in sorted([JOB, "job-2", "review-1", "review-2"])])
 
 
 class CheckModels(unittest.TestCase):

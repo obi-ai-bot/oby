@@ -299,6 +299,10 @@ AGAIN = {
     "review": "Oby's review still asks for changes after its last round: fix what it asks, run the check, "
               "and finish with a short summary.",
 }
+# Why a pull request that can't merge ended the task at the attempt cap: never AGAIN's instructions. A refused head's
+# is the note follow() just wrote, with GitHub's reason (a note, never a brief or message).
+LAST = {"conflict": "its pull request conflicts with dev or is behind it",
+        "review": "Oby's review still asked for changes after its last round"}
 
 
 def obid_reason(j):
@@ -340,7 +344,8 @@ def next_attempt(item, j, case=None):
     head = item.get("head") or ""
     why = AGAIN[case].format(head=head if re.fullmatch(r"[0-9a-f]{40}", head) else "its head") if case else obid_reason(j)
     if item.get("attempt", 1) >= MAX_ATTEMPTS:
-        return "end", f"attempt {item.get('attempt', 1)} of {MAX_ATTEMPTS} ended: {why}"
+        last = (item.get("note") or "GitHub's queue didn't merge it") if case == "queue" else LAST[case] if case else why
+        return "end", f"attempt {item.get('attempt', 1)} of {MAX_ATTEMPTS} ended: {last}"
     return ("message", why) if case else ("build", retry_words(j))
 
 
@@ -431,8 +436,15 @@ def carry(item, account):
         return False
     for k in ("retry", "words"):
         item.pop(k, None)
-    item.update(job=oby_id, state="running", attempt=attempt)
+    move(item, oby_id)
+    item.update(state="running", attempt=attempt)
     return True
+
+
+def move(item, job_id):
+    """Puts the task on another job, keeping the one it leaves in `earlier`, so merged() deletes every attempt's jobs."""
+    item["earlier"] = item.get("earlier", []) + [item["job"]]
+    item["job"] = job_id
 
 
 VIEW = "headRefOid,state,files,mergeable,mergeStateStatus"
@@ -493,14 +505,18 @@ def follow_up(item, jobs):
         if other.get("followUpOf") == item["job"] and other.get("kind") == "build":
             for k in ("retry", "words"):
                 item.pop(k, None)
-            item.update(job=other["id"], state="running")
+            move(item, other["id"])
+            item["state"] = "running"
             say(f"{item['key']}: Oby started a follow-up ({other['id']})")
             return True
     return False
 
 
 def merged(item, jobs):
-    gone = delete_jobs(family(item["job"], jobs))
+    ids = set()
+    for job_id in item.get("earlier", []) + [item["job"]]:  # every attempt's job, rebuilt or followed up
+        ids |= family(job_id, jobs)
+    gone = delete_jobs(ids)
     item.update(state="merged", note=f"merged; {gone} Oby jobs and their worktrees removed")
 
 
