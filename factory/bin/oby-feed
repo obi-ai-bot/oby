@@ -1698,9 +1698,12 @@ def ready_tasks(state):
 def take_agains(state):
     """The owner's --again (FEEDSTOP-4), before anything is followed: each feed/<KEY>.again whose task is stopped gives
     the message that wasn't sent back as owed, under its own key, and starts the run again; the file is deleted once
-    the task is saved, or at once for a task that isn't stopped."""
+    the task is saved, or at once for a task that isn't stopped. While another fix message is owed, the file waits for
+    it to be heard, refused or dropped, so neither is lost."""
     for path in sorted(FEED.glob("*.again")):
         item = state.get(path.stem)
+        if item and item.get("stopped") and item.get("fixOwed"):
+            continue
         if item and item.get("stopped"):
             stopped = item.pop("stopped")
             item.pop("fixRun", None)

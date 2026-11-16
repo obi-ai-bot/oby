@@ -2761,6 +2761,29 @@ class ObyFeed(unittest.TestCase):
                 self.assertEqual(stop.exception.code, 1)
                 self.assertEqual(out.getvalue(), f"{key} isn't stopped: nothing to start again\n")
                 self.assertEqual(sorted(os.listdir(self.feed.FEED)), files)
+        # an again waits for another fix message still owed, which it never replaces: once that one is refused, the
+        # saved message goes; once it is heard, the stop is over and the again is just deleted
+        security = "the security review asked for changes"
+        for answer, sent in (((422, {"error": "no"}), True), ((201, {"id": "job-2"}), False)):
+            with self.subTest(answer=answer[0]):
+                self.afresh(f"again waits {answer[0]}")
+                message = self.stopped_task()
+                other = self.feed.lens_fix("A00-99", ["security"], OLD)
+                item = self.task_now()
+                item["fixOwed"] = {"reason": security, "head": OLD, "message": other}
+                self.feed.save(item)
+                with mock.patch("sys.stdout", io.StringIO()):
+                    self.main("--again", "A00-99")
+                self.stand.message_answers = [answer]
+                self.one_pass()
+                self.assertEqual(self.stand.messages, [(JOB, other)])
+                self.assertTrue((self.feed.FEED / "A00-99.again").exists())
+                self.one_pass()
+                self.assertEqual(self.stand.messages, [(JOB, other)] + [(JOB, message)] * sent)
+                self.assertFalse((self.feed.FEED / "A00-99.again").exists())
+                item = self.task_now()
+                self.assertNotIn("stopped", item)
+                self.assertEqual(item["fixRun"], {"reason": self.CODE if sent else security, "count": 1})
         # a stopped task with no word from the owner gets nothing
         self.afresh("no again")
         self.stopped_task()
