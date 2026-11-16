@@ -927,6 +927,21 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual(self.stand.sent, [])
         self.assertEqual(self.task_now()["state"], "merged")
 
+    # FEEDLOOP-20: a held new build whose resumed job ended done with a pull request follows that job to review
+    def test_feedloop_20_a_held_build_whose_resumed_job_ended_done_goes_to_review(self):
+        disk = self.held_retry("build")
+        self.stand.jobs[JOB].update(status="done", published=f"https://github.com/{REPO}/pull/{PR}")
+        disk["gb"] = 100.0
+        self.one_pass(min_free_gb=10)
+        item = self.task_now()
+        self.assertEqual(self.stand.sent, [])
+        self.assertEqual((item["state"], item["job"], item["attempt"], item["pr"]), ("running", JOB, 1, PR))
+        self.assertNotIn("retry", item)
+        self.one_pass(min_free_gb=10)  # follow() takes the done job to review, as any done job with a pull request
+        item = self.task_now()
+        self.assertEqual(self.stand.sent, [])
+        self.assertEqual((item["state"], item["job"], item["attempt"], item["pr"]), ("reviewing", JOB, 1, PR))
+
     # FEEDLOOP-16: a task merged after a rebuild deletes every attempt's jobs, not only its last job's
     def test_feedloop_16_a_merged_task_deletes_the_jobs_of_every_attempt(self):
         self.no_ready()

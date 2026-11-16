@@ -399,7 +399,8 @@ def recheck(item, jobs):
     a security path waits for the owner, its pull request kept, whichever attempt it waited for. A job that obid has a
     follow-up of, lost or not, is followed there, nothing sent, and so is its own job when it is `queued` or `running`
     again (the owner resumed it in obid); a job that then ended stopped or STATUS: BLOCKED ends the task `failed`
-    (never_retried()); a job that can't be read sends nothing. Then a follow-up whose job obid lost takes the new-build path, or ends at the attempt cap (next_attempt()). Returns (changed, clear):
+    (never_retried()), and a new build's job that then ended done with a pull request is followed again to review; a
+    job that can't be read sends nothing. Then a follow-up whose job obid lost takes the new-build path, or ends at the attempt cap (next_attempt()). Returns (changed, clear):
     clear says its attempt may be sent in this pass; a pull request that can't be read sends nothing until one can."""
     code, j = api("GET", f"/v1/jobs/{item['job']}")
     if code not in (200, 404):
@@ -438,6 +439,14 @@ def recheck(item, jobs):
         for k in ("retry", "words"):
             item.pop(k, None)
         item.update(state="failed", note=final[:240])
+        return True, False
+    if item.get("retry") == "build" and published and (j or {}).get("status") == "done":
+        # a new build waits only for a job that ended without a pull request: resumed, it ended done with one, so the
+        # task follows it again (`running`) and follow() takes it to review as it would any done job, nothing sent
+        for k in ("retry", "words", "note"):
+            item.pop(k, None)
+        item["state"] = "running"
+        say(f"{item['key']}: its job {item['job']} ended done in obid with pull request #{published}: followed, nothing sent")
         return True, False
     if item.get("retry") == "message" and lost:
         verdict, why = next_attempt(item, None, None)
