@@ -10,7 +10,7 @@ import { replaceTasks, type Asking, type PersonQuestion, type PersonReview, type
 import { keepFoldersOf, nameFoldersBy, saveFolders, sendFoldersBy, takeFolders } from './folders';
 import { accountRow, moveKeptChoices, replaceAccounts } from './SettingsView';
 import { BRANDS } from './brands';
-import { TRY_AGAIN } from '../../shared/words';
+import { ALLOW_ONCE, TRY_AGAIN } from '../../shared/words';
 import { has } from '../../shared/capabilities';
 import { answer, answerStatus, answerTurns, apply as applyToObid, type ObidState } from '../../shared/live-state';
 import { unwired, type LiveMessage, type LiveSnapshot } from '../../shared/live-wire';
@@ -406,6 +406,33 @@ function asksOf(s: Live): Asking[] {
     ...limitAsks(s),
   ];
 }
+
+// Waiting for you (docs/contracts/home.md, WAITING-1 to 3): everything across the profile's
+// projects that needs the owner's word, as obid sorts it (needs_you), and every merge card
+// (MERGING-21); open, not put off, not while its answer is on its way; longest waiting first. A
+// view over GET /v1/inbox, with no state of its own.
+export function waitingOf(s: Live): InboxItem[] {
+  const now = Date.now();
+  return s.inbox.filter((i) => i.state === 'open' && (i.triage === 'needs_you' || i.kind === 'merge')
+    && !(i.later && Date.parse(i.later) > now) && !s.answering.has(i.id) && !(i.job && s.answered[i.job]?.item === i.id))
+    .sort((a, b) => Date.parse(a.created) - Date.parse(b.created));
+}
+export const useWaitingCount = () => useSyncExternalStore((l) => { listeners.add(l); return () => { listeners.delete(l); }; }, () => waitingOf(state).length);
+// the project an item is in: its task's repository, else GitHub's, else none ('')
+export const projectOf = (s: Live, i: InboxItem) => s.jobs[i.job]?.repo || i.github?.repo || '';
+// Merge on a row is the merge card's own Merge, signed by main by its button's label
+// (docs/contracts/signed-words.md); Allow once and Deny answer the task's permission, as its card does
+export const mergeWaiting = (i: InboxItem) => answerJob(i.id, 'Merge');
+export const allowWaiting = (i: InboxItem, option: 'Allow once' | 'Deny') => answerJob(i.job, option);
+// an item with nothing to open (a standalone Confirm, another Oby's question): its own answer, by label
+export const answerWaiting = (i: InboxItem, option: string) => answerJob(i.id, option);
+// The tools whose reviews of Oby's approved the head obid last pushed to the job's branch, as obid
+// counts them (job.rs, approving_tools): its approvals and its latest review, each tool once
+export const approvingTools = (j: Job) => {
+  const head = (j.outgoing ?? []).filter((o) => o.action === 'push' && o.branch === j.branch).at(-1)?.id;
+  return [...new Set([...(j.approvals ?? []), ...(j.review ? [j.review] : [])]
+    .filter((r) => r.verdict === 'approved' && !!head && r.commit === head).map((r) => r.agent))].sort();
+};
 
 // An account's limit (#1563): one card for all the jobs it stopped, its answers obid's options. The
 // card's id carries the revision it shows, so a choice covers exactly the jobs and destination on
@@ -1015,7 +1042,7 @@ export async function startGitHubWork(id: string) {
 // On Oby's ask for a check, Use it is the owner's Confirm, No check (or Keep it) their Cancel; Edit
 // sends the command they typed (words) to POST /v1/repos/check, which asks for it in the ask's
 // place, confirmed here at once with this Mac's signature over that ask's title.
-const DECISIONS: Record<string, 'allow' | 'always' | 'deny'> = { Allow: 'allow', 'Always allow': 'always', Deny: 'deny' };
+const DECISIONS: Record<string, 'allow' | 'always' | 'deny'> = { Allow: 'allow', [ALLOW_ONCE]: 'allow', 'Always allow': 'always', Deny: 'deny' };
 const settleQuestion = async (item: InboxItem) => {
   if (!takesNoAnswer(item)) take({ kind: 'inbox', item: await keyed((key) => api.answer(item.id, { answer: 'Done' }, key)) });
 };

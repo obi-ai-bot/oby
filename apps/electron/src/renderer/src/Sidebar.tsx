@@ -22,6 +22,7 @@ import { askCardLine, memberOpens, mockConvosWith, plainId, useConvos } from './
 import { roomOpens, useRoom } from './room';
 import { chatOfTask, lastAgo, latestChat, renameChat, useChats, type Chat } from './chats';
 import { chatFirst, everything } from './lean';
+import { useWaitingCount } from './live';
 import { loadProfiles, openProfile, profileChats, useProfiles } from './profiles';
 import ProfileMenu, { NewProfileModal } from './ProfileMenu';
 import { WELCOME, sampleDid, sampleOut, useSetup } from './onboarding';
@@ -71,7 +72,7 @@ const convoAbout = (c: Chat) => {
 // ?home: Home and Conversations, ?everything also + and your account picture),
 // the column beside them shows it. Search, on the tabs that have it, sits by the panel icon.
 // It opens from the left and pushes the view over.
-export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOpenGroup, onOpenTask, onOpenChat, onOpenOby, onOpenMember, onOpenTalk, onOpenArchive, onOpenSetting, onOpenSphereSetting, onOpenKnowledge, onOpenRoom, activeOby = null, activeTalk = null, activeSetting = null, activeSphereSetting = null, activeKnowledge = null, active = null, width, onResize }: {
+export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOpenGroup, onOpenTask, onOpenChat, onOpenOby, onOpenMember, onOpenTalk, onOpenArchive, onOpenSetting, onOpenSphereSetting, onOpenKnowledge, onOpenRoom, onOpenWaiting, activeWaiting = false, activeOby = null, activeTalk = null, activeSetting = null, activeSphereSetting = null, activeKnowledge = null, active = null, width, onResize }: {
   open: boolean;
   onClose: () => void;  // the panel closes (its tab's icon again, while that tab is showing)
   onNewChat: () => void;
@@ -84,6 +85,8 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   onOpenMember: (owner: string) => void;  // a member of the live Obysphere, by owner id: their thread
   onOpenTalk: (id: string) => void;  // a conversation with Oby, from Conversations
   onOpenArchive: () => void;  // the archived tasks, as a page
+  onOpenWaiting?: () => void;  // Waiting for you, as a page
+  activeWaiting?: boolean;  // Waiting for you is showing: its row is highlighted
   activeOby?: string | null;  // the Oby whose page is showing: its row is highlighted
   activeTalk?: string | null;  // the conversation with Oby that's showing: its row is highlighted
   activeSetting?: string | null;  // the Settings page that's showing: its row is highlighted
@@ -137,6 +140,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   const working = new Set(tasksWith('running').flatMap((t) => chatOfTask(t.id)?.id ?? []));
   const noRow = tasksWith('needs').some((t) => !t.answer && !chatOfTask(t.id)) || asksWaiting().some((a) => !chats.some((c) => c.id === a.talk));
   const anyWaits = noRow || needing.size > 0 || chats.some((c) => c.needs);
+  const waiting = useWaitingCount();
   const [section, setSection] = useState<Section>(SECTIONS[0].id);
   // the Obyspheres you're in (spheres.ts), under the line in the icon strip:
   // an Obysphere (a focused workspace: your Oby with other people's, sharing
@@ -538,6 +542,14 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
               <Plus size={16} strokeWidth={1.6} />
               <span className="sidebar-new-label">New conversation</span>
             </button>
+            {/* everything across the profile's projects that needs your word (WaitingView), only while there is some */}
+            {waiting > 0 && (
+              <button className={`sidebar-new chat-new${activeWaiting ? ' is-active' : ''}`} aria-current={activeWaiting || undefined} onClick={onOpenWaiting}>
+                <ListChecksIcon size={16} />
+                <span className="sidebar-new-label">Waiting for you</span>
+                <span className="waiting-count">{waiting}</span>
+              </button>
+            )}
             {inOrder.map(convoRow)}
             {!talks.length && <p className="sidebar-empty">{q ? `No conversations match “${query.trim()}”` : 'No conversations yet'}</p>}
           </div>

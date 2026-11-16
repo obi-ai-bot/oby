@@ -359,6 +359,29 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .archive-who { margin-right: 6px; color: var(--text); }
 .archive-about, .archive-ago { color: var(--muted); font-size: var(--text-sm); }
 .archive-ago { flex: none; }
+/* Waiting for you (WaitingView.tsx, Sangam's screen 17): one card per thing that needs your word */
+.waiting-head { width: 100%; margin-bottom: 12px; display: flex; align-items: center; gap: 12px; }
+.waiting-head .group-title { margin: 0; }
+.waiting-chip { height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: none; color: var(--text); font-size: var(--text-sm); }
+.waiting-counts { color: var(--muted); font-size: var(--text-sm); }
+.waiting-list { width: 100%; margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.waiting-row { padding: 16px; display: flex; align-items: flex-start; gap: 12px; border: 1px solid var(--line); border-radius: 12px; }
+.waiting-row > svg { flex: none; margin-top: 2px; }
+.waiting-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.waiting-title { margin: 0; color: var(--ink); font-size: var(--text-base); font-weight: 500; }
+.waiting-meta, .waiting-about { margin: 0; color: var(--muted); font-size: var(--text-sm); }
+.waiting-about { color: var(--text); }
+.waiting-summary { margin: 0; color: var(--muted); font-size: var(--text-sm); }
+.waiting-tag.is-failed { color: var(--danger); }
+.waiting-tag { display: inline-flex; align-items: center; gap: 4px; }
+.waiting-diff .is-added { color: #30d158; }  /* lines added: macOS's green */
+.waiting-diff .is-removed { color: var(--danger); }
+.waiting-detail { align-self: flex-start; color: var(--danger); font-size: var(--text-sm); }
+.waiting-chips { margin: 4px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.waiting-kind, .waiting-tag { padding: 2px 8px; border-radius: 6px; background: var(--hover); color: var(--muted); font-size: var(--text-sm); }
+.waiting-kind.is-permission, .waiting-kind.is-question { color: var(--needs); }
+.waiting-actions { flex: none; display: flex; gap: 8px; }
+.waiting-count { margin-left: auto; padding: 0 7px; border-radius: 6px; background: var(--hover); color: var(--needs); font-size: var(--text-sm); }
 .group-cards { width: 100%; display: flex; flex-direction: column; gap: 8px; }
 .group-empty { margin: 8px 4px; color: var(--muted); font-size: var(--text-base); }
 /* a tab with nothing in it: its words in the middle of the window's height (the view starts under

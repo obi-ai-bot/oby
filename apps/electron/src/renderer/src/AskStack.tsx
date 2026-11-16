@@ -155,7 +155,7 @@ const mark = (id: string, change: Sent | null) => {
   sentListeners.forEach((l) => l());
 };
 const subscribeSent = (l: () => void) => { sentListeners.add(l); return () => { sentListeners.delete(l); }; };
-function ReviewBlock({ review: r, onAnswer }: { review: PersonReview; onAnswer?: (option: string) => void }) {
+export function ReviewBlock({ review: r, onAnswer }: { review: PersonReview; onAnswer?: (option: string) => void }) {
   const s = useSyncExternalStore(subscribeSent, () => sent.get(r.id) ?? NOTHING);
   // a click before its words have shown answers nothing (one click, one answer), as AskBlock's
   const [shownAt] = useState(() => performance.now());
