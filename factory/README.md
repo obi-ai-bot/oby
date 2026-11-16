@@ -136,15 +136,21 @@ that can't run, refuses the advance and pushes nothing. An unpushed branch keeps
 refused as unpushed, for the builder to push. A branch with no `done/` copy, or one whose
 `tasks/` file differs from `dev`'s, is refused as before.
 
-Oby's factory (`bin/oby-feed`, building on the factory's own obid) has an approver step too. When a head is
-approved twice by different tools and passes the security-path, model and Kani checks and the gate, the feeder starts an approver
+Oby's factory (`bin/oby-feed`, building on the factory's own obid) has lens reviews and an approver step too. When a
+head is approved twice by different tools and passes the security-path, model and Kani checks and the gate, it goes
+first to its lens reviews: one read-only review job on obid per lens `bin/route`'s rule gives (its `reviewers()`,
+imported) for the task file's `RISK:` line on `dev` (blank is `high`) and the surfaces the pull request touches, each
+with its lens's model and following `.claude/agents/reviewer-<lens>.md` as `dev` has it. A `VERDICT: CHANGES` holds the
+head for the owner, with the lens's findings in `oby-feed --status`; no verdict, or a lens that can't be routed, holds
+it too. Only when every lens says `VERDICT: PASS` for that same head does the feeder start an approver
 job on obid for that head: a read-only review that follows `.claude/agents/approver.md` as `dev` has it. Only its
 `APPROVE` for that same head arms the merge. `ESCALATE` holds the head for the owner, with the approver's reasons
 in `oby-feed --status`. No verdict (any other first line, a job that failed or is gone) holds the head too, and a
 head that moved while the approver read it needs two fresh approvals and a fresh `APPROVE`. Before it arms on an
 `APPROVE`, the feeder checks the approvals, security paths, models, Kani proofs and the gate's verdict again. Until Oby's factory has a
 spec step, the approver checks the task file's own acceptance list, as `dev` has it, never the pull request's copy;
-a task whose file isn't on `dev` is held for the owner. Its contract is FEEDAPPROVE in `docs/contracts/factory.md`.
+a task whose file isn't on `dev` is held for the owner. Their contracts are FEEDLENS and FEEDAPPROVE in
+`docs/contracts/factory.md`.
 
 ## From AGENTS.md
 

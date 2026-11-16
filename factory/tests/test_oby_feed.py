@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""factory/bin/oby-feed's own tests (docs/contracts/factory.md, FEEDMODEL-1 to 5, FEEDALIVE-1 to 6, FEEDKANI-1 to 9 and
-FEEDAPPROVE-1 to 8; task A00-80, FEED-1 to FEED-6), never obid, GitHub, ssh, Quint, Kani, the gate VM or the network.
+"""factory/bin/oby-feed's own tests (docs/contracts/factory.md, FEEDMODEL-1 to 5, FEEDALIVE-1 to 6, FEEDKANI-1 to 9,
+FEEDAPPROVE-1 to 8 and FEEDLENS-1 to 9; task A00-80, FEED-1 to FEED-6), never obid, GitHub, ssh, Quint, Kani, the gate
+VM or the network.
 
 FEED-1 to FEED-6: the feeder's state is a temporary folder; obid's API and every `gh` call are stand-ins that log
 what they were asked and answer as each test sets.
@@ -8,7 +9,14 @@ what they were asked and answer as each test sets.
 FEEDAPPROVE-1 to 8: the stand-in obid answers `POST /v1/jobs` with an approver job, `approver-<n>`, or gives back the
 one it made under the same clientRequestId (200), as obid's receipts do. The job's `startCommit` is the pull request's
 head when it was asked, and its `status` and `summary` are the stand-in's `approver` until a test sets them; that is
-`done` with `APPROVE`, so a test that merges after two approvals reaches the merge one pass later.
+`done` with `APPROVE`, so a test that merges after two approvals reaches the merge one pass after its lens reviews.
+
+FEEDLENS-1 to 9: the stand-in answers a `POST /v1/jobs` whose clientRequestId starts `feed-lens-` with a lens job,
+`lens-<n>`, or the one it made under the same key. Its `startCommit` is the pull request's head when it was asked, and
+its `status` and `summary` are the stand-in's answer for that lens (`lens`), `done` with `VERDICT: PASS` unless a test
+sets one; so a head approved twice gets its lens jobs at one pass, its approver at the next and its merge at the one
+after. `git cat-file -e` finds every task file and lens prompt on the base but those in `off_base` (by stem, so
+`reviewer-security` for a prompt), and `git show` of a task file gives the text a test put in `base_tasks`, else none.
 
 FEEDMODEL-1 to 4: check_models() runs with subprocess.run stubbed: `gh api` returns a model whose first line is a
 `// verify:` line, the `ssh … cat >` and `ssh … rm -f` calls succeed, and each `ssh … quint verify … --invariant=<name> …`
@@ -74,6 +82,14 @@ def load_feed():
 
 feed = load_feed()
 
+
+def load_route():
+    loader = importlib.machinery.SourceFileLoader("factory_route", str(OBY_FEED.parent / "route"))
+    spec = importlib.util.spec_from_loader("factory_route", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
 PATH = "docs/models/oby_factory.qnt"
 HEAD = "0123456789abcdef0123456789abcdef01234567"
 WARNING = "[libprotobuf WARNING] a stand-in for the VM's warning, which mentions an error mid-line"
@@ -107,7 +123,9 @@ class StandIns:
         self.post_answers = []  # answers to the next posts, in order: (code, body), or None for no answer
         self.approver = {"status": "done", "summary": "APPROVE\n1. met: the stand-in read it"}
         self.missed = None  # the feeder's OBID_MISSED, for a post with no answer
-        self.off_base = set()  # task keys whose file origin/<base> doesn't have, as the approver step asks git
+        self.off_base = set()  # task keys, and reviewer-<lens> prompts, whose file origin/<base> doesn't have
+        self.lens = {}  # a lens job's status and summary, by lens: `done` with VERDICT: PASS unless a test sets it
+        self.base_tasks = {}  # a task's file as origin/<base> has it, by key: none there unless a test sets it
 
     def api(self, method, path, body=None, timeout=30):
         self.calls.append(("api", method, path))
@@ -128,6 +146,14 @@ class StandIns:
             for j in self.jobs.values():
                 if j.get("clientRequestId") == sent["clientRequestId"]:
                     return 200, j
+            if sent["clientRequestId"].startswith("feed-lens-"):
+                lens = sent["clientRequestId"].rsplit("-", 2)[1]
+                made = {"id": f"lens-{len([j for j in self.jobs if j.startswith('lens-')]) + 1}", "kind": "review",
+                        "pr": sent["pr"], "clientRequestId": sent["clientRequestId"],
+                        "startCommit": (self.view or {}).get("headRefOid"),
+                        **self.lens.get(lens, {"status": "done", "summary": "VERDICT: PASS\nnothing to change"})}
+                self.jobs[made["id"]] = made
+                return 201, made
             made = {"id": f"approver-{len([j for j in self.jobs if j.startswith('approver-')]) + 1}", "kind": "review",
                     "pr": sent["pr"], "clientRequestId": sent["clientRequestId"],
                     "startCommit": (self.view or {}).get("headRefOid"), **self.approver}
@@ -139,6 +165,10 @@ class StandIns:
         """The `job` of each `POST /v1/jobs`."""
         return [json.loads(body)["job"] for body in self.posts]
 
+    def sent_to(self, prefix):
+        """The `job` of each `POST /v1/jobs` whose clientRequestId starts with `prefix`: `feed-approve-` or `feed-lens-`."""
+        return [sent for sent in self.sent() if sent["clientRequestId"].startswith(prefix)]
+
     def run(self, cmd, **kwargs):
         self.calls.append(("run", *cmd))
         out, code = "", 0
@@ -148,9 +178,12 @@ class StandIns:
             out = json.dumps(self.graphql) if self.graphql else ""
         elif cmd[:3] == ["gh", "pr", "merge"]:
             code = self.merge_code
-        elif cmd[:3] == ["git", "cat-file", "-e"]:  # the approver step's question: is the task file on origin/<base>?
+        elif cmd[:3] == ["git", "cat-file", "-e"]:  # is the task file, or a lens's prompt, on origin/<base>?
             code = 1 if Path(cmd[3]).stem in self.off_base else 0
-        elif cmd[:2] == ["git", "show"]:  # the Kani check's read of the task on origin/<base>: none there
+        elif cmd[:2] == ["git", "show"]:  # the Kani check's and the lens step's read of the task on origin/<base>
+            text = self.base_tasks.get(Path(cmd[2]).stem) if ":factory/queue/tasks/" in cmd[2] else None
+            if text is not None:
+                return subprocess.CompletedProcess(cmd, 0, stdout=text, stderr="")
             return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="fatal: path does not exist")
         elif cmd[:2] not in (["git", "fetch"], ["git", "worktree"]):  # the gate's worktree: added and removed
             raise AssertionError(f"unexpected command: {cmd}")
@@ -257,7 +290,8 @@ class ObyFeed(unittest.TestCase):
         self.task("waiting", head=OLD, refused=OLD)
         self.stand.jobs[JOB]["approvals"] = approvals(OLD, "claude", "codex") + approvals(NEW, "claude", "codex")
         self.stand.view = {"headRefOid": NEW, "state": "OPEN", "files": [{"path": "x.py"}]}
-        self.one_pass()  # its approver first, then the merge on its APPROVE
+        self.one_pass()  # its lens reviews first, then its approver, then the merge on its APPROVE
+        self.one_pass()
         self.one_pass()
         item = self.task_now()
         self.assertEqual(self.stand.merges(), [("gh", "pr", "merge", str(PR), "--repo", REPO, "--auto", "--match-head-commit", NEW)])
@@ -281,7 +315,8 @@ class ObyFeed(unittest.TestCase):
         self.stand.jobs[JOB]["approvals"] = approvals(NEW, "claude", "codex")
         self.stand.view = {"headRefOid": NEW, "state": "OPEN", "files": [{"path": "x.py"}]}
         self.stand.merge_code = 1
-        self.one_pass()  # its approver first, then the merge on its APPROVE
+        self.one_pass()  # its lens reviews first, then its approver, then the merge on its APPROVE
+        self.one_pass()
         self.one_pass()
         item = self.task_now()
         self.assertEqual(item["state"], "waiting")
@@ -629,10 +664,11 @@ class ObyFeed(unittest.TestCase):
         return started
 
     def ask_approvers_first(self):
-        """One pass that starts no new task, in which each head approved twice gets its approver, answering APPROVE:
-        the next pass is the one that merges."""
+        """Two passes that start no new task, in which each head approved twice gets its lens reviews, passing, and
+        then its approver, answering APPROVE: the next pass is the one that merges."""
         ready = self.feed.ready_tasks
         self.feed.ready_tasks = lambda state: []
+        self.assertIsNotNone(self.one_pass())
         self.assertIsNotNone(self.one_pass())
         self.feed.ready_tasks = ready
 
@@ -1114,14 +1150,16 @@ class ObyFeed(unittest.TestCase):
         self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "x.py"}]}
         self.stand.merge_code = 1
         self.stand.merge_err = "HTTP 502: Bad Gateway (https://api.github.com/graphql)"
-        self.one_pass()  # its approver first, then the merge on its APPROVE
+        self.one_pass()  # its lens reviews first, then its approver, then the merge on its APPROVE
+        self.one_pass()
         self.one_pass()
         item = self.task_now()
         self.assertEqual(item["state"], "waiting")
         self.assertNotIn("refused", item)
         self.assertIn("502", item["note"])
         self.stand.merge_err = "GraphQL: Pull request is not mergeable (enablePullRequestAutoMerge)"
-        self.one_pass()  # its approver's job, given back under the same key, then the merge
+        self.one_pass()  # its lens and approver jobs, given back under the same keys, then the merge
+        self.one_pass()
         self.one_pass()
         item = self.task_now()
         self.assertEqual(len(self.stand.merges()), 2)
@@ -1137,7 +1175,7 @@ class ObyFeed(unittest.TestCase):
         self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "x.py"}]}
         self.stand.merge_code = 1
         self.stand.merge_err = "error connecting to api.github.com: connection reset"
-        for _ in range(12):  # each try is a pass at the approver's job, given back under the same key, then the merge
+        for _ in range(12):  # each try is a pass at its lens and approver jobs, given back under the same keys, then the merge
             self.one_pass()
         self.assertEqual(len(self.stand.merges()), 4)
         self.assertEqual(self.task_now()["refused"], OLD)
@@ -1275,7 +1313,8 @@ class ObyFeed(unittest.TestCase):
             self.assertNotIn("does not hold", item["note"])
             self.assertEqual(self.stand.merges(), [])
             verdict[0] = HOLDS
-            self.assertIsNotNone(self.one_pass())  # its approver first, then the merge on its APPROVE
+            self.assertIsNotNone(self.one_pass())  # its lens reviews first, then its approver, then the merge on its APPROVE
+            self.assertIsNotNone(self.one_pass())
             self.assertIsNotNone(self.one_pass())
         self.assertEqual(self.task_now()["state"], "merging")
         self.assertEqual(len(self.stand.merges()), 1)
@@ -1315,9 +1354,10 @@ class ObyFeed(unittest.TestCase):
     def test_feedapprove_1_a_reviewing_head_approved_twice_starts_the_approver_not_the_merge(self):
         self.approved_twice("reviewing")
         self.stand.approver = {"status": "running", "summary": None}
+        self.one_pass()  # its lens reviews first (FEEDLENS)
         self.one_pass()
-        self.assertEqual(len(self.stand.posts), 1)
-        sent = self.stand.sent()[0]
+        self.assertEqual(len(self.stand.sent_to("feed-approve-")), 1)
+        sent = self.stand.sent_to("feed-approve-")[0]
         self.assertEqual({k: sent[k] for k in ("repo", "kind", "pr", "base", "rounds", "title", "clientRequestId", "account")},
                          {"repo": REPO, "kind": "review", "pr": PR, "base": self.feed.job.BASE, "rounds": 1,
                           "title": "A00-99 approver", "clientRequestId": f"feed-approve-A00-99-{OLD[:12]}", "account": "acct"})
@@ -1328,23 +1368,25 @@ class ObyFeed(unittest.TestCase):
                          ("approving", "approver-1", OLD, ["claude", "codex"], ["approver-1"]))
         self.assertEqual(self.stand.merges(), [])
         self.one_pass()
-        self.assertEqual(len(self.stand.posts), 1)
+        self.assertEqual(len(self.stand.sent_to("feed-approve-")), 1)
         self.assertEqual(self.stand.merges(), [])
         self.assertEqual(self.task_now()["state"], "approving")
 
     def test_feedapprove_1_a_waiting_task_with_a_new_head_approved_twice_starts_the_approver(self):
         self.approved_twice("waiting", head=NEW, refused=OLD)
         self.stand.approver = {"status": "running", "summary": None}
+        self.one_pass()  # its lens reviews first (FEEDLENS)
         self.one_pass()
-        self.assertEqual([s["clientRequestId"] for s in self.stand.sent()], [f"feed-approve-A00-99-{NEW[:12]}"])
+        self.assertEqual([s["clientRequestId"] for s in self.stand.sent_to("feed-approve-")], [f"feed-approve-A00-99-{NEW[:12]}"])
         item = self.task_now()
         self.assertEqual((item["state"], item["approverHead"], item["approved"]), ("approving", NEW, ["claude", "codex"]))
         self.assertEqual(self.stand.merges(), [])
 
     def test_feedapprove_1_account_any_names_no_account_on_the_approver(self):
         self.approved_twice("reviewing")
+        self.feed.one_pass(Namespace(max=3, min_free_gb=0, dry_run=False, account="any"))  # its lens reviews first
         self.feed.one_pass(Namespace(max=3, min_free_gb=0, dry_run=False, account="any"))
-        self.assertNotIn("account", self.stand.sent()[0])
+        self.assertNotIn("account", self.stand.sent_to("feed-approve-")[0])
 
     def test_feedapprove_1_the_brief_names_the_head_the_base_definition_and_the_task_file(self):
         item = {"key": "A00-99", "title": "t" * 300, "pr": PR}
@@ -1458,8 +1500,9 @@ class ObyFeed(unittest.TestCase):
         self.stand.jobs[JOB]["approvals"] += approvals(NEW, "claude", "codex")
         self.stand.view = {"headRefOid": NEW, "state": "OPEN", "files": [{"path": "x.py"}]}
         self.stand.approver = {"status": "running", "summary": None}
+        self.one_pass()  # its lens reviews first (FEEDLENS)
         self.one_pass()
-        self.assertEqual([s["clientRequestId"] for s in self.stand.sent()], [f"feed-approve-A00-99-{NEW[:12]}"])
+        self.assertEqual([s["clientRequestId"] for s in self.stand.sent_to("feed-approve-")], [f"feed-approve-A00-99-{NEW[:12]}"])
         item = self.task_now()
         self.assertEqual((item["state"], item["approverHead"], item["approvers"]), ("approving", NEW, ["approver-1", "approver-2"]))
         self.assertEqual(self.stand.merges(), [])
@@ -1485,6 +1528,7 @@ class ObyFeed(unittest.TestCase):
         self.stand.jobs[JOB]["approvals"] += approvals(NEW, "claude", "codex")
         self.stand.view = {"headRefOid": NEW, "state": "OPEN", "files": [{"path": "x.py"}]}
         self.stand.merge_code = 1
+        self.one_pass()  # NEW's lens reviews, its approver, then its merge
         self.one_pass()
         self.one_pass()
         item = self.task_now()
@@ -1492,8 +1536,9 @@ class ObyFeed(unittest.TestCase):
         self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "x.py"}]}
         self.one_pass()
         self.one_pass()
+        self.one_pass()
         self.assertEqual(self.task_now()["state"], "waiting")
-        return [s["clientRequestId"] for s in self.stand.sent()], [m[-1] for m in self.stand.merges()]
+        return [s["clientRequestId"] for s in self.stand.sent_to("feed-approve-")], [m[-1] for m in self.stand.merges()]
 
     def test_feedapprove_3_an_escalated_head_that_comes_back_is_never_asked_again(self):
         self.assertEqual(self.held_head_comes_back("ESCALATE\nIt changes a lane."),
@@ -1538,8 +1583,9 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual((self.stand.posts, self.stand.merges()), ([], []))
         self.stand.jobs[JOB]["approvals"] += approvals(NEW, "claude", "codex")
         self.stand.approver = {"status": "running", "summary": None}
+        self.one_pass()  # its lens reviews first (FEEDLENS)
         self.one_pass()
-        self.assertEqual([s["clientRequestId"] for s in self.stand.sent()], [f"feed-approve-A00-99-{NEW[:12]}"])
+        self.assertEqual([s["clientRequestId"] for s in self.stand.sent_to("feed-approve-")], [f"feed-approve-A00-99-{NEW[:12]}"])
         self.assertEqual(self.task_now()["approverHead"], NEW)
         self.one_pass()
         self.assertEqual(self.stand.merges(), [])
@@ -1642,23 +1688,26 @@ class ObyFeed(unittest.TestCase):
     # FEEDAPPROVE-8: obid not starting the approver never merges
     def test_feedapprove_8_an_approver_start_with_no_answer_is_sent_again_unchanged(self):
         self.approved_twice("reviewing")
+        self.one_pass()  # its lens reviews first (FEEDLENS), which pass
         self.stand.post_answers = [None]
         self.assertIsNone(self.one_pass())
-        self.assertEqual(self.task_now()["state"], "reviewing")
+        self.assertEqual(self.task_now()["state"], "lenses")  # where the approver was asked from
         self.one_pass()
-        self.assertEqual(len(self.stand.posts), 2)
-        self.assertEqual(self.stand.posts[0], self.stand.posts[1])
-        self.assertEqual(self.stand.sent()[0]["clientRequestId"], f"feed-approve-A00-99-{OLD[:12]}")
+        posts = [body for body in self.stand.posts if '"feed-approve-' in body]
+        self.assertEqual(len(posts), 2)
+        self.assertEqual(posts[0], posts[1])
+        self.assertEqual(self.stand.sent_to("feed-approve-")[0]["clientRequestId"], f"feed-approve-A00-99-{OLD[:12]}")
         item = self.task_now()
         self.assertEqual((item["state"], item["approver"]), ("approving", "approver-1"))
         self.assertEqual(self.stand.merges(), [])
 
     def test_feedapprove_8_a_5xx_keeps_the_task_and_a_4xx_holds_the_head(self):
         self.approved_twice("reviewing")
+        self.one_pass()  # its lens reviews first (FEEDLENS), which pass
         self.stand.post_answers = [(503, {"error": "obid is restarting"})]
         self.one_pass()
         item = self.task_now()
-        self.assertEqual(item["state"], "reviewing")
+        self.assertEqual(item["state"], "lenses")  # where the approver was asked from
         self.assertTrue(item["note"].endswith("tried again at the next pass"), item["note"])
         self.stand.post_answers = [(422, {"error": "pr: no such pull request"})]
         self.one_pass()
@@ -1666,7 +1715,7 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual((item["state"], item["refused"]), ("waiting", OLD))
         self.assertTrue(item["note"].startswith("approved twice, but obid didn't start the approver: "), item["note"])
         self.one_pass()
-        self.assertEqual(len(self.stand.posts), 2)
+        self.assertEqual(len(self.stand.sent_to("feed-approve-")), 2)
         self.assertEqual(self.stand.merges(), [])
 
     # ---- FEEDGATE: oby-feed runs factory/bin/gate on each head before it merges ------------------------------------
@@ -1756,13 +1805,15 @@ class ObyFeed(unittest.TestCase):
         gate = self.feed.gate.check_commit
         self.stand.merge_code = 1
         self.stand.merge_err = "HTTP 502: Bad Gateway (https://api.github.com/graphql)"
-        self.one_pass()  # the gate, then its approver; the merge on its APPROVE, after may_arm() and the gate again
+        self.one_pass()  # the gate, then its lens reviews; its approver; the merge on its APPROVE, after may_arm() and the gate again
+        self.one_pass()
         self.one_pass()
         item = self.task_now()
         self.assertEqual((item["state"], item.get("refused")), ("waiting", None))
         self.assertEqual(len(gate.calls), 1)
         self.stand.merge_code = 0
-        self.one_pass()  # its approver's job, given back under the same key, then the merge
+        self.one_pass()  # its lens and approver jobs, given back under the same keys, then the merge
+        self.one_pass()
         self.one_pass()
         item = self.task_now()
         merge = ("gh", "pr", "merge", str(PR), "--repo", REPO, "--auto", "--match-head-commit", OLD)
@@ -1776,7 +1827,8 @@ class ObyFeed(unittest.TestCase):
         self.feed.save(item)
         self.stand.jobs[JOB]["approvals"] = approvals(NEW, "claude", "codex")
         self.stand.view = {"headRefOid": NEW, "state": "OPEN", "files": [{"path": "x.py"}]}
-        self.one_pass()  # the gate and its approver, then the merge
+        self.one_pass()  # the gate and its lens reviews, its approver, then the merge
+        self.one_pass()
         self.one_pass()
         self.assertEqual([call[1] for call in gate.calls], [OLD, NEW])
         self.assertEqual(self.stand.merges()[-1][-1], NEW)
@@ -1929,6 +1981,420 @@ class ObyFeed(unittest.TestCase):
             self.assertEqual(seen, [head, head, head])
             self.assertIn("RuntimeError: the gate broke", record["lines"][0])
 
+    # ---- FEEDLENS: oby-feed reviews each head by lens before its approver -------------------------------------------
+
+    VAULT = "core/crates/obid/src/vault.rs"
+
+    def lensed(self, state="reviewing", head=OLD, files=("x.py",), risk=None, **more):
+        """A task `state` whose pull request at `head`, changing `files`, two tools approved, its task file on the base
+        saying `RISK: <risk>` (no such file for None); the Kani check finds nothing to prove."""
+        self.approved_twice(state, head=head, files=files, **more)
+        self.feed.check_kani = lambda key, files, head: None
+        if risk is not None:
+            self.stand.base_tasks["A00-99"] = f"KEY: A00-99\nTITLE: a task\nRISK: {risk}\n\n## What\nA rule.\n"
+
+    def afresh(self, case):
+        """A new feed folder and stand-ins, for a subtest."""
+        self.feed.FEED = self.dir / f"feed-{case}"
+        self.stand = StandIns()
+        self.stand.missed = self.feed.OBID_MISSED
+        self.feed.api = self.stand.api
+        self.feed.subprocess = Namespace(run=self.stand.run)
+
+    def lens_posts(self):
+        """Each lens POST's (lens, model, clientRequestId), in order."""
+        return [(s["clientRequestId"].rsplit("-", 2)[1], s["model"], s["clientRequestId"])
+                for s in self.stand.sent_to("feed-lens-")]
+
+    def printed_status(self):
+        self.feed.free_gb = lambda: 100.0
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            self.feed.status()
+        return out.getvalue()
+
+    # FEEDLENS-1: the lenses are routed by route's own rule, from the task's risk and the pull request's surfaces
+    def test_feedlens_1_route_reviewers_is_the_one_rule(self):
+        route = self.feed.route
+        self.assertEqual(route.reviewers("high", ["security", "model"]), {"code": "sonnet", "security": "opus", "proofs": "opus"})
+        with self.assertRaisesRegex(ValueError, r"^surface 'nope' isn't in config.json surface_reviewers \(ui, "):
+            route.reviewers("high", ["nope"])
+        with self.assertRaisesRegex(ValueError, r"^risk 'odd' isn't in config.json routing \(low, medium, high\)$"):
+            route.reviewers("odd", [])
+        self.assertNotIn("surface_reviewers", OBY_FEED.read_text())  # imported, never copied
+
+    def test_feedlens_1_route_main_prints_and_records_what_it_did(self):
+        """`route <job-id>` keeps its words: the reviewers line, and an unknown surface's error, through reviewers()."""
+        route = load_route()
+        route.FACTORY = self.dir
+        recorded = []
+
+        def run(cmd, **kwargs):
+            if cmd[1] == "agents":
+                recorded.append(json.loads(cmd[3]))
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        route.subprocess = Namespace(run=run)
+        folder = self.dir / "jobs" / "7-x"
+        folder.mkdir(parents=True)
+        for surfaces in (["security", "model"], ["nope"]):
+            (folder / "job.json").write_text(json.dumps({"intake": {"risk": "high", "surfaces": surfaces}}))
+            out, err = io.StringIO(), io.StringIO()
+            with mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+                try:
+                    route.main(["7-x"])
+                except SystemExit as e:
+                    self.assertEqual(e.code, 1)
+            if surfaces == ["nope"]:
+                self.assertTrue(err.getvalue().startswith("route: surface 'nope' isn't in config.json surface_reviewers ("), err.getvalue())
+            else:
+                self.assertEqual(out.getvalue(), "7-x: reviewers code sonnet, security opus, proofs opus\n")
+        self.assertEqual(recorded, [{"reviewers": {"code": "sonnet", "security": "opus", "proofs": "opus"}}])
+
+    def test_feedlens_1_a_high_risk_security_and_proofs_head_gets_one_job_per_lens(self):
+        self.lensed(risk="high", files=(self.VAULT, "docs/proofs/A00-99.md"))
+        self.one_pass()
+        self.assertEqual(self.lens_posts(), [(lens, model, f"feed-lens-A00-99-{lens}-{OLD[:12]}") for lens, model in
+                                             (("code", "sonnet"), ("proofs", "opus"), ("security", "opus"))])
+        for sent in self.stand.sent_to("feed-lens-"):
+            lens = sent["clientRequestId"].rsplit("-", 2)[1]
+            self.assertIn(f"git show origin/{self.feed.job.BASE}:.claude/agents/reviewer-{lens}.md", sent["task"])
+        self.assertEqual(self.stand.sent_to("feed-approve-"), [])
+
+    def test_feedlens_1_the_risk_and_the_surfaces_route_the_lenses(self):
+        electron = "apps/electron/src/renderer/Home.tsx"
+        cases = {"blank risk": ("", ["x.py"], [("code", "sonnet")]),
+                 "no task text": (None, ["x.py"], [("code", "sonnet")]),
+                 "low": ("low", ["x.py"], [("code", "haiku")]),
+                 "Low, spaced": ("  Low ", ["x.py"], [("code", "haiku")]),
+                 "unknown risk": ("urgent", ["x.py"], [("code", "sonnet")]),
+                 "electron": ("high", [electron], [("code", "sonnet"), ("ui", "haiku"), ("ux", "sonnet")])}
+        for case, (risk, files, lenses) in cases.items():
+            with self.subTest(case=case):
+                self.afresh(case)
+                self.lensed(risk=risk, files=files)
+                self.one_pass()
+                self.assertEqual([(lens, model) for lens, model, _ in self.lens_posts()], lenses)
+        surfaces = self.feed.lens_surfaces
+        self.assertEqual(surfaces("A00-99", ["docs/models/x.qnt", "docs/proofs/A00-99.md"]), ["model", "proofs"])
+        self.assertEqual(surfaces("A00-99", ["docs/models/x.md", "docs/proofs/A00-98.md"]), [])
+        for path in ("factory/bin/oby-feed", "Core/Crates/Obid/src/Sphere/server.rs", "core/crates/obid/src/jobs/lanes.rs",
+                     "core/crates/obid/src/relay/mod.rs", "factory/config.json", "AGENTS.md"):
+            self.assertEqual(surfaces("A00-99", [path]), ["security"], path)
+        self.assertEqual(surfaces("A00-99", ["core/crates/obid/src/jobs/run.rs", "apps/electronic/x"]), [])
+
+    # FEEDLENS-2: each lens job, and the task's state while they run
+    def test_feedlens_2_each_lens_job_is_a_read_only_review_with_its_model(self):
+        for account in ("acct", "any"):
+            with self.subTest(account=account):
+                self.afresh(account)
+                self.lensed(risk="high", files=("x.py", "apps/electron/a.tsx"))
+                self.stand.lens = {lens: {"status": "running", "summary": None} for lens in ("code", "ui", "ux")}
+                self.feed.one_pass(Namespace(max=3, min_free_gb=0, dry_run=False, account=account))
+                sent = self.stand.sent_to("feed-lens-")
+                self.assertEqual(len(sent), 3)
+                for job, (lens, model) in zip(sent, (("code", "sonnet"), ("ui", "haiku"), ("ux", "sonnet"))):
+                    want = {"repo": REPO, "kind": "review", "pr": PR, "base": self.feed.job.BASE, "rounds": 1,
+                            "title": f"A00-99 {lens} review", "agent": "claude", "model": model,
+                            "clientRequestId": f"feed-lens-A00-99-{lens}-{OLD[:12]}"}
+                    self.assertEqual({k: job[k] for k in want}, want)
+                    self.assertEqual(job["task"], self.feed.lens_brief(self.task_now(), OLD, lens))
+                    for absent in ("check", "branch"):
+                        self.assertNotIn(absent, job)
+                    self.assertEqual(job.get("account"), None if account == "any" else "acct")
+                item = self.task_now()
+                self.assertEqual((item["state"], item["lensHead"], item["approved"]), ("lenses", OLD, ["claude", "codex"]))
+                self.assertEqual(item["lenses"], {"code": {"model": "sonnet", "job": "lens-1"},
+                                                  "ui": {"model": "haiku", "job": "lens-2"},
+                                                  "ux": {"model": "sonnet", "job": "lens-3"}})
+                self.assertEqual(item["lensJobs"], ["lens-1", "lens-2", "lens-3"])
+                self.stand.jobs["lens-1"].update(status="done", summary="VERDICT: PASS")
+                self.feed.one_pass(Namespace(max=3, min_free_gb=0, dry_run=False, account=account))
+                self.feed.one_pass(Namespace(max=3, min_free_gb=0, dry_run=False, account=account))
+                self.assertEqual(len(self.stand.posts), 3)
+                self.assertEqual((self.task_now()["state"], self.stand.merges()), ("lenses", []))
+
+    def test_feedlens_2_the_brief_names_the_lens_its_base_prompt_and_the_task_file(self):
+        item = {"key": "A00-99", "title": "t" * 300, "pr": PR}
+        base = self.feed.job.BASE
+        text = self.feed.lens_brief(item, OLD, "security")
+        self.assertEqual(text, self.feed.lens_brief(dict(item), OLD, "security"))
+        self.assertLessEqual(len(text), 2000)
+        for said in (OLD, f"#{PR}", "A00-99", "security", f"git show origin/{base}:.claude/agents/reviewer-security.md",
+                     f"git show origin/{base}:factory/queue/tasks/A00-99.md", f"git diff origin/{base}...HEAD",
+                     "VERDICT: PASS", "VERDICT: CHANGES", "no job folder", "port"):
+            self.assertIn(said, text)
+        self.assertNotIn("factory/queue/done/", text)
+        self.assertNotEqual(text, self.feed.lens_brief(item, OLD, "code"))
+        self.assertLessEqual(len(self.feed.lens_brief(dict(item, title="t" * 5000), OLD, "security")), 2000)
+
+    # FEEDLENS-3: every lens passing the same head asks its approver
+    def test_feedlens_3_every_lens_passing_asks_the_approver_once(self):
+        self.lensed(risk="high", files=(self.VAULT,))
+        self.stand.approver = {"status": "running", "summary": None}
+        self.one_pass()
+        self.assertEqual(self.stand.sent_to("feed-approve-"), [])
+        self.one_pass()
+        self.assertEqual([s["clientRequestId"] for s in self.stand.sent_to("feed-approve-")], [f"feed-approve-A00-99-{OLD[:12]}"])
+        item = self.task_now()
+        self.assertEqual((item["state"], item["approverHead"]), ("approving", OLD))
+        self.assertEqual(len(self.feed.gate.check_commit.calls), 1)
+        self.one_pass()
+        self.assertEqual((len(self.stand.sent_to("feed-approve-")), len(self.stand.sent_to("feed-lens-"))), (1, 2))
+        self.assertEqual(self.stand.merges(), [])
+
+    def test_feedlens_3_a_lens_still_running_asks_no_approver(self):
+        self.lensed(risk="high", files=(self.VAULT,))
+        self.stand.lens = {"security": {"status": "running", "summary": None}}
+        self.one_pass()
+        self.one_pass()
+        self.one_pass()
+        self.assertEqual((self.stand.sent_to("feed-approve-"), self.task_now()["state"]), ([], "lenses"))
+        self.stand.jobs["lens-2"].update(status="done", summary="VERDICT: PASS\nnothing to change")
+        self.one_pass()
+        self.assertEqual(len(self.stand.sent_to("feed-approve-")), 1)
+
+    def test_feedlens_3_passing_lenses_ask_no_approver_once_may_arm_no_longer_arms(self):
+        cases = {"changes": (lambda j: j["approvals"].append({"commit": OLD, "agent": "cursor", "verdict": "changes"}),
+                             "a review asked for changes or needs you: open it in Oby"),
+                 "approvals gone": (lambda j: j.update(approvals=[]),
+                                    f"the lens reviews passed {OLD[:12]}, but it no longer has two approvals: waiting for them")}
+        for case, (change, note) in cases.items():
+            with self.subTest(case=case):
+                self.afresh(case)
+                self.lensed()
+                self.one_pass()
+                change(self.stand.jobs[JOB])
+                self.one_pass()
+                item = self.task_now()
+                self.assertEqual((item["state"], item["note"], item.get("refused")), ("waiting", note, None))
+                self.one_pass()
+                self.assertEqual((self.stand.sent_to("feed-approve-"), self.stand.merges()), ([], []))
+
+    # FEEDLENS-4: a VERDICT: CHANGES holds the head for the owner, with its findings
+    def test_feedlens_4_changes_holds_the_head_with_its_findings(self):
+        self.lensed(risk="high", files=(self.VAULT,))
+        self.stand.lens = {"security": {"status": "done", "summary": "VERDICT: CHANGES\n\nThe vault logs a secret (vault.rs:12).\n"
+                                                                    "\x1b[31mIt reads\x07 the key twice.\x1b]0;owned\x07"}}
+        self.one_pass()
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual((item["state"], item["refused"], item["held"]), ("waiting", OLD, [OLD]))
+        self.assertEqual(item["note"], "approved twice, but the security review asked for changes: The vault logs a secret (vault.rs:12).")
+        self.assertEqual(item["findings"], "security:\n\nThe vault logs a secret (vault.rs:12).\n"
+                                           "\x1b[31mIt reads\x07 the key twice.\x1b]0;owned\x07")
+        self.one_pass()
+        self.assertEqual((self.stand.sent_to("feed-approve-"), self.stand.merges(), len(self.stand.sent_to("feed-lens-"))), ([], [], 2))
+        printed = self.printed_status()
+        self.assertFalse(re.search(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]", printed), repr(printed))
+        lines = printed.splitlines()
+        self.assertTrue(lines[0].startswith("waiting    A00-99"), lines)
+        self.assertEqual(lines[1:5], ["  security:", "  ", "  The vault logs a secret (vault.rs:12).",
+                                      "  [31mIt reads the key twice.]0;owned"])
+        # a new head approved twice starts over, under new keys
+        self.stand.jobs[JOB]["approvals"] += approvals(NEW, "claude", "codex")
+        self.stand.view = {"headRefOid": NEW, "state": "OPEN", "files": [{"path": self.VAULT}]}
+        self.one_pass()
+        self.assertEqual([key for _, _, key in self.lens_posts()][2:],
+                         [f"feed-lens-A00-99-code-{NEW[:12]}", f"feed-lens-A00-99-security-{NEW[:12]}"])
+        item = self.task_now()
+        self.assertEqual((item["state"], item["lensHead"], "findings" in item), ("lenses", NEW, False))
+        self.assertEqual(len(self.feed.gate.check_commit.calls), 2)
+
+    def test_feedlens_4_a_held_head_that_comes_back_gets_no_lens_or_approver(self):
+        self.lensed(risk="high", files=(self.VAULT,))
+        self.stand.lens = {"security": {"status": "done", "summary": "VERDICT: CHANGES\nIt logs a secret."}}
+        self.one_pass()
+        self.one_pass()
+        self.assertEqual(self.task_now()["held"], [OLD])
+        self.stand.lens = {}
+        self.stand.jobs[JOB]["approvals"] += approvals(NEW, "claude", "codex")
+        self.stand.view = {"headRefOid": NEW, "state": "OPEN", "files": [{"path": self.VAULT}]}
+        self.stand.merge_code = 1
+        self.one_pass()  # NEW's lens reviews, its approver, then its merge, which GitHub refuses
+        self.one_pass()
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual((item["state"], item["refused"], item["held"]), ("waiting", NEW, [OLD]))
+        for i in [i for i, j in self.stand.jobs.items() if OLD[:12] in j.get("clientRequestId", "")]:
+            del self.stand.jobs[i]  # obid's receipts for OLD are gone
+        self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": self.VAULT}]}
+        for _ in range(3):
+            self.one_pass()
+        self.assertEqual([key for _, _, key in self.lens_posts() if OLD[:12] in key],
+                         [f"feed-lens-A00-99-code-{OLD[:12]}", f"feed-lens-A00-99-security-{OLD[:12]}"])
+        self.assertEqual([s["clientRequestId"] for s in self.stand.sent_to("feed-approve-")], [f"feed-approve-A00-99-{NEW[:12]}"])
+        self.assertEqual([m[-1] for m in self.stand.merges()], [NEW])
+        self.assertEqual(self.task_now()["state"], "waiting")
+
+    # FEEDLENS-5: a lens with no verdict holds the head for good
+    def test_feedlens_5_a_malformed_answer_or_a_broken_lens_job_holds_the_head(self):
+        cases = [("done", first, f'its answer\'s first line is "{first}"')
+                 for first in ("VERDICT: pass", "**VERDICT: PASS**", "VERDICT: PASS.", "APPROVE", "")]
+        cases += [(status, "VERDICT: PASS", f"its job ended {status}") for status in ("failed", "stopped", "interrupted")]
+        cases += [("gone", "VERDICT: PASS", "its job is gone")]
+        for status, first, why in cases:
+            with self.subTest(status=status, first=first):
+                self.afresh(f"{status}-{len(first)}-{first[:3]}")
+                self.lensed(risk="high", files=(self.VAULT,))
+                self.stand.lens = {"code": {"status": status, "summary": first + ("\nIt does." if first else "")}}
+                self.one_pass()
+                if status == "gone":
+                    del self.stand.jobs["lens-1"]
+                self.one_pass()
+                item = self.task_now()
+                self.assertEqual((item["state"], item["refused"], item["held"]), ("waiting", OLD, [OLD]))
+                self.assertEqual(item["note"], f"approved twice, but the code review gave no verdict: {why}: merge it "
+                                               "yourself or push a new head")
+                self.one_pass()
+                self.assertEqual((self.stand.sent_to("feed-approve-"), self.stand.merges()), ([], []))
+
+    # FEEDLENS-6: a head that moved under its lens reviews waits for fresh approvals
+    def test_feedlens_6_lenses_passing_old_while_the_pull_request_is_at_new_never_ask(self):
+        self.lensed()
+        self.one_pass()
+        self.stand.view = {"headRefOid": NEW, "state": "OPEN", "files": [{"path": "x.py"}]}
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual((item["state"], item.get("refused")), ("waiting", None))
+        self.assertTrue(item["note"].startswith("the head moved while its lens reviews read it"), item["note"])
+        self.one_pass()  # approvals of OLD only
+        self.assertEqual((self.stand.sent_to("feed-approve-"), len(self.stand.sent_to("feed-lens-"))), ([], 1))
+        self.stand.jobs[JOB]["approvals"] += approvals(NEW, "claude", "codex")
+        self.one_pass()
+        self.assertEqual([key for _, _, key in self.lens_posts()], [f"feed-lens-A00-99-code-{OLD[:12]}",
+                                                                     f"feed-lens-A00-99-code-{NEW[:12]}"])
+        self.assertEqual((self.stand.sent_to("feed-approve-"), self.stand.merges()), ([], []))
+
+    def test_feedlens_6_a_lens_job_that_read_another_head_never_asks(self):
+        self.lensed(risk="high", files=(self.VAULT,))
+        self.one_pass()
+        self.stand.jobs["lens-2"]["startCommit"] = NEW
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual((item["state"], item.get("refused")), ("waiting", None))
+        self.assertTrue(item["note"].startswith("the head moved while its lens reviews read it"), item["note"])
+        self.assertEqual((self.stand.sent_to("feed-approve-"), self.stand.merges()), ([], []))
+
+    # FEEDLENS-7: every existing hold comes first, and a lens that can't be routed holds the head
+    def test_feedlens_7_holds_come_first_and_start_no_lens(self):
+        notes = {"security": f"approved twice, but it touches a security path (AGENTS.md): merge it yourself; the gate passed on {OLD[:12]}",
+                 "model": f"approved twice, but {PATH}: the invariant safe does not hold",
+                 "gate": f"approved twice, but the gate failed on {OLD[:12]}: oby-gate: rust failed with exit 1",
+                 "off base": f"approved twice, but its task file isn't on origin/{self.feed.job.BASE}, so its approver "
+                             "has no acceptance list to read: merge it yourself"}
+        for case in ("security", "model", "one tool", "refused", "gate", "off base"):
+            with self.subTest(case=case):
+                self.afresh(case)
+                files = {"security": ["x.py", "AGENTS.md"], "model": [PATH]}.get(case, ["x.py"])
+                self.lensed(files=files, **({"refused": OLD} if case == "refused" else {}))
+                if case == "one tool":
+                    self.stand.jobs[JOB]["approvals"] = approvals(OLD, "claude")
+                self.feed.check_models = (lambda files, head: f"{PATH}: the invariant safe does not hold") if case == "model" else (lambda files, head: None)
+                self.feed.gate.check_commit = gate_result(*(("FAIL", 1) if case == "gate" else ()),
+                                                          **({"failed": ["oby-gate: rust failed with exit 1"]} if case == "gate" else {}))
+                if case == "off base":
+                    self.stand.off_base = {"A00-99"}
+                self.one_pass()
+                self.one_pass()
+                self.assertEqual((self.stand.sent_to("feed-lens-"), self.stand.merges()), ([], []))
+                item = self.task_now()
+                if case in notes:
+                    self.assertTrue(item["note"].startswith(notes[case]), item["note"])
+                self.assertEqual(item["state"], "reviewing" if case == "one tool" else "waiting")
+
+    def test_feedlens_7_a_lens_that_cant_be_routed_holds_the_head(self):
+        base = self.feed.job.BASE
+        config = self.feed.route.CONFIG
+        cases = {"prompt": ({}, f".claude/agents/reviewer-security.md isn't on origin/{base}"),
+                 "model": ({"routing": dict(config["routing"], high={"code": "gpt-x"})},
+                           "the code lens's model gpt-x isn't haiku, sonnet or opus"),
+                 "surface": ({"surface_reviewers": {k: v for k, v in config["surface_reviewers"].items() if k != "security"}},
+                             "surface 'security' isn't in config.json surface_reviewers")}
+        for case, (patched, why) in cases.items():
+            with self.subTest(case=case), mock.patch.dict(config, patched):
+                self.afresh(case)
+                self.lensed(risk="high", files=(self.VAULT,))
+                if case == "prompt":
+                    self.stand.off_base = {"reviewer-security"}
+                self.one_pass()
+                self.one_pass()
+                item = self.task_now()
+                self.assertEqual((item["state"], item["refused"]), ("waiting", OLD))
+                self.assertTrue(item["note"].startswith(f"approved twice, but its lens reviews can't be routed: {why}"), item["note"])
+                self.assertTrue(item["note"].endswith(": merge it yourself"), item["note"])
+                self.assertEqual((self.stand.posts, self.stand.merges()), ([], []))
+
+    # FEEDLENS-8: obid not starting a lens job never asks the approver
+    def test_feedlens_8_a_lens_post_with_no_answer_is_sent_again_unchanged(self):
+        self.lensed()
+        self.stand.lens = {"code": {"status": "running", "summary": None}}
+        self.stand.post_answers = [None]
+        self.assertIsNone(self.one_pass())
+        item = self.task_now()
+        self.assertEqual((item["state"], item["lenses"]), ("lenses", {"code": {"model": "sonnet", "job": None}}))
+        self.one_pass()
+        self.assertEqual(len(self.stand.posts), 2)
+        self.assertEqual(self.stand.posts[0], self.stand.posts[1])
+        self.assertEqual(self.stand.sent()[0]["clientRequestId"], f"feed-lens-A00-99-code-{OLD[:12]}")
+        item = self.task_now()
+        self.assertEqual((item["state"], item["lenses"]["code"]["job"], item["lensJobs"]), ("lenses", "lens-1", ["lens-1"]))
+        self.assertEqual((self.stand.sent_to("feed-approve-"), self.stand.merges()), ([], []))
+
+    def test_feedlens_8_a_5xx_keeps_the_lenses_and_a_4xx_holds_the_head(self):
+        self.lensed()
+        self.stand.post_answers = [(503, {"error": "obid is restarting"})]
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual(item["state"], "lenses")
+        self.assertEqual(item["note"], "obid didn't start the code review: obid is restarting; tried again at the next pass")
+        self.stand.post_answers = [(422, {"error": "model: not a model this tool has"})]
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual((item["state"], item["refused"]), ("waiting", OLD))
+        self.assertEqual(item["note"], "approved twice, but obid didn't start the code review: model: not a model this tool has")
+        self.one_pass()
+        self.assertEqual(len(self.stand.posts), 2)
+        self.assertEqual((self.stand.sent_to("feed-approve-"), self.stand.merges()), ([], []))
+
+    # FEEDLENS-9: lens jobs are deleted with the task, and kept while it matters
+    def test_feedlens_9_a_merged_task_deletes_its_lens_jobs_with_the_rest(self):
+        self.approving(head=NEW)
+        item = self.task_now()
+        item.update(lensJobs=["lens-1", "lens-2", "lens-3"])  # code and security for OLD, code for NEW
+        self.feed.save(item)
+        self.stand.view = {"headRefOid": NEW, "state": "MERGED", "files": []}
+        self.feed.oby_jobs = lambda: [{"id": JOB, "kind": "build"}, {"id": "review-1", "reviewOf": JOB},
+                                      {"id": "approver-1", "kind": "review"}, {"id": "lens-1", "kind": "review"},
+                                      {"id": "lens-2", "kind": "review"}, {"id": "lens-3", "kind": "review"}]
+        cleanup, api = [], self.feed.api
+
+        def first_delete(method, path, body=None, timeout=30):
+            if method == "DELETE" and not cleanup:
+                cleanup.append(self.task_now()["cleanup"])
+            return api(method, path, body, timeout)
+
+        self.feed.api = first_delete
+        self.one_pass()
+        everything = sorted([JOB, "review-1", "approver-1", "lens-1", "lens-2", "lens-3"])
+        self.assertEqual(cleanup, [everything])
+        deleted = sorted(c[2] for c in self.stand.calls if c[:2] == ("api", "DELETE"))
+        self.assertEqual(deleted, [f"/v1/jobs/{i}" for i in everything])
+        self.assertEqual(self.task_now()["state"], "merged")
+
+    def test_feedlens_9_clean_keeps_the_lens_jobs_of_lenses_and_waiting_tasks(self):
+        self.task("lenses", lensHead=OLD, lensJobs=["lens-1"])
+        self.feed.save({"key": "A00-97", "title": "another", "job": "job-3", "state": "waiting", "pr": 42, "head": OLD,
+                        "refused": OLD, "held": [OLD], "findings": "security:\nIt logs a secret.", "lensJobs": ["lens-2"]})
+        self.feed.save({"key": "A00-96", "title": "merged", "job": "job-4", "state": "merged", "pr": 43, "lensJobs": ["lens-3"]})
+        self.feed.oby_jobs = lambda: [{"id": i, "kind": k, "status": "done"} for i, k in
+                                      ((JOB, "build"), ("job-3", "build"), ("lens-1", "review"), ("lens-2", "review"),
+                                       ("lens-3", "review"))]
+        self.feed.free_gb = lambda: 100.0
+        self.feed.clean()
+        deleted = sorted(c[2] for c in self.stand.calls if c[:2] == ("api", "DELETE"))
+        self.assertEqual(deleted, ["/v1/jobs/lens-3"])
+
 
 KEY = "A00-99"
 PROOFS = f"docs/proofs/{KEY}.md"
@@ -2015,7 +2481,11 @@ class FeedKani(unittest.TestCase):
         self.git(self.dir, "init", "-q", "-b", base, str(self.seed))
         (self.seed / LIB).parent.mkdir(parents=True)
         (self.seed / LIB).write_text(BASE_LIB)
-        self.git(self.seed, "add", LIB)
+        prompts = [f".claude/agents/reviewer-{lens}.md" for lens in ("code", "proofs", "security", "ui", "ux")]
+        for prompt in prompts:  # the lens step finds each lens's prompt on origin's base (FEEDLENS)
+            (self.seed / prompt).parent.mkdir(parents=True, exist_ok=True)
+            (self.seed / prompt).write_text("A lens.\n")
+        self.git(self.seed, "add", LIB, *prompts)
         self.git(self.seed, "commit", "-q", "-m", "base")
         self.git(self.seed, "remote", "add", "origin", str(origin))
         self.git(self.seed, "push", "-q", "origin", base)
@@ -2106,12 +2576,14 @@ class FeedKani(unittest.TestCase):
         got, item = self.review(head, files)
         self.assertEqual(got, (1, 0))
         self.assertEqual(self.kani_calls(), [KANI_RUN, KANI_RUN])
-        self.assertEqual(item["state"], "approving")  # its approver first, then the merge on its APPROVE
-        self.one_pass()  # may_arm() again before the merge: the harness and its broken rule run once more
+        self.assertEqual(item["state"], "lenses")  # its lens reviews first, then its approver, then the merge on its APPROVE
+        self.one_pass()  # may_arm() again before the approver: the harness and its broken rule run once more
+        self.assertEqual(self.feed.load_state()[KEY]["state"], "approving")
+        self.one_pass()  # may_arm() again before the merge: and once more
         item = self.feed.load_state()[KEY]
         self.assertEqual(self.stand.merges(), [("gh", "pr", "merge", str(PR), "--repo", REPO, "--auto", "--match-head-commit", head)])
         self.assertEqual(item["state"], "merging")
-        self.assertEqual(self.kani_calls(), [KANI_RUN] * 4)
+        self.assertEqual(self.kani_calls(), [KANI_RUN] * 6)
         self.assert_no_scratch_copy()
         self.assertEqual(self.git(self.repo, "show", f"{head}:{LIB}"), BASE_LIB + PROOF_MODULE)
         self.assertIn("VERIFICATION:- FAILED", (self.feed.FEED / f"{KEY}.proofs.log").read_text())
@@ -2190,11 +2662,13 @@ class FeedKani(unittest.TestCase):
         self.base_task("None: no rule decides an outcome here, so no Kani harness.")
         head = self.head({LIB: BASE_LIB.replace("saturating_add", "wrapping_add")})
         self.review(head, [LIB])
-        self.one_pass()  # its approver first, then the merge on its APPROVE
+        self.one_pass()  # its lens reviews first, then its approver, then the merge on its APPROVE
+        self.one_pass()
         self.assertEqual(self.feed.load_state()[KEY]["state"], "merging")
         self.assertEqual(self.kani_calls(), [])
         head = self.head({"x.py": "x = 1\n"})
         self.review(head, ["x.py"])
+        self.one_pass()
         self.one_pass()
         self.assertEqual(self.feed.load_state()[KEY]["state"], "merging")
         self.assertEqual(len(self.stand.merges()), 2)
