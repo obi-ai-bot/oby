@@ -49,6 +49,34 @@ pub struct Options {
     /// so, and the provider has no default of its own) and Codex says it's Oby, the name it signed
     /// in under.
     pub chatgpt: bool,
+    /// A side call's quoted file (crate::brain::calls, B00-15), written only once the thread has
+    /// started and its login copy is gone: Codex holds its login by then, and whatever the turn
+    /// reads, the quoted file's words included, it can't be that copy.
+    pub quoted: Option<Quoted>,
+}
+
+/// What [`Options::quoted`] removes, then writes, between the thread's start and the turn's.
+#[derive(Debug, Clone, Default)]
+pub struct Quoted {
+    /// The login copy's files, each gone (or never there) before the quoted file is written.
+    pub forget: Vec<PathBuf>,
+    pub file: PathBuf,
+    pub text: String,
+}
+
+impl Quoted {
+    /// Removes [`Quoted::forget`], then writes the file, or says why it didn't.
+    fn swap(&self) -> Result<(), String> {
+        for file in &self.forget {
+            match std::fs::remove_file(file) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("obid couldn't take its login copy away: {e}")),
+            }
+        }
+        std::fs::write(&self.file, &self.text)
+            .map_err(|e| format!("the quoted file couldn't be written: {e}"))
+    }
 }
 
 /// The `command` line `codex app-server` runs as: the binary, then `app-server`. Oby's broker
@@ -376,6 +404,9 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
             .to_owned();
         self.thread = Some(thread.clone());
         (self.on_event)(Event::Session(thread.clone()));
+        if let Some(quoted) = &options.quoted {
+            quoted.swap().map_err(Stop::Failed)?;
+        }
 
         let mut params = json!({"threadId": thread, "input": [text(prompt)]});
         if let Some(model) = options.model.as_deref().filter(|m| !m.is_empty()) {

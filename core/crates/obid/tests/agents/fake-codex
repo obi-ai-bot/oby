@@ -54,7 +54,8 @@
 // the task says APIKEY.
 //   a brain's prompt answers one plan: a reply "From Codex.", with work.md's first line; one
 //                    whose words hold STALL never answers. A side call's (B00-15): triage's sorts
-//                    each item of work.md `fyi`; a recap's says "Codex wrote this recap."
+//                    each item of work.md `fyi`, and fails while its login copy is still in
+//                    CODEX_HOME; a recap's says "Codex wrote this recap."
 //   anything else    "Nothing to do."
 // It fails the turn when its environment holds a Claude Code, Anthropic or GitHub variable, or
 // obid's token, and when obid starts a thread anywhere but in a sandbox it has to ask about: obid's
@@ -198,6 +199,8 @@ async function runTurn(turnId, prompt) {
     // Words with STALL in them: it never answers, as a Codex on a Mac too busy to think.
     if (task.includes("STALL")) return;
     if (task.includes(`"enum":["needs_you","fyi"]`)) {
+      // Its login copy must be gone by the time the quoted file is there (crate::codex::Quoted).
+      if (existsSync(join(home, "auth.json"))) return complete(turnId, null, "failed", { message: "its login copy is still there" });
       const items = readFileSync("work.md", "utf8").match(/^Item \d+:/gm) ?? [];
       return complete(turnId, JSON.stringify({ items: items.map((_, at) => ({ n: at + 1, as: "fyi" })) }));
     }

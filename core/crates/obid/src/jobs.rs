@@ -7954,6 +7954,7 @@ impl Jobs {
                                 self.usage.get(&job.account).priced
                             },
                             chatgpt,
+                            quoted: None,
                         };
                     codex::run_turn(
                         launch,
