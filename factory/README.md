@@ -15,8 +15,10 @@ bin/gate        runs checks.sh in a job's worktree → round-N/checks.md; with `
                 set too, obid's test binaries in shards on the VM's slots, the Mac worker and this Mac, all at
                 once, with one verdict; `gate --idle` deallocates the idle VM (job queue runs it); `gate --checkout
                 <worktree> <commit> <branch> <out-dir>` is the same gate with no job folder (oby-feed's)
-bin/oby-feed    feeds the task files to the factory's own obid (Oby builds and reviews them) and merges what Oby
-                approved twice, once the models, Kani and bin/gate passed on the head; state in ~/.oby-factory/feed/
+bin/oby-feed    feeds the task files to the factory's own obid, each as intake, then spec, then build (Oby builds
+                against the spec and reviews it), and merges what Oby approved twice, once the models, Kani and
+                bin/gate passed on the head; a task intake holds for the owner waits `blocked`; state in
+                ~/.oby-factory/feed/
 bin/prove       re-runs the Kani harnesses a job's spec.md lists under `## Proofs` on the commit its gate passed, through
                 bin/test-run, checks each can fail on its declared broken rule and that the branch adds nothing that
                 games them; for a `model` job, runs `quint typecheck`, `run` and `verify` on each Quint model its
@@ -136,19 +138,26 @@ that can't run, refuses the advance and pushes nothing. An unpushed branch keeps
 refused as unpushed, for the builder to push. A branch with no `done/` copy, or one whose
 `tasks/` file differs from `dev`'s, is refused as before.
 
-Oby's factory (`bin/oby-feed`, building on the factory's own obid) has lens reviews and an approver step too. When a
-head is approved twice by different tools and passes the security-path, model and Kani checks and the gate, it goes
-first to its lens reviews: one read-only review job on obid per lens `bin/route`'s rule gives (its `reviewers()`,
-imported) for the task file's `RISK:` line on `dev` (blank is `high`) and the surfaces the pull request touches, each
-with its lens's model and following `.claude/agents/reviewer-<lens>.md` as `dev` has it. A `VERDICT: CHANGES` holds the
-head for the owner, with the lens's findings in `oby-feed --status`; no verdict, or a lens that can't be routed, holds
-it too. Only when every lens says `VERDICT: PASS` for that same head does the feeder start an approver
+Oby's factory (`bin/oby-feed`, building on the factory's own obid) starts each task as the Claude Code factory
+does: an intake job first, then a spec job, then the build, told to build against that spec (FEEDSPEC in
+`docs/contracts/factory.md`). Intake and spec are read-only `research` jobs following `.claude/agents/intake.md` and
+`spec-writer.md` as `dev` has them; their documents reach the next job as fenced message parts. NEEDS-INFO, REJECT
+or a step that gave nothing usable leaves the task `blocked`, holding no slot, until its task file changes.
+
+It has lens reviews and an approver step too. When a head is approved twice by different tools and passes the
+security-path, model and Kani checks and the gate, it goes first to its lens reviews: one read-only review job on obid
+per lens `bin/route`'s rule gives (its `reviewers()`, imported) for the task intake's `RISK:` and `SURFACES:` lines, as
+`route` reads a job's intake (or, for a task the feeder has no intake for, the task file's `RISK:` line on `dev`, blank
+read as `high`, and the surfaces the pull request touches), each with its lens's model and following
+`.claude/agents/reviewer-<lens>.md` as `dev` has it. A `VERDICT: CHANGES` holds the head for the owner, with the lens's
+findings in `oby-feed --status`; no verdict, or a lens that can't be routed, holds it too. Only when every lens says
+`VERDICT: PASS` for that same head does the feeder start an approver
 job on obid for that head: a read-only review that follows `.claude/agents/approver.md` as `dev` has it. Only its
 `APPROVE` for that same head arms the merge. `ESCALATE` holds the head for the owner, with the approver's reasons
 in `oby-feed --status`. No verdict (any other first line, a job that failed or is gone) holds the head too, and a
 head that moved while the approver read it needs two fresh approvals and a fresh `APPROVE`. Before it arms on an
-`APPROVE`, the feeder checks the approvals, security paths, models, Kani proofs and the gate's verdict again. Until Oby's factory has a
-spec step, the approver checks the task file's own acceptance list, as `dev` has it, never the pull request's copy;
+`APPROVE`, the feeder checks the approvals, security paths, models, Kani proofs and the gate's verdict again. The
+approver still checks the task file's own acceptance list, not the spec's, as `dev` has it, never the pull request's copy;
 a task whose file isn't on `dev` is held for the owner. Their contracts are FEEDLENS and FEEDAPPROVE in
 `docs/contracts/factory.md`.
 
