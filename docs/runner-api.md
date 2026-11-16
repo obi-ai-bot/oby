@@ -85,6 +85,7 @@ The runner API is documented per area in `docs/api/<area>.md`. A change to the A
   - [obid only: GitHub work](api/github.md)
   - [obid only: teammates' pull requests](api/merging.md)
   - [obid only: the vault](api/vault.md)
+  - [obid only: the vault's names, put and remove (`/v1/obid/vault`)](api/vault.md)
   - [obid only: secrets a check declares](api/vault.md)
   - [obid only: conversations](api/conversations.md)
   - [obid only: working folders (#1572)](api/folders.md)

@@ -26,14 +26,27 @@ export const TRY_AGAIN = 'Try again, picking up where you left off. Finish with 
 // button's label, its own so a click on any other button (a permission's Allow) can't stand for it.
 export const BACKGROUND_YES = 'Yes, it can';
 
+// A secret put in or removed on Settings › Vault (docs/contracts/vault.md): its buttons' labels,
+// never the value, which sits in a password box the preload never reads. The signature still
+// covers the exact body, the value included; a removal has no body. Remove Secret is its own, so a
+// click on any other Remove can't stand for it.
+export const VAULT_ADD = 'Add Secret';
+export const VAULT_REMOVE = 'Remove Secret';
+
 const MESSAGES = /^\/v1\/jobs\/[^/]+\/messages$/;
 const ROOM = /^\/v1\/spheres\/[^/]+\/room$/;
 const PEER_ASK = /^\/v1\/obid\/sphere\/peers\/[^/]+\/ask$/;
+const VAULT = /^\/v1\/obid\/vault\/[^/]+$/;
 
 // The words a request carries, for the requests the app sends obid with the owner's words in
 // them; null for any other request, or any other shape (main never signs it). A key the app
 // doesn't send (a job's check, mode or repository, say) is never signed along with the words.
 export function wordsOf(method: string, path: string, body: unknown): string[] | null {
+  // the vault's removal, the one request signed with no body
+  if (VAULT.test(path.split('?')[0])) {
+    if (method === 'DELETE') return body === undefined ? [VAULT_REMOVE] : null;
+    if (method === 'PUT') return isBody(body) && text(body.value) && shaped(body, { value: text }) ? [VAULT_ADD] : null;
+  }
   if (!isBody(body)) return null;
   const p = path.split('?')[0];
   const id = text, flag = (v: unknown) => v === true;

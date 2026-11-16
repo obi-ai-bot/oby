@@ -123,13 +123,14 @@ def squash(text):
 
 
 def entries(spec):
-    """The `### PROOF-<n>` entries of spec.md's `## Proofs`, and the problems that make them unusable."""
+    """The `### PROOF-<n>` entries of a file's `## Proofs` (spec.md, or a proofs file oby-feed reads), and the problems
+    that make them unusable."""
     body = JOB.section(spec, "Proofs") if spec.exists() else None
     if body is None:
-        return [], ["spec.md has no `## Proofs` section"]
+        return [], [f"{spec.name} has no `## Proofs` section"]
     parts = re.split(r"^###[ \t]+(PROOF-[0-9]+)[ \t]*$", body, flags=re.M)
     if len(parts) < 3:
-        return [], ["spec.md's `## Proofs` has no `### PROOF-<n>` entry"]
+        return [], [f"{spec.name}'s `## Proofs` has no `### PROOF-<n>` entry"]
     found, problems = [], []
     for name, text in zip(parts[1::2], parts[2::2]):
         raw = {}

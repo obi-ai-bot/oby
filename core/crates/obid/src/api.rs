@@ -220,6 +220,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .merge(crate::connections::router())
         .merge(crate::tetrix::router())
         .merge(crate::chatgpt_relay::router())
+        .merge(crate::vault::router())
         .route(
             "/v1/settings/jobs",
             get(crate::routes::job_settings).put(crate::routes::set_job_settings),
