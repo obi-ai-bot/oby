@@ -119,7 +119,9 @@ pub struct Helpers {
     /// The file is there and doesn't read: no helpers, and nothing written over it.
     unread: bool,
     /// The conversations of the helpers deleted since obid started: a turn still in one gets no
-    /// connector. A conversation goes with its helper, so no new turn starts in one.
+    /// connector. [`Self::remove`] adds one before it lets the helpers' lock go, and
+    /// [`Self::allows`] reads this under that lock, so a helper it no longer finds is already here.
+    /// A conversation goes with its helper, so no new turn starts in one.
     deleted: Mutex<Vec<String>>,
 }
 
@@ -170,14 +172,15 @@ impl Helpers {
     }
 
     /// Whether a turn in `conversation` may use `asked` now: any but a helper's not granted it, and
-    /// none in a deleted helper's.
+    /// none in a deleted helper's. It locks the helpers, then `deleted`, as [`Self::remove`] does.
     pub fn allows(&self, conversation: &str, asked: Connector) -> bool {
-        let deleted = self.deleted.lock().unwrap_or_else(|e| e.into_inner());
-        if deleted.iter().any(|d| d == conversation) {
-            return false;
+        let helpers = self.lock();
+        match helpers.iter().find(|h| h.conversation == conversation) {
+            Some(h) => may_use(h.granted(), asked),
+            None => !(self.deleted.lock().unwrap_or_else(|e| e.into_inner()))
+                .iter()
+                .any(|d| d == conversation),
         }
-        drop(deleted);
-        (self.of(conversation)).is_none_or(|h| may_use(h.granted(), asked))
     }
 
     /// Removes the helper `id`, kept, its conversation from then on a deleted helper's.
@@ -455,6 +458,50 @@ mod tests {
             helpers.allows("c2", Connector::Github),
             "another conversation is as it was"
         );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// HELPERS-7: a call that comes while its helper's delete is being kept gets no connector the
+    /// helper wasn't granted, before, during or after it.
+    #[test]
+    fn helpers_7_a_call_during_its_helper_s_delete_gets_no_connector() {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        let home = std::env::temp_dir().join(format!("obid-helpers-7-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let mut web = valid();
+        web["connectors"] = json!(["web"]);
+        let kept: Vec<Helper> = (0..20)
+            .map(|i| Helper {
+                id: format!("h{i}"),
+                conversation: format!("c{i}"),
+                ..made(web.clone()).unwrap()
+            })
+            .collect();
+        let saved = json!({ "helpers": kept }).to_string();
+        std::fs::write(home.join("helpers.json"), saved).unwrap();
+        let helpers = Helpers::open(&home);
+        for i in 0..20 {
+            let (asked, done) = (AtomicBool::new(false), AtomicBool::new(false));
+            let conversation = format!("c{i}");
+            let let_through = std::thread::scope(|s| {
+                let calls = s.spawn(|| {
+                    let mut through = false;
+                    while !done.load(SeqCst) {
+                        through |= helpers.allows(&conversation, Connector::Github);
+                        asked.store(true, SeqCst);
+                        std::thread::yield_now();
+                    }
+                    through
+                });
+                while !asked.load(SeqCst) {
+                    std::thread::yield_now();
+                }
+                helpers.remove(&format!("h{i}")).unwrap();
+                done.store(true, SeqCst);
+                calls.join().unwrap()
+            });
+            assert!(!let_through, "{conversation} got github around its delete");
+        }
         let _ = std::fs::remove_dir_all(&home);
     }
 
