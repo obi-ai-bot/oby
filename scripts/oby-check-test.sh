@@ -1275,15 +1275,16 @@ expect no 'the Rust core has .* past its limit' "CI-49: the rust group's plan he
 git checkout --quiet -- "$main"
 
 # CI-50: a base whose core/crates git can't read, none in its tree or an object that's gone (as in a
-# partial clone): the count, its difference unknown, never git's error and never a failure.
+# partial clone): the count, its difference unknown, no error of git's or another tool's, and never a
+# failure.
 unknown="oby-check: the Rust core has 100000 production lines outside the Sphere, the difference from its base unknown (its core/crates can't be read)"
 git rm -r --quiet core/crates
 limits_commit 'no core/crates'
 git checkout --quiet HEAD~1 -- core/crates
 limits_commit 'core/crates back'
 scenario=CI-50 limits_passes 'a base with no core/crates' HEAD~1
-grep -qxF "$unknown" <<<"$ran" && ! grep -q 'fatal:' <<<"$ran" ||
-    wrong "CI-50: a base with no core/crates didn't say its difference is unknown, or said git's error"
+grep -qxF "$unknown" <<<"$ran" && ! grep -q 'fatal:' <<<"$ran" && ! grep -qv '^oby-check: ' <<<"$ran" ||
+    wrong "CI-50: a base with no core/crates didn't say its difference is unknown, or said git's error or another tool's"
 echo '// only the base holds this' >core/crates/obid/src/gone.rs
 limits_commit 'a file only the base holds'
 rm core/crates/obid/src/gone.rs
@@ -1291,7 +1292,7 @@ limits_commit 'without it'
 gone=$(git rev-parse HEAD~1:core/crates/obid/src/gone.rs)
 rm ".git/objects/${gone:0:2}/${gone:2}"
 scenario=CI-50 limits_passes "a base whose core/crates holds an object git can't read" HEAD~1
-grep -qxF "$unknown" <<<"$ran" && ! grep -q 'fatal:' <<<"$ran" ||
-    wrong "CI-50: a base with an object git can't read didn't say its difference is unknown, or said git's error"
+grep -qxF "$unknown" <<<"$ran" && ! grep -q 'fatal:' <<<"$ran" && ! grep -qv '^oby-check: ' <<<"$ran" ||
+    wrong "CI-50: a base with an object git can't read didn't say its difference is unknown, or said git's error or another tool's"
 
 echo 'oby-check-test: passed'
