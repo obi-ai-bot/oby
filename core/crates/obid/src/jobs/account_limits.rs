@@ -632,8 +632,9 @@ impl Jobs {
 
     /// The accounts the brain's quick side calls think with (inbox sorting, memory, the recap;
     /// B00-15): every tool's [`Jobs::thinking_accounts`] whose binary obid finds, the most room
-    /// first as a new job's routing ranks them (USAGE-11); a ChatGPT login only with the owner's
-    /// yes to work nobody's watching (CHATGPT-20), its call through obid's relay.
+    /// first as a new job's routing ranks them (USAGE-11), none a usage limit holds from work
+    /// nobody's watching, as routing skips them; a ChatGPT login only with the owner's yes to such
+    /// work (CHATGPT-20), its call through obid's relay.
     pub fn quick_accounts(&self) -> Vec<(Tool, crate::config::Account)> {
         let accounts = Tool::ALL
             .into_iter()
@@ -643,7 +644,9 @@ impl Jobs {
                     .into_iter()
                     .map(move |a| (tool, a))
             })
-            .filter(|(_, account)| self.takes_background(account))
+            .filter(|(_, account)| {
+                self.takes_background(account) && self.has_room(&account.id, true)
+            })
             .collect();
         let first = crate::settings::load(&self.config.home).default_account;
         self.by_room(accounts, first.as_deref())
@@ -1099,6 +1102,48 @@ mod tests {
             .map(|(_, a)| a.id)
             .collect();
         assert_eq!(ids, ["plan"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// B00-15: a side call takes no account a usage limit holds, as routing doesn't: a held
+    /// default doesn't go first, and with every account held there's none (the item stays pending).
+    #[test]
+    fn side_calls_skip_an_account_a_usage_limit_holds() {
+        let root = std::env::temp_dir().join(format!("obid-quick-held-{}", uuid::Uuid::new_v4()));
+        let folder = |id: &str, login: &str| {
+            let dir = root.join("accounts").join(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(login), "{}").unwrap();
+            json!({"id": id, "name": id, "configDir": dir})
+        };
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"claude": {"bin": "/usr/bin/true",
+                               "accounts": [folder("c1", ".credentials.json")]},
+                           "codex": {"bin": "/usr/bin/true", "accounts": [folder("x", "auth.json")]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(config, crate::events::Events::new(), Err("none".into())).unwrap();
+        let ids = || -> Vec<String> {
+            jobs.quick_accounts()
+                .into_iter()
+                .map(|(_, a)| a.id)
+                .collect()
+        };
+        let read = |five| crate::usage::Usage {
+            five_hour: Some(five),
+            seven_day: Some(0.1),
+            ..Default::default()
+        };
+        crate::settings::update(&jobs.config.home, |s| s.default_account = Some("c1".into()))
+            .unwrap();
+        jobs.usage.record("c1", &read(0.96));
+        jobs.usage.record("x", &read(0.5));
+        assert_eq!(ids(), ["x"], "the held default neither leads nor is taken");
+        jobs.usage.record("x", &read(0.97));
+        assert!(ids().is_empty(), "no account with room: none");
         let _ = std::fs::remove_dir_all(&root);
     }
 
