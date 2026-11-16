@@ -648,6 +648,7 @@ async fn method_not_allowed() -> ApiError {
 pub const CAPABILITIES: &[&str] = &[
     "events-replay-v1",
     "folders-v1",
+    "project-jobs-v1",
     "projects-v1",
     "revisions-v1",
 ];
