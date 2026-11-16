@@ -1371,6 +1371,30 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual((item["state"], item["approverHead"], item["approvers"]), ("approving", NEW, ["approver-1", "approver-2"]))
         self.assertEqual(self.stand.merges(), [])
 
+    def held_head_comes_back(self, summary):
+        """OLD's approver answers `summary`; NEW is approved and GitHub refuses its merge, so `refused` is NEW; then OLD
+        is pushed back, its two approvals still there and obid's receipt for its approver gone. Returns the approver keys
+        sent and the heads merged."""
+        self.approving(head=OLD, summary=summary)
+        self.one_pass()
+        self.assertEqual(self.task_now()["held"], [OLD])
+        self.stand.jobs[JOB]["approvals"] += approvals(NEW, "claude", "codex")
+        self.stand.view = {"headRefOid": NEW, "state": "OPEN", "files": [{"path": "x.py"}]}
+        self.stand.merge_code = 1
+        self.one_pass()
+        self.one_pass()
+        item = self.task_now()
+        self.assertEqual((item["state"], item["refused"], item["held"]), ("waiting", NEW, [OLD]))
+        self.stand.view = {"headRefOid": OLD, "state": "OPEN", "files": [{"path": "x.py"}]}
+        self.one_pass()
+        self.one_pass()
+        self.assertEqual(self.task_now()["state"], "waiting")
+        return [s["clientRequestId"] for s in self.stand.sent()], [m[-1] for m in self.stand.merges()]
+
+    def test_feedapprove_3_an_escalated_head_that_comes_back_is_never_asked_again(self):
+        self.assertEqual(self.held_head_comes_back("ESCALATE\nIt changes a lane."),
+                         ([f"feed-approve-A00-99-{NEW[:12]}"], [NEW]))
+
     # FEEDAPPROVE-4: a malformed answer or a broken approver never merges
     def test_feedapprove_4_a_malformed_answer_or_a_broken_approver_holds_the_head(self):
         cases = [("done", first, f'its answer\'s first line is "{first}"')
@@ -1394,6 +1418,9 @@ class ObyFeed(unittest.TestCase):
                 self.one_pass()
                 self.assertEqual(self.stand.merges(), [])
                 self.assertEqual(self.stand.posts, [])
+
+    def test_feedapprove_4_a_head_with_no_verdict_that_comes_back_is_never_asked_again(self):
+        self.assertEqual(self.held_head_comes_back("Approve"), ([f"feed-approve-A00-99-{NEW[:12]}"], [NEW]))
 
     # FEEDAPPROVE-5: a moved head never merges on an old verdict
     def test_feedapprove_5_an_approve_for_a_head_that_moved_never_merges(self):

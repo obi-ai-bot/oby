@@ -19,8 +19,8 @@ frees the disk afterwards:
   `review` job on obid following .claude/agents/approver.md as origin/<base> has it, against the task file's own
   acceptance list. Only that job's APPROVE for the same head arms the merge. ESCALATE waits for the owner with the
   approver's reasons (shown by --status), and no verdict (any other first line, a job that failed, was stopped or
-  is gone) holds the head; neither, nor a head that moved while the approver read it, ever arms it
-  (docs/contracts/factory.md, FEEDAPPROVE).
+  is gone) holds the head, both for good, even when it comes back later; neither, nor a head that moved while the
+  approver read it, ever arms it (docs/contracts/factory.md, FEEDAPPROVE).
 - A `waiting` task is looked at again at every pass, without holding a slot: Oby's follow-up takes it back to
   `running`, a merge by anyone to `merged`, and two approvals of a new head ask its approver again.
 - A merge GitHub's queue refused (the pull request open, out of the queue, auto-merge off) goes back to
@@ -535,12 +535,18 @@ def ask_approver(item, head, tools, account):
     return True
 
 
-def no_verdict(item, why):
-    """The approver gave no verdict: its head is held, never armed, as a model that fails holds it."""
+def hold_for_good(item, note, **more):
+    """The approver escalated its head or gave no verdict: the head is held for good, never asked about again or
+    armed, even when it comes back after another head was refused (`held`; `refused` keeps only the last one)."""
     head = item["approverHead"]
-    item.update(state="waiting", head=head, refused=head,
-                note=f"{HELD}the approver gave no verdict: {why}: merge it yourself or push a new head")
+    item.update(state="waiting", head=head, refused=head, held=sorted(set(item.get("held", [])) | {head}), note=note,
+                **more)
     return True
+
+
+def no_verdict(item, why):
+    """The approver gave no verdict: its head is held for good."""
+    return hold_for_good(item, f"{HELD}the approver gave no verdict: {why}: merge it yourself or push a new head")
 
 
 def read_approver(item, pr):
@@ -568,13 +574,16 @@ def read_approver(item, pr):
     if first == "ESCALATE":
         rest = "\n".join(lines[1:])[:4000]
         reason = next((line.strip() for line in rest.splitlines() if line.strip()), "")
-        item.update(state="waiting", head=head, refused=head, escalation=rest,
-                    note=f"{HELD}the approver escalated it to you: {reason[:160]}")
-        return True
+        return hold_for_good(item, f"{HELD}the approver escalated it to you: {reason[:160]}", escalation=rest)
     if first != "APPROVE":
         return no_verdict(item, f'its answer\'s first line is "{first[:60]}"')
     arm(item, head, item["approved"])
     return True
+
+
+def refused_for(item, head):
+    """The head may_arm() reads as refused: this head when it is held for good (hold_for_good), else `refused`."""
+    return head if head in item.get("held", []) else item.get("refused")
 
 
 def task_jobs(item, jobs):
@@ -660,7 +669,7 @@ def follow(item, jobs, account):
             item.update(state="failed", note="its pull request was closed")
             return True
         head = pr["headRefOid"]
-        verdict, said = may_arm(j, pr, item.get("refused"))
+        verdict, said = may_arm(j, pr, refused_for(item, head))
         if verdict == "pending":
             return False
         if verdict == "retry":
@@ -720,7 +729,7 @@ def follow(item, jobs, account):
             item.update(state="failed", note="its pull request was closed")
             return True
         head = pr["headRefOid"]
-        verdict, said = may_arm(j, pr, item.get("refused"))
+        verdict, said = may_arm(j, pr, refused_for(item, head))
         if verdict == "arm":
             return ask_approver(item, head, said, account)
         if verdict == "retry":
