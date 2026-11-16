@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import { JOBS, TURNS as LOG, convoTitle, followUpsOf } from './mock';
+import { JOBS, MOCK_HELPERS, TURNS as LOG, convoTitle, followUpsOf } from './mock';
 import { hasAttachments, type Attachments, type Message } from './view';
 import { addTask, conversationOfTask, relay } from './tasks';
 import { streamWords, wait } from './stream';
@@ -22,7 +22,8 @@ type Ask = { question: string; options: string[] };
 // about: its line in Conversations while none of it is loaded (obid's)
 // local: the app's own, not obid's (Oby's first conversation, onboarding.ts): kept as obid's change
 // profile: the mock's only, the profile it's in (none: the default; profiles.ts)
-export type Chat = { id: string; title: string; said: Message[]; typing?: boolean; step?: string; waiting?: Ask; needs?: boolean; pinned?: boolean; fromObys?: boolean; at?: number; about?: string; local?: boolean; talkAccount?: string | null; talkedOn?: string | null; movedOff?: string | null; profile?: string };
+// helper: a helper's own conversation, its id (helpers.ts): under Agents, never among the chats
+export type Chat = { id: string; title: string; said: Message[]; typing?: boolean; step?: string; waiting?: Ask; needs?: boolean; pinned?: boolean; fromObys?: boolean; at?: number; about?: string; local?: boolean; talkAccount?: string | null; talkedOn?: string | null; movedOff?: string | null; profile?: string; helper?: string };
 
 // named after its first line, as Oby would title it
 const titled = (text: string) => {
@@ -110,6 +111,30 @@ const past: Chat[] = PAST.map(([title, asked, answer, at, profile], i) => ({
   id: `p${i + 1}`, title, said: [{ who: 'you', text: asked, ago: at }, { who: 'oby', text: answer, ago: at - 1 }], ...(profile ? { profile } : {}),
 }));
 
+// The mock's agents' conversations (MOCK_HELPERS, screens 08 and 09): Inbox helper waiting on two
+// questions, Researcher at work, the other two quiet for a while
+const question = (id: string, headline: string, text: string, options: string[], ago: number): Message =>
+  ({ who: 'oby', text: '', ago, confirm: { id, ask: { kind: 'question', headline, text, options } } });
+const HELPER_SAID: Record<string, Partial<Chat> & { said: Message[] }> = {
+  inbox: { needs: true, said: [
+    { who: 'oby', text: 'Good morning. 14 new emails since yesterday. Two need you, and I drafted both replies. The other 12 are newsletters and receipts, and I left them as they are.', ago: 40, steps: ['Reading 14 new emails in Gmail', 'Drafting 2 replies'], looked: 2 },
+    question('inbox-dana', 'Send this reply to Dana?', 'She asks whether Thursday at 2 PM works for the demo. My draft says yes.', ['Send it', 'Edit first', 'Don’t reply'], 40),
+    question('inbox-acme', 'What is the order number for Acme?', 'They ask for the purchase order number on invoice 1042. I can’t find it in your mail, so the draft waits for it.', ['Give the number', 'Read the draft'], 40),
+  ] },
+  researcher: { typing: true, step: 'Reading the ChatGPT pricing page', said: [
+    { who: 'you', text: 'Compare what we pay for Claude, ChatGPT and Cursor, and tell me what we’d save on yearly plans.', ago: 3 },
+    { who: 'oby', text: 'On it. I’m reading each pricing page for the plans we’re on, then I’ll put the numbers side by side.', ago: 2, steps: ['Searching the web for “Claude Team plan price”', 'Reading the Cursor pricing page'], looked: 2 },
+  ] },
+  'release-notes': { said: [
+    { who: 'you', text: 'Draft the release notes for 0.9.', ago: 2 * H + 5 },
+    { who: 'oby', text: 'Drafted the notes for 0.9: the usage meters, the settings layout and the DST fix, with a line on each.', ago: 2 * H },
+  ] },
+  support: { said: [
+    { who: 'oby', text: 'Nothing new since Friday. I’ll draft replies when questions come in.', ago: 3 * D },
+  ] },
+};
+const HELPER_CHATS: Chat[] = MOCK_HELPERS.map((h) => ({ id: h.conversation, title: h.name, helper: h.id, profile: h.profile, ...HELPER_SAID[h.id] }));
+
 // when it last moved (minutes ago): its latest message
 export const lastAgo = (c: Chat) => Math.min(c.at ?? Infinity, ...c.said.map((m) => m.ago));
 
@@ -117,14 +142,15 @@ export const lastAgo = (c: Chat) => Math.min(c.at ?? Infinity, ...c.said.map((m)
 // obid says it did (at), where it says: a card still open in it reads as just now, however old
 const movedAgo = (c: Chat) => c.at ?? lastAgo(c);
 // Never the one of what other Obys ask you (ASK-18): a question doesn't decide where the app opens.
-export const latestChat = (all: Chat[]) => all.filter((c) => !c.fromObys).reduce<Chat | undefined>((best, c) => (!best || movedAgo(c) < movedAgo(best) ? c : best), undefined);
+// Nor a helper's, which obid never makes the latest either (docs/api/helpers.md)
+export const latestChat = (all: Chat[]) => all.filter((c) => !c.fromObys && !c.helper).reduce<Chat | undefined>((best, c) => (!best || movedAgo(c) < movedAgo(best) ? c : best), undefined);
 // Where back comes to rest, chat first (CHATFIRST-9, CHATFIRST-12): the conversation you were last
 // in, or the empty chat (null) if that's where you were; one since deleted, your latest
 export const restingChat = (rest: string | null, all: Chat[]) =>
   (rest === null ? undefined : all.find((c) => c.id === rest) ?? latestChat(all))?.id ?? null;
 
 // a new user (lean.ts) starts with none: Oby opens the first (onboarding.ts)
-let chats: Chat[] = everything ? [...seeded, ...past].sort((a, b) => lastAgo(a) - lastAgo(b)) : [];
+let chats: Chat[] = everything ? [...seeded, ...past, ...HELPER_CHATS].sort((a, b) => lastAgo(a) - lastAgo(b)) : [];
 const listeners = new Set<() => void>();
 const set = (next: Chat[]) => { chats = next; listeners.forEach((l) => l()); };
 const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; };
@@ -144,6 +170,8 @@ export const dev = import.meta.env.DEV ? { get: () => chats, patch: update, add:
 // Oby's first conversation (onboarding.ts): Oby opens it, not you; your picks in
 // it go in as your words, and Oby's words land as any of its answers do
 export const openChat = (id: string, title: string) => { if (!chats.some((c) => c.id === id)) set([{ id, title, said: [], local: true }, ...chats]); };
+// a helper made on the mock (helpers.ts): its conversation, the app's own
+export const addChat = (c: Chat) => set([c, ...chats]);
 export const sayYours = (id: string, text: string) => update(id, (c) => ({ said: [...c.said, { who: 'you', text, ago: 0 }] }));
 export async function sayOby(id: string, m: Omit<Message, 'who' | 'ago' | 'jobs'>, start?: () => string[] | undefined) {
   update(id, () => ({ typing: true, step: 'Thinking' }));
