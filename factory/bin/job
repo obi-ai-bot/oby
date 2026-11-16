@@ -55,6 +55,7 @@ SPRINT = CONFIG["sprint"]
 MARKER = "<!-- factory -->"
 KEY = re.compile(r"[A-Z][0-9]{2}-[0-9]{2}")
 ADHOC = "A00"  # tasks made with `job add`: no sprint, no dependencies
+LANES = ("dispatcher", "between-owners", "agent")  # intake.md's LANE: line (AGENTS.md, "Dispatcher, not harness")
 
 TRANSITIONS = {
     "intake": {"needs-info", "rejected", "spec"},
@@ -407,7 +408,7 @@ def cost_usd(job):
 
 
 def read_intake(path):
-    """An intake.md's decision, rescope, risk and surfaces, from its header lines."""
+    """An intake.md's decision, rescope, risk, surfaces and lane, from its header lines."""
     h = header(path)
     return {
         "decision": h.get("DECISION"),
@@ -415,7 +416,22 @@ def read_intake(path):
         "risk": h.get("RISK"),
         "surfaces": [s.strip() for s in h.get("SURFACES", "").split(",")
                      if s.strip() and s.strip() != "none"],
+        "lane": h.get("LANE"),
     }
+
+
+def lane_problem(fields):
+    """Why an intake.md's header lines, as header() reads them, name no lane a spec may start from, or None
+    (docs/contracts/factory.md, NOTHARNESS): `job advance <job> spec` and factory/bin/oby-feed both refuse on it."""
+    lane = fields.get("LANE")
+    if not lane:
+        return "intake.md has no LANE: line (dispatcher, between-owners or agent)"
+    if lane not in LANES:
+        return f"intake.md says LANE: {lane}, not dispatcher, between-owners or agent"
+    if lane == "agent" and fields.get("DECISION") == "ACCEPT":
+        return ("intake.md accepts work in the agent lane: the agent CLIs' own work is REJECT "
+                "(AGENTS.md, \"Dispatcher, not harness\")")
+    return None
 
 
 def sync(job):
@@ -552,6 +568,7 @@ def advance(job, stage):
         want = {"needs-info": "NEEDS-INFO", "rejected": "REJECT", "spec": "ACCEPT"}[stage]
         require(decision == want, f"intake.md says DECISION: {decision}, not {want}")
         if stage == "spec":
+            require((lane := lane_problem(header(d / "intake.md"))) is None, lane)
             require(job["agents"], "route the job first: factory/bin/route " + job["id"])
             run(["git", "fetch", "origin", BASE])
             Path(job["worktree"]).parent.mkdir(parents=True, exist_ok=True)

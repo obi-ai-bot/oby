@@ -73,7 +73,7 @@ through the scripts. `factory/jobs/` is gitignored runtime state.
 <repo>/factory/queue/done/<KEY>.md             a finished task; its own PR moved it here
 <repo>/factory/jobs/<job-id>/job.json          the job's state; the dashboard reads it
 <repo>/factory/jobs/<job-id>/issue.md          the task, quoted as data, with the owner's answers
-<repo>/factory/jobs/<job-id>/intake.md         intake's decision, scope, risk, surfaces
+<repo>/factory/jobs/<job-id>/intake.md         intake's decision, lane, scope, risk, surfaces
 <repo>/factory/jobs/<job-id>/answer-<k>.md     the owner's answer to intake's questions
 <repo>/factory/jobs/<job-id>/spec.md
 <repo>/factory/jobs/<job-id>/build.md
@@ -136,7 +136,10 @@ decision:
 - `ACCEPT`: run `factory/bin/route <id>`, then `factory/bin/job advance <id> spec`
   (it creates the worktree). Go to **spec**. Until `config.json`'s
   `surface_reviewers` has a `model` entry (the orchestrator adds it by hand,
-  on the owner's word), `route` refuses a `model` job: tell the user so.
+  on the owner's word), `route` refuses a `model` job: tell the user so. If
+  `advance` refuses for intake.md's `LANE:` line (none, not a lane, or an
+  ACCEPT in the `agent` lane), spawn `intake` once more with the refusal. If
+  it is refused again, stop this job and tell the user.
 - `NEEDS-INFO`: `factory/bin/job advance <id> needs-info`. The job parks until
   the owner answers. Tell the user the job has questions; they are under
   `## Questions` in its `intake.md`.
