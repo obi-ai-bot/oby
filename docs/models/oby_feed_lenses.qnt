@@ -11,13 +11,18 @@
 // jobs after it, so the head may move between that look and its decision. `refused` holds one head; the heads a lens
 // asked changes for or gave no verdict on are held for good (`held`). A reviewer may turn its approval into a change
 // request while the lenses run; check_again() runs may_arm() again before it asks the approver, so the task then waits.
-// Invariants (FEEDLENS-3 to 6):
+// Invariants (FEEDLENS-3 to 6). Each reads what the lenses said when the approver was asked (the ghosts `passed` and
+// `askedWith`), not only the feeder's own holds, so a feeder that sent a `changes`, malformed, failed or gone lens on
+// breaks one:
 // - approverOnlyAfterEveryLensPassed: every tip the approver was asked about has a pass from every routed lens that
 //   read that tip.
-// - changesNeverReachApprover: no tip a lens asked changes for is ever asked about.
-// - brokenLensNeverReachesApprover: no tip whose lens failed, was gone or answered malformed is ever asked about.
-// - staleLensVerdictNeverReachesApprover: in `approving`, the asked tip is the one the lenses were asked about, and
-//   every routed lens read it.
+// - changesNeverReachApprover: no lens had said changes when the approver was asked, nor is a tip the feeder held for
+//   changes ever asked about.
+// - brokenLensNeverReachesApprover: no lens had failed, was gone or answered malformed when the approver was asked,
+//   nor is a tip the feeder held for that ever asked about.
+// - staleLensVerdictNeverReachesApprover: in `approving`, the asked tip is the one the lenses were asked about, every
+//   routed lens read it, and it is the head the feeder's look saw (FEEDLENS-6's both cases: a lens that read another
+//   head, and every lens passing OLD while the pull request is at NEW).
 // Witnesses, each expected VIOLATED so the model shows the case can happen: approverNeverAsked (the approver is
 // asked), noLensAskedForChanges (a lens asks for changes), noLensBroke (a lens breaks), headNeverMovedUnderLenses (a
 // head is pushed while the lenses read the old one).
@@ -26,8 +31,10 @@
 // oby_feed_approver.qnt's. The gate, the models and Kani are folded into `canMergeAt`'s security flag, and a tip
 // pushed back gets fresh lens jobs here, where obid's receipts would give back the old ones (read_lenses() then sees
 // they read another head). Depth 12 reaches a head pushed between the feeder's look and its decision (staleLens fails
-// if the approver is asked about the pull request's tip in place of `lensTip`), but not a held head coming back after
-// another head was refused: factory/tests/test_oby_feed.py covers that (FEEDLENS-4).
+// if the approver is asked about the pull request's tip in place of `lensTip`), and, from the task found under review,
+// every lens passing OLD while NEW is approved twice and seen (staleLens fails without the `seenTip != lensTip` test);
+// but not a held head coming back after another head was refused: factory/tests/test_oby_feed.py covers that
+// (FEEDLENS-4).
 
 module oby_feed_lenses {
   pure val Tools = Set("claude", "codex")
@@ -55,25 +62,34 @@ module oby_feed_lenses {
   var seenTip: int       // the head `gh pr view` gave read_lenses() this pass; -1 before it looked
   var askedTip: int      // `approverHead`: the tip the feeder asked its approver about
   var approverTips: Set[int]      // ghost: tips the approver was asked about
-  var passed: Set[(str, int)]     // ghost: (lens, the tip it read) for each routed lens when the approver was asked
+  var passed: Set[(str, int)]     // ghost: (lens, the tip it read) for each routed lens that said pass, when the
+                                  // approver was asked
+  var askedWith: Set[(str, int, str)]  // ghost: (lens, the tip it read, what it said) for each routed lens, when the
+                                       // approver was asked
+  var askedSeen: int              // ghost: the head the feeder's look saw when it asked the approver
   var changedTips: Set[int]       // ghost: tips a lens asked changes for
   var brokenTips: Set[int]        // ghost: tips whose lens failed, was gone or answered malformed
 
   def canMergeAt(t: int): bool = okTools(reviews, t).size() >= 2 and not(asked(reviews, t)) and not(security)
 
+  // a task from its start, or one the feeder finds published and under review (a feeder started again): the second
+  // brings a head moved under passing lenses, and approved twice itself, within the depth
   action init = {
     nondet sec = Set(true, false).oneOf()
     nondet lenses = Lenses.powerset().filter(s => s.contains("code")).oneOf()
-    all { st' = "open", job' = "none", pr' = "none", tip' = 0, top' = 0, reviews' = Set(), rounds' = 0, security' = sec,
+    nondet fresh = Set(true, false).oneOf()
+    all { st' = if (fresh) "open" else "reviewing", job' = if (fresh) "none" else "done",
+          pr' = if (fresh) "none" else "open", tip' = if (fresh) 0 else 1, top' = if (fresh) 0 else 1, reviews' = Set(),
+          rounds' = if (fresh) 0 else 1, security' = sec,
           routed' = lenses, rejectedTip' = -1, held' = Set(), lensTip' = -1, lensStatus' = Lenses.mapBy(l => "none"),
           lensRead' = Lenses.mapBy(l => -1), seenTip' = -1, askedTip' = -1, approverTips' = Set(), passed' = Set(),
-          changedTips' = Set(), brokenTips' = Set() }
+          askedWith' = Set(), askedSeen' = -1, changedTips' = Set(), brokenTips' = Set() }
   }
   action keepWorld = all { job' = job, pr' = pr, tip' = tip, top' = top, reviews' = reviews, rounds' = rounds,
                            security' = security, routed' = routed }
   action keepLensJobs = all { lensStatus' = lensStatus, lensRead' = lensRead }
-  action keepGhosts = all { approverTips' = approverTips, passed' = passed, changedTips' = changedTips,
-                            brokenTips' = brokenTips }
+  action keepGhosts = all { approverTips' = approverTips, passed' = passed, askedWith' = askedWith,
+                            askedSeen' = askedSeen, changedTips' = changedTips, brokenTips' = brokenTips }
   action keepFeeder = all { st' = st, rejectedTip' = rejectedTip, held' = held, lensTip' = lensTip, seenTip' = seenTip,
                             askedTip' = askedTip, keepGhosts }
   // the feeder moves the task to `s` and changes nothing else; the pass's look at the pull request ends with it
@@ -152,8 +168,8 @@ module oby_feed_lenses {
   // a lens with no verdict, or asking for changes: lensTip is held for good
   action holdLensTip(changes: bool): bool =
     all { st' = "waiting", rejectedTip' = lensTip, held' = held.union(Set(lensTip)), lensTip' = lensTip, seenTip' = -1,
-          askedTip' = askedTip, keepLensJobs, approverTips' = approverTips, passed' = passed,
-          changedTips' = if (changes) changedTips.union(Set(lensTip)) else changedTips,
+          askedTip' = askedTip, keepLensJobs, approverTips' = approverTips, passed' = passed, askedWith' = askedWith,
+          askedSeen' = askedSeen, changedTips' = if (changes) changedTips.union(Set(lensTip)) else changedTips,
           brokenTips' = if (changes) brokenTips else brokenTips.union(Set(lensTip)) }
   // read_lenses, in its order: still running, a moved head, no verdict, changes, then every lens passing
   action readLenses = {
@@ -170,8 +186,9 @@ module oby_feed_lenses {
     else if (canMergeAt(seenTip))
       all { st' = "approving", rejectedTip' = rejectedTip, held' = held, lensTip' = lensTip, seenTip' = -1,
             askedTip' = lensTip, keepLensJobs, approverTips' = approverTips.union(Set(lensTip)),
-            passed' = passed.union(routed.map(l => (l, lensRead.get(l)))), changedTips' = changedTips,
-            brokenTips' = brokenTips }
+            passed' = passed.union(routed.filter(l => lensStatus.get(l) == "pass").map(l => (l, lensRead.get(l)))),
+            askedWith' = askedWith.union(routed.map(l => (l, lensRead.get(l), lensStatus.get(l)))), askedSeen' = seenTip,
+            changedTips' = changedTips, brokenTips' = brokenTips }
     else moveTo("waiting")
   }
   action pass = all {
@@ -190,10 +207,11 @@ module oby_feed_lenses {
   action step = any { world, start, all { st != "open", pass } }
 
   val approverOnlyAfterEveryLensPassed = approverTips.forall(t => routed.forall(l => passed.contains((l, t))))
-  val changesNeverReachApprover = approverTips.intersect(changedTips) == Set()
-  val brokenLensNeverReachesApprover = approverTips.intersect(brokenTips) == Set()
+  val changesNeverReachApprover = approverTips.intersect(changedTips) == Set() and askedWith.forall(a => a._3 != "changes")
+  val brokenLensNeverReachesApprover = approverTips.intersect(brokenTips) == Set() and
+    askedWith.forall(a => not(Set("malformed", "failed", "gone").contains(a._3)))
   val staleLensVerdictNeverReachesApprover = st == "approving" implies
-    (askedTip == lensTip and routed.forall(l => lensRead.get(l) == askedTip))
+    (askedTip == lensTip and askedSeen == lensTip and routed.forall(l => lensRead.get(l) == askedTip))
   val approverNeverAsked = approverTips == Set()
   val noLensAskedForChanges = changedTips == Set()
   val noLensBroke = brokenTips == Set()
