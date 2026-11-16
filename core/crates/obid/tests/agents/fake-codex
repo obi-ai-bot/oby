@@ -21,7 +21,8 @@
 //   UNKNOWN          sends a request obid doesn't know and says what came back
 //   QUESTION         asks its own question (`item/tool/requestUserInput`; a secret one with
 //                    SECRET) and says what came back
-//   ASK OWNER        asks the owner with Oby's `oby_ask_owner` (approved first, as Codex does),
+//   ASK OWNER        asks the owner with Oby's `oby_ask_owner` (approved first, as Codex does; in
+//                    an own run, only if Oby's server was approved before it, as codex-cli 0.163),
 //                    then ends its turn; resumed, says what it heard
 //   ESCAPE           writes a file outside the worktree without asking, and says how that went
 //   QUIET            says nothing until it is ended, then in the turn obid continues says "Carried
@@ -283,8 +284,13 @@ async function runTurn(turnId, prompt) {
     const args = { question: "Which store?", options: [{ label: "SQLite" }, { label: "Postgres", description: "A server" }] };
     const item = { type: "mcpToolCall", id: randomUUID(), server: "oby", tool: "oby_ask_owner", arguments: args, status: "inProgress" };
     send({ method: "item/started", params: { threadId: thread, turnId, item } });
-    const approved = await ask("mcpServer/elicitation/request", { threadId: thread, turnId, serverName: "oby", mode: "form",
-      _meta: { codex_approval_kind: "mcp_tool_call", tool_params: args }, message: `Allow the oby MCP server to run tool "oby_ask_owner"?`, requestedSchema: { type: "object", properties: {} } });
+    // Under `approval_policy="never"` (an own run), as codex-cli 0.163: Codex asks nobody, so the
+    // call is refused unless Oby's server was approved before the run.
+    const approved = own
+      ? { action: setting("mcp_servers.oby.default_tools_approval_mode") === "approve" ? "accept"
+          : "MCP tool call requires approval, but approval policy is never" }
+      : await ask("mcpServer/elicitation/request", { threadId: thread, turnId, serverName: "oby", mode: "form",
+        _meta: { codex_approval_kind: "mcp_tool_call", tool_params: args }, message: `Allow the oby MCP server to run tool "oby_ask_owner"?`, requestedSchema: { type: "object", properties: {} } });
     if (approved.action !== "accept") return complete(turnId, `ask: ${approved.action}`);
     const post = (method, params) => fetch(setting("mcp_servers.oby.url"), { method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${process.env[setting("mcp_servers.oby.bearer_token_env_var")]}` },

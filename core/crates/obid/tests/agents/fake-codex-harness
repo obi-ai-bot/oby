@@ -14,7 +14,8 @@ if (process.argv[2] === "debug" && process.argv[3] === "models") {
 // A stand-in for `codex app-server` as a conversation's agent (docs/runner-api.md, "obid only: the
 // conversation harness"): JSON-RPC over stdio, streamed words (`item/agentMessage/delta`), tool
 // items, and Oby's `oby` MCP server from its `-c mcp_servers.oby.*` arguments, each MCP tool call
-// approved first (`mcpServer/elicitation/request`), as Codex 0.162 does. Threads are kept in
+// approved first (`mcpServer/elicitation/request`), as Codex 0.162 does; under `never` (an own run)
+// refused unless its server was approved before the run, as codex-cli 0.163. Threads are kept in
 // $CODEX_HOME/threads, so `thread/resume` works across processes. Each turn is one line of
 // $CODEX_HOME/turns.jsonl: argv, cwd, HOME, CODEX_HOME, the prompt, the thread it resumed, its
 // settings, and what its CODEX_HOME holds.
@@ -170,11 +171,18 @@ async function oby(method, params) {
   return answer.json();
 }
 
+// Under `approval_policy="never"` (an own run), as codex-cli 0.163: Codex asks nobody, so a tool
+// of a server not approved before the run is refused, and one approved runs without asking.
+const NEVER = "MCP tool call requires approval, but approval policy is never";
+const approvedBefore = (server) => setting(`mcp_servers.${server}.default_tools_approval_mode`) === "approve";
+
 // An MCP tool call as Codex makes one: the item starts, Codex asks to run it, then runs it.
 async function mcpCall(turnId, server, tool, args, asked = tool) {
   const item = { type: "mcpToolCall", id: randomUUID(), server, tool, arguments: args, status: "inProgress" };
   event("item/started", turnId, { item });
-  const approved = await ask("mcpServer/elicitation/request", { threadId: thread, turnId, serverName: server, mode: "form",
+  const approved = state.approvalPolicy === "never"
+    ? (approvedBefore(server) ? { action: "accept" } : { action: NEVER })
+    : await ask("mcpServer/elicitation/request", { threadId: thread, turnId, serverName: server, mode: "form",
     _meta: { codex_approval_kind: "mcp_tool_call", tool_params: args }, message: `Allow the ${server} MCP server to run tool "${asked}"?`, requestedSchema: { type: "object", properties: {} } });
   if (approved.action !== "accept") {
     event("item/completed", turnId, { item: { ...item, status: "failed", error: { message: "declined" } } });

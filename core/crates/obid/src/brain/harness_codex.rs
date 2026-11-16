@@ -101,6 +101,10 @@ pub(super) async fn launch(
     for setting in SETTINGS {
         flags.extend(["-c".into(), (*setting).into()]);
     }
+    // Under `never` Codex asks nobody: Oby's own tools are approved before the run (LANES-21).
+    if own {
+        flags.extend(crate::codex::OWN_OBY_TOOLS.map(OsString::from));
+    }
     // On a ChatGPT login, no run holds a token: Codex goes through obid's relay with the turn's
     // own token (crate::chatgpt_relay).
     let chatgpt = crate::chatgpt::marker_of(account).is_some();

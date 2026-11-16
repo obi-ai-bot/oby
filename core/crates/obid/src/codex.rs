@@ -79,6 +79,17 @@ pub fn argv(
 /// The MCP servers [`argv`] gives Codex, the only ones that may start or run.
 const OWN_SERVERS: [&str; 2] = ["oby", "tetrix"];
 
+/// What an own run (`approval_policy = "never"`, LANES-13 and LANES-18) is told so that Oby's own
+/// tools run (LANES-21): under `never` Codex asks nobody, and from codex-cli 0.163 it refuses an
+/// MCP call that would need approval ("MCP tool call requires approval, but approval policy is
+/// never"), `oby_dispatch` among them. Only Oby's server is approved, as obid approves its calls
+/// in every run anyway (each is checked by obid's rules as it's served); any other server keeps
+/// Codex's own default. Only for a run [`argv`] gave Oby's server: the key alone would make one.
+pub(crate) const OWN_OBY_TOOLS: [&str; 2] = [
+    "-c",
+    r#"mcp_servers.oby.default_tools_approval_mode="approve""#,
+];
+
 /// Runs one turn: starts the server, sends `prompt`, answers approvals with `decide`, reports with
 /// `on_event`, and ends the server once the turn completes. Ends it and everything it started when
 /// `stop` turns or `limit` passes.
