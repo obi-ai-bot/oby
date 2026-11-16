@@ -4843,7 +4843,7 @@ fn tasks_26_a_task_at_work_shows_no_failed_card_per_attempt() {
     let chain = ["a2600001", "a2600002", "a2600003"];
     // Before it carries on, the task has one: its newest attempt's (TASKS-27).
     support::within(30, "only the newest attempt's card", || {
-        (open_of(&obid, "failed", &chain) == [cards[2].id.clone()]).then_some(())
+        (open_of(&obid, "failed", &chain) == [cards[2].id.as_str()]).then_some(())
     });
     let told = request(
         &obid,
@@ -4908,7 +4908,7 @@ fn tasks_27_one_failed_and_one_merge_card_per_task() {
     support::within(30, "one failed and one merge card for the task", || {
         let failed = open_of(&obid, "failed", &chain);
         let merge = open_of(&obid, "merge", &chain);
-        (failed == [items[4].id.clone()] && merge == [items[5].id.clone()]).then_some(())
+        (failed == [items[4].id.as_str()] && merge == [items[5].id.as_str()]).then_some(())
     });
     for item in &items[..4] {
         let settled = done_item(&obid, &item.id).unwrap_or_else(|| panic!("{}", item.id));
@@ -4917,7 +4917,7 @@ fn tasks_27_one_failed_and_one_merge_card_per_task() {
     let made = format!("a2700009-crash-{}", jobs[3].finished.unwrap());
     let crashes = support::within(30, "the crash card made again", || {
         let open = open_of(&obid, "failed", &["a2700009"]);
-        (open == [made.clone()]).then_some(open)
+        (open == [made.as_str()]).then_some(open)
     });
     assert_eq!(crashes.len(), 1);
     assert!(
@@ -4992,19 +4992,19 @@ fn tasks_28_what_needs_the_owner_still_shows() {
     });
     assert_eq!(
         open_of(&obid, "merge", &["a2800011", "a2800012"]),
-        [items[4].id.clone()]
+        [items[4].id.as_str()]
     );
     for ask in &asks {
         assert_eq!(
             open_of(&obid, &ask.kind, &["a2800001"]),
-            [ask.id.clone()],
+            [ask.id.as_str()],
             "{}",
             ask.kind
         );
     }
     assert_eq!(
         open_of(&obid, "failed", &["a2800021"]),
-        [items[5].id.clone()]
+        [items[5].id.as_str()]
     );
 }
 
