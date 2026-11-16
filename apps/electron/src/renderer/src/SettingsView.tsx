@@ -239,10 +239,20 @@ function Notifications() {
   const [alerts, setAlerts] = useState<boolean | null>(null);
   useEffect(() => { void bridge?.alerts().then(setAlerts); }, []);
   const turn = (on: boolean) => { setAlerts(on); void bridge?.alerts(on).then(setAlerts); };
+  // the news that needs nothing, each kind on by default (main/notify.ts, ALERTS-15)
+  const [kinds, setKinds] = useState<Record<'finished' | 'merged' | 'limit', boolean> | null>(null);
+  useEffect(() => { void bridge?.kinds().then(setKinds); }, []);
+  const turnKind = (kind: 'finished' | 'merged' | 'limit') => (on: boolean) => {
+    setKinds((k) => k && { ...k, [kind]: on });
+    void bridge?.kinds({ [kind]: on }).then((k) => k && setKinds(k));
+  };
   return (
     <Group i={everything ? 4 : 3} title="Notifications" footer="Oby alerts you when a job needs you, like a question or a failed run. Click an alert to open the job.">
       {bridge ? <>
         <Row label="Alerts"><Switch on={alerts ?? true} onChange={turn} label="Alerts" /></Row>
+        <Row label="Finished tasks"><Switch on={kinds?.finished ?? true} onChange={turnKind('finished')} label="Finished tasks" /></Row>
+        <Row label="Merged pull requests"><Switch on={kinds?.merged ?? true} onChange={turnKind('merged')} label="Merged pull requests" /></Row>
+        <Row label="Accounts at their limit"><Switch on={kinds?.limit ?? true} onChange={turnKind('limit')} label="Accounts at their limit" /></Row>
         <Row label="Banners, sounds and Focus"><button className="set-button" onClick={bridge.openSystemSettings}>Open System Settings</button></Row>
       </> : <Row label="Alerts"><Value>Allowed</Value></Row>}
     </Group>
