@@ -661,6 +661,26 @@ done
     echo "oby-check-test: it named a binary that passed: $ran" >&2
     exit 1
 }
+# CI-52: each binary's seconds, and a last line with how long they all took and the longest.
+for said in 'Running slow ([0-9]*s)' "obid's test binaries took [0-9]*s, the longest tests/slow.rs at [0-9]*s"; do
+    grep -q "$said" <<<"$ran" || {
+        echo "oby-check-test: the test binaries' run didn't say \"$said\": $ran" >&2
+        exit 1
+    }
+done
+# CI-51: run by hand (no OBY_BUILD_JOBS), obid's test binaries run half the Mac's cores at once, at
+# least 2, whatever the load: 10 cores run 5, 6 run 3, 2 run 2.
+printf '#!/bin/bash\ncase "$*" in *hw.ncpu*) echo "$OBY_FAKE_CORES" ;; *vm.loadavg*) echo "{ 12.50 1.00 1.00 }" ;; *) exit 1 ;; esac\n' >"$fake/sysctl"
+chmod +x "$fake/sysctl"
+for cores_at_once in '10 5' '6 3' '2 2'; do
+    read -r cores at_once <<<"$cores_at_once"
+    ran=$(env -u OBY_CHECK_PLAN -u OBY_BUILD_JOBS PATH="$fake:$PATH" TMPDIR="$fake/tmp" OBY_FAKE_CORES="$cores" scripts/oby-check.sh HEAD 2>&1) || true
+    grep -q "oby-check: [0-9]* test binaries, $at_once at once with 2 threads each ($cores CPUs, a load average of 12.50)" <<<"$ran" || {
+        echo "oby-check-test: on $cores cores the check didn't run $at_once binaries at once: $ran" >&2
+        exit 1
+    }
+done
+rm "$fake/sysctl"
 rm core/crates/obid/tests/fails.rs
 if ran=$(run OBY_FAKE_BUILDS_NONE=1); then
     echo "oby-check-test: a check whose test binaries weren't built passed: $ran" >&2
