@@ -354,7 +354,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     <div key={c.id} className={`convo-nest${kids.length ? ' has-kids' : ''}`}>
     {kids.length > 0 && (
       <button className="convo-twist" aria-expanded={shown} aria-label={`${shown ? 'Hide' : 'Show'} ${c.title}’s agents`} onClick={() => showKids(c.id, !shown)}>
-        {shown ? <ChevronDown size={12} strokeWidth={2} /> : <ChevronRight size={12} strokeWidth={2} />}
+        {shown ? <ChevronDown size={10} strokeWidth={2} /> : <ChevronRight size={10} strokeWidth={2} />}
       </button>
     )}
     {/* a row with its own menu button, so the row itself isn't a <button> */}

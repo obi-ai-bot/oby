@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { liveBridge } from './liveBridge';
 import type { Task } from '../tasks';
 import type { Job as JobView } from '../view';
@@ -128,6 +130,27 @@ describe('a conversation\'s tasks, nested under it', () => {
     expect(JSON.parse(kept['oby.kidsShown'])).toEqual({ c1: false });
     const again = await on(TWO);
     expect(nestOf(again.side(), 'Two fixes for today')).not.toContain('convo-kids');
+  });
+
+  it('LIVETASK-23: a conversation with tasks has the same row as one without, its twist in the row\'s own gutter with no box of its own', async () => {
+    const { side } = await on({ ...TWO, conversations: [...TWO.conversations, talk('c9', 'Just talk')] });
+    const html = side({ activeTalk: 'c1' });
+    // the row's opening tag, with the state classes that are meant to differ taken off
+    const rowOf = (title: string) => nestOf(html, title).match(/<div role="button"[^>]*class="([^"]*)"/)![1].replace(/ is-active| is-menu-open/g, '');
+    expect(rowOf('Two fixes for today')).toBe('connector task convo-row');
+    expect(rowOf('Just talk')).toBe(rowOf('Two fixes for today'));
+    // the twist is a sibling before the row, not in it, and the only thing that differs
+    const nest = nestOf(html, 'Two fixes for today');
+    expect(nest.indexOf('convo-twist')).toBeGreaterThan(-1);
+    expect(nest.indexOf('convo-twist')).toBeLessThan(nest.indexOf('convo-row'));
+    expect(nestOf(html, 'Just talk')).not.toContain('convo-twist');
+    // the css: every row keeps the gutter, the twist is inside the row's box (no negative offset, no fill of its own)
+    const css = readFileSync(fileURLToPath(new URL('../app.css', import.meta.url)), 'utf8');
+    const rule = (sel: string) => css.split('\n').filter((l) => l.startsWith(`${sel} {`)).join('');
+    expect(rule('.convo-row')).toContain('padding-left: var(--convo-gutter');
+    expect(rule('.convo-twist')).toMatch(/left: 0[;\s]/);
+    expect(rule('.convo-twist')).not.toMatch(/background|border-radius|left: -/);
+    expect(rule('.convo-twist:hover, .convo-twist:focus-visible')).not.toContain('background');
   });
 
   it('LIVETASK-21: the conversation\'s second line says what waits on you, else how many agents work; its mark says so too', async () => {

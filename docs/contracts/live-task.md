@@ -78,6 +78,7 @@ Tests: `apps/electron/src/renderer/src/test/liveTask.test.tsx` and `taskActions.
 - **LIVETASK-20:** A conversation's rows show for the open conversation, the one holding the open task and one whose task needs the owner; otherwise folded. Its twist folds and shows them, and the owner's choice is kept (`oby.kidsShown`) over the default.
 - **LIVETASK-21:** A conversation's second line says what waits on the owner first ("Codex asks to run a command"), else how many of its agents work ("2 agents working"), else its own line; its mark is orange or working accordingly.
 - **LIVETASK-22:** A nested row, or a card, opens that task's own thread over the conversation that started it, the trail reading "conversation › task"; its row is lit while it shows, and back returns to the conversation (`TaskThread.tsx`).
+- **LIVETASK-23:** A conversation with tasks hovers, lights and lays out exactly like one without: the same row box (edges, radius, padding), no class or offset of its own on it. Every conversation row keeps a fixed gutter on its left, so titles line up; the twist sits in that gutter, inside the row's box, with no box of its own (only its colour answers the pointer), and looks the same idle, hovered, open and needing you, folded or not. The nested rows keep their indent and tree line and hover alike (`Sidebar.tsx`, `app.css`; `nested.test.tsx`).
 
 ## Test it when it's done (real Mac)
 

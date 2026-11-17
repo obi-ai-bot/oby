@@ -1551,7 +1551,7 @@ button.connector { width: 100%; text-align: left; }
 }
 .sidebar-item-more:hover { color: var(--ink); background: var(--chip-hover); }
 /* a conversation with Oby in Conversations: its name, what came of it, when it last moved */
-.convo-row { position: relative; cursor: pointer; }
+.convo-row { position: relative; cursor: pointer; padding-left: var(--convo-gutter, 16px); }
 .convo-row .sidebar-item-ago { align-self: flex-start; margin-top: 6px; }
 /* on hover (or with its menu open) the time gives way to the ⋮, in the same spot */
 .convo-row:is(:hover, :focus-visible, :has(:focus-visible), .is-menu-open) > .sidebar-item-ago { opacity: 0; }
@@ -2327,9 +2327,12 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 
 /* A conversation's tasks, nested under its row in the side panel (Sangam's screens 03 and 04,
    LIVETASK-19 to 21): the twist in the gutter on its left, then a row per task under a line */
-.convo-nest { position: relative; }
-.convo-twist { position: absolute; z-index: 1; left: -13px; top: 13px; width: 16px; height: 16px; display: grid; place-items: center; border-radius: 4px; color: var(--muted); }
-.convo-twist:hover, .convo-twist:focus-visible { color: var(--text); background: var(--hover); }
+.convo-nest { position: relative; --convo-gutter: 16px; }
+/* the twist sits in the row's own box, in the gutter every conversation row keeps on its left (so the
+   titles line up whether it has tasks or not): no box of its own, the same in idle, hover, selected and
+   needs-you; only its colour answers the pointer */
+.convo-twist { position: absolute; z-index: 1; left: 0; top: 0; width: var(--convo-gutter); height: 44px; display: grid; place-items: center; color: var(--muted); transition: color var(--fade); }
+.convo-twist:hover, .convo-twist:focus-visible { color: var(--ink); }
 .convo-kids { margin: 0 0 2px 17px; padding-left: 8px; display: flex; flex-direction: column; border-left: 1px solid var(--line); }
 .convo-kid { height: 30px; padding: 0 8px; display: flex; align-items: center; gap: 8px; border-radius: 6px; color: var(--muted); font-size: var(--text-sm); text-align: left; min-width: 0; }
 .convo-kid:hover { background: var(--hover); }
