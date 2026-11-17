@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const state = vi.hoisted(() => ({
@@ -178,4 +180,25 @@ it('AGENTS-11: Cursor\'s models show once each, and a pick keeps the effort and 
   // this account doesn't list Grok's default (medium): the closest id it lists
   await click(button('Grok', document.querySelector('[aria-label="Cursor models"]')!));
   expect(state.tune).toHaveBeenLastCalledWith('x', { model: 'grok-4.7-low' });
+});
+
+// The global ring (`:focus-visible { outline: 1px solid; outline-offset: 2px }`) sits outside a row, and the
+// menu's own scrolling box (.menu-scroll) clips it: on the first row (Auto) only its bottom edge showed,
+// as a stray line above Claude. A row the keyboard is on is lit like a hover instead, as the + menu's are.
+it('CONVERSATION-AGENT-27: a row the keyboard is on is lit like a hover, with no focus ring a menu\'s scrolling box could clip', async () => {
+  await show();
+  const auto = button('Auto');
+  // what clips it: the first row sits straight in a scrolling box inside a .row-menu
+  expect(auto.parentElement?.className).toContain('menu-scroll');
+  expect(auto.closest('.row-menu')).not.toBeNull();
+  const css = readFileSync(join(__dirname, '../app.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const rule = (selector: string) => Array.from(css.matchAll(/([^{}]+)\{([^{}]*)\}/g)).filter((m) => m[1].split(',').some((s) => s.trim() === selector)).map((m) => m[2]);
+  const focused = rule('.row-menu button:focus-visible');
+  expect(focused.length).toBe(1);
+  expect(focused[0]).toMatch(/outline:\s*0\b/);
+  // lit as the hover is
+  const hover = rule('.row-menu button:hover')[0].match(/background:[^;]+/)![0];
+  expect(focused[0]).toContain(hover);
+  // a danger row keeps its own tint on focus as on hover
+  expect(css).toMatch(/\.row-menu \.is-danger:is\(:hover, :focus-visible\)/);
 });
