@@ -1132,17 +1132,29 @@ pub async fn scan(texts: &[(String, String)], scratch: &Path) -> Verdict {
     if let Err(why) = crate::vault::check() {
         return Verdict::CouldNotRun(why);
     }
-    let mut found = built_in(texts);
-    match gitleaks(texts, scratch).await {
+    verdict(built_in(texts), gitleaks(texts, scratch).await)
+}
+
+/// The scan's verdict from what the built-in rules `found` and what gitleaks said: a gitleaks
+/// that couldn't run is never Clean, whatever the rules found; else each finding once, Clean only
+/// with none (proved in crate::proofs::scan).
+pub(crate) fn verdict(mut found: Vec<Finding>, gitleaks: Result<Vec<Finding>, String>) -> Verdict {
+    match gitleaks {
         Ok(more) => found.extend(more),
         Err(why) => return Verdict::CouldNotRun(why),
     }
-    let mut seen = std::collections::HashSet::new();
-    found.retain(|f| seen.insert(f.clone()));
-    if found.is_empty() {
+    // Each finding once, in the order first found. A scan finds a handful, so a list does; a
+    // hash set's hashing of every finding is what CBMC can't get through.
+    let mut kept: Vec<Finding> = Vec::with_capacity(found.len());
+    for f in found {
+        if !kept.contains(&f) {
+            kept.push(f);
+        }
+    }
+    if kept.is_empty() {
         Verdict::Clean
     } else {
-        Verdict::Found(found)
+        Verdict::Found(kept)
     }
 }
 

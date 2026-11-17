@@ -1956,7 +1956,7 @@ fn sent_elsewhere(job: &Job, by_hand: &ByHand) -> bool {
 
 /// Whether a push to `to` may replace what's there: the owner's signed force, else only a branch
 /// obid made (PUBLISHING-13).
-fn may_force(to: &str, job: &Job, by_hand: &ByHand) -> bool {
+pub(crate) fn may_force(to: &str, job: &Job, by_hand: &ByHand) -> bool {
     git::is_branch_name(to)
         && (by_hand.force || to.starts_with("oby/") || (to == job.branch && job.own_branch()))
 }

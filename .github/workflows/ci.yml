@@ -13,6 +13,11 @@
 #   control-plane   cloud/control-plane: pnpm test (vitest inside Miniflare) and pnpm check
 #   electron        apps/electron: npm ci, typecheck, test and build
 #   tools           tools/oby-check-blok (its own Cargo workspace): cargo test
+#   brain           tools/brain: its map of obid and the app, read from the code, typechecked and
+#                   tested, so it can't drift from them (docs/contracts/ci.md, CI-56)
+#   proofs          obid's Kani harnesses: every one compiled, and the ones the change requires by
+#                   path proved (scripts/kani-required.sh); every one proved nightly and on demand
+#                   (docs/proofs.md, CI-57 to 59)
 #   Check           needs every job: fails when plan didn't pass or any job failed or was
 #                   cancelled (a skipped job passes), and writes the lanes, each job's result, a
 #                   failed shard's tests and every flaky test to its summary
@@ -75,6 +80,8 @@ jobs:
       electron: ${{ steps.lanes.outputs.electron }}
       control-plane: ${{ steps.lanes.outputs.control-plane }}
       tools: ${{ steps.lanes.outputs.tools }}
+      brain: ${{ steps.lanes.outputs.brain }}
+      proofs: ${{ steps.lanes.outputs.proofs }}
     env:
       GITLEAKS_VERSION: 8.30.1
       GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
@@ -109,16 +116,22 @@ jobs:
             *) mode="$GITHUB_EVENT_NAME"; range="" ;;
           esac
 
-          rust=false e2e=false electron=false control_plane=false tools=false
-          every_lane() { rust=true e2e=true electron=true control_plane=true tools=true; }
+          rust=false e2e=false electron=false control_plane=false tools=false brain=false proofs=""
+          every_lane() { rust=true e2e=true electron=true control_plane=true tools=true brain=true proofs=all; }
           if [ -z "$range" ]; then
             every_lane
           elif ! files=$(git diff --name-only "$range"); then
             echo "The diff $range can't be read: every lane."
             every_lane
           else
+            # The Kani harnesses the change requires by path (CI-58): `all`, or their filters.
+            proofs=$(scripts/kani-required.sh <<< "$files" | tr '\n' ' ' | sed 's/ $//')
             while IFS= read -r f; do
               [ -n "$f" ] || continue
+              # What the Brain reads (CI-56), apart from the lanes below.
+              case "$f" in
+                tools/brain/*|core/crates/obid/src/*|apps/electron/src/*|apps/shared/*|docs/api/*|docs/runner-api.md|AGENTS.md) brain=true ;;
+              esac
               case "$f" in
                 .github/*|scripts/oby-check*|core/Cargo.lock|core/Cargo.toml|rust-toolchain*) every_lane ;;
                 docs/api/*) rust=true ;;
@@ -126,6 +139,7 @@ jobs:
                 apps/electron/*) electron=true ;;
                 cloud/control-plane/*) control_plane=true ;;
                 tools/oby-check-blok/*) tools=true ;;
+                tools/brain/*) ;;
                 docs/*|factory/*|.claude/*|design/*|character/*|apps/ios/*|apps/watch/*|apps/shared/*|apps/Oby.xcodeproj/*|mcp/*) ;;
                 *.md) ;;
                 *) every_lane ;;
@@ -133,7 +147,8 @@ jobs:
             done <<< "$files"
           fi
           echo "mode=$mode tests=$tests"
-          echo "rust=$rust e2e=$e2e electron=$electron control-plane=$control_plane tools=$tools"
+          echo "rust=$rust e2e=$e2e electron=$electron control-plane=$control_plane tools=$tools brain=$brain"
+          echo "proofs required: ${proofs:-none}"
           {
             echo "mode=$mode"
             echo "tests=$tests"
@@ -142,6 +157,8 @@ jobs:
             echo "electron=$electron"
             echo "control-plane=$control_plane"
             echo "tools=$tools"
+            echo "brain=$brain"
+            echo "proofs=$proofs"
           } >> "$GITHUB_OUTPUT"
 
       - name: Install gitleaks
@@ -529,10 +546,93 @@ jobs:
       - name: cargo test
         run: cargo test --manifest-path tools/oby-check-blok/Cargo.toml --locked
 
+  brain:
+    # The Brain's map of obid and the app (tools/brain), read from this commit's code: its tests hold
+    # every route, module, app call, kept choice and rule to the code (CI-56).
+    name: brain
+    needs: plan
+    if: needs.plan.outputs.brain == 'true' && needs.plan.outputs.tests == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: tools/brain
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tools/brain/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      - name: npm run typecheck
+        run: npm run typecheck
+
+      # Builds the Rust extractor (obid-extract, its own Cargo project) and reads the repository.
+      - name: npm test
+        run: npm test
+
+      - name: The extractor's own tests
+        run: cargo test --manifest-path obid-extract/Cargo.toml --locked
+
+  proofs:
+    # obid's Kani harnesses (docs/proofs.md). Every one is compiled (CI-57); the ones the change
+    # requires by path are proved (CI-58), and nightly and on demand every one (CI-59). Kani is
+    # pinned here and installed from crates.io; its setup fetches its own bundle and nightly, which
+    # it picks itself: the workflow's RUSTUP_TOOLCHAIN is unset for it.
+    name: proofs
+    needs: plan
+    if: needs.plan.outputs.rust == 'true' && needs.plan.outputs.tests == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      KANI_VERSION: 0.68.0
+      PROOFS: ${{ needs.plan.outputs.proofs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+      - name: Install Kani
+        run: |
+          cargo install --locked kani-verifier --version "$KANI_VERSION"
+          env -u RUSTUP_TOOLCHAIN cargo kani setup
+          env -u RUSTUP_TOOLCHAIN cargo kani --version
+
+      - name: Compile every harness
+        working-directory: core
+        run: env -u RUSTUP_TOOLCHAIN cargo kani -p obid --tests --only-codegen
+
+      - name: Prove what the change requires
+        working-directory: core
+        run: |
+          if [ -z "$PROOFS" ]; then
+            echo "No harness proves what this change touched: compiled only."
+          elif [ "$PROOFS" = all ]; then
+            env -u RUSTUP_TOOLCHAIN cargo kani -p obid --tests --output-format terse
+          else
+            args=()
+            for filter in $PROOFS; do args+=(--harness "$filter"); done
+            echo "Proving: $PROOFS"
+            env -u RUSTUP_TOOLCHAIN cargo kani -p obid --tests --output-format terse "${args[@]}"
+          fi
+
   check:
     # The run's one status: the merge queue requires it (R01-03).
     name: Check
-    needs: [plan, lint, limits, rust-build, rust-test, control-plane, e2e, electron, tools]
+    needs: [plan, lint, limits, rust-build, rust-test, control-plane, e2e, electron, tools, brain, proofs]
     if: always() && (github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -556,7 +656,7 @@ jobs:
           needs = json.loads(os.environ["NEEDS"])
           plan = needs["plan"]
           out = plan.get("outputs") or {}
-          lanes = ["rust", "e2e", "electron", "control-plane", "tools"]
+          lanes = ["rust", "e2e", "electron", "control-plane", "tools", "brain"]
           reached = [lane for lane in lanes if out.get(lane) == "true"]
           lines = [
               "## Check",

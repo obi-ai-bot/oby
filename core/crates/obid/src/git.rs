@@ -569,16 +569,19 @@ pub fn is_branch_name(name: &str) -> bool {
     let ok_chars = name
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'/' | b'-'));
+    // Two bytes side by side, read pair by pair: what `contains` says for these, without its
+    // vectorized search, which the force-push proof can't get through (crate::proofs::publish).
+    let has = |pair: &[u8; 2]| name.as_bytes().windows(2).any(|w| w == pair);
     !name.is_empty()
         && name.len() <= 200
         && ok_chars
         && !name.starts_with(['-', '/', '.'])
-        && !name.contains("..")
-        && !name.contains("//")
+        && !has(b"..")
+        && !has(b"//")
         && !name.ends_with('/')
         && !name.ends_with('.')
         && !name.ends_with(".lock")
-        && !name.contains("/.")
+        && !has(b"/.")
 }
 
 /// What a checkout of obid's sets so Git LFS files stay pointers, as the check sees them
