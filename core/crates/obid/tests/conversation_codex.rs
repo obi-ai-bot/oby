@@ -859,6 +859,68 @@ fn lanes_13_an_own_bypass_codex_conversation_runs_its_shell_in_codexs_sandbox() 
     }
 }
 
+/// LANES-21 (docs/contracts/lanes.md, #2425): the owner's Codex conversation in Bypass runs Oby's
+/// own tools under `approval_policy = "never"`: Codex asks nobody there, and codex-cli 0.163 refuses
+/// any MCP call that would need approval, so obid approves Oby's server before the run and no other
+/// server. Words become a task (`oby_dispatch` starts its job), and another server's tool is still
+/// Codex's to refuse.
+#[cfg(target_os = "macos")]
+#[test]
+fn lanes_21_an_own_codex_conversation_starts_a_task_with_obys_own_tool() {
+    let (_folder, obid) = obid("codex-conv-own-tools", true);
+    mode(&obid, "bypass");
+    let answer = said(
+        &obid,
+        json!({"said": r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build"}"#,
+               "new": true}),
+    );
+    assert!(
+        !words(&answer).contains("requires approval"),
+        "{}",
+        answer.text
+    );
+    let jobs = answer.body["jobs"].as_array().unwrap();
+    assert_eq!(jobs.len(), 1, "{}", answer.text);
+    let conversation = answer.body["conversation"].as_str().unwrap().to_owned();
+    let other = said(
+        &obid,
+        json!({"said": "ELSEWHERE", "conversation": conversation}),
+    );
+    assert_eq!(
+        words(&other),
+        "elsewhere: declined (MCP tool call requires approval, but approval policy is never)",
+        "{}",
+        other.text
+    );
+    let recorded = turns(&obid);
+    assert_eq!(recorded.len(), 2, "{recorded:?}");
+    for turn in &recorded {
+        let approved: Vec<String> = (settings(turn).into_iter())
+            .filter(|s| s.contains("approval_mode"))
+            .collect();
+        assert_eq!(
+            approved,
+            [r#"mcp_servers.oby.default_tools_approval_mode="approve""#],
+            "{turn}"
+        );
+    }
+}
+
+/// LANES-21: in Ask the conversation stays boxed, every MCP call asked of obid as before, so obid
+/// approves no server's tools before the run.
+#[test]
+fn lanes_21_a_boxed_codex_conversation_approves_no_server_before_the_run() {
+    let (_folder, obid) = obid("codex-conv-boxed-tools", true);
+    let answer = said(&obid, json!({"said": "TOOLS", "new": true}));
+    assert!(words(&answer).starts_with("tools: "), "{}", answer.text);
+    for turn in turns(&obid) {
+        assert!(
+            !settings(&turn).iter().any(|s| s.contains("approval_mode")),
+            "{turn}"
+        );
+    }
+}
+
 /// LANES-13: the owner's Codex conversation in any other mode stays in Oby's box, as before: its
 /// `CODEX_HOME` the conversation's own with a login copy, `danger-full-access` with every approval
 /// obid's, its shell off and Codex asked nothing first, so a command it runs anyway ends the turn.

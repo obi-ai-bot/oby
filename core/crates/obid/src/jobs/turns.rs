@@ -439,6 +439,10 @@ impl Jobs {
                 }
                 if own {
                     argv.splice(1..1, own_codex_settings(&spec)?);
+                    // Under `never` Codex asks nobody: Oby's own tools are approved (LANES-21).
+                    if broker.is_some() {
+                        argv.splice(1..1, codex::OWN_OBY_TOOLS.map(OsString::from));
+                    }
                 }
                 argv
             }

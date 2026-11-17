@@ -1185,6 +1185,32 @@ fn a_codex_job_asks_the_owner_and_resumes_with_the_answer() {
     );
 }
 
+/// LANES-21 (docs/contracts/lanes.md, #2425): the owner's Codex job in Bypass (LANES-18, under
+/// `approval_policy = "never"`) calls Oby's own `oby_ask_owner` with Oby's server approved before
+/// the run, as codex-cli 0.163 needs: the owner is asked, and the answer picks its thread up.
+#[cfg(target_os = "macos")]
+#[test]
+fn lanes_21_an_own_bypass_codex_job_runs_obys_own_tools() {
+    let folder = Folder::new("codex-own-asks");
+    let obid = obid(&folder, false);
+    let id = dispatch(
+        &obid,
+        json!({"agent": "codex", "task": "ASK OWNER", "mode": "bypass"}),
+    );
+    let job = question_waits(&obid, &id);
+    assert!(
+        summary(&job).starts_with("Asked: Asked the owner. End your turn now"),
+        "{job}"
+    );
+    answer_question(&obid, &id, &job, "postgres");
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert!(
+        summary(&job).contains("- \"Which store?\": the owner answered \"Postgres\""),
+        "{job}"
+    );
+}
+
 /// Codex's own question (`item/tool/requestUserInput`) waits for the owner as Claude Code's
 /// AskUserQuestion does (#858), the answer going back by the question's id; a secret is never
 /// asked.
