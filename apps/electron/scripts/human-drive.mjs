@@ -51,7 +51,7 @@ if (repo.startsWith('obi-ai-bot/')) fail(`Never drive the real tasks into ${repo
 // kill missed is done by the next run's, since the key, so the device, is the same.
 function device(action) {
   try {
-    const out = execFileSync(electronBinary, [join(appRoot, 'scripts/human-drive-device.cjs'), action, join(own, 'electron-data/device-key'), runner, DEVICE],
+    const out = execFileSync(electronBinary, [join(appRoot, 'scripts/human-drive-device.cjs'), action, join(own, 'electron-data/device-key.pem'), runner, DEVICE],
       { encoding: 'utf8', timeout: 60_000, stdio: ['ignore', 'pipe', 'ignore'] });
     return JSON.parse(out.split('\n').find((l) => l.startsWith('DEVICE '))?.slice(7) ?? '{"error":"no answer"}');
   } catch (e) { return { error: e.message.split('\n')[0] }; }
