@@ -190,8 +190,7 @@ impl Jobs {
             .and_then(|n| String::from_utf8_lossy(&n).trim().parse::<u64>().ok())
             .unwrap_or(0);
         self.update(id, |j| {
-            let round = j.checkpoints.pop();
-            j.undone.extend(round);
+            j.undo_round();
             j.commits = j.commits.map(|c| c.saturating_sub(gone));
             if undo.push {
                 j.pushed = j.pushed.map(|p| p.saturating_sub(gone));
@@ -220,20 +219,33 @@ mod tests {
             "claude".into(),
             "a".into(),
         );
+        job.summary = "Added hello.txt.".into();
         let earlier = |job: &Job| follow_up(job, "Now this").earlier.unwrap_or_default();
         assert!(!earlier(&job).contains("undid"), "{}", earlier(&job));
-        job.undone.push(Checkpoint {
-            from: "a".repeat(40),
-            to: "b".repeat(40),
+        let round = |c: char| Checkpoint {
+            from: c.to_string().repeat(40),
+            to: "f".repeat(40),
             at: 0,
-        });
+        };
+        job.checkpoints = vec![round('a'), round('b')];
+        job.undo_round();
         let heard = earlier(&job);
         assert!(
             heard.contains(&format!(
-                "The owner undid one of its rounds: its branch is back at {}, and what that round committed is gone from it.",
-                "a".repeat(12)
+                "Its report: The owner undid one of its rounds: its branch is back at {}, and what that round committed is gone from it.\n\nAdded hello.txt.",
+                "b".repeat(12)
             )),
             "{heard}"
         );
+        // a second undo says so once, the report kept under it
+        job.undo_round();
+        assert_eq!(
+            job.summary,
+            format!(
+                "The owner undid 2 of its rounds: its branch is back at {}, and what those rounds committed is gone from it.\n\nAdded hello.txt.",
+                "a".repeat(12)
+            )
+        );
+        assert!(job.checkpoints.is_empty());
     }
 }

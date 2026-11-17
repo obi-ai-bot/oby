@@ -1499,6 +1499,26 @@ impl Job {
             && !self.pull_request_open()
     }
 
+    /// Takes its last round back (CHANGES-10, 12): kept in `undone`, and its summary opens with
+    /// what was undone, which its follow-up's agent hears with the rest of its report.
+    pub fn undo_round(&mut self) {
+        let Some(round) = self.checkpoints.pop() else {
+            return;
+        };
+        self.undone.push(round);
+        let report = match self.summary.split_once("\n\n") {
+            Some((note, rest)) if note.starts_with("The owner undid ") => rest.to_owned(),
+            _ if self.summary.starts_with("The owner undid ") => String::new(),
+            _ => self.summary.clone(),
+        };
+        let note = self.undone_note().unwrap_or_default();
+        self.summary = if report.is_empty() {
+            note
+        } else {
+            format!("{note}\n\n{report}")
+        };
+    }
+
     /// What its follow-up's agent hears of the rounds the owner undid (CHANGES-12), or none.
     pub fn undone_note(&self) -> Option<String> {
         let last = self.undone.last()?;

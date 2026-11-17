@@ -3,8 +3,10 @@
 //! and its diff, read in its worktree inside its sandbox, at one HEAD. It owns no state, and never
 //! writes a job, a worktree or a branch.
 
-use super::rounds::Round;
+pub(crate) mod rounds;
+
 use super::*;
+use rounds::Round;
 
 /// How much of a job's diff its changes answer, after redaction (TASKS-24).
 const CHANGES_DIFF_MAX: usize = 1024 * 1024;

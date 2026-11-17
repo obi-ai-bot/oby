@@ -1,6 +1,6 @@
 # A task's changes, its worktree, and Undo this round
 
-The business behavior contract for seeing everything a task changed, opening its worktree in the owner's own Terminal or editor, and taking its last round back, from [the template](../business-contract-template.md). Scenarios are numbered `CHANGES-n`; the tests that prove them are named after them: obid's in `core/crates/obid/tests/task_changes.rs` and `core/crates/obid/src/jobs/rounds/undo.rs`, the app's in `apps/electron/src/renderer/src/test/taskChanges.test.tsx` and `apps/electron/src/renderer/src/test/worktreeOpen.test.ts`.
+The business behavior contract for seeing everything a task changed, opening its worktree in the owner's own Terminal or editor, and taking its last round back, from [the template](../business-contract-template.md). Scenarios are numbered `CHANGES-n`; the tests that prove them are named after them: obid's in `core/crates/obid/tests/task_changes.rs` and `core/crates/obid/src/jobs/changes/rounds/undo.rs`, the app's in `apps/electron/src/renderer/src/test/taskChanges.test.tsx` and `apps/electron/src/renderer/src/test/worktreeOpen.test.ts`.
 
 ## Feature and status
 
@@ -37,7 +37,7 @@ The business behavior contract for seeing everything a task changed, opening its
 - The task's menu offers **Undo this round…** when obid has a sentence for it (`GET /v1/jobs/{id}/undo` answers 200). A click shows main's own dialog with obid's sentence, **Undo** and **Not now**; only Undo there signs it (`oby-undo`), as Publish by hand is signed (PUBLISHING-14).
 - obid undoes only the job's last round, and only when: the job isn't running or queued; its pull request isn't merged; its worktree's HEAD is still that round's end; its branch in obid's clone is at that end or before its start (a later follow-up didn't carry it on); and what Oby pushed last to that branch is that round's end or comes before its start.
 - It puts the worktree back at the round's start (`git reset --hard`, which drops work left uncommitted: the sentence says so), and the clone's branch too when it held the round. When the round went out, it first force-pushes the job's own `oby/` branch back to that start, leased on the round's end, so a push that fails changes nothing; the sentence says so, and no new commit leaves. A pushed round on a branch Oby didn't make isn't force-pushed: obid says to revert it there.
-- The job counts fewer commits (and fewer pushed), its `outgoing` lists the push, the task lists one round fewer, and the next follow-up's agent hears that the owner undid its rounds and where its branch is.
+- The job counts fewer commits (and fewer pushed), its `outgoing` lists the push, the task lists one round fewer, and its summary opens with what was undone and where its branch is, which the next follow-up's agent hears with its report.
 
 ### Decisions and invariants
 
@@ -68,7 +68,7 @@ The business behavior contract for seeing everything a task changed, opening its
 - **CHANGES-9** A job with no round has nothing to undo (`409`, `Nothing this task did is left to undo.`); no such job is `404`. (`task_changes::changes_9_a_job_with_no_round_has_nothing_to_undo`)
 - **CHANGES-10** The signed Undo force-pushes the task's `oby/` branch back to the first round's end, moves the clone's branch and the worktree there, counts no commit on the follow-up, lists the push in its `outgoing` and one round on the task; there's then nothing more to undo on it. (the CHANGES-8 test)
 - **CHANGES-11** An Undo from an unregistered device, signed by another key, signed as `oby-publish`, for other words, or more than two minutes old is `403`, and nothing moves; a body that isn't an approval is `422`. (the CHANGES-8 test)
-- **CHANGES-12** Words to a task after an Undo start a follow-up whose agent hears that the owner undid its rounds and where its branch is back. (`rounds::undo::tests::changes_12_a_follow_up_after_an_undo_hears_of_it`)
+- **CHANGES-12** An Undo puts what was undone at the head of the job's summary (`The owner undid one of its rounds: its branch is back at <sha>, …`, one line however many rounds, the agent's report under it), so words to the task after it start a follow-up whose agent hears it with the report. (`jobs::changes::rounds::undo::tests::changes_12_a_follow_up_after_an_undo_hears_of_it`)
 - **CHANGES-13** A round that went out to a branch the owner named, not an `oby/` one, isn't force-pushed back: `409` saying why, and the remote branch stays. (`task_changes::changes_13_a_round_pushed_to_a_branch_oby_didnt_make_isnt_force_pushed`)
 - **CHANGES-14** The menu offers **Undo this round…** only while obid has a sentence for it; the click asks main with that sentence, and main signs only on **Undo** in its own dialog, after an input it saw, for the sentence it read from obid itself. (`taskChanges.test.tsx`, `CHANGES-14`; `device.test.ts`, `CHANGES-14`)
 

@@ -4,8 +4,8 @@
 
 pub(crate) mod undo;
 
-use super::*;
 use crate::job::Checkpoint;
+use crate::jobs::*;
 
 /// One round of a task, numbered from its first job's first (CHANGES-1).
 pub(crate) struct Round {
@@ -26,7 +26,7 @@ impl Round {
 impl Jobs {
     /// Keeps the round that just ended on the owner's job `id` (CHANGES-1): when its worktree's
     /// HEAD moved from `before`, the turn that started at `started` made one.
-    pub(super) async fn checkpoint(&self, id: &str, before: &str, started: i64) {
+    pub(crate) async fn checkpoint(&self, id: &str, before: &str, started: i64) {
         if !git::is_sha(before) {
             return;
         }
