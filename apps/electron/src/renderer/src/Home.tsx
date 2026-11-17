@@ -36,6 +36,7 @@ import { MOCK_SCHEDULE, convoTitle } from './mock';
 import { useHelpers } from './helpers';
 import { hasAttachments, type Attachments } from './view';
 import { box as draftBox } from './drafts';
+import { panelFit } from './panelFit';
 import { TYPES, renameTask, tell, countOf, runningCount, firstTab, hasFresh, toDoOf, useTasks, asksWaiting, type Tab } from './tasks';
 
 // the Settings tip over the message box: off for now (its bar, SettingsTip.tsx, kept for tips to come)
@@ -267,7 +268,7 @@ export default function Home() {
   const [sidebar, setSidebar] = useState(() => {
     try {
       if (!chatFirst) return localStorage.getItem('oby.sidebarOpen') === '1';
-      return localStorage.getItem(PANEL_KEPT) !== '0' && innerWidth >= SIDEBAR_DEFAULT + 420;
+      return localStorage.getItem(PANEL_KEPT) !== '0' && panelFit(innerWidth, SIDEBAR_DEFAULT, SIDEBAR_MIN).docked;
     } catch { return false; }
   });
   // lent: opened by setting up's Obysphere tour (onboarding.ts), which isn't your choice, so it
@@ -284,6 +285,25 @@ export default function Home() {
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     try { return Number(localStorage.getItem('oby.sidebarWidth')) || SIDEBAR_DEFAULT; } catch { return SIDEBAR_DEFAULT; }
   });
+  // how it fits beside the chat (panelFit.ts, CHATFIRST-35): docked while the chat keeps T3 Code's
+  // 640px, the panel giving way down to its narrowest; narrower, it floats over the chat, opened and
+  // closed on its own (and never remembered), the docked choice kept for when the window widens
+  const [windowWidth, setWindowWidth] = useState(() => innerWidth);
+  useEffect(() => {
+    const onResize = () => setWindowWidth(innerWidth);
+    addEventListener('resize', onResize);
+    return () => removeEventListener('resize', onResize);
+  }, []);
+  const fit = panelFit(windowWidth, sidebarWidth, SIDEBAR_MIN);
+  const [floating, setFloating] = useState(false);
+  useEffect(() => { if (fit.docked) setFloating(false); }, [fit.docked]);
+  // floating, a row's click takes you there and the panel goes, as T3 Code's sheet does
+  useEffect(() => { setFloating(false); }, [top?.key]);
+  const panelShown = fit.docked ? sidebar : floating;
+  const togglePanel = (open?: boolean) => {
+    lent.current = false;
+    if (fit.docked) setSidebar((v) => open ?? !v); else setFloating((v) => open ?? !v);
+  };
   const [resizing, setResizing] = useState(false);
   // let go: the edge eases to where it rests (--panel-settle, 640ms)
   const [settling, setSettling] = useState(false);
@@ -310,7 +330,7 @@ export default function Home() {
     const lend = (e: Event) => {
       const open = (e as CustomEvent<boolean>).detail;
       // only where it fits beside the view (--view-min, 420px); else the tour's picks stand in for it
-      if (open && !sidebar && innerWidth >= sidebarWidth + 420) { lent.current = true; setSidebar(true); }
+      if (open && !sidebar && panelFit(innerWidth, sidebarWidth, SIDEBAR_MIN).docked) { lent.current = true; setSidebar(true); }
       if (!open && lent.current) { lent.current = false; setSidebar(false); }
     };
     addEventListener('oby:sidebar', lend);
@@ -372,11 +392,11 @@ export default function Home() {
   const rootTask = top?.kind === 'task' || top?.kind === 'thread' ? top.id : top?.kind === 'talk' && under?.kind === 'task' ? under.id : null;
 
   return (
-    <div className={`app${sidebar ? ' has-sidebar' : ''}${resizing ? ' is-resizing' : ''}${settling ? ' is-settling' : ''}${noLights ? ' no-lights' : ''}`} style={{ '--sidebar': `${sidebarWidth}px`, '--sidebar-min': `${SIDEBAR_MIN}px` } as React.CSSProperties}>
+    <div className={`app${panelShown ? ' has-sidebar' : ''}${fit.docked ? '' : ' is-floating'}${resizing ? ' is-resizing' : ''}${settling ? ' is-settling' : ''}${noLights ? ' no-lights' : ''}`} style={{ '--sidebar': `${fit.width}px`, '--sidebar-min': `${SIDEBAR_MIN}px` } as React.CSSProperties}>
       <Sidebar
-        open={sidebar}
+        open={panelShown}
         atHome={!away}
-        onClose={() => { lent.current = false; setSidebar(false); }}
+        onClose={() => togglePanel(false)}
         onNewChat={newChat}
         onHome={home}
         onOpenGroup={(id) => start({ kind: 'group', id, tab: firstTab(id) })}
@@ -400,9 +420,11 @@ export default function Home() {
         active={rootTask}
         activeTalk={top?.kind === 'talk' ? top.id : null}
         activeOby={firstOby?.id ?? null}
-        width={sidebarWidth}
+        width={fit.width}
         onResize={resizeSidebar}
       />
+      {/* floating over the chat: a click beside it puts it away, as T3 Code's sheet */}
+      {floating && !fit.docked && <button type="button" className="panel-scrim" aria-label="Hide sidebar" tabIndex={-1} onClick={() => togglePanel(false)} />}
 
     <div className="home">
       <header className="bar">
@@ -583,17 +605,14 @@ export default function Home() {
         const kind = l.kind === 'talk' ? 'oby' : l.kind === 'peer' ? 'peer' : 'task';
         return <ChatView key={l.key} kind={kind} id={l.id} leaving={leaving} covered={covered} onBack={back} onGone={onGone} onOpenTask={openTask} onOpenAgent={(id) => push({ kind: 'agent', id })} onOpenMember={(owner) => push({ kind: 'member', id: owner })} />;
       })}
-      {/* chat first: what Oby is asking you, over your conversation, answered there in one click, but
-          what its own tasks ask, which waits over its box (DecisionBar); with none open, all of it on
-          the stage, as on Home */}
-      {chatFirst && top?.kind === 'talk' && (
-        <div className="asks-over"><AskStack active except={top.id} onOpen={openTask} onOpenTalk={(id) => start({ kind: 'talk', id })} /></div>
-      )}
+      {/* chat first: nothing over a conversation but its own: what it and its tasks ask waits in the
+          drawer over its box (ChatView, DecisionBar), what other conversations ask on their rows and
+          in Waiting for you; with none open, all of it on the stage, as on Home (CHATFIRST-8) */}
     </div>
       {/* stays next to the traffic lights whether the side panel is open or not.
           Last in the page on purpose: Electron reads drag areas in page order,
           so coming after the title bar keeps its click from being taken as a drag */}
-      <button className={`icon-button panel-toggle${enterIn ? (arriving ? ' is-waiting' : ' is-arrival') : ''}`} aria-label={sidebar ? 'Hide sidebar' : 'Show sidebar'} aria-expanded={sidebar} onClick={() => { lent.current = false; setSidebar((v) => !v); }}>
+      <button className={`icon-button panel-toggle${enterIn ? (arriving ? ' is-waiting' : ' is-arrival') : ''}`} aria-label={panelShown ? 'Hide sidebar' : 'Show sidebar'} aria-expanded={panelShown} onClick={() => togglePanel()}>
         <PanelLeft size={18} strokeWidth={1.6} />
       </button>
     </div>

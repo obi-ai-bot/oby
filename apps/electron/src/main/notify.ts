@@ -247,10 +247,9 @@ export function onPage(showing: Place, p: Place) {
   if (p.settings) return false;
   if (p.job && showing.job === p.job) return true;
   if (p.conversation) return showing.conversation === p.conversation;
-  // the stack shows what has no task: on Home, and chat first over a conversation too
-  // (docs/contracts/chat-first.md, CHATFIRST-8). ponytail: with ?home a conversation has no stack, and
-  // this takes such an alert away all the same; only Sangam's comparison sees it
-  return !p.job && !showing.job;
+  // the stack shows what has no task or conversation only on Home: never over a conversation
+  // (docs/contracts/chat-first.md, CHATFIRST-8)
+  return !p.job && !showing.job && !showing.conversation;
 }
 // Whether the window is in front on that place now
 const looking = (p: Place) => !!showing && focused() && onPage(showing, p);

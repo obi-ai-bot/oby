@@ -18,8 +18,8 @@ button { appearance: none; border: 0; background: none; padding: 0; cursor: poin
 :focus-visible { outline: 1px solid var(--muted); outline-offset: 2px; }
 
 /* the side panel and the view side by side; opening the panel pushes the view.
-   Neither squeezes below its width: in a narrow window the view runs off the
-   right edge and is clipped */
+   Docked only while the view keeps 640px (panelFit.ts, CHATFIRST-35); narrower, the
+   panel floats over the view, so nothing runs past the window's right edge */
 .app { position: relative; height: 100%; display: flex; overflow: clip; }  /* clip, not hidden: nothing (like the editor bringing its cursor into view) can scroll it sideways */
 .app > .home { flex: 1; min-width: var(--view-min); }
 /* the panel icon: right of the traffic lights, over whatever is beneath */
@@ -1196,6 +1196,14 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
    under its narrowest (252px) it stays 252 and the edge cuts it, no squeezing */
 .is-resizing .sidebar, .is-settling .sidebar { width: max(100%, var(--sidebar-min)); }
 .is-resizing { cursor: col-resize; }
+/* floating (a window too narrow to dock it beside a 640px chat, panelFit.ts): over the view, the
+   view at its full width under it; a dimmed strip beside it puts it away (T3 Code's sheet) */
+.app.is-floating > .home { isolation: isolate; }
+.app.is-floating .sidebar-slot { position: absolute; z-index: 9; top: 0; bottom: 0; left: 0; }
+.app.is-floating .sidebar { background: var(--bg); }
+.app.is-floating.has-sidebar .sidebar-slot { box-shadow: 0 0 32px rgba(0, 0, 0, 0.5); }
+.app.is-floating.has-sidebar .bar { padding-left: calc(var(--after-lights) + 40px); }
+.panel-scrim { position: absolute; z-index: 8; inset: 0; padding: 0; border: 0; background: rgba(0, 0, 0, 0.35); cursor: default; animation: fade-in 160ms var(--warm) both; -webkit-app-region: no-drag; }
 
 /* far left: one icon per section, your account picture at the bottom */
 .rail {
@@ -2279,15 +2287,12 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 }
 
 /* Chat first (docs/contracts/chat-first.md): the side panel's Oby, Obysphere and usage rows
-   (the canvas's), and what Oby is asking you, over your conversation */
+   (the canvas's) */
 .connector.chat-own { min-height: 52px; }
 .connector.chat-own .connector-name { color: var(--ink); font-weight: 500; }
 .sidebar-new.chat-new { margin: 4px 0 2px; }
 .sidebar-item.chat-kind { gap: 6px; }
 .sidebar-item.chat-kind:last-of-type { margin-bottom: 8px; }
-.asks-over { position: absolute; z-index: 5; top: var(--bar); left: 0; right: 0; max-height: calc(100% - var(--bar)); overflow-y: auto; scrollbar-width: none; padding: 8px var(--gutter) 0; display: flex; justify-content: center; pointer-events: none; }
-.asks-over .asks { pointer-events: auto; }
-.asks-over .ask-card { background: var(--surface); box-shadow: 0 0 0 1px var(--surface-edge); }
 
 /* Agents beside Projects (docs/contracts/helpers.md, screens 08 to 10): the switch under the profile's
    name, each agent's row with its coloured Oby, its face in the bar, and the New agent sheet */

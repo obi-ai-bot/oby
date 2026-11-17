@@ -353,13 +353,22 @@ describe('what waits on the owner', () => {
     // (it waits in the drawer over c1's own box: LIVETASK-24, liveTask.test.tsx)
   });
 
-  it('CHATFIRST-23: chats_4_asks_still_show: another conversation\'s task\'s decision is still a card over this one', async () => {
-    const s = await on({ jobs: [job('j', 'c2')], conversations: [talk('c1'), talk('c2', { lastActivity: '2026-10-29T10:00:00Z' })], inbox: [item('i', 'permission', { job: 'j', title: 'Run this?', headline: 'Run this?' })] });
-    expect(await s.home()).toMatch(/class="asks-over"><section[^]*ask-card is-up[^]*Run this\?/);
+  it('CHATFIRST-23: chats_4_asks_still_show: another conversation\'s task\'s decision is never over this one: it lights its own row and Waiting for you', async () => {
+    const s = await on({ jobs: [job('j', 'c2')], conversations: [talk('c1'), talk('c2', { lastActivity: '2026-10-29T10:00:00Z' })], inbox: [item('i', 'permission', { job: 'j', title: 'Run this?', headline: 'Run this?', triage: 'needs_you' })] });
+    const html = await s.home();
+    expect(html).toContain('data-chat="c1"');
+    expect(html).not.toContain('asks-over');
+    expect(html).not.toMatch(/ask-card[^]*Run this\?/);
+    // where it is instead: c2's row is lit, and Waiting for you counts it
+    expect(lit(s.side(), 'Talk c2')).toBe(true);
+    expect(s.side()).toContain('Waiting for you</span><span class="waiting-count">1</span>');
   });
 
-  it('CHATFIRST-23: chats_4_asks_still_show: one with no task is a card over a conversation', async () => {
+  it('CHATFIRST-23: chats_4_asks_still_show: one with no task or conversation is no card over a conversation, only on the empty chat', async () => {
     const s = await on({ jobs: [job('j', 'c1')], conversations: [talk('c1')], inbox: [item('i', 'confirm', { job: '', title: 'Share it?', headline: 'Share it?', options: ['Confirm'] })] });
-    expect(await s.home()).toMatch(/class="asks-over"><section[^]*ask-card is-up[^]*Share it\?/);
+    const html = await s.home();
+    expect(html).toContain('data-chat="c1"');
+    expect(html).not.toMatch(/ask-card[^]*Share it\?/);
+    expect(s.stack()).toContain('Share it?');
   });
 });

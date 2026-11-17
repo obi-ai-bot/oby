@@ -357,6 +357,28 @@ describe('a task at work', () => {
     expect(other).not.toContain('decision-bar');
   });
 
+  it('CHATFIRST-8: what the conversation asks with no task joins its drawer; another conversation\'s never does, nor what its thread shows already', async () => {
+    stub();
+    const { default: ChatView } = await import('../ChatView');
+    const { replaceTasks } = await import('../tasks');
+    const failed = { kind: 'question' as const, headline: 'The routine failed', text: '', options: ['Try again', 'Done'] };
+    const share = { kind: 'question' as const, headline: 'Share it?', text: '', options: ['Confirm'] };
+    replaceTasks([], { work: [], asks: [
+      { id: 'own', title: 'Nightly', ask: failed, talk: 'c1' },
+      { id: 'other', title: 'Elsewhere', ask: { ...failed, headline: 'Another one failed' }, talk: 'c2' },
+      { id: 'shown', title: 'Share', ask: share, talk: 'c1' },
+      { id: 'nowhere', title: 'No conversation', ask: { ...failed, headline: 'GitHub wants you' } },
+    ] });
+    // the Confirm is in the thread already, under Oby's answer
+    page.chats = [{ id: 'c1', title: 'One', said: [{ who: 'oby', text: '', ago: 1, confirm: { id: 'shown', ask: share } }] } satisfies Chat];
+    const html = read(renderToStaticMarkup(<ChatView kind="oby" id="c1" leaving={false} onBack={() => {}} onGone={() => {}} onOpenTask={() => {}} />));
+    const bar = html.slice(html.indexOf('class="decision-bar"'), html.indexOf('<input'));
+    expect(bar).toMatch(/The routine failed<span class="tc-ask-from"> · Nightly/);
+    expect(bar).not.toContain('decision-count');
+    for (const word of ['Another one failed', 'GitHub wants you', 'Share it?']) expect(bar).not.toContain(word);
+    replaceTasks([], { work: [], asks: [] });
+  });
+
   it('LIVETASK-25: the card stays lean: its head alone, whatever it waits on, while the decision waits over the box', async () => {
     const merge = { kind: 'merge' as const, label: 'Ready to merge', headline: 'Merge oby-scratch #4 into main?', text: 'No check ran on its head (this repository has none).\nIts base is main, which Oby merges into only on your word.', options: ['Merge', 'Dismiss'] };
     const stages = [{ id: 'work', title: 'Work', state: 'done' }, { id: 'publish', title: 'Publish', state: 'current' }] as JobView['stages'];

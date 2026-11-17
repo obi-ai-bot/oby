@@ -787,13 +787,12 @@ impl Conversations {
         let index = found.unwrap_or_else(|| {
             threads.push(Thread {
                 id: self.take_next().unwrap_or_else(new_id),
-                // Files with no words: named after the first.
-                title: titled(
-                    names
-                        .first()
-                        .filter(|_| said.trim().is_empty())
-                        .unwrap_or(&said),
-                ),
+                // Named after the owner's words, a few of them (CHATFIRST-36); files with no
+                // words, after the first.
+                title: match names.first().filter(|_| said.trim().is_empty()) {
+                    Some(name) => titled(name),
+                    None => short_title(&said),
+                },
                 created: obi_protocol::time::format(obi_protocol::time::now()),
                 profile: scope.tag(),
                 ..Thread::default()
@@ -2132,6 +2131,124 @@ pub fn titled(text: &str) -> String {
     }
 }
 
+/// What a first message often opens with that says nothing of what it's about: a greeting, the
+/// asking ("can you", "please"), "take a look at" and the like, and a leading article. Lower case,
+/// word by word, each taken off the front for as long as one matches.
+const OPENERS: &[&str] = &[
+    "hey oby",
+    "hi oby",
+    "hello oby",
+    "oby",
+    "hey",
+    "hi",
+    "hello",
+    "ok",
+    "okay",
+    "so",
+    "and",
+    "also",
+    "please",
+    "pls",
+    "plz",
+    "can you",
+    "could you",
+    "would you",
+    "will you",
+    "can u",
+    "could u",
+    "can we",
+    "could we",
+    "i want you to",
+    "i'd like you to",
+    "i would like you to",
+    "i need you to",
+    "i want to",
+    "i'd like to",
+    "i would like to",
+    "i need to",
+    "we need to",
+    "need to",
+    "let's",
+    "lets",
+    "let us",
+    "help me",
+    "go ahead and",
+    "quickly",
+    "take a look at",
+    "have a look at",
+    "look at",
+    "look into",
+    "a",
+    "an",
+    "the",
+];
+/// Words a title cut short shouldn't end on.
+const DANGLING: &[&str] = &[
+    "a", "an", "the", "and", "or", "but", "to", "of", "in", "on", "for", "with", "at", "from",
+    "by", "is", "are", "that", "this", "my", "our", "your", "its", "please", "so",
+];
+/// The most words a conversation's own title takes, about T3 Code's thread titles.
+const TITLE_WORDS: usize = 6;
+
+/// A new conversation's title from the owner's first words, a few words long as T3 Code titles its
+/// threads, but by rule, never a model call (docs/contracts/chat-first.md, CHATFIRST-36): the first
+/// line, less its openers ([`OPENERS`]), up to the end of its first clause (`.`, `?`, `!`, `;` or `,`
+/// before a space), at most [`TITLE_WORDS`] words, none left dangling ([`DANGLING`]) where it was cut,
+/// then as [`titled`] cuts and capitalises it. Nothing left, it's [`titled`]'s.
+pub fn short_title(text: &str) -> String {
+    let bare = |w: &str| {
+        w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '’')
+            .replace('’', "'")
+            .to_lowercase()
+    };
+    let line: String = text
+        .trim()
+        .split(breaks_line)
+        .next()
+        .unwrap_or("")
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let mut words: Vec<&str> = line.split_whitespace().collect();
+    while let Some(n) = OPENERS.iter().find_map(|o| {
+        let o: Vec<&str> = o.split(' ').collect();
+        (words.len() > o.len() && words.iter().zip(&o).all(|(w, o)| bare(w) == *o))
+            .then_some(o.len())
+    }) {
+        words.drain(..n);
+    }
+    // the first clause: up to a word that ends one
+    if let Some(end) = words
+        .iter()
+        .position(|w| w.ends_with(['.', '?', '!', ';', ',']))
+    {
+        words.truncate(end + 1);
+    }
+    let cut = words.len() > TITLE_WORDS;
+    words.truncate(TITLE_WORDS);
+    let last = words.len().saturating_sub(1);
+    let mut words: Vec<String> = words.into_iter().map(str::to_owned).collect();
+    if let Some(w) = words.get_mut(last) {
+        *w = w
+            .trim_end_matches(['.', '?', '!', ';', ',', ':'])
+            .to_owned();
+    }
+    while cut
+        && words.len() > 1
+        && words
+            .last()
+            .is_some_and(|w| DANGLING.contains(&bare(w).as_str()))
+    {
+        words.pop();
+    }
+    let title = words.join(" ");
+    if title.trim().is_empty() {
+        titled(text)
+    } else {
+        titled(&title)
+    }
+}
+
 fn limit(raw: Option<&str>) -> Result<usize, ApiError> {
     let limit = match raw {
         None => 50,
@@ -2392,7 +2509,8 @@ pub async fn confirmed(shared: &Shared, item: &crate::sphere::inbox::Item) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cursor, Error, FolderChange, Task, checked_tasks, follow_ends, job_report, titled,
+        Cursor, Error, FolderChange, Task, checked_tasks, follow_ends, job_report, short_title,
+        titled,
     };
 
     /// How many sweeps, and which jobs' ends were told, following `events` with room for `room`
@@ -3130,6 +3248,46 @@ mod tests {
         assert!(!conversations.oby_asked(&id, "Which store?", "MySQL"));
         assert!(!conversations.oby_asked(&id, "Which store", "SQLite"));
         assert!(!conversations.oby_asked(&id, "On it.", "SQLite"));
+    }
+
+    #[test]
+    fn chatfirst_36_a_new_conversation_is_titled_in_a_few_words() {
+        for (said, title) in [
+            (
+                "Can you please take a look at the failing login retry test in the oby repo and fix it, it started failing after yesterday's merge",
+                "Failing login retry test",
+            ),
+            (
+                "Hey Oby, what's on my plate today?",
+                "What's on my plate today",
+            ),
+            ("review oby PR #33\nand the vault one", "Review oby PR #33"),
+            (
+                "why did oberon’s build go from 4 to 11 minutes since the update?",
+                "Why did oberon’s build go",
+            ),
+            (
+                "I want you to split Engine/Jobs.swift in three",
+                "Split Engine/Jobs.swift in three",
+            ),
+            ("please fix it", "Fix it"),
+            ("First question", "First question"),
+            (
+                "Let’s plan the 0.9 release. Then the notes",
+                "Plan the 0.9 release",
+            ),
+            // nothing but openers: the line as it is
+            ("ok", "Ok"),
+            (" \n ", "New conversation"),
+        ] {
+            assert_eq!(short_title(said), title, "{said}");
+        }
+        // never longer than six words, nor than titled's 48 characters
+        let long = short_title(&"supercalifragilistic ".repeat(9));
+        assert!(
+            long.split(' ').count() <= 6 && long.chars().count() <= 48,
+            "{long}"
+        );
     }
 
     #[test]
