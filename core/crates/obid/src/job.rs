@@ -82,7 +82,7 @@ pub fn obids_doing(reason: &str) -> bool {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Recovery {
-    /// Turns cut by an error tried again: a passing one, or an unknown one (RECOVERY-1).
+    /// Turns cut tried again: a CLI that ended with no result, or an unknown error (RECOVERY-1).
     pub errors: usize,
     /// Runs gone quiet or at the turn limit (RECOVERY-3, RECOVERY-4).
     pub stalls: usize,

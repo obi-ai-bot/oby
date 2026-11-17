@@ -2063,16 +2063,21 @@ fn tasks_15_codex_and_cursor_hear_the_standing_rules() {
 }
 
 /// RECOVERY-7: Codex's `codexErrorInfo` says how its turn ended, whatever its agent said last: words
-/// that name a limit hold no job on one, and a dropped stream is continued.
+/// that name a limit hold no job on one, and a dropped stream is the agent's (RECOVERY-19): the job
+/// ends with Codex's own words and Try again, its turn not sent again.
 #[test]
 fn recovery_7_codex_says_how_its_turn_ended() {
     let folder = Folder::new("recovery-7-codex");
     let (obid, _) = obid_with(&folder, false, json!({"stallAfter": 2}));
     let id = dispatch(&obid, json!({"agent": "codex", "task": "WORDS OF A LIMIT"}));
     let job = ended(&obid, &id);
-    assert_eq!(job["status"], "done", "{job}");
-    assert_eq!(job["summary"], "Carried on.", "{job}");
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(job["nextStep"], "Try again", "{job}");
     assert!(job["accountLimit"].is_null(), "{job}");
+    assert!(job["resumesAt"].is_null(), "{job}");
+    let reason = job["reason"].as_str().unwrap();
+    assert!(reason.contains("stream disconnected"), "{job}");
+    assert!(!reason.contains("usage limit"), "{job}");
 }
 
 /// RECOVERY-7: a usage limit only Codex's field says is a limit: with no other account that has

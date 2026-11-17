@@ -153,8 +153,8 @@ const RETRY_WAITS: [Duration; 3] = [
     Duration::from_secs(2 * 60),
     Duration::from_secs(5 * 60),
 ];
-/// The waits before each continuation of a turn a passing error cut (RECOVERY-1), as Claude's
-/// desktop app waits on a lost connection. A waiting job keeps its slot (ADMISSION-4).
+/// The waits before each continuation of a run cut with no result or an unknown error (RECOVERY-1),
+/// as Claude's desktop app waits on a lost connection. A waiting job keeps its slot (ADMISSION-4).
 const CUT_WAITS: [Duration; 3] = [
     Duration::from_secs(60),
     Duration::from_secs(5 * 60),
@@ -419,9 +419,9 @@ fn waits_for_later(said: &str) -> bool {
 
 /// How many tries in a row a failed turn gets (RECOVERY-1): anything but a login (the tool's
 /// fields, else its `words`, whole, or Codex's refusal), a usage limit (the caller's: the account's
-/// usage, the tool's reset or its words), or a session too long or gone. A passing error
-/// ([`agent::Failure`]: a 5xx or 429, overloaded, a dropped connection) and a CLI that ended with
-/// no result get [`CUT_WAITS`]'; an unknown error one, in its `session`. The tool's own fields
+/// usage, the tool's reset or its words), a session too long or gone, or a passing error (a 5xx or
+/// 429, overloaded, a dropped connection: its CLI retried it, RECOVERY-19). A CLI that ended with no
+/// result gets [`CUT_WAITS`]'; an unknown error one, in its `session`. The tool's own fields
 /// decide first (RECOVERY-7): a 529 whose words hold `401` is still passing. A login refused on a
 /// run whose copy of it ended mid-run (`ended`: a boxed Claude Code run's) gets one: the next launch
 /// refreshes it first (KEYCHAIN-10). A login refused for any other reason (revoked) gets none.
@@ -434,8 +434,8 @@ fn retries(
 ) -> usize {
     use agent::Cause;
     match cause {
-        Some(Cause::Passing | Cause::Busy) => CUT_WAITS.len(),
         Some(Cause::Login) => usize::from(ended),
+        Some(Cause::Passing | Cause::Busy) => 0,
         Some(Cause::Limit | Cause::TooLong | Cause::SessionGone) => 0,
         _ if retrying_wont_mend(words) || codex_login_refused(words) => 0,
         _ if no_result => CUT_WAITS.len(),
@@ -6848,8 +6848,9 @@ mod tests {
         }
     }
 
-    /// RECOVERY-1: overloaded, failing or dropped APIs get 3 tries, an unknown error one; an
-    /// account's usage limit, a login, and a session too long or gone get none.
+    /// RECOVERY-1, RECOVERY-19: an unknown error gets one try; overloaded, failing or dropped APIs
+    /// (the agent's: its CLI retried them), an account's usage limit, a login, and a session too
+    /// long or gone get none.
     #[test]
     fn transient_errors_are_the_ones_trying_again_mends() {
         use super::retries;
@@ -6865,7 +6866,7 @@ mod tests {
             "API Error: 429 rate limit exceeded",
             r#"API Error: 529 {"request_id":"req_401"}"#,
         ] {
-            assert_eq!(tries(error), 3, "{error}");
+            assert_eq!(tries(error), 0, "{error}");
         }
         for error in ["it broke", "the tests timed out after 500 ms"] {
             assert_eq!(tries(error), 1, "{error}");

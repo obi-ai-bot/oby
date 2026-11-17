@@ -259,14 +259,37 @@ fn the_turn_cap_stalls_the_job() {
     assert_eq!(job["stalled"]["why"], "turns");
 }
 
-/// An overloaded API's error ends no job: the round runs again in its session.
+/// RECOVERY-19: a passing error (an overloaded API, a 5xx, a 429) that still ends a turn after the
+/// CLI's own retries is the agent's: obid sends nothing again, shows no wait, and the job needs its
+/// owner at once, `interrupted` with the tool's words and Try again, its account not marked full.
 #[test]
-fn a_transient_error_is_retried() {
-    let (_folder, obid) = obid("long-transient");
-    let id = post_job(&obid, "TRANSIENT");
-    let job = wait(&obid, &id);
-    assert_eq!(job["status"], "done", "{job}");
-    assert_eq!(job["summary"], "Nothing to do.");
+fn recovery_19_a_passing_error_is_left_to_the_agent() {
+    let (_folder, obid) = obid("recovery-19");
+    let events = follow_events(&obid);
+    for (task, said) in [
+        ("TRANSIENT KEEP PROMPTS", "API Error: 529"),
+        (
+            "REJECTED 429 KEEP PROMPTS",
+            "API Error: Request rejected (429)",
+        ),
+    ] {
+        let id = post_job(&obid, task);
+        let job = wait(&obid, &id);
+        assert_eq!(job["status"], "interrupted", "{job}");
+        assert_eq!(job["nextStep"], "Try again", "{job}");
+        assert!(job["reason"].as_str().unwrap().starts_with(said), "{job}");
+        assert!(job["accountLimit"].is_null(), "{job}");
+        assert!(job["stalled"].is_null(), "{job}");
+        assert_eq!(prompts(&job).len(), 1, "obid sent it again: {job}");
+        assert_eq!(tries(&obid, &id), 0, "{job}");
+    }
+    let waits: Vec<String> = std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|(_, job)| job["step"].as_str().map(str::to_owned))
+        .filter(|step| step.starts_with("Trying again"))
+        .collect();
+    assert!(waits.is_empty(), "{waits:?}");
+    let account = call(&obid, "GET", "/v1/status", None).body["accounts"][0].clone();
+    assert!(account["fullUntil"].is_null(), "{account}");
 }
 
 /// A committing job that stalls keeps its commit on its branch and publishes nothing.
@@ -318,29 +341,6 @@ fn recovery_1_an_unknown_error_gets_one_try_after_a_minute() {
     );
 }
 
-/// A transient error every time: three retries, then the job needs you with it (not stalled).
-#[test]
-fn retries_run_out() {
-    let (_folder, obid) = obid("long-retries-out");
-    let events = follow_events(&obid);
-    let id = post_job(&obid, "TRANSIENT ALWAYS");
-    let job = wait(&obid, &id);
-    assert_eq!(job["status"], "interrupted", "{job}");
-    assert!(job["summary"].as_str().unwrap().contains("529"), "{job}");
-    assert!(job["stalled"].is_null(), "{job}");
-    let steps: Vec<String> = std::iter::from_fn(|| events.try_recv().ok())
-        .filter(|(name, _)| name == "job")
-        .filter_map(|(_, job)| job["step"].as_str().map(str::to_owned))
-        .filter(|step| step.starts_with("Trying again"))
-        .collect();
-    for n in 1..=3 {
-        assert!(
-            steps.iter().any(|s| s.contains(&format!("({n} of 3)"))),
-            "{steps:?}"
-        );
-    }
-}
-
 /// A job its agent was at work on when obid went down, kept in obid's home as `id`.
 fn stored(id: &str, task: &str) -> obid::job::Job {
     let mut job = obid::job::Job::new(
@@ -369,35 +369,28 @@ fn prompts(job: &Value) -> Vec<String> {
         .collect()
 }
 
-/// RECOVERY-1: a passing error, or a CLI that ends with no result, leaves the job running in its
-/// session: the marked message quotes the error as data and says to check what ran.
+/// RECOVERY-1: a CLI that ends with no result (it died) leaves the job running in its session: the
+/// marked message says what cut it and to check what ran. A passing error isn't one: RECOVERY-19.
 #[test]
-fn recovery_1_a_passing_error_continues_the_same_session() {
+fn recovery_1_a_cli_that_ends_with_no_result_continues_the_same_session() {
     let (_folder, obid) = obid("recovery-1");
-    let id = post_job(&obid, "TRANSIENT KEEP PROMPTS");
-    let job = wait(&obid, &id);
-    assert_eq!(job["status"], "done", "{job}");
-    let told = prompts(&job);
-    assert_eq!(told.len(), 2, "{told:?}");
-    assert!(told[1].contains("not the owner's words"), "{told:?}");
-    assert!(told[1].contains("> API Error: 529"), "{told:?}");
-    assert!(told[1].contains("check what really ran"), "{told:?}");
-
     let id = post_job(&obid, "DIE KEEP PROMPTS");
     let job = wait(&obid, &id);
     assert_eq!(job["status"], "done", "{job}");
     let told = prompts(&job);
     assert_eq!(told.len(), 2, "{told:?}");
+    assert!(told[1].contains("not the owner's words"), "{told:?}");
     assert!(told[1].contains("stopped without finishing"), "{told:?}");
+    assert!(told[1].contains("check what really ran"), "{told:?}");
 }
 
-/// TASKS-25: a passing error in a job no app signed goes on by itself, in its session, and asks the
-/// owner nothing: no inbox item, open or in an event.
+/// TASKS-25: a cut run (its CLI ended with no result) in a job no app signed goes on by itself, in its
+/// session, and asks the owner nothing: no inbox item, open or in an event.
 #[test]
-fn tasks_25_an_unsigned_jobs_passing_error_goes_on_with_no_inbox_item() {
+fn tasks_25_an_unsigned_jobs_cut_run_goes_on_with_no_inbox_item() {
     let (_folder, obid) = obid("tasks-25-goes-on");
     let events = follow_events(&obid);
-    let id = post_job(&obid, "TRANSIENT KEEP PROMPTS");
+    let id = post_job(&obid, "DIE KEEP PROMPTS");
     let job = wait(&obid, &id);
     assert_eq!(job["status"], "done", "{job}");
     assert_eq!(prompts(&job).len(), 2, "{job}");
@@ -513,30 +506,18 @@ fn recovery_1_a_login_or_a_limit_is_not_retried() {
 }
 
 /// RECOVERY-7: how a turn ended is read from the tool's fields: a 429 whose words name no status
-/// obid could read is a passing error, not an account's limit.
+/// obid could read is a passing error, not an account's limit, so it ends as one does (RECOVERY-19):
+/// the tool's words and Try again, nothing asked about a limit and no account marked full.
 #[test]
 fn recovery_7_a_429_is_read_from_its_status() {
     let (_folder, obid) = obid("recovery-7-429");
     let id = post_job(&obid, "REJECTED 429 KEEP PROMPTS");
     let job = wait(&obid, &id);
-    assert_eq!(job["status"], "done", "{job}");
-    assert!(job["accountLimit"].is_null(), "{job}");
-    let told = prompts(&job);
-    assert_eq!(told.len(), 2, "{told:?}");
-    assert!(told[1].contains("Request rejected (429)"), "{told:?}");
-}
-
-/// RECOVERY-7: a 429 past its tries ends as any passing error does, with the tool's words and Try
-/// again: its words say "rate limit", and no account is full, so nothing asks about one.
-#[test]
-fn recovery_7_a_429_past_its_tries_is_no_limit() {
-    let (_folder, obid) = obid("recovery-7-429-out");
-    let id = post_job(&obid, "REJECTED 429 ALWAYS KEEP PROMPTS");
-    let job = wait(&obid, &id);
     assert_eq!(job["status"], "interrupted", "{job}");
     assert_eq!(job["nextStep"], "Try again", "{job}");
     assert!(job["accountLimit"].is_null(), "{job}");
-    assert_eq!(prompts(&job).len(), 4, "{job}");
+    assert!(job["resumesAt"].is_null(), "{job}");
+    assert_eq!(prompts(&job).len(), 1, "{job}");
     assert!(
         job["reason"]
             .as_str()
@@ -544,20 +525,23 @@ fn recovery_7_a_429_past_its_tries_is_no_limit() {
             .starts_with("API Error: Request rejected (429)"),
         "{job}"
     );
+    let account = call(&obid, "GET", "/v1/status", None).body["accounts"][0].clone();
+    assert!(account["fullUntil"].is_null(), "{account}");
 }
 
 /// RECOVERY-7: words of the agent's that name a limit, before an error of the tool's own, mark no
-/// account full: the tool's error decides.
+/// account full: the tool's error decides, and its words are the job's reason.
 #[test]
 fn recovery_7_the_agents_words_are_no_limit() {
     let (_folder, obid) = obid("recovery-7-words");
     let id = post_job(&obid, "LAST WORDS LIMIT KEEP PROMPTS");
     let job = wait(&obid, &id);
-    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["status"], "interrupted", "{job}");
     assert!(job["accountLimit"].is_null(), "{job}");
-    let told = prompts(&job);
-    assert!(told[1].contains("> API Error: 529"), "{told:?}");
-    assert!(!told[1].contains("stranger"), "{told:?}");
+    assert!(job["resumesAt"].is_null(), "{job}");
+    let reason = job["reason"].as_str().unwrap();
+    assert!(reason.starts_with("API Error: 529"), "{job}");
+    assert!(!reason.contains("stranger"), "{job}");
 }
 
 /// RECOVERY-8: a session too long for its model goes on in a new one, told so and given its whole
@@ -655,7 +639,7 @@ fn recovery_8_too_long_again_tells_the_owner() {
 #[test]
 fn tasks_15_every_run_gets_the_standing_rules() {
     let (_folder, obid) = obid("tasks-15");
-    let id = post_job(&obid, "TRANSIENT KEEP PROMPTS");
+    let id = post_job(&obid, "DIE KEEP PROMPTS");
     let job = wait(&obid, &id);
     assert_eq!(job["status"], "done", "{job}");
     let args =
@@ -787,14 +771,14 @@ fn recovery_1_the_agents_last_words_are_not_the_error() {
 /// the tokens of the turns before it.
 #[test]
 fn recovery_1_a_retry_keeps_the_ceiling_and_the_budget() {
-    let mut job = stored("eeee1001", "TRANSIENT ALWAYS KEEP PROMPTS");
+    let mut job = stored("eeee1001", "DIE ALWAYS KEEP PROMPTS");
     job.ran_secs = Some(3600 - 5);
     let (_folder, obid) = obid_with("recovery-1-ceiling", json!({"jobCeilingHours": 1}), &[job]);
     let job = wait(&obid, "eeee1001");
     assert_eq!(job["stalled"]["why"], "ceiling", "{job}");
 
     let (_folder, obid) = obid_with("recovery-1-budget", json!({"jobTokenBudget": 1000}), &[]);
-    let id = post_job(&obid, "TRANSIENT SPEND: 600 KEEP PROMPTS");
+    let id = post_job(&obid, "FAIL SPEND: 600 KEEP PROMPTS");
     let job = wait(&obid, &id);
     assert_eq!(job["stalled"]["why"], "budget", "{job}");
     assert!(prompts(&job)[1].contains("Your run was cut"), "{job}");
@@ -803,7 +787,7 @@ fn recovery_1_a_retry_keeps_the_ceiling_and_the_budget() {
 /// RECOVERY-1: a retry keeps the job's mode and its untrusted mark.
 #[test]
 fn recovery_1_a_retry_keeps_the_mode_and_the_mark() {
-    let mut job = stored("eeee1002", "TRANSIENT KEEP PROMPTS");
+    let mut job = stored("eeee1002", "DIE KEEP PROMPTS");
     job.mode = Some("plan".into());
     job.untrusted = true;
     let (_folder, obid) = obid_with("recovery-1-mark", json!({}), &[job]);
@@ -1340,7 +1324,7 @@ fn recovery_4_the_turn_limit_continues_and_counts_with_quiet() {
 fn recovery_5_a_retry_shows_as_running_with_the_error_held_back() {
     let (_folder, obid) = obid("recovery-5");
     let events = follow_events(&obid);
-    let id = post_job(&obid, "TRANSIENT ALWAYS");
+    let id = post_job(&obid, "DIE ALWAYS");
     let job = wait(&obid, &id);
     assert_eq!(job["status"], "interrupted", "{job}");
     let seen: Vec<(String, Value)> = std::iter::from_fn(|| events.try_recv().ok()).collect();
@@ -1360,7 +1344,11 @@ fn recovery_5_a_retry_shows_as_running_with_the_error_held_back() {
         assert!(job["finished"].is_null(), "{job}");
         let step = job["step"].as_str().unwrap();
         assert!(step.contains(" in 3 seconds "), "{step}");
-        assert_eq!(step.contains("529"), step.contains("(3 of 3)"), "{step}");
+        assert_eq!(
+            step.contains("stopped without finishing"),
+            step.contains("(3 of 3)"),
+            "{step}"
+        );
     }
     assert!(
         retrying
@@ -1370,7 +1358,7 @@ fn recovery_5_a_retry_shows_as_running_with_the_error_held_back() {
     );
 
     let (_folder, obid) = obid_with("recovery-5-stop", json!({"stallAfter": 600}), &[]);
-    let id = post_job(&obid, "TRANSIENT ALWAYS");
+    let id = post_job(&obid, "DIE ALWAYS");
     within(30, "its wait to try again", || {
         let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
         job["step"]

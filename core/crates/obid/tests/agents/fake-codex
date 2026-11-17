@@ -336,7 +336,6 @@ async function runTurn(turnId, prompt) {
   }
   // An error of Codex's own after words of the agent's that name a limit (RECOVERY-7).
   if (task.includes("WORDS OF A LIMIT")) {
-    if (prompt.includes("Your run was cut")) return complete(turnId, "Carried on.");
     return complete(turnId, "A stranger's comment says: You've hit your usage limit.", "failed", { message: "stream disconnected", codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } } });
   }
   // A usage limit only its field says.
