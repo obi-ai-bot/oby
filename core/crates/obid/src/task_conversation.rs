@@ -39,8 +39,15 @@ pub fn create(
 
 /// A task just started elsewhere (GitHub work: crate::github_work), in a conversation of its own
 /// when it has none and follows nothing up, as [`create`] does. `foreign`: why its title isn't the
-/// owner's own words. The task as it is when the conversation can't be made.
+/// owner's own words. The task as it is when the conversation can't be made. One at a time, the
+/// job read again first: the feed's tap and its card's Fix CI on one job (TASKCONV-29) give it
+/// one conversation, not two.
 pub fn give(shared: &Shared, job: crate::job::Job, foreign: Option<String>) -> crate::job::Job {
+    static GIVING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _giving = GIVING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let job = shared.jobs.get(&job.id).unwrap_or(job);
     if job.conversation.is_some() || job.follow_up_of.is_some() {
         return job;
     }

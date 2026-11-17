@@ -316,9 +316,10 @@ pub struct ByHand {
 }
 
 impl ByHand {
-    /// Where the push goes: `to`, else the job's own branch.
+    /// Where the push goes: `to`, else the owner's pull request's branch a Fix CI job pushes
+    /// onto ([`Job::onto`], TASKCONV-31), else the job's own branch.
     pub fn branch<'a>(&'a self, job: &'a Job) -> &'a str {
-        self.to.as_deref().unwrap_or(&job.branch)
+        (self.to.as_deref().or(job.onto.as_deref())).unwrap_or(&job.branch)
     }
 
     /// Anything beyond Oby's own default.
@@ -393,6 +394,15 @@ pub fn refusal(job: &Job, base: &str, default_branch: &str, by_hand: &ByHand) ->
     }
     if !git::is_branch_name(base) {
         return Some(format!("{base} isn't a branch name."));
+    }
+    // Onto the owner's own pull request's branch, which is its base (TASKCONV-31): never main.
+    if let Some(onto) = job.onto.as_deref()
+        && (onto != base
+            || ["main", "master", default_branch]
+                .iter()
+                .any(|b| b.eq_ignore_ascii_case(onto)))
+    {
+        return Some(format!("obid doesn't push to {onto} by itself."));
     }
     if branch.eq_ignore_ascii_case(base) {
         return Some(format!("{branch} can't be its own base."));

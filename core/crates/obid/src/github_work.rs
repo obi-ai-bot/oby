@@ -1389,15 +1389,21 @@ async fn begin(
     let task = match list {
         "reviews" => format!("Review pull request #{number} in {repo}."),
         "assigned" => format!("Fix issue #{number} in {repo}."),
+        // What its agent can meet before anything is pushed (TASKCONV-30): GitHub runs the checks
+        // again only once Oby publishes the commit, and a goal that waits on them is never met,
+        // so the right fix would stay unpublished.
         _ => format!(
-            "Make pull request #{number} in {repo} pass its checks. Add commits on top of it; never rewrite or drop the ones it has."
+            "Fix what makes the failed checks on pull request #{number} in {repo} fail, and commit the fix. Add commits on top of it; never rewrite or drop the ones it has. GitHub runs its checks again once Oby publishes your commits, so seeing them pass there isn't part of your goal: it's met when the cause is fixed, committed and checked here as far as you can."
         ),
     };
-    let task = match attachments {
-        Some(_) => {
+    let task = match (&attachments, list) {
+        (Some(_), "mine") => format!(
+            "{task} What people wrote on it on GitHub, each check's result and the end of each failed check's log are quoted in .obi/inputs/{file}."
+        ),
+        (Some(_), _) => {
             format!("{task} What people wrote on it on GitHub is quoted in .obi/inputs/{file}.")
         }
-        None => task,
+        (None, _) => task,
     };
     // A routine's job: its agent, account, mode, check, rounds, mark and request, and its task
     // after obid's own words. Its conversation is the feed's.
@@ -1413,6 +1419,9 @@ async fn begin(
         title: Some(cut(&format!("{verb} {name} #{number}"), 60)),
         pr: (list != "assigned").then_some(number),
         issue: (list == "assigned").then_some(number),
+        // The owner's own pull request (`mine`, never a fork's): its fix goes straight onto its
+        // branch, so its checks run again on it, as T3 Code does (TASKCONV-31).
+        onto: base.clone().filter(|_| list == "mine"),
         base,
         attachments,
         adding,
@@ -1529,8 +1538,103 @@ pub(crate) async fn quote(list: &str, repo: &str, number: u64) -> Result<(String
     if let Some(association) = association(&gh, repo, number).await {
         value["authorAssociation"] = json!(association);
     }
+    if list == "mine" {
+        value[LOG_TAILS] = json!(log_tails(&gh, repo, &value).await);
+    }
     let quoted = render(list, repo, number, &value, &crate::brain::briefing::nonce());
     Ok((quoted, value))
+}
+
+/// obid's own key on what `gh pr view` printed: each failed check's name and the end of its log
+/// ([`log_tails`]), for [`render`].
+const LOG_TAILS: &str = "obyLogTails";
+/// At most this many failed checks' logs are read, and this many of each one's last lines kept.
+const LOG_CHECKS: usize = 3;
+const LOG_LINES: usize = 60;
+
+/// The end of each failed check's log on the owner's own pull request (TASKCONV-29), as
+/// `[{"name", "tail"}]`: a GitHub Actions job of `repo` itself only (its `detailsUrl` is
+/// `https://github.com/<repo>/actions/runs/<run>/job/<job>`), read with gh, at most
+/// [`LOG_CHECKS`] of them, each its last [`LOG_LINES`] lines without GitHub's timestamps. A log gh
+/// can't read (expired, too large, another CI) is left out: the check's name and result still are.
+async fn log_tails(gh: &std::path::Path, repo: &str, value: &Value) -> Vec<Value> {
+    let prefix = format!("https://github.com/{repo}/actions/runs/");
+    let failed = (value["statusCheckRollup"].as_array().into_iter().flatten()).filter_map(|c| {
+        let name = c["name"].as_str()?;
+        let failed = matches!(
+            c["conclusion"].as_str(),
+            Some("FAILURE" | "TIMED_OUT" | "STARTUP_FAILURE")
+        );
+        let url = c["detailsUrl"].as_str()?.strip_prefix(&prefix)?;
+        let (_, job) = url.split_once("/job/")?;
+        let job = job.split(['?', '#', '/']).next()?;
+        (failed && !job.is_empty() && job.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| (name.to_owned(), job.to_owned()))
+    });
+    let mut tails = Vec::new();
+    for (name, job) in failed.take(LOG_CHECKS) {
+        let path = format!("repos/{repo}/actions/jobs/{job}/logs");
+        let read = |args: &'static [&'static str]| {
+            let mut all = vec!["api", path.as_str()];
+            all.extend_from_slice(args);
+            async move {
+                let within = std::time::Duration::from_secs(20);
+                crate::github::run_bounded(gh, &all, 8 << 20, within).await
+            }
+        };
+        // A log's colours are escape sequences, which gh 2.100 and later print only when told
+        // to; an older gh doesn't know the flag, and prints them anyway.
+        let log = match read(&["--allow-escape-sequences"]).await {
+            Ok(log) => log,
+            Err(_) => match read(&[]).await {
+                Ok(log) => log,
+                Err(_) => continue,
+            },
+        };
+        let lines: Vec<&str> = log.lines().collect();
+        let tail = lines[lines.len().saturating_sub(LOG_LINES)..]
+            .iter()
+            .map(|l| plain(untimed(l)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        tails.push(json!({"name": name, "tail": tail}));
+    }
+    tails
+}
+
+/// A GitHub Actions log line without the timestamp it starts with (`2026-11-17T12:00:00.0000000Z `).
+fn untimed(line: &str) -> &str {
+    match line.split_once(' ') {
+        Some((at, rest)) if at.len() >= 20 && at.ends_with('Z') && at.as_bytes()[10] == b'T' => {
+            rest
+        }
+        _ => line,
+    }
+}
+
+/// `line` without its terminal escape sequences (a colour's `ESC [ 36;1 m`) or other control
+/// characters but tabs.
+fn plain(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            // a CSI sequence runs to its final byte, '@' to '~'; any other escape is one character
+            if chars.clone().next() == Some('[') {
+                chars.next();
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            } else {
+                chars.next();
+            }
+        } else if c == '\t' || !c.is_control() {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// The quoted file for `value`, what `gh … view --json title,body,author,labels,comments` printed
@@ -1604,6 +1708,17 @@ pub fn render(list: &str, repo: &str, number: u64, value: &Value, nonce: &str) -
             String::new(),
             "## Checks on its head commit".into(),
             fence(nonce, &checks.join("\n")),
+        ]);
+    }
+    for log in value[LOG_TAILS].as_array().into_iter().flatten() {
+        let (Some(name), Some(tail)) = (log["name"].as_str(), log["tail"].as_str()) else {
+            continue;
+        };
+        out.extend([
+            String::new(),
+            // the check's name is GitHub's: inside the fence, never in obid's heading
+            "## The end of a failed check's log".into(),
+            fence(nonce, &format!("{name}\n\n{tail}")),
         ]);
     }
     let comments = value["comments"].as_array().cloned().unwrap_or_default();

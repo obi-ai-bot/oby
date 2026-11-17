@@ -688,6 +688,8 @@ pub struct NewJob {
     /// Never from the API.
     #[serde(skip)]
     pub made_branch: bool,
+    #[serde(skip)] // [`Job::onto`], never from the API
+    pub onto: Option<String>,
     /// The routine whose run it is (crate::routines).
     #[serde(default)]
     pub routine: Option<crate::job::RoutineMark>,
@@ -2357,6 +2359,7 @@ impl Jobs {
             .start_from
             .filter(|b| new.follow_up_of.is_some() && git::is_branch_name(b));
         job.made_branch = new.made_branch;
+        job.onto = new.onto; // publish refuses one that isn't its base (TASKCONV-31)
         job.follow_up_of = new.follow_up_of;
         job.routine = new.routine;
         job.unattended = new.unattended;
@@ -6000,6 +6003,7 @@ pub fn follow_up(job: &Job, words: &str) -> NewJob {
         conversation: job.conversation.clone(),
         branch: carries.then(|| job.branch.clone()),
         made_branch: carries && job.made_branch,
+        onto: job.onto.clone(),
         start_from: unmerged.then(|| job.branch.clone()),
         follow_up_of: Some(job.id.clone()),
         earlier: Some(crate::secrets::known().redact(&did.join("\n"))),

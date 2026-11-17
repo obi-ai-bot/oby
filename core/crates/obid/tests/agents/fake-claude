@@ -4,6 +4,8 @@
 //   .obi/inputs/handoff.json  (another Oby's task, HANDOFF-2) named in the prompt: exits 3 when the
 //                    request's goal reached the prompt; else commits the file its quoted goal's
 //                    `COMMIT: <file>` names, and ends "Added <file>." and `GOAL MET`
+//   .obi/inputs/github-<name>-<n>.md  (GitHub's quoted text) named in the prompt and holding
+//                    `COMMIT: <file>`: commits that file and ends "Fixed <file>." and `GOAL MET`
 //   COMMIT: <file>   writes the file in the worktree and commits it; with ENDS: <line>, its summary's
 //                    last line is that line (`GOAL NOT MET: …`). Told its last line didn't say
 //                    `GOAL MET`, it ends "Carried on." and `GOAL MET` (with SILENT ROUND, the
@@ -622,6 +624,17 @@ rl.on("line", (line) => {
     execFileSync("git", ["add", file]);
     execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", `Add ${file}`]);
     return result(`Added ${file}.\n\nGOAL MET`);
+  }
+  // A GitHub task's quoted file (.obi/inputs/github-<name>-<n>.md) named in the prompt and holding
+  // `COMMIT: <file>`: commits it (a Fix CI job's fix, TASKCONV-31)
+  const quotedGitHub = prompt.match(/\.obi\/inputs\/(github-[\w.-]+\.md)/)?.[1];
+  const quotedCommit = quotedGitHub && existsSync(`.obi/inputs/${quotedGitHub}`)
+    && readFileSync(`.obi/inputs/${quotedGitHub}`, "utf8").match(/COMMIT: (\S+)/)?.[1];
+  if (quotedCommit) {
+    writeFileSync(quotedCommit, "fixed\n");
+    execFileSync("git", ["add", quotedCommit]);
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", `Fix ${quotedCommit}`]);
+    return result(`Fixed ${quotedCommit}.\n\nGOAL MET`);
   }
   const commit = prompt.match(/COMMIT: (\S+)/);
   const ask = prompt.match(/ASK: (\{.*\})/);

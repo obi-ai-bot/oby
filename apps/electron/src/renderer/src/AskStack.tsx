@@ -116,8 +116,22 @@ function AskCard({ entry, count, many, className = 'is-up', ref, onOpen, onOpenT
   onNext?: () => void;
   onAnswer?: (option: string) => void;
 }) {
+  // A GitHub offer's card (docs/contracts/github-work.md, GITHUBWORK-10): a click on it, but on its
+  // own buttons and links or one that selected its text, does what its start button does (Fix CI,
+  // Review it, Fix it), as AskBlock's would: once, and not before its words have shown. Its work
+  // already in a conversation, the click opens that instead.
+  const start = entry.url && entry.ask?.kind === 'start' && !entry.answer && onAnswer ? entry.ask.options[0] : undefined;
+  const [shownAt] = useState(() => performance.now());
+  const onCard = (e: React.MouseEvent) => {
+    if (!start || (e.target as Element).closest('button, a, input, textarea, select, summary, [role="button"]')) return;
+    if (window.getSelection?.()?.toString()) return;
+    if (entry.talk) return onOpenTalk?.(entry.talk);
+    if (performance.now() - shownAt < 500) return;
+    answer(entry.id, start);
+    onAnswer?.(start);
+  };
   return (
-    <article ref={ref} className={`ask-card ${className}`} aria-label={entry.title}>
+    <article ref={ref} className={`ask-card ${className}${start ? ' is-startable' : ''}`} aria-label={entry.title} onClick={onCard}>
       <header className="tc-head">
         {entry.brand && <BrandMark brand={entry.brand} size={16} mono />}
         <h2 className="tc-title">
