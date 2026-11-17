@@ -2,18 +2,18 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronLeft, Plug, X } from 'lucide-react';
 import { BRANDS, BrandMark } from './brands';
-import { Segmented, Select } from './SettingsView';
+import { Segmented } from './SettingsView';
 import { addSource, tetrixFor } from './knowledge';
+import { TETRIX_URL_PLACEHOLDER, tetrixUrl } from './tetrixUrl';
 import { ME } from './spheres';
 
 // Adding a knowledge source to an Obysphere (its Knowledge page): first which
-// kind. Tetrix: sign in to it (its own page, in a mock: a moment), then pick
-// which org. Custom: any MCP server, by its name and URL and how it signs in
+// kind. Tetrix: the address of your own (Oby offers none by name, TETRIX-URL-1), then sign in to it
+// (its own page, in a mock: a moment). Custom: any MCP server, by its name and URL and how it signs in
 // (OAuth, an API key, or nothing); tested before it's added, which lists the
 // tools it found. Either way, connected once, for everyone (your sign-in).
 // Esc, the x or a click outside closes it.
 type Step = 'pick' | 'tetrix' | 'custom';
-const ORGS = [['deskree-inc', 'deskree-inc'], ['deskree', 'deskree']] as const;
 // what a test of a custom server finds (a mock: a graph database's tools)
 const FOUND = ['search_nodes', 'get_node', 'neighbors', 'run_query', 'similar'];
 
@@ -23,9 +23,11 @@ export default function AddSourceModal({ sphere, hasTetrix, onClose }: {
   onClose: () => void;
 }) {
   const [step, setStep] = useState<Step>('pick');
-  // Tetrix: signing in (a moment), then signed in and an org picked
+  // Tetrix: the address typed, then signing in (a moment), then signed in
   const [signing, setSigning] = useState<'no' | 'busy' | 'done'>('no');
-  const [org, setOrg] = useState<string>(ORGS[0][0]);
+  const [tetrix, setTetrix] = useState('');
+  const mine = tetrixUrl(tetrix);
+  const tetrixAt = mine && 'url' in mine ? mine.url : null;
   // custom: what it's called, where, how it signs in; tested: the tools it has
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
@@ -42,7 +44,7 @@ export default function AddSourceModal({ sphere, hasTetrix, onClose }: {
   useEffect(() => (test === 'busy' ? wait(900, () => setTest('ok')) : undefined), [test]);
 
   const connect = () => {
-    if (step === 'tetrix' && signing === 'done') addSource(sphere, tetrixFor(org, ME.name));
+    if (step === 'tetrix' && signing === 'done' && tetrixAt) addSource(sphere, tetrixFor(new URL(tetrixAt ?? '').host, ME.name, tetrixAt ?? ''));
     else if (step === 'custom' && test === 'ok') {
       addSource(sphere, {
         kind: 'mcp', name: name.trim(), url: url.trim(), by: ME.name, access: 'everyone', asks: false,
@@ -85,13 +87,15 @@ export default function AddSourceModal({ sphere, hasTetrix, onClose }: {
         )}
 
         {step === 'tetrix' && <>
-          <p className="modal-lede">Sign in to Tetrix and pick the org. Every Oby here will look things up in it with your sign-in; its admin tools stay off.</p>
-          {signing === 'done' ? <>
+          <p className="modal-lede">Add your Tetrix and sign in. Every Oby here will look things up in it with your sign-in; its admin tools stay off.</p>
+          <label className="modal-label" htmlFor="source-tetrix">Your Tetrix URL</label>
+          <input id="source-tetrix" className="modal-field" autoFocus value={tetrix} disabled={signing !== 'no'} onChange={(e) => setTetrix(e.target.value)}
+            aria-invalid={(mine && 'problem' in mine) || undefined} aria-describedby="source-tetrix-note" placeholder={TETRIX_URL_PLACEHOLDER} autoComplete="off" spellCheck={false} />
+          {mine && 'problem' in mine && <p id="source-tetrix-note" className="sphere-note is-bad" role="alert">{mine.problem}</p>}
+          {signing === 'done' ? (
             <p className="source-signed"><Check size={14} strokeWidth={2} />Signed in to Tetrix as {ME.email}</p>
-            <span className="modal-label sphere-label">Org</span>
-            <span className="source-org"><Select value={org} onChange={setOrg} label="Org" options={ORGS} /></span>
-          </> : (
-            <button type="button" className="set-button source-sign" disabled={signing === 'busy'} onClick={() => setSigning('busy')}>
+          ) : (
+            <button type="button" className="set-button source-sign" disabled={!tetrixAt || signing === 'busy'} onClick={() => setSigning('busy')}>
               <BrandMark brand={BRANDS.tetrix} size={14} />{signing === 'busy' ? 'Signing in…' : 'Sign in to Tetrix'}
             </button>
           )}

@@ -27,7 +27,6 @@ import type {
   EntryDetail,
   TranscriptEntry,
   Tetrix,
-  TetrixTarget,
   Turn,
 } from '../../shared/obid-wire';
 
@@ -215,7 +214,7 @@ export const api = {
   githubSignIn: () => call<SignIn>('POST', '/v1/github/sign-in'),
   githubCancel: () => call<null>('DELETE', '/v1/github/sign-in'),
   tetrix: () => call<Tetrix>('GET', '/v1/tetrix'),
-  tetrixSignIn: (to: TetrixTarget) => call<SignIn>('POST', '/v1/tetrix/sign-in', to),
+  tetrixSignIn: (to: { url: string }) => call<SignIn>('POST', '/v1/tetrix/sign-in', to),
   tetrixCancel: () => call<null>('DELETE', '/v1/tetrix/sign-in'),
   // signs Oby out of Tetrix (its refresh token revoked where the server offers it)
   tetrixDisconnect: () => call<null>('DELETE', '/v1/tetrix'),

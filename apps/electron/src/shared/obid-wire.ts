@@ -303,6 +303,7 @@ export type GitHub = { gh: boolean; signedIn: boolean; user: string | null; sign
 export type Tetrix = {
   connected: boolean;
   url: string | null;
+  // (kept: the API only grows. The app offers no Tetrix by name and reads neither: TETRIX-URL-1)
   preset: string | null;
   presets: { id: string; name: string; url: string }[];
   connectedAt: string | null;

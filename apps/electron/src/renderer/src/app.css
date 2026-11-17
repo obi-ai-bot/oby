@@ -1790,7 +1790,6 @@ button.connector { width: 100%; text-align: left; }
 .source-kind-text > span { color: var(--muted); font-size: var(--text-sm); font-weight: 400; }
 .source-sign { width: 100%; height: 44px; justify-content: center; }
 .source-signed { margin: 0; display: flex; align-items: center; gap: 6px; color: var(--text); font-size: var(--text-base); }
-.source-org .set-select, .source-org select { width: 100%; }
 .source-found { margin-top: 16px; }
 .source-tools { margin: 8px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
 .source-tools code { padding: 2px 6px; border-radius: 4px; background: rgba(255, 255, 255, 0.08); color: var(--text); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
@@ -2214,6 +2213,12 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 /* Claude Code's field for its code, under its name, across the row (its Cancel stays up right) */
 .onb-rows .setup-row:has(> .wl-below) { flex-wrap: wrap; row-gap: 8px; padding-bottom: 10px; }
 .onb-rows .wl-below { flex-basis: 100%; padding-left: 34px; }
+/* the field for the address of the person's own Tetrix (TetrixAddress.tsx), under its row's name; its problem under it */
+.setup-field { height: 36px; padding: 0 12px; border-radius: 10px; font-size: var(--text-sm); }
+.wl-below .setup-field + .wl-sub { display: block; margin-top: 6px; }
+.wl-two .setup-field { margin-top: 8px; }
+.connector-address .setup-field { height: 44px; padding: 0 14px; font-size: var(--text-base); }
+.connector-address .wl-sub { display: block; margin-top: 6px; white-space: normal; }
 .spinner { display: block; animation: spin 800ms linear infinite; }
 @keyframes spin { to { transform: rotate(1turn); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
