@@ -9,6 +9,7 @@ import type {
   Agent,
   KnownAgent,
   Conversation,
+  Connectors,
   GitHub,
   GitHubWork,
   Helper,
@@ -218,6 +219,8 @@ export const api = {
   tetrixCancel: () => call<null>('DELETE', '/v1/tetrix/sign-in'),
   // signs Oby out of Tetrix (its refresh token revoked where the server offers it)
   tetrixDisconnect: () => call<null>('DELETE', '/v1/tetrix'),
+  // the owner's own Claude Code's connectors, as obid last saw them (docs/contracts/connectors.md)
+  connectors: () => call<Connectors>('GET', '/v1/connectors'),
   // obid only: the Sphere's room (docs/contracts/rooms.md). An obid without it answers 404
   room: (sphere: string, after = 0) => call<RoomAnswer>('GET', `/v1/spheres/${id(sphere)}/room${q({ after })}`),
   // the owner's own words in it: main signs them on their keystroke or click (shared/words.ts)

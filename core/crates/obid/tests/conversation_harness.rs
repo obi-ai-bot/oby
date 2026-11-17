@@ -4671,3 +4671,87 @@ fn oby_github_lists_the_owners_pull_requests_and_dispatch_takes_one() {
         wrong.text
     );
 }
+
+/// The owner's own servers the stand-in's `init` names after Oby's (tests/agents/fake-harness):
+/// a claude.ai connector, one that needs its sign-in, and a server of theirs that failed.
+// Only the macOS-only scenarios use it (own conversations, LANES-12).
+#[cfg(target_os = "macos")]
+fn own_servers(obid: &Obid) {
+    std::fs::write(
+        obid.home.join("accounts/stub/mcp-servers.json"),
+        json!([
+            {"name": "claude.ai Slack", "status": "connected"},
+            {"name": "claude.ai Gmail", "status": "needs-auth"},
+            {"name": "rea", "status": "failed"},
+        ])
+        .to_string(),
+    )
+    .unwrap();
+}
+
+/// CONNECTORS-1 (docs/contracts/connectors.md): an own Claude Code conversation keeps the
+/// connectors its session named, names and statuses only, but obid's own `oby`.
+// Own conversations are macOS-only for now (LANES-12).
+#[cfg(target_os = "macos")]
+#[test]
+fn connectors_1_an_own_conversation_keeps_its_claude_codes_connectors() {
+    let (_folder, obid) = obid("harness-connectors-1", true);
+    own_servers(&obid);
+    let answer = said(&obid, json!({"said": "SAY hi", "new": true}));
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    let listed = call(&obid, "GET", "/v1/connectors", None);
+    assert_eq!(listed.status, 200, "{}", listed.text);
+    let claude = &listed.body["claude"];
+    assert_eq!(
+        claude["servers"],
+        json!([
+            {"name": "claude.ai Slack", "status": "connected"},
+            {"name": "claude.ai Gmail", "status": "needs-auth"},
+            {"name": "rea", "status": "failed"},
+        ]),
+        "{}",
+        listed.text
+    );
+    assert!(
+        claude["seenAt"]
+            .as_str()
+            .is_some_and(|at| at.ends_with('Z')),
+        "{}",
+        listed.text
+    );
+    let kept = std::fs::metadata(obid.home.join("connectors.json")).unwrap();
+    assert_eq!(
+        std::os::unix::fs::PermissionsExt::mode(&kept.permissions()) & 0o777,
+        0o600
+    );
+}
+
+/// CONNECTORS-2: before any session named its connectors, there are none to show.
+#[test]
+fn connectors_2_none_before_any_was_seen() {
+    let (_folder, obid) = obid("harness-connectors-2", true);
+    let listed = call(&obid, "GET", "/v1/connectors", None);
+    assert_eq!(listed.status, 200, "{}", listed.text);
+    assert_eq!(listed.body, json!({"claude": null}));
+}
+
+/// CONNECTORS-3: a boxed session's list (obid's servers only) never replaces the own one's.
+// Own conversations are macOS-only for now (LANES-12).
+#[cfg(target_os = "macos")]
+#[test]
+fn connectors_3_a_boxed_session_never_replaces_them() {
+    let (_folder, obid, obys) = obid_with_obys_conversation("harness-connectors-3");
+    own_servers(&obid);
+    said(&obid, json!({"said": "SAY hi", "new": true}));
+    let before = call(&obid, "GET", "/v1/connectors", None).body;
+    assert_eq!(
+        before["claude"]["servers"].as_array().map(Vec::len),
+        Some(3),
+        "{before}"
+    );
+    let boxed = said(&obid, json!({"said": "SAY boxed", "conversation": obys}));
+    assert_eq!(boxed.status, 200, "{}", boxed.text);
+    let recorded = turns(&obid);
+    assert!(!ran_own(&obid, recorded.last().unwrap()), "{recorded:?}");
+    assert_eq!(call(&obid, "GET", "/v1/connectors", None).body, before);
+}

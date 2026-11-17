@@ -23,6 +23,7 @@ pub mod codex;
 pub mod config;
 pub mod conn;
 pub mod connections;
+pub mod connectors;
 pub mod conversation;
 pub mod cursor_usage;
 pub mod decisions;

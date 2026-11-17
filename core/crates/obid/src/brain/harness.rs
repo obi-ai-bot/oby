@@ -2532,6 +2532,14 @@ async fn one(
             | Event::Plan(_)
             | Event::Usage(_)
             | Event::Tokens(_) => {}
+            // An own Claude Code session has the owner's own MCP servers and claude.ai connectors,
+            // as their terminal does (LANES-12): Settings › Connectors shows them (CONNECTORS-1).
+            // A boxed one's are obid's only, never theirs (CONNECTORS-3).
+            Event::Connectors(servers) => {
+                if own && matches!(protocol, Protocol::Claude) {
+                    crate::connectors::saw(&shared.config.home, servers);
+                }
+            }
         }
     };
     // An own session asks obid about every call (LANES-14): what reaches nothing past the session

@@ -5,7 +5,7 @@ import { BRANDS, BrandMark, type Brand } from './brands';
 import { Group, Row, useSetting } from './SettingsView';
 import { Spinner } from './SetupCard';
 import { onObid } from './lean';
-import { api, type GitHub, type Tetrix } from './obid';
+import { api, type Connectors as Seen, type GitHub, type Tetrix } from './obid';
 import { TetrixAddress, useTetrixAddress } from './TetrixAddress';
 import { say, useLive } from './live';
 import { signInWhy } from './signInWhy';
@@ -17,7 +17,7 @@ export default function Connectors() {
 }
 
 // A row: its logo, name and line, and its buttons (Disconnect, or what it needs)
-type Connector = { name: string; about: string; brand: Brand; connected: boolean; control: React.ReactNode };
+type Connector = { name: string; about: string; brand: Brand; connected: boolean; control: React.ReactNode; key?: string };
 
 function List({ connectors }: { connectors: Connector[] }) {
   const [query, setQuery] = useState('');
@@ -35,7 +35,7 @@ function List({ connectors }: { connectors: Connector[] }) {
     {groups.map((g, k) => (
       <Group key={g.title} i={2 + k} title={g.title}>
         {g.items.map((c) => (
-          <Row key={c.name} label={<span className="set-connector"><BrandMark brand={c.brand} /><span className="set-label">{c.name}<span className="set-about">{c.about}</span></span></span>}>
+          <Row key={c.key ?? c.name} label={<span className="set-connector"><BrandMark brand={c.brand} /><span className="set-label">{c.name}<span className="set-about">{c.about}</span></span></span>}>
             {c.control}
           </Row>
         ))}
@@ -80,16 +80,18 @@ function Mock() {
 // What obid last said about both, kept: the page opens on it at once and reads again behind it.
 // Settings reads it as it opens (SettingsView), as obid's first GitHub answer takes a moment (it
 // asks gh: ~600ms; then it's quick)
-let last: { github: GitHub; tetrix: Tetrix } | null = null, lastAt = 0;
-let reading: Promise<{ github: GitHub; tetrix: Tetrix }> | null = null;
+type Read = { github: GitHub; tetrix: Tetrix; seen: Seen };
+let last: Read | null = null, lastAt = 0;
+let reading: Promise<Read> | null = null;
 // A read already on its way is shared; fresh (after a change: a Disconnect, a sign-in started) waits
 // for it and reads again, so what it shows is from after the change
 function readBoth(fresh = false) {
   if (reading && !fresh) return reading;
   const before = reading?.catch(() => {}) ?? Promise.resolve();
-  const mine: Promise<{ github: GitHub; tetrix: Tetrix }> = before
-    .then(() => Promise.all([api.github(), api.tetrix()]))
-    .then(([github, tetrix]) => { lastAt = Date.now(); return (last = { github, tetrix }); })
+  const mine: Promise<Read> = before
+    // the owner's own connectors: none from an obid without them (404), as before any was seen
+    .then(() => Promise.all([api.github(), api.tetrix(), api.connectors().catch((): Seen => ({ claude: null }))]))
+    .then(([github, tetrix, seen]) => { lastAt = Date.now(); return (last = { github, tetrix, seen }); })
     .finally(() => { if (reading === mine) reading = null; });
   return (reading = mine);
 }
@@ -99,6 +101,7 @@ export const readConnectors = () => { if (onObid && Date.now() - lastAt > 30_000
 function Live() {
   const [github, setGitHub] = useState<GitHub | null>(last?.github ?? null);
   const [tetrix, setTetrix] = useState<Tetrix | null>(last?.tetrix ?? null);
+  const [seen, setSeen] = useState<Seen | null>(last?.seen ?? null);
   const [problem, setProblem] = useState<string | null>(null);
   // each connector's sign-in on its way, apart (gh takes a few seconds to give its code)
   const [busy, setBusy] = useState({ GitHub: false, Tetrix: false });
@@ -106,7 +109,7 @@ function Live() {
   const [open, setOpen] = useState<'tetrix' | 'github-off' | null>(null);
   const [said, setSaid] = useState<string | undefined>();
   const repos = useLive().repos.length;
-  const read = (fresh = false) => readBoth(fresh).then(({ github: g, tetrix: t }) => { setGitHub(g); setTetrix(t); setProblem(null); }, (e: Error) => setProblem(e.message));
+  const read = (fresh = false) => readBoth(fresh).then(({ github: g, tetrix: t, seen: c }) => { setGitHub(g); setTetrix(t); setSeen(c); setProblem(null); }, (e: Error) => setProblem(e.message));
   useEffect(() => { void read(); }, []);
   const signingIn = !!(github?.signIn || tetrix?.signIn);
   useEffect(() => {
@@ -153,8 +156,10 @@ function Live() {
     tetrixRow.control = <button className="set-button set-connect" onClick={() => setOpen('tetrix')}>Connect</button>;
   }
 
+  const own = ownRows(seen);
   return <>
-    <List connectors={[gitHub, tetrixRow]} />
+    <List connectors={[gitHub, tetrixRow, ...own]} />
+    {!own.length && <p className="set-foot">Your Claude Code’s connectors show here after your first conversation.</p>}
     {open === 'tetrix' && (
       <TetrixWindow tetrix={t} said={said} waiting={!!t.signIn || busy.Tetrix} onClose={() => { setOpen(null); setSaid(undefined); }}
         onConnect={(to) => { setSaid(undefined); act(async () => { try { page(await api.tetrixSignIn(to)); } catch (e) { setSaid(signInWhy('Tetrix', e)); } }, 'Tetrix')(); }}
@@ -163,6 +168,39 @@ function Live() {
     {/* (closed: read again, in case gh was signed out meanwhile) */}
     {open === 'github-off' && <GitHubOffWindow onClose={() => { setOpen(null); void read(true); }} />}
   </>;
+}
+
+// The owner's own Claude Code's MCP servers and claude.ai connectors (docs/contracts/connectors.md,
+// CONNECTORS-4): what an own conversation's session named, as obid kept it, after GitHub and Tetrix.
+// They're the owner's, in Claude Code and on claude.ai: Oby adds, signs in to and removes none, so a
+// claude.ai one waiting for its sign-in opens claude.ai's own page for it.
+const CLAUDE_AI = 'claude.ai ';
+const CLAUDE_AI_CONNECTORS = 'https://claude.ai/settings/connectors';
+function ownRows(seen: Seen | null): Connector[] {
+  return (seen?.claude?.servers ?? []).map((s, i) => {
+    const fromClaudeAi = s.name.startsWith(CLAUDE_AI);
+    const name = fromClaudeAi ? s.name.slice(CLAUDE_AI.length) : s.name;
+    const whose = fromClaudeAi ? 'Your claude.ai connector' : 'Your Claude Code’s MCP server';
+    const about = s.status === 'connected' ? whose
+      : s.status === 'needs-auth' ? (fromClaudeAi ? 'Sign in to it on claude.ai' : 'Sign in to it in Claude Code (/mcp)')
+      : s.status === 'pending' ? 'Connecting'
+      : s.status === 'failed' ? 'Couldn’t connect'
+      : s.status === 'disabled' ? 'Turned off in Claude Code'
+      : whose;
+    const control = fromClaudeAi && s.status === 'needs-auth'
+      ? <button className="set-button set-connect" onClick={() => window.app?.openExternal(CLAUDE_AI_CONNECTORS)}>Connect</button>
+      : null;
+    return { key: `own-${i}-${s.name}`, name, about, brand: brandOf(name), connected: s.status === 'connected', control };
+  });
+}
+
+// its logo when the app has one, else its first letter on a circle
+function brandOf(name: string): Brand {
+  const n = name.toLowerCase();
+  const known = n === 'slack' ? BRANDS.slack : n === 'gmail' ? BRANDS.gmail : n === 'google meet' ? BRANDS.meet
+    : n.startsWith('zoom') ? BRANDS.zoom : n === 'tetrix' ? BRANDS.tetrix : n.startsWith('deskree') ? BRANDS.deskree
+    : n === 'github' ? BRANDS.github : null;
+  return known ?? { ...BRANDS.circle, letter: (name.trim()[0] ?? '?').toUpperCase() };
 }
 
 // where a sign-in's page is: " at github.com"
