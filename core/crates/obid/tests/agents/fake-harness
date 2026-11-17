@@ -77,7 +77,8 @@ const flag = (name) => (argv.indexOf(name) >= 0 ? argv[argv.indexOf(name) + 1] :
 const conversation = (flag("--mcp-config") ?? "").endsWith("oby-mcp.json");
 // Where it records turns.jsonl and started.jsonl: its config folder, but an own conversation's
 // (LANES-12, on the account's own folder) in its conversation's config/, where a boxed one's is.
-const own = flag("--setting-sources") === "user";
+// An own session loads every settings source, as the terminal (no --setting-sources, LANES-23).
+const own = !argv.includes("--setting-sources");
 const records = conversation && own ? join(process.cwd(), "..", "config") : process.env.CLAUDE_CONFIG_DIR;
 if (conversation && own) mkdirSync(records, { recursive: true });
 if (process.env.CLAUDE_CONFIG_DIR && !argv.includes("--json-schema")) {

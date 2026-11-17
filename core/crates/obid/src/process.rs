@@ -579,79 +579,45 @@ fn read_login_env() -> Option<Vec<(OsString, OsString)>> {
 }
 
 /// `owners` ([`login_env`]'s) under `env`, an own run's (LANES-4): every variable `env` doesn't set,
-/// but what pushes or signs in to a code host ([`agent_withheld`]'s), git's, obid's and Codex's own
-/// (`CODEX_*`), the shell's own bookkeeping, and Claude Code's own but the owner's gateway
-/// ([`claude_gateway`]).
+/// as the owner's terminal has it (the owner's decision of 2026-11-16, LANES-22), but what pushes
+/// or signs in to a code host ([`agent_withheld`]'s), git's, obid's and Codex's own (`CODEX_*`),
+/// the shell's own bookkeeping, the account's folder (the dispatcher's choice: obid sets it, or
+/// none for the default account) and a launching Claude Code session's own ([`CLAUDE_SESSION`]).
+/// Every other `CLAUDE*` and `ANTHROPIC_*` of the owner's is theirs.
 pub fn with_owners(env: &mut Vec<(OsString, OsString)>, owners: &[(OsString, OsString)]) {
     for (name, value) in owners {
         let n = name.to_string_lossy();
-        let withheld = if n.starts_with("CLAUDE") || n.starts_with("ANTHROPIC_") {
-            !claude_gateway(&n)
-        } else {
-            agent_withheld(&n)
-                || ["GIT_", "OBY_", "OBID_", "CODEX_"]
-                    .iter()
-                    .any(|p| n.starts_with(p))
-                || ["PWD", "OLDPWD", "SHLVL", "_"].contains(&&*n)
-        };
+        let claudes = n.starts_with("CLAUDE") || n.starts_with("ANTHROPIC_");
+        let withheld = (!claudes && agent_withheld(&n))
+            || ["GIT_", "OBY_", "OBID_", "CODEX_"]
+                .iter()
+                .any(|p| n.starts_with(p))
+            || ["PWD", "OLDPWD", "SHLVL", "_"].contains(&&*n)
+            || ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"].contains(&&*n)
+            || CLAUDE_SESSION.contains(&&*n);
         if !withheld && !env.iter().any(|(set, _)| set == name) {
             env.push((name.clone(), value.clone()));
         }
     }
 }
 
-/// Whether an own run takes `name` from the owner (their login shell, their user settings' `env`)
-/// as Claude Code's (the owner's decision LANES-4a, "Allow-list"): any `ANTHROPIC_*` (its gateway,
-/// its key, its models), or one of [`CLAUDE_GATEWAY`] or [`CLAUDE_TUNING`]. No other `CLAUDE*`
-/// name: they name its folders, settings and policy sources, permissions, extra directories, its
-/// sandbox and its session, any of which could outrank obid's `--settings` or widen the run
-/// (LANES-5).
-pub fn claude_gateway(name: &str) -> bool {
-    name.starts_with("ANTHROPIC_")
-        || CLAUDE_GATEWAY.contains(&name)
-        || CLAUDE_TUNING.contains(&name)
-}
-
-/// The `CLAUDE*` tuning switches an own run also takes from the owner (LANES-4a, #2423): how many
-/// subagents and tools run at once, retries, compaction, thinking, context size, fast mode and the
-/// terminal's title, measured in Claude Code 2.1.325. Each only tunes or turns off what Claude Code
-/// does; none names a path, a settings source, permissions, directories, the sandbox, hooks, MCP
-/// or a session.
-pub const CLAUDE_TUNING: [&str; 12] = [
-    "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS",
-    "CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY",
-    "CLAUDE_CODE_MAX_RETRIES",
-    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
-    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE",
-    "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
-    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
-    "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
-    "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING",
-    "CLAUDE_CODE_DISABLE_THINKING",
-    "CLAUDE_CODE_DISABLE_1M_CONTEXT",
-    "CLAUDE_CODE_DISABLE_FAST_MODE",
-];
-
-/// The `CLAUDE_CODE_*` switches an own run takes from the owner (LANES-4a): which provider Claude
-/// Code calls (2.1.302's Bedrock, Vertex, Foundry, Anthropic on AWS or Google Cloud, Mantle), how
-/// it signs in there, and its models and output size. Nothing that names a path, a settings
-/// source, permissions, directories, the sandbox, hooks, MCP or a session.
-pub const CLAUDE_GATEWAY: [&str; 15] = [
-    "CLAUDE_CODE_USE_BEDROCK",
-    "CLAUDE_CODE_USE_VERTEX",
-    "CLAUDE_CODE_USE_FOUNDRY",
-    "CLAUDE_CODE_USE_ANTHROPIC_AWS",
-    "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
-    "CLAUDE_CODE_USE_MANTLE",
-    "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
-    "CLAUDE_CODE_SKIP_VERTEX_AUTH",
-    "CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
-    "CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH",
-    "CLAUDE_CODE_SKIP_ANTHROPIC_GOOGLE_CLOUD_AUTH",
-    "CLAUDE_CODE_SKIP_MANTLE_AUTH",
-    "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
-    "CLAUDE_CODE_SUBAGENT_MODEL",
-    "CLAUDE_CODE_EFFORT_LEVEL",
+/// What a Claude Code session exports to what it runs, as T3 Code lists them
+/// (`ClaudeHome.ts`): a Claude Code started with them acts as part of that session (its id, its
+/// messaging socket and token, its effort), so an own run never takes them from the owner's
+/// environment.
+pub const CLAUDE_SESSION: [&str; 12] = [
+    "CLAUDECODE",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_HOST_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_DESKTOP_APP_VERSION",
+    "CLAUDE_EFFORT",
+    "CLAUDE_PID",
+    "CLAUDE_AGENT_SDK_VERSION",
 ];
 
 /// `bin` as an absolute path: itself when it names one (a relative one from obid's own folder,
@@ -1315,37 +1281,42 @@ pub(crate) mod tests {
         );
     }
 
-    /// LANES-5 with LANES-4a ("Allow-list"): of Claude Code's own variables, the owner's shell gives
-    /// an own run only `ANTHROPIC_*` and the gateway switches ([`CLAUDE_GATEWAY`]); a settings or
-    /// policy source that outranks obid's `--settings`, extra session folders and allow rules, and
-    /// any other `CLAUDE*` name never reach it.
+    /// LANES-22 (docs/contracts/lanes.md, the owner's decision of 2026-11-16): an own run takes
+    /// every `CLAUDE*` and `ANTHROPIC_*` variable of the owner's shell as their terminal does,
+    /// settings sources, sandbox switches and names obid never heard of included; only the
+    /// account's folder (the dispatcher's choice), a Claude Code session's own variables when one
+    /// launched obid, and what publishes (LANES-2) stay out.
     #[test]
-    fn lanes_5_the_owners_shell_gives_no_settings_source() {
+    fn lanes_22_the_owners_shell_gives_an_own_run_every_claude_variable() {
         let os = |text: &str| OsString::from(text);
         let mut env = Vec::new();
-        let mut owners: Vec<(OsString, OsString)> = [
+        let given = [
             "CLAUDE_CODE_MANAGED_SETTINGS_PATH",
-            "CLAUDE_CODE_REMOTE_SETTINGS_PATH",
             "CLAUDE_CODE_SANDBOXED",
-            "CLAUDE_RELAUNCH_SESSION_ADD_DIRS",
-            "CLAUDE_BG_SESSION_PERMISSION_RULES",
-            "CLAUDE_CODE_SESSION_KIND",
+            "CLAUDE_CODE_MAX_RETRIES",
             "CLAUDE_FOO",
+            "CLAUDE_CODE_USE_BEDROCK",
+            "ANTHROPIC_MODEL",
+        ];
+        let withheld = [
+            "CLAUDE_CONFIG_DIR",
+            "CLAUDE_SECURESTORAGE_CONFIG_DIR",
             "CLAUDECODE",
-        ]
-        .iter()
-        .map(|name| (os(name), os("/tmp/policy")))
-        .collect();
-        owners.push((os("CLAUDE_CODE_USE_BEDROCK"), os("1")));
-        owners.push((os("ANTHROPIC_MODEL"), os("us.anthropic.claude")));
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_MESSAGING_TOKEN",
+            "GH_TOKEN",
+        ];
+        let owners: Vec<(OsString, OsString)> = given
+            .iter()
+            .chain(&withheld)
+            .map(|name| (os(name), os("1")))
+            .collect();
         with_owners(&mut env, &owners);
-        assert_eq!(
-            env,
-            vec![
-                (os("CLAUDE_CODE_USE_BEDROCK"), os("1")),
-                (os("ANTHROPIC_MODEL"), os("us.anthropic.claude")),
-            ]
-        );
+        let names: Vec<String> = env
+            .iter()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, given, "{names:?}");
     }
 
     /// LANES-16 (docs/contracts/lanes.md): what an own run's commands left running ends with the

@@ -341,7 +341,7 @@ rl.on("line", (line) => {
   // LANES-4: what it got of a login shell's, and its --model, before `leaked` (an own run gets the
   // owner's gateway); then whether its self-update is off (CLIVERSIONS-5).
   if (prompt.includes("SHOW_ENV")) {
-    const names = ["ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_MODEL", "SSH_AUTH_SOCK", "GH_TOKEN", "GIT_CONFIG_COUNT", "LANES_4"];
+    const names = ["ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_MODEL", "SSH_AUTH_SOCK", "GH_TOKEN", "GIT_CONFIG_COUNT", "LANES_4", "CLAUDE_CODE_LANES_21"];
     const at = process.argv.indexOf("--model");
     return result(`${names.map((name) => `${name}=${process.env[name] ?? "none"}`).join(" ")} model=${at >= 0 ? process.argv[at + 1] : "none"} DISABLE_AUTOUPDATER=${process.env.DISABLE_AUTOUPDATER ?? "none"}`);
   }
