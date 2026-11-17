@@ -1007,7 +1007,12 @@ impl Conversations {
             let thread = &mut threads[index];
             let waiting: Vec<(Turn, Replay)> = (thread.turns.iter())
                 .filter(|t| t.delivery.as_ref().is_some_and(|d| d.status == "queued"))
-                .map(|t| (t.clone(), thread.replays.get(&t.id).cloned().unwrap_or_default()))
+                .map(|t| {
+                    (
+                        t.clone(),
+                        thread.replays.get(&t.id).cloned().unwrap_or_default(),
+                    )
+                })
                 .collect();
             if !waiting.is_empty() {
                 queued.push((thread.id.clone(), waiting));
@@ -1028,7 +1033,10 @@ impl Conversations {
             // obid's own words: nothing the conversation read is in them.
             let line = Turn::of("oby", cut_line(clean).to_owned());
             if let Err(e) = self.add(&mut threads, index, line, None) {
-                tracing::warn!("conversation {}: the cut words weren't kept: {e:?}", kept.id);
+                tracing::warn!(
+                    "conversation {}: the cut words weren't kept: {e:?}",
+                    kept.id
+                );
                 threads[index] = kept;
                 continue;
             }

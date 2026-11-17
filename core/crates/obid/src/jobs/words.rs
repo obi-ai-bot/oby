@@ -20,7 +20,11 @@ impl Jobs {
     pub(super) fn steer_close(&self, id: &str, steer: &crate::steer::Steer) {
         let taken = {
             let mut state = self.lock();
-            if state.steers.get(id).is_some_and(|s| std::ptr::eq(&**s, steer)) {
+            if state
+                .steers
+                .get(id)
+                .is_some_and(|s| std::ptr::eq(&**s, steer))
+            {
                 state.steers.remove(id);
             }
             steer.close()

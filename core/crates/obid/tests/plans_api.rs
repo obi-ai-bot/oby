@@ -3271,8 +3271,8 @@ fn stopped_and_started(folder: &Folder, mut obid: Obid, clean: bool) -> Obid {
         let _ = obid.child.wait();
     }
     drop(obid);
-    let config = serde_json::from_slice(&std::fs::read(folder.0.join("config.json")).unwrap())
-        .unwrap();
+    let config =
+        serde_json::from_slice(&std::fs::read(folder.0.join("config.json")).unwrap()).unwrap();
     start(&folder.0, &config, None)
 }
 
@@ -3414,7 +3414,8 @@ fn delivery_10_old_conversations_get_nothing_at_start() {
     assert!(obid.stop().success(), "{}", obid.log());
     // The old one as a file from before deliveries: a turn left `running` with no key at all.
     let file = obid.home.join(format!("conversations/{old}.json"));
-    let mut kept: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let mut kept: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
     for turn in kept["turns"].as_array_mut().unwrap() {
         turn.as_object_mut().unwrap().remove("delivery");
     }
