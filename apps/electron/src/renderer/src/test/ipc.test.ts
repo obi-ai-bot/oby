@@ -17,6 +17,7 @@ const the = vi.hoisted(() => ({
   calls: [] as unknown[][],
   dialogs: 0,
   opened: [] as string[],
+  refuseOpen: false,
   checks: 0,
   policies: 0,
 }));
@@ -62,7 +63,7 @@ vi.mock('electron', async () => {
     powerMonitor: { on() {} },
     safeStorage: { isEncryptionAvailable: () => true, encryptString: (s: string) => Buffer.from(s), decryptString: (b: Buffer) => b.toString() },
     screen: { getCursorScreenPoint: () => ({ x: 0, y: 0 }) },
-    shell: { openExternal: async (url: string) => { the.opened.push(url); } },
+    shell: { openExternal: async (url: string) => { if (the.refuseOpen) throw new Error('refused'); the.opened.push(url); } },
   };
 });
 // the native window style (index.ts's windowStyle): where it put the traffic lights
@@ -317,5 +318,37 @@ describe('IPC-4', () => {
     expect(files).toContain('index.ts');
     const raw = files.filter((f) => /ipcMain\s*\.\s*(handle|on)\s*\(/.test(readFileSync(join(main, f), 'utf8')));
     expect(raw).toEqual([]);
+  });
+});
+
+describe('ALERTS-19', () => {
+  const PANE = 'x-apple.systempreferences:com.apple.Notifications-Settings.extension';
+  it('alerts_19_main_opens_only_the_notifications_pane_whatever_the_page_sends', async () => {
+    the.opened.length = 0;
+    // the page's click opens the pane; anything it sends along is ignored
+    await call('open-notification-settings', own());
+    await call('open-notification-settings', own(), 'x-apple.systempreferences:com.apple.Passwords-Settings.extension', 'https://example.com');
+    expect(the.opened).toEqual([PANE, PANE]);
+    // a sender that isn't the window's own page opens nothing
+    await call('open-notification-settings', stranger());
+    expect(the.opened).toHaveLength(2);
+    // the page's open-external still takes https only: no System Settings URL, no other scheme
+    for (const url of [PANE, `${PANE}?id=com.deskree.oby.electron`, 'x-apple.systempreferences:', 'file:///etc/passwd', 'http://example.com']) {
+      await call('open-external', own(), url);
+    }
+    expect(the.opened).toHaveLength(2);
+    the.opened.length = 0;
+  });
+
+  it('alerts_19_a_refused_open_is_logged_never_silent', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    the.refuseOpen = true;
+    try {
+      await call('open-notification-settings', own());
+      await vi.waitFor(() => expect(logged).toHaveBeenCalledWith(expect.stringContaining(`Oby: couldn’t open System Settings at ${PANE}`)));
+    } finally {
+      the.refuseOpen = false;
+      logged.mockRestore();
+    }
   });
 });

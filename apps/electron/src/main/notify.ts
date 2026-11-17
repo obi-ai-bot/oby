@@ -420,9 +420,17 @@ export function windowSeen() {
   for (const [key, s] of shown) if (looking(s.place)) withdraw(key);
 }
 
-// macOS's own settings for Oby's alerts (allowed, banners, sounds, Focus). ponytail: the packaged
-// app's bundle id, electron-builder.yml's appId; in development, the list
-const SYSTEM = `x-apple.systempreferences:com.apple.Notifications-Settings.extension${app.isPackaged ? '?id=com.deskree.oby.electron' : ''}`;
+// macOS's own settings for Oby's alerts (allowed, banners, sounds, Focus): Notifications › Oby
+// where the app has its bundle id (a packaged one, electron-builder.yml's appId; the list in
+// development), else the Notifications pane. These two are the only URLs main opens for the
+// page's click: it passes none (ALERTS-19).
+const PANE = 'x-apple.systempreferences:com.apple.Notifications-Settings.extension';
+const OBY = `${PANE}?id=com.deskree.oby.electron`;
+async function openSystemSettings() {
+  for (const url of app.isPackaged ? [OBY, PANE] : [PANE]) {
+    try { await shell.openExternal(url); return; } catch (e) { console.error(`Oby: couldn’t open System Settings at ${url}: ${e}`); }
+  }
+}
 
 // What the window shows, as the page says: a job's or a conversation's (anything else in it
 // dropped), or nothing; never refused
@@ -480,6 +488,6 @@ export function notifying(trusted: Trusted, window: () => BrowserWindow | null, 
     }
     return { ...kinds };
   }, null);
-  channels.on('open-notification-settings', [], () => { void shell.openExternal(SYSTEM); });
+  channels.on('open-notification-settings', [], () => { void openSystemSettings(); });
   onLive(heardLive);
 }
