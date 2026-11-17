@@ -65,8 +65,9 @@ mod authors;
 mod budget;
 mod by_github;
 pub(crate) mod cant_run;
-mod changes;
+pub(crate) mod changes;
 mod check_run;
+pub(crate) mod rounds;
 #[cfg(test)]
 use check_run::check_failed;
 use check_run::{BaseFailure, random_check_id};
@@ -5982,6 +5983,7 @@ pub fn follow_up(job: &Job, words: &str) -> NewJob {
     if let Some(url) = &job.published {
         did.push(format!("Pull request: {url}"));
     }
+    did.extend(job.undone_note());
     let carries = unmerged && job.published.is_some() && job.pull_request_open();
     NewJob {
         repo: job.repo.clone(),

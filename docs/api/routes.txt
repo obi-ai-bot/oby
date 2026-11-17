@@ -73,6 +73,8 @@ POST /v1/jobs/{id}/start
 POST /v1/jobs/{id}/stop
 GET /v1/jobs/{id}/transcript
 GET /v1/jobs/{id}/transcript/{n}
+GET /v1/jobs/{id}/undo
+POST /v1/jobs/{id}/undo
 GET /v1/jobs/{id}/wait
 GET /v1/limit-decisions
 POST /v1/limit-decisions/{id}/answer

@@ -11,6 +11,7 @@ import { AskBlock, resultLine } from './TaskCard';
 import DecisionBar, { type Pending } from './DecisionBar';
 import { useScrollThumb } from './useScrollThumb';
 import TaskMenu from './TaskMenu';
+import { openChanges } from './ChangesPanel';
 import { replyTarget, type Box } from './replyTarget';
 import Composer, { typingIn } from './Composer';
 import Formatted from './Formatted';
@@ -388,6 +389,8 @@ export function ThreadTask({ task, current, onOpen, onMenu }: {
             {body}
           </button>
         )}
+      {/* what it changed, in the side panel beside the conversation (CHANGES-4) */}
+      {!task.unknown && task.job.worktree && <button type="button" className="msg-task-changes" onClick={() => openChanges(task.id)}>Changes</button>}
     </div>
   );
 }

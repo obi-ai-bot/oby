@@ -117,10 +117,29 @@ export type Job = {
   usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; costUsd?: number; priced?: 'plan' | 'api' | (string & {}) };
   windowShare?: { fiveHour: number | null; sevenDay: number | null; estimate: true };
   estimate?: { low: number; high: number; basis: string; samples: number; firstGiven?: { low: number; high: number } };
+  // obid only: its worktree, an absolute path, once it exists (a task's Changes and Open in, CHANGES-4, 6)
+  worktree?: string | null;
   // one more each time obid sends it changed: of two copies, the higher is the newer (#1709);
   // none from an older obid
   revision?: number;
 };
+
+// GET /v1/jobs/{id}/changes (docs/contracts/tasks.md, TASKS-23; task-changes.md, CHANGES-1 to 3):
+// the files and the diff of the whole task, or of one of its rounds, and its rounds
+export type ChangedFile = { path: string; status: 'added' | 'deleted' | 'modified' | (string & {}); additions: number; deletions: number };
+export type ChangeRound = { round: number; job: string; from: string; to: string; at: string };
+export type JobChanges = {
+  base: string | null;
+  head: string | null;
+  files: ChangedFile[];
+  diff: string;
+  truncated: boolean;
+  // none from an obid before CHANGES-1
+  round?: number | null;
+  rounds?: ChangeRound[];
+};
+// GET /v1/jobs/{id}/undo (CHANGES-8): obid's own sentence for Undo this round
+export type UndoAction = { action: string; from: string; to: string; branch: string; push: boolean };
 
 // "Inbox item"
 // An owner id with anything but plain ASCII shows those characters as codes, so a Cyrillic i in "dima"

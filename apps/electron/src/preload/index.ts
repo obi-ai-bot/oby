@@ -141,6 +141,10 @@ contextBridge.exposeInMainWorld('app', {
     ipcRenderer.on('sphere', listener);
     return () => { ipcRenderer.off('sphere', listener); };
   },
+  // a task's worktree in the owner's Terminal or editor (main/worktree.ts, CHANGES-6): only its id
+  // goes; true once opened. The editor's name, for the menu
+  openWorktree: (job: string, where: 'terminal' | 'editor') => ipcRenderer.invoke('open-worktree', job, where) as Promise<boolean>,
+  editorName: () => ipcRenderer.invoke('worktree-editor') as Promise<string | null>,
   sphereLeave: () => ipcRenderer.invoke('sphere-leave') as Promise<string | null>,
   // the Obysphere's rules (main/sphere.ts, docs/contracts/sphere-policy.md): read, and the members
   // rule added, right after the owner's click. The page sends only the version it read; main decides
@@ -157,6 +161,9 @@ contextBridge.exposeInMainWorld('app', {
     // Publish by hand, on the owner's click: main reads obid's sentence again and signs it
     publish: (job: string, action: string, choices: { anyway?: boolean; force?: boolean; to?: string }) =>
       ipcRenderer.invoke('obid-publish', job, action, choices) as Promise<Answer>,
+    // Undo this round, on the owner's click: main reads obid's sentence again, asks in its own
+    // dialog and signs it (CHANGES-14)
+    undo: (job: string, action: string) => ipcRenderer.invoke('obid-undo', job, action) as Promise<Answer>,
     limitAnswer: (item: string, revision: number, choice: string, account?: string) =>
       ipcRenderer.invoke('obid-limit-answer', item, revision, choice, account) as Promise<Answer>,
     // Pair a device: main signs the invitation with this Mac's device key
