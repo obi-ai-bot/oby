@@ -12,8 +12,9 @@ export type Answer = { status: number; text: string };
 export type Call = (method: string, path: string, body?: unknown) => Promise<Answer>;
 
 // What another Oby may ask this one, and what the delegation lets it do (identity.md 4.2)
-export const ACCEPTS = ['review_request', 'question'];
-export const SCOPES = 'send:review_request send:question reply receive directory:read audit:read';
+// handoff: another member's task, which the owner accepts on Home (docs/contracts/handoff.md, HANDOFF-6)
+export const ACCEPTS = ['review_request', 'question', 'handoff'];
+export const SCOPES = 'send:review_request send:question send:handoff reply receive directory:read audit:read';
 const DELEGATION_LIFE = 2_592_000; // 30 days, the longest a delegation lives
 const ASSERTION_LIFE = 300;
 

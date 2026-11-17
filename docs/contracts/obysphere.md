@@ -60,7 +60,7 @@ The business behavior contract for the Electron app joining an Obysphere someone
 
 ## Acceptance scenarios
 
-- **SPHERE-1** A private link joins this Oby: obid's key and card, the card signed by the owner key (one detached JWS over its RFC 8785 JSON), a 30-day delegation to that Oby for that Obysphere with `receive` and `reply` among its scopes; an open link's Oby is `obi-<UUID>`, a named link's its own.
+- **SPHERE-1** A private link joins this Oby: obid's key and card, the card signed by the owner key (one detached JWS over its RFC 8785 JSON), a 30-day delegation to that Oby for that Obysphere with `receive`, `reply` and `send:handoff` among its scopes, the card accepting `review_request`, `question` and `handoff` ([handoff.md](handoff.md), HANDOFF-6); an open link's Oby is `obi-<UUID>`, a named link's its own.
 - **SPHERE-2** A link this Oby can't use joins nothing, makes no owner key, and says why: one the spec's reader refuses (every known answer in obi-sphere's vectors), a named one for another owner, one for a Google Workspace, an Oby already in an Obysphere, one the Obysphere refuses, obid not answering.
 - **SPHERE-3** The joined Obysphere shows in the side panel by its link's name, at its own address, with the other Obys' owners as members; none shows when obid isn't joined.
 - **SPHERE-4** Leaving takes this Oby out of the Obysphere with the owner's own token, then obid forgets it; when the Obysphere can't be told, obid leaves all the same and the owner is told why; with nothing joined, no owner key is made and no Sphere is called.

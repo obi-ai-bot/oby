@@ -43,28 +43,7 @@ impl Link {
             self.reply_failed(&cid, None).await;
             return;
         };
-        let texts = every_text(&body);
-        let scratch = self.config.home.join("tmp");
-        let verdict = scan::scan(&texts, &scratch).await;
-        let (scan_json, failure) = match &verdict {
-            scan::Verdict::Clean => (json!({"ran": true, "clean": true}), None),
-            scan::Verdict::Found(found) => {
-                let places: Vec<String> = found.iter().take(3).map(ToString::to_string).collect();
-                (
-                    json!({"ran": true, "clean": false}),
-                    Some(format!(
-                        "The publish gate found a possible secret in {}: no text was sent.",
-                        places.join(", ")
-                    )),
-                )
-            }
-            scan::Verdict::CouldNotRun(why) => (
-                json!({"ran": false, "clean": false}),
-                Some(format!(
-                    "The secret scan couldn't run ({why}): no text was sent."
-                )),
-            ),
-        };
+        let (scan_json, failure) = self.publish_gate(&body).await;
         if let Some(why) = failure {
             tracing::warn!("sphere: exchange {cid}: {why}");
             self.reply_failed(&cid, Some((scan_json, why))).await;
@@ -109,6 +88,33 @@ impl Link {
         };
         self.save_exchange(&queued);
         self.send_now(&cid).await;
+    }
+
+    /// The publish gate (protocol.md section 11, step 8): every text of a reply's `body` scanned.
+    /// Its scan's record, and why nothing with text may go when it found a possible secret or
+    /// couldn't run.
+    pub(super) async fn publish_gate(&self, body: &Value) -> (Value, Option<String>) {
+        let texts = every_text(body);
+        let scratch = self.config.home.join("tmp");
+        match scan::scan(&texts, &scratch).await {
+            scan::Verdict::Clean => (json!({"ran": true, "clean": true}), None),
+            scan::Verdict::Found(found) => {
+                let places: Vec<String> = found.iter().take(3).map(ToString::to_string).collect();
+                (
+                    json!({"ran": true, "clean": false}),
+                    Some(format!(
+                        "The publish gate found a possible secret in {}: no text was sent.",
+                        places.join(", ")
+                    )),
+                )
+            }
+            scan::Verdict::CouldNotRun(why) => (
+                json!({"ran": false, "clean": false}),
+                Some(format!(
+                    "The secret scan couldn't run ({why}): no text was sent."
+                )),
+            ),
+        }
     }
 
     /// The Obi answers a question by itself under `rule` (protocol.md section 11, "Questions"): a

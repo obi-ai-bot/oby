@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // A stand-in for Claude Code in obid's tests: stream-json in and out, as obid runs `claude`. What
 // it does comes from the prompt (the job's task):
+//   .obi/inputs/handoff.json  (another Oby's task, HANDOFF-2) named in the prompt: exits 3 when the
+//                    request's goal reached the prompt; else commits the file its quoted goal's
+//                    `COMMIT: <file>` names, and ends "Added <file>." and `GOAL MET`
 //   COMMIT: <file>   writes the file in the worktree and commits it; with ENDS: <line>, its summary's
 //                    last line is that line (`GOAL NOT MET: …`). Told its last line didn't say
 //                    `GOAL MET`, it ends "Carried on." and `GOAL MET` (with SILENT ROUND, the
@@ -601,6 +604,15 @@ rl.on("line", (line) => {
     return result("Wrote the tests.");
   }
   if (prompt.startsWith("Your last line didn't say `GOAL MET`")) return result("Carried on.\n\nGOAL MET");
+  if (prompt.includes(".obi/inputs/handoff.json") && existsSync(".obi/inputs/handoff.json")) {
+    const request = JSON.parse(readFileSync(".obi/inputs/handoff.json", "utf8"));
+    if (prompt.includes(request.goal)) process.exit(3);
+    const file = String(request.goal).match(/COMMIT: (\S+)/)?.[1] ?? "handoff.txt";
+    writeFileSync(file, "hello\n");
+    execFileSync("git", ["add", file]);
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", `Add ${file}`]);
+    return result(`Added ${file}.\n\nGOAL MET`);
+  }
   const commit = prompt.match(/COMMIT: (\S+)/);
   const ask = prompt.match(/ASK: (\{.*\})/);
   const asks = prompt.match(/ASKS: (\[.*\])/);

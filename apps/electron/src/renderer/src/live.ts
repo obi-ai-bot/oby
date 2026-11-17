@@ -369,12 +369,12 @@ export const questionOf = (i: InboxItem): PersonQuestion | undefined => {
 const word = (x: unknown) => (typeof x === 'string' ? x : '');
 export const reviewOf = (i: InboxItem): PersonReview | undefined => {
   const o = i.obi, q = o?.quoted;
-  if (i.kind !== 'obiRequest' || o?.type !== 'review_request' || typeof o.fromOwner !== 'string') return undefined;
+  if (i.kind !== 'obiRequest' || (o?.type !== 'review_request' && o?.type !== 'handoff') || typeof o.fromOwner !== 'string') return undefined;
   const conditions = (Array.isArray(q?.acceptance) ? q.acceptance as unknown[] : [])
     .map((c) => ({ text: word((c as { text?: unknown } | null)?.text), note: word((c as { note?: unknown } | null)?.note) }))
     .filter((c) => c.text || c.note);
   return {
-    id: i.id, from: o.fromOwner, text: i.text, repo: word(o.repo), headSha: word(o.headSha),
+    kind: o.type === 'handoff' ? 'task' : 'review', id: i.id, from: o.fromOwner, text: i.text, repo: word(o.repo), headSha: word(o.headSha),
     goal: word(q?.goal), summary: word(q?.summary), conditions, options: texts(i.options),
   };
 };
@@ -389,7 +389,7 @@ function asksOf(s: Live): Asking[] {
       const question = questionOf(i);
       if (question) return { id: i.id, title: `Question from ${plainId(question.from)}`, question };
       const review = reviewOf(i);
-      if (review) return { id: i.id, title: `Review request from ${plainId(review.from)}`, review };
+      if (review) return { id: i.id, title: `${review.kind === 'task' ? 'Task' : 'Review request'} from ${plainId(review.from)}`, review };
       // over it a GitHub item's own title, as on To do; obid's words under Oby's headline, or under
       // the title till one comes (clamped: they can be long; an escalation's is whole, TASKS-17)
       const g = i.github;

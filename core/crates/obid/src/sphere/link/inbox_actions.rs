@@ -1731,8 +1731,9 @@ impl Link {
                     "That request expired before the answer.",
                 ));
             }
-            // Only a review request is accepted here: a question is answered in words (above).
-            if exchange.kind != "review_request" {
+            // Only a review request or a handoff is accepted here: a question is answered in
+            // words (above).
+            if exchange.kind != "review_request" && exchange.kind != "handoff" {
                 return Err(api(
                     StatusCode::CONFLICT,
                     "That request isn't a review request.",
