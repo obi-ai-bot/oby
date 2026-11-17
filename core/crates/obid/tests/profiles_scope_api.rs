@@ -137,6 +137,13 @@ fn profiles_33_a_conversation_is_kept_in_its_own_profile() {
     let new = json!({"said": "draft the acme press release", "new": true});
     let started = as_profile(&obid, Some(B), "POST", "/v1/plans", Some(&new));
     assert_eq!(started.status, 200, "{}", started.text);
+    // B has no account of its own: Oby says so, naming none of the default profile's.
+    assert!(!started.text.contains("Stub"), "{}", started.text);
+    assert!(
+        started.text.contains("no agent account"),
+        "{}",
+        started.text
+    );
     let made = started.body["conversation"].as_str().unwrap().to_owned();
     assert!(ids(&obid, Some(B), "/v1/conversations", None).contains(&made));
     assert!(!ids(&obid, None, "/v1/conversations", None).contains(&made));
