@@ -62,7 +62,12 @@ function ModelChip({ chips, onChange }: { chips: Chips; onChange: (c: Chips) => 
   const [accounts] = useAccounts();
   const [, options] = useModels();
   const [at, setAt] = useState<DOMRect | null>(null);
-  const [efforts, setEfforts] = useState<{ agent: Agent; model: string; top: number } | null>(null);
+  const [efforts, setEfforts] = useState<{ agent: Agent; model: string; top: number; left: boolean } | null>(null);
+  // beside the model's row, to its right, else its left where the window ends there (as ModelPicker's)
+  const beside = (agent: Agent, model: string, row: HTMLElement) => {
+    const r = row.getBoundingClientRect(), menu = (row.closest('.row-menu') ?? row).getBoundingClientRect();
+    setEfforts({ agent, model, top: r.top - menu.top - 6, left: menu.right + 4 + 160 > innerWidth - 8 });
+  };
   const tools = [...new Set(accounts.map((a) => a.agent).filter(isAgent))] as Agent[];
   const modelsOf = (agent: Agent) => options[agent]?.models ?? [];
   const effortsOf = (agent: Agent, model: string) => (agent === 'cursor' ? [] : modelsOf(agent).find((m) => m.id === model)?.efforts ?? options[agent]?.efforts ?? []);
@@ -92,12 +97,13 @@ function ModelChip({ chips, onChange }: { chips: Chips; onChange: (c: Chips) => 
                 return (
                   <span key={m.id} className="menu-sub-anchor">
                     <button role="menuitemradio" aria-checked={on} aria-haspopup={more.length ? 'menu' : undefined}
-                      onPointerEnter={(e) => setEfforts(more.length ? { agent: tool, model: m.id, top: e.currentTarget.offsetTop } : null)}
+                      onPointerEnter={(e) => (more.length ? beside(tool, m.id, e.currentTarget) : setEfforts(null))}
                       // the keys too, as the talk pill's models open: Right opens the efforts beside it
-                      onKeyDown={(e) => { if (e.key === 'ArrowRight' && more.length) { e.preventDefault(); setEfforts({ agent: tool, model: m.id, top: e.currentTarget.offsetTop }); } }}
+                      onKeyDown={(e) => { if (e.key === 'ArrowRight' && more.length) { e.preventDefault(); beside(tool, m.id, e.currentTarget); } }}
                       onClick={() => pick({ agent: tool, model: m.id, effort: on ? chips.effort : undefined })}>
-                      {m.name}{on && <Check size={14} strokeWidth={1.8} className="menu-check" />}
+                      {m.name}
                       {more.length > 0 && <ChevronRight size={12} strokeWidth={1.8} className="task-more" />}
+                      {on && <Check size={14} strokeWidth={1.8} className="menu-check" />}
                     </button>
                   </span>
                 );
@@ -106,7 +112,7 @@ function ModelChip({ chips, onChange }: { chips: Chips; onChange: (c: Chips) => 
           ))}
         </div>
         {efforts && (
-          <span className="row-menu row-submenu is-scroll task-efforts" style={{ top: efforts.top }} role="menu" aria-label="Effort">
+          <span className={`row-menu row-submenu is-scroll task-efforts${efforts.left ? ' is-left' : ''}`} style={{ top: efforts.top }} role="menu" aria-label="Effort">
             <button role="menuitemradio" aria-checked={!(chips.agent === efforts.agent && chips.model === efforts.model && chips.effort)} onClick={() => pick({ agent: efforts.agent, model: efforts.model, effort: undefined })}>
               Account’s effort{!(chips.agent === efforts.agent && chips.model === efforts.model && chips.effort) && <Check size={14} strokeWidth={1.8} className="menu-check" />}
             </button>

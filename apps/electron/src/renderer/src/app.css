@@ -2435,8 +2435,12 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .task-chip.is-default { color: var(--muted); }
 .task-chip.is-default:hover, .task-chip.is-default.is-on { color: var(--ink); }
 .task-models .menu-label.task-tool { display: flex; align-items: center; gap: 6px; }
-.task-models .task-more { margin-left: auto; color: var(--muted); }
+/* a model's row: its name, then at its end the arrow to its efforts, and its check after it */
+.row-menu .task-models .menu-sub-anchor > button > svg.task-more { margin-left: auto; color: var(--muted); }
+.row-menu .task-models .menu-sub-anchor > button > svg.menu-check { color: var(--ink); }
+.row-menu .task-models .menu-sub-anchor > button > svg.task-more + svg.menu-check { margin-left: 6px; }
 .row-menu .task-efforts { left: calc(100% + 4px); min-width: 150px; }
+.row-menu .task-efforts.is-left { left: auto; right: calc(100% + 4px); }
 /* Words waiting for the turn under way (COMPOSER-8): a row each over the box, Edit and Cancel at its end */
 .queued-words { display: flex; flex-direction: column; gap: 4px; margin: 0 0 6px; }
 .queued-row { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 6px 0 12px; border: 1px solid var(--line); border-radius: 17px; color: var(--text); font-size: var(--text-sm); }
