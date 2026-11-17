@@ -10,10 +10,12 @@
 # A run is due when no other run holds the results folder's lock and the newest result started more
 # than 20 hours ago, or there is none. It fetches origin/dev, checks it out detached in the results
 # folder's own worktree, installs the Electron app's modules there (npm ci), runs the check with its
-# own Cargo target folder (kept, so the next night builds only what changed), writes <stamp>.md and
-# <stamp>.log, and removes the worktree, after a pass, a failure or a stop alike. A stopped run
-# writes no .md, so it is due again. It never creates, deletes or checks out a branch, never pushes,
-# and writes nothing in the checkout it was run from, factory/ included.
+# own Cargo target folder, and writes <stamp>.md and <stamp>.log. The worktree and the target folder
+# stay for the next night, which moves the worktree to its commit and cleans it: the check's shared
+# caches (~/Library/Caches/oby-check) hold builds that name the folder they were built in, and a
+# removed folder fails every later check that reuses them. A stopped run writes no .md, so it is due
+# again. It never creates, deletes or checks out a branch, never pushes, and writes nothing in the
+# checkout it was run from, factory/ included.
 #
 # The results folder is OBY_NIGHTLY_DIR, by default ~/Library/Logs/Oby/nightly: <stamp>.md (the UTC
 # start, YYYY-MM-DDTHHMMZ) says RESULT, COMMIT, STARTED, SECONDS, the load average as it started and
@@ -82,12 +84,18 @@ if ! mkdir "$lock" 2>/dev/null; then
 fi
 echo $$ >"$lock/pid"
 worktree="$results/worktree"
-clear_worktree() {
-    git -C "$repo" worktree remove --force "$worktree" >/dev/null 2>&1 || true
-    rm -rf "$worktree"
-    git -C "$repo" worktree prune >/dev/null 2>&1 || true
+# The worktree on a commit, clean but for the Electron app's modules (npm ci replaces them): the one
+# kept from the last night, else a new one.
+worktree_at() {
+    if [[ "$(git -C "$worktree" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" == "$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)" ]]; then
+        git -C "$worktree" checkout --quiet --detach --force "$1" && git -C "$worktree" clean -ffdxq -e apps/electron/node_modules
+    else
+        rm -rf "$worktree"
+        git -C "$repo" worktree prune
+        git -C "$repo" worktree add --quiet --detach "$worktree" "$1"
+    fi
 }
-trap 'clear_worktree; rm -rf "$lock"' EXIT
+trap 'rm -rf "$lock"' EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 
@@ -107,10 +115,9 @@ stamp=$(date -u +%Y-%m-%dT%H%MZ)
 log="$results/$stamp.log"
 began=$(date +%s)
 load_began=$(load)
-clear_worktree
 if ! git -C "$repo" fetch --quiet origin "$base" 2>"$log" ||
     ! commit=$(git -C "$repo" rev-parse "origin/$base^{commit}" 2>>"$log") ||
-    ! git -C "$repo" worktree add --quiet --detach "$worktree" "$commit" 2>>"$log"; then
+    ! worktree_at "$commit" 2>>"$log"; then
     echo "oby-nightly: couldn't check out origin/$base: $(tail -1 "$log")" >&2
     rm -f "$log"
     exit 2

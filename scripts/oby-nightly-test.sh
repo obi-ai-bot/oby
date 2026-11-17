@@ -40,7 +40,7 @@ run() { "$nightly" "$@" 2>&1; }
 md() { find "$results" -maxdepth 1 -name '????-??-??T????Z.md' | sort; }
 
 # CI-53: with no result, a run checks origin/dev as merged with every suite, writes its result and
-# removes its worktree; the checkout it ran from is untouched.
+# keeps its worktree on that commit; the checkout it ran from is untouched.
 said=$(run) || fail "a passing run didn't exit 0: $said"
 grep -q "^oby-nightly: PASS (${commit:0:7}, exit 0 in [0-9]*s): $results/.*\.md$" <<<"$said" || fail "a pass wasn't said: $said"
 [[ $(md | wc -l) -eq 1 ]] || fail "a run didn't write one result: $(md)"
@@ -51,8 +51,22 @@ grep -q "check ran in $results/worktree with OBY_CHECK_ALL=1 CARGO_TARGET_DIR=$r
     fail "the check didn't run on origin/dev with every suite in its own worktree and target: $(cat "$result")"
 grep -q 'npm --prefix apps/electron ci' "$result" || fail "the Electron app's modules weren't installed: $(cat "$result")"
 [[ "$(readlink "$results/latest.md")" == "${result##*/}" ]] || fail "latest.md doesn't link the newest result"
-[[ ! -e "$results/worktree" && ! -e "$results/.lock" ]] || fail "a run left its worktree or its lock"
-! git worktree list | grep -q "$results/worktree" || fail "git still lists the nightly's worktree"
+[[ ! -e "$results/.lock" ]] || fail "a run left its lock"
+[[ "$(git -C "$results/worktree" rev-parse HEAD)" == "$commit" ]] || fail "a run didn't keep its worktree on its commit"
+# The next night moves the kept worktree to dev's new commit and cleans it.
+echo left >"$results/worktree/left-by-the-check"
+git switch --quiet dev
+echo two >two
+git add two
+git commit --quiet -m two
+git push --quiet origin dev
+commit=$(git rev-parse HEAD)
+git switch --quiet elsewhere
+said=$(run --now) || fail "a second run didn't pass: $said"
+[[ "$(git -C "$results/worktree" rev-parse HEAD)" == "$commit" && -f "$results/worktree/two" ]] || fail "the kept worktree didn't move to dev's new commit"
+[[ ! -e "$results/worktree/left-by-the-check" ]] || fail "the kept worktree wasn't cleaned"
+rm -f "$results"/*.md
+said=$(run) || fail "a run with no result didn't pass: $said"
 [[ "$(git branch --show-current)" == elsewhere && -z "$(git status --porcelain)" ]] || fail "the checkout it ran from changed"
 
 # CI-54: a result under 20 hours old makes it not due; --now runs anyway; one 21 hours old is due.
@@ -85,7 +99,7 @@ wait "$holder" 2>/dev/null || true
 said=$(run) || fail "a stale lock wasn't taken over: $said"
 grep -q '^oby-nightly: PASS' <<<"$said" || fail "a stale lock wasn't taken over: $said"
 
-# CI-55: a stopped run writes no result and leaves no worktree or lock, so it's due again.
+# CI-55: a stopped run writes no result and leaves no lock, so it's due again.
 rm -f "$results"/*.md
 echo hang >"$work/does"
 "$nightly" >"$work/stopped.said" 2>&1 &
@@ -95,7 +109,7 @@ for ((n = 0; n < 100; n++)); do [[ -f "$work/does.pid" ]] && break; sleep 0.1; d
 kill -TERM "$running" "$(cat "$work/does.pid")"
 wait "$running" 2>/dev/null || true
 [[ -z "$(md)" ]] || fail "a stopped run wrote a result: $(md)"
-[[ ! -e "$results/worktree" && ! -e "$results/.lock" ]] || fail "a stopped run left its worktree or its lock"
+[[ ! -e "$results/.lock" ]] || fail "a stopped run left its lock"
 
 # CI-53: when origin/dev can't be checked out, it exits 2, says why, and writes no result.
 rm -f "$work/does"
