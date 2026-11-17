@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { BookOpen, Check, Mail, UserPlus, ChevronDown, EllipsisVertical, Folder, FolderPlus, Plus, Search, type LucideIcon } from 'lucide-react';
+import { BookOpen, Check, Mail, UserPlus, ChevronDown, ChevronRight, EllipsisVertical, Folder, FolderPlus, Plus, Search, type LucideIcon } from 'lucide-react';
 // the icon strip uses Phosphor: it has outline and filled versions of each icon
 import { ChatsCircleIcon, GearSixIcon, HouseIcon, ListChecksIcon, PlusIcon } from '@phosphor-icons/react';
 import { BrandMark } from './brands';
@@ -17,7 +17,7 @@ import SphereTile from './SphereTile';
 import { CAN_CREATE, ME, SAMPLE, cancelInvite, invite, memberCount, urlOf, useSpheres, type Sphere } from './spheres';
 import TaskMenu from './TaskMenu';
 import ConvoMenu from './ConvoMenu';
-import StatusDot from './StatusDot';
+import StatusDot, { TaskMark } from './StatusDot';
 import { askCardLine, memberOpens, mockConvosWith, plainId, useConvos } from './peers';
 import { roomOpens, useRoom } from './room';
 import { chatOfTask, lastAgo, latestChat, renameChat, useChats, type Chat } from './chats';
@@ -28,10 +28,9 @@ import ProfileMenu, { NewProfileModal } from './ProfileMenu';
 import { useProjects, useProjectsOn } from './projects';
 import ProjectSheet from './ProjectSheet';
 import AgentsList, { convoAbout } from './AgentsList';
+import { kidLine, kidTitle, kidsLine, kidsOf } from './nested';
 
-// The Agents side of the panel (screens 08–10) is hidden until it works end to end: the owner's word, 2026-11-16.
-// Turn it back on here.
-const AGENTS_SHOWN = false;
+import { AGENTS_SHOWN } from './panelFlags';
 import { WELCOME, sampleDid, sampleOut, useSetup } from './onboarding';
 import { SAMPLE_TALK } from './Welcome';
 
@@ -67,7 +66,7 @@ const SEARCHABLE: Section[] = ['oby', 'conversations'];
 // ?home: Home and Conversations, ?everything also + and your account picture),
 // the column beside them shows it. Search, on the tabs that have it, sits by the panel icon.
 // It opens from the left and pushes the view over.
-export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOpenGroup, onOpenTask, onOpenChat, onOpenOby, onOpenMember, onOpenTalk, onOpenArchive, onOpenSetting, onOpenSphereSetting, onOpenKnowledge, onOpenRoom, onOpenWaiting, activeWaiting = false, activeOby = null, activeTalk = null, activeSetting = null, activeSphereSetting = null, activeKnowledge = null, active = null, width, onResize }: {
+export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOpenGroup, onOpenTask, onOpenAgent, activeAgent = null, onOpenChat, onOpenOby, onOpenMember, onOpenTalk, onOpenArchive, onOpenSetting, onOpenSphereSetting, onOpenKnowledge, onOpenRoom, onOpenWaiting, activeWaiting = false, activeOby = null, activeTalk = null, activeSetting = null, activeSphereSetting = null, activeKnowledge = null, active = null, width, onResize }: {
   open: boolean;
   onClose: () => void;  // the panel closes (its tab's icon again, while that tab is showing)
   onNewChat: () => void;
@@ -75,6 +74,8 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   atHome: boolean;  // on Home's own page, nothing open over it
   onOpenGroup: (id: string) => void;  // chat first: a kind of work's cards (Home's chips, on Home)
   onOpenTask: (id: string) => void;  // a task's page, on its own
+  onOpenAgent?: (id: string, chat: string) => void;  // a nested task's own thread, over the conversation that started it
+  activeAgent?: string | null;  // the nested task whose thread is showing: its row is highlighted
   onOpenChat: (id: string) => void;  // a task's conversation, from its menu or its row's icon
   onOpenOby: (name: string) => void;  // someone else's Oby, from the mock's Obysphere: its conversations
   onOpenMember: (owner: string) => void;  // a member of the live Obysphere, by owner id: their thread
@@ -311,6 +312,18 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     return next;
   });
   const [newProject, setNewProject] = useState(false);
+  // A conversation's tasks, nested under its row (LIVETASK-19 to 21): shown for the open conversation,
+  // the one holding the open task and one whose task needs you, unless the owner folded it; what the
+  // owner chose is kept (oby.kidsShown: conversation id to shown or not)
+  const [kidsShown, setKidsShown] = useState<Record<string, boolean>>(() => {
+    try { const kept: unknown = JSON.parse(localStorage.getItem('oby.kidsShown') ?? '{}'); return kept && typeof kept === 'object' && !Array.isArray(kept) ? Object.fromEntries(Object.entries(kept).filter(([, v]) => typeof v === 'boolean')) as Record<string, boolean> : {}; } catch { return {}; }
+  });
+  const showKids = (id: string, shown: boolean) => {
+    const next = { ...kidsShown, [id]: shown };
+    setKidsShown(next);
+    try { localStorage.setItem('oby.kidsShown', JSON.stringify(next)); } catch { /* not remembered, that's all */ }
+  };
+  const chatIdOf = (taskId: string) => chatOfTask(taskId)?.id;
   // the chats are searched, never the agents (Agents has no search)
   const searchable = SEARCHABLE.includes(section) && !(section === 'oby' && side === 'agents');
   const openSearch = () => {
@@ -333,10 +346,19 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     ...projects.map((p) => ({ id: p.id, name: p.name, rows: inOrder.filter((c) => c.project === p.id) })),
     { id: '', name: 'No project', rows: inOrder.filter((c) => !projects.some((p) => p.id === c.project)) },
   ].filter((g) => g.rows.length || (g.id && !q));
-  const convoRow = (c: Chat) => (
-    // a row with its own menu button, so the row itself isn't a <button>
+  const convoRow = (c: Chat) => {
+    const kids = chatFirst ? kidsOf(tasks, c.id, chatIdOf) : [];
+    const lit = kids.some((k) => k.id === activeAgent);
+    const shown = kids.length > 0 && (kidsShown[c.id] ?? (activeTalk === c.id || lit || kids.some((k) => k.status === 'needs')));
+    return (
+    <div key={c.id} className={`convo-nest${kids.length ? ' has-kids' : ''}`}>
+    {kids.length > 0 && (
+      <button className="convo-twist" aria-expanded={shown} aria-label={`${shown ? 'Hide' : 'Show'} ${c.title}’s agents`} onClick={() => showKids(c.id, !shown)}>
+        {shown ? <ChevronDown size={12} strokeWidth={2} /> : <ChevronRight size={12} strokeWidth={2} />}
+      </button>
+    )}
+    {/* a row with its own menu button, so the row itself isn't a <button> */}
     <div
-      key={c.id}
       role="button"
       tabIndex={0}
       className={`connector task convo-row${activeTalk === c.id ? ' is-active' : ''}${convoMenu?.id === c.id ? ' is-menu-open' : ''}`}
@@ -362,7 +384,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
             aria-label="Conversation name"
           />
         ) : <span className="connector-name">{c.title}</span>}
-        <span className="connector-about">{convoAbout(c)}</span>
+        <span className="connector-about">{kidsLine(kids) ?? convoAbout(c)}</span>
       </span>
       {/* when it last moved; on hover, its ⋮ in the same spot */}
       <span className="sidebar-item-ago">{c.typing ? 'now' : ago(lastAgo(c))}</span>
@@ -380,7 +402,28 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
         <EllipsisVertical size={14} strokeWidth={1.6} />
       </button>
     </div>
-  );
+    {/* its tasks, each a session of its own: its agent, its title, what it's on, its state (screen 03) */}
+    {shown && (
+      <div className="convo-kids" role="group" aria-label={`${c.title}’s tasks`}>
+        {kids.map((k) => (
+          <button
+            key={k.id}
+            className={`convo-kid${activeAgent === k.id ? ' is-active' : ''}`}
+            aria-current={activeAgent === k.id || undefined}
+            title={kidTitle(k)}
+            onClick={() => { markSeen(k.id); onOpenAgent?.(k.id, c.id); }}
+            onContextMenu={(e) => { e.preventDefault(); setTaskMenu({ id: k.id, at: new DOMRect(e.clientX, e.clientY, 0, 0), atPointer: true }); }}
+          >
+            <BrandMark brand={k.brand} size={14} mono />
+            <span className="convo-kid-text"><b>{k.title}</b> · {kidLine(k)}</span>
+            <TaskMark task={k} />
+          </button>
+        ))}
+      </div>
+    )}
+    </div>
+    );
+  };
 
   // An Obysphere's people, by their names
   const memberRows = (s: Sphere) => (s.sample || s.live ? s.members.map((name) => ({ name })) : OBYS.filter((o) => s.members.includes(o.name))).filter((o) => matches(o.name)).map((o) => {

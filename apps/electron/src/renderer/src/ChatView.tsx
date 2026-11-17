@@ -1,18 +1,16 @@
 import { copyPlain } from './room';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, File as FileIcon } from 'lucide-react';
+import { Check, ChevronRight, File as FileIcon } from 'lucide-react';
 import { BrandMark } from './brands';
 import { ObyFace, PeerByline } from './ObyFace';
 import AskCard from './AskCard';
 import ObyFaceLive from './ObyFaceLive';
 import { markRead, say, useConvos } from './peers';
-import StatusDot from './StatusDot';
+import StatusDot, { TaskMark } from './StatusDot';
 import { AskBlock, resultLine } from './TaskCard';
 import { useScrollThumb } from './useScrollThumb';
-import AgentThread, { WorkNow, openCards } from './AgentThread';
 import TaskMenu from './TaskMenu';
 import { replyTarget, type Box } from './replyTarget';
-import { span } from './jobPage';
 import Composer, { typingIn } from './Composer';
 import Formatted from './Formatted';
 import Said from './Said';
@@ -53,9 +51,9 @@ type Entry = Message | { who: 'oby'; ask: true; ago: number };
 // (peers.ts): each Oby's words under its owner's picture and name. Whatever is
 // happening now comes last: an Oby at work, or the agent's line. It lies over
 // what was open; back (in the title bar, or Esc) returns to it. A task's card
-// opens in place, under it, into its agent's own conversation (AgentThread);
+// opens its own thread over this one (TaskThread, LIVETASK-22), never in place;
 // the message box at the foot never talks to a card's agent (replyTarget).
-export default function ChatView({ id, kind = 'task', leaving, covered = false, onBack, onGone, onOpenTask, onOpenMember }: {
+export default function ChatView({ id, kind = 'task', leaving, covered = false, onBack, onGone, onOpenTask, onOpenAgent, onOpenMember }: {
   id: string;
   kind?: 'task' | 'oby' | 'peer';
   leaving: boolean;
@@ -63,6 +61,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   onBack: () => void;
   onGone: () => void;
   onOpenTask: (id: string) => void;       // a card in the thread: that task's page (its menu, View details)
+  onOpenAgent?: (id: string) => void;     // a card in the thread: that task's own thread, a conversation of its own (LIVETASK-22)
   onOpenMember?: (owner: string) => void;  // a question's card: that person's thread
 }) {
   const tasks = useTasks();
@@ -82,10 +81,6 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   const name = task ? convoTitle(task.job) : talk ? talk.title : convo!.title;
   const j = task?.job;
   const { list, onScroll, thumbProps } = useScrollThumb<HTMLElement>();
-  // the cards the owner opened in place, and those needing them they folded during this need
-  // (deleted, a card goes with its task, opened or not: there's nobody left to tell)
-  const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
-  const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
   // a card's menu (right-click), at the pointer
   const [menu, setMenu] = useState<{ id: string; at: DOMRect } | null>(null);
   const menuTask = menu && tasks.find((t) => t.id === menu.id);
@@ -104,26 +99,6 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
     // person's Oby from the same side, under its owner's name (by). Only you, the
     // person, get a bubble
     : { who: 'oby', by: m.who === 'oby' ? undefined : m.who, text: m.text, ago: m.ago, jobs: m.task ? [m.task] : undefined, streaming: m.streaming }));
-  // the cards that need the owner open by themselves, but for one they folded (LIVETASK-16);
-  // a task's own card in its own thread is never a card to open
-  const needing = thread.flatMap((m) => ('jobs' in m ? m.jobs ?? [] : []))
-    .filter((jid) => !(kind === 'task' && jid === id) && tasks.find((t) => t.id === jid)?.status === 'needs');
-  const open = openCards(opened, folded, needing);
-  const without = (s: ReadonlySet<string>, jid: string) => new Set([...s].filter((x) => x !== jid));
-  const toggle = (jid: string) => {
-    if (open.has(jid)) {
-      setOpened((s) => without(s, jid));
-      if (needing.includes(jid)) setFolded((s) => new Set(s).add(jid));
-    } else {
-      setOpened((s) => new Set(s).add(jid));
-      setFolded((s) => without(s, jid));
-    }
-  };
-  // a fold lasts as long as the need: a later one opens it again
-  useEffect(() => {
-    const ended = [...folded].filter((f) => tasks.find((t) => t.id === f)?.status !== 'needs');
-    if (ended.length) setFolded((s) => new Set([...s].filter((f) => !ended.includes(f))));
-  }, [tasks, folded]);
   // an Oby at work on an answer, and what it's on (someone else's: writing)
   const typing = !!(task ?? talk ?? convo)!.typing, step = talk ? talk.step : convo?.typing ? 'Writing' : undefined;
   // who's writing, in a conversation with other people's Obys: the first in it
@@ -236,11 +211,8 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                         key={jid}
                         task={t}
                         current={kind === 'task' && jid === id}
-                        opened={open.has(jid)}
-                        onOpen={toggle}
+                        onOpen={(tid) => (onOpenAgent ?? onOpenTask)(tid)}
                         onMenu={(at) => setMenu({ id: jid, at })}
-                        // a follow-up its box started: its card opened, where this conversation lists it
-                        onFollowUp={(next) => setOpened((s) => new Set(s).add(next))}
                       />
                     );
                   }),
@@ -369,46 +341,24 @@ function Attached({ files = [] }: { files?: { name: string; preview?: string }[]
 // color: an agent's, in its own conversation
 const Face = ({ live = false, talk, color }: { live?: boolean; talk?: number; color?: string }) => <ObyFaceLive live={live} talk={talk} color={color} />;
 
-// A task started in the conversation, as a small card under Oby's message: its title, how it stands
-// and who has it, and its status mark (as in the side panel). While it works, under that, its to-dos
-// with the current one lit and the last things it did (WorkNow); ended, what it left behind, in one
-// line. A click opens it in place into the agent's own conversation (AgentThread; again: folds it),
-// and a right-click opens its menu (onMenu, at the pointer); in a task's own thread, its own card
-// just shows where it stands. A status this build doesn't know says no word and shows StatusDot's
-// neutral mark (docs/contracts/wire.md, WIRE-3).
-export function ThreadTask({ task, current, opened = false, onOpen, onMenu, onFollowUp }: {
+// A task started in the conversation, as a card under Oby's message (Sangam's screen 03): its agent,
+// its title, how it stands, who has it and where ("Running · Claude Code · oby"), while it works what
+// it's on now, and its stages as a bar; its status mark at the right (as on its nested row in the side
+// panel). A click opens its own thread, a conversation of its own over this one (LIVETASK-22): the
+// card never opens in place. Waiting on the owner, the decision shows under its head, answered right
+// there (screen 04, LIVETASK-9). A right-click opens its menu (onMenu, at the pointer); in a task's own
+// thread, its own card just shows where it stands. A status this build doesn't know says no word and
+// shows StatusDot's neutral mark (docs/contracts/wire.md, WIRE-3).
+export function ThreadTask({ task, current, onOpen, onMenu }: {
   task: Task;
   current: boolean;
-  opened?: boolean;
   onOpen: (id: string) => void;
   onMenu?: (at: DOMRect) => void;
-  onFollowUp?: (id: string) => void;
 }) {
-  const j = task.job;
-  const repo = j.repo.includes('/') ? j.repo.split('/')[1] : null;
-  const atWork = task.status === 'running' || task.status === 'needs';
-  const word = task.unknown ? null : task.status === 'running' ? (j.status === 'queued' ? 'Queued' : 'Running') : task.status === 'needs' ? 'Needs you' : j.nothingDone ? 'Nothing done' : ENDED[j.status] ?? 'Done';
-  const body = <>
-    <BrandMark brand={agentOf(j.agent).brand} size={16} mono />
-    <span className="msg-task-text">
-      <span className="msg-task-title">
-        {task.who && <span className="tc-who">{task.who}</span>}
-        {task.title}
-      </span>
-      <span className="msg-task-meta">
-        {word}{word && ' · '}{agentOf(j.agent).name} · {j.account}{j.on && <> · on {j.on}</>}{repo && <> · {repo}</>}
-        {task.status === 'running' && j.status !== 'queued' && <> · {span(j.created * 60)}</>}
-      </span>
-      {/* stopped: why, in obid's words, on one line */}
-      {task.status === 'done' && ENDED[j.status] && j.reason && <span className="msg-task-meta">{j.reason.split('\n')[0]}</span>}
-      {task.status === 'done' && !task.unknown && resultLine(task)}
-    </span>
-    {/* stopped or failed isn't the check a finished one gets (Sangam's board "Stuck and failed") */}
-    {task.status === 'done' && ENDED[j.status] ? <span className="status" role="img" aria-label={ENDED[j.status]}><span className="status-dot is-failed" /></span> : <StatusDot task={task} />}
-    {!current && (opened ? <ChevronDown size={14} strokeWidth={1.8} className="msg-task-go" /> : <ChevronRight size={14} strokeWidth={1.8} className="msg-task-go" />)}
-  </>;
+  const body = <TaskHead task={task} go={!current} />;
+  const needs = task.status === 'needs' && !!task.job.ask && !current;
   return (
-    <div className={`msg-task-work${atWork ? ' is-live' : ''}${opened ? ' is-on' : ''}`}>
+    <div className={`msg-task-work${task.status === 'running' || task.status === 'needs' ? ' is-live' : ''}${needs ? ' is-asking' : ''}`}>
       {current
         ? <div className="msg-task">{body}</div>
         : (
@@ -417,14 +367,56 @@ export function ThreadTask({ task, current, opened = false, onOpen, onMenu, onFo
             onClick={() => onOpen(task.id)}
             onContextMenu={(e) => { e.preventDefault(); onMenu?.(new DOMRect(e.clientX, e.clientY, 0, 0)); }}
             aria-label={`Open ${task.title}`}
-            aria-expanded={opened}
           >
             {body}
           </button>
         )}
-      {opened && !current
-        ? <AgentThread id={task.id} onFollowUp={(next) => onFollowUp?.(next)} />
-        : atWork && <WorkNow task={task} onClick={current ? undefined : () => onOpen(task.id)} />}
+      {needs && <div className="msg-task-ask"><AskBlock task={task} inChat /></div>}
     </div>
+  );
+}
+
+// A task's head, as its card and its own thread show it (screen 03): go, the chevron that says a click
+// opens it elsewhere
+export function TaskHead({ task, go = false }: { task: Task; go?: boolean }) {
+  const j = task.job;
+  const repo = j.repo.includes('/') ? j.repo.split('/')[1] : j.repo || null;
+  const word = task.unknown ? null : task.status === 'running' ? (j.status === 'queued' ? 'Queued' : 'Running') : task.status === 'needs' ? 'Needs you' : j.nothingDone ? 'Nothing done' : ENDED[j.status] ?? 'Done';
+  // what it's on now, by the stage it's in: "Work · Running cargo test"
+  const stage = j.stages.find((st) => st.state === 'current');
+  const now = task.status === 'running' && j.status !== 'queued' && j.step ? [stage?.title, j.step].filter(Boolean).join(' · ') : null;
+  return <>
+    <BrandMark brand={agentOf(j.agent).brand} size={16} mono />
+    <span className="msg-task-text">
+      <span className="msg-task-title">
+        {task.who && <span className="tc-who">{task.who}</span>}
+        {task.title}
+      </span>
+      <span className="msg-task-meta">
+        {word}{word && ' · '}{agentOf(j.agent).name}{j.on && <> · on {j.on}</>}{repo && <> · {repo}</>}
+      </span>
+      {now && <span className="msg-task-now"><span className="sheen">{now}</span></span>}
+      {/* stopped: why, in obid's words, on one line */}
+      {task.status === 'done' && ENDED[j.status] && j.reason && <span className="msg-task-meta">{j.reason.split('\n')[0]}</span>}
+      {task.status === 'done' && !task.unknown && resultLine(task)}
+      {j.stages.length > 0 && task.status !== 'done' && <Stages task={task} />}
+    </span>
+    {/* stopped or failed isn't the check a finished one gets (Sangam's board "Stuck and failed") */}
+    <TaskMark task={task} />
+    {go && <ChevronRight size={14} strokeWidth={1.8} className="msg-task-go" />}
+  </>;
+}
+
+// Its stages as a bar of six (screen 03): those done filled, the one it's on pulsing, or orange while
+// it waits on the owner, a failed one red
+function Stages({ task }: { task: Task }) {
+  const stages = task.job.stages;
+  const at = stages.findIndex((st) => st.state === 'current');
+  const needs = task.status === 'needs';
+  const label = at >= 0 ? `Stage ${at + 1} of ${stages.length}: ${stages[at].title}${needs ? ', needs you' : ''}` : `${stages.filter((st) => st.state === 'done').length} of ${stages.length} stages done`;
+  return (
+    <span className="tc-progress msg-task-stages" role="img" aria-label={label}>
+      {stages.map((st, i) => <span key={i} className={st.state === 'done' ? 'is-done' : st.state === 'failed' ? 'is-failed' : st.state === 'current' ? (needs ? 'is-needs' : 'is-current') : undefined} />)}
+    </span>
   );
 }

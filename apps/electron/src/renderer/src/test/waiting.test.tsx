@@ -90,6 +90,8 @@ describe('Waiting for you', () => {
     expect(rows()).toEqual(['Retry jitter for the collector', 'Fix the live panel’s queue order', 'Fix the iOS signing step']);
     expect(host.querySelector('.waiting-counts')?.textContent).toBe('2 to merge · 1 permission');
     expect(host.textContent).toContain('tetrix · 40m');
+    // a permission says what it asks in place of how long (screen 17)
+    expect(host.textContent).toContain('oby · asks to run a command');
     // a merge's row: Oby's summary, its check and who approved it
     const first = host.querySelector('.waiting-row')!;
     expect(first.querySelector('.waiting-summary')?.textContent).toBe('Backoff gets ±20% jitter so a fleet doesn’t retry at once.');

@@ -4,6 +4,10 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Chat } from '../chats';
 import { liveBridge } from './liveBridge';
+import { AGENTS_SHOWN } from '../panelFlags';
+
+// The Agents side is hidden for now (panelFlags.ts): its panel's scenarios run again once it's shown
+const shown = describe.skipIf(!AGENTS_SHOWN);
 
 // Agents beside Projects in the side panel (docs/contracts/helpers.md, HELPERS-12 to 20): the real
 // Sidebar, and Home with its conversation, with main's bridge (window.app.obid.call) stood in for as obid.
@@ -160,7 +164,7 @@ describe('agentRows', () => {
   });
 });
 
-describe('HELPERS-12', () => {
+shown('HELPERS-12', () => {
   it('HELPERS-12: helpers_12_the_switch', async () => {
     await show('', obid([INBOX]).app, TALKS);
     expect(tabs().map((t) => t.textContent)).toEqual(['Projects', 'Agents']);
@@ -213,7 +217,7 @@ describe('HELPERS-12', () => {
   });
 });
 
-describe('HELPERS-13', () => {
+shown('HELPERS-13', () => {
   it('HELPERS-13: helpers_13_needs_you_first_in_the_open_profile', async () => {
     const chats = [...TALKS, talk(INBOX.conversation, 'Inbox helper', 30, { needs: true }), talk(RESEARCHER.conversation, 'Researcher', 3, { typing: true, step: 'Reading the pricing page' }),
       talk(NOTES.conversation, 'Release notes', 120, { said: [{ who: 'oby', text: 'Drafted the notes.', ago: 120 }] }), talk(ELSEWHERE.conversation, 'Acme replies', 1)];
@@ -261,7 +265,7 @@ describe('HELPERS-14', () => {
   });
 });
 
-describe('HELPERS-15', () => {
+shown('HELPERS-15', () => {
   it('HELPERS-15: helpers_15_the_sheet_sends_what_it_shows', async () => {
     const o = obid([INBOX]);
     await show('', o.app, TALKS);
@@ -312,7 +316,7 @@ describe('HELPERS-15', () => {
   });
 });
 
-describe('HELPERS-16', () => {
+shown('HELPERS-16', () => {
   it('HELPERS-16: helpers_16_gmail_and_slack_are_never_sent_on_obid', async () => {
     const o = obid([]);
     await show('', o.app, TALKS);
@@ -357,7 +361,7 @@ describe('HELPERS-16', () => {
   });
 });
 
-describe('HELPERS-17', () => {
+shown('HELPERS-17', () => {
   it('HELPERS-17: helpers_17_a_refusal_keeps_the_sheet', async () => {
     const o = obid([INBOX]);
     o.said.create = { status: 422, text: '{"error":"A Cursor agent needs The web: Cursor’s own web search can’t be taken away.","reason":"cursor-needs-web"}' };
@@ -390,7 +394,7 @@ describe('HELPERS-17', () => {
   });
 });
 
-describe('HELPERS-18', () => {
+shown('HELPERS-18', () => {
   it('HELPERS-18: helpers_18_an_agent_s_conversation', async () => {
     const turns = { [RESEARCHER.conversation]: [
       { id: 't1', who: 'user', text: 'Compare what we pay.', at, jobs: [] }, { id: 't2', who: 'oby', text: 'On it. Reading each pricing page.', at, jobs: [] },
@@ -427,7 +431,7 @@ describe('HELPERS-18', () => {
   });
 });
 
-describe('HELPERS-19', () => {
+shown('HELPERS-19', () => {
   const cards = () => [...(layer()?.querySelectorAll('.tc-ask') ?? [])].map((c) => ({
     kind: c.querySelector('.tc-ask-kind')!.textContent, head: c.querySelector('.tc-ask-head')!.textContent, options: [...c.querySelectorAll('.tc-option')].map((b) => b.textContent),
   }));
@@ -475,7 +479,7 @@ describe('HELPERS-19', () => {
   });
 });
 
-describe('HELPERS-20', () => {
+shown('HELPERS-20', () => {
   it('HELPERS-20: helpers_20_an_obid_without_helpers', async () => {
     for (const answer of [{ status: 404, text: '{"error":"Not found."}' }, { status: 0, text: 'Oby’s engine isn’t running.' }]) {
       const o = obid(answer);

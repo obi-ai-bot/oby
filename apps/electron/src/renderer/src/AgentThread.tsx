@@ -18,7 +18,7 @@ const stateOf = (task: Task) => (task.unknown ? 'unknown' : task.status === 'nee
 
 // Its to-dos as the agent wrote them, the one it's on lit (Sangam's sp-todos), and under it what's
 // passed in: on a card, the last things it did
-function Todos({ todos, task, children }: { todos: Todo[]; task: Task; children?: React.ReactNode }) {
+export function Todos({ todos, task, children }: { todos: Todo[]; task: Task; children?: React.ReactNode }) {
   const state = stateOf(task);
   return (
     <ol className="lt-todos" aria-label="What it’s doing">
@@ -86,16 +86,11 @@ export function WorkNow({ task, onClick }: { task: Task; onClick?: () => void })
   );
 }
 
-// Which cards in a conversation show opened (LIVETASK-16): the ones the owner opened, and every one
-// that needs them unless they folded it during this need. Opening by itself never folds one.
-export const openCards = (opened: ReadonlySet<string>, folded: ReadonlySet<string>, needing: readonly string[]) =>
-  new Set([...opened, ...needing.filter((id) => !folded.has(id))]);
-
-// The agent's own conversation (Sangam's screens 03 and 04, docs/design/oby-home/), opened in place
-// under its card: from the start, what it said, did and thought and what you told it, its to-dos on
+// The agent's own conversation (Sangam's screens 03 and 04, docs/design/oby-home/), a task's own
+// thread (TaskThread, LIVETASK-22): from the start, what it said, did and thought and what you told it, its to-dos on
 // top, the decision it waits on, and the box to tell it something (POST /v1/jobs/{id}/messages), with
 // Stop in it while it runs. Told something once it's finished, it starts a follow-up (onFollowUp).
-export default function AgentThread({ id, onFollowUp }: { id: string; onFollowUp: (id: string) => void }) {
+export default function AgentThread({ id, onFollowUp, head }: { id: string; onFollowUp: (id: string) => void; head?: React.ReactNode }) {
   const tasks = useTasks();
   const task = tasks.find((t) => t.id === id)!;
   const entries = useEntries(id);
@@ -115,20 +110,22 @@ export default function AgentThread({ id, onFollowUp }: { id: string; onFollowUp
   };
   return (
     <div className="lt-thread" role="group" aria-label={`Conversation with ${agent.name}`}>
-      {todos && <div className="lt-thread-todos"><Todos todos={todos} task={task} /></div>}
       <div className="lt-thread-scroll">
         <section ref={list} className="lt-thread-lines" onScroll={onListScroll}>
+          <div className="lt-thread-column">
+          {head}
+          {todos && <div className="lt-thread-todos"><Todos todos={todos} task={task} /></div>}
           <ol className="ss-entries">
             <Earlier count={tail.earlier} onClick={tail.more} />
             {tail.shown.map((e, i) => <Line key={e.n ?? i} entry={e} job={id} brand={agent.brand} live={liveFor(e, live)} inCard />)}
           </ol>
+          {task.status === 'needs' && j.ask && <div className="lt-thread-ask"><AskBlock task={task} inChat /></div>}
+          </div>
         </section>
         <div {...thumbProps} />
       </div>
-      {task.status === 'needs' && j.ask && <div className="lt-thread-ask"><AskBlock task={task} inChat /></div>}
       <Composer
         className="lt-box"
-        autoFocus={false}
         placeholder={tellPlaceholder(task, agent.name)}
         label={`Tell the agent about ${task.title}`}
         onSend={send}

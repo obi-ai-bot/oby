@@ -2321,3 +2321,22 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .chatgpt-link { padding: 0; background: none; border: 0; color: var(--muted); font: inherit; text-decoration: underline; cursor: pointer; }
 .chatgpt-link:hover { color: var(--ink); }
 .wl-alt { align-self: flex-start; font-size: var(--text-sm); }
+
+/* A conversation's tasks, nested under its row in the side panel (Sangam's screens 03 and 04,
+   LIVETASK-19 to 21): the twist in the gutter on its left, then a row per task under a line */
+.convo-nest { position: relative; }
+.convo-twist { position: absolute; z-index: 1; left: -13px; top: 13px; width: 16px; height: 16px; display: grid; place-items: center; border-radius: 4px; color: var(--muted); }
+.convo-twist:hover, .convo-twist:focus-visible { color: var(--text); background: var(--hover); }
+.convo-kids { margin: 0 0 2px 17px; padding-left: 8px; display: flex; flex-direction: column; border-left: 1px solid var(--line); }
+.convo-kid { height: 30px; padding: 0 8px; display: flex; align-items: center; gap: 8px; border-radius: 6px; color: var(--muted); font-size: var(--text-sm); text-align: left; min-width: 0; }
+.convo-kid:hover { background: var(--hover); }
+.convo-kid.is-active { background: var(--active); }
+.convo-kid > svg { flex: none; }
+.convo-kid > .status { flex: none; }
+.convo-kid-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
+.convo-kid-text b { color: var(--item); font-weight: 400; }
+.convo-kid.is-active .convo-kid-text b { color: var(--ink); }
+/* the new profile's sheet (screen 18): its colours under their label, as its name is */
+.profile-sheet .modal-label { margin-top: 16px; }
+.profile-sheet .modal-lede + .modal-label { margin-top: 0; }
+.profile-sheet .profile-swatches { margin-top: 0; }
