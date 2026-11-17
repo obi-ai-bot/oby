@@ -13,6 +13,7 @@ import { useLive } from './live';
 import { TetrixAddress, useTetrixAddress } from './TetrixAddress';
 import { CONTINUE, offersChatGpt } from './chatgpt';
 import { ChatGptLogo } from './ChatGptPlan';
+import { INSTALL, useMissing } from './install';
 
 // a sign-in's code to type on its page, after what the row says
 const typed = (c?: Code) => (c?.userCode ? ` · enter ${c.userCode}` : '');
@@ -117,8 +118,16 @@ const AGENT_SUB: Record<Agent, [ready: string, out: string]> = {
 export function AgentRows({ bare = false }: { bare?: boolean }) {
   const s = useSetup();
   const { status } = useLive();
+  // first run: an agent whose CLI obid doesn't find shows Install first, the vendor's command under
+  // it once clicked (FIRSTRUN-2)
+  const missing = useMissing(bare && onObid ? status : null);
+  const [installing, setInstalling] = useState<Agent | null>(null);
   return <>{(Object.keys(AGENTS) as Agent[]).map((a, i) => {
     const st = s.found <= i ? 'looking' : s.agents[a];
+    if (bare && st === 'out' && missing.has(a)) {
+      return <Row key={a} mark={<BrandMark brand={AGENTS[a].brand} size={22} />} name={AGENTS[a].name} state="out" act="Install" bare
+        onAct={() => setInstalling(installing === a ? null : a)} below={installing === a ? <Install agent={a} /> : undefined} />;
+    }
     // Codex with no login on this Mac: Continue with ChatGPT, its device code a way besides
     const chatgpt = a === 'codex' && offersChatGpt(status);
     // on obid: the account obid signed in, the code its page wants, Claude Code's code to paste
@@ -131,6 +140,20 @@ export function AgentRows({ bare = false }: { bare?: boolean }) {
       {st === 'waiting' && s.codes[a]?.paste ? <PasteCode onCode={(code) => sendAgentCode(a, code)} /> : undefined}
     </Row>;
   })}</>;
+}
+
+// An agent's install command, the vendor's own, to copy and run in Terminal: Oby runs nothing
+function Install({ agent }: { agent: Agent }) {
+  const [copied, setCopied] = useState(false);
+  const name = AGENTS[agent].name;
+  const copy = () => { void navigator.clipboard?.writeText(INSTALL[agent]).then(() => setCopied(true), () => { /* left to select by hand */ }); };
+  return <div className="setup-install">
+    <span className="setup-install-line">
+      <code className="setup-install-command">{INSTALL[agent]}</code>
+      <button type="button" className="set-button" aria-label={`Copy ${name}’s install command`} onClick={copy}>{copied ? 'Copied' : 'Copy'}</button>
+    </span>
+    <span className="wl-sub">Paste it in Terminal. Oby finds it once it’s installed.</span>
+  </div>;
 }
 
 const PLAYED = new Set<SetupStep>();

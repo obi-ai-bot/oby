@@ -48,10 +48,14 @@ impl Profile {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct Saved {
     #[serde(default)]
     profiles: Vec<Profile>,
+    /// The ids of deleted profiles: everything one kept is the default profile's (PROFILES-44).
+    /// Left out until a profile is deleted, so the file keeps its shape.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    merged: Vec<String>,
 }
 
 /// The profiles kept in `home/profiles.json` (0600).
@@ -71,6 +75,7 @@ pub struct Profiles {
 pub enum Refused {
     Unreadable,
     NoSuchProfile,
+    IsDefault,
     Unwritten(std::io::Error),
 }
 
@@ -94,6 +99,7 @@ impl Profiles {
             );
             Saved {
                 profiles: vec![first_profile()],
+                merged: Vec::new(),
             }
         });
         if saved.profiles.is_empty() {
@@ -174,7 +180,7 @@ impl Profiles {
             false => bad("There's no such profile on this Mac."),
         };
         match at {
-            Some(at) => Ok(Scope::of(&saved.profiles[at])),
+            Some(at) => Ok(Scope::of(&saved.profiles[at], &saved.merged)),
             // A registry with no default answers what was there before profiles.
             None if named == Named::Nothing => Ok(Scope::before_profiles()),
             None => Err(refused()),
@@ -185,16 +191,67 @@ impl Profiles {
     /// everything kept before profiles belong to.
     pub fn default_scope(&self) -> Scope {
         let saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
-        (saved.profiles.iter().find(|p| p.default)).map_or_else(Scope::before_profiles, Scope::of)
+        (saved.profiles.iter().find(|p| p.default))
+            .map_or_else(Scope::before_profiles, |p| Scope::of(p, &saved.merged))
     }
 
-    /// The scope of the profile `id` (a thing's tag), or the default's for none.
+    /// Every profile's scope, in the registry's order (PROFILES-47).
+    pub fn scopes(&self) -> Vec<Scope> {
+        let saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
+        (saved.profiles.iter())
+            .map(|p| Scope::of(p, &saved.merged))
+            .collect()
+    }
+
+    /// The scope of the profile `id` (a thing's tag), or the default's for none or for a deleted
+    /// profile's.
     pub fn scope_by(&self, id: Option<&str>) -> Option<Scope> {
         let Some(id) = id.filter(|id| !id.is_empty()) else {
             return Some(self.default_scope());
         };
         let saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
-        saved.profiles.iter().find(|p| p.id == id).map(Scope::of)
+        if saved.merged.iter().any(|m| m == id) {
+            drop(saved);
+            return Some(self.default_scope());
+        }
+        (saved.profiles.iter().find(|p| p.id == id)).map(|p| Scope::of(p, &saved.merged))
+    }
+
+    /// The id and name of the profile a thing kept with `tag` belongs to (none, or a deleted
+    /// profile's, is the default's): what `otherProfileLogins` names.
+    pub fn named_by(&self, tag: Option<&str>) -> Option<(String, String)> {
+        let scope = self.scope_by(tag)?;
+        let saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
+        let profile = saved.profiles.iter().find(|p| p.id == scope.id)?;
+        Some((profile.id.clone(), profile.name.clone()))
+    }
+
+    /// Profile `id`'s storage root, when it is one that may be deleted: not the default, and the
+    /// registry read at start ([`Self::delete`]).
+    pub fn deletable(&self, home: &Path, id: &str) -> Result<PathBuf, Refused> {
+        if self.unreadable {
+            return Err(Refused::Unreadable);
+        }
+        let saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
+        let profile = (saved.profiles.iter().find(|p| p.id == id)).ok_or(Refused::NoSuchProfile)?;
+        if profile.default {
+            return Err(Refused::IsDefault);
+        }
+        storage_root(home, profile).ok_or(Refused::NoSuchProfile)
+    }
+
+    /// Profile `id` taken off the registry, kept, its id under `merged`: everything it kept is the
+    /// default profile's from now on (PROFILES-44). Never the default.
+    pub fn delete(&self, id: &str) -> Result<Profile, Refused> {
+        self.update(|saved| {
+            let at =
+                (saved.profiles.iter().position(|p| p.id == id)).ok_or(Refused::NoSuchProfile)?;
+            if saved.profiles[at].default {
+                return Err(Refused::IsDefault);
+            }
+            saved.merged.push(id.to_owned());
+            Ok(saved.profiles.remove(at))
+        })
     }
 
     /// A new profile, not the default, with its own empty folder under `home` (0700), kept.
@@ -242,9 +299,7 @@ impl Profiles {
         if self.unreadable {
             return Err(Refused::Unreadable);
         }
-        let mut next = Saved {
-            profiles: saved.profiles.clone(),
-        };
+        let mut next = saved.clone();
         let profile = edit(&mut next)?;
         keep(&self.file, &next).map_err(Refused::Unwritten)?;
         *saved = next;
@@ -273,13 +328,20 @@ fn named(saved: &Saved, headers: &HeaderMap) -> (Named, bool) {
 pub struct Scope {
     pub id: String,
     pub default: bool,
+    /// The default profile's only: the deleted profiles whose things are its now (PROFILES-44).
+    merged: Vec<String>,
 }
 
 impl Scope {
-    fn of(profile: &Profile) -> Scope {
+    fn of(profile: &Profile, merged: &[String]) -> Scope {
         Scope {
             id: profile.id.clone(),
             default: profile.default,
+            merged: if profile.default {
+                merged.to_vec()
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -289,20 +351,31 @@ impl Scope {
         Scope::before_profiles()
     }
 
+    /// Profile `id`'s, not the default, as a test's own conversations have it.
+    #[cfg(test)]
+    pub fn of_profile_for_tests(id: &str) -> Scope {
+        Scope {
+            id: id.to_owned(),
+            default: false,
+            merged: Vec::new(),
+        }
+    }
+
     /// A home whose registry has no default: everything is as before profiles.
     fn before_profiles() -> Scope {
         Scope {
             id: String::new(),
             default: true,
+            merged: Vec::new(),
         }
     }
 
-    /// Whether a thing kept with the profile `tag` belongs to this profile: none, or empty, is the
-    /// default's.
+    /// Whether a thing kept with the profile `tag` belongs to this profile: none, or empty, or a
+    /// deleted profile's, is the default's.
     pub fn holds(&self, tag: Option<&str>) -> bool {
         match tag.filter(|tag| !tag.is_empty()) {
             None => self.default,
-            Some(tag) => tag == self.id,
+            Some(tag) => tag == self.id || self.merged.iter().any(|m| m == tag),
         }
     }
 
@@ -446,6 +519,37 @@ pub async fn change_route(
     Ok((StatusCode::OK, axum::Json(profile.to_json())).into_response())
 }
 
+/// `DELETE /v1/profiles/{id}` (PROFILES-44, 45): a profile that isn't the default goes, and
+/// everything it kept is the default's: its projects are added to the default's, after its own,
+/// then it leaves the registry (its id kept under `merged`, which makes its conversations, jobs,
+/// helpers, accounts and secrets the default's), then its folder goes. Nothing is deleted, stopped
+/// or signed out. The default's projects are put back when the registry isn't written.
+pub async fn delete_route(
+    State(shared): State<Arc<Shared>>,
+    UrlPath(id): UrlPath<String>,
+) -> Result<Response, ApiError> {
+    let home = &shared.config.home;
+    let root = shared.profiles.deletable(home, &id)?;
+    let mut held = shared.projects.lock();
+    let before = held.merge_into_home(&root)?;
+    if let Err(refused) = shared.profiles.delete(&id) {
+        held.put_back_home(before);
+        return Err(refused.into());
+    }
+    held.forget(&root);
+    drop(held);
+    if let Err(e) = std::fs::remove_dir_all(&root)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(
+            "profile {id} is deleted, but {} is left: {e}",
+            root.display()
+        );
+    }
+    tracing::info!("profile {id} is deleted: what it kept is the default profile's");
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 /// A name of 1 to 40 characters, trimmed.
 fn fit_name(name: &str) -> Result<String, ApiError> {
     let name = name.trim();
@@ -482,6 +586,10 @@ impl From<Refused> for ApiError {
             Refused::NoSuchProfile => {
                 ApiError::new(StatusCode::NOT_FOUND, "There's no such profile.")
             }
+            Refused::IsDefault => ApiError::new(
+                StatusCode::CONFLICT,
+                "The default profile isn't deleted: everything kept before profiles is its.",
+            ),
             Refused::Unwritten(e) => ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("The profile couldn't be kept: {e}"),
@@ -576,6 +684,7 @@ mod tests {
                 color: "#7a4a8c".into(),
                 default: true,
             }],
+            merged: Vec::new(),
         };
         keep(&home.join("profiles.json"), &saved).unwrap();
         let before = std::fs::read(home.join("profiles.json")).unwrap();
@@ -640,6 +749,7 @@ mod tests {
         };
         let saved = Saved {
             profiles: vec![profile(b, false), profile(a, true), profile(c, false)],
+            merged: Vec::new(),
         };
         keep(&home.join("profiles.json"), &saved).unwrap();
         let profiles = Profiles::open(&home);

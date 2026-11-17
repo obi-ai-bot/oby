@@ -5,6 +5,8 @@ import { AgentRows, GitHubRow, TetrixRow } from './SetupCard';
 import { findAgents, useSetup } from './onboarding';
 import { useLive } from './live';
 import { resetSettingsTip } from './SettingsTip';
+import { onObid } from './lean';
+import { CAN_CREATE } from './spheres';
 
 // Setting up, Sangam's way (2026-10-27): a window of its own, not the chat. Oby
 // hops up out of the bottom edge (as the Obys of a conversation do), half of it
@@ -229,8 +231,9 @@ function Hello() {
   </>;
 }
 
-// What Oby needs to start: a coding agent (one at least, to go on) and access to your code
-// (GitHub here; GitLab and Bitbucket from Settings' connectors). GitHub can wait: Home asks for it
+// What Oby needs to start: a coding agent and access to your code (GitHub here). GitHub can wait:
+// Home asks for it. With no agent signed in, Skip for now goes on (FIRSTRUN-1): first run is never a
+// dead end
 function Tools() {
   const s = useSetup();
   const { problem, why } = useLive();
@@ -248,9 +251,14 @@ function Tools() {
     {/* GitHub a little apart from the agents, no labels: the marks say what each is. Under it, where
         the other places code lives go (not a link: nobody leaves setting up half way) */}
     <In d={180} as="ul" className="setup-rows onb-rows is-apart"><GitHubRow /></In>
-    <In d={200} as="p" className="onb-note">Use GitLab or Bitbucket? Add it in Settings after setup.</In>
+    {/* (on obid only what's built: GitLab and Bitbucket aren't, FIRSTRUN-4) */}
+    {!onObid && <In d={200} as="p" className="onb-note">Use GitLab or Bitbucket? Add it in Settings after setup.</In>}
     {failed && <p className="onb-why" role="status">{problem}</p>}
-    <In d={260} className="onb-hit"><button type="button" className="onb-go" onPointerEnter={() => { if (ready) nod(); }} onPointerLeave={noNod} onClick={() => { noNod(); go(); }}>Continue<ArrowRight size={16} strokeWidth={ARROW_STROKE} /></button></In>
+    <In d={260} className="onb-hit onb-buttons">
+      <button type="button" className="onb-go" onPointerEnter={() => { if (ready) nod(); }} onPointerLeave={noNod} onClick={() => { noNod(); go(); }}>Continue<ArrowRight size={16} strokeWidth={ARROW_STROKE} /></button>
+      {/* under Continue, as on the Knowledge step; an agent ready, it fades out but keeps its room */}
+      <button type="button" className={`onb-skip${ready ? ' is-gone' : ''}`} tabIndex={ready ? -1 : undefined} aria-hidden={ready || undefined} onClick={() => { noNod(); openOnboarding('knowledge'); }}>Skip for now</button>
+    </In>
   </>;
 }
 
@@ -265,7 +273,7 @@ function Knowledge() {
   return <>
     <In d={0} as="p" className="onb-text">Connect your team’s knowledge system.</In>
     <In d={120} as="ul" className={`setup-rows onb-rows${nope ? ` is-nope-${nope % 2}` : ''}`}><TetrixRow /></In>
-    <In d={180} as="p" className="onb-note">Or add any MCP server in Settings after setup.</In>
+    {!onObid && <In d={180} as="p" className="onb-note">Or add any MCP server in Settings after setup.</In>}
     <In d={260} className="onb-hit onb-buttons">
       <button type="button" className="onb-go" onPointerEnter={() => { if (on) nod(); }} onPointerLeave={noNod} onClick={() => { noNod(); go(); }}>Continue<ArrowRight size={16} strokeWidth={ARROW_STROKE} /></button>
       {/* under Continue; connected, it fades out but keeps its room, so nothing moves */}
@@ -278,7 +286,7 @@ function Knowledge() {
 function Sphere() {
   return <>
     <In d={0} soft as="h1" className="onb-title">One more thing.</In>
-    <In d={500} soft as="p" className="onb-text">Your Oby can talk to other Obys.<br />Create an Obysphere for your team and bring them together.</In>
+    <In d={500} soft as="p" className="onb-text">Your Oby can talk to other Obys.<br />{CAN_CREATE ? 'Create an Obysphere for your team and bring them together.' : 'Join your team’s Obysphere from its invite link.'}</In>
     <In d={620} soft className="onb-hit"><button type="button" className="onb-go" onClick={finishOnboarding}>Let’s go<ArrowRight size={16} strokeWidth={ARROW_STROKE} /></button></In>
   </>;
 }

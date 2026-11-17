@@ -260,8 +260,14 @@ export type Status = {
   // obid only: the account conversations talk through (none: Auto), and the one a new one's first turn would
   talkAccount?: string | null;
   talkNext?: string | null;
-  // obid only: the tools' own logins found on this Mac that aren't accounts yet
+  // obid only: the tools' own logins found on this Mac that aren't accounts yet (held by no profile)
   availableLogins?: { agent: Agent; id: string; name: string }[];
+  // obid only: the tools' own logins on this Mac that another profile holds, by its id and name
+  // (docs/contracts/profiles.md, PROFILES-43); an older obid sends none
+  otherProfileLogins?: { agent: Agent; id: string; profile: string; profileName: string }[];
+  // obid only: each tool's binary (path null when it isn't found) and its version (CLIVERSIONS);
+  // an older obid sends none
+  tools?: { agent: string; path: string | null; version: string | null; versionStatus: string; knownBadReason?: string }[];
   models: Record<string, { model: string }>;
   maxRunning: number;
   running: number;
