@@ -45,10 +45,21 @@ mod tests {
     /// COMPOSER-5: the chip's effort holds over the account's, until the job changes tool.
     #[test]
     fn composer_5_a_named_effort_holds_over_the_accounts() {
-        let mut job = Job::new("j".into(), "o/r".into(), "build".into(), "x".into(), "claude".into(), "a".into());
+        let mut job = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "build".into(),
+            "x".into(),
+            "claude".into(),
+            "a".into(),
+        );
         let tuning = BTreeMap::from([(
             "a".to_owned(),
-            crate::settings::Tuning { model: None, effort: Some("low".into()), complex_effort: None },
+            crate::settings::Tuning {
+                model: None,
+                effort: Some("low".into()),
+                complex_effort: None,
+            },
         )]);
         tune(&mut job, &tuning, &[]);
         assert_eq!(job.effort.as_deref(), Some("low"));

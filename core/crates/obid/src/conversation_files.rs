@@ -84,7 +84,13 @@ fn names(folder: &Path) -> Vec<String> {
     let listed = std::process::Command::new("git")
         .arg("-C")
         .arg(folder)
-        .args(["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ])
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .output();
@@ -103,7 +109,9 @@ fn names(folder: &Path) -> Vec<String> {
 }
 
 fn walk(dir: &Path, under: &str, out: &mut Vec<String>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     let mut entries: Vec<_> = entries.flatten().collect();
     entries.sort_by_key(|e| e.file_name());
     for entry in entries {
@@ -111,9 +119,15 @@ fn walk(dir: &Path, under: &str, out: &mut Vec<String>) {
             return;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        let path = if under.is_empty() { name.clone() } else { format!("{under}/{name}") };
+        let path = if under.is_empty() {
+            name.clone()
+        } else {
+            format!("{under}/{name}")
+        };
         // A link is never followed: it could lead anywhere on the Mac.
-        let Ok(kind) = entry.file_type() else { continue };
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
         if kind.is_dir() {
             if !name.starts_with('.') && !SKIPPED.contains(&name.as_str()) {
                 walk(&entry.path(), &path, out);
@@ -155,7 +169,10 @@ mod tests {
         std::os::unix::fs::symlink("/etc", root.join("etc-link")).unwrap();
         let folder = root.to_string_lossy().into_owned();
         let paths = |q: &str| -> Vec<String> {
-            found(std::slice::from_ref(&folder), q).iter().map(|f| f["path"].as_str().unwrap().to_owned()).collect()
+            found(std::slice::from_ref(&folder), q)
+                .iter()
+                .map(|f| f["path"].as_str().unwrap().to_owned())
+                .collect()
         };
         assert_eq!(paths("app"), ["src/app.ts", "src/lib/apply.ts"]);
         assert_eq!(paths("map"), ["docs/map.md"]);
@@ -163,7 +180,10 @@ mod tests {
         assert!(paths("index").is_empty(), "node_modules is skipped");
         assert!(paths("passwd").is_empty(), "a link isn't followed");
         assert_eq!(paths("").len(), 3);
-        assert_eq!(found(std::slice::from_ref(&folder), "app")[0]["folder"], folder.as_str());
+        assert_eq!(
+            found(std::slice::from_ref(&folder), "app")[0]["folder"],
+            folder.as_str()
+        );
     }
 
     /// COMPOSER-15: in a repository, git's own list: ignored files aren't offered.
@@ -171,13 +191,27 @@ mod tests {
     fn composer_15_a_repository_offers_what_git_does() {
         let dir = scratch("git");
         let root = dir.as_path();
-        let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(root).args(args).output().unwrap().status.success());
+        let git = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(root)
+                    .args(args)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            )
+        };
         git(&["init", "-q"]);
         std::fs::write(root.join(".gitignore"), "secret.env\n").unwrap();
         std::fs::write(root.join("secret.env"), "x").unwrap();
         std::fs::write(root.join("server.rs"), "x").unwrap();
         let folder = root.to_string_lossy().into_owned();
-        let paths: Vec<_> = found(&[folder], "se").iter().map(|f| f["path"].as_str().unwrap().to_owned()).collect();
+        let paths: Vec<_> = found(&[folder], "se")
+            .iter()
+            .map(|f| f["path"].as_str().unwrap().to_owned())
+            .collect();
         assert_eq!(paths, ["server.rs"]);
     }
 }

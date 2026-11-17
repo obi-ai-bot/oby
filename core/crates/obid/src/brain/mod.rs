@@ -346,7 +346,9 @@ pub async fn plan(
         if !next.turns.contains(&own) {
             return Ok((
                 StatusCode::OK,
-                axum::Json(json!({"kind": "none", "jobs": [], "drafts": [], "conversation": conversation})),
+                axum::Json(
+                    json!({"kind": "none", "jobs": [], "drafts": [], "conversation": conversation}),
+                ),
             )
                 .into_response());
         }
@@ -421,7 +423,9 @@ fn underway(shared: &Shared, body: &Bytes) -> Result<Option<String>, ApiError> {
             "Stop takes {\"conversation\": \"<id>\"}, or nothing: turn is for POST /v1/plans/cancel.",
         ));
     }
-    Ok(named.conversation.or_else(|| shared.turns.latest_conversation()))
+    Ok(named
+        .conversation
+        .or_else(|| shared.turns.latest_conversation()))
 }
 
 /// `POST /v1/conversation/stop`: the turn under way in one conversation ends after the action
@@ -442,7 +446,11 @@ pub async fn stop(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Resp
 /// under way and other words go on, and the answer's `dropped` lists them, or is empty when a turn
 /// had taken them already (COMPOSER-11).
 pub async fn cancel(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Response, ApiError> {
-    if let Which { conversation, turn: Some(turn) } = which(&body)? {
+    if let Which {
+        conversation,
+        turn: Some(turn),
+    } = which(&body)?
+    {
         let Some(id) = conversation else {
             return Err(ApiError::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -451,7 +459,11 @@ pub async fn cancel(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Re
         };
         let dropped = shared.turns.drop_waiting(&id, &turn);
         shared.conversations.deliver(&id, &dropped, &Move::Cancel);
-        return Ok((StatusCode::OK, axum::Json(json!({"cancelled": true, "dropped": dropped}))).into_response());
+        return Ok((
+            StatusCode::OK,
+            axum::Json(json!({"cancelled": true, "dropped": dropped})),
+        )
+            .into_response());
     }
     if let Some(id) = underway(&shared, &body)? {
         let dropped = shared.turns.cancel(Some(&id));
