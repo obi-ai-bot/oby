@@ -2083,6 +2083,21 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 }
 .connection.is-down { color: var(--ink); border-color: color-mix(in srgb, var(--over) 45%, transparent); }
 
+/* another conversation needs you while the window is in front (NeedsYouNote, ALERTS-20): a quiet
+   note in the window's corner, the T3 Code way, with Open */
+.needs-note {
+  position: absolute; right: 16px; top: calc(var(--bar, 52px) + 8px); z-index: 60; display: flex; align-items: center; gap: 10px;
+  max-width: min(380px, calc(100vw - 32px)); padding: 10px 10px 10px 14px;
+  border-radius: 12px; border: 1px solid var(--surface-edge); background: var(--surface);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); color: var(--text); font-size: var(--text-md);
+  animation: fade-in 160ms var(--warm) both;
+}
+.needs-note-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--needs); }
+.needs-note-words { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.needs-note-words b { color: var(--ink); font-weight: 500; }
+.needs-note-title { color: var(--muted); font-size: var(--text-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.needs-note-close { flex: none; }
+
 /* --- Oby talking (ObyFaceLive; the owner's, 2026-10-27, ~/Projects/Deskree/research/oby-specs/balloon-final.css) ---
    The speech balloon: Q*bert's grawlix beside Oby's head while its words come in. It grows out of its
    tail on the face's body spring, breathes while open, its glyphs crossfading, then deflates back into
