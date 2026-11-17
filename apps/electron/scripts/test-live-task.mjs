@@ -15,7 +15,7 @@ import { createServer } from 'node:net';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { buildFixture } from '../../../e2e/lib/fixture.mjs';
-import { appRoot, launch, sleep, until } from './drive-lib.mjs';
+import { appRoot, launch, sleep, until, skipFirstRun } from './drive-lib.mjs';
 
 const repoRoot = resolve(appRoot, '../..');
 const agents = join(repoRoot, 'core/crates/obid/tests/agents');
@@ -69,8 +69,7 @@ async function main() {
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   await page.waitForLoadState('domcontentloaded');
-  await page.evaluate(() => { for (const k of ['oby.onboarded', 'oby.setUp', 'oby.welcomed']) localStorage.setItem(k, '1'); });
-  await page.reload();
+  await skipFirstRun(page);
   await until('Home', async () => (await page.locator('.app').count()) > 0);
   const size = async (width, height = 780) => {
     await app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setSize(w, h), [width, height]);

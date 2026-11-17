@@ -16,7 +16,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { appRoot, electronBinary, launch, sleep, until as waitFor } from './drive-lib.mjs';
+import { appRoot, electronBinary, launch, skipFirstRun, sleep, until as waitFor } from './drive-lib.mjs';
 import scenarios from './human-drive.scenarios.mjs';
 
 const runner = join(homedir(), 'Library/Application Support/Oby/Runner');
@@ -65,8 +65,7 @@ async function openApp() {
   const page = await app.firstWindow();
   await page.waitForLoadState('domcontentloaded');
   // set up already: Home, not the first run's screens (the owner went through those)
-  await page.evaluate(() => { for (const k of ['oby.onboarded', 'oby.setUp', 'oby.welcomed']) localStorage.setItem(k, '1'); });
-  await page.reload();
+  await skipFirstRun(page);
   await page.waitForLoadState('domcontentloaded');
   return { app, page };
 }
