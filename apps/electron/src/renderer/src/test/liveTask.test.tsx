@@ -319,7 +319,7 @@ describe('a task at work', () => {
     ] });
     // the Confirm is in the thread already, under Oby's answer
     page.chats = [{ id: 'c1', title: 'One', said: [{ who: 'oby', text: '', ago: 1, confirm: { id: 'shown', ask: share } }] } satisfies Chat];
-    const html = read(renderToStaticMarkup(<ChatView kind="oby" id="c1" leaving={false} onBack={() => {}} onGone={() => {}} onOpenTask={() => {}} />));
+    const html = read(renderToStaticMarkup(<ChatView kind="oby" id="c1" leaving={false} onBack={() => {}} onGone={() => {}} />));
     const bar = html.slice(html.indexOf('class="decision-bar"'), html.indexOf('<input'));
     expect(bar).toMatch(/The routine failed<span class="tc-ask-from"> · Nightly/);
     expect(bar).not.toContain('decision-count');

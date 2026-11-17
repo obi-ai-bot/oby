@@ -14,10 +14,15 @@ const seen = vi.hoisted(() => ({
   stack: [] as ((id: string) => void)[],
   open: null as null | ((place: { job?: string; conversation?: string }) => void),
 }));
-vi.mock('../ChatView', () => ({
-  default: ({ id, kind, leaving, flash }: { id: string; kind: string; leaving: boolean; flash?: { task: string } }) => (leaving ? null : <div data-chat={id} data-kind={kind} data-at={flash?.task} />),
-  clock: () => '',
-}));
+vi.mock('../ChatView', async () => {
+  const { useEffect } = await import('react');
+  // gone once it leaves, as the real one says after its way out
+  const ChatView = ({ id, kind, leaving, flash, onGone }: { id: string; kind: string; leaving: boolean; flash?: { task: string }; onGone: () => void }) => {
+    useEffect(() => { if (leaving) onGone(); }, [leaving, onGone]);
+    return leaving ? null : <div data-chat={id} data-kind={kind} data-at={flash?.task} />;
+  };
+  return { default: ChatView, clock: () => '' };
+});
 vi.mock('../Sidebar', () => ({ default: (props: Record<string, (...a: string[]) => void>) => { seen.sidebar = props; return null; } }));
 vi.mock('../WaitingView', () => ({ default: (props: Record<string, (id: string) => void>) => { seen.waiting = props; return <div data-waiting="" />; } }));
 vi.mock('../AskStack', () => ({ default: ({ onOpen }: { onOpen: (id: string) => void }) => { seen.stack.push(onOpen); return null; } }));
@@ -54,7 +59,8 @@ const top = () => [...host.querySelectorAll<HTMLElement>('[data-chat]')].at(-1);
 const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 300)); });
 
 describe('every way to a task opens its conversation at its card', () => {
-  beforeEach(async () => { root?.unmount(); host?.remove(); await mount(); });
+  // (Home's first import is slow on a busy Mac)
+  beforeEach(async () => { root?.unmount(); host?.remove(); await mount(); }, 180_000);
 
   it('LIVETASK-28: a notification\'s click opens the task\'s conversation at its card, never a page of its own', async () => {
     await act(async () => seen.open!({ job: 'r1', conversation: 'c-route' }));
@@ -79,6 +85,11 @@ describe('every way to a task opens its conversation at its card', () => {
   });
 
   it('LIVETASK-28: the stack of asks and a task row\'s menu open the conversation at the card too', async () => {
+    // the stack is on Home's stage, with nothing open (CHATFIRST-8)
+    seen.stack.length = 0;
+    await act(async () => seen.sidebar.onNewChat());
+    await settle();
+    expect(seen.stack.length).toBeGreaterThan(0);
     await act(async () => seen.stack.at(-1)!('r1'));
     await settle();
     expect(top()?.dataset).toMatchObject({ chat: 'c-route', at: 'r1' });
