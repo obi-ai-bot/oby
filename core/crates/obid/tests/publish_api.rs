@@ -429,8 +429,11 @@ fn a_done_job_publishes_by_itself_and_follows_its_pull_request() {
         body.contains("- Check: ` test -f hello.txt ` passed.\n- Secret scan: clean."),
         "{body}"
     );
+    // A signed POST /v1/jobs is the owner's own work: it merges by itself (PUBLISHING-42).
     assert!(
-        body.contains("Oby merges it only when its owner says so."),
+        body.ends_with(
+            "It's its owner's own work, so Oby merges it by itself after its own review."
+        ),
         "{body}"
     );
     // gh got no secret of obid's: not the API token, in its arguments or its environment.
@@ -490,6 +493,45 @@ fn a_done_job_publishes_by_itself_and_follows_its_pull_request() {
         remote_branch(&remote, "main").as_deref(),
         Some(main.as_str())
     );
+}
+
+/// PUBLISHING-39: an agent's summary that links its files by their full path in the worktree
+/// (Markdown, `file://` and `%20` links) goes to GitHub with the repository's paths: no folder of
+/// the Mac's, its user's name among them, is in the pull request's description, while the job's
+/// `summary`, the Mac's own, keeps them.
+#[test]
+fn publishing_39_the_pull_request_names_no_path_on_the_mac() {
+    let folder = Folder::new("publish-paths");
+    let bin = fake_gh(&folder.0);
+    let (obid, _remote, _) = obid_with(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: calc.py LINKED",
+               "check": "test -f calc.py"}),
+    );
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
+    assert_eq!(job["published"], PULL, "{job}");
+    let worktree = job["worktree"].as_str().unwrap().to_owned();
+    assert!(
+        job["summary"].as_str().unwrap().contains("/calc.py"),
+        "{job}"
+    );
+    // The description's invisible breaks (after `[` and `]`) aside.
+    let body = kept(&folder.0, "body").replace('\u{200B}', "");
+    assert!(
+        body.starts_with(
+            "The agent's summary:\n\n> Added [calc.py](calc.py), see calc.py:1 and `calc.py`."
+        ),
+        "{body}"
+    );
+    let real = std::fs::canonicalize(&worktree).unwrap();
+    for path in [worktree.as_str(), &real.to_string_lossy(), "file://"] {
+        assert!(!body.contains(path), "{path} in {body}");
+    }
+    for home in obid::jobs::person_homes() {
+        assert!(!body.contains(&*home.to_string_lossy()), "{body}");
+    }
 }
 
 /// A follow-up of a job whose pull request is still open goes on its branch: it starts at the

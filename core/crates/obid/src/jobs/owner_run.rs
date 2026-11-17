@@ -1522,10 +1522,15 @@ impl Jobs {
             if let Some(left) = goal.as_deref().filter(|l| l.starts_with("GOAL NOT MET"))
                 && commits > 0
             {
+                let left = one_line(&crate::job::readable(left), 300);
+                let stop = if left.ends_with(['.', '!', '?']) {
+                    ""
+                } else {
+                    "."
+                };
                 return Err(End::needs_you(
                     format!(
-                        "{} The branch is kept and nothing was pushed: tell it what's left, or Publish it as it is.",
-                        one_line(left, 300)
+                        "{left}{stop} The branch is kept and nothing was pushed: tell it what's left, or Publish it as it is."
                     ),
                     None,
                 ));

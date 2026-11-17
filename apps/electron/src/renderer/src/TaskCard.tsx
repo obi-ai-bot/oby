@@ -72,7 +72,7 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
         <span className="tc-ago">{when}</span>
       </header>
       <p className="tc-meta">
-        {agentOf(j.agent).name} · {j.account}{j.on && <> · on {j.on}</>}{repo && <> · {repo}</>}
+        {header(j)}{j.on && <> · on {j.on}</>}{repo && <> · {repo}</>}
         {/* on its page, how much the agent may do on its own; a click changes it */}
         {page?.mode && !done && (
           <button className="tc-mode" aria-haspopup="menu" aria-expanded={!!modeAt}
@@ -482,6 +482,13 @@ function Usage({ usage: u, account, done }: { usage: NonNullable<Page['usage']>;
       {bar('Week', u.week, u.jobWeek)}
     </div>
   );
+}
+
+// Its agent and account, the account left out when it's named after the agent ("Codex", not
+// "Codex · Codex")
+export function header(j: { agent: string; account: string }) {
+  const agent = agentOf(j.agent).name;
+  return !j.account || j.account.trim().toLowerCase() === agent.toLowerCase() ? agent : `${agent} · ${j.account}`;
 }
 
 // What a done task left behind, one line: its commits, its pull request, and

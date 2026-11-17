@@ -1552,7 +1552,7 @@ fn tasks_19_goal_not_met_with_commits_ends_interrupted_and_unpublished() {
         job["reason"]
             .as_str()
             .unwrap()
-            .starts_with("GOAL NOT MET: the tests are left"),
+            .starts_with("Not done yet: the tests are left. The branch is kept"),
         "{job}"
     );
     assert!(job["nextStep"].is_null(), "{job}");
@@ -1563,9 +1563,10 @@ fn tasks_19_goal_not_met_with_commits_ends_interrupted_and_unpublished() {
     );
     assert!(job["outgoing"].as_array().unwrap().is_empty(), "{job}");
     assert_eq!(job["canPublishAnyway"], true, "{job}");
+    // The marker is for obid: the owner reads what's left in words (TASKS-19).
     assert_eq!(
         job["summary"],
-        "Added a.txt.\n\nGOAL NOT MET: the tests are left"
+        "Added a.txt.\n\nNot done yet: the tests are left"
     );
 }
 

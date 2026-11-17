@@ -863,7 +863,8 @@ fn codex_resumes_fails_and_stops() {
     assert!(
         second.starts_with(&format!("Round 2 on thread {thread}, which remembers: "))
             && second.contains("What the user asked for: TWICE")
-            && second.ends_with("GOAL MET"),
+            // Its `GOAL MET` line is obid's, not the owner's to read (TASKS-19).
+            && !second.contains("GOAL MET"),
         "{job}"
     );
     // A turn that fails part way needs you: Try again picks its thread up.

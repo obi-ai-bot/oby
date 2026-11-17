@@ -176,7 +176,7 @@ export function pageOf(j: Job, account?: Account, needs = false, now = Date.now(
 // obid's transcript as the session's lines (SessionView.tsx), in order
 const TOOLS: Record<string, ToolKind> = { read: 'Read', search: 'Grep', edit: 'Edit', command: 'Bash', test: 'Bash', tetrix: 'Tetrix', web: 'Web' };
 // obid names a call as it starts ("Reading scan.rs"); ended, it says what it did. Refused, it never ran.
-const PAST: Record<string, string> = { Reading: 'Read', Running: 'Ran', Editing: 'Edited', Searching: 'Searched', Looking: 'Looked', Planning: 'Planned', Using: 'Used', Fetching: 'Fetched', Writing: 'Wrote' };
+const PAST: Record<string, string> = { Reading: 'Read', Running: 'Ran', Editing: 'Edited', Searching: 'Searched', Looking: 'Looked', Planning: 'Planned', Using: 'Used', Fetching: 'Fetched', Writing: 'Wrote', Asking: 'Asked' };
 // A line once made stays the same object while its entry does (live.ts keeps those), so a long
 // session's unchanged lines don't draw again; a call running has a clock in it, so it's made anew.
 // A kind this build doesn't know has no line; a state it doesn't know stays obid's, drawn gray with

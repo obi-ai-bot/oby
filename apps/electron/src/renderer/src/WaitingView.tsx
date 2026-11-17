@@ -88,7 +88,8 @@ function WaitingRow({ item: i, onOpenTask, onOpenTalk }: { item: InboxItem; onOp
   const stage = (id: string) => j?.pipeline?.stages.find((st) => st.id === id);
   const check = stage('check')?.state === 'done' ? 'Check passed' : stage('check')?.state === 'failed' ? 'Check failed' : undefined;
   const tools = j ? approvingTools(j) : [];
-  const review = tools.length ? undefined : stage('review')?.detail;
+  // a merge's only: a question or a permission is never tagged with the task's review
+  const review = kind !== 'merge' || tools.length ? undefined : stage('review')?.detail;
   const summary = kind === 'merge' ? j?.summary : undefined;
   const diff = kind === 'merge' ? j?.diff : undefined;
   // what it waits on with no task's permission and nowhere to open: its card, as Home's stack shows

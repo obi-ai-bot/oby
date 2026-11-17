@@ -637,8 +637,9 @@ where
         .as_str()
         .map(str::trim)
         .filter(|b| !b.is_empty())
-        .ok_or("the item shows no review to post")?
-        .to_owned();
+        .ok_or("the item shows no review to post")?;
+    // The Mac's own paths stay on it, before the scan reads the review (PUBLISHING-41).
+    let body = crate::local_paths::Places::of_home(home).rewrite(body);
     let pr = &watch["pr"];
     let (Some(repo), Some(number), Some(sha)) = (
         pr["repo"].as_str(),
@@ -858,6 +859,12 @@ pub async fn ready_card(home: &Path, gh: Option<&Path>, job: &crate::job::Job) -
         return None;
     }
     let (verdict, summary) = decided(job.summary.trim());
+    // What the item shows is what Approve posts: the Mac's own paths already out (PUBLISHING-41).
+    let mut places = crate::local_paths::Places::of_home(home);
+    if let Some(worktree) = job.worktree.as_deref() {
+        places.add_worktree(Path::new(worktree));
+    }
+    let summary = places.rewrite(&summary);
     let scratch = home.join("tmp");
     let _ = crate::store::make_private_dir(&scratch);
     let clean = matches!(

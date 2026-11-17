@@ -613,7 +613,8 @@ fn summaries(job: &Job) -> Vec<&String> {
 
 /// The pull request's description: every round's summary, what the owner asked for, the check and
 /// the scan, `Closes #N` (`Part of #N` when it doesn't close it), that obid opened it, and how it
-/// merges: by `workflow`, the one the owner taught it, else only on their say-so. The agent's summaries are untrusted (it may have read someone else's words), so they go
+/// merges: by `workflow`, the one the owner taught it, by itself for the owner's own work, else
+/// only on their say-so. The agent's summaries are untrusted (it may have read someone else's words), so they go
 /// in as blockquotes under a label that says whose words they are, defused: no heading, HTML,
 /// link, image, alert, task box, mention, issue reference or closing keyword in them takes effect.
 pub fn body(job: &Job, closes: bool, workflow: Option<&crate::memory::Workflow>) -> String {
@@ -628,6 +629,8 @@ pub fn body(job: &Job, closes: bool, workflow: Option<&crate::memory::Workflow>)
                 format!("Round {}, the agent's summary:", i + 1)
             };
             // The owner's rule: no "Generated with Claude Code" line in a pull request obid opens.
+            // The agent's `GOAL MET` line is for obid, not the reader (TASKS-19).
+            let summary = crate::job::readable(summary);
             let summary: Vec<&str> = (summary.split('\n'))
                 .filter(|l| {
                     !l.to_lowercase()
@@ -684,6 +687,10 @@ pub fn body(job: &Job, closes: bool, workflow: Option<&crate::memory::Workflow>)
             "Oby merges it by itself, the way its owner taught it: {}",
             workflow.sentence()
         ),
+        // The owner's own work merges by itself after Oby's review (MERGING-45, PUBLISHING-42).
+        None if crate::merge::own_work(job) => {
+            "It's its owner's own work, so Oby merges it by itself after its own review.".to_owned()
+        }
         None => "Oby merges it only when its owner says so.".to_owned(),
     };
     format!(
@@ -1219,7 +1226,10 @@ pub async fn publish(
     })
     .inspect_err(|failure| scanned(Err(failure)))?;
     let subjects: Vec<String> = subjects.lines().map(str::to_owned).collect();
-    let title = title(job, &subjects);
+    // The Mac's own paths stay on it: the worktree's read as the repository's, the home's as
+    // `~/…`, before the scan reads what goes out (PUBLISHING-39 to 41).
+    let places = crate::local_paths::Places::of_job(job.worktree.as_deref());
+    let title = places.rewrite(&title(job, &subjects));
     // Read once: the scan checks the very description the pull request gets.
     let closes = match (job.issue, &target.gh) {
         (Some(number), Some(gh)) if target.pull_requests => {
@@ -1229,7 +1239,7 @@ pub async fn publish(
         }
         _ => false,
     };
-    let description = body(job, closes, target.workflow.as_ref());
+    let description = places.rewrite(&body(job, closes, target.workflow.as_ref()));
     let texts = scanned_texts(job, &title, &description);
     let mut said: Vec<Found> = match scan::scan(&texts, &target.scratch).await {
         Verdict::Clean => Vec::new(),
@@ -2433,6 +2443,45 @@ mod tests {
         );
         assert!(!text.contains("only when its owner says so"));
         assert!(body(&job, false, None).ends_with("Oby merges it only when its owner says so."));
+    }
+
+    /// PUBLISHING-42: the description says how it merges as Oby will: the owner's own work by
+    /// itself after Oby's review, anything else on the owner's word.
+    #[test]
+    fn publishing_42_the_footer_tells_how_own_work_merges() {
+        let mut job = job();
+        job.own_conversation = true;
+        let own = body(&job, false, None);
+        assert!(
+            own.ends_with(
+                "It's its owner's own work, so Oby merges it by itself after its own review."
+            ),
+            "{own}"
+        );
+        assert!(!own.contains("only when its owner says so"), "{own}");
+        // Another Oby's, or reached by unsigned words: the owner's say-so.
+        job.unsigned = true;
+        assert!(body(&job, false, None).ends_with("Oby merges it only when its owner says so."));
+    }
+
+    /// TASKS-19: the agent's `GOAL MET` line is obid's, not the pull request's reader's.
+    #[test]
+    fn tasks_19_the_goal_line_stays_off_github() {
+        let mut job = job();
+        job.summary = "Sorted the parser.\n\nGOAL MET".into();
+        let text = body(&job, false, None);
+        assert!(
+            text.starts_with("The agent's summary:\n\n> Sorted the parser.\n\nWhat the user"),
+            "{text}"
+        );
+        assert!(!text.contains("GOAL"), "{text}");
+        job.summaries = Some(vec![
+            "One.\nGOAL NOT MET: the tests".into(),
+            "Two.\n\nGOAL MET".into(),
+        ]);
+        let text = body(&job, false, None);
+        assert!(text.contains("> One.\n> Not done yet: the tests"), "{text}");
+        assert!(!text.contains("GOAL"), "{text}");
     }
 
     #[test]
