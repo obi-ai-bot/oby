@@ -1290,6 +1290,10 @@ impl Jobs {
                 if let Some(call) = self.lock().asked.remove(id) {
                     return Err(End::Asked(Asked::Question(call)));
                 }
+                // Its answer came first and ended this run (PERMISSIONS-23): the next run hears it.
+                if *signal.borrow() != Signal::Run {
+                    return Ok(());
+                }
                 if self.ends_on_plan(id, round, &said) {
                     return Err(End::Asked(Asked::Plan(said)));
                 }

@@ -1710,9 +1710,11 @@ pub fn job_report(job: &Value) -> Option<(String, String)> {
         },
         ("failed", _) => format!("{title} failed."),
         ("stopped", _) => format!("{title} was stopped."),
+        // Stopped, as its card's mark says: no decision waits on it (TASKS-25, TASKS-29), so
+        // its line never says it needs the owner; its reason says what can be done.
         ("interrupted", _) => match first_line("reason") {
-            Some(why) => format!("{title} needs you: {why}"),
-            None => format!("{title} needs you."),
+            Some(why) => format!("{title} stopped: {why}"),
+            None => format!("{title} stopped."),
         },
         _ => return None,
     };
@@ -2718,16 +2720,22 @@ mod tests {
             job_report(&job("stopped")).unwrap().1,
             "Fix oby #351 was stopped."
         );
+        // TASKS-29: no decision waits on an interrupted task (TASKS-25), so its line says it
+        // stopped, never that it needs the owner.
         assert_eq!(
             job_report(&job("interrupted")).unwrap().1,
-            "Fix oby #351 needs you."
+            "Fix oby #351 stopped."
         );
-        let mut needs_you = job("interrupted");
-        needs_you["reason"] = json!("Stopped at a limit: the round ran past 45 minutes.");
+        let mut stopped = job("interrupted");
+        stopped["reason"] = json!(
+            "GOAL NOT MET: tests still fail The branch is kept and nothing was pushed: tell it what's left, or Publish it as it is."
+        );
+        let said = job_report(&stopped).unwrap().1;
         assert_eq!(
-            job_report(&needs_you).unwrap().1,
-            "Fix oby #351 needs you: Stopped at a limit: the round ran past 45 minutes."
+            said,
+            "Fix oby #351 stopped: GOAL NOT MET: tests still fail The branch is kept and nothing was pushed: tell it what's left, or Publish it as it is."
         );
+        assert!(!said.contains("needs you"), "{said}");
         let mut nothing = job("done");
         nothing["reason"] = json!("Nothing committed, so nothing was published.");
         assert_eq!(
