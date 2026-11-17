@@ -189,6 +189,17 @@ function namedServers() {
     return [];
   }
 }
+// The owner's own commands and skills its `init` names, as Claude Code 2.1.317 and later do
+// (COMPOSER-18): `slash-commands.json` in its account's folder, {slash_commands,
+// terminal_slash_commands, skills}; an own session only, as for its servers.
+function namedCommands() {
+  if (!ownServers) return {};
+  try {
+    return JSON.parse(readFileSync(join(process.env.CLAUDE_CONFIG_DIR ?? ".", "slash-commands.json"), "utf8"));
+  } catch {
+    return {};
+  }
+}
 const stalls = join(process.env.CLAUDE_CONFIG_DIR ?? ".", "stalls");
 
 const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
@@ -223,7 +234,7 @@ const handle = (line) => {
     process.stdout.end(() => process.exit(1));
     return;
   }
-  emit({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, tools: ["Read", "Bash"], mcp_servers: [{ name: "oby", status: "connected" }, ...namedServers()], model: flag("--model") ?? "fake" });
+  emit({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, tools: ["Read", "Bash"], mcp_servers: [{ name: "oby", status: "connected" }, ...namedServers()], ...namedCommands(), model: flag("--model") ?? "fake" });
   const before = going;
   going = session;
   if (!conversation && prompt.includes("write a handoff note")) return say(NOTE);

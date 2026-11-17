@@ -26,6 +26,9 @@ pub struct Control {
     cancelled: AtomicBool,
     /// The owner's words this turn answers were signed by an app of theirs ([`Words::signed`]).
     signed: AtomicBool,
+    /// Those words are one message alone: not answered together with other words, not an answer
+    /// to Oby's question (what may run as a command, COMPOSER-19).
+    alone: AtomicBool,
     /// When it began: an inbox item made since is one the owner hasn't seen yet.
     pub begun: i64,
 }
@@ -51,6 +54,15 @@ impl Control {
 
     pub fn set_signed(&self, signed: bool) {
         self.signed.store(signed, Ordering::SeqCst);
+    }
+
+    /// Whether the owner's words this turn answers are one message alone ([`Control::set_alone`]).
+    pub fn alone(&self) -> bool {
+        self.alone.load(Ordering::SeqCst)
+    }
+
+    pub fn set_alone(&self, alone: bool) {
+        self.alone.store(alone, Ordering::SeqCst);
     }
 }
 
@@ -169,6 +181,7 @@ impl Turns {
             stopped: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
             signed: AtomicBool::new(false),
+            alone: AtomicBool::new(false),
             begun: obi_protocol::time::now(),
         });
         let mut underway = self.lock();

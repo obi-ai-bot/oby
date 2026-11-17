@@ -25,6 +25,7 @@ DELETE /v1/attachments
 POST /v1/attachments
 GET /v1/brain/usage
 POST /v1/clear
+GET /v1/commands
 GET /v1/connectors
 GET /v1/conversation
 POST /v1/conversation/stop

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { conversationFiles } from './live';
+import { agentCommands, conversationFiles } from './live';
 import { onObid } from './lean';
-import { FILES } from './mock';
-import type { ConversationFile } from './obid';
+import { COMMANDS, FILES } from './mock';
+import type { AgentCommand, ConversationFile } from './obid';
 
 // What the message box takes besides typing (docs/contracts/composer.md, COMPOSER-12 to 16), each
 // as T3 Code's composer does it: files dropped on it, files of the conversation's folders after an
@@ -55,12 +55,54 @@ export function useMentionFiles(conversation: string | undefined, at: string | n
   return files;
 }
 
-// --- / commands (COMPOSER-16)
+// --- / commands (COMPOSER-16, 17), after T3's composerSlashCommandSearch.ts
 
 // What's typed after a / at the very start of the box, before any space; null: no command being typed
 export const slashOf = (text: string) => /^\/(\S*)$/.exec(text)?.[1] ?? null;
-// What the list says while obid can list no command of the tool's: what's missing, plainly
-export const noCommands = (tool: string) => `${tool}’s own commands can’t be listed here yet: Oby doesn’t read them from its sessions, and words to Oby don’t run them. Say what you want instead.`;
+// The most commands the list shows
+export const COMMANDS_MOST = 50;
+// How well a name matches what's typed: it, starts with it, has it after a - _ or :, holds it (lower
+// is better), as T3's scoreQueryMatch ranks a command's name; null: not at all
+function score(name: string, typed: string): number | null {
+  const n = name.toLowerCase();
+  if (n === typed) return 0;
+  if (n.startsWith(typed)) return 1;
+  if (['-', '_', ':'].some((m) => n.includes(m + typed))) return 2;
+  if (n.includes(typed)) return 3;
+  return null;
+}
+// The commands matching what's typed after the /, best first and by name within each; every one, in
+// Claude Code's order, while nothing is typed
+export function searchCommands(commands: AgentCommand[], typed: string): AgentCommand[] {
+  const q = typed.replace(/^\/+/, '').trim().toLowerCase();
+  if (!q) return commands.slice(0, COMMANDS_MOST);
+  return commands
+    .map((c) => ({ c, s: score(c.name, q) }))
+    .filter((r): r is { c: AgentCommand; s: number } => r.s !== null)
+    .sort((a, b) => a.s - b.s || a.c.name.localeCompare(b.c.name))
+    .slice(0, COMMANDS_MOST)
+    .map((r) => r.c);
+}
+// What a picked command puts in the box, in place of what was typed: the owner adds what it takes
+export const commandWords = (c: AgentCommand) => `/${c.name} `;
+// What the list says when it has none to show: a tool whose commands obid can't list, Claude Code's
+// before any was seen, or none matching what's typed
+export const noCommands = (tool: string) => `${tool}’s own commands can’t be listed here yet. Say what you want instead.`;
+export const NO_COMMANDS_YET = 'Claude Code’s commands show here once Oby has talked through it on this Mac.';
+export const noMatch = (typed: string) => `No command matches /${typed}.`;
+
+// The owner's own Claude Code's commands, asked when the / list opens (`open`), once each time it
+// does; none while it's closed (in a browser, the mock's: obid lists the real ones)
+export function useAgentCommands(open: boolean): AgentCommand[] | null {
+  const [commands, setCommands] = useState<AgentCommand[] | null>(null);
+  useEffect(() => {
+    if (!open) { setCommands(null); return; }
+    let live = true;
+    void (onObid ? agentCommands() : Promise.resolve(COMMANDS)).then((c) => { if (live) setCommands(c); });
+    return () => { live = false; };
+  }, [open]);
+  return commands;
+}
 
 // --- Stop (COMPOSER-12), after T3's useStopPhase
 

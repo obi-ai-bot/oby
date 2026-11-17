@@ -213,6 +213,8 @@ pub async fn plan(
             .into_response());
     }
     // Oby's question the words answer: its text is that conversation's (crate::secretspec).
+    // Words that answer Oby's question are never a command (COMPOSER-19).
+    let answering = req.answer.is_some();
     let question = req
         .answer
         .as_ref()
@@ -312,6 +314,7 @@ pub async fn plan(
         let control = shared.turns.begin(&next.words.turn, &conversation);
         deliver(Move::Confirm(next.words.turn.clone()));
         control.set_signed(next.words.signed);
+        control.set_alone(next.turns.len() == 1 && !answering);
         let asked = Asked {
             said,
             attachments: &next.words.attachments,

@@ -27,7 +27,7 @@ import { ProjectChip } from './ProjectSheet';
 import TaskChips from './TaskChips';
 import QueuedWords from './QueuedWords';
 import { chipsOf, defaultsOf } from './chips';
-import { FOLDER_DROPPED, dropped, fileWords, isFileDrag, noCommands, slashOf, useMentionFiles, useStopping } from './composerInput';
+import { FOLDER_DROPPED, NO_COMMANDS_YET, commandWords, dropped, fileWords, isFileDrag, noCommands, noMatch, searchCommands, slashOf, useAgentCommands, useMentionFiles, useStopping } from './composerInput';
 import { useLive } from './live';
 import { onObid } from './lean';
 import { has } from '../../shared/capabilities';
@@ -174,9 +174,11 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   // how many folders the conversation works in: a file of one of several is named after its folder
   const chat = chats.find((c) => c.id === conversation);
   const workFolders = inProject ? projects.find((p) => p.id === chat?.project)?.folders.length ?? 1 : kept.length;
-  // the tool the conversation talks through, for the commands' list when no chip names one
+  // the tool the conversation talks through, whose session a command runs in (COMPOSER-16): Home's
+  // new conversation, Claude Code's
   const [accounts] = useAccounts();
   const accountAgent = accounts.find((a) => a.id === (chat?.talkedOn ?? chat?.talkAccount))?.agent;
+  const slashTool = accountAgent ?? 'claude';
   // from the list as it is when it's applied (a tag's × applies after its 140ms leave: two quick ×s
   // mustn't bring the first back)
   const putFolders = (next: (was: string[]) => string[]) => (conversation ? setFolders(conversation, next(foldersOf(conversation))) : setHomeFolders(next));
@@ -204,10 +206,25 @@ export default function Composer({ placeholder, prompts = false, note, label, on
     ? [...obysFor(at!).map((o) => ({ kind: 'oby' as const, name: o.name })), ...atFiles.map((file) => ({ kind: 'file' as const, file }))] : [];
   const slashShown = slash !== null && !slashClosed && !view;
   useClicksEverywhere(matches.length > 0 || slashShown);
+  // the commands obid kept of the owner's own Claude Code, asked as the list opens, narrowed by what's
+  // typed; the lit one, the first again as the typing changes (COMPOSER-16, 17)
+  const allCommands = useAgentCommands(slashShown && slashTool === 'claude');
+  const commands = slashShown && allCommands ? searchCommands(allCommands, slash ?? '') : [];
+  const [slashLit, setSlashLit] = useState(0);
+  useEffect(() => setSlashLit(0), [slash]);
+  const litCommand = Math.min(slashLit, commands.length - 1);
+  // a command picked: `/name ` in place of what was typed, for what it takes (the list goes with the space)
+  const pickCommand = (c: (typeof commands)[number]) => { box.current?.setText(commandWords(c)); box.current?.focus(); };
   const pickOby = (name: string) => { setView(null); box.current?.mention(name); box.current?.focus(); };
   const pickMatch = (m: (typeof matches)[number]) => pickOby(m.kind === 'oby' ? m.name : fileWords(m.file, workFolders));
   const onMentionKey = (key: MentionKey) => {
-    if (slashShown && !matches.length) { if (key !== 'close') return false; setSlashClosed(true); return true; }
+    if (slashShown && !matches.length) {
+      if (key === 'close') { setSlashClosed(true); return true; }
+      if (!commands.length) return false;
+      if (key === 'pick') pickCommand(commands[litCommand]);
+      else setSlashLit((i) => (Math.min(i, commands.length - 1) + (key === 'down' ? 1 : commands.length - 1)) % commands.length);
+      return true;
+    }
     if (!matches.length) return false;
     if (key === 'close') setAtClosed(true);
     else if (key === 'pick') pickMatch(matches[Math.min(lit, matches.length - 1)]);
@@ -418,13 +435,31 @@ export default function Composer({ placeholder, prompts = false, note, label, on
             ))}
           </div>
         )}
-        {/* a / at the start: the chosen agent's own commands, where obid can list them; it lists
-            none yet, so the list says what's missing (COMPOSER-16) */}
-        {slashShown && !matches.length && (
-          <div className="add-panel slash-panel" role="dialog" aria-label="Commands">
-            <p className="add-empty">{noCommands(agentOf(chipsOf(draft).agent ?? accountAgent ?? 'claude').name)}</p>
+        {/* a / at the start: the commands and skills of the conversation's own Claude Code, which
+            sending runs there; a tool obid can't list them for, or none, says what's missing (COMPOSER-16, 17) */}
+        {slashShown && !matches.length && (slashTool !== 'claude' || allCommands) && (commands.length > 0 ? (
+          <div className="add-panel mention-panel slash-panel" role="listbox" aria-label="Commands">
+            {commands.map((c, i) => (
+              <button
+                type="button"
+                role="option"
+                key={c.name}
+                aria-selected={i === litCommand}
+                className={i === litCommand ? 'is-lit' : undefined}
+                // the text keeps the focus (and its cursor)
+                onMouseDown={(e) => e.preventDefault()}
+                onMouseEnter={() => setSlashLit(i)}
+                onClick={() => pickCommand(c)}
+              >
+                <span className="add-item-text">/{c.name}{c.skill && <span className="add-item-about">Skill</span>}</span>
+              </button>
+            ))}
           </div>
-        )}
+        ) : (
+          <div className="add-panel slash-panel" role="dialog" aria-label="Commands">
+            <p className="add-empty">{slashTool !== 'claude' ? noCommands(agentOf(slashTool).name) : allCommands?.length ? noMatch(slash ?? '') : NO_COMMANDS_YET}</p>
+          </div>
+        ))}
         {/* no talking (v1): send before the usage gauge, which keeps the end */}
         <div className={`composer-grid${everything && !wordsOnly ? '' : ' is-send-first'}`}>
           {(attached.length > 0 || repo || folders.length > 0 || (home && projectsOn)) && (

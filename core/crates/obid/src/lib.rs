@@ -20,6 +20,7 @@ pub mod chatgpt_relay;
 pub mod clear;
 pub mod cli_versions;
 pub mod codex;
+pub mod commands;
 pub mod config;
 pub mod conn;
 pub mod connections;

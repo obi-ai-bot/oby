@@ -40,6 +40,7 @@ afterEach(async () => {
   localStorage.clear();
   editor.mention = [];
   editor.set = [];
+  commandsSeen = null;
 });
 
 type Call = { method: string; path: string; body?: unknown };
@@ -47,10 +48,15 @@ const at = '2026-11-17T10:00:00Z';
 const STATUS = (capabilities: string[]) => ({ runner: { version: '0.2.4', host: 'mac' }, accounts: [{ id: 'p', agent: 'claude', name: 'Personal', signedIn: true }], models: {}, maxRunning: 6, running: 0, capabilities });
 const convo = { id: 'c1', title: 'Composer', pinned: false, created: at, lastActivity: at, cursor: '', folders: ['/Users/me/oby'] };
 
+// obid's GET /v1/commands: the owner's own Claude Code's commands, or a 404 (an older obid)
+let commandsSeen: { name: string; skill: boolean }[] | null | 'none' = null;
 function obid(files: { folder: string; path: string }[] = []) {
   const calls: Call[] = [];
   const call = vi.fn(async (method: string, path: string, body?: unknown) => {
     calls.push({ method, path, body });
+    if (method === 'GET' && path === '/v1/commands' && commandsSeen !== 'none') {
+      return { status: 200, text: JSON.stringify({ claude: commandsSeen && { seenAt: at, commands: commandsSeen } }) };
+    }
     if (method === 'GET' && path.startsWith('/v1/conversations/c1/files')) return { status: 200, text: JSON.stringify({ files }) };
     if (method === 'GET' && path.startsWith('/v1/conversation?id=')) return { status: 200, text: '[]' };
     return { status: 404, text: '{"error":"Not found."}' };
@@ -204,11 +210,44 @@ describe('drop, @ and /', () => {
     expect(editor.mention).toEqual(['src/app.ts']);
   });
 
+  it('composer_16_slash_lists_the_agents_commands', async () => {
+    commandsSeen = [{ name: 'code-review', skill: true }, { name: 'simplify', skill: true }, { name: 'compact', skill: false }, { name: 'security-review', skill: false }];
+    const { o } = await box({ conversation: 'c1' });
+    await type('/');
+    const rows = () => [...document.querySelectorAll('.slash-panel [role="option"]')].map((r) => r.textContent);
+    expect(rows()).toEqual(['/code-reviewSkill', '/simplifySkill', '/compact', '/security-review']);
+    expect(o.calls.filter((c) => c.path === '/v1/commands')).toHaveLength(1);
+    // what's typed narrows it: a name starting with it, then one with it after a -
+    await type('/rev');
+    expect(rows()).toEqual(['/code-reviewSkill', '/security-review']);
+    await type('/review');
+    expect(rows()).toEqual(['/code-reviewSkill', '/security-review']);
+    await type('/zzz');
+    expect(document.querySelector('.slash-panel')?.textContent).toBe('No command matches /zzz.');
+    await type('/simplify the diff');
+    expect(document.querySelector('.slash-panel')).toBeNull();
+  });
   it('composer_16_slash_says_what_is_missing', async () => {
+    // none seen yet
     await box({ conversation: 'c1' });
     await type('/rev');
-    expect(document.querySelector('.slash-panel')?.textContent).toContain('Claude Code’s own commands can’t be listed here yet');
+    expect(document.querySelector('.slash-panel')?.textContent).toBe('Claude Code’s commands show here once Oby has talked through it on this Mac.');
     await type('/review this');
     expect(document.querySelector('.slash-panel')).toBeNull();
+  });
+  it('composer_16_an_older_obid_lists_no_command', async () => {
+    commandsSeen = 'none';
+    await box({ conversation: 'c1' });
+    await type('/');
+    expect(document.querySelector('.slash-panel')?.textContent).toBe('Claude Code’s commands show here once Oby has talked through it on this Mac.');
+  });
+  it('composer_17_picking_a_command_puts_it_in_the_box', async () => {
+    commandsSeen = [{ name: 'simplify', skill: true }, { name: 'compact', skill: false }];
+    await box({ conversation: 'c1' });
+    await type('/com');
+    const row = document.querySelector('.slash-panel [role="option"]')!;
+    expect(row.textContent).toBe('/compact');
+    await click(row);
+    expect(editor.set).toEqual(['/compact ']);
   });
 });

@@ -336,6 +336,11 @@ export type PlanDefaults = { mode?: string; agent?: string; model?: string; effo
 // "GET /v1/conversations/{id}/files" (obid only, composer-v1): a file of the conversation's folders,
 // its path from the folder
 export type ConversationFile = { folder: string; path: string };
+// obid only: "GET /v1/commands" (docs/api/commands.md, COMPOSER-18): the commands and skills the
+// owner's own Claude Code named the last time an own conversation's session started, names only,
+// in its order; claude null before any was seen
+export type AgentCommand = { name: string; skill: boolean };
+export type AgentCommands = { claude: { seenAt: string; commands: AgentCommand[] } | null };
 // "POST /v1/plans/cancel" (dropped: obid only, composer-v1, with `turn`: the words it dropped, none
 // when a turn had taken them already)
 export type Cancelled = { cancelled: true; dropped?: string[] };

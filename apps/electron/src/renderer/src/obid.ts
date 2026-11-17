@@ -16,7 +16,7 @@ import type {
   InboxItem,
   Job,
   LimitDecision,
-  PlanAnswer, PlanDefaults, ConversationFile, Cancelled,
+  PlanAnswer, PlanDefaults, ConversationFile, Cancelled, AgentCommands,
   Profile,
   Project,
   Repo,
@@ -158,6 +158,8 @@ export const api = {
   cancelWords: (conversation: string, turn: string) => call<Cancelled>('POST', '/v1/plans/cancel', { conversation, turn }),
   // the files of a conversation's folders matching what's typed after an @ (composer-v1, COMPOSER-14)
   conversationFiles: (c: string, typed: string) => call<{ files: ConversationFile[] }>('GET', `/v1/conversations/${id(c)}/files${q({ q: typed })}`),
+  // obid only: the owner's own Claude Code's commands and skills, as obid last saw them (COMPOSER-18); older obids answer 404
+  commands: () => call<AgentCommands>('GET', '/v1/commands'),
   // a file picked or pasted, kept by obid for the words it goes with: its path there; one over
   // obid's 25 MB isn't read at all, and says so in obid's words
   upload: async (file: File, name: string) => {

@@ -302,7 +302,8 @@ impl Transcripts {
             | Event::Step(_)
             | Event::Usage(_)
             | Event::Tokens(_)
-            | Event::Connectors(_) => vec![],
+            | Event::Connectors(_)
+            | Event::Commands(_) => vec![],
         };
         let written = self.write(job, live, entries);
         for (n, detail) in details {

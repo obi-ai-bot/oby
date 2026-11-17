@@ -1764,17 +1764,27 @@ async fn attempts(
             None => prompt,
         }
     };
+    // The owner's own command (COMPOSER-19): their words alone are the whole prompt, so Claude
+    // Code runs it; what would have gone before them goes with their next words (COMPOSER-21).
+    let listed = crate::commands::listed(&shared.config.home);
+    let command = command_turn(own && tool == Tool::Claude, control, session, &listed);
     // A session that goes on hasn't heard them; a new one gets them with the earlier turns.
     let words = match &reports {
         Some(reports) => format!("{reports}\n\n{}", said.trim()),
         None => said.trim().to_owned(),
     };
-    let words = crate::vault::for_agent(&with(words))?;
+    // Words that aren't a command never start the prompt as one (COMPOSER-20).
+    let words = match command {
+        true => crate::vault::for_agent(said.trim())?,
+        false => crate::commands::guarded(crate::vault::for_agent(&with(words))?, &listed),
+    };
     let first = crate::vault::for_agent(&with(first_prompt(shared, said.trim(), given)))?;
-    let first = if tool == Tool::Cursor {
+    let first = if command {
+        words.clone()
+    } else if tool == Tool::Cursor {
         super::harness_cursor::first_prompt(shared, tetrix.is_some(), helper, &first)?
     } else {
-        first
+        crate::commands::guarded(first, &listed)
     };
     let mut failures = vec![];
     // Why the last attempt couldn't start, or its login was refused: the account's (ACCOUNTS-19).
@@ -2250,18 +2260,43 @@ fn tasks_line(tasks: &[crate::conversation::Task], nonce: &str) -> Option<String
     ))
 }
 
+/// Whether this turn's words run as the owner's own command (COMPOSER-19): an own Claude Code
+/// session (`own_claude`), words an app of the owner's signed, one message alone, nothing attached
+/// to them, and their first word a command obid keeps (crate::commands::runs).
+fn command_turn(
+    own_claude: bool,
+    control: &Control,
+    session: &Session,
+    listed: &[crate::commands::Command],
+) -> bool {
+    own_claude
+        && control.signed()
+        && control.alone()
+        && session.attachments.is_empty()
+        && session.attached_jobs.is_empty()
+        && crate::commands::runs(&session.said, listed)
+}
+
 /// How the jobs of this conversation ended since the owner last spoke, which the session going on
 /// hasn't heard, quoted (TASKCONV-17): the first line of obid's reports, its own words. What their
 /// agents wrote stays out: reading that is `oby_job`'s, and makes the turn no longer the owner's word.
 /// A job that isn't on obid's allowlist (crate::secretspec) may have someone else's words in its
 /// title and reason too, so only its id and status are said.
 fn job_reports(shared: &Shared, given: &[Turn], nonce: &str) -> Option<String> {
-    // A turn that got no answer heard nothing: what it was to hear is still to say.
+    // A turn that got no answer heard nothing: what it was to hear is still to say. Nor did a
+    // command's (COMPOSER-21): any words naming a command obid keeps, with nothing attached, count
+    // as one, so a report may be told twice, never lost.
+    let listed = crate::commands::listed(&shared.config.home);
     let answered = |at: usize| {
-        !given[at + 1..]
-            .iter()
-            .take_while(|t| t.who != "user")
-            .any(|t| t.text.starts_with(NO_ANSWER) || t.text == super::TOO_LONG)
+        let turn = &given[at];
+        let command = turn.attachments.is_empty()
+            && turn.jobs.is_empty()
+            && crate::commands::runs(&turn.text, &listed);
+        !command
+            && !given[at + 1..]
+                .iter()
+                .take_while(|t| t.who != "user")
+                .any(|t| t.text.starts_with(NO_ANSWER) || t.text == super::TOO_LONG)
     };
     let since = (0..given.len())
         .rev()
@@ -2541,6 +2576,13 @@ async fn one(
             Event::Connectors(servers) => {
                 if own && matches!(protocol, Protocol::Claude) {
                     crate::connectors::saw(&shared.config.home, servers);
+                }
+            }
+            // Its commands are what the owner's words run as a command, in this same session
+            // (COMPOSER-18, 19): an own Claude Code's only, never a boxed one's.
+            Event::Commands(commands) => {
+                if own && matches!(protocol, Protocol::Claude) {
+                    crate::commands::saw(&shared.config.home, commands);
                 }
             }
         }

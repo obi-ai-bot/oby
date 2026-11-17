@@ -223,6 +223,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/v1/notifications", post(crate::push::register))
         .route("/v1/alerts", get(crate::routes::alerts))
         .merge(crate::connections::router())
+        .merge(crate::commands::router())
         .merge(crate::connectors::router())
         .merge(crate::tetrix::router())
         .merge(crate::chatgpt_relay::router())

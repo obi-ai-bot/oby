@@ -987,6 +987,9 @@ impl Jobs {
                 // What Settings shows is an own conversation's (crate::connectors): a job's
                 // session has the same owner's, with the job's broker in place of Oby's tools.
                 AgentEvent::Connectors(_) => {}
+                // What `/` lists is what the owner's words run in, an own conversation's session
+                // (crate::commands): a job's has its repository's own too, which those don't.
+                AgentEvent::Commands(_) => {}
             }
         };
         let plan = Self::mode_of(&job) == Mode::Plan;

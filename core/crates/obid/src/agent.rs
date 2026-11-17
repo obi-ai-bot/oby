@@ -144,6 +144,9 @@ pub enum Event {
     /// The MCP servers and claude.ai connectors its session has, but obid's own, by name and status,
     /// from Claude Code's `init` line (crate::connectors, CONNECTORS-1).
     Connectors(Vec<crate::connectors::Server>),
+    /// The commands and skills its session takes, by name, from Claude Code's `init` line
+    /// (crate::commands, COMPOSER-18); none from a Claude Code whose `init` names none.
+    Commands(Vec<crate::commands::Command>),
 }
 
 /// How a turn ended, for every adapter.
@@ -633,6 +636,9 @@ pub async fn turn_on(
                 }
                 api_key_source = message["apiKeySource"].as_str().map(str::to_owned);
                 on_event(Event::Connectors(crate::connectors::named(&message)));
+                if let Some(commands) = crate::commands::named(&message) {
+                    on_event(Event::Commands(commands));
+                }
             }
             Some("assistant") => {
                 // A subagent's (Task's) messages carry the tool call they answer: their words are

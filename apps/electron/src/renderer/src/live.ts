@@ -971,6 +971,12 @@ export async function conversationFiles(shown: string, typed: string) {
   if (!has(state.status, 'composer-v1')) return [];
   try { return (await api.conversationFiles(realId(shown), typed)).files; } catch { return []; }
 }
+// The owner's own Claude Code's commands for a / (COMPOSER-16): none from an obid without them (404)
+// or before any own session named them
+export async function agentCommands() {
+  if (!has(state.status, 'composer-v1')) return [];
+  try { return (await api.commands()).claude?.commands ?? []; } catch { return []; }
+}
 export async function stopConversation(shown: string) {
   try { await api.stopConversation(realId(shown)); } catch (e) { say(e); }
 }

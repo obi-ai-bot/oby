@@ -4755,3 +4755,178 @@ fn connectors_3_a_boxed_session_never_replaces_them() {
     assert!(!ran_own(&obid, recorded.last().unwrap()), "{recorded:?}");
     assert_eq!(call(&obid, "GET", "/v1/connectors", None).body, before);
 }
+
+/// The owner's own commands and skills the stand-in's `init` names (tests/agents/fake-harness), as
+/// Claude Code 2.1.325 names them: one that runs only in a terminal, and one of Claude Code's own.
+// Only the macOS-only scenarios use it (own conversations, LANES-12).
+#[cfg(target_os = "macos")]
+fn own_commands(obid: &Obid) {
+    std::fs::write(
+        obid.home.join("accounts/stub/slash-commands.json"),
+        json!({
+            "slash_commands": ["simplify", "compact", "doctor", "__remote-workflow"],
+            "terminal_slash_commands": ["doctor"],
+            "skills": ["simplify", "doctor"],
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
+/// A conversation of the owner's whose job ended and was reported in it, and whose next turn
+/// would hear that report (TASKCONV-17): what a command's turn must not be handed.
+#[cfg(target_os = "macos")]
+fn conversation_with_a_report(obid: &Obid) -> String {
+    let start = json!({"repo": "obi-e2e/fixture-app", "task": "Look around"});
+    let first = call_typed(
+        obid,
+        "POST",
+        "/v1/plans",
+        &json!({"said": format!("OBY oby_dispatch {start}"), "new": true}),
+    );
+    assert_eq!(first.status, 200, "{}", first.text);
+    let id = first.body["conversation"].as_str().unwrap().to_owned();
+    let job = first.body["jobs"][0]["id"].as_str().unwrap().to_owned();
+    assert!(ended(obid, &job)["status"].is_string());
+    within(30, "the job's report", || {
+        let thread = call(obid, "GET", &format!("/v1/conversation?id={id}"), None);
+        thread.text.contains("\"ended\":true").then_some(())
+    });
+    id
+}
+
+/// What the stand-in was given last.
+fn last_prompt(obid: &Obid) -> String {
+    turns(obid).last().unwrap()["prompt"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// COMPOSER-18 (docs/contracts/composer.md): an own Claude Code conversation keeps the commands its
+/// session named, but terminal-only and `_` ones, skills marked; none before any was seen.
+// Own conversations are macOS-only for now (LANES-12).
+#[cfg(target_os = "macos")]
+#[test]
+fn composer_18_an_own_conversation_keeps_its_commands() {
+    let (_folder, obid) = obid("harness-commands-18", true);
+    let none = call(&obid, "GET", "/v1/commands", None);
+    assert_eq!(none.status, 200, "{}", none.text);
+    assert_eq!(none.body, json!({"claude": null}));
+    own_commands(&obid);
+    said(&obid, json!({"said": "SAY hi", "new": true}));
+    let listed = call(&obid, "GET", "/v1/commands", None);
+    assert_eq!(
+        listed.body["claude"]["commands"],
+        json!([{"name": "simplify", "skill": true}, {"name": "compact", "skill": false}]),
+        "{}",
+        listed.text
+    );
+    assert!(
+        listed.body["claude"]["seenAt"]
+            .as_str()
+            .is_some_and(|at| at.ends_with('Z')),
+        "{}",
+        listed.text
+    );
+    let kept = std::fs::metadata(obid.home.join("commands.json")).unwrap();
+    assert_eq!(
+        std::os::unix::fs::PermissionsExt::mode(&kept.permissions()) & 0o777,
+        0o600
+    );
+}
+
+/// COMPOSER-18: a boxed session's list (another Oby's conversation) never replaces the own one's.
+#[cfg(target_os = "macos")]
+#[test]
+fn composer_18_a_boxed_sessions_commands_are_not_kept() {
+    let (_folder, obid, obys) = obid_with_obys_conversation("harness-commands-boxed");
+    own_commands(&obid);
+    said(&obid, json!({"said": "SAY hi", "new": true}));
+    let before = call(&obid, "GET", "/v1/commands", None).body;
+    assert_eq!(
+        before["claude"]["commands"].as_array().map(Vec::len),
+        Some(2),
+        "{before}"
+    );
+    let boxed = said(&obid, json!({"said": "SAY boxed", "conversation": obys}));
+    assert_eq!(boxed.status, 200, "{}", boxed.text);
+    assert!(!ran_own(&obid, turns(&obid).last().unwrap()));
+    assert_eq!(call(&obid, "GET", "/v1/commands", None).body, before);
+}
+
+/// The owner's signed words in a conversation, answered.
+#[cfg(target_os = "macos")]
+fn signed_said(obid: &Obid, body: Value) -> Answer {
+    let answer = call_typed(obid, "POST", "/v1/plans", &body);
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    answer
+}
+
+/// COMPOSER-19: the owner's signed `/simplify …`, alone, is the whole prompt of an own session's
+/// turn: not the job report it would otherwise have heard first.
+#[cfg(target_os = "macos")]
+#[test]
+fn composer_19_a_command_is_the_whole_prompt() {
+    let (_folder, obid) = obid("harness-commands-19", true);
+    own_commands(&obid);
+    let id = conversation_with_a_report(&obid);
+    let command = "/simplify the greeting\nand its test";
+    signed_said(&obid, json!({"said": command, "conversation": id}));
+    assert!(ran_own(&obid, turns(&obid).last().unwrap()));
+    assert_eq!(last_prompt(&obid), command);
+}
+
+/// COMPOSER-21: the report a command's turn didn't hear goes with the owner's next words.
+#[cfg(target_os = "macos")]
+#[test]
+fn composer_21_a_command_turn_hears_no_reports() {
+    let (_folder, obid) = obid("harness-commands-21", true);
+    own_commands(&obid);
+    let id = conversation_with_a_report(&obid);
+    signed_said(&obid, json!({"said": "/compact", "conversation": id}));
+    assert_eq!(last_prompt(&obid), "/compact");
+    signed_said(&obid, json!({"said": "REMEMBER", "conversation": id}));
+    let told = last_prompt(&obid);
+    assert!(told.contains("How your jobs ended"), "{told}");
+}
+
+/// COMPOSER-20: the same words unsigned, or with a task attached, are words: what goes before
+/// them is said, and a prompt that would start with a kept command's name is guarded; a path goes
+/// as it is.
+#[cfg(target_os = "macos")]
+#[test]
+fn composer_20_unsigned_or_attached_words_are_words() {
+    let (_folder, obid) = obid("harness-commands-20", true);
+    own_commands(&obid);
+    let id = conversation_with_a_report(&obid);
+    let words = "/simplify the greeting";
+    said(&obid, json!({"said": words, "conversation": id}));
+    let told = last_prompt(&obid);
+    assert!(told.contains("How your jobs ended"), "{told}");
+    assert!(told.ends_with(words), "{told}");
+    // Signed, but with a task attached: words.
+    let job = call(&obid, "GET", "/v1/jobs", None).body[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    signed_said(
+        &obid,
+        json!({"said": words, "conversation": id, "jobs": [job]}),
+    );
+    let told = last_prompt(&obid);
+    assert!(told.contains("The owner attached these jobs"), "{told}");
+    assert!(told.ends_with(words), "{told}");
+    // With nothing to tell before them, unsigned words alone would start the prompt: guarded.
+    let other = signed_said(&obid, json!({"said": "SAY hi", "new": true}));
+    let other = other.body["conversation"].as_str().unwrap().to_owned();
+    said(&obid, json!({"said": words, "conversation": other}));
+    assert_eq!(
+        last_prompt(&obid),
+        format!("These words aren't a command:\n{words}")
+    );
+    // A path is words to Claude Code already: it goes as it is, signed and alone.
+    let path = "/Users/me/notes.txt what's in it?";
+    signed_said(&obid, json!({"said": path, "conversation": other}));
+    assert_eq!(last_prompt(&obid), path);
+}

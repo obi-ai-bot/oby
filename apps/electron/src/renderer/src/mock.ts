@@ -759,6 +759,10 @@ export const MOCK_ROOM: { sphere: string; status: 'available' | 'unavailable'; p
 export const mockRoomScene = ROOM_SCENE;
 
 // A conversation's files for @ in a browser (COMPOSER-14): obid lists the real ones
+// The owner's own Claude Code's commands and skills, as obid's GET /v1/commands lists them (COMPOSER-16)
+export const COMMANDS: { name: string; skill: boolean }[] = [
+  ['code-review', true], ['simplify', true], ['security-review', false], ['compact', false], ['context', false], ['init', false], ['debug', true], ['verify', true],
+].map(([name, skill]) => ({ name: name as string, skill: skill as boolean }));
 export const FILES: { folder: string; path: string }[] = [
   'src/app.tsx', 'src/auth/login.tsx', 'src/auth/signup.tsx', 'src/auth/session.ts', 'src/api/client.ts', 'README.md',
 ].map((path) => ({ folder: '/Users/you/Projects/web', path }));
