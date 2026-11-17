@@ -34,8 +34,9 @@ export function useEntries(id: string, follow = true) {
   return useMemo(() => (onObid ? sessionOf(had ?? []) : SESSIONS[id] ?? []), [id, had]);
 }
 
-// What the agent is writing now comes in a word at a time; the tool at work counts up, from when
-// its line was last made (only while one is at work: nothing to draw otherwise)
+// What the agent is writing now comes in a word at a time on the mock; on obid it shows as obid
+// streams it, about every tenth of a second (LIVETASK-32). The tool at work counts up, from when its
+// line was last made (only while one is at work: nothing to draw otherwise)
 export function useLiveLines(entries: Entry[], running: boolean) {
   const liveSaid = useMemo(() => entries.find((e): e is Extract<Entry, { kind: 'said' }> => e.kind === 'said' && !!e.live), [entries]);
   const words = (liveSaid?.text ?? '').match(/\S+\s*/g) ?? [];
@@ -49,7 +50,7 @@ export function useLiveLines(entries: Entry[], running: boolean) {
     return () => clearInterval(t);
   }, [running, ticking]);
   useEffect(() => {
-    if (!running || !words.length) return;
+    if (onObid || !running || !words.length) return;
     const w = setInterval(() => setShown((n) => Math.min(n + 1, words.length)), WORD_MS);
     return () => clearInterval(w);
   }, [running, words.length]);
@@ -203,7 +204,7 @@ export const Line = memo(function Line({ entry: e, job, brand, live, inCard = fa
         <li className="ss-said">
           <span className="ss-mark"><BrandMark brand={brand} size={16} mono /></span>
           <div className="ss-words">
-            <Said text={e.live ? live.shown : e.text} streaming={e.live} />
+            <Said text={e.live && !onObid ? live.shown : e.text} streaming={e.live} />
             {e.live && <span className="ss-caret" aria-hidden="true" />}
             {inCard && <time className="ss-clock">{e.at}</time>}
           </div>
@@ -245,8 +246,10 @@ function Tool({ call: e, job, tick }: { call: Extract<Entry, { kind: 'tool' }>; 
     void entryDetail(job, e.n).then((d) => { if (here && d) setFetched(d); });
     return () => { here = false; };
   }, [open, e.state, e.n, e.detail, job]);
-  const detail = e.detail ?? fetched, opens = !!e.detail || e.n != null;
   const secs = e.state === 'running' ? e.seconds + tick : e.seconds;
+  // a running command's last lines, as obid streams them, until its own output comes (LIVETASK-34)
+  const known = e.detail ?? fetched, opens = !!e.detail || e.n != null;
+  const detail = e.live && e.state === 'running' ? { ...known, output: e.live.output, lines: e.live.lines } : known;
   return (
     <li className={`ss-tool is-${e.state}${open ? ' is-open' : ''}`}>
       <button className="ss-tool-row" onClick={() => opens && setOpen(!open)} aria-expanded={opens ? open : undefined} disabled={!opens}>
@@ -258,7 +261,7 @@ function Tool({ call: e, job, tick }: { call: Extract<Entry, { kind: 'tool' }>; 
         <span className="ss-took">{took(secs)}</span>
         {opens && <ChevronRight size={12} strokeWidth={1.8} className="ss-chev" />}
       </button>
-      {open && detail && <ToolDetail tool={e.tool} detail={detail} seconds={e.seconds} />}
+      {open && detail && <ToolDetail tool={e.tool} detail={detail} seconds={secs} />}
     </li>
   );
 }

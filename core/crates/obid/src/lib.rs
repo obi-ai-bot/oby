@@ -76,6 +76,7 @@ pub mod secrets;
 pub mod secretspec;
 pub mod settings;
 pub mod sphere;
+pub mod spill;
 pub mod steer;
 pub mod store;
 pub mod task_conversation;

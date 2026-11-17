@@ -145,7 +145,18 @@ pub(crate) fn token_char(c: char) -> bool {
 /// How many of these lines, at the end, are a run of base64 or hex, with the line before it
 /// (which a run can continue): a secret wrapped over them is only whole once the run has ended.
 pub fn encoded_tail(lines: &[&str]) -> usize {
-    let run = lines
+    let run = encoded_run(lines);
+    if run > 0 {
+        (run + 1).min(lines.len())
+    } else {
+        0
+    }
+}
+
+/// How many of these lines, at the end, are a run of base64 or hex: [`encoded_tail`] without the
+/// line before it.
+pub fn encoded_run(lines: &[&str]) -> usize {
+    lines
         .iter()
         .rev()
         .take_while(|l| {
@@ -157,12 +168,7 @@ pub fn encoded_tail(lines: &[&str]) -> usize {
                     b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'_' | b'-')
                 })
         })
-        .count();
-    if run > 0 {
-        (run + 1).min(lines.len())
-    } else {
-        0
-    }
+        .count()
 }
 
 /// The first `bytes` of `text` at most, at a character.
