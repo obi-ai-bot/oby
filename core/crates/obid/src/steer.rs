@@ -1,5 +1,5 @@
 //! Words written into a Claude Code job's turn while it runs (docs/contracts/task-conversations.md,
-//! TASKCONV-29 to 31): the owner's words to a task at work reach its agent at once, in the same
+//! TASKCONV-32 to 34): the owner's words to a task at work reach its agent at once, in the same
 //! process, never by waiting for its turn to end and starting Claude Code again.
 //!
 //! Claude Code reads each `user` line obid writes to its stream-json input as it comes, and takes
@@ -113,10 +113,10 @@ impl Steer {
 mod tests {
     use super::*;
 
-    /// TASKCONV-31: nothing goes in before the agent replays its prompt, nor after its turn is
+    /// TASKCONV-34: nothing goes in before the agent replays its prompt, nor after its turn is
     /// over; a result with words not taken yet isn't the end; only replayed words count as heard.
     #[test]
-    fn taskconv_31_only_replayed_words_are_heard() {
+    fn taskconv_34_only_replayed_words_are_heard() {
         let steer = Steer::default();
         assert!(!steer.offer("too early"), "before its prompt's replay");
         steer.replayed();
@@ -133,9 +133,9 @@ mod tests {
         assert!(steer.close().is_empty());
     }
 
-    /// TASKCONV-31: words offered but never taken (the turn was cut) aren't heard.
+    /// TASKCONV-34: words offered but never taken (the turn was cut) aren't heard.
     #[test]
-    fn taskconv_31_words_not_taken_stay_unheard() {
+    fn taskconv_34_words_not_taken_stay_unheard() {
         let steer = Steer::default();
         steer.replayed();
         assert!(steer.offer("one"));

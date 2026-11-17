@@ -789,7 +789,7 @@ impl Jobs {
                     // The words as the agent writes them, for the transcript (Event::Delta).
                     "--include-partial-messages",
                     // Each line obid writes, back as it's taken: the owner's words reach it mid-turn
-                    // (crate::steer, TASKCONV-29).
+                    // (crate::steer, TASKCONV-32).
                     "--replay-user-messages",
                     "--permission-prompt-tool",
                     "stdio",
@@ -1019,7 +1019,7 @@ impl Jobs {
                 // Read just before the run, so only its agent's commits count, never obid's own
                 // rebase between rounds: a run that moved it got somewhere (RECOVERY-1).
                 let head_before = self.worktree_head(id).await;
-                // A Claude Code turn takes the owner's words as they come (TASKCONV-29).
+                // A Claude Code turn takes the owner's words as they come (TASKCONV-32).
                 let steer = (tool == Tool::Claude).then(|| self.steer_open(id));
                 let turn = self
                     .turn(

@@ -1,4 +1,4 @@
-//! The owner's words to a job's agent between and during its turns (#1661, TASKCONV-29 to 31):
+//! The owner's words to a job's agent between and during its turns (#1661, TASKCONV-32 to 34):
 //! what its next turn hears (`Job::heard`, `Job::owners`), and the words a Claude Code turn under
 //! way takes as they come (crate::steer), which leave `heard` once that turn is over. It owns the
 //! jobs' `steers` while a turn runs; it never starts, stops or publishes a job.

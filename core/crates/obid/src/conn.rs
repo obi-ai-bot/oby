@@ -116,7 +116,7 @@ pub struct Conn {
     /// An own run's temp, working and `login` folders and its tag, to sweep it by (LANES-16).
     leftovers: Option<(PathBuf, PathBuf, PathBuf, PathBuf)>,
     stdin: Option<ChildStdin>,
-    /// Words written into its turn as they come (crate::steer, TASKCONV-29): a job's Claude Code.
+    /// Words written into its turn as they come (crate::steer, TASKCONV-32): a job's Claude Code.
     pub steer: Option<std::sync::Arc<crate::steer::Steer>>,
     lines: BufReader<ChildStdout>,
     copying: Option<tokio::task::JoinHandle<()>>,

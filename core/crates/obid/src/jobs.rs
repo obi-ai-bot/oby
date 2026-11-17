@@ -3101,7 +3101,7 @@ impl Jobs {
                 {
                     heard(&mut job);
                     job.owners.extend(owners(false));
-                    // Its Claude Code hears them now, in the turn under way (TASKCONV-29).
+                    // Its Claude Code hears them now, in the turn under way (TASKCONV-32).
                     if let Some(steer) = state.steers.get(id) {
                         steer.offer(text);
                     }

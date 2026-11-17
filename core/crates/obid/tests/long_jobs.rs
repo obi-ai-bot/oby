@@ -1026,12 +1026,12 @@ fn recovery_2_the_words_a_run_went_down_with_go_with_the_next() {
     assert!(told[2].contains("use SQLite"), "{told:?}");
 }
 
-/// TASKCONV-29: the owner's words to a Claude Code job at work reach its agent in the turn under
+/// TASKCONV-32: the owner's words to a Claude Code job at work reach its agent in the turn under
 /// way, at its next step: no wait for the turn to end, no second launch, and they aren't heard
 /// again in a later turn.
 #[test]
-fn taskconv_29_words_reach_a_claude_code_job_in_the_turn_under_way() {
-    let (_folder, obid) = obid("taskconv-29");
+fn taskconv_32_words_reach_a_claude_code_job_in_the_turn_under_way() {
+    let (_folder, obid) = obid("taskconv-32");
     let id = post_job(&obid, "STEPS: 60 250 KEEP PROMPTS");
     at_work(&obid, &id);
     let answer = call_typed(

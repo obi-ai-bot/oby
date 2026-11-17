@@ -4,7 +4,7 @@
 - **Status:** In force
 - **Replaced:** TASKCONV-14's "as its next turn" for a Claude Code task at work (the words waited for the agent's whole turn to end, then for Claude Code to start again), and R05-07's proposal that words steer a running job only with `steer: true` on `POST /v1/jobs/{id}/messages`, queue kept as the default
 - **Changed by:** Nothing
-- **Contracts and scenarios:** [task-conversations.md](../contracts/task-conversations.md) (TASKCONV-14, TASKCONV-29 to 31)
+- **Contracts and scenarios:** [task-conversations.md](../contracts/task-conversations.md) (TASKCONV-14, TASKCONV-32 to 34)
 
 ## The owner's words
 
@@ -14,7 +14,7 @@ The owner's answer of 2026-11-17 to "Keep words to a Claude Code task on by defa
 
 ## Where it is stated
 
-- [task-conversations.md](../contracts/task-conversations.md), TASKCONV-29 to 31
+- [task-conversations.md](../contracts/task-conversations.md), TASKCONV-32 to 34
 - [docs/api/jobs.md](../api/jobs.md), `POST /v1/jobs/{id}/messages`, "Running"
 
 ## Notes
