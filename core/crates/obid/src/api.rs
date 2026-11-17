@@ -760,6 +760,14 @@ pub struct RunnerJson {
     pub host: String,
     /// `obid`: what tells the apps and the e2e harness this runner is obid, not the Swift one.
     pub engine: &'static str,
+    /// The commit obid was built from (`OBY_BUILD_COMMIT` when it was compiled, as
+    /// scripts/run-dev.sh and the app's packaging set it), or null for a build that wasn't told.
+    pub commit: Option<&'static str>,
+}
+
+/// [`RunnerJson::commit`]: what the build was given, empty counting as none.
+pub fn build_commit() -> Option<&'static str> {
+    option_env!("OBY_BUILD_COMMIT").filter(|commit| !commit.is_empty())
 }
 
 /// An account (docs/runner-api.md, "Account"), as obid knows it before any job has run on it.
@@ -1050,6 +1058,7 @@ async fn status(
             version: API_VERSION,
             host: shared.host.clone(),
             engine: "obid",
+            commit: build_commit(),
         },
         accounts,
         available_logins: shared

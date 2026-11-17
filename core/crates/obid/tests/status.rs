@@ -424,6 +424,12 @@ fn status_answers_with_engine_obid() {
     // runner-api.md, "obid only: configuration": GET /v1/status adds "engine": "obid" to runner.
     assert_eq!(status["runner"]["engine"], "obid");
     assert_eq!(status["runner"]["version"], "0.2.0");
+    // The commit it was built from (Settings › About), always sent: null when the build wasn't told
+    // (scripts/run-dev.sh sets OBY_BUILD_COMMIT for obid and this test alike).
+    assert_eq!(
+        status["runner"].get("commit"),
+        Some(&json!(option_env!("OBY_BUILD_COMMIT").filter(|c| !c.is_empty())))
+    );
     assert!(
         status["runner"]["host"]
             .as_str()

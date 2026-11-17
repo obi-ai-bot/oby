@@ -14,6 +14,14 @@ import { sphering } from './sphere';
 import { ipc } from './ipc';
 import { childGone, quit, quitting, renderFailed, rendererGone, started, windowLoaded } from './runMarker';
 import { flag, https, string } from '../shared/decode';
+import { SCRATCH } from '../shared/build';
+
+// A scratch install (scripts/run-dev.sh --port --home, shared/build.ts) keeps its own folder and
+// Keychain item beside its obid's home, never the installed Oby's: set before anything reads them
+if (SCRATCH) {
+  app.setName('oby-app-scratch');
+  app.setPath('userData', join(dirname(SCRATCH.home), 'app-data'));
+}
 
 // One small window: Oby, what needs you, and a way to talk. The renderer gets
 // the cursor's position wherever it is on screen, so Oby can watch it outside
@@ -212,8 +220,9 @@ app.whenReady().then(() => {
   notifying(trusted, () => win, front);
   // obid's events, followed once from here until Oby quits, for the alerts and the window (live.ts)
   living(trusted, () => win);
-  // Oby's own updates (updates.ts), told to About while the window is there
-  updating(trusted, () => win);
+  // Oby's own updates (updates.ts), told to About while the window is there; a scratch install
+  // never updates itself
+  if (!SCRATCH) updating(trusted, () => win);
   // Settings rows obid has no setting for yet, kept in settings.json (settings.ts)
   localSettings(trusted);
   // Open at login's default, once per install (settings.ts)

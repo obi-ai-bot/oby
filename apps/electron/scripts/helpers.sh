@@ -7,19 +7,24 @@
 # extraFiles, signIgnore), so gitleaks keeps the one entitlement it needs. OBY_CARGO_TARGET_DIR
 # reuses a cargo target directory, as for scripts/release.sh. With --if-stale it stages only when
 # build/helpers/stamp isn't the last commit of what goes in, or that has changes not committed.
+# For a build that stays on this Mac (scripts/run-dev.sh): OBY_HELPERS_IDENTITY signs with another
+# identity (its SHA-1, or - for ad hoc), and OBY_OBID_TARGETS builds obid for those targets only.
+# obid is told the commit it's built from (OBY_BUILD_COMMIT, else HEAD), for Settings › About.
 set -euo pipefail
 
 app=${0:A:h:h}
 root=${app:h:h}
 out=$app/build/helpers
 sources=(core plugins apps/mac/app/Tools apps/electron/scripts/helpers.sh)
-stamp=$(git -C "$root" log -1 --format=%H -- "${sources[@]}")
+export OBY_BUILD_COMMIT=${OBY_BUILD_COMMIT:-$(git -C "$root" rev-parse HEAD)}
+# what's staged, and how: a release's staging is never taken for a local one's, nor the other way
+stamp="$(git -C "$root" log -1 --format=%H -- "${sources[@]}") ${OBY_OBID_TARGETS:-all} ${OBY_HELPERS_IDENTITY:-team}"
 if [[ "${1:-}" == --if-stale && "$(cat "$out/stamp" 2> /dev/null)" == "$stamp" \
   && -z "$(git -C "$root" status --porcelain -- "${sources[@]}")" ]]; then
   exit 0
 fi
 team=${OBY_TEAM_ID:-3UV9W5SV7W}
-identity=$(security find-identity -v -p codesigning | grep "Developer ID Application" | grep "($team)" | head -n 1 | awk '{print $2}')
+identity=${OBY_HELPERS_IDENTITY:-$(security find-identity -v -p codesigning | grep "Developer ID Application" | grep "($team)" | head -n 1 | awk '{print $2}')}
 [[ -n "$identity" ]] || { echo "error: no Developer ID Application identity of team $team in the keychain" >&2; exit 1; }
 
 rm -rf "$out"

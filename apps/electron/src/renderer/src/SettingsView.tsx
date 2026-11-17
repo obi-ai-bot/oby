@@ -20,6 +20,7 @@ import { liveState, lookAtUsage, patchStatus, say, useLive } from './live';
 import { AUTO, TALK_DEFAULT, talkChoices, tools } from './talk';
 import { isAgent } from '../../shared/obid-wire';
 import { version } from '../../../package.json';
+import { COMMIT, versionText } from '../../shared/build';
 import type { Update } from '../../shared/updates';
 
 // how long the way out takes (the sink animation in app.css)
@@ -1134,13 +1135,22 @@ function Vault() {
   </>;
 }
 
+// About's Version on obid: this app's version and the commit it and obid were built from
+// (src/shared/build.ts, obid's runner.commit), so the owner can tell which dev they run
+function BuiltVersion() {
+  const [engine, setEngine] = useState<string | null>(null);
+  useEffect(() => { api.status().then((s) => setEngine(s.runner?.commit ?? null), () => {}); }, []);
+  return <Value>{versionText(version, COMMIT, engine)}</Value>;
+}
+
 // About in the Mac app: the version, and Oby's own updates in Sangam's rows (main/updates.ts
 // decides, shared/updates.ts; docs/contracts/updates.md)
 function Updates() {
   const app = window.app!;
   const [kept, setKept] = useState<{ auto: boolean; update: Update } | null>(null);
   useEffect(() => {
-    void app.updates!().then(setKept);
+    // a scratch install has no updater (main/index.ts): About keeps its Version row
+    void app.updates!().then(setKept, () => {});
     return app.onUpdate!((update) => setKept((k) => k && { ...k, update }));
   }, []);
   const ask = (a: 'check' | 'install' | boolean) => {
@@ -1151,7 +1161,7 @@ function Updates() {
   const found = u.state === 'available' || u.state === 'downloading' || u.state === 'ready' ? u : null;
   return (
     <Group i={1} footer={auto ? 'Oby downloads updates in the background and installs them when you quit.' : undefined}>
-      <Row label="Version"><Value>{version}</Value></Row>
+      <Row label="Version"><BuiltVersion /></Row>
       <Row label="Update automatically"><Switch on={auto} onChange={ask} label="Update automatically" /></Row>
       {found && (
         <Row label={`Oby ${found.version} is available`} about={found.date ? `Released ${new Date(found.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : undefined}>
@@ -1174,7 +1184,7 @@ function About() {
   const [auto, setAuto] = useSetting('updates.auto', true);
   const [found, setFound] = useState<'none' | 'current' | 'update'>('none');
   if (onObid && window.app?.updates) return <Updates />;
-  if (onObid) return <Group i={1}><Row label="Version"><Value>{version}</Value></Row></Group>;
+  if (onObid) return <Group i={1}><Row label="Version"><BuiltVersion /></Row></Group>;
   return <>
     <Group i={1} footer={auto ? 'Oby downloads updates in the background and installs them when you quit.' : undefined}>
       <Row label="Version"><Value>0.9.2 (412)</Value></Row>
