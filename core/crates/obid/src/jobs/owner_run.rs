@@ -1100,8 +1100,8 @@ impl Jobs {
                     // and reason.
                     let error = crate::secrets::known().redact(turn.error());
                     let first = crate::detail::mask(error.lines().next().unwrap_or("").trim());
-                    // Claude Code and Codex retry these themselves first; one that still ends the
-                    // turn gets the round again in its session, after a wait.
+                    // A passing error that still ends the turn is the agent's: Claude Code and
+                    // Codex retried it themselves, so it isn't sent again (RECOVERY-19).
                     // As its windows are now: one past its reset is empty again.
                     let usage = self.usage.get(&job.account);
                     let at = obi_protocol::time::now();
@@ -1125,9 +1125,9 @@ impl Jobs {
                     // On a ChatGPT login only the relay's refusal says it's a limit: a usage read
                     // doesn't exist, and OpenAI's limit names no time (the contract).
                     let chatgpt = crate::chatgpt::marker_of(&account).is_some();
-                    // RECOVERY-1: one denylist, the tool's own fields first (RECOVERY-7).
+                    // RECOVERY-1: one denylist, the tool's own fields first (RECOVERY-7). OpenAI's
+                    // refusal through the relay went back to Codex, which retried it (RECOVERY-19).
                     let of = match &refusal {
-                        Some(refusal) if refusal.after == After::TryAgain => CUT_WAITS.len(),
                         Some(_) => 0,
                         None if !chatgpt && limit_said => 0,
                         None => {
