@@ -907,6 +907,7 @@ fn new_job(job: &Map<String, Value>) -> Result<NewJob, String> {
         earlier: None,
         start_from: None,
         made_branch: false,
+        onto: None,
         routine: None,
         unattended: false,
         untrusted: false,

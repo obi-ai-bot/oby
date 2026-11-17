@@ -606,6 +606,37 @@ said=$(OBY_CHECK_PATHS=apps/electron/src/renderer/src/test/x.test.ts OBY_CHECK_P
     exit 1
 }
 rm core/crates/obid/tests/routes_guard.rs
+# CI-56: what the Brain reads plans its tests, in the electron group; a doc it doesn't read doesn't;
+# in a job's box only a change to the Brain itself runs them.
+for path in tools/brain/brain.config.ts core/crates/obid/src/jobs/lanes.rs apps/electron/src/renderer/src/Sidebar.tsx \
+    apps/shared/Runner.swift docs/api/jobs.md docs/runner-api.md AGENTS.md; do
+    said=$(OBY_CHECK_PATHS=$path OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
+    grep -q -- '==> npm --prefix tools/brain run --silent test' <<<"$said" && grep -qxF 'oby-check: group electron' <<<"$said" || {
+        echo "oby-check-test: CI-56: a change to $path didn't plan the Brain's tests in the electron group:" >&2
+        sed 's/^/| /' <<<"$said" >&2
+        exit 1
+    }
+done
+said=$(OBY_CHECK_PATHS=docs/decisions/x.md OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
+! grep -q 'tools/brain' <<<"$said" || {
+    echo "oby-check-test: CI-56: a change to a doc the Brain doesn't read planned its tests:" >&2
+    sed 's/^/| /' <<<"$said" >&2
+    exit 1
+}
+if /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null; then
+    said=$(OBY_CHECK_PATHS=core/crates/obid/src/jobs/lanes.rs nested)
+    grep -q "the Brain's map isn't checked in a job's box" <<<"$said" && ! grep -q -- '--prefix tools/brain' <<<"$said" || {
+        echo "oby-check-test: CI-56: nested, a change to obid planned the Brain's tests:" >&2
+        sed 's/^/| /' <<<"$said" >&2
+        exit 1
+    }
+    said=$(OBY_CHECK_PATHS=tools/brain/brain.config.ts nested)
+    grep -q -- '==> npm --prefix tools/brain run --silent test' <<<"$said" || {
+        echo "oby-check-test: CI-56: nested, a change to the Brain didn't plan its tests:" >&2
+        sed 's/^/| /' <<<"$said" >&2
+        exit 1
+    }
+fi
 
 # obid's test binaries run side by side, each to its end: one that fails doesn't stop the others,
 # its failure is named and comes last, each runs quietly, and a binary cargo didn't build fails the

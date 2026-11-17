@@ -17,6 +17,8 @@ Checks run in two places: GitHub's `CI` workflow (`.github/workflows/ci.yml`) an
 | `control-plane` | In `cloud/control-plane/`: `pnpm test` and `pnpm check`. |
 | `electron` | In `apps/electron/`: `npm ci`, `npm run typecheck`, `npm test`, `npm run build` (Node 22, with zsh installed: the ChatGPT gate's test runs `scripts/package.sh` with `/bin/zsh`). |
 | `tools` | `cargo test` in `tools/oby-check-blok/`, its own Cargo workspace, with the tool installed and gitleaks on `PATH`, since its tests run `scripts/oby-check.sh`. |
+| `brain` | In `tools/brain/`: `npm ci`, `npm run typecheck`, `npm test` (the Brain's map of obid and the app, read from the code) and the extractor's `cargo test` (CI-56). |
+| `proofs` | Kani at its pin: every obid harness compiled (`cargo kani -p obid --tests --only-codegen`, CI-57), then the harnesses the change requires by path proved (`scripts/kani-required.sh` and `scripts/kani-prove.sh`, CI-58), each within 20 minutes, but those on `core/.config/kani-slow.txt`; every one nightly and on demand (CI-59). docs/proofs.md says what they prove. |
 | `Check` | Needs every job above. |
 
 **Modes.** Which jobs run depends on the event, then on the lanes:
@@ -42,11 +44,12 @@ A newer push to the same pull request cancels the run it supersedes; merge queue
 | `apps/electron/**` | `electron` |
 | `cloud/control-plane/**` | `control-plane` |
 | `tools/oby-check-blok/**` | `tools` |
+| `tools/brain/**` | none but `brain` |
 | `docs/**`, `factory/**`, `.claude/**`, `design/**`, `character/**`, `apps/ios/**`, `apps/watch/**`, `apps/shared/**`, `apps/Oby.xcodeproj/**`, `mcp/**`, `*.md` | none: `plan` and `Check` only |
 | any other path | every lane |
 | a diff that can't be read (a missing commit, `git diff` failing) | every lane |
 
-`lint`, `rust-build` and `rust-test` follow `rust`, and so does `limits` in the runs that test (not on a ready pull request into `dev`); `e2e`, `electron`, `control-plane` and `tools` follow their own lanes.
+`lint`, `rust-build` and `rust-test` follow `rust`, and so do `limits` and `proofs` in the runs that test (not on a ready pull request into `dev`); `e2e`, `electron`, `control-plane` and `tools` follow their own lanes. `brain` follows what the Brain reads, apart from the rows above: `tools/brain/**`, obid's `src/`, `apps/electron/src/`, `apps/shared/`, `docs/api/`, `docs/runner-api.md` and `AGENTS.md` (every lane reaches it too). `plan` also prints the Kani harnesses the change requires (`proofs required:`), `all` when every lane is reached.
 
 **`Check`'s rule.** It fails when `plan` didn't succeed (so skipped lanes can never pass over a broken plan), or when any job failed or was cancelled; a skipped job passes. Its step summary shows the mode, the lanes, each job's result, each failed shard with its failing tests (from that shard's JUnit), and under "Flaky" every test that passed only on its retry.
 

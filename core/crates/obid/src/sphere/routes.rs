@@ -352,6 +352,7 @@ pub async fn answer(
         // Not a Confirm of an open confirm item: answered as before (one already done says so).
         let Some(live) = confirm_item.filter(|i| confirming && i.done.is_none()) else {
             let answered = shared.link.answer_typed(&id, &rest, typed).await?;
+            started_in_its_conversation(&shared, &answered);
             return Ok((StatusCode::OK, answered, None));
         };
         let (item, checked) = as_checked(checked, live);
@@ -386,6 +387,22 @@ pub async fn answer(
     };
     let stored = crate::routes::stored;
     crate::routes::keyed(&shared, key.as_deref(), &route, &judged, stored, work).await
+}
+
+/// A `github` card answered with its start (`Review it`, `Fix it`, `Fix CI`): its task, started as
+/// the feed's tap starts it, is in a conversation of its own the same way (TASKCONV-2, 29), so the
+/// app shows it where tasks show, under that conversation. Its title is GitHub's, so the
+/// conversation counts as having read words from outside.
+fn started_in_its_conversation(shared: &Shared, answered: &Value) {
+    let start = answered["options"].get(0).and_then(Value::as_str);
+    let job = answered["job"].as_str().filter(|j| !j.is_empty());
+    if answered["kind"] != "github" || start.is_none() || answered["answer"].as_str() != start {
+        return;
+    }
+    if let Some(job) = job.and_then(|j| shared.jobs.get(j)) {
+        let foreign = format!("the title of job {}, which came from GitHub", job.id);
+        crate::task_conversation::give(shared, job, Some(foreign));
+    }
 }
 
 /// What a Confirm confirms (#776): the item as its approval was checked before the lookup, never as

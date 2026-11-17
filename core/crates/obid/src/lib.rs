@@ -59,6 +59,8 @@ pub mod process;
 pub mod profile_scope;
 pub mod profiles;
 pub mod projects;
+#[cfg(test)]
+mod proofs;
 pub mod providers;
 pub mod publish;
 pub mod push;
