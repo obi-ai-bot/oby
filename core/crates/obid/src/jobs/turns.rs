@@ -327,6 +327,12 @@ impl Jobs {
         if owners.is_none() {
             self.note_change(&job.id, "Your login shell didn't answer within 10 seconds, so this run has none of its environment.".into());
         }
+        // An own Claude Code loads the owner's MCP servers: its first turn waits for none of them,
+        // only for obid's own, which are `alwaysLoad` (LANES-24).
+        if own && tool == Tool::Claude {
+            let (name, value) = crate::agent::MCP_STARTUP_WAIT;
+            extra.push((name, value.into()));
+        }
         match (&account.config_dir, tool) {
             // In the CLI's own sandbox, with the account's own folder and login: no copy.
             _ if own => extra.extend(own_run_env(

@@ -878,6 +878,14 @@ impl Jobs {
                     if let Some((url, token)) = tetrix.as_ref().filter(|_| tool == Tool::Claude) {
                         config["mcpServers"]["tetrix"] = json!({"type":"http","url":url,"headers":{"Authorization":format!("Bearer {token}")}});
                     }
+                    // An own run's first turn waits for none of the owner's servers, so obid's are
+                    // each `alwaysLoad`: connected before it (LANES-24, `agent::MCP_STARTUP_WAIT`).
+                    // A boxed run (`--strict-mcp-config`) has only obid's, and waits for them.
+                    if own && let Some(servers) = config["mcpServers"].as_object_mut() {
+                        for server in servers.values_mut() {
+                            server["alwaysLoad"] = json!(true);
+                        }
+                    }
                     let text = serde_json::to_vec(&config).map_err(|e| e.to_string())?;
                     let _ = std::fs::remove_file(&file);
                     crate::store::write_private(&file, &text)

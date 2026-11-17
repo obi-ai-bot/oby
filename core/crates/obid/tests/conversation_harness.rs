@@ -483,6 +483,57 @@ fn a_new_conversation_finds_its_claude_code_started() {
     );
 }
 
+/// CONVERSATION-AGENT-25 (docs/contracts/conversation-agent.md): the next new conversation's Claude
+/// Code, started ahead, ran the owner's `SessionStart` hooks as it started and wrote their lines
+/// before any prompt; it still takes that conversation's first turn, with Oby's tools.
+// Own conversations, which run the owner's hooks, are macOS-only for now (LANES-12).
+#[cfg(target_os = "macos")]
+#[test]
+fn conversation_agent_25_a_claude_code_started_ahead_that_ran_its_hooks_takes_the_turn() {
+    let (_folder, obid) = obid_env(
+        "harness-agent-25",
+        true,
+        json!({"agent": "claude"}),
+        &[("OBID_PRESTART", "on")],
+        json!({}),
+    );
+    std::fs::write(obid.home.join("accounts/stub/startup-hooks"), "").unwrap();
+    let first = said(&obid, json!({"said": "SAY hi", "new": true}));
+    let one = first.body["conversation"].as_str().unwrap().to_owned();
+    let conversations = obid.home.join("conversations");
+    // The stand-in writes its hooks' lines before it records its start.
+    let (next, record) = within(30, "the next conversation's Claude Code started", || {
+        std::fs::read_dir(&conversations)
+            .ok()?
+            .flatten()
+            .filter(|e| e.path().is_dir() && e.file_name().to_string_lossy() != one)
+            .find_map(|e| {
+                let line = std::fs::read_to_string(e.path().join("config/started.jsonl")).ok()?;
+                let record: Value = serde_json::from_str(line.lines().next()?).ok()?;
+                Some((e.file_name().to_string_lossy().into_owned(), record))
+            })
+    });
+    let second = said(&obid, json!({"said": "OBY oby_jobs {}", "new": true}));
+    assert_eq!(
+        second.body["conversation"],
+        next.as_str(),
+        "{}",
+        second.text
+    );
+    let text = second.body["text"].as_str().unwrap_or_default();
+    assert!(
+        text.starts_with("oby: ") && !text.contains("refused"),
+        "{}",
+        second.text
+    );
+    let recorded = recorded(&conversations.join(format!("{next}/config/turns.jsonl")));
+    assert_eq!(recorded.len(), 1, "{recorded:?}");
+    assert_eq!(
+        recorded[0]["id"], record["id"],
+        "the turn went to the Claude Code started ahead"
+    );
+}
+
 /// A waiting Claude Code that wrote a line while it waited isn't given the next turn (the line
 /// would be taken for the turn's): a new one answers it.
 #[test]
