@@ -457,8 +457,24 @@ pub(crate) fn fetch_args<'a>(signed: &'a [String], refspecs: &'a [String]) -> Ve
     args
 }
 
+/// What a tool's run leaves in a worktree that is never source, whatever the repository: Python's
+/// bytecode and its tools' caches, `node_modules/`, macOS's `.DS_Store` (PUBLISHING-43). Excluded
+/// in obid's own clone, they don't hold a job's publish in a repository with no `.gitignore`, and
+/// the repository's files are never touched. Only untracked files: a repository that commits one of
+/// them keeps it.
+pub const DROPPINGS: [&str; 7] = [
+    "__pycache__/",
+    "*.pyc",
+    ".pytest_cache/",
+    ".mypy_cache/",
+    ".ruff_cache/",
+    "node_modules/",
+    ".DS_Store",
+];
+
 /// `.obi/` (what obid hands an agent: quoted inputs and context) and `.oby/` (the Swift runner's)
-/// are never part of the work: excluded in the clone's `info/exclude`, which every worktree shares.
+/// are never part of the work, nor [`DROPPINGS`]: excluded in the clone's `info/exclude`, which
+/// every worktree shares.
 pub fn exclude_obi_folders(clone: &Path) -> Result<(), GitError> {
     let info = clone.join(".git").join("info");
     std::fs::create_dir_all(&info)
@@ -467,7 +483,7 @@ pub fn exclude_obi_folders(clone: &Path) -> Result<(), GitError> {
     let text = std::fs::read_to_string(&exclude).unwrap_or_default();
     let mut lines: Vec<&str> = text.lines().collect();
     let mut changed = false;
-    for folder in ["/.obi/", "/.oby/"] {
+    for folder in ["/.obi/", "/.oby/"].into_iter().chain(DROPPINGS) {
         if !lines.contains(&folder) {
             lines.push(folder);
             changed = true;
@@ -971,6 +987,54 @@ pub fn is_sha(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// PUBLISHING-43: obid's clone excludes what tools leave behind, once however often it's
+    /// written; git then lists a real file left uncommitted, never a dropping.
+    #[test]
+    fn publishing_43_the_clone_excludes_droppings_not_work() {
+        let root = std::env::temp_dir().join(format!("obid-droppings-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        run(&["init", "-q"]);
+        exclude_obi_folders(&root).unwrap();
+        exclude_obi_folders(&root).unwrap();
+        let exclude = std::fs::read_to_string(root.join(".git/info/exclude")).unwrap();
+        for line in ["/.obi/", "__pycache__/", "node_modules/", ".DS_Store"] {
+            assert_eq!(
+                exclude.lines().filter(|l| *l == line).count(),
+                1,
+                "{exclude}"
+            );
+        }
+        for file in [
+            "src/__pycache__/calc.cpython-312.pyc",
+            ".pytest_cache/v/x",
+            "node_modules/a/i.js",
+            ".DS_Store",
+            "notes.txt",
+        ] {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "x").unwrap();
+        }
+        assert_eq!(
+            run(&["status", "--porcelain", "--untracked-files=all"]),
+            "?? notes.txt\n"
+        );
+        assert!(
+            !root.join(".gitignore").exists(),
+            "the repository's files untouched"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// RECOVERY-14: a repository whose name says `timeout` isn't a network failure.
     #[test]
