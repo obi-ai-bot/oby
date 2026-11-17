@@ -1373,7 +1373,7 @@ pub fn security_paths(changed: &[String], command: Option<&str>) -> Vec<String> 
 
 /// Whether the changed `path` is on the [`SECURITY_PATHS`] `entry`, in any letter case: the same
 /// file name, inside the entry's folder at any depth, or the same whole path from the root, as the
-/// entry is anchored (proved for every entry in crate::proofs::security_paths).
+/// entry is anchored (docs/proofs.md: its proof is still to come).
 pub(crate) fn caught_by(path: &str, entry: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     let p = entry.to_ascii_lowercase();
@@ -1383,7 +1383,7 @@ pub(crate) fn caught_by(path: &str, entry: &str) -> bool {
         (false, false) => Anchor::Name,
     };
     // Only the anchor's own test runs, byte by byte: the same answers as `rsplit` and
-    // `match_indices`, without the character searches the proofs can't get through.
+    // `match_indices`, without the character searches Kani can't get through.
     let fit = Fit {
         name: anchor == Anchor::Name && {
             let start = lower.bytes().rposition(|b| b == b'/').map_or(0, |i| i + 1);

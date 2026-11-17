@@ -1137,7 +1137,7 @@ pub async fn scan(texts: &[(String, String)], scratch: &Path) -> Verdict {
 
 /// The scan's verdict from what the built-in rules `found` and what gitleaks said: a gitleaks
 /// that couldn't run is never Clean, whatever the rules found; else each finding once, Clean only
-/// with none (proved in crate::proofs::scan).
+/// with none (docs/proofs.md: its proof is still to come).
 pub(crate) fn verdict(mut found: Vec<Finding>, gitleaks: Result<Vec<Finding>, String>) -> Verdict {
     match gitleaks {
         Ok(more) => found.extend(more),

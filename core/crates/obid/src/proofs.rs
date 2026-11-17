@@ -6,8 +6,6 @@
 
 mod lanes;
 mod publish;
-mod scan;
-mod security_paths;
 mod token;
 mod within;
 
@@ -24,17 +22,4 @@ pub(crate) fn any_str<const N: usize>() -> String {
             unreachable!()
         }
     }
-}
-
-/// `word` with each ASCII letter in any case.
-pub(crate) fn any_case(word: &str) -> String {
-    word.chars()
-        .map(|c| {
-            if kani::any() {
-                c.to_ascii_uppercase()
-            } else {
-                c.to_ascii_lowercase()
-            }
-        })
-        .collect()
 }
