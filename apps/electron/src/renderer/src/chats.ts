@@ -8,6 +8,7 @@ import * as live from './live';
 import { useKeptSetting } from './SettingsView';
 import { TALK_DEFAULT } from './talk';
 import { box as draftBox, forget } from './drafts';
+import { shortTitle, titled } from './titles';
 
 // A conversation with Oby: what you asked, its answers, and the tasks they
 // started (a card under the answer that started each). Asking Oby (Home's
@@ -26,12 +27,6 @@ type Ask = { question: string; options: string[] };
 // project: the project it's in, or null (projects.ts): its group in the side panel
 export type Chat = { id: string; title: string; said: Message[]; typing?: boolean; step?: string; waiting?: Ask; needs?: boolean; pinned?: boolean; fromObys?: boolean; at?: number; about?: string; local?: boolean; talkAccount?: string | null; talkedOn?: string | null; movedOff?: string | null; profile?: string; helper?: string; project?: string | null };
 
-// named after its first line, as Oby would title it
-const titled = (text: string) => {
-  const line = text.trim().split('\n')[0];
-  const t = line.length > 48 ? `${line.slice(0, 45).trimEnd()}…` : line;
-  return t[0].toUpperCase() + t.slice(1);
-};
 
 // The mock's past conversations: your log with Oby (mock.ts), a new one each
 // time you asked something, each with what's been said since about the tasks
@@ -211,7 +206,7 @@ export function askOby(text: string, att?: Attachments) {
   const t = text.trim();
   if (!t && !hasAttachments(att)) return;
   const id = `c${++made}`;
-  set([{ id, title: titled(t || att?.files?.[0]?.name || 'New conversation'), said: [{ who: 'you', text: t, ago: 0, ...att }], project: att?.project ?? null }, ...chats]);
+  set([{ id, title: t ? shortTitle(t) : titled(att?.files?.[0]?.name || 'New conversation'), said: [{ who: 'you', text: t, ago: 0, ...att }], project: att?.project ?? null }, ...chats]);
   answer(id);
   return id;
 }

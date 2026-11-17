@@ -20,6 +20,7 @@ import type { GitHubWork } from './obid';
 import { lookAgain, takeRoomPost } from './room';
 import { lookAgainAtThreads, plainId, threadChanged } from './peers';
 import { added, adopted, answered as planAnswered, awaited, awaitedIn, conversationOf, failed as sendFailed, gone as goneWith, settled, starts, type Pendings } from './pending';
+import { shortTitle, titled } from './titles';
 
 // What obid has (docs/runner-api.md), as main's one follower of its events keeps it (main/live.ts):
 // main's snapshot when the page opens and after each sync, then each event main applied, applied
@@ -232,7 +233,7 @@ function chatsOf(s: Live): Chat[] {
   for (const st of Object.values(s.pending)) {
     if (!starts(st) || [...rows, ...chats].some((c) => c.id === st.shown)) continue;
     const real = st.conversation ?? Object.keys(s.alias).find((k) => s.alias[k] === st.shown);
-    const shown = chatOf(s, { id: real ?? st.shown, title: st.said.split('\n')[0].slice(0, 48), pinned: false, created: now, lastActivity: now, cursor: '' });
+    const shown = chatOf(s, { id: real ?? st.shown, title: st.said.trim() ? shortTitle(st.said) : titled(st.files[0]?.name ?? ''), pinned: false, created: now, lastActivity: now, cursor: '' });
     rows.push({ ...shown, id: st.shown, said: shown.said.length ? shown.said : [{ who: 'you', text: st.said, ago: 0, ...(st.files.length ? { files: st.files } : {}) }], ...(st.over ? {} : { typing: true, step: shown.step ?? 'Thinking' }) });
   }
   return [...rows, ...chats];

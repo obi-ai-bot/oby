@@ -17,7 +17,7 @@ import Formatted from './Formatted';
 import Said from './Said';
 import { convoTitle, threadOf } from './mock';
 import { ENDED, agentOf, type Message } from './view';
-import { markSeen, tell, tellPlaceholder, useTasks, type Task } from './tasks';
+import { asksWaiting, markSeen, tell, tellPlaceholder, useTasks, type Task } from './tasks';
 import { obys, ofObid, stopChat, tellChat, useChats, type Chat } from './chats';
 import SetupCard from './SetupCard';
 import OfferCard from './OfferCard';
@@ -152,6 +152,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   // conversation started (each named by its task: carded here, or its job's conversation, its card
   // not placed yet), then an account's limit stopping its work
   const carded = [...new Set([...thread.flatMap((m) => m.jobs ?? []), ...(talk ? tasks.filter((t) => t.job.conversation === talk.id).map((t) => t.id) : [])])];
+  const inThread = new Set(thread.flatMap((m) => [(m as Message).confirm?.id, (m as Message).offer?.id].filter((x): x is string => !!x)));
   const pending: Pending[] = [
     ...(task ? (task.status === 'needs' && j!.ask ? [{ key: task.id, task }] : [])
       : carded.flatMap((jid) => {
@@ -159,6 +160,11 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
         return t && t.status === 'needs' && t.job.ask ? [{ key: t.id, task: t, from: t.title }] : [];
       })),
     ...limits.map((a) => ({ key: a.id, task: { id: a.id, job: { ask: a.ask! } } })),
+    // and what this conversation asks with no task to show it on (a failure, a GitHub offer made
+    // here), unless its thread shows it already (a Confirm, an offer): never another conversation's
+    // (CHATFIRST-8)
+    ...(talk ? asksWaiting().filter((a) => a.talk === talk.id && a.ask && !inThread.has(a.id))
+      .map((a) => ({ key: a.id, task: { id: a.id, job: { ask: a.ask! } }, from: a.title })) : []),
   ];
 
   // where the message box's words go: Oby, a task's own agent, or another Oby (replyTarget)
