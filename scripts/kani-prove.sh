@@ -8,7 +8,9 @@
 # KANI_SLOW=prove also proves the harnesses on core/.config/kani-slow.txt, which are otherwise left
 # out and named; KANI_HARNESS_TIMEOUT (by default 20m) is each harness's limit, past which it fails.
 # KANI_JOBS (by default 2) runs that many at once: CBMC takes several GB a harness, and four at once
-# ran GitHub's 16 GB runner out of memory.
+# ran GitHub's 16 GB runner out of memory. On Linux each process gets at most KANI_MEMORY_GB (by
+# default 6) of memory: a harness past it fails with CBMC's out-of-memory message and the job goes
+# on to name it, where without a ceiling the runner died with no log at all.
 set -euo pipefail
 cd "$(dirname "$0")/../core"
 filters=${1:-}
@@ -52,6 +54,10 @@ if [[ -z "$names" ]]; then
 fi
 args=()
 while IFS= read -r name; do args+=(--harness "$name"); done <<< "$names"
-echo "kani-prove: proving $(wc -l <<< "$names" | tr -d ' ') harnesses, each within ${KANI_HARNESS_TIMEOUT:-20m}"
+if [[ "$(uname)" == Linux ]]; then
+    ulimit -v $(( ${KANI_MEMORY_GB:-6} * 1024 * 1024 ))
+fi
+echo "kani-prove: proving $(wc -l <<< "$names" | tr -d ' ') harnesses, ${KANI_JOBS:-2} at a time, each within ${KANI_HARNESS_TIMEOUT:-20m} and ${KANI_MEMORY_GB:-6} GB"
+printf 'kani-prove:   %s\n' $names
 exec env -u RUSTUP_TOOLCHAIN cargo kani -p obid --tests --output-format terse --exact "${args[@]}" \
     --jobs "${KANI_JOBS:-2}" -Z unstable-options --harness-timeout "${KANI_HARNESS_TIMEOUT:-20m}"
