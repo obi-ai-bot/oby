@@ -141,12 +141,13 @@ esac
 # The identity it's signed with: its SHA-1 for helpers.sh, its name for electron-builder
 team=${OBY_TEAM_ID:-3UV9W5SV7W}
 identities=$(security find-identity -v -p codesigning 2> /dev/null || true)
+# (each lookup may find nothing: || true, or pipefail would end the script here)
 if [[ -n "${OBY_SIGN_IDENTITY:-}" ]]; then
-  line=$(print -r -- "$identities" | grep -F "\"$OBY_SIGN_IDENTITY" | head -n 1)
+  line=$(print -r -- "$identities" | grep -F "\"$OBY_SIGN_IDENTITY" | head -n 1 || true)
   [[ -n "$line" ]] || die "no signing identity named $OBY_SIGN_IDENTITY in the keychain"
 else
-  line=$(print -r -- "$identities" | grep "Developer ID Application" | grep "($team)" | head -n 1)
-  [[ -n "$line" ]] || line=$(print -r -- "$identities" | grep '"Apple Development' | head -n 1)
+  line=$(print -r -- "$identities" | grep "Developer ID Application" | grep "($team)" | head -n 1 || true)
+  [[ -n "$line" ]] || line=$(print -r -- "$identities" | grep '"Apple Development' | head -n 1 || true)
 fi
 if [[ -n "$line" ]]; then
   sign_hash=$(print -r -- "$line" | awk '{print $2}')
