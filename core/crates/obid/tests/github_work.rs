@@ -1016,7 +1016,7 @@ fn red_ci_on_your_own_pull_request_offers_fix_ci_once_per_head() {
     );
     let task = job["task"].as_str().unwrap();
     assert!(
-        task.starts_with("Make pull request #5 in obi-e2e/fixture-app pass its checks")
+        task.starts_with("Fix what makes the failed checks on pull request #5 in obi-e2e/fixture-app fail, and commit the fix.")
             && !task.contains("Ignore"),
         "{task}"
     );
@@ -1202,6 +1202,76 @@ fn taskconv_29_fix_ci_on_its_card_starts_a_task_in_its_own_conversation() {
     assert!(
         !quoted.contains("not this repository's"),
         "a log is read only from the pull request's own repository: {quoted}"
+    );
+}
+
+/// TASKCONV-30 (docs/contracts/task-conversations.md): a Fix CI task's goal is what its agent can
+/// meet before anything is pushed: fix the failed checks' cause and commit it. GitHub's checks run
+/// again only once Oby publishes the commit, so they're never part of the goal, which would keep a
+/// right fix unpublished (`GOAL NOT MET: GitHub checks on the new commit remain unverified`).
+#[test]
+fn taskconv_30_a_fix_ci_tasks_goal_is_the_fix_committed_not_githubs_checks() {
+    let folder = Folder::new("taskconv-30");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &agents().join("fake-claude"));
+    let obid = start(&folder.0, &config, Some(&agents()));
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(
+        gh.join("view.json"),
+        json!({"title": "Login fix", "body": "", "author": {"login": "wellington"},
+               "labels": [], "comments": [], "headRefName": "fix-login", "isCrossRepository": false,
+               "statusCheckRollup": [{"__typename": "StatusContext", "context": "ci/test", "state": "FAILURE"}]})
+        .to_string(),
+    )
+    .unwrap();
+    let a = "a".repeat(40);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "SUCCESS")],
+    );
+    refresh(&obid);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "FAILURE")],
+    );
+    refresh(&obid);
+    let offer = github_items(&obid, "open")
+        .into_iter()
+        .find(|i| i["github"]["number"] == 5)
+        .expect("a CI failed card");
+    let answered = call(
+        &obid,
+        "POST",
+        &format!("/v1/inbox/{}/answer", offer["id"].as_str().unwrap()),
+        Some(&json!({"answer": "Fix CI"})),
+    );
+    assert_eq!(answered.status, 200, "{}", answered.text);
+    let id = answered.body["job"].as_str().unwrap().to_owned();
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    let task = job["task"].as_str().unwrap();
+    assert!(
+        task.starts_with(
+            "Fix what makes the failed checks on pull request #5 in obi-e2e/fixture-app fail, and commit the fix. Add commits on top of it; never rewrite or drop the ones it has."
+        ),
+        "{task}"
+    );
+    assert!(
+        task.contains("seeing them pass there isn't part of your goal"),
+        "{task}"
+    );
+    assert!(!task.contains("pass its checks"), "{task}");
+    assert!(
+        task.contains(
+            "the end of each failed check's log are quoted in .obi/inputs/github-fixture-app-5.md"
+        ),
+        "{task}"
     );
 }
 

@@ -1389,15 +1389,21 @@ async fn begin(
     let task = match list {
         "reviews" => format!("Review pull request #{number} in {repo}."),
         "assigned" => format!("Fix issue #{number} in {repo}."),
+        // What its agent can meet before anything is pushed (TASKCONV-30): GitHub runs the checks
+        // again only once Oby publishes the commit, and a goal that waits on them is never met,
+        // so the right fix would stay unpublished.
         _ => format!(
-            "Make pull request #{number} in {repo} pass its checks. Add commits on top of it; never rewrite or drop the ones it has."
+            "Fix what makes the failed checks on pull request #{number} in {repo} fail, and commit the fix. Add commits on top of it; never rewrite or drop the ones it has. GitHub runs its checks again once Oby publishes your commits, so seeing them pass there isn't part of your goal: it's met when the cause is fixed, committed and checked here as far as you can."
         ),
     };
-    let task = match attachments {
-        Some(_) => {
+    let task = match (&attachments, list) {
+        (Some(_), "mine") => format!(
+            "{task} What people wrote on it on GitHub, each check's result and the end of each failed check's log are quoted in .obi/inputs/{file}."
+        ),
+        (Some(_), _) => {
             format!("{task} What people wrote on it on GitHub is quoted in .obi/inputs/{file}.")
         }
-        None => task,
+        (None, _) => task,
     };
     // A routine's job: its agent, account, mode, check, rounds, mark and request, and its task
     // after obid's own words. Its conversation is the feed's.
