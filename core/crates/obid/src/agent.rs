@@ -871,7 +871,23 @@ pub fn step(tool: &str, input: &Value) -> String {
         "Task" | "Agent" => text("description")
             .unwrap_or("Starting a helper")
             .to_owned(),
-        _ => format!("Using {tool}"),
+        // The agent's questions to the owner, in words: Claude Code's own, and Oby's (Claude Code
+        // names it `mcp__oby__oby_ask_owner`, Codex `oby_ask_owner`).
+        "AskUserQuestion" => "Asking you a question".into(),
+        "ExitPlanMode" => "Asking you to approve its plan".into(),
+        _ if mcp_name(tool) == crate::permissions::ASK_OWNER => "Asking you a question".into(),
+        _ if mcp_name(tool).to_ascii_lowercase().contains("permission") => {
+            "Asking for permission".into()
+        }
+        _ => format!("Using {}", mcp_name(tool).replace('_', " ")),
+    }
+}
+
+/// An MCP tool's own name, without Claude Code's `mcp__<server>__` before it.
+fn mcp_name(tool: &str) -> &str {
+    match tool.strip_prefix("mcp__") {
+        Some(rest) => rest.split_once("__").map_or(rest, |(_, name)| name),
+        None => tool,
     }
 }
 
@@ -1316,6 +1332,26 @@ mod tests {
             "Looking for **/*.js"
         );
         assert_eq!(step("Mystery", &json!({})), "Using Mystery");
+        // A tool's name never shows raw: the owner's questions in words, an MCP tool's own name.
+        for asks in [
+            "AskUserQuestion",
+            "mcp__oby__oby_ask_owner",
+            "oby_ask_owner",
+        ] {
+            assert_eq!(step(asks, &json!({})), "Asking you a question", "{asks}");
+        }
+        assert_eq!(
+            step("ExitPlanMode", &json!({})),
+            "Asking you to approve its plan"
+        );
+        assert_eq!(
+            step("mcp__oby__request_permission", &json!({})),
+            "Asking for permission"
+        );
+        assert_eq!(
+            step("mcp__tetrix__search_entities", &json!({})),
+            "Using search entities"
+        );
     }
 
     /// RECOVERY-7: a 429's words say "rate limit", and that's no usage limit: the tool's fields

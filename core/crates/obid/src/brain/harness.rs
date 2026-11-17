@@ -2998,8 +2998,7 @@ fn step_text(name: &str, input: &Value) -> String {
             Some(path) => format!("Listing {path}"),
             None => "Listing the room".into(),
         },
-        Some(other) => format!("Using {other}"),
-        None => agent::step(name, input),
+        Some(_) | None => agent::step(name, input),
     }
 }
 

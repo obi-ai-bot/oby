@@ -1817,7 +1817,10 @@ async fn merging(
     let commits: Vec<Value> = serde_json::from_str::<Vec<Vec<Value>>>(&commits)
         .map(|pages| pages.into_iter().flatten().collect())
         .map_err(|_| wait("Not merged yet: GitHub said something else about its commits."))?;
+    // The Mac's own paths stay on it, before the scan reads the words (PUBLISHING-41).
+    let places = crate::local_paths::Places::of_job(job.worktree.as_deref());
     let (title, message) = squash(&pull.title, &commits, number);
+    let (title, message) = (places.rewrite(&title), places.rewrite(&message));
     // A merge or a rebase lands each commit as it is: one saying it closes an issue would. GitHub
     // lists at most 250 of them, so past that Oby can't tell.
     if workflow.method != Method::Squash && commits.len() >= GITHUB_LISTS {

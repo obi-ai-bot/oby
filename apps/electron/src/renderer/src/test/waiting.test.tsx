@@ -105,6 +105,21 @@ describe('Waiting for you', () => {
     expect(rows()).toEqual(['Fix the live panel’s queue order', 'Fix the iOS signing step']);
   });
 
+  it('waiting_1_a_question_is_tagged_as_a_question_never_with_the_tasks_review', async () => {
+    fill();
+    const s = live.liveState();
+    // a running task's pipeline still says its Review is to come: that's the task's, not the question's
+    s.jobs.j4 = job('j4', 'obi-ai-bot/oby', 'Ask before deleting', { status: 'running', pipeline: { number: 3, total: 6, stages: [
+      { id: 'review', title: 'Review', state: 'upcoming', detail: 'Waiting for review' },
+    ] } });
+    s.inbox = [item('j4-question-q1', 'question', 'j4', at(2), { text: 'Delete the old fixtures?', options: ['Yes', 'No'] })];
+    await waitingPage();
+    const row = host.querySelector('.waiting-row')!;
+    expect(row.querySelector('.waiting-kind')?.textContent).toBe('Question');
+    expect(row.textContent).not.toContain('Waiting for review');
+    expect(row.querySelectorAll('.waiting-tag')).toHaveLength(0);
+  });
+
   it('waiting_2_merge_is_signed_and_leaves', async () => {
     fill();
     await waitingPage();

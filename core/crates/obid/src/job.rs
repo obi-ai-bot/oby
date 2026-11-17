@@ -1009,6 +1009,28 @@ pub fn steered(summary: &str) -> (&str, Option<&str>) {
     }
 }
 
+/// An agent's words as a person reads them (TASKS-19): its `GOAL MET` line, a signal between the
+/// agent and obid, taken out, and a `GOAL NOT MET: <what's left>` line read as `Not done yet:
+/// <what's left>`. The job keeps the agent's own words; this is for what the owner reads (the
+/// API's `summary`, `summaries` and `reason`) and what goes to GitHub (crate::publish::body).
+pub fn readable(text: &str) -> String {
+    if !text.contains("GOAL MET") && !text.contains("GOAL NOT MET") {
+        return text.to_owned();
+    }
+    let lines: Vec<String> = text
+        .split('\n')
+        .filter(|l| l.trim() != "GOAL MET")
+        .map(|l| match l.trim().strip_prefix("GOAL NOT MET") {
+            Some(left) => match left.trim_start_matches([':', ' ']).trim() {
+                "" => "Not done yet.".to_owned(),
+                left => format!("Not done yet: {left}"),
+            },
+            None => l.to_owned(),
+        })
+        .collect();
+    lines.join("\n").trim_end().to_owned()
+}
+
 /// The first line of the last reply to the owner's words in `summary`, with [`STEERED`].
 pub fn last_steer(summary: &str) -> Option<&str> {
     let at = summary.rfind(&format!("\n\n{STEERED}"))?;
@@ -1646,7 +1668,7 @@ impl Job {
             "task": self.task,
             "status": self.status.as_str(),
             "step": self.step,
-            "summary": self.summary,
+            "summary": readable(&self.summary),
             "session": self.session,
             "created": obi_protocol::time::format(self.created),
             "started": date(self.started),
@@ -1655,7 +1677,7 @@ impl Job {
             "published": self.published,
             "pushed": self.pushed,
             "publishError": self.publish_error,
-            "summaries": self.summaries,
+            "summaries": self.summaries.as_ref().map(|list| list.iter().map(|s| readable(s)).collect::<Vec<_>>()),
             "issue": self.issue,
             "fromPR": null,
             "rounds": self.max_rounds(),
@@ -2248,6 +2270,35 @@ fn mac_check_json(check: Option<Value>, kind: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// TASKS-19: the `GOAL MET` line is obid's: a person reads the summary without it, and a
+    /// `GOAL NOT MET` line as what's left, in words.
+    #[test]
+    fn tasks_19_the_goal_line_is_not_for_a_person() {
+        assert_eq!(
+            readable("Fixed the parser.\n\nGOAL MET"),
+            "Fixed the parser."
+        );
+        assert_eq!(
+            readable("Added a.txt.\n\nGOAL NOT MET: the tests are left"),
+            "Added a.txt.\n\nNot done yet: the tests are left"
+        );
+        assert_eq!(readable("Half.\nGOAL NOT MET"), "Half.\nNot done yet.");
+        let plain = "Says GOAL MET in a sentence, which stays.";
+        assert_eq!(readable(plain), plain);
+        let mut job = Job {
+            summary: "Done.\n\nGOAL MET".into(),
+            summaries: Some(vec!["One.\nGOAL MET".into(), "Two.".into()]),
+            ..job()
+        };
+        let json = job.to_json();
+        assert_eq!(json["summary"], "Done.");
+        assert_eq!(json["summaries"], serde_json::json!(["One.", "Two."]));
+        // The job keeps the agent's own words, for obid's rounds.
+        assert!(job.summary.ends_with("GOAL MET"));
+        job.summaries = None;
+        assert!(job.to_json()["summaries"].is_null());
+    }
 
     /// MERGING-2: a job saved while `checkWithheld` was a bool keeps holding its merge once read
     /// by this obid, with a reason; one that wasn't held stays so.
