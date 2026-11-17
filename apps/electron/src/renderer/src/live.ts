@@ -15,7 +15,6 @@ import { has } from '../../shared/capabilities';
 import { answer, answerStatus, answerTurns, apply as applyToObid, type ObidState } from '../../shared/live-state';
 import { unwired, type LiveMessage, type LiveSnapshot } from '../../shared/live-wire';
 import { onObid } from './lean';
-import { FILES } from './mock';
 import type { GitHubItem } from './view';
 import type { GitHubWork } from './obid';
 import { lookAgain, takeRoomPost } from './room';
@@ -969,7 +968,6 @@ export async function cancelWords(shown: string, turn: string): Promise<boolean>
 }
 // The files of a conversation's folders for an @ (COMPOSER-14): none from an obid without them
 export async function conversationFiles(shown: string, typed: string) {
-  if (!onObid) return FILES.filter((f) => f.path.toLowerCase().includes(typed.toLowerCase())).slice(0, 20);
   if (!has(state.status, 'composer-v1')) return [];
   try { return (await api.conversationFiles(realId(shown), typed)).files; } catch { return []; }
 }

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { conversationFiles } from './live';
+import { onObid } from './lean';
+import { FILES } from './mock';
 import type { ConversationFile } from './obid';
 
 // What the message box takes besides typing (docs/contracts/composer.md, COMPOSER-12 to 16), each
@@ -45,7 +47,9 @@ export function useMentionFiles(conversation: string | undefined, at: string | n
   useEffect(() => {
     const n = ++asked.current;
     if (!conversation || at === null) { setFiles([]); return; }
-    const t = setTimeout(() => { void conversationFiles(conversation, at).then((f) => { if (n === asked.current) setFiles(f); }); }, 120);
+    // (in a browser, the mock's: obid lists the real ones)
+    const ask = () => (onObid ? conversationFiles(conversation, at) : Promise.resolve(FILES.filter((f) => f.path.toLowerCase().includes(at.toLowerCase())).slice(0, 20)));
+    const t = setTimeout(() => { void ask().then((f) => { if (n === asked.current) setFiles(f); }); }, 120);
     return () => clearTimeout(t);
   }, [conversation, at]);
   return files;
