@@ -19,7 +19,7 @@ import { usePrompt } from './prompts';
 import { leave, useGlide } from './glide';
 import { folderName, folderPlace, foldersOf, pickFolders, setFolders, useFolders, usedFolders, useRecentFolders } from './folders';
 import { everything } from './lean';
-import { keeper, leftInBox } from './drafts';
+import { dataOf, fileOf, hold, keeper, leftInBox, type KeptTag } from './drafts';
 import TalkPill from './TalkPill';
 import { useChats, type Chat } from './chats';
 import { useProjects, useProjectsOn } from './projects';
@@ -228,13 +228,44 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   // quit loses nothing. Sending empties the box, which lets its draft go.
   const drafts = useRef<ReturnType<typeof keeper>>(null);
   drafts.current ??= keeper();
+  // which box the tags shown are of: none kept for a box until its own are put back
+  const [tagsOf, setTagsOf] = useState<string>();
   useLayoutEffect(() => {
     const d = drafts.current!, b = box.current;
     const text = d.show(draft ?? null);
     if (b && draft !== undefined && (text || b.text())) b.setText(text);
+    // its tags and choices come back with its words (DRAFTS-4 to 7): a file whose bytes weren't
+    // kept, after a relaunch, doesn't
+    if (draft !== undefined && !wordsOnly) {
+      const e = d.more();
+      setAttached((e.tags ?? []).flatMap((t): Attached[] => {
+        if (t.kind !== 'file') return t.kind === 'repo' ? [] : [t];
+        const file = fileOf(draft, t);
+        return file ? [{ kind: 'file', name: t.name, file, preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined }] : [];
+      }));
+      const r = e.tags?.find((t) => t.kind === 'repo');
+      setRepoPick(r && r.kind === 'repo' ? r.name : undefined);
+      if (home) { setHomeProject(e.project ?? null); setHomeFolders(e.folders ?? []); }
+      setTagsOf(draft);
+    }
     addEventListener('pagehide', d.flush);
     return () => { removeEventListener('pagehide', d.flush); d.flush(); };
   }, [draft]);
+  // and are kept as they change, the files' bytes read first (DRAFTS-4 to 8)
+  useEffect(() => {
+    if (draft === undefined || wordsOnly || tagsOf !== draft) return;
+    const files = attached.flatMap((a) => (a.kind === 'file' ? [a] : []));
+    hold(draft, files);
+    let gone = false;
+    void Promise.all(files.map((f) => (f.file ? dataOf(f.file) : undefined))).then((datas) => {
+      if (gone) return;
+      let n = 0;
+      const tags = attached.map((a): KeptTag => (a.kind === 'file' ? { kind: 'file', name: a.name, ...(a.file?.type ? { type: a.file.type } : {}), ...(datas[n++] ? { data: datas[n - 1] } : {}) } : a));
+      if (typeof repoPick === 'string') tags.push({ kind: 'repo', name: repoPick });
+      drafts.current!.carry({ tags, ...(home ? { project: homeProject, folders: homeFolders } : {}) });
+    });
+    return () => { gone = true; };
+  }, [attached, repoPick, homeProject, homeFolders, tagsOf, draft]);
   // Home's box stepping aside (a page opened over it) puts its panel away
   useEffect(() => { if (hidden) setView(null); }, [hidden]);
   // a click outside the box and its panel closes the panel (anywhere in the window)
