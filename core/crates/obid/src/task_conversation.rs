@@ -118,7 +118,8 @@ fn start(
     words: Option<Words>,
     foreign: Option<String>,
 ) -> Option<crate::job::Job> {
-    let conversation = match shared.conversations.start_for(&job.short_title()) {
+    let title = job.short_title();
+    let conversation = match (shared.conversations).start_in_profile(&title, job.profile.clone()) {
         Ok(conversation) => conversation,
         Err(e) => {
             tracing::warn!("job {}: no conversation of its own: {e:?}", job.id);

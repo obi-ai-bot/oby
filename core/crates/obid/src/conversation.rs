@@ -6,6 +6,7 @@
 use crate::api::{ApiError, Shared};
 use crate::delivery::{Delivery, Move, Replay};
 use crate::events::Events;
+use crate::profiles::Scope;
 use crate::projects::{Event, Whose, answered, next};
 use axum::body::Bytes;
 use axum::extract::{Path as UrlPath, Query, State};
@@ -148,6 +149,10 @@ struct Thread {
     /// The helper whose one conversation it is (crate::helpers): kept aside as [`Self::from_obys`]'s.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     helper: Option<String>,
+    /// The profile it was made in (crate::profile_scope, B00-40); none is the default's, as is
+    /// every conversation made before profiles. It never changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    profile: Option<String>,
     /// The folders its work is in (crate::folders): canonical paths, in the order picked. Its own
     /// list: while it's in a project it answers the project's, and this waits underneath.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -347,7 +352,15 @@ impl Thread {
         if let Some(helper) = &self.helper {
             summary["helper"] = json!(helper);
         }
+        if let Some(profile) = &self.profile {
+            summary["profile"] = json!(profile);
+        }
         summary
+    }
+
+    /// Whether it's the profile `scope`'s; every one is, for none.
+    fn within(&self, scope: Option<&Scope>) -> bool {
+        scope.is_none_or(|scope| scope.holds(self.profile.as_deref()))
     }
 
     fn whose(&self) -> Whose {
@@ -715,6 +728,7 @@ impl Conversations {
     #[allow(clippy::too_many_arguments)]
     pub fn begin(
         &self,
+        scope: &Scope,
         target: Target,
         said: String,
         jobs: Vec<String>,
@@ -734,7 +748,7 @@ impl Conversations {
             let thread = &threads[at];
             let in_target = match &target {
                 Target::Id(named) => thread.id == *named,
-                Target::Latest => latest(&threads) == Some(at),
+                Target::Latest => latest_in(&threads, Some(scope)) == Some(at),
                 Target::New => thread.turns.first().is_some_and(|t| t.id == id),
             };
             let same = thread
@@ -755,8 +769,8 @@ impl Conversations {
         let folders = folders.map_err(Error::Folder)?;
         let project = project.map_err(Error::Folder)?;
         let found = match target {
-            Target::Id(id) => Some(index_of(&threads, &id)?),
-            Target::Latest => latest(&threads),
+            Target::Id(id) => Some(index_in(&threads, &id, Some(scope))?),
+            Target::Latest => latest_in(&threads, Some(scope)),
             Target::New => None,
         };
         if found.is_some_and(|at| threads[at].project.is_some()) && !folders.is_empty() {
@@ -781,6 +795,7 @@ impl Conversations {
                         .unwrap_or(&said),
                 ),
                 created: obi_protocol::time::format(obi_protocol::time::now()),
+                profile: scope.tag(),
                 ..Thread::default()
             });
             threads.len() - 1
@@ -846,8 +861,23 @@ impl Conversations {
 
     /// The conversation with the latest turn, if there is one.
     pub fn latest_id(&self) -> Option<String> {
+        self.latest_id_in(None)
+    }
+
+    /// [`Self::latest_id`] of the profile `scope`'s (every profile's for none).
+    pub fn latest_id_in(&self, scope: Option<&Scope>) -> Option<String> {
         let threads = self.lock();
-        latest(&threads).map(|index| threads[index].id.clone())
+        latest_in(&threads, scope).map(|index| threads[index].id.clone())
+    }
+
+    /// The profile conversation `id` was made in (none: the default's), or none when obid has no
+    /// such conversation (crate::profile_scope).
+    pub fn profile_of(&self, id: &str) -> Option<Option<String>> {
+        let threads = self.lock();
+        threads
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| t.profile.clone())
     }
 
     /// Adds a turn to the conversation `id`. `foreign`: why its text isn't on obid's allowlist
@@ -971,16 +1001,31 @@ impl Conversations {
     /// A new conversation titled `title`, with no turn yet: the one a routine's runs go to
     /// (crate::routines). Its first turn follows at once.
     pub fn start_for(&self, title: &str) -> Result<String, Error> {
-        self.start(title, None)
+        self.start(title, None, None)
+    }
+
+    /// [`Self::start_for`], in the profile `profile` (a job's task conversation is its job's).
+    pub fn start_in_profile(&self, title: &str, profile: Option<String>) -> Result<String, Error> {
+        self.start(title, None, profile)
     }
 
     /// [`Self::start_for`], the one conversation of the helper `helper` (crate::helpers): kept
     /// aside, so it forgets none of the owner's.
-    pub fn start_helper(&self, title: &str, helper: &str) -> Result<String, Error> {
-        self.start(title, Some(helper.to_owned()))
+    pub fn start_helper(
+        &self,
+        title: &str,
+        helper: &str,
+        profile: Option<String>,
+    ) -> Result<String, Error> {
+        self.start(title, Some(helper.to_owned()), profile)
     }
 
-    fn start(&self, title: &str, helper: Option<String>) -> Result<String, Error> {
+    fn start(
+        &self,
+        title: &str,
+        helper: Option<String>,
+        profile: Option<String>,
+    ) -> Result<String, Error> {
         let mut threads = self.lock();
         let mut thread = Thread {
             id: new_id(),
@@ -988,6 +1033,7 @@ impl Conversations {
             created: obi_protocol::time::format(obi_protocol::time::now()),
             sequence: next_sequence(&threads),
             helper,
+            profile,
             ..Thread::default()
         };
         let summary = thread.revised();
@@ -1240,18 +1286,20 @@ impl Conversations {
     /// of the conversation `id`, else of the one holding `before`, else of the latest.
     fn page(
         &self,
+        scope: Option<&Scope>,
         id: Option<&str>,
         before: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Turn>, Error> {
         let threads = self.lock();
         let thread = match (id, before) {
-            (Some(id), _) => &threads[index_of(&threads, id)?],
+            (Some(id), _) => &threads[index_in(&threads, id, scope)?],
             (None, Some(turn)) => threads
                 .iter()
+                .filter(|t| t.within(scope))
                 .find(|t| t.turns.iter().any(|t| t.id == turn))
                 .ok_or(Error::NoTurn)?,
-            (None, None) => match latest(&threads) {
+            (None, None) => match latest_in(&threads, scope) {
                 Some(index) => &threads[index],
                 None => return Ok(vec![]),
             },
@@ -1270,10 +1318,16 @@ impl Conversations {
     /// Up to `limit` conversations listed after `after` (or from the first): the pinned ones,
     /// then the rest, each newest first. A cursor is a place, not a conversation, so one that
     /// moved since is skipped or listed again, never anything else.
-    pub(crate) fn list(&self, after: Option<Cursor>, limit: usize) -> Vec<Value> {
+    pub(crate) fn list(
+        &self,
+        scope: Option<&Scope>,
+        after: Option<Cursor>,
+        limit: usize,
+    ) -> Vec<Value> {
         let threads = self.lock();
         ordered(&threads, after)
             .iter()
+            .filter(|t| t.within(scope))
             .take(limit)
             .map(|t| t.summary())
             .collect()
@@ -1286,6 +1340,7 @@ impl Conversations {
     /// are gone from the list, so they're never found.
     pub fn search(
         &self,
+        scope: Option<&Scope>,
         words: &[String],
         except: Option<&str>,
         after: Option<Cursor>,
@@ -1301,7 +1356,7 @@ impl Conversations {
         let threads = self.lock();
         ordered(&threads, after)
             .into_iter()
-            .filter(|t| except != Some(t.id.as_str()))
+            .filter(|t| except != Some(t.id.as_str()) && t.within(scope))
             .filter_map(|t| {
                 let hits: Vec<(usize, Turn)> = t
                     .turns
@@ -1527,10 +1582,11 @@ impl Conversations {
             .push(id.clone());
         // The revision after its last one, so no event from before reads as newer (EVENTS-7).
         let revision = gone.revision + 1;
-        self.events.send(
-            "conversation",
-            json!({"id": id, "deleted": true, "revision": revision}),
-        );
+        let mut deleted = json!({"id": id, "deleted": true, "revision": revision});
+        if let Some(profile) = &gone.profile {
+            deleted["profile"] = json!(profile);
+        }
+        self.events.send("conversation", deleted);
         Ok(gone.uploads)
     }
 
@@ -1979,11 +2035,21 @@ fn index_of(threads: &[Thread], id: &str) -> Result<usize, Error> {
         .ok_or(Error::NoConversation)
 }
 
-/// The conversation with the latest turn.
-fn latest(threads: &[Thread]) -> Option<usize> {
+/// The conversation with the latest turn: of the profile `scope`'s, or of every profile's for none.
+fn latest_in(threads: &[Thread], scope: Option<&Scope>) -> Option<usize> {
     (0..threads.len())
-        .filter(|&i| !threads[i].aside())
+        .filter(|&i| !threads[i].aside() && threads[i].within(scope))
         .max_by_key(|&i| threads[i].sequence)
+}
+
+/// [`index_of`], of a conversation of the profile `scope`'s: another profile's is none
+/// (`NoConversation`), as one obid doesn't have.
+fn index_in(threads: &[Thread], id: &str, scope: Option<&Scope>) -> Result<usize, Error> {
+    let index = index_of(threads, id)?;
+    match threads[index].within(scope) {
+        true => Ok(index),
+        false => Err(Error::NoConversation),
+    }
 }
 
 fn next_sequence(threads: &[Thread]) -> u64 {
@@ -2015,6 +2081,20 @@ pub fn kept_project(home: &Path, id: &str) -> Option<String> {
     }
     let bytes = std::fs::read(home.join("conversations").join(format!("{id}.json"))).ok()?;
     serde_json::from_slice::<Kept>(&bytes).ok()?.project
+}
+
+/// The profile conversation `id` was made in, as kept in `home` (none: the default's, or no such
+/// conversation): a job started in it is that profile's (crate::job::Job::start_in, B00-40).
+pub fn kept_profile(home: &Path, id: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Kept {
+        profile: Option<String>,
+    }
+    if !is_id(id) {
+        return None;
+    }
+    let bytes = std::fs::read(home.join("conversations").join(format!("{id}.json"))).ok()?;
+    serde_json::from_slice::<Kept>(&bytes).ok()?.profile
 }
 
 /// Writes the folder's own entries (the names in it) to the disk.
@@ -2078,12 +2158,17 @@ pub struct Page {
 /// `GET /v1/conversation?id=&before=&limit=`: one page of a conversation's turns, oldest first.
 pub async fn get(
     State(shared): State<std::sync::Arc<Shared>>,
+    scope: Option<axum::Extension<Scope>>,
     Query(query): Query<Page>,
 ) -> Result<Response, ApiError> {
     let limit = limit(query.limit.as_deref())?;
-    let turns = shared
-        .conversations
-        .page(query.id.as_deref(), query.before.as_deref(), limit)?;
+    let scope = crate::profile_scope::of(&shared, scope);
+    let turns = (shared.conversations).page(
+        Some(&scope),
+        query.id.as_deref(),
+        query.before.as_deref(),
+        limit,
+    )?;
     Ok((StatusCode::OK, axum::Json(json!(turns))).into_response())
 }
 
@@ -2099,8 +2184,10 @@ pub struct ListPage {
 /// turn that does (`turn`, null when only the title does), its text cut to [`EXCERPT`] (#593).
 pub async fn list(
     State(shared): State<std::sync::Arc<Shared>>,
+    scope: Option<axum::Extension<Scope>>,
     Query(query): Query<ListPage>,
 ) -> Result<Response, ApiError> {
+    let scope = crate::profile_scope::of(&shared, scope);
     let limit = limit(query.limit.as_deref())?;
     let after = match query.after.as_deref() {
         None => None,
@@ -2112,7 +2199,7 @@ pub async fn list(
         })?),
     };
     let Some(q) = query.q else {
-        let list = shared.conversations.list(after, limit);
+        let list = shared.conversations.list(Some(&scope), after, limit);
         return Ok((StatusCode::OK, axum::Json(json!(list))).into_response());
     };
     let words = search_words(&q);
@@ -2124,7 +2211,7 @@ pub async fn list(
     }
     let found: Vec<Value> = shared
         .conversations
-        .search(&words, None, after, limit)
+        .search(Some(&scope), &words, None, after, limit)
         .into_iter()
         .map(|found| {
             let mut item = found.summary;
@@ -2171,6 +2258,7 @@ pub async fn update(
     UrlPath(id): UrlPath<String>,
     paired: Option<axum::Extension<crate::gateway::PairedDevice>>,
     relayed: Option<axum::Extension<crate::gateway::Relayed>>,
+    headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let change: Change = serde_json::from_slice(&body).map_err(|_| {
@@ -2221,11 +2309,16 @@ pub async fn update(
             "title is one line of 1 to 100 characters.",
         ));
     }
+    // A project put in is one of the profile the request names, found before any lock is taken.
+    let asked = match change.project {
+        Some(Some(id)) => Some(Some((crate::profiles::root_of(&shared, &headers)?, id))),
+        other => other.map(|_| None),
+    };
     // The projects' lock first, then the conversations': the project can't go meanwhile.
-    let projects = shared.projects.lock();
-    let project = match change.project {
-        Some(Some(asked)) => Some(Some(
-            crate::projects::joined(&projects, &asked).map_err(Error::Folder)?,
+    let mut projects = shared.projects.lock();
+    let project = match asked {
+        Some(Some((root, id))) => Some(Some(
+            crate::projects::joined(projects.at(&root), &id).map_err(Error::Folder)?,
         )),
         other => other.map(|_| None),
     };
@@ -2279,7 +2372,7 @@ pub async fn confirmed(shared: &Shared, item: &crate::sphere::inbox::Item) {
     else {
         return;
     };
-    let now = shared.conversations.list(None, usize::MAX);
+    let now = shared.conversations.list(None, None, usize::MAX);
     for named in asked.payload["conversations"]
         .as_array()
         .into_iter()
@@ -2893,6 +2986,7 @@ mod tests {
         let start = || {
             conversations
                 .begin(
+                    &crate::profiles::Scope::before_profiles_for_tests(),
                     super::Target::New,
                     "Fix it".into(),
                     vec![],
@@ -2950,6 +3044,7 @@ mod tests {
         let conversations = super::Conversations::open(&home, events.clone());
         let id = conversations
             .begin(
+                &crate::profiles::Scope::before_profiles_for_tests(),
                 super::Target::New,
                 "Fix it".into(),
                 vec![],
@@ -2991,6 +3086,7 @@ mod tests {
         );
         let unsigned = conversations
             .begin(
+                &crate::profiles::Scope::before_profiles_for_tests(),
                 super::Target::New,
                 "Fix it".into(),
                 vec![],
@@ -3071,6 +3167,7 @@ mod tests {
         let conversations = super::Conversations::open(&home, events.clone());
         let id = conversations
             .begin(
+                &crate::profiles::Scope::before_profiles_for_tests(),
                 super::Target::New,
                 "first".into(),
                 vec![],
@@ -3139,6 +3236,7 @@ mod tests {
         ];
         let begun = conversations
             .begin(
+                &crate::profiles::Scope::before_profiles_for_tests(),
                 super::Target::New,
                 "Look at these".into(),
                 vec!["j1".into(), "j2".into()],
@@ -3165,7 +3263,7 @@ mod tests {
             json!({ begun.turn.as_str(): {"attachments": paths, "signed": true} })
         );
         let served = conversations
-            .page(Some(&begun.conversation), None, 10)
+            .page(None, Some(&begun.conversation), None, 10)
             .unwrap();
         for shown in [serde_json::to_value(&served[0]).unwrap(), json!(served)] {
             let text = shown.to_string();
@@ -3195,7 +3293,7 @@ mod tests {
         std::fs::write(&file, old.to_string()).unwrap();
         let events = crate::events::Events::new();
         let conversations = super::Conversations::open(&home, events.clone());
-        let turns = conversations.page(Some(&id), None, 10).unwrap();
+        let turns = conversations.page(None, Some(&id), None, 10).unwrap();
         assert!(turns[0].delivery.is_none());
         assert!(
             serde_json::to_value(&turns[0])
@@ -3276,7 +3374,7 @@ mod tests {
         assert_eq!(turn.revision, 1);
         let mut received = events.subscribe();
         let listed = |conversations: &super::Conversations| {
-            let page = conversations.page(Some(&id), None, 10).unwrap();
+            let page = conversations.page(None, Some(&id), None, 10).unwrap();
             page.iter().find(|t| t.id == turn.id).unwrap().revision
         };
         for revision in [2, 3] {

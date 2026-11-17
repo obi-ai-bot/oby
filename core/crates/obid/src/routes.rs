@@ -236,19 +236,22 @@ pub struct Limit {
 /// queued and running first (PROJECTS-14).
 pub async fn jobs(
     State(shared): State<Arc<Shared>>,
+    scope: Option<axum::Extension<crate::profiles::Scope>>,
     Query(query): Query<Limit>,
 ) -> Result<Response, ApiError> {
+    let scope = crate::profile_scope::of(&shared, scope);
     let limit = match query.limit.as_deref() {
         None => 50,
         Some(text) => text
             .parse::<usize>()
             .map_err(|_| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "limit is a number."))?,
     };
+    // Only the profile's own (B00-40), then the latest of those.
+    let all = shared.jobs.list(usize::MAX).into_iter();
+    let all: Vec<_> = all.filter(|j| scope.holds(j.profile.as_deref())).collect();
     let jobs = match &query.project {
-        Some(project) => {
-            crate::projects::listed(shared.jobs.list(usize::MAX), project, limit.min(1000))
-        }
-        None => shared.jobs.list(limit.min(1000)),
+        Some(project) => crate::projects::listed(all, project, limit.min(1000)),
+        None => all.into_iter().take(limit.min(1000)).collect(),
     };
     let list: Vec<Value> = jobs.iter().map(|j| j.to_json()).collect();
     Ok(json(StatusCode::OK, Value::Array(list)))
@@ -589,6 +592,7 @@ pub async fn wait(
 pub async fn events(
     State(shared): State<Arc<Shared>>,
     device: Option<axum::Extension<crate::gateway::PairedDevice>>,
+    scope: Option<axum::Extension<crate::profiles::Scope>>,
     Query(query): Query<std::collections::HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
@@ -612,10 +616,15 @@ pub async fn events(
     // anything else, the stream ends (crate::events::Events::follow_from, docs/runner-api.md
     // "GET /v1/events").
     let epoch = shared.events.epoch();
-    let stream = shared.events.follow_from(after).map(move |event| {
-        let frame = SseEvent::default()
-            .event(event.name)
-            .data(event.data.to_string());
+    // Only the profile's own conversations, jobs and accounts (B00-40).
+    let scope = crate::profile_scope::of(&shared, scope);
+    let seen = shared.clone();
+    let stream = shared.events.follow_from(after).filter_map(move |event| {
+        let data = crate::profile_scope::shown(&seen, &scope, event.name, &event.data);
+        futures_util::future::ready(data.map(|data| (event, data)))
+    });
+    let stream = stream.map(move |(event, data)| {
+        let frame = SseEvent::default().event(event.name).data(data.to_string());
         Ok(match event.id {
             Some(id) => frame.id(format!("{epoch}-{id}")),
             None => frame,
@@ -689,8 +698,10 @@ pub async fn dispatch(
     State(shared): State<Arc<Shared>>,
     uri: axum::http::Uri,
     headers: HeaderMap,
+    scope: Option<axum::Extension<crate::profiles::Scope>>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
+    let scope = crate::profile_scope::of(&shared, scope);
     let value: Value = serde_json::from_slice(&body)
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, format!("The body isn't JSON: {e}")))?;
     let Some(job) = value.get("job").and_then(Value::as_object) else {
@@ -731,6 +742,8 @@ pub async fn dispatch(
             new_job(job).map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
         new.vetted = typed;
         new.own_conversation = typed;
+        // Made in the request's profile, on its accounts only (B00-40).
+        new.profile = scope.tag();
         // Only an app of the owner's signs: anything else with the token, nobody's said to watch.
         new.unattended = !new.vetted;
         if job.get("runsOn").is_some_and(|place| !place.is_null()) {
@@ -887,6 +900,7 @@ fn new_job(job: &Map<String, Value>) -> Result<NewJob, String> {
         attachments: None,
         mode: text("mode")?,
         conversation: None,
+        profile: None,
         turn: None,
         brief: None,
         follow_up_of: None,

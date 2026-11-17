@@ -88,6 +88,7 @@ mod own_refs;
 pub(crate) use own_refs::OWN_COMMON;
 mod owner_run;
 mod permission_asks;
+mod profiles;
 mod publishing;
 mod research;
 mod retry;
@@ -667,6 +668,7 @@ pub struct NewJob {
     pub mode: Option<String>,
     /// The conversation whose plan started it (#493).
     pub conversation: Option<String>,
+    pub profile: Option<String>, // the one it's made in (jobs::profiles, B00-40)
     /// The user's turn whose words started it ([`Job::turn`]).
     #[serde(default)]
     pub turn: Option<String>,
@@ -2252,7 +2254,7 @@ impl Jobs {
             .as_deref()
             .is_some_and(|a| !a.trim().is_empty() && !a.trim().eq_ignore_ascii_case("auto"));
         let background = new.unattended || new.routine.is_some();
-        let work = Work::new(new.model.as_deref(), None, background);
+        let work = self.work_for(new, background);
         // Held back by weekly reserves alone, it waits for one to be lifted, or for room (#872); by
         // limits, as a limit's job waits (LIMITS-18); by a ChatGPT login the owner hasn't said yes
         // to alone, for their yes (CHATGPT-20).
@@ -2348,7 +2350,7 @@ impl Jobs {
         );
         job.files = files;
         job.attachments = new.attachments;
-        job.start_in(&self.config.home, new.conversation);
+        job.start_in(&self.config.home, new.profile, new.conversation);
         job.turn = new.turn.filter(|_| job.conversation.is_some());
         job.brief = new
             .brief

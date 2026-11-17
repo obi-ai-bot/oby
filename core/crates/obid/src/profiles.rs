@@ -1,14 +1,16 @@
 //! Chrome-style profiles on this Mac (docs/contracts/profiles.md): a local id and name in
 //! `home/profiles.json`, never an identity. PROF-1 keeps the registry and `GET /v1/profiles`;
-//! PROF-3a creates and renames profiles, each with its own folder that nothing reads yet, and
-//! apps show nothing.
+//! PROF-3a creates and renames profiles, each with its own folder. A request names its profile
+//! with the `Oby-Profile` header ([`root_of`], A00-79): the project routes, and a conversation's
+//! `project`, read that profile's own projects. Its conversations, jobs, helpers, accounts and vault
+//! secrets are its own too ([`Scope`], crate::profile_scope, B00-40).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use axum::body::Bytes;
 use axum::extract::{Path as UrlPath, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -33,8 +35,8 @@ pub struct Profile {
 }
 
 impl Profile {
-    /// What `GET /v1/profiles` shows for this one. `waiting` is always false until something else
-    /// reads the registry and has work that waits on the owner in a profile.
+    /// What `GET /v1/profiles` shows for this one. `waiting` is always false until a profile has
+    /// work of its own that waits on the owner.
     pub fn to_json(&self) -> Value {
         json!({
             "id": self.id,
@@ -55,6 +57,10 @@ struct Saved {
 /// The profiles kept in `home/profiles.json` (0600).
 pub struct Profiles {
     file: PathBuf,
+    /// Which profile each account belongs to, by its id (crate::profile_scope, B00-40).
+    pub accounts: crate::profile_scope::Tags,
+    /// Which profile each vault secret belongs to, by its name.
+    pub secrets: crate::profile_scope::Tags,
     /// `profiles.json` didn't read at `open`: nothing writes over it until obid starts again.
     unreadable: bool,
     saved: Mutex<Saved>,
@@ -97,6 +103,8 @@ impl Profiles {
             }
         }
         Profiles {
+            accounts: crate::profile_scope::Tags::open(home.join("account-profiles.json")),
+            secrets: crate::profile_scope::Tags::open(home.join("vault-profiles.json")),
             file,
             unreadable,
             saved: Mutex::new(saved),
@@ -120,6 +128,73 @@ impl Profiles {
         let mut profiles = saved.profiles.iter();
         let found = profiles.find(|p| id.map_or(p.default, |id| p.id == id));
         found.map(|p| p.id.clone())
+    }
+
+    /// Every profile's root, as crate::projects::reconcile reads them: `home`, the default's, then
+    /// each other profile's own, skipping one that has none.
+    pub fn roots(&self, home: &Path) -> Vec<PathBuf> {
+        let saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
+        let others = saved.profiles.iter().filter(|p| !p.default);
+        let others = others.filter_map(|p| storage_root(home, p));
+        std::iter::once(home.to_path_buf()).chain(others).collect()
+    }
+
+    /// The folder whose stores a request reaches: the profile its one `Oby-Profile` header names,
+    /// or with none the default profile's, `home`. A value that is no profile's id, empty, not text
+    /// or sent twice is refused, `400`, never the default. The registry's lock goes on return.
+    pub(crate) fn root_of(&self, home: &Path, headers: &HeaderMap) -> Result<PathBuf, ApiError> {
+        let saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
+        let (named, twice) = named(&saved, headers);
+        let default_at = saved.profiles.iter().position(|p| p.default);
+        let root = match root_for(named, default_at) {
+            Root::Home => Some(home.to_path_buf()),
+            Root::Profile(at) => storage_root(home, &saved.profiles[at]),
+            Root::Refused => None,
+        };
+        root.ok_or_else(|| match twice {
+            true => bad("Send one Oby-Profile."),
+            false => bad("There's no such profile on this Mac."),
+        })
+    }
+
+    /// The profile a request is for (B00-40), as [`Self::root_of`] reads its `Oby-Profile`: none
+    /// is the default profile, and one this Mac doesn't have, empty, not text or sent twice is
+    /// refused, `400`, never the default.
+    pub(crate) fn scope_of(&self, headers: &HeaderMap) -> Result<Scope, ApiError> {
+        let saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
+        let (named, twice) = named(&saved, headers);
+        let default_at = saved.profiles.iter().position(|p| p.default);
+        let at = match (named, default_at) {
+            (Named::At(at), _) => Some(at),
+            (Named::Nothing, at) => at,
+            (Named::Unknown, _) => None,
+        };
+        let refused = || match twice {
+            true => bad("Send one Oby-Profile."),
+            false => bad("There's no such profile on this Mac."),
+        };
+        match at {
+            Some(at) => Ok(Scope::of(&saved.profiles[at])),
+            // A registry with no default answers what was there before profiles.
+            None if named == Named::Nothing => Ok(Scope::before_profiles()),
+            None => Err(refused()),
+        }
+    }
+
+    /// The default profile's scope: what a request naming none, a phone's, a job's own work and
+    /// everything kept before profiles belong to.
+    pub fn default_scope(&self) -> Scope {
+        let saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
+        (saved.profiles.iter().find(|p| p.default)).map_or_else(Scope::before_profiles, Scope::of)
+    }
+
+    /// The scope of the profile `id` (a thing's tag), or the default's for none.
+    pub fn scope_by(&self, id: Option<&str>) -> Option<Scope> {
+        let Some(id) = id.filter(|id| !id.is_empty()) else {
+            return Some(self.default_scope());
+        };
+        let saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
+        saved.profiles.iter().find(|p| p.id == id).map(Scope::of)
     }
 
     /// A new profile, not the default, with its own empty folder under `home` (0700), kept.
@@ -177,6 +252,67 @@ impl Profiles {
     }
 }
 
+/// What a request's `Oby-Profile` names in `saved`, and whether it was sent twice.
+fn named(saved: &Saved, headers: &HeaderMap) -> (Named, bool) {
+    let mut sent = headers.get_all("oby-profile").iter();
+    let (first, twice) = (sent.next(), sent.next().is_some());
+    let named = match first.map(|value| value.to_str()) {
+        None => Named::Nothing,
+        Some(Ok(id)) if !twice && !id.is_empty() => (saved.profiles.iter())
+            .position(|p| p.id == id)
+            .map_or(Named::Unknown, Named::At),
+        Some(_) => Named::Unknown,
+    };
+    (named, twice)
+}
+
+/// The profile a request is for, or a thing belongs to (B00-40): its id, and whether it's the
+/// default. A thing kept with no profile (made before profiles, or in the default profile) is the
+/// default's, so an upgrade loses nothing and the default profile's files keep their shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scope {
+    pub id: String,
+    pub default: bool,
+}
+
+impl Scope {
+    fn of(profile: &Profile) -> Scope {
+        Scope {
+            id: profile.id.clone(),
+            default: profile.default,
+        }
+    }
+
+    /// The default profile's, as a test's own `Conversations` has it.
+    #[cfg(test)]
+    pub fn before_profiles_for_tests() -> Scope {
+        Scope::before_profiles()
+    }
+
+    /// A home whose registry has no default: everything is as before profiles.
+    fn before_profiles() -> Scope {
+        Scope {
+            id: String::new(),
+            default: true,
+        }
+    }
+
+    /// Whether a thing kept with the profile `tag` belongs to this profile: none, or empty, is the
+    /// default's.
+    pub fn holds(&self, tag: Option<&str>) -> bool {
+        match tag.filter(|tag| !tag.is_empty()) {
+            None => self.default,
+            Some(tag) => tag == self.id,
+        }
+    }
+
+    /// What a thing made in this profile keeps: none in the default profile, so its record reads as
+    /// one made before profiles; else the profile's id.
+    pub fn tag(&self) -> Option<String> {
+        (!self.default).then(|| self.id.clone())
+    }
+}
+
 /// Where profile `profile` keeps its own things: the default profile's is `home` itself (nothing
 /// an install has moves), any other's `home/profiles/<id>` for a lower-case UUID id, and none for
 /// anything else.
@@ -186,6 +322,41 @@ pub(crate) fn storage_root(home: &Path, profile: &Profile) -> Option<PathBuf> {
     }
     let id: [u8; 36] = profile.id.as_bytes().try_into().ok()?;
     is_profile_id(id).then(|| home.join("profiles").join(&profile.id))
+}
+
+/// What a request named: no profile, the profile at this place in the registry, or one this Mac doesn't have.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Named {
+    Nothing,
+    At(usize),
+    Unknown,
+}
+
+/// Whose stores a request reaches: obid's home (the default profile's), the profile at this
+/// place in the registry, or none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Root {
+    Home,
+    Profile(usize),
+    Refused,
+}
+
+/// The root a request reaches (PROFILES-28, 29, 32): naming none or the default profile (at
+/// `default_at`) is obid's home, naming another is that profile's own, and naming one this Mac
+/// doesn't have is refused, never the default.
+pub(crate) fn root_for(named: Named, default_at: Option<usize>) -> Root {
+    match named {
+        Named::Nothing => Root::Home,
+        Named::At(at) if Some(at) == default_at => Root::Home,
+        Named::At(at) => Root::Profile(at),
+        Named::Unknown => Root::Refused,
+    }
+}
+
+/// The folder whose stores a request reaches (PROFILES-26 to 32): [`Profiles::root_of`] in obid's
+/// home.
+pub(crate) fn root_of(shared: &Shared, headers: &HeaderMap) -> Result<PathBuf, ApiError> {
+    shared.profiles.root_of(&shared.config.home, headers)
 }
 
 /// Whether `id` is a lower-case UUID: hex digits with `-` at 8, 13, 18 and 23, so never a path
@@ -443,6 +614,60 @@ mod tests {
         }
     }
 
+    /// PROFILES-32: naming none or the default profile reaches `home`, naming another its own root
+    /// and never another's, and naming one this Mac doesn't have is refused.
+    #[test]
+    fn profiles_32_the_root_is_the_named_profiles_own() {
+        assert_eq!(root_for(Named::Nothing, Some(0)), Root::Home);
+        assert_eq!(root_for(Named::Nothing, None), Root::Home);
+        assert_eq!(root_for(Named::At(1), Some(1)), Root::Home);
+        assert_eq!(root_for(Named::At(2), Some(1)), Root::Profile(2));
+        assert_eq!(root_for(Named::At(0), None), Root::Profile(0));
+        assert_eq!(root_for(Named::Unknown, Some(0)), Root::Refused);
+
+        let home = std::env::temp_dir().join(format!("obid-profiles-32-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let (a, b, c) = (
+            "aaaaaaaa-1111-4111-8111-111111111111",
+            "22222222-2222-4222-8222-222222222222",
+            "33333333-3333-4333-8333-333333333333",
+        );
+        let profile = |id: &str, default: bool| Profile {
+            id: id.into(),
+            name: "Acme".into(),
+            color: FIRST_COLOR.into(),
+            default,
+        };
+        let saved = Saved {
+            profiles: vec![profile(b, false), profile(a, true), profile(c, false)],
+        };
+        keep(&home.join("profiles.json"), &saved).unwrap();
+        let profiles = Profiles::open(&home);
+        let root = |values: &[&str]| {
+            let mut headers = HeaderMap::new();
+            for value in values {
+                headers.append("Oby-Profile", value.parse().unwrap());
+            }
+            profiles.root_of(&home, &headers).map_err(|e| e.status)
+        };
+        assert_eq!(root(&[]), Ok(home.clone()));
+        assert_eq!(root(&[a]), Ok(home.clone()));
+        assert_eq!(root(&[b]), Ok(home.join("profiles").join(b)));
+        assert_eq!(root(&[c]), Ok(home.join("profiles").join(c)));
+        let unknown = "44444444-4444-4444-8444-444444444444";
+        for values in [
+            &[unknown][..],
+            &[""],
+            &["../x"],
+            &[&a.to_uppercase()],
+            &[b, b],
+        ] {
+            assert_eq!(root(values), Err(StatusCode::BAD_REQUEST), "{values:?}");
+        }
+        assert!(!home.join("profiles").exists());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     fn snapshot(home: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
         let mut out = std::collections::BTreeMap::new();
         for name in [
@@ -462,7 +687,8 @@ mod tests {
 #[cfg(test)]
 mod proofs {
     #![cfg(kani)]
-    //! Kani's proof of [`is_profile_id`] (PROFILES-17): `kani::any()` stands for every 36 bytes.
+    //! Kani's proofs of [`is_profile_id`] (PROFILES-17), where `kani::any()` stands for every 36
+    //! bytes, and of [`root_for`] (PROFILES-28, 29, 32), for every place in the registry.
 
     use super::*;
 
@@ -491,5 +717,38 @@ mod proofs {
             }
         }
         assert!(is_profile_id(*b"3f0c2a4e-9b1d-4c8e-a7f2-5d6e8b9c0a1f"));
+    }
+
+    /// What the registry's default is: none, or the profile at any place.
+    fn any_default() -> Option<usize> {
+        let at: usize = kani::any();
+        if kani::any::<bool>() { Some(at) } else { None }
+    }
+
+    /// PROOF-1, PROFILES-32: a request naming the profile at any place reaches obid's home when
+    /// that profile is the default, and that profile's own root otherwise, never another's.
+    #[kani::proof]
+    fn profiles_32_a_named_profile_reaches_only_its_own_root() {
+        let (at, default_at): (usize, Option<usize>) = (kani::any(), any_default());
+        let root = root_for(Named::At(at), default_at);
+        if default_at == Some(at) {
+            assert_eq!(root, Root::Home);
+        } else {
+            assert_eq!(root, Root::Profile(at));
+        }
+    }
+
+    /// PROOF-2, PROFILES-28: a request naming a profile this Mac doesn't have is refused whatever
+    /// the default, never obid's home or any profile's root.
+    #[kani::proof]
+    fn profiles_28_an_unknown_profile_is_refused_never_the_default() {
+        assert_eq!(root_for(Named::Unknown, any_default()), Root::Refused);
+    }
+
+    /// PROOF-3, PROFILES-29: a request naming no profile reaches obid's home, the default
+    /// profile's root, whatever the registry holds.
+    #[kani::proof]
+    fn profiles_29_naming_no_profile_reaches_obids_home() {
+        assert_eq!(root_for(Named::Nothing, any_default()), Root::Home);
     }
 }

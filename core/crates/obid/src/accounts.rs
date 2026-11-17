@@ -834,7 +834,13 @@ const DEFAULT_SHAPE: &str = "{\"agent\": \"claude\" | \"codex\" | \"cursor\", \"
 /// `POST /v1/accounts`: a new account for Claude Code, Codex or Cursor, in a folder obid makes,
 /// `home/accounts/<id>` (0700), under the name given, else the tool's own until its first sign-in
 /// fills it (ACCOUNTS-1, ACCOUNTS-2). `201` with the Account.
-pub async fn add(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Response, ApiError> {
+pub async fn add(
+    State(shared): State<Arc<Shared>>,
+    scope: Option<axum::Extension<crate::profiles::Scope>>,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    // It's the request's profile's, and no other's (B00-40).
+    let scope = crate::profile_scope::of(&shared, scope);
     let map = object(&body, &["agent", "name", "payer", "default"], NEW_SHAPE)?;
     let agent = text_field(&map, "agent")?
         .ok_or_else(|| unprocessable(format!("agent is missing: the body is {NEW_SHAPE}.")))?;
@@ -847,7 +853,7 @@ pub async fn add(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Respo
                 "The tool's own login comes back with {DEFAULT_SHAPE}."
             )));
         }
-        return restore_default(shared, tool).await;
+        return restore_default(shared, tool, &scope).await;
     }
     let text = text_field(&map, "name")?;
     let payer = payer(map.get("payer"))?;
@@ -865,6 +871,8 @@ pub async fn add(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Respo
                 .ok_or_else(|| unprocessable("name is missing and the tool's own is taken."))?,
         };
         let id = new_id(agents, saved);
+        (shared.profiles.accounts.made_in(&scope, &id))
+            .map_err(|why| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, why))?;
         let config_dir = own_folder(&home, &id).expect("obid's own id");
         make_folder(&config_dir).map_err(|e| {
             ApiError::new(
@@ -896,7 +904,11 @@ pub async fn add(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Respo
 /// `cursor`), removed earlier or found on this Mac ([`Live::available`]), listed: no folder,
 /// signed in with the tool itself. `201` with the Account; `409` while it's listed, or when it was
 /// neither removed nor found.
-async fn restore_default(shared: Arc<Shared>, tool: Tool) -> Result<Response, ApiError> {
+async fn restore_default(
+    shared: Arc<Shared>,
+    tool: Tool,
+    scope: &crate::profiles::Scope,
+) -> Result<Response, ApiError> {
     let own = own_login(tool);
     // The configuration may name an account with that id and a folder of its own: that one isn't
     // the tool's own login, and doesn't come back here.
@@ -939,6 +951,8 @@ async fn restore_default(shared: Arc<Shared>, tool: Tool) -> Result<Response, Ap
                 ),
             ));
         }
+        (shared.profiles.accounts.made_in(scope, &own.id))
+            .map_err(|why| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, why))?;
         if !removed && !saved.own.iter().any(|t| t == tool.id()) {
             saved.own.push(tool.id().into());
         }
@@ -1245,6 +1259,7 @@ fn forget_account(shared: &Shared, account: &Account) -> Result<(), ApiError> {
         tracing::warn!("account {id}: its settings stay: {e}");
     }
     shared.conversations.forget_account(&id);
+    shared.profiles.accounts.forget(&id);
     Ok(())
 }
 

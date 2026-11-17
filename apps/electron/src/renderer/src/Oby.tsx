@@ -49,6 +49,8 @@ declare global {
         pairInvite(): Promise<{ status: number; text: string }>;
         live(onSnapshot: (s: LiveSnapshot) => void, onMessage: (m: LiveMessage) => void): () => void;
         load(what: LoadWhat): Promise<true | string | null>;
+        // the profile the window has open: true when main changed to it (B00-40)
+        profile?(id: string | null): Promise<boolean | null>;
       };
     };
   }

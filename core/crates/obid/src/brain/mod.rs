@@ -95,8 +95,10 @@ pub async fn plan(
     headers: axum::http::HeaderMap,
     paired: Option<axum::Extension<crate::gateway::PairedDevice>>,
     relayed: Option<axum::Extension<crate::gateway::Relayed>>,
+    scope: Option<axum::Extension<crate::profiles::Scope>>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
+    let scope = crate::profile_scope::of(&shared, scope);
     let req: Request = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "That isn't a plan request."))?;
     let words = req.said.trim();
@@ -142,6 +144,10 @@ pub async fn plan(
             "A project is chosen when a conversation starts: send project with new.",
         ));
     }
+    // The project is one of the profile the request names (crate::profiles::root_of).
+    let root = (req.project.as_ref())
+        .map(|_| crate::profiles::root_of(&shared, &headers))
+        .transpose()?;
     // Left out, a request joins the latest conversation, as it did when there was only one: the
     // apps from before #493 send none and show one thread.
     let target = match (req.conversation, req.new.unwrap_or(false)) {
@@ -155,6 +161,12 @@ pub async fn plan(
         (None, true) => Target::New,
         (None, false) => Target::Latest,
     };
+    // Another profile's conversation is none of this one's (B00-40): nothing of it is stopped.
+    if let Target::Id(id) = &target
+        && (shared.conversations.profile_of(id)).is_some_and(|tag| !scope.holds(tag.as_deref()))
+    {
+        return Err(crate::conversation::Error::NoConversation.into());
+    }
     let turns = validate_turns(req.turns)?;
     // The owner's message: after more than 30 minutes away, the answer starts with a recap (#594),
     // for an owner who asked for updates.
@@ -175,7 +187,8 @@ pub async fn plan(
         // that start a new conversation have no turn to stop.
         let underway = match &target {
             Target::Id(id) => Some(id.clone()),
-            Target::Latest => shared.turns.latest_conversation(),
+            Target::Latest => (shared.turns.latest_conversation())
+                .filter(|id| scope.holds(shared.conversations.profile_of(id).flatten().as_deref())),
             Target::New => None,
         };
         if let Some(id) = &underway {
@@ -185,7 +198,7 @@ pub async fn plan(
         if let Some(since) = back {
             recap::keep(shared.clone(), since, now);
         }
-        let conversation = underway.or_else(|| shared.conversations.latest_id());
+        let conversation = underway.or_else(|| shared.conversations.latest_id_in(Some(&scope)));
         return Ok((
             StatusCode::OK,
             axum::Json(
@@ -223,9 +236,11 @@ pub async fn plan(
     // The files go with the conversation; their names on the turn, for the tags under the words.
     // The projects' lock first, so the project can't go before the conversation is in it.
     let begun = {
-        let projects = shared.projects.lock();
-        let project = req.project.map(|p| crate::projects::joined(&projects, &p));
+        let mut projects = shared.projects.lock();
+        let project = (req.project.zip(root))
+            .map(|(p, root)| crate::projects::joined(projects.at(&root), &p));
         shared.conversations.begin(
+            &scope,
             target,
             said.clone(),
             jobs.clone(),
@@ -537,7 +552,12 @@ pub(super) fn acknowledge(shared: &Shared, control: &turn::Control, text: &str) 
 pub(super) fn context(shared: &Shared, conversation: &str, turns: &[Turn], nonce: &str) -> Context {
     let config = &shared.config;
     let now = obi_protocol::time::now();
-    let tools = tool_accounts(config);
+    // Only the accounts of the conversation's profile (B00-40).
+    let scope = crate::profile_scope::of_conversation(shared, conversation);
+    let mine = |a: &crate::config::Account| shared.profiles.accounts.holds(&scope, &a.id);
+    let tools: Vec<_> = (tool_accounts(config).into_iter())
+        .map(|(tool, list)| (tool, list.into_iter().filter(mine).collect::<Vec<_>>()))
+        .collect();
     let mut accounts: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut every = vec!["auto".to_owned()];
     let mut move_accounts: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -578,7 +598,7 @@ pub(super) fn context(shared: &Shared, conversation: &str, turns: &[Turn], nonce
         turns: turns.to_vec(),
         conversation: conversation.to_owned(),
         place: shared.host.clone(),
-        jobs: shared.jobs.list(usize::MAX),
+        jobs: crate::profile_scope::jobs_of(shared, conversation),
         inbox: shared.link.waiting_items(now),
         accounts: told,
         // Only while routing would use it: never a full or signed-out account for the plan to pin.

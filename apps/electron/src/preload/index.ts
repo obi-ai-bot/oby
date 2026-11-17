@@ -164,5 +164,7 @@ contextBridge.exposeInMainWorld('app', {
     }, () => ipcRenderer.invoke('obid-snapshot') as Promise<LiveSnapshot | null>, onSnapshot, onMessage),
     // a conversation's turns, a job, or the limit decisions, read and kept by main: true, else why not
     load: (what: LoadWhat) => ipcRenderer.invoke('obid-load', what) as Promise<true | string | null>,
+    // the profile the window has open, named on every call and the stream from now on (B00-40)
+    profile: (id: string | null) => ipcRenderer.invoke('obid-profile', id) as Promise<boolean | null>,
   },
 });

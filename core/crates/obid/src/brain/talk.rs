@@ -214,9 +214,11 @@ pub fn next(shared: &Shared) -> Option<String> {
     let chosen = chosen.filter(|id| {
         id != AUTO && crate::accounts::find(&shared.config.agents.get(), id).is_some()
     });
+    // A new conversation of the default profile's: one of its accounts (B00-40).
+    let scope = shared.profiles.default_scope();
     accounts(shared, chosen.as_deref(), None, None)
         .into_iter()
-        .next()
+        .find(|(_, account)| shared.profiles.accounts.holds(&scope, &account.id))
         .map(|(_, account)| account.id)
 }
 
@@ -245,7 +247,13 @@ pub(super) const ON_CURSOR_UNASKED: &str =
 /// Why a turn has no account to try, in one line: with failover off, why the chosen one can't run;
 /// else what holds each signed-in account back, every tool's or `only`'s; none signed in, why the
 /// first has none.
-pub(super) fn why_none(shared: &Shared, chosen: Option<&str>, only: Option<&str>) -> String {
+/// Only the accounts `mine` holds are named: the conversation's profile's (B00-40), never another's.
+pub(super) fn why_none(
+    shared: &Shared,
+    chosen: Option<&str>,
+    only: Option<&str>,
+    mine: impl Fn(&str) -> bool,
+) -> String {
     let now = obi_protocol::time::now();
     let held = |tool: Tool, account: &Account| {
         // OpenAI's limit names no time, and the hour obid inferred isn't one to say.
@@ -279,6 +287,7 @@ pub(super) fn why_none(shared: &Shared, chosen: Option<&str>, only: Option<&str>
     if !shared.jobs.account_failover()
         && let Some((tool, account)) =
             chosen.and_then(|id| crate::accounts::find(&shared.config.agents.get(), id))
+        && mine(&account.id)
     {
         let signed_in = shared.jobs.signed_in_accounts(tool);
         return if signed_in.iter().any(|a| a.id == account.id) {
@@ -294,11 +303,20 @@ pub(super) fn why_none(shared: &Shared, chosen: Option<&str>, only: Option<&str>
             let accounts = shared.jobs.signed_in_accounts(*tool);
             accounts
                 .into_iter()
+                .filter(|a| mine(&a.id))
                 .map(|a| held(*tool, &a))
                 .collect::<Vec<_>>()
         })
         .collect();
+    // A profile with none of its own: words for Sangam to change (docs/contracts/profiles.md).
+    let every: Vec<String> = (Tool::ALL.iter())
+        .flat_map(|t| shared.jobs.accounts(*t).into_iter().map(|a| a.id))
+        .collect();
+    let none_here = !every.is_empty() && !every.iter().any(|id| mine(id));
     match tools.first() {
+        Some(_) if said.is_empty() && none_here => {
+            return "this profile has no agent account yet: add one in Settings › Agents".into();
+        }
         Some(first) if said.is_empty() => return shared.jobs.none_signed_in(*first),
         None => return format!("{} can't talk here", only.unwrap_or_default()),
         Some(_) => {}

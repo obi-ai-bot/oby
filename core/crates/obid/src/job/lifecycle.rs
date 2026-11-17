@@ -415,7 +415,7 @@ mod tests {
                 model_from_account, complex, issue_unread, notes, files, attachments,
                 attachments_gone, start_commit, checked_head, mode, cut, after_pr_rebase,
                 checks_rounds, changes_rounds, crash_resumes, recovery, worktree, obi,
-                conversation, project, turn, review_result, approvable, obi_request, permission,
+                conversation, profile, project, turn, review_result, approvable, obi_request, permission,
                 question_call, parked, mac_check, apple_check, apple_ran, apple_token, answered,
                 answered_count, tetrix, teammates, connection_uses, heard, owners, said, api_said,
                 replies, offers, asked, brief, artifacts, artifact_problems, follow_up_of,

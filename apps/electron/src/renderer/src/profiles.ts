@@ -27,6 +27,7 @@ export async function loadProfiles() {
   if (!onObid) return;
   try {
     set({ list: await api.profiles() });
+    void tellMain();
   } catch (e) {
     if (e instanceof ApiError && (e.status === 404 || e.status === 0)) set({ list: null });
   }
@@ -36,6 +37,16 @@ if (onObid) void loadProfiles();
 export function chooseProfile(id: string) {
   set({ kept: id });
   try { localStorage.setItem(KEPT, id); } catch { /* not remembered, that's all */ }
+  void tellMain();
+}
+
+// On obid, every call and the event stream name the open profile (main/live.ts, B00-40), so obid
+// answers only its conversations, jobs, helpers, accounts and vault. When main changes to it, the
+// page reads everything again, as a window of that profile
+async function tellMain() {
+  if (!onObid || !state.list?.length) return;
+  const open = openProfile(state.list, state.kept);
+  if (await window.app?.obid.profile?.(open.id)) location.reload();
 }
 
 // A new profile: obid makes it (its refusal, an ApiError, goes to the form as it said it), or on the
@@ -49,8 +60,8 @@ export async function createProfile(name: string, color: string) {
   return made;
 }
 
-// The panel's conversations under the open profile: on the mock only, each its own. On obid a
-// profile holds nothing of its own yet, so all of them, as they are
+// The panel's conversations under the open profile: on the mock, each its own. On obid, obid answers
+// only the open profile's (tellMain), so all of them, as they are
 export function profileChats(chats: Chat[], list: Profile[] | null, kept: string | null) {
   if (onObid || !list?.length) return chats;
   const open = openProfile(list, kept).id, first = list.find((p) => p.default)?.id;

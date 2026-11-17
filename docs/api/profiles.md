@@ -1,8 +1,8 @@
 ### obid only: profiles
 
-Chrome-style profiles on this Mac (docs/contracts/profiles.md): a local id and name, never an identity. PROF-1 keeps the registry and the list route, PROF-3a creates and renames profiles; nothing else in obid reads them yet. The Electron app lists and creates profiles for its panel's title, and a second profile still holds nothing of its own. The Swift runner has none: `404`.
+Chrome-style profiles on this Mac (docs/contracts/profiles.md): a local id and name, never an identity. PROF-1 keeps the registry and the list route, PROF-3a creates and renames profiles, A00-79's first slice lets a request name its profile with `Oby-Profile` (below), and B00-40 keeps each profile's conversations, jobs, helpers, accounts and vault secrets its own. The Electron app lists and creates profiles for its panel's title and names the open one on every call and on its event stream. The Swift runner has none: `404`.
 
-**Where.** `home/profiles.json` (0600): `{"profiles":[{"id","name","color","default"}]}`. An install with no file, or one whose `profiles` list is empty, gets one first profile on start (`id` a lower-case UUID, `name` `Default`, `color` `#3a5a8c`, `default` true) that holds everything the install already has: nothing moves, renames or signs out. An existing registry keeps its names (an install upgraded before PROF-3a keeps `Personal`). A file that doesn't read is left as it is, logged, and answered as that same first profile without writing over it; creating and renaming then answer `409` until obid starts with a file that reads. A profile that isn't the default has its own folder, `home/profiles/<id>` (0700), made when it is created and empty: nothing reads or writes in it yet.
+**Where.** `home/profiles.json` (0600): `{"profiles":[{"id","name","color","default"}]}`. An install with no file, or one whose `profiles` list is empty, gets one first profile on start (`id` a lower-case UUID, `name` `Default`, `color` `#3a5a8c`, `default` true) that holds everything the install already has: nothing moves, renames or signs out. An existing registry keeps its names (an install upgraded before PROF-3a keeps `Personal`). A file that doesn't read is left as it is, logged, and answered as that same first profile without writing over it; creating and renaming then answer `409` until obid starts with a file that reads. A profile that isn't the default has its own folder, `home/profiles/<id>` (0700), made when it is created and empty; its projects are kept there in `projects.json` once one is made in it ([projects.md](projects.md)).
 
 **`GET /v1/profiles`**: every profile, as kept:
 
@@ -32,3 +32,16 @@ Both answer `{"error": "…"}` with:
 - `500`: the folder or `profiles.json` couldn't be written; the reason is in `error`, and the profiles stay as they were.
 
 Older runners answer `404`.
+
+**The `Oby-Profile` header** (obid only, A00-79, B00-40): the profile a request is for, by its id (`Oby-Profile: 9b2e…`; the header's name in any case). It is read on every `/v1` route and on `GET /v1/events` (B00-40, `profile-scope-v1`): the project routes and a conversation's `project` ([projects.md](projects.md)), and every list, read, change and use of a conversation, a job, a helper, an account or a vault secret answer only that profile's (below). With no header a request is for the default profile, as before. It is refused with `400` and `{"error": …}`, nothing read or written and never answered from the default profile, when its value is no profile's id exactly (an unknown id, `../x`, another case), empty or not plain text (`There's no such profile on this Mac.`), or when it is sent more than once (`Send one Oby-Profile.`); a profile whose id in `profiles.json` isn't a lower-case UUID has no folder, and is refused the same way. `400`, not `404`, so an app never takes it for a route an older obid lacks. `profile-projects-v1` in `GET /v1/status`'s `capabilities` says obid reads it; an app sends the header only to an obid that lists it, since an older one ignores it and answers the default profile's projects. The gateway doesn't forward it, so a phone always reaches the default profile. The refusal texts are placeholders.
+
+**What each profile keeps** (obid only, B00-40, `profile-scope-v1`; docs/contracts/profiles.md, "Each profile keeps its own"):
+
+- `GET /v1/conversations` (`q=` too) and `GET /v1/conversation` answer only the profile's conversations; `POST /v1/plans` `{"new": true}` makes one in it, and `conversation` naming another profile's is `404`.
+- `GET /v1/jobs` lists only the profile's jobs; `POST /v1/jobs` makes one in it, on its accounts only (naming another profile's account is refused as one obid doesn't have).
+- `GET /v1/status`'s `accounts` lists only the profile's; `POST /v1/accounts` adds one to it.
+- `GET /v1/helpers` lists only the profile's; `POST /v1/helpers` makes one in it (`profile`, when sent, must be the request's: `422` otherwise).
+- `GET /v1/obid/vault` lists only the profile's names; `PUT` of a name another profile keeps is `409`, `DELETE` of one `404`.
+- `/v1/jobs/{id}…`, `/v1/conversations/{id}`, `/v1/accounts/{id}…` and `/v1/helpers/{id}` of another profile's are `404`, as an id obid doesn't have.
+- `GET /v1/events` sends a job's, a conversation's and their turns' events only when they're the profile's, and `accounts` with only its accounts.
+- A conversation's summary, a job and their events carry `profile`, the profile's id, only for a profile that isn't the default (add-only).

@@ -240,8 +240,8 @@ impl Jobs {
                     changing.name
                 )));
             }
-            // Routing skips an account being signed in or removed.
-            accounts.retain(|a| !self.being_changed(&a.id));
+            // Routing skips an account being signed in or removed, and another profile's (B00-40).
+            accounts.retain(|a| !self.being_changed(&a.id) && self.in_profile(a, work));
             match named {
                 // Routing skips an account that isn't signed in (#626), and one without room.
                 None => {

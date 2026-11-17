@@ -12,7 +12,7 @@ The business behavior contract for projects, from [the template](../business-con
   - Anything on screen of a project's jobs: the factory beside the conversation and in full (Sangam's screens 05 and 06).
   - The factory's stages or settings: the stages are a job's `pipeline`, as it is.
   - A project deciding where a job runs, and moving a job between projects: a job's `project` is set by obid alone, as it starts.
-  - Storage per profile, and moving `projects.json` into one: A00-75. Until then projects are kept in obid's home, beside the conversations.
+  - Moving or copying projects between profiles. Projects are kept per profile ([profiles.md](profiles.md), A00-79): each profile's in `projects.json` under its root, the default profile's still `home/projects.json`, and a request names its profile with `Oby-Profile`. Conversations are still one per Mac, so a conversation of any profile may be in another profile's project, and the start's reconcile reads every profile's projects.
   - `repos` deciding where a job runs, any call to GitHub, or a check that a repository exists: `repos` are kept and answered only.
   - Folders reaching jobs or the brain's briefing, still proposed in [folders.md](folders.md).
   - A `project` event, a cap on projects or repositories, unique names, and any order but the order made.
@@ -52,6 +52,8 @@ The business behavior contract for projects, from [the template](../business-con
 |---|---|---|
 | A refused value (a folder, a name, a repository) | `422` with the reason, nothing kept | The reason |
 | An unknown project id on a project route | `404` | — |
+| A project of another profile than the one the request names | `404` on a project route, `422` on a conversation or plan, nothing changed | The reason |
+| `Oby-Profile` names no profile on this Mac, is empty or not text, or is sent twice | `400`, nothing read or written, never the default profile ([profiles.md](profiles.md)) | — |
 | An unknown project id on a conversation or plan | `422`, nothing changed, no conversation made | The reason |
 | `projects.json` can't be written | `500`, the change undone in memory | The reason |
 | A conversation can't be written on a delete | `500`; that conversation is put back, and the project stays | The project still listed; `DELETE` again finishes it |
