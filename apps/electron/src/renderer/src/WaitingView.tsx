@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { BrandMark } from './brands';
 import { useScrollThumb } from './useScrollThumb';
 import { agentOf, ago } from './view';
+import { useChats } from './chats';
 import { allowWaiting, answerWaiting, approvingTools, homeAsk, itemAsk, mergeWaiting, projectOf, questionOf, reviewOf, shownId, useLive, waitingOf } from './live';
 import { ReviewBlock } from './AskStack';
 import { QuestionBlock } from './QuestionCard';
@@ -101,7 +102,12 @@ function WaitingRow({ item: i, onOpenTask, onOpenTalk }: { item: InboxItem; onOp
   // another Oby's review request: all it quotes (goal, summary, conditions) before its answers
   const request = card ? reviewOf(i) : undefined;
   const answers = kind === 'merge' && !merges ? i.options : [];
-  const meta = [project ? name(project) : 'No project', ago((Date.now() - Date.parse(i.created)) / 60_000)].join(' · ');
+  // its project, then (screen 17) a merge's pull request and where it goes, else the conversation it
+  // waits in and, for a permission, what it asks; then how long it has waited, but for a permission
+  const chats = useChats();
+  const pr = kind === 'merge' && j?.published ? /\/pull\/(\d+)/.exec(j.published)?.[1] : undefined;
+  const where = pr ? `${name(j!.repo)}#${pr}${j!.base ? ` into ${j!.base}` : ''}` : talk ? chats.find((c) => c.id === shownId(talk))?.title : undefined;
+  const meta = [project ? name(project) : 'No project', where, kind === 'permission' ? (j?.permission?.detail ? 'asks to run a command' : 'asks for permission') : ago((Date.now() - Date.parse(i.created)) / 60_000)].filter(Boolean).join(' · ');
   return (
     <li className="waiting-row" aria-label={j?.title ?? i.title}>
       {j && <BrandMark brand={agentOf(j.agent).brand} size={16} mono />}

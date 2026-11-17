@@ -3,6 +3,7 @@ import { act, useImperativeHandle, useRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { liveBridge } from './liveBridge';
+import { AGENTS_SHOWN } from '../panelFlags';
 
 // Conversations under their project, and a project to pick or make (docs/contracts/projects.md,
 // PROJECTS-16 to 24): the real Home, with its Sidebar and Composer, on what obid lists through
@@ -406,7 +407,8 @@ describe('PROJECTS-22', () => {
     expect(button('Select working folder…', box())).toBeDefined();
     expect(o.calls.some((c) => c.method === 'PATCH' && (c.body as object) && 'folders' in (c.body as object))).toBe(false);
 
-    // a helper's conversation: no chip
+    // a helper's conversation: no chip (under Agents, hidden for now: panelFlags.ts)
+    if (!AGENTS_SHOWN) return;
     await click([...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find((t) => t.textContent === 'Agents')!);
     await until(() => expect(host.querySelector('.agent-row')).not.toBeNull());
     await click(host.querySelector('.agent-row')!);

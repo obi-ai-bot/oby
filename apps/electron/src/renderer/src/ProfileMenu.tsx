@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, Plus, X } from 'lucide-react';
 import { Menu } from './Menu';
-import { AVATAR_COLORS, OwnerAvatar } from './ObyFace';
+import { OwnerAvatar } from './ObyFace';
 import { chooseProfile, createProfile, openProfile } from './profiles';
 import type { Profile } from './obid';
 
@@ -38,9 +38,12 @@ export default function ProfileMenu({ list, kept, at, onClose, onNew }: {
 
 // Making a profile: its name and colour (the first one no profile has yet). obid's refusal shows in
 // the form, which stays; made, it's the open one. Esc, Cancel, the x or a click outside closes it.
+// A new profile's colours, by name (Sangam's screen 18)
+export const PROFILE_COLORS = [['Blue', '#3a5a8c'], ['Green', '#5a7a4f'], ['Brown', '#8c5a3a'], ['Purple', '#6a4f8c'], ['Grey', '#5c5c60']] as const;
+
 export function NewProfileModal({ taken, onClose }: { taken: string[]; onClose: () => void }) {
   const [name, setName] = useState('');
-  const [color, setColor] = useState(() => AVATAR_COLORS.find((c) => !taken.includes(c.toLowerCase())) ?? AVATAR_COLORS[0]);
+  const [color, setColor] = useState<string>(() => PROFILE_COLORS.find(([, c]) => !taken.includes(c.toLowerCase()))?.[1] ?? PROFILE_COLORS[0][1]);
   const [problem, setProblem] = useState<string | null>(null);
   const [making, setMaking] = useState(false);
   const ready = name.trim().length > 0 && !making;
@@ -67,16 +70,18 @@ export function NewProfileModal({ taken, onClose }: { taken: string[]; onClose: 
 
   return createPortal(
     <div className="modal-backdrop" onPointerDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <form className="modal is-small" role="dialog" aria-modal="true" aria-labelledby="profile-title" onSubmit={(e) => { e.preventDefault(); void create(); }}>
+      <form className="modal is-small profile-sheet" role="dialog" aria-modal="true" aria-labelledby="profile-title" onSubmit={(e) => { e.preventDefault(); void create(); }}>
         <header className="modal-head">
           <h2 id="profile-title">New profile</h2>
           <button type="button" className="icon-button" aria-label="Close" onClick={onClose}><X size={16} strokeWidth={1.6} /></button>
         </header>
+        <p className="modal-lede">A profile is a place of its own: its conversations, projects, agents, routines and vault. Nothing crosses from one profile to another.</p>
         <label className="modal-label" htmlFor="profile-name">Name</label>
         <input id="profile-name" className="modal-field" autoFocus maxLength={40} value={name} onChange={(e) => setName(e.target.value)} autoComplete="off" spellCheck={false} />
-        <div className="profile-swatches" role="radiogroup" aria-label="Colour">
-          {AVATAR_COLORS.map((c) => (
-            <button key={c} type="button" role="radio" aria-checked={c === color} aria-label={c} className={`profile-swatch${c === color ? ' is-on' : ''}`} style={{ background: c }} onClick={() => setColor(c)} />
+        <span className="modal-label" id="profile-colour">Colour</span>
+        <div className="profile-swatches" role="radiogroup" aria-labelledby="profile-colour">
+          {PROFILE_COLORS.map(([label, c]) => (
+            <button key={c} type="button" role="radio" aria-checked={c === color} aria-label={label} className={`profile-swatch${c === color ? ' is-on' : ''}`} style={{ background: c }} onClick={() => setColor(c)} />
           ))}
         </div>
         {problem && <p className="sphere-note is-bad" role="alert">{problem}</p>}

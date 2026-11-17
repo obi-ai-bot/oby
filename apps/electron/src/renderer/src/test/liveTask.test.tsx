@@ -9,7 +9,7 @@ import type { TranscriptEntry } from '../obid';
 import type { Chat } from '../chats';
 import type { Task } from '../tasks';
 
-// A task's live card and its agent's own conversation, opened in place under it (docs/contracts/live-task.md).
+// A task's live card in its conversation, and its own thread, a conversation of its own (docs/contracts/live-task.md).
 // Each box (Composer) is a marker that keeps what it's given, by its label; what the boxes send to is spied on,
 // and onObid is read when a box sends, so the same render sends on obid or off it.
 type Props = { placeholder: string; label: string; onSend: (text: string, att: object) => void; onStop?: () => void };
@@ -50,10 +50,12 @@ async function taskOf(id: string, more: Partial<JobView> = {}, status: 'running'
   } as JobView;
   return { id, type: 'issues', title: job.title, brand: AGENTS.claude.brand, status, job } as Task;
 }
-// the card folded, and the same card opened in place
-async function views(entries: Entry[], more: Partial<JobView> = {}, status: 'running' | 'needs' | 'done' = 'running') {
+// the card, and the task's own thread (TaskThread)
+const WORKING = [{ id: 'prepare', title: 'Prepare', state: 'done' }, { id: 'work', title: 'Work', state: 'current' }, { id: 'check', title: 'Check', state: 'upcoming' }] as JobView['stages'];
+async function views(entries: Entry[], more: Partial<JobView> = {}, status: 'running' | 'needs' | 'done' = 'running', onOpenAgent: (id: string) => void = () => {}) {
   stub();
   const { ThreadTask } = await import('../ChatView');
+  const { default: TaskThread } = await import('../TaskThread');
   const { SESSIONS } = await import('../session');
   const { replaceTasks } = await import('../tasks');
   SESSIONS.j1 = entries;
@@ -61,7 +63,7 @@ async function views(entries: Entry[], more: Partial<JobView> = {}, status: 'run
   replaceTasks([task]);
   return {
     card: read(renderToStaticMarkup(<ThreadTask task={task} current={false} onOpen={() => {}} />)),
-    opened: read(renderToStaticMarkup(<ThreadTask task={task} current={false} opened onOpen={() => {}} />)),
+    opened: read(renderToStaticMarkup(<TaskThread id="j1" leaving={false} onBack={() => {}} onGone={() => {}} onOpenAgent={onOpenAgent} />)),
   };
 }
 // a conversation with Oby (c1) whose answer started two tasks: j1 at work, j2 needing the owner
@@ -89,18 +91,20 @@ describe('a task at work', () => {
   beforeEach(() => { page.boxes = {}; page.obid = false; vi.clearAllMocks(); });
   afterEach(() => { vi.unstubAllGlobals(); });
 
-  it('LIVETASK-1: the card shows its to-dos with the one it is on lit, and the last things it did', async () => {
-    const { card } = await views([{ kind: 'said', text: 'Looking.', at: '1:50 PM' }, tool('Read', 'a.ts'), tool('Read', 'b.ts'), plan, { kind: 'thought', text: '', seconds: 6 }, tool('Editing', 'session.ts', 'running')]);
-    expect(card).toContain('Running · Claude Code · Personal · obi · 12m');
-    expect(card).toContain('What it’s doing');
-    expect(card).toMatch(/is-done.*Read the test/);
-    expect(card).toMatch(/is-on is-working.*sheen">Replace the timer/);
-    expect(card).toMatch(/is-up.*Run the check/);
-    // the last three, under the one it's on, the one at work with its working dot
-    expect(card).toContain('b.ts');
-    expect(card).toContain('Thought for 6s');
-    expect(card).toMatch(/lt-tool is-running.*Editing.*session\.ts/);
-    expect(card).not.toContain('a.ts');
+  it('LIVETASK-1: the card says what it is on and its stages; its thread shows its to-dos with the one it is on lit, and what it did', async () => {
+    const { card, opened } = await views([{ kind: 'said', text: 'Looking.', at: '1:50 PM' }, tool('Read', 'a.ts'), tool('Read', 'b.ts'), plan, { kind: 'thought', text: '', seconds: 6 }, tool('Editing', 'session.ts', 'running')], { step: 'Editing session.ts', stages: WORKING });
+    expect(card).toContain('>Running · Claude Code · obi<');
+    expect(card).toMatch(/msg-task-now"><span class="sheen">Work · Editing session\.ts</);
+    expect(card).toMatch(/tc-progress msg-task-stages" role="img" aria-label="Stage 2 of 3: Work"><span class="is-done"><\/span><span class="is-current"><\/span><span><\/span>/);
+    // the card holds no list: the thread does, on top
+    expect(card).not.toContain('What it’s doing');
+    expect(opened).toContain('What it’s doing');
+    expect(opened).toMatch(/is-done.*Read the test/);
+    expect(opened).toMatch(/is-on is-working.*sheen">Replace the timer/);
+    expect(opened).toMatch(/is-up.*Run the check/);
+    expect(opened).toContain('b.ts');
+    expect(opened).toContain('Thought for 6s');
+    expect(opened).toContain('session.ts');
   });
 
   it('LIVETASK-1: a long list on a card shows the part around the one it is on', () => {
@@ -112,13 +116,13 @@ describe('a task at work', () => {
   });
 
   it('LIVETASK-2: with no list from the agent it shows only its steps, and invents no to-do', async () => {
-    const { card, opened } = await views([tool('Read', 'a.ts'), tool('Running', 'npm test', 'running')]);
+    const { card, opened } = await views([tool('Read', 'a.ts'), tool('Running', 'npm test', 'running')], { step: 'Running npm test' });
     expect(card).not.toContain('What it’s doing');
     expect(opened).not.toContain('lt-thread-todos');
     expect(card).toContain('npm test');
-    // and before it has done anything, what obid says it's on
+    // and before it has done anything, what obid says it's on; nothing said, no line for it
     expect((await views([], { step: 'Waiting for a free slot' })).card).toContain('Waiting for a free slot');
-    expect((await views([], { step: '', waiting: undefined })).card).not.toContain('lt-now');
+    expect((await views([], { step: '', waiting: undefined })).card).not.toContain('msg-task-now');
   });
 
   it('RECOVERY-5: a job being tried again says so, under the steps it already has', async () => {
@@ -126,10 +130,9 @@ describe('a task at work', () => {
     const reading = { ...tool('Read', 'a.ts'), summary: 'Reading a.ts' } as Entry;
     expect((await views([reading], { step: trying })).card).toContain(trying);
     expect((await views([reading, plan], { step: trying })).card).toContain(trying);
-    // what its session holds isn't said twice, nor that it's working
-    const line = (card: string) => card.includes('lt-thought');
-    expect(line((await views([reading], { step: 'Reading a.ts' })).card)).toBe(false);
-    expect(line((await views([reading], { step: 'Working' })).card)).toBe(false);
+    // on the card, what it's on is said once
+    const times = (card: string, text: string) => card.split(text).length - 1;
+    expect(times((await views([reading], { step: 'Reading a.ts' })).card, 'Reading a.ts')).toBe(1);
   });
 
   it('LIVETASK-3: obid\'s transcript events are read, entries update by n, and words never go back', () => {
@@ -156,7 +159,7 @@ describe('a task at work', () => {
 
   it('LIVETASK-4: ended, the card folds to one line that says so, with its branch and pull request', async () => {
     const { card } = await views([plan, tool('Read', 'a.ts')], { commits: 2, published: 'https://github.com/deskree/obi/pull/9', finished: 1 }, 'done');
-    expect(card).toContain('>Done · Claude Code · Personal');
+    expect(card).toContain('>Done · Claude Code · obi<');
     expect(card).toContain('2 commits on oby/fix-1');
     expect(card).toContain('obi#9');
     expect(card).not.toContain('lt-now');
@@ -164,34 +167,38 @@ describe('a task at work', () => {
     expect((await views([plan], { status: 'failed' }, 'done')).card).toContain('>Failed · Claude Code');
   });
 
-  it('LIVETASK-5: opened in place, the card holds its words, steps, thinking and to-dos, and a box with Stop in it', async () => {
+  it('LIVETASK-5: a click on the card opens its own thread, which holds its words, steps, thinking and to-dos, and a box with Stop in it', async () => {
     const { card, opened } = await views([
       { kind: 'start', text: 'Started on Claude Code', at: '1:50 PM' }, { kind: 'you', text: 'Fix the login test', at: '1:50 PM' }, tool('Read', 'a.ts'),
       { kind: 'said', text: 'It races a timer.', at: '1:53 PM' }, plan, { kind: 'thought', text: '', seconds: 8 }, tool('Editing', 'session.ts', 'running'),
     ]);
-    // under its head, inside the card
-    expect(opened).toMatch(/^<div class="msg-task-work is-live is-on"><button class="msg-task is-link"[^>]*aria-expanded="true">.*<div class="lt-thread" role="group" aria-label="Conversation with Claude Code">/);
-    expect(opened).toContain('Fix the login test');
+    // a page of its own, its head as the card's, not a card opened in place
+    expect(opened).toMatch(/^<div class="chat-layer agent-layer"><div class="lt-thread" role="group" aria-label="Conversation with Claude Code">.*<div class="msg-task agent-head">.*Fix the login test/);
     expect(opened.replace(/<[^>]+>/g, '')).toContain('It races a timer.');
     expect(opened).toContain('1:53 PM');
     expect(opened).toContain('Thought for 8s');
     expect(opened).toContain('session.ts');
     expect(opened).toMatch(/lt-thread-todos.*Replace the timer/);
-    // the list is on top once: not a line of the conversation, nor the card's live part as well
+    // the list is on top once: not a line of the conversation as well
     expect(opened.split('Replace the timer')).toHaveLength(2);
     expect(opened).not.toContain('ss-plan');
-    expect(opened).not.toContain('lt-now');
     expect(opened).toContain('placeholder="Tell Claude Code…"');
     expect(page.boxes['Tell the agent about Fix the login test'].onStop).toBeTypeOf('function');
-    // no title bar, close or Stop button of its own: Stop is the box's
+    // no close or Stop button of its own: Stop is the box's
     expect(opened).not.toContain('>Stop<');
     expect(opened).not.toContain('Close this conversation');
-    // folded: none of it, its live part instead
-    expect(card).toContain('aria-expanded="false"');
+    // the card: none of it, and nothing that opens in place
+    expect(card).not.toContain('aria-expanded');
     expect(card).not.toContain('lt-thread');
     expect(card).not.toContain('ss-entries');
     expect(card).not.toContain('1:53 PM');
     expect(card).not.toContain('placeholder=');
+    // a click on it opens the task's thread, by its id
+    const { ThreadTask } = await import('../ChatView');
+    const onOpen = vi.fn();
+    const el = ThreadTask({ task: await taskOf('j1'), current: false, onOpen }) as React.ReactElement<{ children: React.ReactElement<{ onClick: () => void }>[] }>;
+    el.props.children[0].props.onClick();
+    expect(onOpen).toHaveBeenCalledWith('j1');
     // finished: no Stop, and what the box does then
     page.boxes = {};
     const done = (await views([tool('Read', 'a.ts')], {}, 'done')).opened;
@@ -200,12 +207,10 @@ describe('a task at work', () => {
     expect(done).toContain('placeholder="Ask for a follow-up…"');
   });
 
-  it('LIVETASK-7: told something once finished, the follow-up it started is opened where it is listed', async () => {
-    const { ThreadTask } = await import('../ChatView');
+  it('LIVETASK-7: told something once finished, the follow-up it started opens as its own thread', async () => {
     const live = await import('../live');
-    await views([tool('Read', 'a.ts')], {}, 'done');
     const followed = vi.fn();
-    renderToStaticMarkup(<ThreadTask task={await taskOf('j1', {}, 'done')} current={false} opened onOpen={() => {}} onFollowUp={followed} />);
+    await views([tool('Read', 'a.ts')], {}, 'done', followed);
     vi.mocked(live.tellAgent).mockResolvedValueOnce('j9');
     page.obid = true;
     page.boxes['Tell the agent about Fix the login test'].onSend('one more thing', {});
@@ -273,8 +278,8 @@ describe('a task at work', () => {
   it('LIVETASK-5: the mock\'s running card has a conversation to review', async () => {
     const { SESSIONS } = await import('../session');
     // t1: a running job the mock's first conversation has a card for
-    const { opened, card } = await views(SESSIONS.t1);
-    expect(card).toContain('Fix the flags route');
+    const { opened } = await views(SESSIONS.t1);
+    expect(opened).toContain('Fix the flags route');
     expect(opened).toContain('Thought for 6s');
     // s1, at work, in the conversation that has a card needing you too (screen 03)
     const s1 = (await views(SESSIONS.s1)).opened;
@@ -285,34 +290,28 @@ describe('a task at work', () => {
   it('LIVETASK-9: waiting on you, the card says for what, and opened it carries the decision with its options', async () => {
     const { card, opened } = await views([plan], { ask }, 'needs');
     expect(card).toContain('>Needs you · Claude Code');
-    expect(card).toContain('Run npm test?');
-    expect(card).toMatch(/is-on is-needs.*status-dot is-needs|status-dot is-needs.*Replace the timer/);
-    expect(card).not.toMatch(/sheen">Replace the timer/);
-    // inside the card, under its head: the decision's options, then a box with send and no Stop
-    expect(opened).toMatch(/^<div class="msg-task-work is-live is-on">.*lt-thread-ask.*>Allow<.*>Deny<.*placeholder="Tell Claude Code…"/);
+    // the decision under the card's head, answered right there (screen 04), no running sheen
+    expect(card).toMatch(/^<div class="msg-task-work is-live is-asking">.*status-dot is-needs.*<div class="msg-task-ask">.*Run npm test\?.*>Allow<.*>Deny</);
+    expect(card).not.toContain('sheen');
+    // and in its own thread: the decision's options, then a box with send and no Stop
+    expect(opened).toMatch(/^<div class="chat-layer agent-layer">.*lt-thread-ask.*>Allow<.*>Deny<.*placeholder="Tell Claude Code…"/);
     expect(opened).not.toContain('data-stop');
     expect(page.boxes['Tell the agent about Fix the login test'].onStop).toBeUndefined();
   });
 
-  it('LIVETASK-15: an opened card goes with its job', async () => {
-    expect(await conversation()).toContain('aria-label="Conversation with Claude Code"');
+  it('LIVETASK-15: a card goes with its job, its decision too', async () => {
+    expect(await conversation()).toContain('class="msg-task-ask"');
     const gone = await conversation(['j1']);
     expect(gone).not.toContain('Run the tests');
-    expect(gone).not.toContain('lt-thread');
+    expect(gone).not.toContain('msg-task-ask');
   });
 
-  it('LIVETASK-16: a card that needs you opens by itself, folds nothing you opened, and stays folded for that need once you fold it', async () => {
-    const { openCards } = await import('../AgentThread');
-    const set = (...ids: string[]) => new Set(ids);
-    expect(openCards(set(), set(), ['a'])).toEqual(set('a'));
-    expect(openCards(set('b'), set(), ['a'])).toEqual(set('a', 'b'));
-    expect(openCards(set(), set('a'), ['a'])).toEqual(set());
-    expect(openCards(set('a'), set(), [])).toEqual(set('a'));
-    // in a conversation with Oby: the needing card opened, with its decision; the one at work folded
+  it('LIVETASK-16: a card that needs you shows the decision under its head; one at work shows none, and none opens in place', async () => {
     const html = await conversation();
-    expect(cardOf(html, 'Run the tests')).toMatch(/aria-expanded="true">.*lt-thread-ask.*>Allow</);
-    expect(cardOf(html, 'Fix the login test')).toContain('aria-expanded="false"');
-    expect(cardOf(html, 'Fix the login test')).not.toContain('lt-thread');
+    expect(cardOf(html, 'Run the tests')).toMatch(/<div class="msg-task-ask">.*>Allow</);
+    expect(cardOf(html, 'Fix the login test')).not.toContain('msg-task-ask');
+    expect(html).not.toContain('lt-thread');
+    expect(html).not.toContain('aria-expanded="true"');
   });
 
   it('LIVETASK-17: words in a card\'s box reach that job alone; the foot box\'s reach Oby, whatever card is open', async () => {
@@ -325,16 +324,20 @@ describe('a task at work', () => {
     expect(replyTarget({ foot: { kind: 'peer', id: 'p1' } })).toStrictEqual({ peer: 'p1' });
   });
 
-  it('LIVETASK-17: with a needing card opened by itself, the foot box still talks to Oby and the card\'s to its job', async () => {
+  it('LIVETASK-17: in a conversation with a card that needs you, its box talks to Oby alone; the task\'s thread\'s box to its job alone', async () => {
     const chats = await import('../chats'), live = await import('../live'), tasks = await import('../tasks');
     await conversation();
+    // the conversation's one box
+    expect(Object.keys(page.boxes)).toEqual(['Reply to Oby']);
     expect(page.boxes['Reply to Oby'].placeholder).toBe('Reply to Oby…');
     page.boxes['Reply to Oby'].onSend('hi', {});
     expect(chats.tellChat).toHaveBeenCalledTimes(1);
     expect(chats.tellChat).toHaveBeenCalledWith('c1', 'hi', {});
     expect(live.tellAgent).not.toHaveBeenCalled();
     expect(tasks.tell).not.toHaveBeenCalled();
-    // the opened card's box: its job and nothing else, on obid and off it
+    // the needing task's own thread: its job and nothing else, on obid and off it
+    const { default: TaskThread } = await import('../TaskThread');
+    renderToStaticMarkup(<TaskThread id="j2" leaving={false} onBack={() => {}} onGone={() => {}} onOpenAgent={() => {}} />);
     page.obid = true;
     page.boxes['Tell the agent about Run the tests'].onSend('go on', {});
     expect(live.tellAgent).toHaveBeenCalledTimes(1);

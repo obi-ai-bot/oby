@@ -58,3 +58,23 @@
 .chat-composer.lt-box { max-width: none; margin: 0; padding: 0; }
 /* the card's box talks to its agent: no usage of Oby's accounts, no talking to Oby (screens 03 and 04) */
 .lt-box .composer-usage, .lt-box .composer-voice { display: none; }
+
+/* A task's card in the conversation (Sangam's screen 03): what it's on now, its stages as a bar; waiting
+   on the owner, the decision under its head (screen 04) */
+.msg-task-now { font-size: var(--text-sm); line-height: 17px; white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
+.msg-task .msg-task-stages { margin-top: 8px; max-height: none; }
+.msg-task-stages .is-needs { background: var(--needs); }
+.msg-task-work.is-asking .msg-task { border-bottom-left-radius: 0; border-bottom-right-radius: 0; border-bottom-color: var(--divider); }
+.msg-task-ask { padding: 2px 14px 12px 38px; border: 1px solid var(--line); border-top: 0; border-radius: 0 0 14px 14px; background: rgba(255, 255, 255, 0.06); user-select: text; }
+.msg-task-ask .tc-ask { margin-top: 8px; border-top: 0; }
+
+/* A task's own thread (TaskThread, LIVETASK-22): the agent's conversation as a page of its own, its
+   head as its card shows it, its box at the foot as a conversation's */
+.agent-layer > .lt-thread { grid-row: 1 / -1; min-height: 0; display: grid; grid-template-rows: 1fr auto; gap: 0; padding: 0; border: 0; border-radius: 0; background: none; }
+.agent-layer .lt-thread-scroll { min-height: 0; }
+.agent-layer .lt-thread-lines { position: absolute; inset: 0; max-height: none; padding: 16px var(--gutter) 24px; }
+.agent-layer .lt-thread-column { max-width: 540px; margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
+.agent-layer .agent-head { cursor: default; user-select: text; }
+.agent-layer .lt-thread-todos { padding: 4px 0 10px; }
+.agent-layer .lt-thread-ask { padding-top: 0; border-top: 0; }
+.agent-layer .chat-composer.lt-box { max-width: calc(540px + 2 * var(--gutter)); margin: 0 auto; padding: 8px var(--gutter) 16px; width: 100%; box-sizing: border-box; }

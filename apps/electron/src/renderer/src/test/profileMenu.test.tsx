@@ -193,10 +193,12 @@ describe('PROFILES-22', () => {
     expect(create().disabled).toBe(true);
     await type('   ');
     expect(create().disabled).toBe(true);
-    // the first colour no profile has is picked already
-    expect(host.querySelector('[role="radio"][aria-checked="true"]')!.getAttribute('aria-label')).toBe('#7a4a8c');
+    // the first colour no profile has is picked already, each named (screen 18)
+    expect(host.querySelector('[role="radio"][aria-checked="true"]')!.getAttribute('aria-label')).toBe('Green');
+    expect([...host.querySelectorAll('[role="radio"]')].map((r) => r.getAttribute('aria-label'))).toEqual(['Blue', 'Green', 'Brown', 'Purple', 'Grey']);
+    expect(host.querySelector('[role="dialog"] .modal-lede')!.textContent).toBe('A profile is a place of its own: its conversations, projects, agents, routines and vault. Nothing crosses from one profile to another.');
     await type('Acme');
-    await click(button('#8c5a3a')!);
+    await click(button('Brown')!);
     await click(create());
     await until(() => expect(host.querySelector('[role="dialog"]')).toBeNull());
     expect(o.calls.filter((c) => c.method === 'POST')).toEqual([{ method: 'POST', path: '/v1/profiles', body: { name: 'Acme', color: '#8c5a3a' } }]);
