@@ -1047,6 +1047,18 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .talk-choice-used.is-high { color: var(--full); }
 .talk-choice-used.is-over { color: var(--over); }
 .talk-choice-check { flex: none; color: var(--ink); }
+/* a model list beside the message box's menu: left-aligned rows of one line each (the full name in the
+   row's title), the current one checked, a search over them when it's long; one size, set from the
+   count of all its models (modelMenuPlace), so typing in the search never resizes it */
+.row-menu.row-submenu.model-menu { box-sizing: border-box; padding: 8px; overflow: hidden; }
+.model-search { flex: none; box-sizing: border-box; height: 32px; margin: 0 0 8px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); color: var(--ink); font: inherit; font-size: var(--text-md); outline: none; user-select: text; transition: border-color var(--fade); }
+.model-search:focus { border-color: var(--field-edge-on); }
+.model-search::placeholder { color: var(--muted); }
+.model-list { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; overscroll-behavior: contain; }
+.row-menu button.model-row { flex: none; justify-content: flex-start; gap: 10px; height: 34px; margin-top: 0; padding: 0 10px; font-size: var(--text-md); text-align: left; }
+.model-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-row .menu-check { flex: none; margin-left: auto; color: var(--ink); }
+.model-empty { padding: 8px 10px; color: var(--muted); font-size: var(--text-sm); }
 /* just past the gauge's top right corner, clear of its line */
 .usage-dot { position: absolute; top: 5px; right: 4px; width: 6px; height: 6px; border-radius: 50%; }
 .usage-dot.is-high { background: var(--full); }
