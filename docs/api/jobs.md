@@ -333,6 +333,26 @@ The transcript's entry `n` as it is now, with its `detail` (#784): what the call
 - Masked as the transcript is (above). `said`, `thought`, `you`, `plan` and `start` entries have no `detail`: their `text` is all there is.
 - Kept in `home/jobs/<id>/transcript-detail.jsonl` (0600), at most 32 MB a job; past that, a call's entry keeps its summary and its detail is `{"kept": false}`. Deleting a job removes its transcript and detail too.
 
+### `GET /v1/jobs/{id}/changes` (obid only)
+
+What the job's branch committed against its base (A00-93; docs/contracts/tasks.md, TASKS-23, 24, 29 and 30): each changed file, and the diff. Read in the job's worktree, in its sandbox, from the merge-base of `origin/<base>` (as the clone has it) to the worktree's HEAD, read once; uncommitted work isn't in it. It changes nothing.
+
+```json
+{"base": "main", "head": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+ "files": [{"path": "src/greet.js", "status": "modified", "additions": 1, "deletions": 0},
+           {"path": "a.txt", "status": "added", "additions": 1, "deletions": 0}],
+ "diff": "diff --git a/src/greet.js b/src/greet.js\n…", "truncated": false}
+```
+
+- `base`: the base branch's name, the job's `base` or else its repository's default branch.
+- `head`: the 40-hex commit the change was read at.
+- `files`: in git's order, each `path`, `status` (`added`, `deleted`, or `modified` for anything else, a type change too) and git's `additions` and `deletions` (a binary file counts `0` and `0`). No renames: a moved file is one `deleted` and one `added`.
+- `diff`: the unified diff, with no external diff program, textconv or colour. Every secret obid knows (the vault's, obid's API token and its other tokens) is taken out of the whole diff first, as `[redacted: <name>]`, and each `path` too; then the diff is cut to 1 MiB (1,048,576 bytes), on a character.
+- `truncated`: `true` exactly when `diff` is less than the whole diff. A diff of more than 4 MiB, or one git couldn't give, answers `diff` `""` with `truncated` `true`, its `files` still there.
+- `?path=<path>`: only the file whose `path`, as git printed it, equals it, and the diff of that file alone; the path reaches git only once it's found there, taken literally. A path the change doesn't hold answers `files` `[]`, `diff` `""` and `truncated` `false`, with `base` and `head`.
+- A job with nothing to read (no branch or worktree yet, no usable base, a HEAD that isn't a commit, a sandbox that can't run, file reads that fail) answers `{"base": null, "head": null, "files": [], "diff": "", "truncated": false}`. `404` `There's no such job.` for a job obid doesn't have.
+- Not on the gateway's allowlist: a phone gets `404`.
+
 ### `POST /v1/jobs/{id}/stop`
 
 Stops a queued or running job. Returns the job (`status: "stopped"`).
