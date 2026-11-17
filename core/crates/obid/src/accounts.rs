@@ -34,6 +34,8 @@ use crate::agent::Tool;
 use crate::api::{AccountJson, ApiError, Shared, answer};
 use crate::config::{Account, Agent, Agents};
 
+pub(crate) mod sign_out;
+
 /// Where obid keeps what the API changed, under its home.
 const FILE: &str = "accounts.json";
 

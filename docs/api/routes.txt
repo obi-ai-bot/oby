@@ -11,6 +11,7 @@ POST /v1/accounts/{id}/reserve
 DELETE /v1/accounts/{id}/sign-in
 GET /v1/accounts/{id}/sign-in
 POST /v1/accounts/{id}/sign-in
+POST /v1/accounts/{id}/sign-out
 GET /v1/agent/chatgpt/{run}/models
 POST /v1/agent/chatgpt/{run}/responses
 POST /v1/agent/mcp/{job}

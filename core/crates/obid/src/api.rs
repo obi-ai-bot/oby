@@ -146,6 +146,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
         )
         .route("/v1/accounts/{id}/reserve", post(crate::accounts::reserve))
         .route(
+            "/v1/accounts/{id}/sign-out",
+            post(crate::accounts::sign_out::sign_out),
+        )
+        .route(
             "/v1/accounts/{id}/background",
             post(crate::accounts::background),
         )

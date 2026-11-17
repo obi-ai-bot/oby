@@ -492,7 +492,15 @@ function useSignIns(accounts: Account[], setAccounts: (a: Account[]) => void) {
       put(gone.id); look();
       if (said?.revoked === false) setProblems((p) => ({ ...p, [ADD]: `ChatGPT didn’t confirm ending ${gone.name}’s session. You can disconnect it in ChatGPT settings.` }));
     }))} onClose={() => setRemoving(null)} />;
-  return { offered, setOffered, look, signing, put, problems, busy, tried, signIn, signInChatGpt, sendCode, cancel, remove, removeWindow };
+  // signing one out (ACCOUNTS-23): the tool's own logout, the account staying, signed in again with
+  // Sign In; off obid, the mock's row only
+  const [outing, setOuting] = useState<string | null>(null);
+  const signOut = (a: Account) => tried(a.id, async () => {
+    if (!onObid) { setAccounts(accounts.map((x) => (x.id === a.id ? { ...x, signedIn: false, label: null } : x))); return; }
+    setOuting(a.id);
+    try { await api.signOut(a.id); } finally { setOuting(null); }
+  });
+  return { offered, setOffered, look, signing, put, problems, busy, tried, signIn, signInChatGpt, sendCode, cancel, remove, removeWindow, signOut, outing };
 }
 
 function Accounts() {
@@ -856,7 +864,7 @@ export function Agents() {
   const [chosen, setChosen] = useDefaultAccount();
   const [talking, setTalking] = useTalkDefault();
   // signing in, as Settings › Accounts does (useSignIns): its states, its problems, the tool's own login
-  const { offered, setOffered, look, signing, problems, signIn, signInChatGpt, sendCode, cancel, remove, removeWindow } = useSignIns(accounts, setAccounts);
+  const { offered, setOffered, look, signing, problems, signIn, signInChatGpt, sendCode, cancel, remove, removeWindow, signOut, outing } = useSignIns(accounts, setAccounts);
   const [adding, setAdding] = useState(false);
   const { status } = useLive();
   // the question again, when its switch is turned on: only its own button's click says yes
@@ -954,8 +962,11 @@ export function Agents() {
           {x.chatgpt && !out && known && <Row label={BACKGROUND_LABEL}>
             <Switch on={!!x.background} label={`${x.name}: ${BACKGROUND_LABEL}`} onChange={(on) => (on ? setAsking(x) : background(x, false))} />
           </Row>}
-          {/* the card's own action, on the left; red: it can't be undone (its sign-in goes with it) */}
+          {/* the card's own actions, on the left: Sign out, the tool's own logout, the account
+              staying (ACCOUNTS-23; the tool's own login is signed out with the tool itself, as it's
+              signed in); Remove, red: it can't be undone (its sign-in goes with it) */}
           <div className="set-row is-action">
+            {known && !out && !sign && !own && <button className="set-button" disabled={outing === x.id} onClick={() => void signOut(x)}>{outing === x.id ? 'Signing out…' : 'Sign out'}</button>}
             <button className="set-button is-danger" onClick={() => remove(x)}>Remove</button>
           </div>
         </Group>

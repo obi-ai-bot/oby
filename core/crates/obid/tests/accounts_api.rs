@@ -1765,3 +1765,72 @@ fn accounts_9_limits_accounts_is_the_only_cap_on_how_many() {
     assert_eq!(full.status, 422, "{}", full.text);
     assert!(full.text.contains("at most 40"), "{}", full.text);
 }
+
+/// ACCOUNTS-23 to 25: an account signs out with its tool's own logout, run in its folder, and stays:
+/// its name with it, signed out, who it was gone; Sign In signs it in again. The tool's own login is
+/// the person's, signed out with the tool itself.
+#[test]
+fn accounts_23_24_25_an_account_signs_out_with_its_tools_own_logout_and_stays() {
+    let folder = Folder::new("accounts-sign-out");
+    let mut config = accounts_config(&folder.0);
+    config["agents"]["claude"]["accounts"] =
+        json!([{"id": "default", "name": "Default", "configDir": null}]);
+    let obid = start(&folder.0, &config, None);
+    let added = add(&obid, json!({"agent": "codex", "name": "Work"}));
+    let id = added.body["id"].as_str().unwrap().to_owned();
+    let dir = obid.home.join("accounts").join(&id);
+    std::fs::write(
+        dir.join("who.json"),
+        r#"{"email": "work@example.com", "plan": "plus"}"#,
+    )
+    .unwrap();
+    let started = call(&obid, "GET", &format!("/v1/accounts/{id}/sign-in"), None);
+    assert_eq!(started.status, 200, "{}", started.text);
+    within(15, "Codex signed in, and who it is read", || {
+        account(&obid, &id)
+            .filter(|a| a["signedIn"] == true && a["email"] == "work@example.com")
+            .map(|_| ())
+    });
+
+    let out = call(&obid, "POST", &format!("/v1/accounts/{id}/sign-out"), None);
+    assert_eq!(out.status, 200, "{}", out.text);
+    assert_eq!(out.body["signedIn"], false);
+    assert_eq!(out.body["name"], "Work");
+    assert!(
+        out.body.get("email").is_none(),
+        "who it was stays: {}",
+        out.text
+    );
+    assert!(!dir.join("auth.json").exists(), "the logout left its login");
+    // Its own logout, in the account's own folder.
+    let saw: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("logout-saw.json")).unwrap()).unwrap();
+    assert_eq!(
+        saw["argv"],
+        json!(["logout", "-c", "cli_auth_credentials_store=\"file\""])
+    );
+    assert_eq!(saw["env"]["CODEX_HOME"], json!(dir));
+    let kept = account(&obid, &id).expect("the account stays");
+    assert_eq!(kept["signedIn"], false);
+    for text in [&out.text, &obid.log()] {
+        assert!(!text.contains(SECRET), "the logout's output leaked: {text}");
+    }
+
+    // ACCOUNTS-24: the tool's own login is the person's.
+    let own = call(&obid, "POST", "/v1/accounts/default/sign-out", None);
+    assert_eq!(own.status, 409, "{}", own.text);
+    assert_eq!(own.body["reason"], "ownLogin");
+    assert_eq!(
+        call(&obid, "POST", "/v1/accounts/nobody/sign-out", None).status,
+        404
+    );
+
+    // ACCOUNTS-25: Sign In signs it in again.
+    let again = call(&obid, "GET", &format!("/v1/accounts/{id}/sign-in"), None);
+    assert_eq!(again.status, 200, "{}", again.text);
+    within(15, "Codex signed in again", || {
+        account(&obid, &id)
+            .filter(|a| a["signedIn"] == true)
+            .map(|_| ())
+    });
+}

@@ -241,6 +241,9 @@ if (process.argv[process.argv.indexOf("-p") + 1] === "/usage") {
 if (process.argv[2] === "auth" && process.argv[3] === "status") {
   (await import(new URL("./fake-login.mjs", import.meta.url))).status("claude");
 }
+if (process.argv[2] === "auth" && process.argv[3] === "logout") {
+  (await import(new URL("./fake-login.mjs", import.meta.url))).logout("claude");
+}
 if (process.argv[2] === "auth" && process.argv[3] === "login") {
   await (await import(new URL("./fake-login.mjs", import.meta.url))).login("claude");
 }

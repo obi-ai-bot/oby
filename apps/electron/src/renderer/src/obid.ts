@@ -210,6 +210,8 @@ export const api = {
   setBackgroundConsent: (a: string, given: boolean) => call<Account>('POST', `/v1/accounts/${id(a)}/background`, { given }),
   signInCode: (a: string, code: string) => call<Account>('POST', `/v1/accounts/${id(a)}/sign-in`, { code }),
   endSignIn: (a: string) => call<null>('DELETE', `/v1/accounts/${id(a)}/sign-in`),
+  // obid only (ACCOUNTS-23): the tool's own logout for the account, its row staying
+  signOut: (a: string) => call<Account>('POST', `/v1/accounts/${id(a)}/sign-out`),
   // obid only: GitHub's sign-in (gh's device flow), and Tetrix's
   github: () => call<GitHub>('GET', '/v1/github'),
   githubSignIn: () => call<SignIn>('POST', '/v1/github/sign-in'),
