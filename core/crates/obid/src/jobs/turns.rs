@@ -795,10 +795,12 @@ impl Jobs {
             && self
                 .get(id)
                 .is_some_and(|job| job.someone_elses().is_none());
+        // Every owner's job's turn that may commit: where its round starts (CHANGES-1). A review
+        // only reads, so it makes no round.
+        let rounds = owner && self.get(id).is_some_and(|job| !job.read_only());
         // LANES-8: an own run's refs are its own; obid reads the clone's before and after it.
         let own_run = self.own_turn(id, launch.own_sandbox).await?;
-        // Every owner's job's turn: where its round starts (CHANGES-1).
-        let before = match owner {
+        let before = match records || rounds {
             true => Box::pin(self.sandboxed_git(id, &["rev-parse", "--verify", "HEAD"], None))
                 .await
                 .ok(),
@@ -818,7 +820,9 @@ impl Jobs {
             if records {
                 Box::pin(self.record_turn(id, &before, started)).await;
             }
-            Box::pin(self.checkpoint(id, &before, started)).await;
+            if rounds {
+                Box::pin(self.checkpoint(id, &before, started)).await;
+            }
         }
         turn
     }
