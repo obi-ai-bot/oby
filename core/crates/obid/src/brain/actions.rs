@@ -205,7 +205,12 @@ fn planned_job(
     // Work planned after the turn read something untrusted starts now, marked untrusted, in the
     // owner's mode (the owner's decision of 2026-10-27, replacing 2026-10-23's Sandbox at most),
     // and publishes by itself as any job does (the owner's decision of 2026-10-24).
-    let new = super::defaults::Defaults::apply(asked.defaults, new, asked.signed, shared.jobs.bypass_widens());
+    let new = super::defaults::Defaults::apply(
+        asked.defaults,
+        new,
+        asked.signed,
+        shared.jobs.bypass_widens(),
+    );
     marked(
         super::written_in(shared, asked.conversation, new),
         asked,

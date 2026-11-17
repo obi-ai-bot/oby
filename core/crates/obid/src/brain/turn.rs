@@ -208,10 +208,15 @@ impl Turns {
     pub fn drop_waiting(&self, conversation: &str, turn: &str) -> Vec<String> {
         let waiting = self.waiting();
         let mut dropped = self.dropped.lock().unwrap_or_else(|e| e.into_inner());
-        let there = waiting.iter().any(|(c, w)| c == conversation && w.turn == turn);
-        if there && dropped.insert(turn.to_owned()) { vec![turn.to_owned()] } else { vec![] }
+        let there = waiting
+            .iter()
+            .any(|(c, w)| c == conversation && w.turn == turn);
+        if there && dropped.insert(turn.to_owned()) {
+            vec![turn.to_owned()]
+        } else {
+            vec![]
+        }
     }
-
 
     fn mark(&self, conversation: Option<&str>, mark: impl Fn(&Control)) -> bool {
         let underway = self.lock();
@@ -425,15 +430,33 @@ mod tests {
     #[tokio::test]
     async fn composer_7_words_answered_together_take_the_latest_chips() {
         let turns = Arc::new(Turns::default());
-        let chips = |mode: &str| super::super::defaults::Defaults { mode: Some(mode.into()), ..Default::default() };
-        let words = |turn: &str, defaults| Words { turn: turn.into(), said: turn.into(), attachments: vec![], jobs: vec![], signed: true, defaults };
+        let chips = |mode: &str| super::super::defaults::Defaults {
+            mode: Some(mode.into()),
+            ..Default::default()
+        };
+        let words = |turn: &str, defaults| Words {
+            turn: turn.into(),
+            said: turn.into(),
+            attachments: vec![],
+            jobs: vec![],
+            signed: true,
+            defaults,
+        };
         let held = turns.wait_turn("c1", words("t1", None)).await.unwrap();
         let (a, b) = (turns.clone(), turns.clone());
-        let early = tokio::spawn(async move { a.wait_turn("c1", words("t2", Some(chips("plan")))).await.map(|n| n.words.defaults) });
+        let early = tokio::spawn(async move {
+            a.wait_turn("c1", words("t2", Some(chips("plan"))))
+                .await
+                .map(|n| n.words.defaults)
+        });
         while turns.waiting().len() < 1 {
             tokio::task::yield_now().await;
         }
-        let late = tokio::spawn(async move { b.wait_turn("c1", words("t3", Some(chips("ask")))).await.map(|n| n.words.defaults) });
+        let late = tokio::spawn(async move {
+            b.wait_turn("c1", words("t3", Some(chips("ask"))))
+                .await
+                .map(|n| n.words.defaults)
+        });
         while turns.waiting().len() < 2 {
             tokio::task::yield_now().await;
         }
@@ -458,7 +481,12 @@ mod tests {
         };
         let wait = |turn: &'static str| {
             let turns = turns.clone();
-            tokio::spawn(async move { turns.wait_turn("c1", words(turn)).await.map(|n| (n.turns, n.words.turn)) })
+            tokio::spawn(async move {
+                turns
+                    .wait_turn("c1", words(turn))
+                    .await
+                    .map(|n| (n.turns, n.words.turn))
+            })
         };
         let waiting = |n: usize| {
             let turns = turns.clone();
@@ -476,13 +504,22 @@ mod tests {
         waiting(2).await;
         assert_eq!(turns.drop_waiting("c1", "t3"), ["t3"]);
         assert!(turns.drop_waiting("c1", "t3").is_empty(), "once");
-        assert!(turns.drop_waiting("c1", "t1").is_empty(), "the turn under way isn't waiting");
-        assert!(turns.drop_waiting("c2", "t2").is_empty(), "another conversation's");
+        assert!(
+            turns.drop_waiting("c1", "t1").is_empty(),
+            "the turn under way isn't waiting"
+        );
+        assert!(
+            turns.drop_waiting("c2", "t2").is_empty(),
+            "another conversation's"
+        );
         assert!(control.live(), "the turn under way goes on");
         drop(underway);
         // t2 deferred to the latest words' waiter, which answers it alone.
         assert!(second.await.unwrap().is_none());
-        assert_eq!(third.await.unwrap(), Some((vec!["t2".to_owned()], "t2".to_owned())));
+        assert_eq!(
+            third.await.unwrap(),
+            Some((vec!["t2".to_owned()], "t2".to_owned()))
+        );
         // Only dropped words left: nothing answers them.
         let held = turns.wait_turn("c1", words("t4")).await.unwrap();
         let alone = wait("t5");

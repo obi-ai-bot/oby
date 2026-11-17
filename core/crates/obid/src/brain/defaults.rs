@@ -65,14 +65,22 @@ impl Defaults {
     /// (Bypass only on signed words, else as the brain's Bypass is: the owner's default or none);
     /// the chip's tool is the job's where the brain left it `auto`; its model and effort hold when
     /// the job is on that tool.
-    pub fn apply(defaults: Option<&Self>, new: NewJob, signed: bool, bypass_widens: bool) -> NewJob {
+    pub fn apply(
+        defaults: Option<&Self>,
+        new: NewJob,
+        signed: bool,
+        bypass_widens: bool,
+    ) -> NewJob {
         let Some(d) = defaults else { return new };
         let mode = match d.mode.as_deref() {
             Some("bypass") if !signed && bypass_widens => new.mode,
             Some(mode) => Some(mode.to_owned()),
             None => new.mode,
         };
-        let auto = new.agent.as_deref().is_none_or(|a| a.eq_ignore_ascii_case("auto"));
+        let auto = new
+            .agent
+            .as_deref()
+            .is_none_or(|a| a.eq_ignore_ascii_case("auto"));
         let agent = match (&d.agent, auto) {
             (Some(chip), true) => Some(chip.clone()),
             _ => new.agent.clone(),
@@ -80,7 +88,11 @@ impl Defaults {
         let on_chip = d.agent.is_some() && agent == d.agent;
         NewJob {
             mode,
-            model: if on_chip { d.model.clone().or(new.model.clone()) } else { new.model.clone() },
+            model: if on_chip {
+                d.model.clone().or(new.model.clone())
+            } else {
+                new.model.clone()
+            },
             effort: if on_chip { d.effort.clone() } else { None },
             agent,
             ..new
@@ -109,7 +121,12 @@ mod tests {
     #[test]
     fn composer_4_the_chips_mode_is_the_jobs() {
         let plan = chips(serde_json::json!({"mode": "plan"}));
-        let job = Defaults::apply(Some(&plan), planned("auto", Some("acceptEdits")), true, true);
+        let job = Defaults::apply(
+            Some(&plan),
+            planned("auto", Some("acceptEdits")),
+            true,
+            true,
+        );
         assert_eq!(job.mode.as_deref(), Some("plan"));
         let bypass = chips(serde_json::json!({"mode": "bypass"}));
         let job = Defaults::apply(Some(&bypass), planned("auto", None), true, true);
@@ -124,13 +141,18 @@ mod tests {
         assert_eq!(job.mode.as_deref(), Some("bypass"));
         // No chips: the brain's plan as it was.
         let job = Defaults::apply(None, planned("codex", Some("ask")), true, true);
-        assert_eq!((job.agent.as_deref(), job.mode.as_deref()), (Some("codex"), Some("ask")));
+        assert_eq!(
+            (job.agent.as_deref(), job.mode.as_deref()),
+            (Some("codex"), Some("ask"))
+        );
     }
 
     /// COMPOSER-5: the chip's tool where the brain left it auto, its model and effort only on it.
     #[test]
     fn composer_5_the_chips_model_and_effort_hold_on_their_tool() {
-        let opus = chips(serde_json::json!({"agent": "claude", "model": "claude-opus-5-5", "effort": "high"}));
+        let opus = chips(
+            serde_json::json!({"agent": "claude", "model": "claude-opus-5-5", "effort": "high"}),
+        );
         let job = Defaults::apply(Some(&opus), planned("auto", None), true, true);
         assert_eq!(job.agent.as_deref(), Some("claude"));
         assert_eq!(job.model.as_deref(), Some("claude-opus-5-5"));
