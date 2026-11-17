@@ -277,7 +277,7 @@ describe('the task menu on obid', () => {
   it('LIVETASK-7: telling the agent is obid\'s own message; a finished one\'s follow-up is what the pane then follows', async () => {
     const { live } = await load(true);
     answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ status: 'running' }) };
-    expect(await live.tellAgent('j1', 'Use the other file.')).toBeUndefined();
+    expect(await live.tellAgent('j1', 'Use the other file.')).toBe(true);
     expect(calls.map((c) => [c.method, c.path])).toEqual([['POST', '/v1/jobs/j1/messages']]);
     expect(calls[0].body).toMatchObject({ text: 'Use the other file.' });
     answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ id: 'j2', followUpOf: 'j1', status: 'queued' }) };

@@ -22,6 +22,17 @@ use std::sync::Mutex;
 const KEPT: usize = 500;
 /// The conversations kept: past it, starting one forgets the oldest that isn't pinned.
 pub const CONVERSATIONS: usize = 200;
+
+/// Oby's line in a conversation whose words a stop cut (DELIVERY-7, DELIVERY-9): `clean` when obid
+/// was stopped (an update, a quit), else it went down. Not Sangam's words yet: the contract's.
+pub fn cut_line(clean: bool) -> &'static str {
+    if clean {
+        "Oby restarted before it finished answering that. Send it again to get an answer."
+    } else {
+        "Oby went down before it finished answering that. Send it again to get an answer."
+    }
+}
+
 /// The longest title a rename may set.
 const TITLE: usize = 100;
 /// The longest search a list takes, in characters (#593).
@@ -981,6 +992,59 @@ impl Conversations {
         for turn in moved {
             self.events.send("turnDelivery", turn);
         }
+    }
+
+    /// At start (DELIVERY-7 to 10): the owner's words a stop cut read `interrupted` (those that
+    /// were `starting` or `running`), and each conversation with any gets one Oby turn in obid's
+    /// words ([`cut_line`]: `clean` when obid was stopped, not gone down), in one write with them.
+    /// Words still `queued` come back by conversation, oldest first, with what a replay needs
+    /// ([`Replay`]), for one turn to answer (`crate::brain::recover`). A turn with no `delivery`
+    /// is left as it is.
+    pub fn recover(&self, clean: bool) -> Vec<(String, Vec<(Turn, Replay)>)> {
+        let mut threads = self.lock();
+        let mut queued = vec![];
+        for index in 0..threads.len() {
+            let thread = &mut threads[index];
+            let waiting: Vec<(Turn, Replay)> = (thread.turns.iter())
+                .filter(|t| t.delivery.as_ref().is_some_and(|d| d.status == "queued"))
+                .map(|t| {
+                    (
+                        t.clone(),
+                        thread.replays.get(&t.id).cloned().unwrap_or_default(),
+                    )
+                })
+                .collect();
+            if !waiting.is_empty() {
+                queued.push((thread.id.clone(), waiting));
+            }
+            let kept = thread.clone();
+            let mut cut = vec![];
+            for turn in &mut thread.turns {
+                if let Some(delivery) = turn.delivery.as_mut()
+                    && matches!(delivery.status.as_str(), "starting" | "running")
+                    && delivery.apply(&Move::Interrupted)
+                {
+                    cut.push(serde_json::to_value(turn.revised()).unwrap_or_default());
+                }
+            }
+            if cut.is_empty() {
+                continue;
+            }
+            // obid's own words: nothing the conversation read is in them.
+            let line = Turn::of("oby", cut_line(clean).to_owned());
+            if let Err(e) = self.add(&mut threads, index, line, None) {
+                tracing::warn!(
+                    "conversation {}: the cut words weren't kept: {e:?}",
+                    kept.id
+                );
+                threads[index] = kept;
+                continue;
+            }
+            for turn in cut {
+                self.events.send("turnDelivery", turn);
+            }
+        }
+        queued
     }
 
     /// Oby's turn telling the conversation `id` how the job `job` ended ([`job_report`], #351).

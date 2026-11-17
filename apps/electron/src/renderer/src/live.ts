@@ -975,10 +975,12 @@ export async function tellJob(id: string, text: string, files: { path?: string }
     say(e);
   }
 }
-// Told from the agent's own conversation, opened in place under its card (AgentThread.tsx): the follow-up it started, if it had finished
-export const tellAgent = async (id: string, text: string, files?: { path?: string }[]) => {
+// Told from the agent's own conversation, opened in place under its card (AgentThread.tsx): the
+// follow-up it started, if it had finished; else true once obid took the words, false when it
+// refused them (the box keeps them, ATTACH-20)
+export const tellAgent = async (id: string, text: string, files?: { path?: string }[]): Promise<string | boolean> => {
   const j = await tellJob(id, text, files, true);
-  return j && j.id !== id ? j.id : undefined;
+  return !j ? false : j.id !== id ? j.id : true;
 };
 // A task's Mode menu: how much it asks from now on (POST /v1/jobs/{id}/mode)
 export async function changeMode(id: string, mode: string) {
