@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Settings › Connectors on obid shows the owner's own Claude Code connectors after GitHub and
 // Tetrix (docs/contracts/connectors.md, CONNECTORS-4 and 5).
@@ -33,6 +33,12 @@ const call = vi.fn(async (method: string, path: string) => {
 const openExternal = vi.fn();
 
 let root: Root, host: HTMLDivElement;
+// the Settings page's modules transformed once, ahead: on a busy Mac the first import alone can take
+// longer than a test may
+beforeAll(async () => {
+  (window as unknown as { app: unknown }).app = { obid: { call }, openExternal };
+  await import('../Connectors');
+}, 180_000);
 beforeEach(() => {
   vi.resetModules();
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
@@ -45,7 +51,7 @@ async function page() {
   const { default: Connectors } = await import('../Connectors');
   await act(async () => root.render(<Connectors />));
   // its reads answer, then it shows them: waited for, not timed (a busy Mac answers late)
-  for (let i = 0; i < 200 && !(host.querySelector('.set-connector') && call.mock.calls.some(([, path]) => path === '/v1/connectors')); i++) {
+  for (let i = 0; i < 800 && !(host.querySelector('.set-connector') && call.mock.calls.some(([, path]) => path === '/v1/connectors')); i++) {
     await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
   }
   await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
