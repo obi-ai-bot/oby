@@ -414,7 +414,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
             onClick={() => { markSeen(k.id); onOpenAgent?.(k.id, c.id); }}
             onContextMenu={(e) => { e.preventDefault(); setTaskMenu({ id: k.id, at: new DOMRect(e.clientX, e.clientY, 0, 0), atPointer: true }); }}
           >
-            <BrandMark brand={k.brand} size={14} mono />
+            <BrandMark brand={k.brand} size={14} />
             <span className="convo-kid-text"><b>{k.title}</b> · {kidLine(k)}</span>
             <TaskMark task={k} />
           </button>

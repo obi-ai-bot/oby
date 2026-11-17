@@ -386,7 +386,7 @@ export function TaskHead({ task, go = false }: { task: Task; go?: boolean }) {
   const stage = j.stages.find((st) => st.state === 'current');
   const now = task.status === 'running' && j.status !== 'queued' && j.step ? [stage?.title, j.step].filter(Boolean).join(' · ') : null;
   return <>
-    <BrandMark brand={agentOf(j.agent).brand} size={16} mono />
+    <BrandMark brand={agentOf(j.agent).brand} size={16} />
     <span className="msg-task-text">
       <span className="msg-task-title">
         {task.who && <span className="tc-who">{task.who}</span>}
