@@ -141,6 +141,9 @@ pub enum Event {
     /// What this turn used so far, in tokens and cost (crate::usage::Tokens): each one replaces
     /// the turn's last.
     Tokens(crate::usage::Tokens),
+    /// The MCP servers and claude.ai connectors its session has, but obid's own, by name and status,
+    /// from Claude Code's `init` line (crate::connectors, CONNECTORS-1).
+    Connectors(Vec<crate::connectors::Server>),
 }
 
 /// How a turn ended, for every adapter.
@@ -629,6 +632,7 @@ pub async fn turn_on(
                     on_event(Event::Session(session.to_owned()));
                 }
                 api_key_source = message["apiKeySource"].as_str().map(str::to_owned);
+                on_event(Event::Connectors(crate::connectors::named(&message)));
             }
             Some("assistant") => {
                 // A subagent's (Task's) messages carry the tool call they answer: their words are

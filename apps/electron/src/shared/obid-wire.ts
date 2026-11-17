@@ -312,6 +312,12 @@ export type Tetrix = {
   error: string | null;
 };
 export type TetrixTarget = { preset: string } | { url: string };
+// obid only: "GET /v1/connectors" (docs/contracts/connectors.md): the MCP servers and claude.ai
+// connectors the owner's own Claude Code named the last time an own conversation's session started,
+// by name and status only (`status` is an open string: connected, needs-auth, pending, failed, ...);
+// claude null before any was seen
+export type ConnectorSeen = { name: string; status: string };
+export type Connectors = { claude: { seenAt: string; servers: ConnectorSeen[] } | null };
 
 // "POST /v1/plans"
 export type Question = { text: string; options: string[]; recommended: number | null };

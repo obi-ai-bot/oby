@@ -984,6 +984,9 @@ impl Jobs {
                 | AgentEvent::Thought { .. }
                 | AgentEvent::Thinking { .. }
                 | AgentEvent::Plan(_) => {}
+                // What Settings shows is an own conversation's (crate::connectors): a job's
+                // session has the same owner's, with the job's broker in place of Oby's tools.
+                AgentEvent::Connectors(_) => {}
             }
         };
         let plan = Self::mode_of(&job) == Mode::Plan;
