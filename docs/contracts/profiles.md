@@ -1,6 +1,6 @@
 # Chrome-style profiles
 
-The business behavior contract for local profiles on this Mac (Chrome-style), from [the template](../business-contract-template.md). Scenarios are numbered `PROFILES-n`; the tests that prove them are named after them (`profiles_1_…` in `core/crates/obid/src/profiles.rs` and `core/crates/obid/tests/profiles_api.rs`, `profiles_26_…` to `profiles_31_…` in `core/crates/obid/tests/profiles_api.rs`, `profiles_33_…` to `profiles_40_…` in `core/crates/obid/tests/profiles_scope_api.rs`, `profiles_32_…` in `core/crates/obid/src/profiles.rs`, `profiles_12_…` in `core/crates/obid/src/lib.rs`, `profiles_19_…` to `profiles_25_…` and `profiles_41_…` in `apps/electron/src/renderer/src/test/profileMenu.test.tsx`).
+The business behavior contract for local profiles on this Mac (Chrome-style), from [the template](../business-contract-template.md). Scenarios are numbered `PROFILES-n`; the tests that prove them are named after them (`profiles_1_…` in `core/crates/obid/src/profiles.rs` and `core/crates/obid/tests/profiles_api.rs`, `profiles_26_…` to `profiles_31_…` in `core/crates/obid/tests/profiles_api.rs`, `profiles_33_…` to `profiles_40_…` in `core/crates/obid/tests/profiles_scope_api.rs`, `profiles_32_…` in `core/crates/obid/src/profiles.rs`, `profiles_12_…` in `core/crates/obid/src/lib.rs`, `profiles_19_…` to `profiles_25_…` and `profiles_41_…` in `apps/electron/src/renderer/src/test/profileMenu.test.tsx`, `profiles_42_…` in `apps/electron/src/renderer/src/test/navigate.test.ts`).
 
 ## Feature and status
 
@@ -139,6 +139,7 @@ Per-profile stores (including `home/profiles.json`) and `Jobs::open` are unchang
 - **PROFILES-39** (`profiles_39_what_was_kept_before_is_the_default_profiles`): an install with a conversation and an account and no profiles lists both in the default profile; a profile made then lists no conversation, account or job; the conversation's file is byte-identical, and no side file is written.
 - **PROFILES-40** (`profiles_40_an_unknown_profile_is_refused_everywhere`): `Oby-Profile` naming no profile is `400` with an `error` on `GET /v1/status`, `/v1/conversations`, `/v1/conversation`, `/v1/jobs`, `/v1/helpers`, `/v1/obid/vault` and `/v1/events`, and `POST /v1/plans` and `/v1/accounts`; nothing is made.
 - **PROFILES-41** (`profiles_41_main_is_told_the_open_profile`): the app opening on its kept profile Deskree tells main Deskree is open (`obid.profile`, the `obid-profile` channel); main answering that it changed to it, the page reloads once; choosing the profile already open tells main again, which changes nothing, and nothing reloads.
+- **PROFILES-42** (`profiles_42_the_page_reloads_itself_in_a_built_app`, in `apps/electron/src/renderer/src/test/navigate.test.ts`): the reload PROFILES-41 asks for goes through in a built app too: main lets the window's page navigate to exactly the URL it is at (a reload of itself) and still refuses every other page, a site, another file of the app or itself with other words after `?`; in dev, itself with other words after `?` stays allowed. `npm run test:chat-first` walks first run through it.
 
 **Test it when it's done (real Mac):**
 

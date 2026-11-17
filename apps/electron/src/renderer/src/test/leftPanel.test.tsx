@@ -353,6 +353,11 @@ describe('what waits on the owner', () => {
     // (it waits in the drawer over c1's own box: LIVETASK-24, liveTask.test.tsx)
   });
 
+  it('CHATFIRST-23: chats_4_asks_still_show: another conversation\'s task\'s decision is still a card over this one', async () => {
+    const s = await on({ jobs: [job('j', 'c2')], conversations: [talk('c1'), talk('c2', { lastActivity: '2026-10-29T10:00:00Z' })], inbox: [item('i', 'permission', { job: 'j', title: 'Run this?', headline: 'Run this?' })] });
+    expect(await s.home()).toMatch(/class="asks-over"><section[^]*ask-card is-up[^]*Run this\?/);
+  });
+
   it('CHATFIRST-23: chats_4_asks_still_show: one with no task is a card over a conversation', async () => {
     const s = await on({ jobs: [job('j', 'c1')], conversations: [talk('c1')], inbox: [item('i', 'confirm', { job: '', title: 'Share it?', headline: 'Share it?', options: ['Confirm'] })] });
     expect(await s.home()).toMatch(/class="asks-over"><section[^]*ask-card is-up[^]*Share it\?/);
