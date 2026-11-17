@@ -82,16 +82,15 @@ const lines = (kind: string) => Array.from(document.querySelectorAll(`.changes-l
 
 describe('CHANGES-4: the task card\'s Changes opens the panel', () => {
   it('changes_4_a_card_with_a_worktree_shows_changes_and_one_without_none', async () => {
-    const { ThreadTask } = await import('../ChatView');
-    const { useChangesOpen } = await import('../ChangesPanel');
+    const { ChangesPill, useChangesOpen } = await import('../ChangesPanel');
     let opened: string | null = null;
     const Seen = () => { opened = useChangesOpen(); return null; };
     const task = await taskFor(job());
-    await act(async () => root.render(<><ThreadTask task={task} current={false} onOpen={() => {}} /><Seen /></>));
+    await act(async () => root.render(<><ChangesPill task={task} /><Seen /></>));
     await act(async () => button('Changes')!.click());
     expect(opened).toBe('j1');
     const bare = await taskFor(job({ worktree: null }));
-    await act(async () => root.render(<ThreadTask task={bare} current={false} onOpen={() => {}} />));
+    await act(async () => root.render(<ChangesPill task={bare} />));
     expect(button('Changes')).toBeUndefined();
   });
 
