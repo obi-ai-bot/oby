@@ -524,11 +524,11 @@ fn conversation_agent_3_a_chosen_account_that_cant_run_moves_too() {
     assert_ne!(fresh, conversation(&new));
 }
 
-/// CONVERSATION-AGENT-24: a chosen account whose agent can't start: the turn moves, and its line
+/// CONVERSATION-AGENT-26: a chosen account whose agent can't start: the turn moves, and its line
 /// says why in plain words, no path in them. ACCOUNTS-19: the reason stays on the account in
 /// `GET /v1/status` (`cantRun`) until it answers again.
 #[test]
-fn conversation_agent_24_a_move_says_why_the_account_couldnt_start() {
+fn conversation_agent_26_a_move_says_why_the_account_couldnt_start() {
     let folder = Folder::new("talk-cant-start");
     let mut config = configured(&folder);
     let nowhere = folder.0.join("nowhere/codex");

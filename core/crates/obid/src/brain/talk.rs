@@ -325,7 +325,7 @@ pub(super) fn why_none(
 }
 
 /// The line that says the turn moved: `left` by its name, why, then where to. One that couldn't
-/// start says why in plain words, its tool named (CONVERSATION-AGENT-24): what it last failed with
+/// start says why in plain words, its tool named (CONVERSATION-AGENT-26): what it last failed with
 /// ([`crate::jobs::Jobs::cant_run_why`]), else that it isn't signed in. Words for Sangam to change
 /// (docs/contracts/conversation-agent.md, proposed).
 pub(super) fn moved_line(
