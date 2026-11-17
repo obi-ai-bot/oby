@@ -1275,6 +1275,95 @@ fn taskconv_30_a_fix_ci_tasks_goal_is_the_fix_committed_not_githubs_checks() {
     );
 }
 
+/// TASKCONV-31 (docs/contracts/task-conversations.md): Fix CI on the owner's own pull request
+/// pushes its fix straight onto that pull request's branch, as T3 Code does, so its checks run
+/// again on the same pull request: no `oby/` branch, no pull request opened, and the owner's
+/// description untouched. Only a fast-forward: a branch that moved on is left alone, in plain words.
+#[test]
+fn taskconv_31_fix_ci_pushes_onto_the_owners_own_pull_requests_branch() {
+    let folder = Folder::new("taskconv-31");
+    let remote = fixture(&folder.0.join("fixture"));
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("--git-dir")
+            .arg(&remote)
+            .args(args)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    git(&["branch", "fix-login", "main"]);
+    git(&["update-ref", "refs/pull/5/head", "fix-login"]);
+    let started_at = git(&["rev-parse", "fix-login"]);
+    let config = config(&folder.0, &remote, &agents().join("fake-claude"));
+    let obid = start(&folder.0, &config, Some(&agents()));
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(
+        gh.join("view.json"),
+        json!({"title": "Login fix", "body": "COMMIT: fixed.txt", "author": {"login": "wellington"},
+               "labels": [], "comments": [], "headRefName": "fix-login", "isCrossRepository": false,
+               "statusCheckRollup": [{"__typename": "StatusContext", "context": "ci/test", "state": "FAILURE"}]})
+        .to_string(),
+    )
+    .unwrap();
+    let a = "a".repeat(40);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "SUCCESS")],
+    );
+    refresh(&obid);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "FAILURE")],
+    );
+    refresh(&obid);
+    let offer = github_items(&obid, "open")
+        .into_iter()
+        .find(|i| i["github"]["number"] == 5)
+        .expect("a CI failed card");
+    let answered = call(
+        &obid,
+        "POST",
+        &format!("/v1/inbox/{}/answer", offer["id"].as_str().unwrap()),
+        Some(&json!({"answer": "Fix CI"})),
+    );
+    assert_eq!(answered.status, 200, "{}", answered.text);
+    let id = answered.body["job"].as_str().unwrap().to_owned();
+    let job = ended_within(&obid, &id, 120);
+    assert_eq!(job["status"], "done", "{}", job["summary"]);
+    assert_eq!(
+        (&job["pushed"], &job["published"]),
+        (&json!(1), &Value::Null),
+        "{job}"
+    );
+    assert_eq!(
+        git(&["log", "-1", "--format=%s", "fix-login"]),
+        "Fix fixed.txt"
+    );
+    assert_eq!(
+        git(&["rev-parse", "fix-login~1"]),
+        started_at,
+        "a fast-forward of the pull request's own branch"
+    );
+    assert_eq!(
+        git(&["for-each-ref", "refs/heads/oby/"]),
+        "",
+        "no oby/ branch"
+    );
+    let calls = std::fs::read_to_string(gh.join("calls")).unwrap_or_default();
+    assert!(
+        !calls.lines().any(|c| c == "pr create" || c == "pr edit"),
+        "no pull request opened or edited: {calls}"
+    );
+}
+
 /// MERGING-54 (docs/contracts/merging.md): GitHub work a tap starts isn't the owner's own work,
 /// even sent signed: its job's file holds no own mark, so its pull request keeps its card
 /// (`merge_api::merging_46_work_not_from_the_owners_conversation_keeps_its_card`).
@@ -1461,7 +1550,7 @@ fn issuetask_4_whose_words_are_read_each_time_the_issue_is() {
         serde_json::from_slice::<Value>(&file).unwrap()["foreign"].clone()
     };
     let job = issue_job_ended(&obid, 140, "Do #140");
-    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["status"], "done", "{}", job["summary"]);
     assert!(foreign(job["id"].as_str().unwrap()).is_null(), "{job}");
 
     who_wrote(&gh, &["mallory"]);

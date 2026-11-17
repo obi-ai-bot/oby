@@ -691,6 +691,11 @@ pub struct Job {
     /// for a follow-up of work that isn't merged. Never in the API's job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_from: Option<String>,
+    /// The owner's own pull request's branch, its base too, that a Fix CI job pushes its commits
+    /// onto by itself, as T3 Code does (TASKCONV-31): a fast-forward only, no pull request opened
+    /// or edited, nothing merged, rebased or deleted. Never from the API, never in the API's job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub onto: Option<String>,
     /// What the conversation supervisor (deleted, rules-delete-supervisor) did each time it
     /// stalled, oldest first: only a job kept from before it went has any. `supervised` in the API
     /// stays, empty from now on.

@@ -1004,7 +1004,7 @@ pub fn github_item(work: &crate::github_work::Item, known: bool, now: i64) -> It
             format!("CI failed: {name} #{n}"),
             format!("Checks failed on your pull request #{n} in {repo}."),
             FIX_CI,
-            "Starts a fix job on your pull request's branch. It never pushes onto your branch: when its check passes, it opens a pull request into it.".to_owned(),
+            "Starts a task that fixes what failed and pushes the fix onto your pull request's branch, so its checks run again there.".to_owned(),
         ),
         _ => (
             format!("Assigned to you: {name} #{n}"),

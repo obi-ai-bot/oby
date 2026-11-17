@@ -1419,6 +1419,9 @@ async fn begin(
         title: Some(cut(&format!("{verb} {name} #{number}"), 60)),
         pr: (list != "assigned").then_some(number),
         issue: (list == "assigned").then_some(number),
+        // The owner's own pull request (`mine`, never a fork's): its fix goes straight onto its
+        // branch, so its checks run again on it, as T3 Code does (TASKCONV-31).
+        onto: base.clone().filter(|_| list == "mine"),
         base,
         attachments,
         adding,
