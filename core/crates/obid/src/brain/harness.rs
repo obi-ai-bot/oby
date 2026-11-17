@@ -67,7 +67,17 @@ const MAX_TURNS: &str = "50";
 const TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write,Edit,MultiEdit,NotebookEdit,Task,TodoWrite";
 /// An own Claude Code session's (LANES-12): those, its own Bash, which runs in Claude Code's own
 /// sandbox and has no login copy to read, the owner's skills, and their MCP servers' resources.
-const OWN_TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write,Edit,MultiEdit,NotebookEdit,Task,TodoWrite,Bash,BashOutput,KillShell,Skill,ListMcpResourcesTool,ReadMcpResourceTool,ReadMcpResourceDirTool";
+/// And ToolSearch, Claude Code's own lookup of a deferred MCP tool (CONVERSATION-AGENT-24): with it
+/// the owner's MCP servers' tools load when a turn needs them, as in their terminal, instead of
+/// every one in every prompt (some 700 tools, half a million tokens, on the owner's Mac).
+const OWN_TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write,Edit,MultiEdit,NotebookEdit,Task,TodoWrite,Bash,BashOutput,KillShell,Skill,ToolSearch,ListMcpResourcesTool,ReadMcpResourceTool,ReadMcpResourceDirTool";
+/// What tells an own session's Claude Code not to hold its first turn for the owner's MCP servers
+/// (CONVERSATION-AGENT-24). Given any `--mcp-config` server, Claude Code 2.1.325 holds the first
+/// turn of a headless session until every MCP server answers or its 30 s timeout passes: one slow
+/// server of the owner's held every new conversation's first words 30 s. `0` lifts that hold, as
+/// in the owner's terminal, where a server that connects later adds its tools then; Oby's own
+/// servers are still connected first ([`write_mcp`]'s `alwaysLoad`).
+const MCP_STARTUP_WAIT: (&str, &str) = ("CLAUDE_CODE_MCP_STARTUP_WAIT_MS", "0");
 /// How long a call of Oby's tools waits for obid's reader to reach the line where the agent wrote
 /// it, counting only while the reader holds no line ([`Session::heard`]).
 pub const READ_WAIT: Duration = Duration::from_secs(5);
@@ -815,7 +825,7 @@ fn claude_launch(
 ) -> Result<agent::Launch, String> {
     let (frozen, stderr) = (vec![place.repos.clone()], place.folder.join("agent.log"));
     if own {
-        return shared.jobs.conversation_own_launch(
+        let mut launch = shared.jobs.conversation_own_launch(
             account,
             &place.room,
             &place.temp,
@@ -823,7 +833,9 @@ fn claude_launch(
             frozen,
             flags,
             stderr,
-        );
+        )?;
+        lift_mcp_hold(&mut launch.env);
+        return Ok(launch);
     }
     shared.jobs.conversation_launch(
         Tool::Claude,
@@ -835,6 +847,13 @@ fn claude_launch(
         flags,
         stderr,
     )
+}
+
+/// Sets [`MCP_STARTUP_WAIT`] in an own session's environment, in place of any value it had.
+fn lift_mcp_hold(env: &mut Vec<(OsString, OsString)>) {
+    let (name, value) = MCP_STARTUP_WAIT;
+    env.retain(|(set, _)| set != name);
+    env.push((name.into(), value.into()));
 }
 
 /// Where a conversation's MCP configuration is ([`mcp_file`]), the URL of Oby's tools for it, and
@@ -867,11 +886,12 @@ fn mcp_file(place: &Place, own: bool) -> Result<PathBuf, String> {
 }
 
 /// Writes the MCP configuration that gives the agent Oby's tools, and Tetrix when it's given,
-/// with `token`. The agent writes in its HOME: never through a link it left there (O_NOFOLLOW,
-/// O_EXCL).
+/// with `token`. Each is `alwaysLoad`: Claude Code connects it before the first turn and never
+/// defers its tools, even when it holds that turn for no other server (CONVERSATION-AGENT-24). The
+/// agent writes in its HOME: never through a link it left there (O_NOFOLLOW, O_EXCL).
 fn write_mcp(mcp: &Path, url: &str, tetrix: Option<&str>, token: &str) -> Result<(), String> {
     let server = |url: &str| {
-        json!({"type": "http", "url": url,
+        json!({"type": "http", "url": url, "alwaysLoad": true,
                "headers": {"Authorization": format!("Bearer {token}")}})
     };
     let mut servers = json!({"oby": server(url)});
@@ -2750,6 +2770,11 @@ fn rule(
     {
         return Answer::Allow;
     }
+    // An own session's lookup of a deferred tool of its MCP servers (CONVERSATION-AGENT-24): it
+    // brings what the prompt held of them before, the tools' names and descriptions, no more.
+    if own && tool == "ToolSearch" {
+        return Answer::Allow;
+    }
     if let Some(why) = crate::policy::fixed_denial(tool, input, &bounds.worktree, &[]) {
         return Answer::Deny(why);
     }
@@ -4217,6 +4242,50 @@ mod tests {
         }
         assert!(ORIENTATION.contains(NO_SHELL));
         assert!(NO_SHELL.contains("no commands") && NO_SHELL.contains("job"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// CONVERSATION-AGENT-24: an own session may look up its MCP servers' deferred tools
+    /// (ToolSearch), which taints nothing, and its launch lifts Claude Code's first-turn hold for
+    /// them in place of any value; Oby's own servers are connected before that turn (`alwaysLoad`).
+    /// A boxed session has no ToolSearch.
+    #[test]
+    fn conversation_agent_24_an_own_session_looks_up_tools_and_waits_only_for_obys() {
+        let home = std::env::temp_dir().join(format!("obid-agent-24-{}", std::process::id()));
+        let place = Place::of(&home, "c1");
+        std::fs::create_dir_all(&place.room).unwrap();
+        let bounds = place.bounds();
+        let input = json!({"query": "select:mcp__github__merge"});
+        let own = rule("ToolSearch", &input, &bounds, &place.repos, true, &|| {});
+        assert_eq!(own, Answer::Allow);
+        assert!(!taints("ToolSearch", &input, &bounds, &place.repos));
+        let boxed = rule("ToolSearch", &input, &bounds, &place.repos, false, &|| {});
+        assert!(matches!(boxed, Answer::Deny(_)), "{boxed:?}");
+        assert!(OWN_TOOLS.split(',').any(|t| t == "ToolSearch"));
+        assert!(!TOOLS.split(',').any(|t| t == "ToolSearch"));
+        let mut env: Vec<(OsString, OsString)> = vec![
+            (MCP_STARTUP_WAIT.0.into(), "30000".into()),
+            ("A".into(), "1".into()),
+        ];
+        lift_mcp_hold(&mut env);
+        let set: Vec<_> = env
+            .iter()
+            .filter(|(n, _)| n == MCP_STARTUP_WAIT.0)
+            .collect();
+        assert_eq!(set, [&(MCP_STARTUP_WAIT.0.into(), "0".into())]);
+        std::fs::create_dir_all(&place.login).unwrap();
+        let mcp = place.login.join(MCP_FILE);
+        write_mcp(
+            &mcp,
+            "http://127.0.0.1:1/oby",
+            Some("http://127.0.0.1:1/t"),
+            "tok",
+        )
+        .unwrap();
+        let servers: Value = serde_json::from_slice(&std::fs::read(&mcp).unwrap()).unwrap();
+        for name in ["oby", "tetrix"] {
+            assert_eq!(servers["mcpServers"][name]["alwaysLoad"], true, "{servers}");
+        }
         let _ = std::fs::remove_dir_all(&home);
     }
 

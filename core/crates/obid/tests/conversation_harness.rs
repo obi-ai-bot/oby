@@ -3171,6 +3171,33 @@ fn lanes_12_git_status_runs_through_claude_codes_own_bash_in_the_room() {
     assert!(!folder.join("config/.credentials.json").exists());
 }
 
+/// CONVERSATION-AGENT-24 (docs/contracts/conversation-agent.md): a new own conversation answers
+/// without waiting for the owner's own MCP servers, as their terminal does: one of theirs that
+/// takes 20 s to answer doesn't hold the first turn, and Oby's own tools are there on it. The
+/// stand-in holds the first turn as Claude Code 2.1.325 does (tests/agents/fake-harness).
+// Own conversations are macOS-only for now (LANES-12).
+#[cfg(target_os = "macos")]
+#[test]
+fn conversation_agent_24_a_new_conversation_doesnt_wait_for_the_owners_mcp_servers() {
+    let (_folder, obid) = obid("harness-agent-24", true);
+    std::fs::write(obid.home.join("accounts/stub/slow-mcp-ms"), "20000").unwrap();
+    let began = Instant::now();
+    let answer = said(&obid, json!({"said": "OBY oby_jobs {}", "new": true}));
+    let took = began.elapsed();
+    let text = answer.body["text"].as_str().unwrap_or_default();
+    assert!(
+        text.starts_with("oby: ") && !text.contains("refused") && !text.contains("connected"),
+        "Oby's tools on the first turn: {}",
+        answer.text
+    );
+    assert!(
+        took < Duration::from_secs(10),
+        "the first turn waited {took:?} for the owner's MCP servers"
+    );
+    let recorded = turns(&obid);
+    assert!(ran_own(&obid, &recorded[0]), "{}", recorded[0]);
+}
+
 /// LANES-12, F-M2-63: a waiting Claude Code started with other flags (another model) ends, taking
 /// its `oby-mcp.json` with it, and the new one the turn starts still has the file, with Oby's tools.
 // Own conversations are macOS-only for now (LANES-12).
