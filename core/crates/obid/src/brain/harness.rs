@@ -933,7 +933,7 @@ pub async fn run(
     let mut failed: Option<String> = None;
     let mut why = String::new();
     if accounts.is_empty() {
-        why = super::talk::why_none(shared, chosen.as_deref(), only);
+        why = super::talk::why_none(shared, chosen.as_deref(), only, mine);
     }
     for (tool, account) in &accounts {
         match session(shared, *tool, account, said, given, asked, control).await {
