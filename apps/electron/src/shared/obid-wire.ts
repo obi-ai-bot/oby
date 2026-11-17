@@ -244,7 +244,8 @@ export type Account = {
   modelsRead?: boolean;
 };
 export type Status = {
-  runner: { version: string; host: string; engine?: string };
+  // commit: the one obid was built from, null when its build wasn't told (older obids: absent)
+  runner: { version: string; host: string; engine?: string; commit?: string | null };
   accounts: Account[];
   // obid only: the account conversations talk through (none: Auto), and the one a new one's first turn would
   talkAccount?: string | null;

@@ -6,6 +6,7 @@ import { basename, join } from 'node:path';
 import { promisify } from 'node:util';
 import { anything, flag, method, v1Path } from '../shared/decode';
 import { ipc, type Trusted } from './ipc';
+import { SCRATCH } from '../shared/build';
 
 // obid, Oby's engine (core/, docs/runner-api.md), as this app reaches it: the obid already
 // answering on this Mac, adopted. Its token stays here in main: the renderer asks main for each
@@ -15,11 +16,14 @@ import { ipc, type Trusted } from './ipc';
 
 // fixed: obid never moves to another port, and neither does the app. In development only,
 // OBID_PORT and OBID_HOME point it at a scratch obid run by hand (a live check's), never the
-// installed one's; a packaged app ignores them.
-const PORT = (!app.isPackaged && Number(process.env.OBID_PORT)) || 7777;
+// installed one's; a packaged app ignores them. A scratch install (scripts/run-dev.sh --port
+// --home) has its port and home baked into its build instead (shared/build.ts), and is run like
+// development: no launch agent, and the obid run beside it is its own.
+const MANAGED = app.isPackaged && !SCRATCH;
+const PORT = SCRATCH?.port || (!app.isPackaged && Number(process.env.OBID_PORT)) || 7777;
 const BASE = `http://127.0.0.1:${PORT}`;
 // ponytail: macOS only, as the Swift app's runner home; follows obid's `home` when the app starts it
-export const HOME = (!app.isPackaged && process.env.OBID_HOME) || join(homedir(), 'Library/Application Support/Oby/Runner');
+export const HOME = SCRATCH?.home || (!app.isPackaged && process.env.OBID_HOME) || join(homedir(), 'Library/Application Support/Oby/Runner');
 const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 
 // A file in obid's home, read only when it's a regular file of this user's, never through a link;
@@ -54,7 +58,7 @@ export function reason(error?: unknown): Answer {
   return { status: 0, text: !error || cause?.code === 'ECONNREFUSED' ? NOTHING : cause?.message ?? (error instanceof Error ? error.message : String(error)) };
 }
 
-const NOTHING = 'Nothing answers on 127.0.0.1:7777: obid isn’t running.';
+const NOTHING = `Nothing answers on 127.0.0.1:${PORT}: obid isn’t running.`;
 const WAITING: Answer = { status: 0, text: 'Oby’s engine is starting.', why: 'waiting' };
 
 // obid gone while launchd still has this app's agent (a kickstart during an install, a config
@@ -66,7 +70,7 @@ let returning: Promise<boolean> | null = null;
 let gaveUp: { until: number; answer: Answer } | null = null;
 async function gone(error?: unknown): Promise<Answer> {
   const hard = reason(error);
-  if (hard.text !== NOTHING || process.platform !== 'darwin' || !app.isPackaged) return hard;
+  if (hard.text !== NOTHING || process.platform !== 'darwin' || !MANAGED) return hard;
   if (gaveUp && Date.now() < gaveUp.until) return gaveUp.answer;
   returning ??= (async () => {
     if (!(await Promise.all([LABEL, SESSION].map((label) => launchd(label)))).some(Boolean)) { returning = null; return false; }
@@ -106,7 +110,7 @@ async function listener(): Promise<'mine' | 'foreign' | 'none'> {
   if (!pids.length) return await answers() ? 'foreign' : 'none';
   const launchds = await Promise.all([LABEL, SESSION, SCRIPT].map(async (label) => field(await launchd(label), 'pid')));
   for (const pid of pids) {
-    const byHand = !app.isPackaged && await run('/bin/ps', ['-o', 'comm=', '-p', pid]).then((r) => basename(r.stdout.trim()) === 'obid', () => false);
+    const byHand = !MANAGED && await run('/bin/ps', ['-o', 'comm=', '-p', pid]).then((r) => basename(r.stdout.trim()) === 'obid', () => false);
     if (launchds.includes(pid) || byHand) { mineUntil = Date.now() + 10_000; return 'mine'; }
   }
   return 'foreign';
@@ -311,7 +315,7 @@ async function retireSwift(printed: string | null) {
 // At launch: adopts the obid that answers, or starts this app's own and says why when it can't.
 // Only a packaged app has the launch agent: in development it's the obid you run.
 export async function startObid() {
-  if (process.platform !== 'darwin' || !app.isPackaged) return;
+  if (process.platform !== 'darwin' || !MANAGED) return;
   starting = true;
   try {
     const who = await listener();

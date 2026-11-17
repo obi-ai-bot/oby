@@ -6,6 +6,7 @@ import { ipc } from './ipc';
 import { takeInput } from './words';
 import { safeInteger } from '../shared/decode';
 import { NotThisKey, addStarterRule, join, joinWarning, keepMembership, leave, parseInvite, readPolicy, type PolicyAnswer } from '../shared/sphere';
+import { SCRATCH } from '../shared/build';
 
 // Joining an Obysphere by a private link (docs/contracts/obysphere.md). The owner key, Ed25519, is
 // made here in main and kept as the device key is (device.ts): it never leaves main, and the page
@@ -34,7 +35,8 @@ function onWindow(f: (w: BrowserWindow) => void) {
 }
 
 export function sphering(trusted: Trusted, show: () => BrowserWindow) {
-  if (app.isPackaged) app.setAsDefaultProtocolClient('oby');
+  // a scratch install (shared/build.ts) never takes oby:// from the installed Oby
+  if (app.isPackaged && !SCRATCH) app.setAsDefaultProtocolClient('oby');
   const said = (w: BrowserWindow, message: string, detail?: string) => dialog.showMessageBox(w, { type: 'warning', message, detail, buttons: ['OK'] });
 
   // the card obid asks for (its seal key) and the delegation's renewal (SPHERE-6): at launch, after
