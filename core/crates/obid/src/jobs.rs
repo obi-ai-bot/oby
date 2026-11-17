@@ -64,6 +64,7 @@ pub(crate) mod asks;
 mod authors;
 mod budget;
 mod by_github;
+pub(crate) mod cant_run;
 mod check_run;
 #[cfg(test)]
 use check_run::check_failed;
@@ -1105,6 +1106,8 @@ pub struct Jobs {
     usage_reads: Mutex<UsageReads>,
     /// Each account's last good model list, refreshed with those usage reads (crate::model_lists).
     pub model_lists: crate::model_lists::ModelLists,
+    /// Why each account's agent couldn't start, while kept (jobs::cant_run, ACCOUNTS-31).
+    pub cant_run: cant_run::CantRun,
     /// What the meter last read: the machine's memory, and each running job's ([`Jobs::meter`]).
     measured: Mutex<Measured>,
     /// Wakes the meter: a job started.
@@ -1117,15 +1120,6 @@ const MOST_SITES_ASKED: usize = 3;
 
 /// How often the meter reads while jobs run ([`Jobs::meter`]).
 const METER_TICK: Duration = Duration::from_secs(5);
-/// How often at most each account's usage is asked of its tool ([`Jobs::want_usage`]): every 10
-/// minutes, or `OBID_USAGE_EVERY_SECONDS` (obid's tests set less). A running job's own reports
-/// come between.
-fn usage_every() -> Duration {
-    std::env::var("OBID_USAGE_EVERY_SECONDS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .map_or(Duration::from_secs(600), Duration::from_secs)
-}
 /// How long one account's usage read may take: Claude Code's took 4 seconds.
 const USAGE_READ_LIMIT: Duration = Duration::from_secs(30);
 /// How long past now a Claude Code login copy must last to read with: twice the 5 minutes in which
@@ -1402,6 +1396,7 @@ impl Jobs {
             usage_changed: Notify::new(),
             usage_reads: Mutex::default(),
             model_lists: crate::model_lists::ModelLists::default(),
+            cant_run: cant_run::CantRun::default(),
             measured: Mutex::new(Measured::default()),
             metering: Notify::new(),
         });

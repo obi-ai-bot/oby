@@ -246,7 +246,10 @@ impl Jobs {
                 // Routing skips an account that isn't signed in (#626), and one without room.
                 None => {
                     for account in accounts {
-                        if !signed_in(*tool, &account, home.as_deref()) {
+                        // One whose agent couldn't start is passed over too (ACCOUNTS-20).
+                        if !signed_in(*tool, &account, home.as_deref())
+                            || self.cant_run_why(&account.id).is_some()
+                        {
                             first.get_or_insert((*tool, account));
                         } else if work.background && !self.takes_background(&account) {
                             not_yet.get_or_insert(account.name);

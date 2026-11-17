@@ -56,6 +56,14 @@ It stays when: the tool said no email (Cursor out of reach; nothing to compare);
 - No box ever gets an account's folder; agents have no code-host login: nothing here changes either.
 - Older apps ignore the new keys. A new key in an Account is absent while it has no value.
 
+### Why an account can't run
+
+The owner's words of 2026-11-16: when an account can't run, say why, on the account, on the line where a conversation moves off it, and on a failed task's card.
+
+- **obid** keeps, per account, why its agent last couldn't start: its launch was refused (a login that's missing, ended or refused by macOS, a binary it can't find, a box it can't make), or its login was refused when it ran. In plain words: the first line, the secrets it knows taken out, each path down to its last name, so no home folder or `~/…` is in it. It's in memory only, kept until a start on that account goes through, the account is signed in again, or 10 minutes have passed since it last failed; then the next start tries it again. A sign-in or removal under way isn't a reason.
+- While it's kept, `GET /v1/status` and the `accounts` event carry it as the account's `cantRun`, and routing passes over the account as over a signed-out one: work goes to one that can start, and to it only when nothing else can. A job that names it, and a conversation the owner pointed at it, still try it first.
+- **The Electron app** shows it on the account's row in Settings › Agents, `<tool> can’t start: <reason>` (proposed, Sangam's to rewrite), and doesn't show that account as where new tasks go while another can start. A failed task's line, on its card, is obid's reason with each path down to its last name.
+
 ## Failure and recovery
 
 - A status that doesn't answer in 15 seconds, or isn't JSON: nothing is learned, the account stays as it is, and the same login twice isn't noticed for that sign-in.
@@ -86,6 +94,10 @@ It stays when: the tool said no email (Cursor out of reach; nothing to compare);
 - **ACCOUNTS-15:** a card shows who it is and a bar for its session, else its week, else none.
 - **ACCOUNTS-16:** first run still connects an agent under the name it gives.
 - **ACCOUNTS-17:** one email on another plan or org is another account, and both stay.
+- **ACCOUNTS-19 (`accounts_19_*`):** a job whose agent can't start on an account fails saying `<tool> couldn't start on <account>: <reason>.`, the reason in plain words with no path; the account carries the same words as `cantRun` in `GET /v1/status` and the `accounts` event, a conversation turn's start failure too (`conversation_agent_24_*`); a start that goes through, or a sign-in, takes it off.
+- **ACCOUNTS-20 (`accounts_20_*`, `accounts_19_*`):** while `cantRun` is kept (10 minutes from its last failure), routing passes over that account, even when it's `defaultAccount`, and takes it only when nothing else can start; a job naming it still goes there.
+- **ACCOUNTS-21 (`cantRun.test.tsx`):** Settings › Agents says `<tool> can’t start: <reason>` on the account's row, and "New tasks go to" shows another account that can start; with none that can, the chosen one stays shown.
+- **ACCOUNTS-22 (`cantRun.test.tsx`):** a failed task's card line is obid's reason with every path down to its last name: no `~/…`, home folder or `[oby]` in it; a bare `/login` stays.
 - **ACCOUNTS-18:** a boxed Codex copy whose access token's JWT `exp` has passed, ending on a bare 401, says `run codex once` and stays signed in; a revocation on that expired copy, or a 401 or revocation while `exp` is still ahead, still ends the login (`run codex login`).
 
 **Test it when it's done (real Mac):**

@@ -957,6 +957,7 @@ pub async fn run(
     for (tool, account) in &accounts {
         match session(shared, *tool, account, said, given, asked, control).await {
             Ok(mut answered) => {
+                shared.jobs.started_on(&account.id);
                 shared
                     .conversations
                     .talked_on(&control.conversation, &account.id);
@@ -983,6 +984,9 @@ pub async fn run(
                 return answered;
             }
             Err(unanswered) => {
+                if let Some(reason) = &unanswered.cant_start {
+                    shared.jobs.cant_start(account, reason);
+                }
                 why = unanswered.why;
                 // An account its turn found full is another's to take over, and so is one that
                 // couldn't run at all; a turn that failed for what it was asked isn't.
@@ -1056,6 +1060,9 @@ fn said_why(talk: Talk, line: &str) -> Talk {
 pub(super) struct Unanswered {
     pub(super) why: String,
     moves: bool,
+    /// Why the account itself couldn't start the turn, kept on it (ACCOUNTS-19): its launch was
+    /// refused, its agent didn't start, or its login was refused.
+    cant_start: Option<String>,
 }
 
 impl Unanswered {
@@ -1063,13 +1070,27 @@ impl Unanswered {
         Unanswered {
             why: why.into(),
             moves: true,
+            cant_start: None,
+        }
+    }
+
+    /// The account couldn't start the turn, for `why`: another may take it.
+    fn cant_start(why: impl Into<String>) -> Unanswered {
+        let why = why.into();
+        Unanswered {
+            cant_start: Some(why.clone()),
+            ..Unanswered::moves(why)
         }
     }
 }
 
 impl From<String> for Unanswered {
     fn from(why: String) -> Unanswered {
-        Unanswered { why, moves: false }
+        Unanswered {
+            why,
+            moves: false,
+            cant_start: None,
+        }
     }
 }
 
@@ -1748,6 +1769,8 @@ async fn attempts(
         first
     };
     let mut failures = vec![];
+    // Why the last attempt couldn't start, or its login was refused: the account's (ACCOUNTS-19).
+    let mut cant_start: Option<String> = None;
     // What a try after a cut says first, and all it was sent (CONVERSATION-AGENT-15).
     let mut sent = &words;
     let mut cut: Option<String> = None;
@@ -1788,7 +1811,7 @@ async fn attempts(
                 .jobs
                 .claude_login_ready(Some(account))
                 .await
-                .map_err(Unanswered::moves)?;
+                .map_err(Unanswered::cant_start)?;
         }
         // What the agent planted for the next Claude Code goes before every turn, a waiting one's
         // too (it loads nothing again, but the rule is the turn's).
@@ -1833,7 +1856,7 @@ async fn attempts(
                         helper,
                     )
                     .await
-                    .map_err(Unanswered::moves)?;
+                    .map_err(Unanswered::cant_start)?;
                     (
                         Run::Cold(launch),
                         codex.map_or(Protocol::Claude, Protocol::Codex),
@@ -1850,7 +1873,7 @@ async fn attempts(
                         token,
                         &resume,
                     )
-                    .map_err(Unanswered::moves)?;
+                    .map_err(Unanswered::cant_start)?;
                     (Run::Cold(launch), Protocol::Cursor(options))
                 }
                 Tool::Claude => {
@@ -1859,7 +1882,7 @@ async fn attempts(
                     // arguments instead.
                     write_mcp(&mcp, &url, tetrix.as_deref(), token)?;
                     let launch = claude_launch(shared, account, place, flags, own)
-                        .map_err(Unanswered::moves)?;
+                        .map_err(Unanswered::cant_start)?;
                     (Run::Cold(launch), Protocol::Claude)
                 }
             },
@@ -1877,6 +1900,7 @@ async fn attempts(
                     "attempt {attempt}: {} couldn't start: {e}",
                     tool.name()
                 ));
+                cant_start = Some(e.to_string());
                 continue;
             }
         };
@@ -2029,6 +2053,7 @@ async fn attempts(
             )));
         }
         failures.push(format!("attempt {attempt}: {} ({why})", turn.exit));
+        cant_start = crate::jobs::cant_run::login_refused(turn.cause(), &why).then(|| why.clone());
         // A session the tool says can't be picked up: a new one, the earlier turns handed over.
         // Any other stays on its session, which holds what its tools did, and hears what happened.
         resume = match turn.cause() {
@@ -2063,7 +2088,10 @@ async fn attempts(
         control.conversation,
         crate::secrets::known().redact(&failures.join("; "))
     );
-    Err(Unanswered::moves(FAILED_TWICE))
+    Err(Unanswered {
+        cant_start,
+        ..Unanswered::moves(FAILED_TWICE)
+    })
 }
 
 /// Copies the turn's attachments (already checked to be in obid's attachments folder) into the

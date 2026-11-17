@@ -812,6 +812,10 @@ pub struct AccountJson {
     /// against it only then. Add-only; left out until then.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub models_read: bool,
+    /// Why its agent couldn't start, in plain words, while obid keeps it (ACCOUNTS-19); else left
+    /// out (add-only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cant_run: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -973,6 +977,7 @@ pub fn account_json(
             &crate::model_lists::fallback(tool),
         ),
         models_read: shared.jobs.model_lists.read(tool, &account.id),
+        cant_run: shared.jobs.cant_run_why(&account.id),
     }
 }
 

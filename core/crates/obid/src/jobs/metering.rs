@@ -370,3 +370,13 @@ impl Jobs {
         Some(machine)
     }
 }
+
+/// How often at most each account's usage is asked of its tool ([`Jobs::want_usage`]): every 10
+/// minutes, or `OBID_USAGE_EVERY_SECONDS` (obid's tests set less). A running job's own reports
+/// come between.
+fn usage_every() -> Duration {
+    std::env::var("OBID_USAGE_EVERY_SECONDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map_or(Duration::from_secs(600), Duration::from_secs)
+}

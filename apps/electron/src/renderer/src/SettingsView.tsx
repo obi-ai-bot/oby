@@ -334,7 +334,7 @@ function MockRemote() {
 // session: the 5-hour window's use (null: none reported) and when it starts over; weekly: whether
 // used is the week's
 // chatgpt: signed in with Continue with ChatGPT (docs/contracts/chatgpt-sign-in.md)
-export type Account = { chatgpt?: boolean; background?: boolean; signingIn?: boolean; id: string; agent: Agent | (string & {}); name: string; payer: string; who?: string; used: number | null; resets: string; plan?: Plan; signedIn?: boolean; label?: string | null; session?: number | null; sessionResets?: string | null; weekly?: boolean; full?: boolean; models?: { id: string; name: string }[]; modelsRead?: boolean };
+export type Account = { chatgpt?: boolean; background?: boolean; signingIn?: boolean; id: string; agent: Agent | (string & {}); name: string; payer: string; who?: string; used: number | null; resets: string; plan?: Plan; signedIn?: boolean; label?: string | null; session?: number | null; sessionResets?: string | null; weekly?: boolean; full?: boolean; models?: { id: string; name: string }[]; modelsRead?: boolean; cantRun?: string };
 // how full an account (or an agent) is: past 80% yellow, past 90% red
 export const fullness = (used: number) => (used > 90 ? 'is-over' : used > 80 ? 'is-high' : '');
 // what a card's bar shows: its 5-hour session, else its week
@@ -371,6 +371,7 @@ export function accountRow(a: Status['accounts'][number], now: number): Account 
     full: !!a.fullUntil && Date.parse(a.fullUntil) > now,
     models: a.models,
     modelsRead: a.modelsRead,
+    cantRun: a.cantRun,
   };
 }
 const ACCOUNTS: Account[] = [
@@ -859,7 +860,9 @@ export function Agents() {
   // obid's (docs/contracts/providers.md, PROVIDERS-5)
   const agents = tools(accounts).flatMap((a) => accounts.filter((x) => x.agent === a));
   const ready = agents.filter((x) => x.signedIn !== false);
-  const fallback = ready.find((x) => x.id === chosen) ?? ready[0];
+  // where new tasks go: one that can start (ACCOUNTS-21), as obid's routing passes the others by
+  const can = ready.filter((x) => !x.cantRun);
+  const fallback = can.find((x) => x.id === chosen) ?? can[0] ?? ready.find((x) => x.id === chosen) ?? ready[0];
   return <>
     <Group i={1} title="Default agent">
       {fallback
@@ -912,6 +915,8 @@ export function Agents() {
                 : <span className="set-about">{week}</span>}
               {sign && sign !== 'opening' && sign.pasteCode && !sign.code && <PasteCode onCode={(code) => sendCode(x.id, sign, code)} />}
               {problems[x.id] && <span className="set-about set-problem" role="alert">{problems[x.id]}</span>}
+              {/* why obid couldn't start it (ACCOUNTS-21): obid's words, proposed */}
+              {x.cantRun && !out && !sign && <span className="set-about set-problem">{`${tool} can’t start: ${x.cantRun}`}</span>}
             </span>
             {/* (obid signs in only the accounts with a folder of their own: not the tool's own login) */}
             {out && known && (!own || plan) && <span className="set-control set-control-top">
