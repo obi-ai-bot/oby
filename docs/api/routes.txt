@@ -130,6 +130,7 @@ DELETE /v1/routines/{id}
 GET /v1/routines/{id}
 PATCH /v1/routines/{id}
 POST /v1/routines/{id}/run
+PUT /v1/settings/agents/{agent}
 GET /v1/settings/chatgpt
 PUT /v1/settings/chatgpt
 PUT /v1/settings/default-agent

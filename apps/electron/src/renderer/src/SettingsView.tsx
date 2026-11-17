@@ -19,6 +19,7 @@ import { Menu } from './Menu';
 import { liveState, lookAtUsage, patchStatus, say, useLive } from './live';
 import { AUTO, TALK_DEFAULT, talkChoices, tools } from './talk';
 import { isAgent } from '../../shared/obid-wire';
+import AgentBinaries from './AgentBinaries';
 import { version } from '../../../package.json';
 import { COMMIT, versionText } from '../../shared/build';
 import type { Update } from '../../shared/updates';
@@ -972,6 +973,8 @@ export function Agents() {
         </Group>
       );
     })}
+    {/* where each tool runs from (ACCOUNTS-26) */}
+    <AgentBinaries agents={tools(accounts).filter((a) => accounts.some((x) => x.agent === a))} tools={status?.tools} i={3 + agents.length} />
     {asking && <BackgroundConsent name={asking.name} onClose={() => setAsking(null)} onAnswer={(given) => { background(asking, given); setAsking(null); }} />}
     {adding && <AddAccount accounts={accounts} setAccounts={setAccounts} found={offered}
       onFound={(l) => (onObid ? look() : setOffered(offered.filter((x) => x !== l)))} onClose={() => { setAdding(false); look(); }} />}

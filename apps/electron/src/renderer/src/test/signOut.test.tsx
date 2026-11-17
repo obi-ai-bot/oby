@@ -4,8 +4,9 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Status } from '../obid';
 
-// Sign out (docs/contracts/accounts.md, ACCOUNTS-23 to 25) in Settings › Agents: an account obid
-// signs in has Sign out beside Remove, which asks obid for the tool's own logout and keeps the row.
+// Sign out and the binaries (docs/contracts/accounts.md, ACCOUNTS-23 to 28) in Settings › Agents:
+// an account obid signs in has Sign out beside Remove, which asks obid for the tool's own logout and
+// keeps the row; each tool with an account has its binary, set or taken back to the default.
 
 vi.mock('../Composer', () => ({ default: () => null, typingIn: () => false }));
 vi.mock('../lean', async (original) => ({ ...await original<typeof import('../lean')>(), onObid: true }));
@@ -64,5 +65,44 @@ describe('ACCOUNTS-23 to 25: Sign out in Settings › Agents', () => {
     expect(button(card('Default'), 'Sign out')).toBeUndefined();
     expect(button(card('Work'), 'Sign out')).toBeUndefined();
     expect(button(card('Work'), 'Remove')).toBeTruthy();
+  });
+});
+
+describe('ACCOUNTS-26 to 28: each tool’s binary in Settings › Agents', () => {
+  const field = (name: string) => host.querySelector<HTMLInputElement>(`input[aria-label="${name} binary"]`)!;
+  const type = async (input: HTMLInputElement, value: string) => {
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => { set.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })); });
+  };
+
+  it('accounts_26_each_tool_with_an_account_shows_what_it_runs_as_and_where_it_was_found', async () => {
+    await agents([row('w', 'claude', 'Work'), row('cx', 'codex', 'Codex')]);
+    const binaries = card('Binaries');
+    expect(field('Claude Code').value).toBe('claude');
+    expect(field('Codex').value).toBe('/opt/codex/bin/codex');
+    expect(binaries?.textContent).toContain('Found at /usr/local/bin/claude · 2.1.302');
+    // the one the owner set can go back to the default; the default can't
+    expect(button(binaries, 'Use default')).toBeTruthy();
+    expect(Array.from(binaries!.querySelectorAll('button')).filter((b) => b.textContent === 'Use default')).toHaveLength(1);
+  });
+
+  it('accounts_26_a_path_typed_and_saved_goes_to_obid', async () => {
+    await agents([row('w', 'claude', 'Work')]);
+    await type(field('Claude Code'), '/opt/homebrew/bin/claude');
+    await act(async () => button(card('Binaries'), 'Save')!.click());
+    expect(call).toHaveBeenCalledWith('PUT', '/v1/settings/agents/claude', { bin: '/opt/homebrew/bin/claude' });
+  });
+
+  it('accounts_27_one_obid_cant_find_says_why_on_its_row', async () => {
+    await agents([row('w', 'claude', 'Work')]);
+    await type(field('Claude Code'), '/nope');
+    await act(async () => button(card('Binaries'), 'Save')!.click());
+    expect(card('Binaries')?.textContent).toContain('obid can’t find /nope to run as Claude Code.');
+  });
+
+  it('accounts_28_use_default_takes_it_back_to_the_configurations', async () => {
+    await agents([row('cx', 'codex', 'Codex')]);
+    await act(async () => button(card('Binaries'), 'Use default')!.click());
+    expect(call).toHaveBeenCalledWith('PUT', '/v1/settings/agents/codex', { bin: null });
   });
 });

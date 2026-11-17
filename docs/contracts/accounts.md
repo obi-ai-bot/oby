@@ -1,6 +1,6 @@
 # Adding accounts
 
-The business behavior contract for connecting any number of accounts of any tool easily, from [the template](../business-contract-template.md). Scenarios are numbered `ACCOUNTS-n`; the tests that prove them are named after them (`accounts_1_…` in `core/crates/obid/tests/accounts_api.rs` and `core/crates/obid/src/accounts.rs`, `accounts_23_…` to `accounts_25_…` in `core/crates/obid/src/accounts/sign_out.rs`, `tests/accounts_api.rs` and `apps/electron/src/renderer/src/test/signOut.test.tsx`, `accounts_18_…` in `core/crates/obid/src/jobs/logins.rs`, `ACCOUNTS-10:` to `ACCOUNTS-16:` in `apps/electron/src/renderer/src/test/addAccount.test.ts`).
+The business behavior contract for connecting any number of accounts of any tool easily, from [the template](../business-contract-template.md). Scenarios are numbered `ACCOUNTS-n`; the tests that prove them are named after them (`accounts_1_…` in `core/crates/obid/tests/accounts_api.rs` and `core/crates/obid/src/accounts.rs`, `accounts_23_…` to `accounts_28_…` in `core/crates/obid/src/accounts/sign_out.rs`, `accounts/bins.rs`, `tests/accounts_api.rs` and `apps/electron/src/renderer/src/test/signOut.test.tsx`, `accounts_18_…` in `core/crates/obid/src/jobs/logins.rs`, `ACCOUNTS-10:` to `ACCOUNTS-16:` in `apps/electron/src/renderer/src/test/addAccount.test.ts`).
 
 ## Feature and status
 
@@ -71,6 +71,13 @@ The gap analysis of 2026-11-17: an account could be removed but not signed out.
 - **obid** signs an account out with the tool's own logout, run as its sign-in is (the account's own folder, no box, nothing it prints kept or logged): `claude auth logout`, `codex logout` (its file store), `cursor-agent logout`; a Continue with ChatGPT login is obid's own, so obid revokes and deletes it. The account's row, name, model and settings stay; who it was and its usage go, since its next sign-in may be someone else. The tool's own login (no folder of obid's) is the person's: signed out with the tool itself, as it's signed in. Not while a job runs on it.
 - **The Electron app** shows `Sign out` beside Remove on each signed-in account obid signs in (proposed words, Sangam's to rewrite); Sign In signs it in again.
 
+### Each tool's binary
+
+The gap analysis of 2026-11-17: a tool's binary could be set only in obid's `config.json`.
+
+- **obid** keeps a binary the owner set for a tool in `home/accounts.json` (`bins`), laid over the configuration's `agents.<tool>.bin` at every start: a path from `/`, or a command's bare name, found now as obid finds every tool's binary. One it can't find, or that is neither, is refused, so a typo never leaves a tool that can't start; `null` goes back to the configuration's. `GET /v1/status`'s `tools[]` says what each runs as (`bin`), whether the owner set it (`binSet`), and as before where it was found and its version.
+- **The Electron app** shows, after the accounts' cards in Settings › Agents, `Binaries`: a row per tool with an account, its binary in a field (Save when changed, `Use default` when set), and under it where obid found it and its version, or why obid refused the one typed (proposed words, Sangam's to rewrite).
+
 ## Failure and recovery
 
 - A status that doesn't answer in 15 seconds, or isn't JSON: nothing is learned, the account stays as it is, and the same login twice isn't noticed for that sign-in.
@@ -108,6 +115,9 @@ The gap analysis of 2026-11-17: an account could be removed but not signed out.
 - **ACCOUNTS-23:** `POST /v1/accounts/{id}/sign-out` runs the tool's own logout in the account's folder (`claude auth logout`, `codex logout -c cli_auth_credentials_store="file"`, `cursor-agent logout`), or ends a Continue with ChatGPT login (revoked, its vault entry and marker gone), answers the Account with `signedIn` false, and keeps its row; Settings › Agents has `Sign out`, which asks it.
 - **ACCOUNTS-24:** the tool's own login is `409` `ownLogin` (signed out with the tool itself), a signed-out account has no Sign out in Settings, a job on it is `409` `busy`, and a logout that fails is `502` `didNotSignOut`, the account as it was.
 - **ACCOUNTS-25:** a signed-out account keeps its name and settings; who it was and its usage go, and Sign In signs it in again.
+- **ACCOUNTS-26:** `PUT /v1/settings/agents/{agent}` `{"bin": "<path or name>"}` keeps the tool's binary over the configuration's, across restarts; `GET /v1/status` `tools[].bin` and `binSet` say so; Settings › Agents › Binaries shows it, where it was found, and saves a new one.
+- **ACCOUNTS-27:** a value that isn't a path from `/` or a bare command name is `422` `badBin`, and one obid can't find `422` `notFound`, said on the tool's row; nothing changes.
+- **ACCOUNTS-28:** `{"bin": null}` (`Use default`) goes back to the configuration's; a kept value that doesn't read (an unknown tool, a relative path) is left out at start and logged.
 - **ACCOUNTS-18:** a boxed Codex copy whose access token's JWT `exp` has passed, ending on a bare 401, says `run codex once` and stays signed in; a revocation on that expired copy, or a 401 or revocation while `exp` is still ahead, still ends the login (`run codex login`).
 
 **Test it when it's done (real Mac):**

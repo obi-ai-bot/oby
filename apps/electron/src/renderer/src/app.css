@@ -1853,6 +1853,12 @@ button.connector { width: 100%; text-align: left; }
 .set-address:focus-within { border-color: var(--field-edge-on); }
 .set-address.is-bad, .set-address.is-bad:focus-within { border-color: rgba(240, 113, 103, 0.5); }
 .set-problem { color: var(--danger); }
+/* a tool's binary (Settings › Agents › Binaries, ACCOUNTS-26): where it was found cut to one line
+   (the whole on hover), the field and its button beside it */
+.set-bin .set-label { flex: 1; min-width: 0; }
+.set-bin .set-about { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.set-bin .set-control { flex: none; gap: 8px; }
+.set-bin .set-field { width: 220px; }
 
 /* an account: what it's used this week, as a bar under its name */
 .set-usage { align-items: flex-start; }

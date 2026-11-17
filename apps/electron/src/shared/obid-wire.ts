@@ -277,6 +277,9 @@ export type Status = {
   unreadable?: { path: string; error: string; since: string }[];
   // obid only: the optional features it serves, by name (docs/contracts/capabilities.md); an obid before R06-01 sends none
   capabilities?: string[];
+  // each tool's binary: what obid runs it as (bin, binSet: the owner set it in Settings, ACCOUNTS-26),
+  // where it found it and its version, each null when it isn't found; older obids send no bin
+  tools?: { agent: string; bin?: string; binSet?: boolean; path: string | null; version: string | null; versionStatus?: string; knownBadReason?: string }[];
 };
 
 // obid only: "GET /v1/repos", the repositories a job may start in: the listed ones first, then

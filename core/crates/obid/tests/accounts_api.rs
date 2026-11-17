@@ -1834,3 +1834,94 @@ fn accounts_23_24_25_an_account_signs_out_with_its_tools_own_logout_and_stays() 
             .map(|_| ())
     });
 }
+
+/// ACCOUNTS-26 to 28: a tool's binary set from Settings is kept over the configuration's, across a
+/// restart; one obid can't find, or that isn't a path or a name, changes nothing; null takes it back.
+#[test]
+fn accounts_26_27_28_a_tools_binary_is_set_kept_and_taken_back() {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = Folder::new("accounts-bins");
+    let config = accounts_config(&folder.0);
+    let mut obid = start(&folder.0, &config, None);
+    let codex_of = |obid: &Obid| {
+        call(obid, "GET", "/v1/status", None).body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["agent"] == "codex")
+            .cloned()
+            .unwrap()
+    };
+    let configured = agent("fake-codex").display().to_string();
+    assert_eq!(codex_of(&obid)["bin"], json!(configured));
+    assert_eq!(codex_of(&obid)["binSet"], false);
+
+    // Another binary, a copy of the stand-in.
+    let other = folder.0.join("bin/other-codex");
+    std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+    std::fs::write(&other, format!("#!/bin/sh\nexec {configured} \"$@\"\n")).unwrap();
+    std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let set = call(
+        &obid,
+        "PUT",
+        "/v1/settings/agents/codex",
+        Some(&json!({"bin": other})),
+    );
+    assert_eq!(set.status, 200, "{}", set.text);
+    assert_eq!(set.body["bin"], json!(other));
+    assert_eq!(set.body["binSet"], true);
+    assert_eq!(codex_of(&obid)["bin"], json!(other));
+
+    // ACCOUNTS-27: refused, nothing changed.
+    let missing = call(
+        &obid,
+        "PUT",
+        "/v1/settings/agents/codex",
+        Some(&json!({"bin": "/no/such/codex"})),
+    );
+    assert_eq!(
+        (missing.status, missing.body["reason"].clone()),
+        (422, json!("notFound")),
+        "{}",
+        missing.text
+    );
+    let bad = call(
+        &obid,
+        "PUT",
+        "/v1/settings/agents/codex",
+        Some(&json!({"bin": "bin/codex"})),
+    );
+    assert_eq!(
+        (bad.status, bad.body["reason"].clone()),
+        (422, json!("badBin")),
+        "{}",
+        bad.text
+    );
+    assert_eq!(
+        call(
+            &obid,
+            "PUT",
+            "/v1/settings/agents/gemini",
+            Some(&json!({"bin": "gemini"}))
+        )
+        .status,
+        404
+    );
+    assert_eq!(codex_of(&obid)["bin"], json!(other));
+
+    // ACCOUNTS-26: kept across a restart.
+    assert!(obid.stop().success());
+    obid = start(&folder.0, &config, None);
+    assert_eq!(codex_of(&obid)["bin"], json!(other));
+
+    // ACCOUNTS-28: null takes it back to the configuration's.
+    let back = call(
+        &obid,
+        "PUT",
+        "/v1/settings/agents/codex",
+        Some(&json!({"bin": null})),
+    );
+    assert_eq!(back.status, 200, "{}", back.text);
+    assert_eq!(back.body["binSet"], false);
+    assert_eq!(codex_of(&obid)["bin"], json!(configured));
+}

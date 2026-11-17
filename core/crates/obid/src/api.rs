@@ -150,6 +150,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
             post(crate::accounts::sign_out::sign_out),
         )
         .route(
+            "/v1/settings/agents/{agent}",
+            axum::routing::put(crate::accounts::bins::set),
+        )
+        .route(
             "/v1/accounts/{id}/background",
             post(crate::accounts::background),
         )
@@ -728,6 +732,11 @@ pub struct Status {
 #[serde(rename_all = "camelCase")]
 pub struct ToolJson {
     pub agent: &'static str,
+    /// What obid runs it as before it's found: the configuration's `bin`, or the one the owner
+    /// set (ACCOUNTS-26). Older obids don't send it.
+    pub bin: String,
+    /// Whether that's the one the owner set in Settings, not the configuration's.
+    pub bin_set: bool,
     pub path: Option<String>,
     pub version: Option<String>,
     pub version_status: &'static str,
@@ -1139,6 +1148,8 @@ async fn status(
                     crate::cli_versions::status(tool, version.as_deref());
                 ToolJson {
                     agent: tool.id(),
+                    bin: crate::accounts::bin_of(&agents, tool).to_owned(),
+                    bin_set: shared.config.agents.bin_set(tool),
                     path: read.and_then(|r| Some(r.path?.display().to_string())),
                     version,
                     version_status,
