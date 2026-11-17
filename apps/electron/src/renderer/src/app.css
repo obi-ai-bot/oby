@@ -961,6 +961,9 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 /* a tag: 30px, its icon 15px, the words 13px, room either side */
 .composer-tag { height: 30px; max-width: 260px; padding: 0 5px 0 10px; display: inline-flex; align-items: center; gap: 7px; border-radius: var(--radius-pill); background: var(--chip-hover); color: var(--item); font-size: var(--text-md); }
 .composer-tag > svg { flex: none; color: var(--muted); }
+/* a tag with nothing to remove (a project's folders, PROJECTS-22) is as roomy on its right as on its left: the
+   5px on the right is for its remove button's own room */
+.composer-tag:not(:has(> button)) { padding-right: 10px; }
 .composer-tag-text { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .composer-tag button { flex: none; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; color: var(--muted); transition: color var(--fade), background-color var(--fade); }
 .composer-tag button:hover { color: var(--ink); background: var(--hover); }
