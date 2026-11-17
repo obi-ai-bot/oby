@@ -3,7 +3,7 @@ import { BrandMark } from './brands';
 import { useScrollThumb } from './useScrollThumb';
 import { agentOf, ago } from './view';
 import { useChats } from './chats';
-import { allowWaiting, answerWaiting, approvingTools, homeAsk, itemAsk, mergeWaiting, projectOf, questionOf, reviewOf, shownId, useLive, waitingOf } from './live';
+import { allowWaiting, answerWaiting, approvingTools, homeAsk, itemAsk, mergeWaiting, prChecksOf, projectOf, questionOf, reviewOf, shownId, useLive, waitingOf } from './live';
 import { ReviewBlock } from './AskStack';
 import { QuestionBlock } from './QuestionCard';
 import { AskBlock } from './TaskCard';
@@ -79,7 +79,7 @@ export default function WaitingView({ leaving, covered = false, onClose, onGone,
 function WaitingRow({ item: i, onOpenTask, onOpenTalk }: { item: InboxItem; onOpenTask: (id: string) => void; onOpenTalk: (id: string) => void }) {
   const s = useLive();
   const j = s.jobs[i.job];
-  const ask = itemAsk(i);
+  const ask = { ...itemAsk(i, undefined, j?.permission?.question), ...prChecksOf(s, i) };
   const kind = kindOf(i);
   const project = projectOf(s, i);
   const talk = i.conversation ?? j?.conversation;

@@ -831,6 +831,21 @@ pub async fn failed_logs(gh: &Path, repo: &str, head: &str, failed: &[String]) -
 /// then any not finished (or that reads as nothing known) is `PENDING`, then `SUCCESS`; an empty
 /// list is `NONE`.
 pub(crate) fn rollup(list: &[Value]) -> &'static str {
+    if list.is_empty() {
+        return "NONE";
+    }
+    if list.iter().any(|c| check_state(c) == "FAILURE") {
+        "FAILURE"
+    } else if list.iter().all(|c| check_state(c) == "SUCCESS") {
+        "SUCCESS"
+    } else {
+        "PENDING"
+    }
+}
+
+/// One check run or status of a head, as [`rollup`] counts it: `FAILURE`, `SUCCESS` (passed,
+/// neutral or skipped) or `PENDING` (not finished, or nothing known).
+pub(crate) fn check_state(check: &Value) -> &'static str {
     const FAILED: [&str; 7] = [
         "FAILURE",
         "ERROR",
@@ -841,30 +856,17 @@ pub(crate) fn rollup(list: &[Value]) -> &'static str {
         "STALE",
     ];
     const PASSED: [&str; 3] = ["SUCCESS", "NEUTRAL", "SKIPPED"];
-    if list.is_empty() {
-        return "NONE";
-    }
     // A check run says `conclusion` once `status` is `COMPLETED`; a status says `state`.
-    fn outcome(check: &Value) -> Option<&str> {
-        let finished = check["status"].as_str().is_none_or(|s| s == "COMPLETED");
-        let said = check["conclusion"]
-            .as_str()
-            .filter(|c| !c.is_empty())
-            .or(check["state"].as_str());
-        if finished { said } else { None }
-    }
-    if list
-        .iter()
-        .any(|c| outcome(c).is_some_and(|o| FAILED.contains(&o)))
-    {
-        "FAILURE"
-    } else if list
-        .iter()
-        .all(|c| outcome(c).is_some_and(|o| PASSED.contains(&o)))
-    {
-        "SUCCESS"
-    } else {
-        "PENDING"
+    let finished = check["status"].as_str().is_none_or(|s| s == "COMPLETED");
+    let said = check["conclusion"]
+        .as_str()
+        .filter(|c| !c.is_empty())
+        .or(check["state"].as_str())
+        .filter(|_| finished);
+    match said {
+        Some(o) if FAILED.contains(&o) => "FAILURE",
+        Some(o) if PASSED.contains(&o) => "SUCCESS",
+        _ => "PENDING",
     }
 }
 

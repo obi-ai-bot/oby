@@ -2655,6 +2655,7 @@ mod tests {
             fork: Some(false),
             board: None,
             milestone: None,
+            check_runs: Vec::new(),
         };
         let offer = |author, association, trusted| {
             crate::sphere::inbox::github_item(&work(author, association, trusted), true, 0)

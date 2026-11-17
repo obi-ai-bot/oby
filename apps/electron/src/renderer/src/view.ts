@@ -1,5 +1,5 @@
 import { BRANDS, lettered, type Brand } from './brands';
-import { isAgent, type AskMark } from '../../shared/obid-wire';
+import { isAgent, type AskMark, type CheckRun } from '../../shared/obid-wire';
 
 // The app's view of Oby's work: the shapes its screens draw, their fixed words and the
 // helpers that read them. The demo data built from these is in mock.ts.
@@ -64,6 +64,11 @@ export type Ask = {
   text: string;       // what happened, or the agent's question
   options: string[];
   recommended?: number;
+  // an agent's question (#858): each option's description, in the options' order ('' for none),
+  // and whether several may be picked (answered as their labels with commas, as obid takes them)
+  about?: string[];
+  multi?: boolean;
+  checks?: CheckRun[];  // a GitHub offer's pull request's checks, each its own line (PrChecks.tsx, GITHUBWORK-9)
   detail?: string;    // the command, the diff stat, the plan
   label?: string;     // over the headline, in place of the kind's (a merge card's own: Ready to merge)
   always?: string;    // what Always allow saves, in obid's words: on its button's hover (proposed, Sangam's to change)
@@ -155,6 +160,7 @@ export type GitHubItem = {
   url?: string;        // its page on GitHub
   board?: { project: string; column: string };
   updated: number;     // minutes ago
+  checks?: CheckRun[]; // a pull request's checks, each its own line (PrChecks.tsx, GITHUBWORK-9)
 };
 
 // Done and out of Home: the archive (Home's Archived), most recent first.

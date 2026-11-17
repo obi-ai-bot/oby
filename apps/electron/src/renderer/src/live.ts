@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { knownUpTo, withEntries, withLine } from './liveTask';
 import { LIMIT_REACHED, LIMIT_WORDS, MANAGE_USAGE, manageUsage } from './chatgpt';
-import { ApiError, api, isInboxKind, isJobStatus, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type TranscriptEntry, type Turn, type AskMark } from './obid';
+import { ApiError, api, isInboxKind, isJobStatus, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type AgentQuestion, type CheckRun, type Repo, type Status, type TranscriptEntry, type Turn, type AskMark } from './obid';
 import { carriedOn, detailOf, pageOf, publishOf, stagesOf } from './jobPage';
 import { STEER, TELL, agentOf, type Ask, type AskKind, type Job as JobView, type Attachments, type Message, type Offer } from './view';
 import { replaceChats, type Chat } from './chats';
@@ -274,7 +274,7 @@ export function askOf(s: Live, j: Job): Ask | undefined {
   // The grouped limit appears once, but unrelated permissions or questions still need attention.
   if (limitHolds(s, j) && (!item || item.kind === 'limit')) return undefined;
   if (item) {
-    const ask = itemAsk(item, item.kind === 'permission' ? j.permission?.detail : undefined);
+    const ask = itemAsk(item, item.kind === 'permission' ? j.permission?.detail : undefined, j.permission?.question);
     if (item.kind === 'permission' && j.permission?.always) ask.always = j.permission.always;
     // Oby's own question about a task that stopped: its own Done, and his question card's Tell it
     // something (#1795); a stalled task's takes no answer, so Tell it something alone. Try again and
@@ -298,7 +298,7 @@ export function askOf(s: Live, j: Job): Ask | undefined {
 // for the owner's own words (obid takes any words as the answer), so one with no options is
 // answered too.
 const LABELLED: Record<string, AskKind> = { github: 'start', failure: 'failed', agentQuestion: 'question' };
-export const itemAsk = (item: InboxItem, detail?: string): Ask => {
+export const itemAsk = (item: InboxItem, detail?: string, question?: AgentQuestion | null): Ask => {
   // a kind this build doesn't know: obid's words, its kind as its label, and nothing to answer (WIRE-2)
   if (!isInboxKind(item.kind)) return { kind: item.kind as AskKind, headline: item.headline ?? item.title, text: item.text, options: [], unknown: true };
   // Oby's ask for a repository's check (set_check): the command under the question, and the
@@ -309,7 +309,7 @@ export const itemAsk = (item: InboxItem, detail?: string): Ask => {
     const options = ['Use it', 'Edit', item.confirm!.payload?.was ? 'Keep it' : 'No check'];
     return { kind: 'check', headline: `Use this as ${item.confirm!.target}’s check before publishing?`, text: item.text, options, detail: check };
   }
-  if (item.kind === 'agentQuestion') return { kind: 'question', headline: item.text, text: '', options: [...item.options, TELL] };
+  if (item.kind === 'agentQuestion') return questionAsk(item, question);
   // A merge card's title is its task's, which the card shows already, after what it is (Not
   // merged, Ready to merge, Needs a teammate): that is its label. With no headline of the model's,
   // obid's reason leads, its first sentence (without the label's words again) over the rest (what to
@@ -336,6 +336,24 @@ export const itemAsk = (item: InboxItem, detail?: string): Ask => {
     repos: repoTicks(item),
   };
 };
+// The agent's question (#858, BYPASS-10 and 11), as T3 Code shows one: each option with its
+// description under it, the one the agent recommends marked (Claude Code's AskUserQuestion, and
+// Codex's, mark it by its label's "(Recommended)", which stays in the label: what's answered),
+// and a multiple choice ticked, then sent as one answer. The descriptions are the item's details;
+// whether several may be picked is the job's question (permission.question), when it's this one.
+const RECOMMENDED = /\(recommended\)\s*$/i;
+export const recommendedIn = (label: string) => RECOMMENDED.test(label);
+function questionAsk(item: InboxItem, question?: AgentQuestion | null): Ask {
+  const asked = question && question.question === item.text ? question : undefined;
+  const about = item.options.map((o, i) => item.details?.[i] || asked?.options.find((c) => c.label === o)?.description || '');
+  const recommended = item.options.findIndex(recommendedIn);
+  return {
+    kind: 'question', headline: item.text, text: '', options: [...item.options, TELL],
+    ...(about.some(Boolean) ? { about } : {}),
+    ...(recommended >= 0 ? { recommended } : {}),
+    ...(asked?.multiSelect && item.options.length ? { multi: true } : {}),
+  };
+}
 // A card as obid just answered it (PEER-38: its title after a tick)
 export const seeItem = (item: InboxItem) => take({ kind: 'inbox', item });
 // a check to keep: one taking a check out shows as any confirm item, its Confirm as such
@@ -379,6 +397,13 @@ export const reviewOf = (i: InboxItem): PersonReview | undefined => {
     goal: word(q?.goal), summary: word(q?.summary), conditions, options: texts(i.options),
   };
 };
+// A GitHub offer's pull request's checks, each on its own line (GITHUBWORK-9): from the feed's item
+// for the same repository and number (GET /v1/github/work), none when the feed hasn't it
+export const prChecksOf = (s: Pick<Live, 'github'>, i: InboxItem): { checks?: CheckRun[] } => {
+  const g = i.github, w = s.github;
+  const runs = g && w && [...w.mine, ...w.reviews].find((x) => x.repo === g.repo && x.number === g.number)?.checkRuns;
+  return runs?.length ? { checks: runs } : {};
+};
 // An escalation with no job still reaches the stack (TASKS-17): Done and Later, whole text
 const onHome = (i: InboxItem) => ON_HOME.has(i.kind) || !!questionOf(i) || !!reviewOf(i) || (isEscalation(i) && i.kind === 'question' && !i.job);
 function asksOf(s: Live): Asking[] {
@@ -395,7 +420,7 @@ function asksOf(s: Live): Asking[] {
       // the title till one comes (clamped: they can be long; an escalation's is whole, TASKS-17)
       const g = i.github;
       return {
-        id: i.id, ask: homeAsk(i), title: g?.quoted?.title ? `#${g.number} ${g.quoted.title}` : i.title, talk: i.conversation ? shownId(i.conversation) : undefined,
+        id: i.id, ask: { ...homeAsk(i), ...prChecksOf(s, i) }, title: g?.quoted?.title ? `#${g.number} ${g.quoted.title}` : i.title, talk: i.conversation ? shownId(i.conversation) : undefined,
         ...(g ? { who: g.list === 'reviews' ? g.author ?? undefined : undefined, brand: BRANDS.github, url: g.url } : {}),
       };
     }),
@@ -509,6 +534,7 @@ function workOf(w: GitHubWork | null): GitHubItem[] {
     return {
       id: g.id, type: g.list === 'assigned' ? 'issues' : 'review', who: g.list === 'reviews' ? g.author ?? undefined : undefined,
       title: `#${g.number} ${g.title}`, repo: name, url: g.url, board: g.board ?? undefined, updated: minutesAgo(g.updated), action,
+      ...(g.checkRuns?.length ? { checks: g.checkRuns } : {}),
       request: g.list === 'reviews' ? `${g.author ?? 'Someone'} asked you to review ${at}.` : g.list === 'assigned' ? `Assigned to you in ${at}.`
         : stands ? `${stands[0].toUpperCase()}${stands.slice(1)}.` : `Open in ${at}.`,
       label: action ? undefined : g.list === 'mine' ? 'Your pull request' : 'On GitHub',

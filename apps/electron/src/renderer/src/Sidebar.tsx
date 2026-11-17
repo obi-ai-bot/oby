@@ -21,7 +21,9 @@ import StatusDot, { TaskMark } from './StatusDot';
 import { askCardLine, memberOpens, mockConvosWith, plainId, useConvos } from './peers';
 import { roomOpens, useRoom } from './room';
 import { chatOfTask, lastAgo, latestChat, renameChat, useChats, type Chat } from './chats';
-import { chatFirst, everything } from './lean';
+import { chatFirst, everything, onObid } from './lean';
+import { tasksMatching, useObidSearch } from './search';
+import { ariaKeys, shortcutLabel, withShortcut } from './shortcuts';
 import { useWaitingCount } from './live';
 import { loadProfiles, openProfile, profileChats, useProfiles } from './profiles';
 import ProfileMenu, { NewProfileModal } from './ProfileMenu';
@@ -337,10 +339,27 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   };
   // the search field takes focus as it opens
   useEffect(() => { if (searching) searchInput.current?.focus(); }, [searching]);
+  // ⌘K (SHORTCUTS-2): the chats' search, from anywhere, its field taking the keys (what was typed
+  // in it stays, selected)
+  useEffect(() => {
+    const open = () => {
+      setSection(chatFirst ? 'oby' : 'conversations');
+      if (chatFirst && side === 'agents') setSide('projects');
+      setSearching(true);
+      requestAnimationFrame(() => searchInput.current?.select());
+    };
+    addEventListener('oby:search', open);
+    return () => removeEventListener('oby:search', open);
+  }, [side]);
 
   // your conversations with Oby (matching the search): pinned ones first, under
   // Pinned, the rest under Recent (no headings while nothing's pinned)
-  const talks = chats.filter((c) => matches(c.title, ...c.said.flatMap((m) => (m.askCard ? [m.askCard.question, m.askCard.said ?? '', askCardLine(m.askCard, Date.now()) ?? ''] : [m.text]))));
+  // (SEARCH-1 to 3) what's on the page as it's typed, then, under those so nothing jumps, those
+  // obid's own search found the words in and those holding a task they're in
+  const found = useObidSearch(searching ? query : '', onObid);
+  const local = chats.filter((c) => matches(c.title, ...c.said.flatMap((m) => (m.askCard ? [m.askCard.question, m.askCard.said ?? '', askCardLine(m.askCard, Date.now()) ?? ''] : [m.text]))));
+  const byTask = tasksMatching(tasks, q);
+  const talks = !q ? local : [...local, ...chats.filter((c) => !local.includes(c) && (found.has(c.id) || byTask.has(c.id)))];
   const pinned = talks.filter((c) => c.pinned);
   // chat first, under your Oby: all of them, in one list
   const latest = latestChat(chats);
@@ -389,7 +408,8 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
             aria-label="Conversation name"
           />
         ) : <span className="connector-name">{c.title}</span>}
-        <span className="connector-about">{kidsLine(kids) ?? convoAbout(c)}</span>
+        {/* searching: the words obid found it by, in its latest turn holding them */}
+        <span className="connector-about">{(q && found.get(c.id)) || (kidsLine(kids) ?? convoAbout(c))}</span>
       </span>
       {/* when it last moved; on hover, its ⋮ in the same spot */}
       <span className="sidebar-item-ago">{c.typing ? 'now' : ago(lastAgo(c))}</span>
@@ -494,7 +514,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
               Settings itself, the gear filled while it's open; the design's account picture and its
               menu (name, email, Log out) with ?everything */}
           {!everything ? (
-            <button className={`rail-button rail-settings${inSettings ? ' is-on' : ''}`} data-tip="Settings" aria-label="Settings" aria-pressed={inSettings}
+            <button className={`rail-button rail-settings${inSettings ? ' is-on' : ''}`} data-tip={withShortcut('Settings', 'settings.open')} aria-label="Settings" aria-keyshortcuts={ariaKeys('settings.open')} aria-pressed={inSettings}
               // a Settings page open: the gear again closes the panel (as a tab's icon does); else it opens
               // Settings (General), staying on the Settings list if that's showing
               onClick={() => { if (inSettings && activeSetting) return pick('settings'); if (!inSettings) pick('settings'); if (!activeSetting) onOpenSetting('general'); }}>
@@ -576,7 +596,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
         {/* on the panel icon's row */}
         <div className="sidebar-top">
           {searchable && (
-            <button className={`icon-button${searching ? ' is-on' : ''}`} aria-label="Search" aria-expanded={searching} onClick={openSearch}>
+            <button className={`icon-button${searching ? ' is-on' : ''}`} aria-label="Search" title={withShortcut('Search', 'search.open')} aria-keyshortcuts={ariaKeys('search.open')} aria-expanded={searching} onClick={openSearch}>
               <Search size={17} strokeWidth={1.6} />
             </button>
           )}
@@ -641,7 +661,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
               </span>
               {noRow && <span className="status-dot is-needs" role="img" aria-label="Needs you" />}
             </button>
-            <button className={`sidebar-new chat-new${atHome ? ' is-active' : ''}`} aria-current={atHome || undefined} onClick={onNewChat}>
+            <button className={`sidebar-new chat-new has-kbd${atHome ? ' is-active' : ''}`} aria-current={atHome || undefined} aria-keyshortcuts={ariaKeys('chat.new')} data-kbd={shortcutLabel('chat.new')} onClick={onNewChat}>
               <Plus size={16} strokeWidth={1.6} />
               <span className="sidebar-new-label">New conversation</span>
             </button>
@@ -911,7 +931,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
           </div>
           <hr />
           {/* Settings opens on General, unless one of its pages is open already */}
-          <button role="menuitem" onClick={() => { setAccountMenu(null); pick('settings'); if (!activeSetting) onOpenSetting('general'); }}>Settings</button>
+          <button role="menuitem" className="has-kbd" aria-keyshortcuts={ariaKeys('settings.open')} data-kbd={shortcutLabel('settings.open')} onClick={() => { setAccountMenu(null); pick('settings'); if (!activeSetting) onOpenSetting('general'); }}>Settings</button>
           <hr />
           <button role="menuitem" onClick={() => setAccountMenu(null)}>Log out</button>
         </Menu>

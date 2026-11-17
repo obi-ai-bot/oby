@@ -4,6 +4,7 @@ import TaskCard from './TaskCard';
 import { CommandWindow } from './Connectors';
 import { BrandMark, BRANDS } from './brands';
 import { ago, ASK_LABEL, type GitHubItem } from './view';
+import PrChecks from './PrChecks';
 import { columnsOf, gitHubError, hasToDo, openOnGitHub, putOff, startGitHub, tasksIn, toDoOf, useTasks, type Tab, type TaskType } from './tasks';
 
 // how long the way out takes (the sink animation in app.css)
@@ -190,6 +191,7 @@ function GitHubCard({ item, style }: { item: GitHubItem; style?: React.CSSProper
         <span className="tc-ask-kind">{item.label ?? ASK_LABEL.start}</span>
         <p className="tc-ask-head">{item.request}</p>
         {item.note && <p className="tc-ask-text">{item.note}</p>}
+        {item.checks && <PrChecks runs={item.checks} />}
         <div className="tc-options">
           {item.action && <button className="tc-option is-primary" onClick={() => startGitHub(item.id)}>{item.action}</button>}
           <button className={`tc-option${item.action ? '' : ' is-primary'}`} onClick={() => openOnGitHub(item.url)}>Open on GitHub</button>
