@@ -23,10 +23,14 @@ describe('the name', () => {
     const pkg = JSON.parse(file('package.json'));
     expect(pkg.name).toBe('oby-app');
     expect(pkg.productName).toBeUndefined();
-    // the two other ways to change it: electron-builder writing into the bundle's package.json, or main
+    // the two other ways to change it: electron-builder writing into the bundle's package.json, or main.
+    // Only a scratch install's build renames itself (scripts/run-dev.sh, shared/build.ts), so it never
+    // reads the installed Oby's item: that one block is taken out before looking
     expect(builder).not.toMatch(/^extraMetadata:/m);
+    const scratchOnly = /\nif \(SCRATCH\) \{\n  app\.setName\('oby-app-scratch'\);\n  app\.setPath\('userData', [^\n]+\);\n\}\n/;
+    expect(file('src/main/index.ts')).toMatch(scratchOnly);
     for (const f of readdirSync(new URL('../../../main/', import.meta.url)))
-      expect(file(`src/main/${f}`), f).not.toMatch(/app\.(name\s*=[^=]|setName\()/);
+      expect(file(`src/main/${f}`).replace(scratchOnly, ''), f).not.toMatch(/app\.(name\s*=[^=]|setName\()/);
   });
 
   it('the_bundle_id_and_the_engines_label_stay', () => {
