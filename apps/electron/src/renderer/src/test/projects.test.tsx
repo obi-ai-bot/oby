@@ -5,8 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { liveBridge } from './liveBridge';
 import { AGENTS_SHOWN } from '../panelFlags';
 
-// Conversations under their project, and a project to pick or make (docs/contracts/projects.md,
-// PROJECTS-16 to 24): the real Home, with its Sidebar and Composer, on what obid lists through
+// Conversations under their project, and a project to pick, make or change (docs/contracts/projects.md,
+// PROJECTS-16 to 31): the real Home, with its Sidebar and Composer, on what obid lists through
 // live.ts, main's bridge (window.app.obid.call) stood in for as obid.
 
 vi.mock('react-dom', async (original) => ({ ...await original<typeof import('react-dom')>(), createPortal: (node: unknown) => node }));
@@ -39,8 +39,9 @@ afterEach(async () => {
   localStorage.clear();
 });
 
-const OBY = { id: '6f1c2b9e-0000-4000-8000-000000000001', name: 'Oby app', folders: ['/Users/me/oby'], repos: ['obi-ai-bot/oby', 'obi-ai-bot/oby-plan'] };
-const TETRIX = { id: '6f1c2b9e-0000-4000-8000-000000000002', name: 'Tetrix', folders: ['/Users/me/tetrix'], repos: ['deskree-inc/tetrix-ee', 'deskree-inc/tetrix-front-end', 'deskree-inc/tetrix-collectors'] };
+type Project = { id: string; name: string; folders: string[]; repos: string[] };
+const OBY: Project = { id: '6f1c2b9e-0000-4000-8000-000000000001', name: 'Oby app', folders: ['/Users/me/oby'], repos: ['obi-ai-bot/oby', 'obi-ai-bot/oby-plan'] };
+const TETRIX: Project = { id: '6f1c2b9e-0000-4000-8000-000000000002', name: 'Tetrix', folders: ['/Users/me/tetrix'], repos: ['deskree-inc/tetrix-ee', 'deskree-inc/tetrix-front-end', 'deskree-inc/tetrix-collectors'] };
 const UNLISTED = '6f1c2b9e-0000-4000-8000-0000000000aa';
 type Answer = { status: number; text: string };
 type Call = { method: string; path: string; body?: unknown };
@@ -48,10 +49,10 @@ const STATUS = (capabilities: string[]) => ({ runner: { version: '0.2.4', host: 
 const at = '2026-11-16T10:00:00Z';
 const convo = (id: string, title: string, more: object = {}) => ({ id, title, pinned: false, created: at, lastActivity: at, cursor: '', project: null, ...more });
 
-// main's bridge, as obid answers: its projects (a create is listed), a conversation's move (its answer,
-// or a refusal), words (taken), its repositories and one helper; the rest 404
-function obid(projects: unknown[], conversations: ReturnType<typeof convo>[] = []) {
-  const said = { projects, create: undefined as Answer | undefined, patch: undefined as Answer | undefined,
+// main's bridge, as obid answers: its projects (a create is listed, a change kept, a delete gone), a
+// conversation's move (its answer, or a refusal), words (taken), its repositories and one helper; the rest 404
+function obid(projects: Project[], conversations: ReturnType<typeof convo>[] = []) {
+  const said = { projects, create: undefined as Answer | undefined, patch: undefined as Answer | undefined, edit: undefined as Answer | undefined, del: undefined as Answer | undefined,
     repos: [{ repo: 'o/website-cms', defaultBranch: 'main', listed: true }, { repo: 'o/docs', defaultBranch: 'main', listed: true }] };
   const calls: Call[] = [];
   const call = vi.fn(async (method: string, path: string, body?: unknown) => {
@@ -59,9 +60,21 @@ function obid(projects: unknown[], conversations: ReturnType<typeof convo>[] = [
     if (method === 'GET' && path === '/v1/projects') return { status: 200, text: JSON.stringify(said.projects) };
     if (method === 'POST' && path === '/v1/projects') {
       if (said.create) return said.create;
-      const made = { id: `6f1c2b9e-0000-4000-8000-0000000000f${said.projects.length}`, ...(body as object) };
+      const made = { id: `6f1c2b9e-0000-4000-8000-0000000000f${said.projects.length}`, ...(body as object) } as Project;
       said.projects = [...said.projects, made];
       return { status: 201, text: JSON.stringify(made) };
+    }
+    const project = path.match(/^\/v1\/projects\/([^/]+)$/);
+    if (method === 'PATCH' && project) {
+      if (said.edit) return said.edit;
+      const kept = { ...said.projects.find((p) => p.id === project[1])!, ...(body as object) };
+      said.projects = said.projects.map((p) => (p.id === kept.id ? kept : p));
+      return { status: 200, text: JSON.stringify(kept) };
+    }
+    if (method === 'DELETE' && project) {
+      if (said.del) return said.del;
+      said.projects = said.projects.filter((p) => p.id !== project[1]);
+      return { status: 204, text: '' };
     }
     const moved = path.match(/^\/v1\/conversations\/([^/]+)$/);
     if (method === 'PATCH' && moved) {
@@ -134,7 +147,7 @@ const choices = () => [...menu()!.querySelectorAll('.project-choice[role="menuit
 const choice = (name: string) => choices().find((c) => c.querySelector('.project-choice-name')!.textContent === name)!;
 const shownChoices = () => choices().map((c) => [c.querySelector('.project-choice-name')!.textContent, c.querySelector('.project-choice-repos')?.textContent ?? '']);
 const checked = () => choices().filter((c) => c.getAttribute('aria-checked') === 'true').map((c) => c.querySelector('.project-choice-name')!.textContent);
-const dialog = () => host.querySelector('[role="dialog"]');
+const dialog = () => host.querySelector('[role="dialog"], [role="alertdialog"]');
 const sheetRows = () => [...host.querySelectorAll('.project-row')].map((r) => [r.querySelector('.project-row-name')!.textContent, r.querySelector('.project-row-where')!.textContent, r.getAttribute('title')]);
 const addPanel = (form: Element) => form.querySelector('.add-panel');
 const posted = (calls: Call[], path: string) => calls.filter((c) => c.method === 'POST' && c.path === path);
@@ -394,10 +407,8 @@ describe('PROJECTS-22', () => {
     await click(choice('Oby app'));
     await until(() => expect(chipName(barChip())).toBe('Oby app'));
 
-    // in its project: its folders as obid answers them, no × and no Select working folder…
+    // in its project: no Select working folder… (its folders: PROJECTS-25)
     const box = () => layer()!.querySelector('form.chat-composer')!;
-    expect([...box().querySelectorAll('.composer-tag')].map((t) => t.textContent)).toEqual(['oby']);
-    expect(box().querySelector('.composer-tag button')).toBeNull();
     await click(button('Add to the message', box())!);
     expect(addPanel(box())).not.toBeNull();
     expect(button('Select working folder…', box())).toBeUndefined();
@@ -414,6 +425,215 @@ describe('PROJECTS-22', () => {
     await click(host.querySelector('.agent-row')!);
     await until(() => expect(host.querySelector('.crumbs')?.textContent).toContain('Researcher'));
     expect(barChip()).toBeNull();
+  });
+});
+
+describe('PROJECTS-25', () => {
+  it('PROJECTS-25: projects_25_no_folder_chip_in_a_projects_box', async () => {
+    const talks = [convo('c1', 'Two fixes for today', { project: OBY.id, folders: OBY.folders }), convo('c2', 'Loose talk', { folders: ['/Users/me/scratch'] })];
+    const o = obid([OBY, TETRIX], talks);
+    await showHome(o);
+    await until(() => expect(listed()).toContain('# Tetrix'));
+    const box = () => layer()!.querySelector('form.chat-composer')!;
+    // in a project: its title bar's chip, and no folder tag (nor any tag row) in its box
+    await openRow('Two fixes for today');
+    await until(() => expect(chipName(barChip())).toBe('Oby app'));
+    expect(box().querySelector('.composer-tag')).toBeNull();
+    expect(box().querySelector('.composer-tags')).toBeNull();
+    expect(box().querySelector('.project-chip')).toBeNull();
+    // words to it go with no folders
+    await send(box(), 'Next step');
+    await until(() => expect(posted(o.calls, '/v1/plans')).toHaveLength(1));
+    expect(posted(o.calls, '/v1/plans')[0].body).not.toHaveProperty('folders');
+    // in no project: its own folders, each with its ×, and Select working folder… to pick more
+    await openRow('Loose talk');
+    await until(() => expect([...box().querySelectorAll('.composer-tag')].map((t) => t.textContent)).toEqual(['scratch']));
+    expect(button('Remove scratch', box())).toBeDefined();
+    await click(button('Add to the message', box())!);
+    expect(button('Select working folder…', box())).toBeDefined();
+    // Home's box keeps its project chip (Home has no title bar to show it)
+    expect(homeChip()).not.toBeNull();
+  });
+});
+
+// a project's heading in the side panel, its ⋮, and the menu it opens
+const headMore = (name: string) => button(`More for ${name}`, group(name))!;
+async function editFromPanel(name: string) {
+  await click(headMore(name));
+  await click(button('Edit project…')!);
+  await until(() => expect(dialog()!.querySelector('h2')!.textContent).toBe('Edit project'));
+}
+const patched = (calls: Call[]) => calls.filter((c) => c.method === 'PATCH' && c.path.startsWith('/v1/projects/'));
+
+describe('PROJECTS-26', () => {
+  it('PROJECTS-26: projects_26_edit_opens_filled_in', async () => {
+    const talks = [convo('c1', 'Two fixes for today', { project: OBY.id, folders: OBY.folders }), convo('c2', 'Loose talk')];
+    const o = obid([OBY, TETRIX], talks);
+    await showHome(o);
+    await until(() => expect(listed()).toContain('# Tetrix'));
+    // the ⋮ of a project's heading (none on No project), and its menu
+    expect(headMore('Oby app').getAttribute('aria-haspopup')).toBe('menu');
+    expect(button('More for No project', group('No project'))).toBeUndefined();
+    await click(headMore('Oby app'));
+    expect([...menu()!.children].map((e) => e.textContent || e.tagName)).toEqual(['Edit project…', 'HR', 'Delete project…']);
+    await click(button('Edit project…')!);
+    expect(menu()).toBeNull();
+    // filled in: its name, its folders and its repositories
+    expect(dialog()!.querySelector('h2')!.textContent).toBe('Edit project');
+    expect(host.querySelector<HTMLInputElement>('#project-name')!.value).toBe('Oby app');
+    expect(sheetRows()).toEqual([
+      ['oby', 'On this Mac', '/Users/me/oby'], ['oby', 'GitHub', 'obi-ai-bot/oby'], ['oby-plan', 'GitHub', 'obi-ai-bot/oby-plan'],
+    ]);
+    expect(buttons(dialog()!).filter((b) => !b.classList.contains('project-row-remove')).map((b) => b.textContent))
+      .toEqual(['Add a folder…', 'Add from GitHub…', 'Delete project…', 'Cancel', 'Save']);
+    // Save with nothing changed, and Cancel, send nothing
+    await click(button('Save', dialog()!)!);
+    await until(() => expect(dialog()).toBeNull());
+    await editFromPanel('Oby app');
+    await fill('#project-name', 'Oby');
+    await click(button('Cancel', dialog()!)!);
+    expect(dialog()).toBeNull();
+    expect(patched(o.calls)).toHaveLength(0);
+
+    // the title bar's menu: Edit project… for the conversation's project, before New project…
+    await openRow('Two fixes for today');
+    await until(() => expect(chipName(barChip())).toBe('Oby app'));
+    await click(barChip()!);
+    expect([...menu()!.children].map((e) => e.textContent || e.tagName).slice(-3)).toEqual(['HR', 'Edit project…', 'New project…']);
+    await click(button('Edit project…')!);
+    expect(dialog()!.querySelector('h2')!.textContent).toBe('Edit project');
+    expect(host.querySelector<HTMLInputElement>('#project-name')!.value).toBe('Oby app');
+    await click(button('Cancel', dialog()!)!);
+    // one in no project: no Edit project…
+    await openRow('Loose talk');
+    await until(() => expect(chipName(barChip())).toBe('No project'));
+    await click(barChip()!);
+    expect(button('Edit project…')).toBeUndefined();
+  });
+});
+
+describe('PROJECTS-27', () => {
+  it('PROJECTS-27: projects_27_add_a_repo', async () => {
+    const o = obid([OBY, TETRIX], [convo('c1', 'Two fixes for today', { project: OBY.id, folders: OBY.folders })]);
+    await showHome(o);
+    await until(() => expect(listed()).toContain('# Tetrix'));
+    // from the title bar's chip
+    await openRow('Two fixes for today');
+    await until(() => expect(chipName(barChip())).toBe('Oby app'));
+    await click(barChip()!);
+    await click(button('Edit project…')!);
+    await click(button('Add from GitHub…', dialog()!)!);
+    await until(() => expect(dialog()!.querySelectorAll('[role="menuitemcheckbox"]')).toHaveLength(2));
+    await click(dialog()!.querySelector('[role="menuitemcheckbox"]')!);
+    expect(sheetRows().map((r) => r[2])).toEqual(['/Users/me/oby', 'obi-ai-bot/oby', 'obi-ai-bot/oby-plan', 'o/website-cms']);
+    await click(button('Save', dialog()!)!);
+    await until(() => expect(dialog()).toBeNull());
+    // only the key that changed
+    expect(patched(o.calls)).toEqual([{ method: 'PATCH', path: `/v1/projects/${OBY.id}`, body: { repos: ['obi-ai-bot/oby', 'obi-ai-bot/oby-plan', 'o/website-cms'] } }]);
+    await click(barChip()!);
+    await until(() => expect(shownChoices()[0]).toEqual(['Oby app', '3 repos']));
+  });
+});
+
+describe('PROJECTS-28', () => {
+  it('PROJECTS-28: projects_28_remove_a_repo', async () => {
+    const o = obid([OBY, TETRIX]);
+    await showHome(o);
+    await until(() => expect(listed()).toContain('# Tetrix'));
+    await editFromPanel('Tetrix');
+    await click(button('Remove tetrix-front-end', dialog()!)!);
+    expect(sheetRows().map((r) => r[2])).toEqual(['/Users/me/tetrix', 'deskree-inc/tetrix-ee', 'deskree-inc/tetrix-collectors']);
+    await click(button('Save', dialog()!)!);
+    await until(() => expect(dialog()).toBeNull());
+    expect(patched(o.calls)).toEqual([{ method: 'PATCH', path: `/v1/projects/${TETRIX.id}`, body: { repos: ['deskree-inc/tetrix-ee', 'deskree-inc/tetrix-collectors'] } }]);
+    await click(homeChip()!);
+    await until(() => expect(shownChoices()[1]).toEqual(['Tetrix', '2 repos']));
+  });
+});
+
+describe('PROJECTS-29', () => {
+  it('PROJECTS-29: projects_29_add_and_remove_a_folder', async () => {
+    const talks = [convo('c1', 'Two fixes for today', { project: OBY.id, folders: OBY.folders })];
+    const o = obid([OBY, TETRIX], talks);
+    await showHome(o);
+    await until(() => expect(listed()).toContain('# Tetrix'));
+    await editFromPanel('Oby app');
+    // a folder from main's own dialog, the old one out, and a new name: each key that changed
+    await click(button('Add a folder…', dialog()!)!);
+    await until(() => expect(sheetRows()).toHaveLength(4));
+    await click(button('Remove oby', dialog()!)!);
+    expect(sheetRows().map((r) => r[2])).toEqual(['/Users/me/website', 'obi-ai-bot/oby', 'obi-ai-bot/oby-plan']);
+    await fill('#project-name', ' Oby site ');
+    await click(button('Save', dialog()!)!);
+    await until(() => expect(dialog()).toBeNull());
+    expect(patched(o.calls)).toEqual([{ method: 'PATCH', path: `/v1/projects/${OBY.id}`, body: { name: 'Oby site', folders: ['/Users/me/website'] } }]);
+    // the heading and the title bar's chip take the new name
+    await until(() => expect(listed()[0]).toBe('# Oby site'));
+    await openRow('Two fixes for today');
+    await until(() => expect(chipName(barChip())).toBe('Oby site'));
+    // its conversation takes the new folders as obid's event says, and its box still shows none
+    await act(async () => o.bridge.event('conversation', { ...talks[0], folders: ['/Users/me/website'], revision: 3 }));
+    expect(layer()!.querySelector('form.chat-composer .composer-tag')).toBeNull();
+  });
+});
+
+describe('PROJECTS-30', () => {
+  it('PROJECTS-30: projects_30_a_refused_save', async () => {
+    const o = obid([OBY, TETRIX]);
+    o.said.edit = { status: 422, text: '{"error":"/Users/me/website is one of the places Oby never works in."}' };
+    await showHome(o);
+    await until(() => expect(listed()).toContain('# Tetrix'));
+    await editFromPanel('Oby app');
+    await click(button('Add a folder…', dialog()!)!);
+    await until(() => expect(sheetRows()).toHaveLength(4));
+    await click(button('Save', dialog()!)!);
+    await until(() => expect(dialog()!.querySelector('[role="alert"]')?.textContent).toBe('/Users/me/website is one of the places Oby never works in.'));
+    // the sheet stays, as it was; obid's list unchanged
+    expect(dialog()!.querySelector('h2')!.textContent).toBe('Edit project');
+    expect(host.querySelector<HTMLInputElement>('#project-name')!.value).toBe('Oby app');
+    expect(sheetRows().map((r) => r[2])).toEqual(['/Users/me/oby', '/Users/me/website', 'obi-ai-bot/oby', 'obi-ai-bot/oby-plan']);
+    expect(button('Save', dialog()!)!.disabled).toBe(false);
+    await click(button('Cancel', dialog()!)!);
+    await click(homeChip()!);
+    await until(() => expect(shownChoices()[0]).toEqual(['Oby app', '2 repos']));
+    expect(o.said.projects).toEqual([OBY, TETRIX]);
+  });
+});
+
+describe('PROJECTS-31', () => {
+  it('PROJECTS-31: projects_31_delete_asks_first', async () => {
+    const talks = [convo('c1', 'Two fixes for today', { project: OBY.id, folders: OBY.folders }), convo('c2', 'Loose talk')];
+    const o = obid([OBY, TETRIX], talks);
+    await showHome(o);
+    await until(() => expect(listed()).toContain('# Tetrix'));
+    const deletes = () => o.calls.filter((c) => c.method === 'DELETE');
+    // from the sheet: it asks; Cancel goes back to the sheet
+    await editFromPanel('Oby app');
+    await click(button('Delete project…', dialog()!)!);
+    expect(dialog()!.getAttribute('role')).toBe('alertdialog');
+    expect(dialog()!.querySelector('h2')!.textContent).toBe('Delete Oby app?');
+    expect(dialog()!.querySelector('.modal-lede')!.textContent).toBe('Its conversations stay, working in its folders as their own.');
+    await click(button('Cancel', dialog()!)!);
+    expect(dialog()!.querySelector('h2')!.textContent).toBe('Edit project');
+    await click(button('Cancel', dialog()!)!);
+    expect(deletes()).toHaveLength(0);
+    // from the heading's menu: straight to the ask, and Delete project sends DELETE
+    await click(headMore('Oby app'));
+    await click(button('Delete project…')!);
+    expect(dialog()!.querySelector('h2')!.textContent).toBe('Delete Oby app?');
+    // refused: obid's words in the ask, which stays
+    o.said.del = { status: 500, text: '{"error":"A conversation could not be written."}' };
+    await click(button('Delete project', dialog()!)!);
+    await until(() => expect(dialog()!.querySelector('[role="alert"]')?.textContent).toBe('A conversation could not be written.'));
+    expect(listed()[0]).toBe('# Oby app');
+    o.said.del = undefined;
+    await click(button('Delete project', dialog()!)!);
+    await until(() => expect(dialog()).toBeNull());
+    expect(deletes()).toHaveLength(2);
+    expect(deletes()[1]).toEqual({ method: 'DELETE', path: `/v1/projects/${OBY.id}`, body: undefined });
+    // its conversation goes under No project as obid's event says, with the folders it had
+    await act(async () => o.bridge.event('conversation', { ...talks[0], project: null, revision: 3 }));
+    await until(() => expect(listed()).toEqual(['# Tetrix', '# No project', 'Loose talk', 'Two fixes for today', '+ New project']));
   });
 });
 

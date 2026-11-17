@@ -165,9 +165,12 @@ export const api = {
   // obid only: the profiles on this Mac (docs/api/profiles.md), and a new one; older runners answer 404
   profiles: () => call<Profile[]>('GET', '/v1/profiles'),
   createProfile: (name: string, color: string) => call<Profile>('POST', '/v1/profiles', { name, color }),
-  // obid only: the projects (docs/api/projects.md), and a new one
+  // obid only: the projects (docs/api/projects.md), a new one, a change and a delete
   projects: () => call<Project[]>('GET', '/v1/projects'),
   createProject: ({ name, folders, repos }: { name: string; folders: string[]; repos: string[] }) => call<Project>('POST', '/v1/projects', { name, folders, repos }),
+  // a change to one (only the keys that changed), and its delete (PROJECTS-3, PROJECTS-8)
+  editProject: (p: string, change: { name?: string; folders?: string[]; repos?: string[] }) => call<Project>('PATCH', `/v1/projects/${id(p)}`, change),
+  deleteProject: (p: string) => call<null>('DELETE', `/v1/projects/${id(p)}`),
   // obid only: the helpers (docs/api/helpers.md), and a new one; older runners answer 404
   helpers: () => call<Helper[]>('GET', '/v1/helpers'),
   createHelper: (body: { name: string; color: string; instructions: string; tool: string; connectors: string[]; profile?: string }) => call<Helper>('POST', '/v1/helpers', body),
