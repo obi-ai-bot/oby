@@ -67,6 +67,10 @@ async function openApp() {
   // set up already: Home, not the first run's screens (the owner went through those)
   await skipFirstRun(page);
   await page.waitForLoadState('domcontentloaded');
+  // the page's first load was setting up, which held the window at the setup's 700px, and a reload
+  // on Home keeps the size it has, and setting up's hold on it (main.tsx, main's setup-window): the
+  // owner's window, set up, is the app's own 994 × 670 and resizable
+  await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; w?.setResizable(true); w?.setSize(994, 670); });
   return { app, page };
 }
 
@@ -82,7 +86,8 @@ function driver(page, record, state) {
   let said = 0;
   const shown = () => page.evaluate(() => document.body.innerText);
   const t = {
-    page, repo, state, shown,
+    // app: the window as main holds it, only for what a person does to the window itself (maximize)
+    page, app, repo, state, shown,
     step(label) { record.steps.push({ label, at: Date.now() - record.started }); },
     note(text) { record.notes.push(text); },
     async shot(name) {
