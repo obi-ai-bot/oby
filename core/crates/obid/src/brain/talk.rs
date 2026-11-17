@@ -85,12 +85,12 @@ pub(super) fn accounts(
         .into_iter()
         .map(|tool| (tool, shared.jobs.thinking_accounts(tool)))
         .collect();
-    // A turn is watched: a weekly reserve doesn't hold it (LIMITS-20).
-    let on = on.filter(|on| shared.jobs.has_room(on, false));
+    // A turn is watched: a weekly reserve doesn't hold it (LIMITS-20). One whose agent couldn't
+    // start comes after those that can (ACCOUNTS-20), the owner's choice still first.
+    let room = |id: &str| shared.jobs.has_room(id, false) && shared.jobs.cant_run_why(id).is_none();
+    let on = on.filter(|on| room(on));
     keep_apart(
-        order(chosen, on, lists, shared.jobs.account_failover(), |id| {
-            shared.jobs.has_room(id, false)
-        }),
+        order(chosen, on, lists, shared.jobs.account_failover(), room),
         &apart,
     )
 }
@@ -324,7 +324,9 @@ pub(super) fn why_none(
     said.join("; ")
 }
 
-/// The line that says the turn moved: `left` by its name, then where to. Words for Sangam to change
+/// The line that says the turn moved: `left` by its name, why, then where to. One that couldn't
+/// start says why in plain words, its tool named (CONVERSATION-AGENT-26): what it last failed with
+/// ([`crate::jobs::Jobs::cant_run_why`]), else that it isn't signed in. Words for Sangam to change
 /// (docs/contracts/conversation-agent.md, proposed).
 pub(super) fn moved_line(
     shared: &Shared,
@@ -332,20 +334,30 @@ pub(super) fn moved_line(
     tool: Tool,
     account: &Account,
 ) -> Option<String> {
-    let (_, was) = crate::accounts::find(&shared.config.agents.get(), left)?;
+    let (was_on, was) = crate::accounts::find(&shared.config.agents.get(), left)?;
     let now = obi_protocol::time::now();
     let usage = shared.jobs.usage.get(left);
-    let why = if usage.full_until_at(now).is_some() || usage.held(now).is_some() {
-        "hit its limit"
-    } else {
-        "couldn't run"
-    };
-    Some(format!(
-        "{} {why}, so I moved to {} · {}.",
-        was.name,
-        tool.name(),
-        account.name
-    ))
+    let to = format!("so I moved to {} · {}.", tool.name(), account.name);
+    if usage.full_until_at(now).is_some() || usage.held(now).is_some() {
+        return Some(format!("{} hit its limit, {to}", was.name));
+    }
+    let home = crate::jobs::login_home();
+    let reason = shared.jobs.cant_run_why(left).or_else(|| {
+        (!crate::jobs::signed_in(was_on, &was, home.as_deref())).then(|| {
+            crate::jobs::cant_run::login_problem_of(was_on, &was, home.as_deref()).map_or_else(
+                || "it isn't signed in".into(),
+                |why| crate::jobs::cant_run::plain(&why),
+            )
+        })
+    });
+    Some(match reason {
+        Some(reason) => format!(
+            "{} · {} couldn't start: {reason}, {to}",
+            was_on.name(),
+            was.name
+        ),
+        None => format!("{} couldn't run, {to}", was.name),
+    })
 }
 
 #[cfg(test)]

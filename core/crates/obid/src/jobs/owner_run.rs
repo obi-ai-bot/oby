@@ -948,8 +948,19 @@ impl Jobs {
                     Some(rules) => format!("{rules}\n\n{told}"),
                     None => told,
                 };
-                let launch =
-                    self.launch(&job, &spec, tool, flags.clone(), &account, broker.as_ref())?;
+                // Why it couldn't start is kept on the account in plain words (ACCOUNTS-19).
+                let launch = self
+                    .launch(&job, &spec, tool, flags.clone(), &account, broker.as_ref())
+                    .map_err(|why| {
+                        let plain = self.cant_start(&account, &why);
+                        tracing::info!("job {id}: {} didn't start: {why}", tool.name());
+                        format!(
+                            "{} couldn't start on {}: {plain}.",
+                            tool.name(),
+                            account.name
+                        )
+                    })?;
+                self.started_on(&account.id);
                 if *signal.borrow() != Signal::Run {
                     return Ok(());
                 }
@@ -1224,6 +1235,10 @@ impl Jobs {
                     }
                     if tries < of && recovery.spent() {
                         reason = crate::job::capped(&reason);
+                    }
+                    // Its login was refused: the account can't run until that changes (ACCOUNTS-19).
+                    if cant_run::login_refused(turn.cause(), &reason) {
+                        self.cant_start(&account, &reason);
                     }
                     let resumes = None;
                     return Err(End::NeedsYou {

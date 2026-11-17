@@ -1905,6 +1905,8 @@ async fn start(
         }
         if signed {
             shared.jobs.usage.forget_priced(&account.id);
+            // Signed in again: why it couldn't start is the old login's (ACCOUNTS-19).
+            shared.jobs.cant_run.clear(&account.id);
             // Before jobs may use it: it may be another account's login again.
             settle_sign_in(&shared, tool, &account).await;
         }

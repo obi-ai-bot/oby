@@ -494,7 +494,7 @@ fn conversation_agent_3_a_chosen_account_that_cant_run_moves_too() {
     let second = said(&obid, json!({"said": "REMEMBER", "conversation": id}));
     assert_ne!(text(&second), "resume=none", "{}", second.text);
     assert!(
-        text(&second).ends_with("\nCodex stub couldn't run, so I moved to Claude Code · Stub."),
+        text(&second).ends_with("\nCodex · Codex stub couldn't start: it isn't signed in, so I moved to Claude Code · Stub."),
         "{}",
         second.text
     );
@@ -517,11 +517,115 @@ fn conversation_agent_3_a_chosen_account_that_cant_run_moves_too() {
     let new = said(&obid, json!({"said": "REMEMBER", "new": true}));
     assert_eq!(
         text(&new),
-        "resume=none\nCodex stub couldn't run, so I moved to Claude Code · Stub.",
+        "resume=none\nCodex · Codex stub couldn't start: it isn't signed in, so I moved to Claude Code · Stub.",
         "{}",
         new.text
     );
     assert_ne!(fresh, conversation(&new));
+}
+
+/// CONVERSATION-AGENT-26: a chosen account whose agent can't start: the turn moves, and its line
+/// says why in plain words, no path in them. ACCOUNTS-19: the reason stays on the account in
+/// `GET /v1/status` (`cantRun`) until it answers again.
+#[test]
+fn conversation_agent_26_a_move_says_why_the_account_couldnt_start() {
+    let folder = Folder::new("talk-cant-start");
+    let mut config = configured(&folder);
+    let nowhere = folder.0.join("nowhere/codex");
+    config["agents"]["codex"]["bin"] = json!(nowhere);
+    let obid = start(&folder.0, &config, None);
+    let id = conversation(&said(&obid, json!({"said": "HELLO", "new": true})));
+    choose(&obid, &id, json!(CODEX));
+    let moved = said(&obid, json!({"said": "HELLO", "conversation": id}));
+    let line = text(&moved);
+    let line = line.lines().last().unwrap_or_default();
+    assert!(
+        line.starts_with("Codex · Codex stub couldn't start: ")
+            && line.ends_with(", so I moved to Claude Code · Stub."),
+        "{}",
+        moved.text
+    );
+    let reason = line
+        .trim_start_matches("Codex · Codex stub couldn't start: ")
+        .trim_end_matches(", so I moved to Claude Code · Stub.");
+    assert!(!reason.is_empty() && !reason.contains('/'), "{line}");
+    let account = |id: &str| {
+        let status = call(&obid, "GET", "/v1/status", None).body;
+        status["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["id"] == id)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(
+        account(CODEX)["cantRun"],
+        reason,
+        "the same words on the account"
+    );
+    assert_eq!(account(CODEX)["signedIn"], true);
+    assert!(
+        account(CLAUDE).get("cantRun").is_none(),
+        "one that answered has none"
+    );
+}
+
+/// ACCOUNTS-19, ACCOUNTS-20: a job whose agent can't start fails saying why in plain words, the
+/// reason is kept on the account, and routing passes over that account for the next job while it's
+/// kept, even when it's where new tasks go; a job naming it still goes there.
+#[test]
+fn accounts_19_a_job_that_cant_start_keeps_why_on_its_account() {
+    let folder = Folder::new("job-cant-start");
+    let mut config = configured(&folder);
+    config["agents"]["codex"]["bin"] = json!(folder.0.join("nowhere/codex"));
+    let obid = start(&folder.0, &config, None);
+    let set = call(
+        &obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"defaultAccount": CODEX})),
+    );
+    assert_eq!(set.status, 200, "{}", set.text);
+    let post = |account: Option<&str>| {
+        let mut job =
+            json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Nothing to do"});
+        if let Some(account) = account {
+            job["account"] = json!(account);
+        }
+        let made = call(&obid, "POST", "/v1/jobs", Some(&json!({ "job": job })));
+        assert_eq!(made.status, 201, "{}", made.text);
+        made.body
+    };
+    let first = post(Some(CODEX));
+    let id = first["id"].as_str().unwrap().to_owned();
+    let failed = within(30, "the job fails", || {
+        let now = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (now["status"] == "failed").then_some(now)
+    });
+    let reason = failed["reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.starts_with("Codex couldn't start on Codex stub: ") && !reason.contains('/'),
+        "{failed}"
+    );
+    let kept = within(10, "the account says why", || {
+        let status = call(&obid, "GET", "/v1/status", None).body;
+        status["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["id"] == CODEX)
+            .and_then(|a| a["cantRun"].as_str().map(str::to_owned))
+    });
+    assert!(reason.contains(&kept), "{reason} / {kept}");
+    assert!(!kept.contains('/'), "{kept}");
+    // Where new tasks go can't start: the next goes where one can.
+    assert_eq!(post(None)["account"], CLAUDE);
+    assert_eq!(
+        post(Some(CODEX))["account"],
+        CODEX,
+        "named, it still goes there"
+    );
 }
 
 /// A chosen account full before the turn starts is said once too, while the session stays elsewhere;

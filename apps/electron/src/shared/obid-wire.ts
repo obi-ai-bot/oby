@@ -242,6 +242,8 @@ export type Account = {
   models?: { id: string; name: string }[];
   // obid only: true once its own list is known (AGENTS-6); only then is a saved model judged unavailable
   modelsRead?: boolean;
+  // obid only: why its agent couldn't start, in plain words, while obid keeps it (ACCOUNTS-19); left out otherwise
+  cantRun?: string;
 };
 export type Status = {
   // commit: the one obid was built from, null when its build wasn't told (older obids: absent)
