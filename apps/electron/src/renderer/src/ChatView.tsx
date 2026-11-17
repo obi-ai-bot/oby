@@ -365,7 +365,8 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
         />
       )}
       {/* a card's menu: tell its agent something, Stop or Archive, and Delete */}
-      {menu && menuTask && <TaskMenu task={menuTask} at={menu.at} align="left" onClose={() => setMenu(null)} onTell={() => tellTo(menu.id)} />}
+      {/* (from its ⋯, at the card's right edge: it opens leftward; from a right-click, at the pointer) */}
+      {menu && menuTask && <TaskMenu task={menuTask} at={menu.at} align={menu.at.width > 0 ? 'right' : 'left'} onClose={() => setMenu(null)} onTell={() => tellTo(menu.id)} />}
     </div>
   );
 }
