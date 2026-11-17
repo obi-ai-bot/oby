@@ -1,7 +1,9 @@
 //! What a job's branch changed against its base (docs/contracts/tasks.md, TASKS-23, 24, 29 and
-//! 30): its files and its diff, read in its worktree inside its sandbox, at one HEAD. It owns no
-//! state, and never writes a job, a worktree or a branch.
+//! 30), or in one of its task's rounds (docs/contracts/task-changes.md, CHANGES-1 to 4): its files
+//! and its diff, read in its worktree inside its sandbox, at one HEAD. It owns no state, and never
+//! writes a job, a worktree or a branch.
 
+use super::rounds::Round;
 use super::*;
 
 /// How much of a job's diff its changes answer, after redaction (TASKS-24).
@@ -10,25 +12,55 @@ const CHANGES_DIFF_MAX: usize = 1024 * 1024;
 /// A changed file as git listed it: its path, `added`, `deleted` or `modified`, and its counts.
 type Changed = (String, &'static str, u64, u64);
 
+/// What `GET /v1/jobs/{id}/changes` narrows the whole task's changes to.
+#[derive(Debug, Default)]
+pub struct ChangesAsk<'a> {
+    /// One file's, taken literally.
+    pub path: Option<&'a str>,
+    /// One round's, by its number in `rounds` (CHANGES-2).
+    pub round: Option<usize>,
+    /// Changes in whitespace alone left out, as `git diff -w` does (CHANGES-3).
+    pub ignore_whitespace: bool,
+}
+
 impl Jobs {
     /// `GET /v1/jobs/{id}/changes`: the files and the diff the job `id`'s HEAD makes against its
-    /// base (`origin/<base>...<head>`), only `path`'s when given; none when there's no such job,
-    /// and nothing to read answers no files.
-    pub async fn changes(&self, id: &str, path: Option<&str>) -> Option<Value> {
+    /// base (`origin/<base>...<head>`), or one of its rounds makes (`<from>..<to>`), only `path`'s
+    /// when given, and its task's rounds; none when there's no such job, and nothing to read
+    /// answers no files.
+    pub async fn changes(&self, id: &str, ask: &ChangesAsk<'_>) -> Option<Value> {
         let job = self.get(id)?;
-        let Some((base, head, mut files)) = self.changed_at_head(&job).await else {
-            return Some(
-                json!({"base": null, "head": null, "files": [], "diff": "", "truncated": false}),
-            );
+        let empty = |rounds: Vec<Value>| {
+            json!({"base": null, "head": null, "files": [], "diff": "", "truncated": false,
+                   "round": ask.round, "rounds": rounds})
         };
-        let range = format!("refs/remotes/origin/{base}...{head}");
-        if let Some(path) = path {
+        let Some((base, head)) = self.base_and_head(&job).await else {
+            return Some(empty(Vec::new()));
+        };
+        let rounds = self.rounds_at(&job, &head).await;
+        let listed: Vec<Value> = rounds.iter().map(Round::to_json).collect();
+        let range = match ask.round {
+            None => format!("refs/remotes/origin/{base}...{head}"),
+            Some(n) => match rounds.iter().find(|r| r.number == n) {
+                Some(round) => format!("{}..{}", round.from, round.to),
+                None => {
+                    let mut none = empty(listed);
+                    none["base"] = json!(base);
+                    none["head"] = json!(head);
+                    return Some(none);
+                }
+            },
+        };
+        let Some(mut files) = self.changed_over(id, &range, ask.ignore_whitespace).await else {
+            return Some(empty(listed));
+        };
+        if let Some(path) = ask.path {
             files.retain(|f| f.0 == path);
         }
-        let (diff, truncated) = if path.is_some() && files.is_empty() {
+        let (diff, truncated) = if ask.path.is_some() && files.is_empty() {
             (String::new(), false)
         } else {
-            self.change_diff(id, &range, path).await
+            self.change_diff(id, &range, ask).await
         };
         let known = crate::secrets::known();
         let files: Vec<Value> = files
@@ -39,13 +71,13 @@ impl Jobs {
             })
             .collect();
         Some(
-            json!({"base": base, "head": head, "files": files, "diff": diff, "truncated": truncated}),
+            json!({"base": base, "head": head, "files": files, "diff": diff,
+                    "truncated": truncated, "round": ask.round, "rounds": listed}),
         )
     }
 
-    /// The job's base, its worktree's HEAD read once, and the files that HEAD changes against the
-    /// base, in git's order; none when any of them can't be read.
-    async fn changed_at_head(&self, job: &Job) -> Option<(String, String, Vec<Changed>)> {
+    /// The job's base and its worktree's HEAD, read once; none when either can't be read.
+    async fn base_and_head(&self, job: &Job) -> Option<(String, String)> {
         let worktree = self.worktree_path(&job.id);
         if job.branch.is_empty() || !worktree.join(".git").exists() {
             return None;
@@ -64,8 +96,17 @@ impl Jobs {
         .await
         .ok()
         .filter(|h| git::is_sha(h))?;
-        let range = format!("refs/remotes/origin/{base}...{head}");
-        let args = [
+        Some((base, head))
+    }
+
+    /// The files `range` changes, in git's order; none when they can't be read.
+    async fn changed_over(
+        &self,
+        id: &str,
+        range: &str,
+        ignore_whitespace: bool,
+    ) -> Option<Vec<Changed>> {
+        let mut args = vec![
             "diff",
             "--raw",
             "--numstat",
@@ -73,11 +114,13 @@ impl Jobs {
             "--no-renames",
             "--no-ext-diff",
             "--no-textconv",
-            &range,
-            "--",
         ];
+        if ignore_whitespace {
+            args.push("--ignore-all-space");
+        }
+        args.extend([range, "--"]);
         let out = self
-            .sandboxed_git_within(&job.id, &args, None, DIFF_LIMIT, DIFF_OUTPUT_MAX)
+            .sandboxed_git_within(id, &args, None, DIFF_LIMIT, DIFF_OUTPUT_MAX)
             .await
             .ok()?;
         // `:<modes> <shas> <letter>` then its path, for each file; then `<added>\t<deleted>\t<path>`.
@@ -102,12 +145,12 @@ impl Jobs {
                 file.3 = deleted.parse().unwrap_or(0);
             }
         }
-        Some((base, head, files))
+        Some(files)
     }
 
-    /// The diff over `range` (only `path`'s, taken literally), redacted and then cut to
+    /// The diff over `range` (only `ask`'s path's, taken literally), redacted and then cut to
     /// [`CHANGES_DIFF_MAX`], and whether any was cut: none, and cut, when it can't be read whole.
-    async fn change_diff(&self, id: &str, range: &str, path: Option<&str>) -> (String, bool) {
+    async fn change_diff(&self, id: &str, range: &str, ask: &ChangesAsk<'_>) -> (String, bool) {
         let mut args = vec![
             "--literal-pathspecs",
             "diff",
@@ -115,10 +158,12 @@ impl Jobs {
             "--no-ext-diff",
             "--no-textconv",
             "--no-color",
-            range,
-            "--",
         ];
-        args.extend(path);
+        if ask.ignore_whitespace {
+            args.push("--ignore-all-space");
+        }
+        args.extend([range, "--"]);
+        args.extend(ask.path);
         let Ok(out) = self
             .sandboxed_git_within(id, &args, None, DIFF_LIMIT, CHANGED_MAX)
             .await

@@ -799,6 +799,11 @@ pub struct BranchChain {
 }
 
 impl BranchChain {
+    /// The commit obid pushed last to the branch, by any job carrying it.
+    pub(crate) fn pushed(&self) -> Option<&str> {
+        self.pushed.as_deref()
+    }
+
     pub(crate) fn of(job: &Job, jobs: &std::collections::HashMap<String, Job>) -> Self {
         let mut chain = Self::default();
         let mut current = job;
@@ -1969,6 +1974,25 @@ fn sent_elsewhere(job: &Job, by_hand: &ByHand) -> bool {
 pub(crate) fn may_force(to: &str, job: &Job, by_hand: &ByHand) -> bool {
     git::is_branch_name(to)
         && (by_hand.force || to.starts_with("oby/") || (to == job.branch && job.own_branch()))
+}
+
+/// Undo this round (docs/contracts/task-changes.md, CHANGES-10): puts the job's own `oby/` branch
+/// back at `commit`, which comes before what obid pushed there last (`lease`), with
+/// `--force-with-lease` on that push. No new commit leaves: `commit` went out with `lease`, or is
+/// on the base.
+pub(crate) async fn push_back(
+    commit: &str,
+    job: &Job,
+    target: &Target,
+    lease: &str,
+) -> Result<(), Failure> {
+    if !job.branch.starts_with("oby/") || !git::is_sha(commit) || !git::is_sha(lease) {
+        return Err(Failure::Refused(format!(
+            "Oby force-pushes only its own oby/ branches, and {} isn't one.",
+            job.branch
+        )));
+    }
+    push(commit, job, target, Some(lease), &ByHand::default()).await
 }
 
 /// Pushes one commit to the job's own branch: no tags, submodules or signing. With `lease`, the

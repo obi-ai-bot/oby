@@ -3183,7 +3183,8 @@ fn tasks_29_a_queued_job_answers_no_files_and_no_job_404() {
     assert!(!obid.home.join("worktrees").join(&queued).exists());
     assert_eq!(
         changes(&obid, &queued, ""),
-        json!({"base": null, "head": null, "files": [], "diff": "", "truncated": false})
+        json!({"base": null, "head": null, "files": [], "diff": "", "truncated": false,
+               "round": null, "rounds": []})
     );
     let missing = call(&obid, "GET", "/v1/jobs/not-a-job/changes", None);
     assert_eq!(missing.status, 404, "{}", missing.text);

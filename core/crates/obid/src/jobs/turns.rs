@@ -790,13 +790,15 @@ impl Jobs {
     ) -> Result<agent::Turn, String> {
         // What an owner's job's turn commits goes in obid's record of what it made, only while
         // its check would get values (crate::secretspec).
-        let records = matches!(gate, Gate::Owner { .. })
+        let owner = matches!(gate, Gate::Owner { .. });
+        let records = owner
             && self
                 .get(id)
                 .is_some_and(|job| job.someone_elses().is_none());
         // LANES-8: an own run's refs are its own; obid reads the clone's before and after it.
         let own_run = self.own_turn(id, launch.own_sandbox).await?;
-        let before = match records {
+        // Every owner's job's turn: where its round starts (CHANGES-1).
+        let before = match owner {
             true => Box::pin(self.sandboxed_git(id, &["rev-parse", "--verify", "HEAD"], None))
                 .await
                 .ok(),
@@ -812,7 +814,11 @@ impl Jobs {
             run.settle().await?;
         }
         if let Some(before) = before {
-            Box::pin(self.record_turn(id, String::from_utf8_lossy(&before).trim(), started)).await;
+            let before = String::from_utf8_lossy(&before).trim().to_owned();
+            if records {
+                Box::pin(self.record_turn(id, &before, started)).await;
+            }
+            Box::pin(self.checkpoint(id, &before, started)).await;
         }
         turn
     }
