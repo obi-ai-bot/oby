@@ -7,6 +7,11 @@
 // admin, whose app adds the members rule that lets the question cross, then writes at a version
 // that's gone stale. Nothing here reaches a network beyond 127.0.0.1.
 //
+// Run through jiti (`npm run test:sphere`): src/shared/sphere.ts imports './policy' with no extension,
+// which Node's own TypeScript loader can't resolve. The obi-sphere checkout must have the admins
+// route (`PUT /v0.1/spheres/{sphere}/admins/{owner}`): its `feat/room-on-live`, the commit Deskree's
+// Sphere runs, has it; its `main` doesn't yet.
+//
 //   OBI_SPHERE_DIR=<obi-sphere checkout, `pnpm install` run in server/> \
 //   OBY_TEST_OBID=<obid binary> npm run test:sphere
 //

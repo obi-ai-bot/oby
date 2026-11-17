@@ -172,7 +172,7 @@ export function ReviewBlock({ review: r, onAnswer }: { review: PersonReview; onA
   };
   return (
     <div className="tc-ask">
-      <span className="tc-ask-kind is-review">Review request</span>
+      <span className="tc-ask-kind is-review">{r.kind === 'task' ? 'Task' : 'Review request'}</span>
       <p className="tc-ask-head">{r.text}</p>
       {/* all of it, never clamped as Home's other text is: one quote that keeps its lines and scrolls */}
       {(r.goal || r.summary || r.conditions.length > 0) && (

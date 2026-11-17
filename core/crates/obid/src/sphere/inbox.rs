@@ -619,6 +619,69 @@ fn condition_words(condition: &Value) -> String {
     }
 }
 
+/// A request's acceptance conditions (a `review_request`'s or a `handoff`'s), as its item shows
+/// them: obid's sentence of the typed ones (`Conditions: tests pass.`, and a word on any custom
+/// one), the typed fields alone, and each one's notes quoted.
+struct Conditions {
+    sentence: String,
+    typed: Vec<Value>,
+    quoted: Vec<Value>,
+}
+
+fn conditions(body: &Value, judged: &str) -> Conditions {
+    let conditions: Vec<&Value> = body["acceptance"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .collect();
+    let words: Vec<String> = conditions
+        .iter()
+        .filter(|c| c["kind"] != "custom")
+        .map(|c| condition_words(c))
+        .collect();
+    let custom = conditions.iter().filter(|c| c["kind"] == "custom").count();
+    let mut sentence = String::new();
+    if !words.is_empty() {
+        sentence.push_str(&format!(" Conditions: {}.", words.join(", ")));
+    }
+    if custom > 0 {
+        sentence.push_str(&format!(
+            " {custom} custom condition{}, quoted below: obid doesn't judge custom conditions, so the result will say {} met.",
+            if custom == 1 { "" } else { "s" },
+            if custom == 1 { "it isn't" } else { "they aren't" }
+        ));
+    }
+    sentence.push_str(judged);
+    let typed = conditions
+        .iter()
+        .enumerate()
+        .map(|(index, c)| {
+            let mut typed = json!({"index": index, "kind": c["kind"]});
+            if let Some(severity) = c.get("severity") {
+                typed["severity"] = severity.clone();
+            }
+            typed
+        })
+        .collect();
+    let quoted = conditions
+        .iter()
+        .enumerate()
+        .map(|(index, c)| {
+            let mut quoted =
+                json!({"index": index, "note": c.get("note").cloned().unwrap_or(Value::Null)});
+            if c["kind"] == "custom" {
+                quoted["text"] = c.get("text").cloned().unwrap_or(Value::Null);
+            }
+            quoted
+        })
+        .collect();
+    Conditions {
+        sentence,
+        typed,
+        quoted,
+    }
+}
+
 /// The `obiRequest` item for a `review_request` (its body already checked against the spec),
 /// from `from` of `from_owner`, expiring at `expires_at`.
 pub fn review_request_item(
@@ -636,58 +699,16 @@ pub fn review_request_item(
         text_of("head_branch"),
         text_of("head_sha"),
     );
-    let conditions: Vec<&Value> = body["acceptance"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .collect();
-    let typed: Vec<String> = conditions
-        .iter()
-        .filter(|c| c["kind"] != "custom")
-        .map(|c| condition_words(c))
-        .collect();
-    let custom = conditions.iter().filter(|c| c["kind"] == "custom").count();
+    let conditions = conditions(body, "");
     let change = match body["pr"].as_u64() {
         Some(pr) => format!("{repo} pull request #{pr}"),
         None => repo.clone(),
     };
-    let mut text = format!(
-        "{from_owner}'s Obi ({from}) asks for a review of {change}: {head} into {base} at {}.",
-        &sha[..sha.len().min(7)]
+    let text = format!(
+        "{from_owner}'s Obi ({from}) asks for a review of {change}: {head} into {base} at {}.{}",
+        &sha[..sha.len().min(7)],
+        conditions.sentence
     );
-    if !typed.is_empty() {
-        text.push_str(&format!(" Conditions: {}.", typed.join(", ")));
-    }
-    if custom > 0 {
-        text.push_str(&format!(
-            " {custom} custom condition{}, quoted below: obid doesn't judge custom conditions, so the result will say {} met.",
-            if custom == 1 { "" } else { "s" },
-            if custom == 1 { "it isn't" } else { "they aren't" }
-        ));
-    }
-    let acceptance: Vec<Value> = conditions
-        .iter()
-        .enumerate()
-        .map(|(index, c)| {
-            let mut typed = json!({"index": index, "kind": c["kind"]});
-            if let Some(severity) = c.get("severity") {
-                typed["severity"] = severity.clone();
-            }
-            typed
-        })
-        .collect();
-    let quoted_acceptance: Vec<Value> = conditions
-        .iter()
-        .enumerate()
-        .map(|(index, c)| {
-            let mut quoted =
-                json!({"index": index, "note": c.get("note").cloned().unwrap_or(Value::Null)});
-            if c["kind"] == "custom" {
-                quoted["text"] = c.get("text").cloned().unwrap_or(Value::Null);
-            }
-            quoted
-        })
-        .collect();
     Item {
         id: format!("obi-{correlation_id}"),
         kind: "obiRequest".into(),
@@ -713,11 +734,75 @@ pub fn review_request_item(
             "repo": repo,
             "headSha": sha,
             "expiresAt": expires_at,
-            "acceptance": acceptance,
+            "acceptance": conditions.typed,
             "quoted": {
                 "goal": body["goal"],
                 "summary": body.get("summary").cloned().unwrap_or(Value::Null),
-                "acceptance": quoted_acceptance,
+                "acceptance": conditions.quoted,
+            },
+        })),
+        ..Default::default()
+    }
+}
+
+/// The `obiRequest` item for a `handoff` (docs/contracts/handoff.md, HANDOFF-1; its body already
+/// checked against the spec), from `from` of `from_owner`, expiring at `expires_at`: its text from
+/// typed fields only, the goal, summary and notes quoted.
+pub fn handoff_item(
+    correlation_id: &str,
+    from: &str,
+    from_owner: &str,
+    body: &Value,
+    expires_at: &str,
+    now: i64,
+) -> Item {
+    let repo = body["repo"].as_str().unwrap_or("").to_owned();
+    let base = body["base_branch"].as_str().unwrap_or("").to_owned();
+    let judged = if body["acceptance"].as_array().is_some_and(|all| {
+        all.iter()
+            .any(|c| c["kind"] != "tests_pass" && c["kind"] != "custom")
+    }) {
+        " obid judges only tests pass, so the result will say the others aren't met."
+    } else {
+        ""
+    };
+    let conditions = conditions(body, judged);
+    let about = match (body["issue"].as_u64(), body["pr"].as_u64()) {
+        (Some(issue), _) => format!(", for {repo} issue #{issue}"),
+        (None, Some(pr)) => format!(", for {repo} pull request #{pr}"),
+        (None, None) => String::new(),
+    };
+    Item {
+        id: format!("obi-{correlation_id}"),
+        kind: "obiRequest".into(),
+        title: format!("Task from {from_owner}"),
+        text: format!(
+            "{from_owner}'s Obi ({from}) asks your Oby to do a task in {repo} from {base}{about}, quoted below.{}",
+            conditions.sentence
+        ),
+        options: OBI_OPTIONS.iter().map(|o| (*o).to_owned()).collect(),
+        details: Some(vec![
+            "Do it this time.".into(),
+            format!("Do it, and do {from_owner}'s tasks on {repo} from now on without asking."),
+            "Say no this time.".into(),
+            format!(
+                "Say no, and say no to {from_owner}'s tasks on {repo} from now on without asking."
+            ),
+        ]),
+        created: now,
+        obi: Some(json!({
+            "correlationId": correlation_id,
+            "from": from,
+            "fromOwner": from_owner,
+            "type": "handoff",
+            "repo": repo,
+            "baseBranch": base,
+            "expiresAt": expires_at,
+            "acceptance": conditions.typed,
+            "quoted": {
+                "goal": body["goal"],
+                "summary": body.get("summary").cloned().unwrap_or(Value::Null),
+                "acceptance": conditions.quoted,
             },
         })),
         ..Default::default()

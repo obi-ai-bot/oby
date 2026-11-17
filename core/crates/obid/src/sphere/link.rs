@@ -45,6 +45,7 @@ use obi_protocol::identity::takes_card_runtime;
 mod asking;
 pub use asking::{AskMember, Picked, pick};
 mod follower;
+mod handoffs;
 mod inbox_actions;
 mod reviews;
 mod room_link;
@@ -968,6 +969,7 @@ impl Link {
         if membership.as_deref().is_some_and(|s| s != "joined") {
             self.settle_on_revoke();
         }
+        self.watch_handoffs();
         self.reconcile();
         if membership.as_deref() == Some("joined") {
             self.follow();
@@ -1027,15 +1029,22 @@ impl Link {
         for cid in answering {
             self.to_owner(&cid);
         }
-        let waiting: Vec<(String, Option<String>)> = self
+        let waiting: Vec<(String, Option<String>, bool)> = self
             .lock()
             .exchanges
             .values()
             .filter(|e| e.direction == "incoming" && e.state == "accepted" && !e.ended())
-            .map(|e| (e.correlation_id.clone(), e.job.clone()))
+            .map(|e| (e.correlation_id.clone(), e.job.clone(), e.kind == "handoff"))
             .collect();
-        for (cid, job) in waiting {
-            let ended = match job.as_deref().and_then(|id| self.jobs.get(id)) {
+        for (cid, job, handoff) in waiting {
+            let job = job.as_deref().and_then(|id| self.jobs.get(id));
+            // A handoff's job that ended while obid was down sends its own result (HANDOFF-3).
+            if let (true, Some(job)) = (handoff, &job) {
+                let (link, id) = (self.clone(), job.id.clone());
+                tokio::spawn(async move { link.handoff_job_changed(&id).await });
+                continue;
+            }
+            let ended = match job {
                 Some(job) => !job.status.is_active(),
                 None => true,
             };
@@ -2076,10 +2085,10 @@ impl Link {
         }
         if let Some(other) = accepts
             .iter()
-            .find(|a| !matches!(a.as_str(), "review_request" | "question"))
+            .find(|a| !matches!(a.as_str(), "review_request" | "question" | "handoff"))
         {
             return Err(invalid(format!(
-                "obid takes review_request and question in this version, not {other}."
+                "obid takes review_request, question and handoff in this version, not {other}."
             )));
         }
         if obi_protocol::keys::key_id_of(owner_key).is_none() {
@@ -3080,9 +3089,14 @@ enum Decided {
     ByItself(Rule),
 }
 
-/// A failed review result: no findings, no text.
+/// A failed result, with no text: a review's has no findings; a handoff's says each condition
+/// wasn't met (docs/contracts/handoff.md).
 fn failed_result(request: &Value) -> Value {
     let body = &request["body"];
+    if request["type"] == "handoff" {
+        return json!({"for": "handoff", "outcome": "failed", "repo": body["repo"],
+            "acceptance": handoffs::acceptance(body, false)});
+    }
     json!({"for": "review_request", "outcome": "failed", "repo": body["repo"], "head_sha": body["head_sha"], "findings": []})
 }
 
