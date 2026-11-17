@@ -185,10 +185,11 @@ function drawn(a: Served): Alert {
   };
 }
 
-// A refused alert still gets the owner's attention: the Dock's icon bounces until they look.
+// A refused alert is logged, and the Dock's badge still counts what waits (`waiting`). The Dock's
+// icon never bounces for it: the owner's word, 2026-11-17 ("I hate that jumping Oby on the Dock").
 export function refused(why: string, dock: { bounce?: (kind: 'critical') => unknown } | undefined = app.dock) {
   console.error(`Oby: macOS refused an alert: ${why}`);
-  dock?.bounce?.('critical');
+  void dock;
 }
 
 // --- the gate
