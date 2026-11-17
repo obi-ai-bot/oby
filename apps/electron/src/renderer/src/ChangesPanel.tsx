@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { X } from 'lucide-react';
 import { api, type ChangeRound, type JobChanges } from './obid';
-import { useTasks } from './tasks';
+import { useTasks, type Task } from './tasks';
 import './changes.css';
 
 // A task's Changes (docs/contracts/task-changes.md, CHANGES-4 and 5), as T3 Code's diff panel
@@ -16,6 +16,12 @@ const changed = () => listeners.forEach((l) => l());
 export const openChanges = (task: string) => { open = task; changed(); };
 export const closeChanges = () => { open = null; changed(); };
 export const useChangesOpen = () => useSyncExternalStore((l) => { listeners.add(l); return () => { listeners.delete(l); }; }, () => open, () => open);
+
+// The way in under a task's card, once it has a worktree (CHANGES-4)
+export function ChangesPill({ task }: { task: Task }) {
+  if (task.unknown || !task.job.worktree) return null;
+  return <button type="button" className="msg-task-changes" onClick={() => openChanges(task.id)}>Changes</button>;
+}
 
 // One file's part of a unified diff, as git wrote it: from its `diff --git` line to the next
 export type FileDiff = { path: string; lines: string[] };

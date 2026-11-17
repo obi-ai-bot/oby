@@ -1,5 +1,5 @@
 import { copyPlain } from './room';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Check, ChevronRight, File as FileIcon } from 'lucide-react';
 import { BrandMark } from './brands';
 import { ObyFace, PeerByline } from './ObyFace';
@@ -11,7 +11,7 @@ import { AskBlock, resultLine } from './TaskCard';
 import DecisionBar, { type Pending } from './DecisionBar';
 import { useScrollThumb } from './useScrollThumb';
 import TaskMenu from './TaskMenu';
-import { openChanges } from './ChangesPanel';
+import { ChangesPill } from './ChangesPanel';
 import { replyTarget, type Box } from './replyTarget';
 import Composer, { typingIn } from './Composer';
 import Formatted from './Formatted';
@@ -224,13 +224,16 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                   ...('jobs' in m ? m.jobs ?? [] : []).map((jid) => {
                     const t = tasks.find((x) => x.id === jid);
                     return t && (
-                      <ThreadTask
-                        key={jid}
-                        task={t}
-                        current={kind === 'task' && jid === id}
-                        onOpen={(tid) => (onOpenAgent ?? onOpenTask)(tid)}
-                        onMenu={(at) => setMenu({ id: jid, at })}
-                      />
+                      <Fragment key={jid}>
+                        <ThreadTask
+                          task={t}
+                          current={kind === 'task' && jid === id}
+                          onOpen={(tid) => (onOpenAgent ?? onOpenTask)(tid)}
+                          onMenu={(at) => setMenu({ id: jid, at })}
+                        />
+                        {/* what it changed, in the side panel beside the conversation (CHANGES-4) */}
+                        <ChangesPill task={t} />
+                      </Fragment>
                     );
                   }),
                 ].filter(Boolean);
@@ -389,8 +392,6 @@ export function ThreadTask({ task, current, onOpen, onMenu }: {
             {body}
           </button>
         )}
-      {/* what it changed, in the side panel beside the conversation (CHANGES-4) */}
-      {!task.unknown && task.job.worktree && <button type="button" className="msg-task-changes" onClick={() => openChanges(task.id)}>Changes</button>}
     </div>
   );
 }
