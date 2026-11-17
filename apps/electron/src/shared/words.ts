@@ -61,6 +61,8 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
     const ok = text(body.said) && shaped(body, {
       said: text, answer: (a) => isBody(a) && text(a.question) && text(a.option) && shaped(a, { question: text, option: text }),
       conversation: id, new: flag, folders: strings, id, attachments: strings, jobs: strings,
+      // the project the words start a conversation in: signed with the body, never one of the words
+      project: id,
     });
     // an answer to Oby's question: the words it answers, and the owner's answer
     return ok ? [body.said as string, ...(isBody(answer) ? [answer.option as string] : [])] : null;

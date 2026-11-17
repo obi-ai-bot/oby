@@ -215,7 +215,7 @@ export function chatOf(s: Live, c: Conversation): Chat {
   confirm({ who: 'oby', text: '', ago: 0 });
   return {
     id: s.alias[c.id] ?? c.id, title: c.title, pinned: c.pinned, at: minutesAgo(c.lastActivity), said, fromObys: c.fromObys, helper: c.helper, talkAccount: c.talkAccount, talkedOn: c.talkedOn, movedOff: c.movedOff,
-    about: tasksLine(s, c.tasks),
+    project: c.project, about: tasksLine(s, c.tasks),
     typing: c.id in s.working, step: p || words ? undefined : s.working[c.id],
     waiting: q ? { question: q.text, options: q.options } : undefined,
     // waiting on you with no task to say so (a task's says it itself, Sidebar.tsx): Oby's question back,
@@ -792,7 +792,7 @@ export async function openConversation(shown: string) {
 // (POST /v1/attachments), and the words carry an id of their own: sent again while obid doesn't
 // answer, obid takes them once, files and tasks included.
 let made = 0;
-export function ask(said: string, shown?: string, repo?: string, folders?: string[], att?: Pick<Attachments, 'files' | 'jobs'>): string | undefined {
+export function ask(said: string, shown?: string, repo?: string, folders?: string[], att?: Pick<Attachments, 'files' | 'jobs' | 'project'>): string | undefined {
   const files = att?.files?.filter((f) => f.path) ?? [], jobs = att?.jobs ?? [];
   if (!said.trim() && !files.length && !jobs.length) return;
   const id = shown ?? `new:${++made}`;
@@ -813,9 +813,11 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
     try {
       if (files.length) set({ previews: { ...state.previews, [turn]: files.map((f) => ({ name: f.path!.split('/').pop()!, shown: f.name, preview: f.preview })) } });
       // the working folders go with words that start a conversation, once obid takes them (an
-      // older one refuses the key); a conversation's own are obid's already (sendFoldersBy)
+      // older one refuses the key); a conversation's own are obid's already (sendFoldersBy). So does
+      // the project chosen for it, once obid has projects (docs/api/projects.md)
+      const project = !c && takesProjects() ? att?.project : undefined;
       const a = await sent(() => api.plan(q ? q.said : words, q ? { question: q.text, option: words } : undefined, c ? { conversation: c } : { new: true },
-        has(state.status, 'folders-v1') && !c ? folders : undefined, { id: turn, attachments: paths, jobs }));
+        has(state.status, 'folders-v1') && !c ? folders : undefined, { id: turn, attachments: paths, jobs, project }));
       planned = true;
       const where = a.conversation ?? c;
       // Oby's turn is in a reply or a question (its event may land after this answer, and the card
@@ -898,6 +900,13 @@ export async function chooseTalk(shown: string, talkAccount: string) {
   take({ kind: 'conversation', conversation: await api.editConversation(c, { talkAccount }) });
 }
 export const talkReady = (shown: string) => !realId(shown).startsWith('new:');
+// The project a conversation is in (its title bar's chip, docs/contracts/projects.md): obid's answer
+// moves its row; a refusal is said, and it stays where it was
+export async function moveToProject(shown: string, project: string | null) {
+  try { const c = await api.editConversation(realId(shown), { project }); take({ kind: 'conversation', conversation: c }); } catch (e) { say(e); }
+}
+// whether obid has projects (projects-v1): with none, nothing names one (projects.ts)
+export const takesProjects = (s: Pick<Live, 'status'> = state) => has(s.status, 'projects-v1');
 export async function pinConversation(shown: string, pinned: boolean) {
   try { const c = await api.editConversation(realId(shown), { pinned }); take({ kind: 'conversation', conversation: c }); } catch (e) { say(e); }
 }

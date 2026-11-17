@@ -191,6 +191,8 @@ export type Conversation = { id: string; title: string; pinned: boolean; created
   fromObys?: boolean;
   // a helper's own conversation: that helper's id (docs/api/helpers.md)
   helper?: string;
+  // the project it's in, or null (docs/api/projects.md); none from an older obid
+  project?: string | null;
   // one more each time obid sends it changed, as a job's: the higher is the newer; none from an older obid
   revision?: number };
 
@@ -274,6 +276,10 @@ export type Repo = { repo: string; defaultBranch: string; listed: boolean; check
 // obid only: "GET /v1/profiles" (docs/api/profiles.md), a local profile on this Mac: its name and
 // colour, the one obid made first (default), and whether something in it waits on the owner
 export type Profile = { id: string; name: string; color: string; default: boolean; waiting: boolean };
+
+// obid only: "GET /v1/projects" (docs/api/projects.md), a named set of folders and GitHub
+// repositories (owner/name) that conversations belong to
+export type Project = { id: string; name: string; folders: string[]; repos: string[] };
 
 // obid only: "GET /v1/helpers" (docs/api/helpers.md), an assistant of the owner's for one kind of
 // general work, in one profile, with one conversation of its own; the app calls them Agents.

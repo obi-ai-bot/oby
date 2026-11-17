@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { confirming, notificationWords, ownersWords } from '../../../main/device';
-import { input, takeInput } from '../../../main/words';
+import { input, picked, takeInput } from '../../../main/words';
 
 // Main's Confirm as the window reaches it (docs/contracts/peer-thread.md, PEER-17): what it signs,
 // through its real handler, with obid and Electron's own parts stood in for.
@@ -15,6 +15,8 @@ const the = vi.hoisted(() => ({
   // doesn't answer at all (status 0)
   receipts: false,
   lost: 0,
+  // obid's answer to main's own read of its projects (WORDS-18)
+  projects: { status: 200, text: '[]' },
 }));
 vi.mock('electron', () => ({
   app: { getPath: () => mkdtempSync(join(tmpdir(), 'oby-device-')) },
@@ -28,6 +30,7 @@ vi.mock('../../../main/obid', () => ({
     the.calls.push({ method, path, body, words });
     if (path === '/v1/inbox') return { status: 200, text: JSON.stringify([the.item]) };
     if (path === '/v1/devices') return { status: 200, text: JSON.stringify({ id: 'd1' }) };
+    if (path === '/v1/projects') return the.projects;
     if (path.endsWith('/messages') && the.lost > 0) { the.lost--; return { status: 0, text: 'obid closed the connection.' }; }
     return { status: 200, text: '{}' };
   },
@@ -187,5 +190,47 @@ describe('main signs again only the request obid didn’t answer', () => {
     const sent = the.calls.filter((c) => c.path === path);
     expect(sent).toHaveLength(5);
     expect(sent.filter((c) => c.words?.startsWith('d1 '))).toHaveLength(2);
+  });
+});
+
+// Words that start a conversation in a project (docs/contracts/signed-words.md, WORDS-18): main reads
+// the project's folders from obid itself, and signs only when each was picked in its dialog this run
+describe('main reads a project’s folders itself', () => {
+  const plan = { said: 'Fix the login', new: true, project: 'pr1' };
+  const listing = (projects: unknown) => { the.projects = { status: 200, text: JSON.stringify(projects) }; };
+  const signedOnInput = async (body: unknown) => {
+    while (takeInput()) { /* other tests' */ }
+    the.calls.length = 0;
+    input();
+    await ownersWords('POST', '/v1/plans', body);
+    return the.calls.find((c) => c.path === '/v1/plans')?.words;
+  };
+  afterEach(() => { the.projects = { status: 200, text: '[]' }; });
+
+  it('words_18_a_project_signs_only_with_folders_picked_this_run', async () => {
+    picked(['/Users/me/picked']);
+    // no folders, or only folders main's dialog returned: signed, after main's own read
+    listing([{ id: 'pr1', name: 'App', folders: [], repos: [] }]);
+    expect(await signedOnInput(plan)).toMatch(/^d1 /);
+    expect(the.calls.map((c) => `${c.method} ${c.path}`)).toContain('GET /v1/projects');
+    listing([{ id: 'pr0', name: 'Other', folders: ['/Users/me/never-picked'], repos: [] }, { id: 'pr1', name: 'App', folders: ['/Users/me/picked'], repos: [] }]);
+    expect(await signedOnInput(plan)).toMatch(/^d1 /);
+    // one folder not picked, an id obid doesn't list, a read that fails or doesn't parse: unsigned
+    listing([{ id: 'pr1', name: 'App', folders: ['/Users/me/picked', '/Users/me/never-picked'], repos: [] }]);
+    expect(await signedOnInput(plan)).toBeUndefined();
+    listing([{ id: 'pr2', name: 'App', folders: [], repos: [] }]);
+    expect(await signedOnInput(plan)).toBeUndefined();
+    the.projects = { status: 500, text: '{"error":"projects.json doesn’t read."}' };
+    expect(await signedOnInput(plan)).toBeUndefined();
+    the.projects = { status: 200, text: 'not json' };
+    expect(await signedOnInput(plan)).toBeUndefined();
+    the.projects = { status: 200, text: '{"projects":[]}' };
+    expect(await signedOnInput(plan)).toBeUndefined();
+    // the page's folders never stand for the project's
+    listing([{ id: 'pr1', name: 'App', folders: ['/Users/me/never-picked'], repos: [] }]);
+    expect(await signedOnInput({ ...plan, folders: ['/Users/me/picked'] })).toBeUndefined();
+    // words with no project: no read of main's
+    expect(await signedOnInput({ said: 'Fix the login', new: true })).toMatch(/^d1 /);
+    expect(the.calls.some((c) => c.path === '/v1/projects')).toBe(false);
   });
 });
