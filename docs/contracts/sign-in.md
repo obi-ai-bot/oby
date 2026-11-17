@@ -26,7 +26,7 @@ The business behavior contract for why a sign-in didn't take, shown under its ow
 | `busy` | a task of the account is queued or running, it's being removed, a sign-in of the other kind is under way (`?with=chatgpt`), or GitHub's sign-in is starting | `409` | `Codex is busy with a task. Try again when it’s done.`; GitHub: `GitHub’s sign-in is already starting. Try again in a moment.` |
 | `didNotStart` | the login (or gh) gave no link or code, or couldn't start; Tetrix's sign-in server didn't register Oby | `502` | `GitHub’s sign-in didn’t start. Try again.` |
 | `codeRefused` | Claude Code didn't sign in with the code pasted | `422` | `That code didn’t work. Connect again for a new one.` |
-| `badAddress` | a Tetrix address that isn't HTTPS (or loopback HTTP), one with a login, a fragment or a query other than `?org=<uuid>` (the organization a login in several answers for, #1667), or an unknown preset | `422` | `That isn’t a Tetrix address Oby can use.` |
+| `badAddress` | a Tetrix address that isn't HTTPS (or loopback HTTP), one with a login, a fragment or a query other than `?org=<uuid>` (the organization a login in several answers for, #1667), or an unknown preset (the app never sends one: [tetrix-url.md](tetrix-url.md)) | `422` | `That isn’t a Tetrix address Oby can use.` |
 | `noSignIn` | that Tetrix's metadata, sign-in server or client can't be found or used | `502` | `That Tetrix doesn’t say where to sign in.` |
 
 One more `reason` isn't a failure to start: `sameAccount` with `sameAs` (`409`), a new account whose sign-in turned out to be another's login again (docs/contracts/accounts.md, ACCOUNTS-7). Settings' sheet says `That’s Personal again`.
