@@ -41,6 +41,8 @@
 //   SLOWFAIL <ms>  waits that long, then ends the turn with an error result
 //   FAIL           ends the turn with an error result
 //   USAGE          says "used" in a result line with usage: 11 in, 7 out, 5 cache read, 3 written
+//   (an own session's first turn waits for the owner's slowest MCP server as Claude Code 2.1.325
+//   does, below: `slow-mcp-ms` in its account's folder says how long that server takes)
 //   FULL ON <w>    on an account whose login's access token holds <w>, says the account is full
 //                  (a refused rate_limit_event) and ends the turn with Claude Code's usage-limit
 //                  error; elsewhere says "answered"
@@ -88,6 +90,25 @@ if (process.env.CLAUDE_CONFIG_DIR && !argv.includes("--json-schema")) {
   beat();
   setInterval(beat, 100).unref();
 }
+// As Claude Code 2.1.325, measured on a Mac on 2026-11-16 (CONVERSATION-AGENT-24): a session that
+// loads the owner's own MCP servers (no --strict-mcp-config) and is given an --mcp-config holds its
+// first turn until each of them has answered, 30 s at most from its start, unless ToolSearch is
+// among its --tools and CLAUDE_CODE_MCP_STARTUP_WAIT_MS is 0. The owner's slowest server answers
+// after the milliseconds `slow-mcp-ms` in its account's folder holds (none: at once). With that
+// hold lifted, a --mcp-config server that isn't `alwaysLoad` isn't connected yet on the first turn.
+const ownServers = conversation && !argv.includes("--strict-mcp-config");
+const lifted =
+  ownServers && (flag("--tools") ?? "").split(",").includes("ToolSearch") && process.env.CLAUDE_CODE_MCP_STARTUP_WAIT_MS === "0";
+const slowest = (() => {
+  try {
+    return Number(readFileSync(join(process.env.CLAUDE_CONFIG_DIR ?? ".", "slow-mcp-ms"), "utf8")) || 0;
+  } catch {
+    return 0;
+  }
+})();
+const holdUntil = ownServers && !lifted ? Date.now() + Math.min(slowest, 30000) : 0;
+// The owner's messages it has had: a server not yet connected on the first is connected after it.
+let heard = 0;
 const resumed = flag("--resume");
 // Its session, once a turn ran in it: the one a later message goes on with.
 let going = resumed;
@@ -115,6 +136,9 @@ async function mcp(name, tool, args) {
   const config = JSON.parse(readFileSync(flag("--mcp-config"), "utf8"));
   const server = config.mcpServers[name];
   if (!server) return null;
+  if (lifted && heard === 1 && server.alwaysLoad !== true) {
+    return { jsonrpc: "2.0", id: 1, error: { code: -32000, message: `MCP server ${name} isn't connected yet` } };
+  }
   const method = tool.includes("/") || tool === "initialize" ? tool : "tools/call";
   const answer = await fetch(server.url, {
     method: "POST",
@@ -148,7 +172,7 @@ const NOTE = "Done: the first half.\nLeft: the second half.\nFailed: nothing.\nO
 const stalls = join(process.env.CLAUDE_CONFIG_DIR ?? ".", "stalls");
 
 const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
-rl.on("line", (line) => {
+const handle = (line) => {
   let message;
   try {
     message = JSON.parse(line);
@@ -167,6 +191,7 @@ rl.on("line", (line) => {
     return asks.length ? askNext() : result(`perms: ${answers.join(" ")}`);
   }
   if (message.type !== "user") return;
+  heard += 1;
   const prompt = typeof message.message.content === "string" ? message.message.content : "";
   appendFileSync(
     join(records, "turns.jsonl"),
@@ -221,7 +246,17 @@ rl.on("line", (line) => {
     return;
   }
   act(prompt.split("\n").pop(), prompt, before).catch(failed);
-});
+};
+// Lines that come while the first turn is held wait for it, in order.
+const queued = [];
+let holding = holdUntil > Date.now();
+if (holding) {
+  setTimeout(() => {
+    holding = false;
+    queued.splice(0).forEach(handle);
+  }, holdUntil - Date.now());
+}
+rl.on("line", (line) => (holding ? queued.push(line) : handle(line)));
 
 // What 2.1.302 ends with when the prompt doesn't fit its model.
 const toolong = () => emit({ type: "result", subtype: "success", is_error: true, num_turns: 1, terminal_reason: "prompt_too_long", api_error_status: 400, result: "Prompt is too long · the request is ~250000 tokens (limit 200000)", session_id: session });
