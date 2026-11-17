@@ -996,7 +996,7 @@ impl Jobs {
             match tool {
                 Tool::Claude => {
                     // The owner's words go into it as they come, while its run opened that
-                    // (crate::steer, TASKCONV-32).
+                    // (crate::steer, TASKCONV-33).
                     let steer = self.lock().steers.get(id).cloned();
                     agent::run_turn_steered(
                         launch,
