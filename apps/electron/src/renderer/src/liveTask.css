@@ -52,29 +52,44 @@
 .ss-earlier { align-self: center; }
 .ss-earlier button { padding: 4px 10px; border: 0; border-radius: var(--radius-pill); background: rgba(255, 255, 255, 0.08); color: var(--text); font: inherit; font-size: var(--text-sm); cursor: pointer; }
 .lt-thread .ss-clock { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 14px; font-variant-numeric: tabular-nums; }
-/* the decision it waits on, under a line, then its box (Stop in it while it runs) */
-.lt-thread-ask { padding-top: 2px; border-top: 1px solid var(--divider); }
-.lt-thread-ask .tc-ask { margin-top: 8px; border-top: 0; }
+/* a decision answered here: one line where it was asked (LIVETASK-27) */
+.lt-answered { margin: 2px 0; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--text-sm); line-height: 17px; }
 .chat-composer.lt-box { max-width: none; margin: 0; padding: 0; }
 /* the card's box talks to its agent: no usage of Oby's accounts, no talking to Oby (screens 03 and 04) */
 .lt-box .composer-usage, .lt-box .composer-voice { display: none; }
 
 /* A task's card in the conversation (Sangam's screen 03): what it's on now, its stages as a bar; waiting
-   on the owner, the decision under its head (screen 04) */
+   on the owner, its head alone (the decision waits over the message box: LIVETASK-25) */
 .msg-task-now { font-size: var(--text-sm); line-height: 17px; white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
 .msg-task .msg-task-stages { margin-top: 8px; max-height: none; }
 .msg-task-stages .is-needs { background: var(--needs); }
-.msg-task-work.is-asking .msg-task { border-bottom-left-radius: 0; border-bottom-right-radius: 0; border-bottom-color: var(--divider); }
-.msg-task-ask { padding: 2px 14px 12px 38px; border: 1px solid var(--line); border-top: 0; border-radius: 0 0 14px 14px; background: rgba(255, 255, 255, 0.06); user-select: text; }
-.msg-task-ask .tc-ask { margin-top: 8px; border-top: 0; }
 
 /* A task's own thread (TaskThread, LIVETASK-22): the agent's conversation as a page of its own, its
    head as its card shows it, its box at the foot as a conversation's */
-.agent-layer > .lt-thread { grid-row: 1 / -1; min-height: 0; display: grid; grid-template-rows: 1fr auto; gap: 0; padding: 0; border: 0; border-radius: 0; background: none; }
+.agent-layer > .lt-thread { grid-row: 1 / -1; min-height: 0; display: grid; grid-template-rows: 1fr auto auto; gap: 0; padding: 0; border: 0; border-radius: 0; background: none; }
 .agent-layer .lt-thread-scroll { min-height: 0; }
 .agent-layer .lt-thread-lines { position: absolute; inset: 0; max-height: none; padding: 16px var(--gutter) 24px; }
 .agent-layer .lt-thread-column { max-width: var(--column); margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
 .agent-layer .agent-head { cursor: default; user-select: text; }
 .agent-layer .lt-thread-todos { padding: 4px 0 10px; }
-.agent-layer .lt-thread-ask { padding-top: 0; border-top: 0; }
 .agent-layer .chat-composer.lt-box { max-width: calc(var(--column) + 2 * var(--gutter)); margin: 0 auto; padding: 8px var(--gutter) 16px; width: 100%; box-sizing: border-box; }
+
+/* The decisions waiting on the owner, a drawer on top of the message box (DecisionBar, LIVETASK-24; T3
+   Code's composer drawer): one at a time, on one line, its buttons under it; Details opens the rest */
+.decision-bar { width: 100%; max-width: calc(var(--column) + 2 * var(--gutter)); margin: 0 auto; padding: 8px var(--gutter) 0; box-sizing: border-box; animation: rise 280ms var(--warm) both; }
+.decision-card { padding: 10px 12px 10px 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--chip); user-select: text; }
+.tc-ask.is-bar { margin: 0; padding: 0; border: 0; }
+.tc-ask-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.tc-ask-line .tc-ask-kind { flex: none; }
+.tc-ask-line .tc-ask-head { flex: 1; min-width: 0; margin: 0; font-size: var(--text-md); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tc-ask-from { color: var(--muted); font-weight: 400; }
+.decision-count { flex: none; display: inline-flex; align-items: center; gap: 2px; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; user-select: none; }
+.decision-next, .tc-ask-more { flex: none; display: inline-flex; align-items: center; gap: 2px; padding: 2px 4px; border: 0; border-radius: 6px; background: none; color: var(--muted); font: inherit; font-size: var(--text-sm); cursor: pointer; }
+.decision-next:hover, .tc-ask-more:hover { color: var(--ink); background: var(--hover); }
+.tc-ask-more svg { transition: transform 160ms var(--warm); }
+.tc-ask-more[aria-expanded="true"] svg { transform: rotate(180deg); }
+.tc-ask.is-bar .tc-ask-text { max-height: calc(19px * 8); overflow-y: auto; }
+.tc-ask.is-bar .tc-code { max-height: 160px; overflow-y: auto; }
+.tc-ask-command { display: block; margin: 6px 0 0; padding: 4px 8px; border-radius: 6px; background: rgba(0, 0, 0, 0.3); color: var(--text); font: 12px/18px ui-monospace, "SF Mono", Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tc-ask.is-bar .tc-options { margin-top: 8px; }
+.agent-layer .decision-bar { padding-top: 8px; }

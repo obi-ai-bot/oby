@@ -407,14 +407,18 @@ function asksOf(s: Live): Asking[] {
   ];
 }
 
-// Waiting for you (docs/contracts/home.md, WAITING-1 to 3): everything across the profile's
+// Waiting for you (docs/contracts/home.md, WAITING-1 to 4): everything across the profile's
 // projects that needs the owner's word, as obid sorts it (needs_you), and every merge card
-// (MERGING-21); open, not put off, not while its answer is on its way; longest waiting first. A
+// (MERGING-21); open, not put off (but a task's), not while its answer is on its way; longest waiting first. A
 // view over GET /v1/inbox, with no state of its own.
 export function waitingOf(s: Live): InboxItem[] {
   const now = Date.now();
-  return s.inbox.filter((i) => i.state === 'open' && (i.triage === 'needs_you' || i.kind === 'merge')
-    && !(i.later && Date.parse(i.later) > now) && !s.answering.has(i.id) && !(i.job && s.answered[i.job]?.item === i.id))
+  // a task's decision put off (obid's later, from another device or an earlier build, or that
+  // build's Later) is still the task's to answer: listed until it is (WAITING-4)
+  const tasks = (i: InboxItem) => !!i.job && !!s.jobs[i.job];
+  return s.inbox.filter((i) => (i.state === 'open' || (i.state === 'later' && tasks(i))) && (i.triage === 'needs_you' || i.kind === 'merge')
+    && !(i.later && Date.parse(i.later) > now && !tasks(i)) && !s.answering.has(i.id)
+    && !(i.job && s.answered[i.job]?.item === i.id && s.answered[i.job].option !== 'Later'))
     .sort((a, b) => Date.parse(a.created) - Date.parse(b.created));
 }
 export const useWaitingCount = () => useSyncExternalStore((l) => { listeners.add(l); return () => { listeners.delete(l); }; }, () => waitingOf(state).length);

@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { InboxItem, Job } from '../obid';
 
-// Waiting for you (docs/contracts/home.md, WAITING-1 to 3): one list across the profile's projects
+// Waiting for you (docs/contracts/home.md, WAITING-1 to 4): one list across the profile's projects
 // of what needs the owner's word, over obid's inbox. obid answers through the bridge main gives the
 // page (window.app.obid), stood in for here; the clock is vitest's.
 const call = vi.fn();
@@ -249,5 +249,19 @@ describe('Waiting for you', () => {
     await show(panel());
     expect(row()).toBeUndefined();
     expect(rows()).toHaveLength(0);
+  });
+
+  it('waiting_4_a_tasks_decision_put_off_is_still_listed', () => {
+    fill();
+    const s = live.liveState();
+    // j3's permission put off in obid (another device, an earlier build's Later), with that build's
+    // record of it: still the task's to answer, so still listed; the standalone item put off isn't
+    s.inbox = s.inbox.map((i) => (i.id === 'j3-permission-p1' ? { ...i, state: 'later', later: at(-60) } : i));
+    s.answered = { j3: { ask: { kind: 'permission', headline: 'Run xcodebuild', text: '', options: ['Allow', 'Deny'] }, option: 'Later', item: 'j3-permission-p1', until: Date.now() + 3600_000 } };
+    expect(live.waitingOf(s).map((i) => i.id)).toEqual(['merge-j2', 'merge-j1', 'j3-permission-p1']);
+    expect(live.waitingOf(s).map((i) => i.id)).not.toContain('later-1');
+    // answered (not put off), it leaves while its answer is on its way
+    s.answered = { j3: { ...s.answered.j3, option: 'Allow' } };
+    expect(live.waitingOf(s).map((i) => i.id)).not.toContain('j3-permission-p1');
   });
 });

@@ -8,6 +8,7 @@ import ObyFaceLive from './ObyFaceLive';
 import { markRead, say, useConvos } from './peers';
 import StatusDot, { TaskMark } from './StatusDot';
 import { AskBlock, resultLine } from './TaskCard';
+import DecisionBar, { type Pending } from './DecisionBar';
 import { useScrollThumb } from './useScrollThumb';
 import TaskMenu from './TaskMenu';
 import { replyTarget, type Box } from './replyTarget';
@@ -37,9 +38,9 @@ export const clock = (ago: number) => {
   return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString([], { weekday: 'short' })} ${time}`;
 };
 
-// One entry in the thread: a message, or the decision the task needs from you
-// (Oby asking, so it sits on Oby's side).
-type Entry = Message | { who: 'oby'; ask: true; ago: number };
+// One entry in the thread: a message (the decision a task needs from you waits over the message box,
+// DecisionBar, never in the thread: LIVETASK-24)
+type Entry = Message;
 
 // A conversation. kind 'oby': one with Oby (chats.ts), opened from
 // Conversations or started on Home: what you asked, Oby's answers with the
@@ -85,13 +86,9 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   const [menu, setMenu] = useState<{ id: string; at: DOMRect } | null>(null);
   const menuTask = menu && tasks.find((t) => t.id === menu.id);
   const agent = j ? agentOf(j.agent).name : 'Oby';
-  // a task's: what came before, the decision (if any) where things stand, then
-  // what's been said since (the decision has been waiting since Oby's last
-  // word, so no time of its own)
-  const before = j ? threadOf(j) : [];
+  // a task's: what came before, then what's been said since
   const thread: Entry[] = task ? [
-    ...before,
-    ...(task.status === 'needs' && j!.ask ? [{ who: 'oby' as const, ask: true as const, ago: before.at(-1)!.ago }] : []),
+    ...(j ? threadOf(j) : []),
     ...(task.said ?? []),
   ] : talk ? talk.said : convo!.messages.map((m): Message => (m.who === 'you'
     ? { who: 'you', text: m.text, ago: m.ago, jobs: [...(m.task ? [m.task] : []), ...(m.jobs ?? [])], files: m.files, obys: m.obys }
@@ -151,6 +148,19 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
     return () => removeEventListener('keydown', onKey);
   }, [onBack, covered]);
 
+  // the decisions waiting over the message box: this task's own, else those of the tasks this
+  // conversation started (each named by its task: carded here, or its job's conversation, its card
+  // not placed yet), then an account's limit stopping its work
+  const carded = [...new Set([...thread.flatMap((m) => m.jobs ?? []), ...(talk ? tasks.filter((t) => t.job.conversation === talk.id).map((t) => t.id) : [])])];
+  const pending: Pending[] = [
+    ...(task ? (task.status === 'needs' && j!.ask ? [{ key: task.id, task }] : [])
+      : carded.flatMap((jid) => {
+        const t = tasks.find((x) => x.id === jid);
+        return t && t.status === 'needs' && t.job.ask ? [{ key: t.id, task: t, from: t.title }] : [];
+      })),
+    ...limits.map((a) => ({ key: a.id, task: { id: a.id, job: { ask: a.ask! } } })),
+  ];
+
   // where the message box's words go: Oby, a task's own agent, or another Oby (replyTarget)
   const foot: Box = { foot: task ? { kind: 'task', id: task.id } : talk ? { kind: 'oby', id: talk.id } : { kind: 'peer', id: convo!.id } };
   const sendFoot = (text: string, att: Parameters<typeof tellChat>[2]) => {
@@ -180,10 +190,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                   ...('steps' in m && m.steps?.length ? [<Steps key="steps" steps={m.steps} looked={m.looked ?? m.steps.length} asked={m.asked} />] : []),
                   // what went with yours: photos and files (Obys are @mentions in the words; tasks: cards, below)
                   ...('files' in m && m.files?.length ? [<Attached key="att" files={m.files} />] : []),
-                  // the decision the task needs from you, as on its card
-                  'ask' in m ? (
-                    <div key="ask" className="msg-ask"><AskBlock task={task!} inChat /></div>
-                  ) : m.who === 'peer' ? (
+                  m.who === 'peer' ? (
                     // another Oby's answer to what Oby asked: quoted in Oby's turn,
                     // under its owner's picture and name
                     <blockquote key="text" className="msg-quote"><PeerByline name={(m as Message).by!} /><Said text={m.text} /></blockquote>
@@ -227,7 +234,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                       : <span className="msg-face"><Face live={working && i === head && !covered} talk={i === head && !covered ? talking?.text.length : undefined} color={helper?.color} /></span>)}
                     {parts}
                     {last && !(m as Message).streaming && !(typing && i === thread.length - 1 && side === 'oby') ? (
-                      <div className={`msg-end${end?.type === ThreadTask || end?.type === SetupCard || end?.type === OfferCard || end?.type === AskCard || 'ask' in m || (m as Message).confirm ? ' is-wide' : ''}`}>
+                      <div className={`msg-end${end?.type === ThreadTask || end?.type === SetupCard || end?.type === OfferCard || end?.type === AskCard || (m as Message).confirm ? ' is-wide' : ''}`}>
                         {end}
                         <time className="msg-time">{clock(m.ago)}</time>
                       </div>
@@ -259,8 +266,6 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                 </div>
               )}
             </div>
-            {/* an account's limit stopping this work: its decision, as on Home's stack */}
-            {limits.map((a) => <div key={a.id} className="msg-ask"><AskBlock task={{ id: a.id, job: { ask: a.ask! } }} inChat /></div>)}
           </div>
         </section>
         <div {...thumbProps} />
@@ -282,6 +287,9 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
           </div>
         </div>
       )}
+      {/* what this conversation's tasks, or this task, wait on the owner for, and an account's limit
+          stopping its work: one line each, over the message box (LIVETASK-24 to 27) */}
+      <DecisionBar pending={pending} />
       <Composer
         style={{ '--i': 2 } as React.CSSProperties}
         placeholder={convo ? `Message ${convo.with.length > 1 ? 'the group' : `${writer}’s Oby`}…` : helper ? `Message ${helper.name}…` : !task ? 'Reply to Oby…' : tellPlaceholder(task, agent)}
@@ -345,8 +353,9 @@ const Face = ({ live = false, talk, color }: { live?: boolean; talk?: number; co
 // its title, how it stands, who has it and where ("Running · Claude Code · oby"), while it works what
 // it's on now, and its stages as a bar; its status mark at the right (as on its nested row in the side
 // panel). A click opens its own thread, a conversation of its own over this one (LIVETASK-22): the
-// card never opens in place. Waiting on the owner, the decision shows under its head, answered right
-// there (screen 04, LIVETASK-9). A right-click opens its menu (onMenu, at the pointer); in a task's own
+// card never opens in place. Waiting on the owner, it stays its head alone: "Needs you", the stage it
+// waits on orange; the decision waits over the message box (DecisionBar, LIVETASK-9, LIVETASK-25).
+// A right-click opens its menu (onMenu, at the pointer); in a task's own
 // thread, its own card just shows where it stands. A status this build doesn't know says no word and
 // shows StatusDot's neutral mark (docs/contracts/wire.md, WIRE-3).
 export function ThreadTask({ task, current, onOpen, onMenu }: {
@@ -356,9 +365,8 @@ export function ThreadTask({ task, current, onOpen, onMenu }: {
   onMenu?: (at: DOMRect) => void;
 }) {
   const body = <TaskHead task={task} go={!current} />;
-  const needs = task.status === 'needs' && !!task.job.ask && !current;
   return (
-    <div className={`msg-task-work${task.status === 'running' || task.status === 'needs' ? ' is-live' : ''}${needs ? ' is-asking' : ''}`}>
+    <div className={`msg-task-work${task.status === 'running' || task.status === 'needs' ? ' is-live' : ''}`}>
       {current
         ? <div className="msg-task">{body}</div>
         : (
@@ -371,7 +379,6 @@ export function ThreadTask({ task, current, onOpen, onMenu }: {
             {body}
           </button>
         )}
-      {needs && <div className="msg-task-ask"><AskBlock task={task} inChat /></div>}
     </div>
   );
 }

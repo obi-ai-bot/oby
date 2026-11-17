@@ -58,7 +58,7 @@ Tests: `apps/electron/src/renderer/src/test/chatFirst.test.tsx`, `test/leftPanel
 - **CHATFIRST-5:** A tile opens the Obysphere's column, and its room only chat first; a teammate's Oby opens from its row, and Chats brings you back to your conversation.
 - **CHATFIRST-6:** A task opens from its card's menu in the conversation (a right-click, View details), and back returns to that conversation.
 - **CHATFIRST-7:** Retired with the Tasks icon (2026-11-03). Review PR, Issues and Tasks open from Home's chips with `?home`.
-- **CHATFIRST-8:** What Oby is asking shows over your conversation and is answered there in one click. Taller than the window it scrolls, so its choices stay reachable. An alert already out for one with no task goes.
+- **CHATFIRST-8:** What Oby is asking with no task to show it on (a Confirm, GitHub's offer, another Oby's question) shows over your conversation and is answered there in one click; a task's decision waits in the drawer over its own conversation's and thread's message box instead (live-task.md, LIVETASK-24, [why](../decisions/2026-11-17-decisions-like-t3-code.md)). Taller than the window it scrolls, so its choices stay reachable. An alert already out for one with no task goes.
 - **CHATFIRST-9:** From a page opened from the side panel, back returns to the conversation you were last in, or to the empty chat if that's where you were, your words still in its box; the panel goes back to the chats. Esc in your conversation stays there.
 - **CHATFIRST-10:** First run still works and lands on the empty chat, its Oby in place. Its window is setting up's narrow one, so that first landing keeps the side panel closed; the next launch opens it.
 - **CHATFIRST-12:** Deleting the conversation you're in goes to your latest, and when it was the last one, to the empty chat.
@@ -73,7 +73,7 @@ Tests: `apps/electron/src/renderer/src/test/chatFirst.test.tsx`, `test/leftPanel
 - **CHATFIRST-20:** Archived is at the foot of Chats once something's in it, opens as a page, and a task in it opens.
 - **CHATFIRST-21 (`dots_1_row_when_its_task_needs_you`, `dots_2_chats_icon`):** A task that needs you lights its conversation's row, however far down, and the Chats icon. One running marks its row as working and lights nothing.
 - **CHATFIRST-22:** A conversation asking by itself, Oby's question back included, lights its row and the icon. What has no row lights Oby's. GitHub's work no one's started lights nothing. The icon is never lit with no row lit.
-- **CHATFIRST-23 (`chats_4_asks_still_show`):** The stack shows on the empty chat and over a conversation.
+- **CHATFIRST-23 (`chats_4_asks_still_show`):** The stack shows on the empty chat, every decision in it; over a conversation, only what has no task (CHATFIRST-8).
 - **CHATFIRST-24 (`hello_1_no_name_invented`):** The empty chat's line is "What do you want me to work on?", with no name, whatever is running or waiting, its box "Message Oby…"; `?home` keeps Sangam's line and prompts.
 - **CHATFIRST-25:** A job's permission, agent's question, plan, merge or question lights its conversation's row and the icon, and is on the stack.
 - **CHATFIRST-26:** So does one on a job past the latest 100 obid lists, on the first load and when its item comes as an event.
