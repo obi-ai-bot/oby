@@ -11,6 +11,7 @@ import { updating } from './updates';
 import { localSettings, loginDefault } from './settings';
 import { menu } from '../shared/menu';
 import { sphering } from './sphere';
+import { stays } from './navigate';
 import { ipc } from './ipc';
 import { childGone, quit, quitting, renderFailed, rendererGone, started, windowLoaded } from './runMarker';
 import { flag, https, string } from '../shared/decode';
@@ -175,10 +176,11 @@ function createWindow() {
   // Oby's alerts (notify.ts): none for what the window shows while it's in front
   win.on('focus', windowSeen);
   for (const ev of ['blur', 'hide', 'minimize'] as const) win.on(ev as 'blur', windowLeft);
-  // the page holds obid's API through main: it never leaves for another page or opens one (in dev,
-  // only to itself with other words after ?, like ?welcome)
+  // the page holds obid's API through main: it never leaves for another page or opens one, but may
+  // reload itself (another profile opened, PROFILES-42); in dev, also go to itself with other words
+  // after ?, like ?welcome (navigate.ts)
   win.webContents.on('will-navigate', (e, url) => {
-    if (!dev || new URL(url).origin !== new URL(win!.webContents.getURL()).origin) e.preventDefault();
+    if (!stays(url, win!.webContents.getURL(), dev)) e.preventDefault();
   });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   // its page loaded: this start counts as a good one (runMarker.ts)

@@ -196,8 +196,8 @@ describe('a task at work', () => {
     // a click on it opens the task's thread, by its id
     const { ThreadTask } = await import('../ChatView');
     const onOpen = vi.fn();
-    const el = ThreadTask({ task: await taskOf('j1'), current: false, onOpen }) as React.ReactElement<{ children: React.ReactElement<{ onClick: () => void }>[] }>;
-    el.props.children[0].props.onClick();
+    const el = ThreadTask({ task: await taskOf('j1'), current: false, onOpen }) as React.ReactElement<{ children: React.ReactElement<{ onClick: () => void }> }>;
+    el.props.children.props.onClick();
     expect(onOpen).toHaveBeenCalledWith('j1');
     // finished: no Stop, and what the box does then
     page.boxes = {};
@@ -287,31 +287,104 @@ describe('a task at work', () => {
     expect(s1).toContain('data-stop="yes"');
   });
 
-  it('LIVETASK-9: waiting on you, the card says for what, and opened it carries the decision with its options', async () => {
+  it('LIVETASK-9: waiting on you, the card says so, and its own thread carries the decision over its box', async () => {
     const { card, opened } = await views([plan], { ask }, 'needs');
     expect(card).toContain('>Needs you · Claude Code');
-    // the decision under the card's head, answered right there (screen 04), no running sheen
-    expect(card).toMatch(/^<div class="msg-task-work is-live is-asking">.*status-dot is-needs.*<div class="msg-task-ask">.*Run npm test\?.*>Allow<.*>Deny</);
+    // the card says so with its mark, no running sheen, and no decision under it (LIVETASK-25)
+    expect(card).toMatch(/^<div class="msg-task-work is-live"><button class="msg-task is-link".*status-dot is-needs/);
     expect(card).not.toContain('sheen');
-    // and in its own thread: the decision's options, then a box with send and no Stop
-    expect(opened).toMatch(/^<div class="chat-layer agent-layer">.*lt-thread-ask.*>Allow<.*>Deny<.*placeholder="Tell Claude Code…"/);
+    expect(card).not.toContain('tc-ask');
+    // in its own thread: the decision over its box, then the box with send and no Stop
+    expect(opened).toMatch(/^<div class="chat-layer agent-layer">.*<\/section>.*class="decision-bar".*Run npm test\?.*>Allow<.*>Deny<.*placeholder="Tell Claude Code…"/);
     expect(opened).not.toContain('data-stop');
     expect(page.boxes['Tell the agent about Fix the login test'].onStop).toBeUndefined();
   });
 
   it('LIVETASK-15: a card goes with its job, its decision too', async () => {
-    expect(await conversation()).toContain('class="msg-task-ask"');
+    expect(await conversation()).toContain('class="decision-bar"');
     const gone = await conversation(['j1']);
     expect(gone).not.toContain('Run the tests');
-    expect(gone).not.toContain('msg-task-ask');
+    expect(gone).not.toContain('decision-bar');
   });
 
-  it('LIVETASK-16: a card that needs you shows the decision under its head; one at work shows none, and none opens in place', async () => {
+  it('LIVETASK-16: no card shows a decision, at work or waiting on you, and none opens in place', async () => {
     const html = await conversation();
-    expect(cardOf(html, 'Run the tests')).toMatch(/<div class="msg-task-ask">.*>Allow</);
-    expect(cardOf(html, 'Fix the login test')).not.toContain('msg-task-ask');
+    expect(cardOf(html, 'Run the tests')).not.toContain('tc-ask');
+    expect(cardOf(html, 'Fix the login test')).not.toContain('tc-ask');
     expect(html).not.toContain('lt-thread');
     expect(html).not.toContain('aria-expanded="true"');
+  });
+
+  it('LIVETASK-24: a conversation\'s pending decision waits over its message box, on one line, from its task, with its buttons and Later', async () => {
+    const html = await conversation();
+    // after the thread, before the box
+    expect(html).toMatch(/<\/section>.*class="decision-bar".*<input placeholder="Reply to Oby…"/);
+    const bar = html.slice(html.indexOf('class="decision-bar"'), html.indexOf('<input'));
+    // one line: its kind, its headline and the task it's from; obid's words behind Details
+    expect(bar).toMatch(/class="tc-ask-line"><span class="tc-ask-kind is-permission">Permission<\/span><p class="tc-ask-head" title="Run npm test\?">Run npm test\?<span class="tc-ask-from"> · Run the tests<\/span><\/p><button type="button" class="tc-ask-more" aria-expanded="false">Details/);
+    expect(bar).not.toContain('It wants to run the tests.');
+    expect(bar).toMatch(/>Allow<.*>Deny<.*>Later</);
+    // one decision: no count
+    expect(bar).not.toContain('decision-count');
+  });
+
+  it('LIVETASK-24: several pending decisions show one at a time, "1 of 2", with the next one\'s arrow; a permission\'s command on one line', async () => {
+    stub();
+    const { default: ChatView } = await import('../ChatView');
+    const { replaceTasks } = await import('../tasks');
+    // obid's why after the command, on a line of its own
+    const bash = { ...ask, headline: 'Run a command?', detail: 'npm test -- --watch=false\nAllowing it lets this task run the tests.' };
+    replaceTasks([{ ...await taskOf('j1', { ask: bash }, 'needs'), title: 'First' }, { ...await taskOf('j2', { ask }, 'needs'), title: 'Second' }]);
+    page.chats = [{ id: 'c1', title: 'Two', said: [{ who: 'oby', text: 'On it.', ago: 4, jobs: ['j1', 'j2'] }] } satisfies Chat];
+    const html = read(renderToStaticMarkup(<ChatView kind="oby" id="c1" leaving={false} onBack={() => {}} onGone={() => {}} onOpenTask={() => {}} />));
+    expect(html).toMatch(/Run a command\?<span class="tc-ask-from"> · First<\/span><\/p><span class="decision-count">1 of 2<button type="button" class="decision-next" aria-label="Next decision"/);
+    expect(html).toContain('<code class="tc-ask-command" title="npm test -- --watch=false\nAllowing it lets this task run the tests.">npm test -- --watch=false</code>');
+    expect(html).not.toContain('>Allowing it');
+    expect(html).not.toContain('· Second');
+  });
+
+  it('LIVETASK-24: a task of the conversation whose card isn\'t placed yet (its turns not loaded) still waits in its drawer', async () => {
+    stub();
+    const { default: ChatView } = await import('../ChatView');
+    const { replaceTasks } = await import('../tasks');
+    replaceTasks([{ ...await taskOf('j2', { ask, conversation: 'c1' }, 'needs'), title: 'Run the tests' }]);
+    page.chats = [{ id: 'c1', title: 'Two', said: [] } satisfies Chat];
+    const html = read(renderToStaticMarkup(<ChatView kind="oby" id="c1" leaving={false} onBack={() => {}} onGone={() => {}} onOpenTask={() => {}} />));
+    expect(html).toMatch(/class="decision-bar".*Run npm test\?<span class="tc-ask-from"> · Run the tests/);
+    // another conversation's task isn't this one's
+    page.chats = [{ id: 'c2', title: 'Other', said: [] } satisfies Chat];
+    const other = read(renderToStaticMarkup(<ChatView kind="oby" id="c2" leaving={false} onBack={() => {}} onGone={() => {}} onOpenTask={() => {}} />));
+    expect(other).not.toContain('decision-bar');
+  });
+
+  it('LIVETASK-25: the card stays lean: its head alone, whatever it waits on, while the decision waits over the box', async () => {
+    const merge = { kind: 'merge' as const, label: 'Ready to merge', headline: 'Merge oby-scratch #4 into main?', text: 'No check ran on its head (this repository has none).\nIts base is main, which Oby merges into only on your word.', options: ['Merge', 'Dismiss'] };
+    const stages = [{ id: 'work', title: 'Work', state: 'done' }, { id: 'publish', title: 'Publish', state: 'current' }] as JobView['stages'];
+    const { card, opened } = await views([], { ask: merge, stages, repo: 'acme/oby-scratch' }, 'needs');
+    // title, "Needs you · Claude Code · oby-scratch", its stages with the one it waits on orange: nothing else
+    expect(card).toContain('>Needs you · Claude Code · oby-scratch<');
+    expect(card).toMatch(/aria-label="Stage 2 of 2: Publish, needs you"><span class="is-done"><\/span><span class="is-needs"><\/span>/);
+    for (const word of ['Merge oby-scratch', 'No check ran', 'Its base is main', '>Merge<', '>Later<']) expect(card).not.toContain(word);
+    // the decision waits over the thread's box, on one line, its holds behind Details
+    expect(opened).toMatch(/class="decision-bar".*<span class="tc-ask-kind is-merge">Ready to merge<\/span><p class="tc-ask-head" title="Merge oby-scratch #4 into main\?">.*>Details<.*>Merge<.*>Dismiss<.*>Later</);
+    expect(opened).not.toContain('No check ran');
+  });
+
+  it('LIVETASK-27: answered in its own thread, one line stays where it was asked: its kind and the answer', async () => {
+    stub();
+    const { default: TaskThread } = await import('../TaskThread');
+    const { replaceTasks } = await import('../tasks');
+    const { SESSIONS } = await import('../session');
+    SESSIONS.j1 = [tool('Read', 'a.ts')];
+    replaceTasks([{ ...await taskOf('j1', { ask }), answer: 'Allow' }]);
+    const html = read(renderToStaticMarkup(<TaskThread id="j1" leaving={false} onBack={() => {}} onGone={() => {}} onOpenAgent={() => {}} />));
+    expect(html).toMatch(/<p class="lt-answered"><svg.*<\/svg>Permission · Allow<\/p>/);
+    expect(html).not.toContain('decision-bar');
+    // put off (Later, from an earlier build or obid): no record, it still waits
+    replaceTasks([{ ...await taskOf('j1', { ask }, 'needs'), answer: 'Later' }]);
+    const waiting = read(renderToStaticMarkup(<TaskThread id="j1" leaving={false} onBack={() => {}} onGone={() => {}} onOpenAgent={() => {}} />));
+    expect(waiting).not.toContain('lt-answered');
+    expect(waiting).toMatch(/class="decision-bar".*>Allow<.*>Deny<.*>Later</);
   });
 
   it('LIVETASK-17: words in a card\'s box reach that job alone; the foot box\'s reach Oby, whatever card is open', async () => {
@@ -362,9 +435,9 @@ describe('a task at work', () => {
     expect(menu).not.toContain('Rename');
     // a right-click on the card: its menu, at the pointer
     const onMenu = vi.fn();
-    const card = ThreadTask({ task, current: false, onOpen: () => {}, onMenu }) as React.ReactElement<{ children: React.ReactElement<{ onContextMenu: (e: object) => void }>[] }>;
+    const card = ThreadTask({ task, current: false, onOpen: () => {}, onMenu }) as React.ReactElement<{ children: React.ReactElement<{ onContextMenu: (e: object) => void }> }>;
     const preventDefault = vi.fn();
-    card.props.children[0].props.onContextMenu({ preventDefault, clientX: 40, clientY: 60 });
+    card.props.children.props.onContextMenu({ preventDefault, clientX: 40, clientY: 60 });
     expect(preventDefault).toHaveBeenCalled();
     expect(onMenu).toHaveBeenCalledWith(expect.objectContaining({ x: 40, y: 60 }));
   });

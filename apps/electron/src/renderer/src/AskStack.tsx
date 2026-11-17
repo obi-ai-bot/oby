@@ -17,7 +17,9 @@ import { answer, asksWaiting, openOnGitHub, tasksWith, useTasks, type Asking, ty
 // stack (what's put off still needs you, so the line above still counts it).
 // Nothing waiting: no stack, and Home is as it always was. On obid, what it asks
 // with no task to show it on (a GitHub offer, a Confirm, an offer to start work)
-// comes after the tasks'.
+// comes after the tasks'. Over a conversation (chat first: except, its id), all but its own tasks':
+// those already wait in the drawer over its message box (DecisionBar, docs/contracts/live-task.md
+// LIVETASK-24), never in a second card over it.
 type Leave = 'out' | 'later' | 'next' | 'prev';
 // a card: what obid asks (tasks.ts), and for a task's decision, its page one click away
 type Entry = Asking & { task?: boolean; answer?: string };
@@ -25,9 +27,9 @@ const entryOf = (t: Task): Entry => ({ id: t.id, title: t.title, who: t.who, bra
 const LEAVE_MS = 320;  // the longest way out (app.css, ask-later and the like)
 let left = 0;
 let keptAt = { id: '', i: 0 };
-export default function AskStack({ active, onOpen, onOpenTalk }: { active: boolean; onOpen: (id: string) => void; onOpenTalk: (id: string) => void }) {
+export default function AskStack({ active, onOpen, onOpenTalk, except }: { active: boolean; onOpen: (id: string) => void; onOpenTalk: (id: string) => void; except?: string }) {
   useTasks();
-  const asks: Entry[] = [...tasksWith('needs').filter((t) => !t.answer).map(entryOf), ...asksWaiting()];
+  const asks: Entry[] = [...tasksWith('needs').filter((t) => !t.answer && (!except || t.job.conversation !== except)).map(entryOf), ...asksWaiting()];
   const n = asks.length;
   // the card on top, and where it was: answered, the one after it takes its place
   // (kept here: chat first, the stack comes and goes with the page under it, and stays where you left it)

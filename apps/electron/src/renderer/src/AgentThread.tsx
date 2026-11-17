@@ -3,13 +3,13 @@ import { useEffect, useMemo } from 'react';
 import { Check } from 'lucide-react';
 import Composer from './Composer';
 import { Earlier, Line, liveFor, useEntries, useLiveEnd, useLiveLines, useTail } from './SessionView';
-import { AskBlock } from './TaskCard';
+import DecisionBar from './DecisionBar';
 import { box as draftBox } from './drafts';
 import { onObid } from './lean';
 import { replyTarget } from './replyTarget';
 import { tellAgent } from './live';
 import { around, lastSteps, thoughtWords, todosOf, type Step, type Todo } from './liveTask';
-import { agentOf } from './view';
+import { ASK_LABEL, agentOf } from './view';
 import { markSeen, stop, tell, tellPlaceholder, useTasks, type Task } from './tasks';
 
 // How the to-do it's on stands: at work, waiting on you, stopped by a failure, or just ended;
@@ -88,7 +88,7 @@ export function WorkNow({ task, onClick }: { task: Task; onClick?: () => void })
 
 // The agent's own conversation (Sangam's screens 03 and 04, docs/design/oby-home/), a task's own
 // thread (TaskThread, LIVETASK-22): from the start, what it said, did and thought and what you told it, its to-dos on
-// top, the decision it waits on, and the box to tell it something (POST /v1/jobs/{id}/messages), with
+// top, the decision it waits on over its box (DecisionBar), and the box to tell it something (POST /v1/jobs/{id}/messages), with
 // Stop in it while it runs. Told something once it's finished, it starts a follow-up (onFollowUp).
 export default function AgentThread({ id, onFollowUp, head }: { id: string; onFollowUp: (id: string) => void; head?: React.ReactNode }) {
   const tasks = useTasks();
@@ -119,11 +119,16 @@ export default function AgentThread({ id, onFollowUp, head }: { id: string; onFo
             <Earlier count={tail.earlier} onClick={tail.more} />
             {tail.shown.map((e, i) => <Line key={e.n ?? i} entry={e} job={id} brand={agent.brand} live={liveFor(e, live)} inCard />)}
           </ol>
-          {task.status === 'needs' && j.ask && <div className="lt-thread-ask"><AskBlock task={task} inChat /></div>}
+          {/* answered here: one line where it was asked, until obid asks something else (LIVETASK-27) */}
+          {task.status !== 'needs' && j.ask && task.answer && task.answer !== 'Later' && (
+            <p className="lt-answered"><Check size={12} strokeWidth={2} />{j.ask.label ?? ASK_LABEL[j.ask.kind] ?? j.ask.kind} · {task.answer}</p>
+          )}
           </div>
         </section>
         <div {...thumbProps} />
       </div>
+      {/* the decision it waits on, over its box (LIVETASK-24) */}
+      <DecisionBar pending={task.status === 'needs' && j.ask ? [{ key: id, task }] : []} />
       <Composer
         className="lt-box"
         placeholder={tellPlaceholder(task, agent.name)}

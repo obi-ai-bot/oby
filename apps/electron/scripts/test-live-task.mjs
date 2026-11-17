@@ -3,8 +3,9 @@
 // agent, account or GitHub. What only this proves: a task shows as a row nested under its conversation,
 // its card and its row open its own thread over the conversation (never in place) and back returns, the
 // thread's box tells it and its follow-up opens as its own thread, Stop in the box stops it, a tool line
-// fetches its detail and stays that call's as the to-dos change, a deleted job's thread and card go, and
-// the card's menu opens the task's page.
+// fetches its detail and stays that call's as the to-dos change, a deleted job's thread and card go, a
+// real permission waits in the drawer over the message box with the card lean and Later only taking it off
+// that drawer (LIVETASK-24 to 27), and the card's menu opens the task's page.
 // Screenshots go to OBY_LIVE_SHOTS (a folder), when it's set.
 // Run: OBY_TEST_OBID=<obid> (else core/target/debug/obid), npm run build, then npm run test:live-task.
 import assert from 'node:assert/strict';
@@ -181,6 +182,7 @@ async function main() {
   await until('it goes', async () => (await card('The long one').count()) === 0 && (await kid('The long one').count()) === 0 && (await page.locator('.agent-layer').count()) === 0, 15_000);
   ok('LIVETASK-15 a deleted job’s thread, card and row go with it');
 
+
   // LIVETASK-18: the card's menu (right-click), View details: the task's page; then, LIVETASK-15 again
   // where every list is in the session, Full session
   const second = await dispatch('The second list', 'TODOS', talkBox);
@@ -197,6 +199,50 @@ async function main() {
   assert.equal(await session.locator('.ss-tool.is-open', { hasText: 'echo alpha' }).count(), 1, 'the same call stays open');
   await until('it ends', async () => ended(await s.call('GET', `/v1/jobs/${second.id}`)), 60_000);
   ok('LIVETASK-13, -15 Full session: one list, and an opened line stays that call’s');
+
+  // back from the task's page to the conversation
+  await page.locator('.crumbs button.crumb').first().click();
+  await until('the conversation', () => page.locator(talkBox).evaluate((el) => el.checkVisibility()).catch(() => false), 10_000);
+
+  // LIVETASK-24 to 27: a real permission waits in the drawer over the message box, the card lean; Later
+  // takes it off that drawer only, and the row, Waiting for you and the task's thread still have it
+  // (a mode that asks: a new install runs in Bypass, #1602; last, since going back to Bypass takes a
+  // signed click)
+  await s.call('PUT', '/v1/settings/permissions', { mode: 'ask' });
+  const asking = await dispatch('The ask', 'ASK: {"tool":"Bash","input":{"command":"curl https://example.invalid"}}', talkBox);
+  await until('it asks', async () => (await s.call('GET', `/v1/jobs/${asking.id}`)).permission, 30_000);
+  const drawer = page.locator('.chat-layer:not(.agent-layer):not(.is-leaving) .decision-bar');
+  await until('the drawer over the box', () => drawer.count(), 15_000);
+  assert.match(await drawer.locator('.tc-ask-line').innerText(), /^Permission\s+The ask/);
+  assert.equal(await drawer.locator('.tc-ask-command', { hasText: 'curl https://example.invalid' }).count(), 1, 'its command on one line');
+  assert.equal(await card('The ask').locator('.tc-ask, .tc-option').count(), 0, 'the card stays lean');
+  assert.match(await card('The ask').locator('.msg-task-meta').innerText(), /^Needs you · /);
+  await until('its row needs you', () => kid('The ask').locator('.status-dot.is-needs').count(), 15_000);
+  await shot('9-drawer');
+  ok('LIVETASK-24, -25 the decision waits on one line over the message box; the card is its head alone');
+  await sleep(600);
+  await drawer.getByRole('button', { name: 'Later', exact: true }).click();
+  await until('off the drawer', async () => (await drawer.count()) === 0);
+  await sleep(500);
+  assert.ok((await s.call('GET', `/v1/jobs/${asking.id}`)).permission, 'it still asks');
+  const inbox = await s.call('GET', '/v1/inbox');
+  const items = Array.isArray(inbox) ? inbox : inbox.items ?? [];
+  assert.ok(items.filter((i) => i.job === asking.id).every((i) => !i.later), 'nothing put off in obid');
+  assert.equal(await kid('The ask').locator('.status-dot.is-needs').count(), 1, 'its row still needs you');
+  assert.match(await card('The ask').locator('.msg-task-meta').innerText(), /^Needs you · /);
+  await shot('10-later');
+  await kid('The ask').click();
+  await until('its thread', () => thread().count());
+  const own = page.locator('.agent-layer:not(.is-leaving) .decision-bar');
+  await until('the decision again, over its box', () => own.count(), 15_000);
+  ok('LIVETASK-26 Later takes it off that drawer only: the row still needs you, and the task shows it again');
+  await sleep(600);
+  await own.locator('.tc-option', { hasText: /^Allow( once)?$/ }).first().click();
+  await until('answered', async () => !(await s.call('GET', `/v1/jobs/${asking.id}`)).permission, 30_000);
+  await until('one line where it was asked', () => thread().locator('.lt-answered', { hasText: /^Permission · Allow/ }).count(), 15_000);
+  assert.equal(await own.count(), 0, 'the drawer goes');
+  await shot('11-answered');
+  ok('LIVETASK-27 answered, one line stays in its thread');
 
   assert.deepEqual(errors, [], 'no errors on the page');
 }

@@ -230,20 +230,49 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
 // pick (Home's stack, to send the card away). A check's Edit opens the command
 // in a field, in place of the choices: Use it keeps what's typed. A kind this build doesn't know
 // is a gray label with no choices, not even Later (docs/contracts/wire.md, WIRE-2).
-export function AskBlock({ task, inChat = false, onAnswer }: { task: Pick<Task, 'id' | 'answer'> & { job: Pick<Task['job'], 'ask'> }; inChat?: boolean; onAnswer?: (option: string) => void }) {
+// bar: the drawer over the message box (DecisionBar, LIVETASK-24): its kind and headline on one line
+// (from: the task it's from, in a conversation), obid's text and a check's command behind Details,
+// a permission's command on one line, and Later only the drawer's own onLater, never an answer.
+export function AskBlock({ task, inChat = false, onAnswer, bar }: {
+  task: Pick<Task, 'id' | 'answer'> & { job: Pick<Task['job'], 'ask'> }; inChat?: boolean; onAnswer?: (option: string) => void;
+  bar?: { onLater: () => void; from?: string; count?: React.ReactNode };
+}) {
   const ask = task.job.ask!;
   // a click before its words have shown answers nothing: on Home, a double-click on the card
   // answered would land on the next one's buttons (one click, one answer)
   const [shownAt] = useState(() => performance.now());
   const [editing, setEditing] = useState<string | null>(null);
   const [hold, setHold] = useState(false);
+  const [open, setOpen] = useState(false);
   const pick = (o: string, words?: string) => { if (performance.now() - shownAt < 500) return; answer(task.id, o, words); onAnswer?.(o); };
+  const later = () => (bar ? bar.onLater() : pick('Later'));
+  const kind = <span className={`tc-ask-kind is-${ask.unknown ? 'unknown' : ask.kind}`}>{ask.label ?? ASK_LABEL[ask.kind] ?? ask.kind}</span>;
+  // in the drawer: a permission's command on one line (its first: obid's why may follow it), and
+  // behind Details what's left (obid's words, the rest of the command, a check's or review's text)
+  const command = ask.kind === 'permission' && ask.detail ? ask.detail.split('\n')[0] : undefined;
+  const more = !!bar && (!!ask.text || (!!ask.detail && ask.detail !== command));
+  // (the task it's from, unless the headline says it already)
+  const from = bar?.from && bar.from !== ask.headline ? bar.from : undefined;
   return (
-    <div className={`tc-ask${ask.fullText ? ' is-full' : ''}${ask.steer ? ' is-steer' : ''}`}>
-      <span className={`tc-ask-kind is-${ask.unknown ? 'unknown' : ask.kind}`}>{ask.label ?? ASK_LABEL[ask.kind] ?? ask.kind}</span>
-      <p className="tc-ask-head">{ask.headline}</p>
-      <p className="tc-ask-text">{ask.text}</p>
-      {ask.detail && editing === null && <pre className="tc-code">{ask.detail}</pre>}
+    <div className={`tc-ask${ask.fullText ? ' is-full' : ''}${ask.steer ? ' is-steer' : ''}${bar ? ' is-bar' : ''}`}>
+      {bar ? (
+        <div className="tc-ask-line">
+          {kind}
+          <p className="tc-ask-head" title={ask.headline}>{ask.headline}{from && <span className="tc-ask-from"> · {from}</span>}</p>
+          {bar.count}
+          {more && (
+            <button type="button" className="tc-ask-more" aria-expanded={open} onClick={() => setOpen(!open)}>
+              Details<ChevronDown size={14} strokeWidth={1.8} />
+            </button>
+          )}
+        </div>
+      ) : <>
+        {kind}
+        <p className="tc-ask-head">{ask.headline}</p>
+      </>}
+      {(!bar || open) && ask.text && <p className="tc-ask-text">{ask.text}</p>}
+      {bar && command && editing === null && !open && <code className="tc-ask-command" title={ask.detail}>{command}</code>}
+      {ask.detail && editing === null && (!bar || open) && <pre className="tc-code">{ask.detail}</pre>}
       {ask.repos && !task.answer && <RepoTicks {...ask.repos} onCard={seeItem} onHold={setHold} />}
       {task.answer ? (
         !inChat && <p className="tc-answered"><Check size={14} strokeWidth={1.8} />{task.answer}</p>
@@ -273,7 +302,7 @@ export function AskBlock({ task, inChat = false, onAnswer }: { task: Pick<Task, 
                 {o}
               </button>
             ))}
-            <button className="tc-option is-quiet" onClick={() => pick('Later')}>Later</button>
+            <button className="tc-option is-quiet" onClick={later}>Later</button>
           </div>
         </>
       )}

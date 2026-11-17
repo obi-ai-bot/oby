@@ -583,10 +583,11 @@ export default function Home() {
         const kind = l.kind === 'talk' ? 'oby' : l.kind === 'peer' ? 'peer' : 'task';
         return <ChatView key={l.key} kind={kind} id={l.id} leaving={leaving} covered={covered} onBack={back} onGone={onGone} onOpenTask={openTask} onOpenAgent={(id) => push({ kind: 'agent', id })} onOpenMember={(owner) => push({ kind: 'member', id: owner })} />;
       })}
-      {/* chat first: what Oby is asking you, over your conversation, answered there in one click
-          (with none open, on the stage, as on Home) */}
+      {/* chat first: what Oby is asking you, over your conversation, answered there in one click, but
+          what its own tasks ask, which waits over its box (DecisionBar); with none open, all of it on
+          the stage, as on Home */}
       {chatFirst && top?.kind === 'talk' && (
-        <div className="asks-over"><AskStack active onOpen={openTask} onOpenTalk={(id) => start({ kind: 'talk', id })} /></div>
+        <div className="asks-over"><AskStack active except={top.id} onOpen={openTask} onOpenTalk={(id) => start({ kind: 'talk', id })} /></div>
       )}
     </div>
       {/* stays next to the traffic lights whether the side panel is open or not.
