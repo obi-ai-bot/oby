@@ -38,7 +38,11 @@ obid's `last-start-error`, else launchd's last exit code and the end of
 until the next login (launchd exits 78: `copy_bundle_path … not a bundle`); the app
 then runs the same obid as a job of this login session only. In development
 (`npm run dev`) it starts nothing; `OBID_PORT` and `OBID_HOME` point it at a
-scratch obid run by hand instead of 7777 (a packaged app ignores them).
+scratch obid run by hand instead of 7777 (a packaged app ignores them). It keeps
+its own app folder and Keychain item, `oby-app-dev` (its own device key, paired
+on your click), never the installed Oby's `oby-app` (docs/contracts/keychain.md,
+KEYCHAIN-11): Electron's own binary is signed ad hoc and runs any script, so it
+stays off the installed item's access list.
 `node e2e/rig.mjs app` opens it on a test rig's obid, with a second Oby to talk to
 (docs/contracts/test-rig.md).
 

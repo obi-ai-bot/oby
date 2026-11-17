@@ -24,13 +24,15 @@ describe('the name', () => {
     expect(pkg.name).toBe('oby-app');
     expect(pkg.productName).toBeUndefined();
     // the two other ways to change it: electron-builder writing into the bundle's package.json, or main.
-    // Only a scratch install's build renames itself (scripts/run-dev.sh, shared/build.ts), so it never
-    // reads the installed Oby's item: that one block is taken out before looking
+    // Only a scratch install and the app run from source rename themselves, by main/appFolder.ts's
+    // ownFolder (KEYCHAIN-11, keychain.test.ts), so neither reads the installed Oby's item: that one
+    // block is taken out before looking
     expect(builder).not.toMatch(/^extraMetadata:/m);
-    const scratchOnly = /\nif \(SCRATCH\) \{\n  app\.setName\('oby-app-scratch'\);\n  app\.setPath\('userData', [^\n]+\);\n\}\n/;
-    expect(file('src/main/index.ts')).toMatch(scratchOnly);
+    const ownOnly = /\nif \(own\) \{\n  app\.setName\(own\.name\);\n  app\.setPath\('userData', own\.userData\);\n\}\n/;
+    expect(file('src/main/index.ts')).toMatch(/\nconst own = ownFolder\(\{ packaged: app\.isPackaged, name: app\.getName\(\), scratchHome: SCRATCH\?\.home \?\? null, appData: app\.getPath\('appData'\) \}\);\n/);
+    expect(file('src/main/index.ts')).toMatch(ownOnly);
     for (const f of readdirSync(new URL('../../../main/', import.meta.url)))
-      expect(file(`src/main/${f}`).replace(scratchOnly, ''), f).not.toMatch(/app\.(name\s*=[^=]|setName\()/);
+      expect(file(`src/main/${f}`).replace(ownOnly, ''), f).not.toMatch(/app\.(name\s*=[^=]|setName\()/);
   });
 
   it('the_bundle_id_and_the_engines_label_stay', () => {

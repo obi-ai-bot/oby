@@ -16,12 +16,15 @@ import { ipc } from './ipc';
 import { childGone, quit, quitting, renderFailed, rendererGone, started, windowLoaded } from './runMarker';
 import { flag, https, string } from '../shared/decode';
 import { SCRATCH } from '../shared/build';
+import { ownFolder } from './appFolder';
 
-// A scratch install (scripts/run-dev.sh --port --home, shared/build.ts) keeps its own folder and
-// Keychain item beside its obid's home, never the installed Oby's: set before anything reads them
-if (SCRATCH) {
-  app.setName('oby-app-scratch');
-  app.setPath('userData', join(dirname(SCRATCH.home), 'app-data'));
+// A scratch install (scripts/run-dev.sh --port --home, shared/build.ts) and the app run from source
+// (npm run dev) keep their own folder and Keychain item, never the installed Oby's (main/appFolder.ts,
+// KEYCHAIN-11): set before anything reads them
+const own = ownFolder({ packaged: app.isPackaged, name: app.getName(), scratchHome: SCRATCH?.home ?? null, appData: app.getPath('appData') });
+if (own) {
+  app.setName(own.name);
+  app.setPath('userData', own.userData);
 }
 
 // One small window: Oby, what needs you, and a way to talk. The renderer gets
