@@ -122,7 +122,7 @@ Oby (MERGING-41) and the factory (`job merge`, CI-23) hand an approved pull requ
 
 The queue's `limits` job judges `jobs.rs`'s line limit on the group's combined code (CI-35), so two pull requests that each fit can't put `dev` past it together. The script's other rules come along on that code too, but for a raise's payback line and its pull request of its own (CI-39, CI-40), which the pull request's own check judges against its merge base. So a group under the sleep limit fails until a pull request lowers the limit.
 
-The Mac's check still gates each pull request before approval, and the nightly full Mac run checks `dev` as merged: the factory's between its jobs (CI-29), and `scripts/oby-nightly.sh` without it (CI-53 to 55), every night at 03:30 once installed (`scripts/oby-nightly.sh --install`), its results in `~/Library/Logs/Oby/nightly/` on the Mac (`latest.md` the newest). Run by hand or by either nightly, the check takes as many jobs as the Mac has free CPUs (CI-51), so an idle Mac runs a full check within its limit.
+The Mac's check still gates each pull request before approval, and the nightly full Mac run checks `dev` as merged: the factory's between its jobs (CI-29), and `scripts/oby-nightly.sh` without it (CI-53 to 55), every night at 03:30 once installed (`scripts/oby-nightly.sh --install`), its results in `~/Library/Logs/Oby/nightly/` on the Mac (`latest.md` the newest). Run by hand or by either nightly, the check runs half the Mac's cores of obid's test binaries at once (CI-51), so a full run fits its limit.
 
 The queue and the required check are GitHub's limits, not Oby's: the owner, as the repository's admin, changes or bypasses them in its settings, and when one holds a merge Oby says what holds it.
 

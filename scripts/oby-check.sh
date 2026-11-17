@@ -64,11 +64,10 @@
 #
 # Builds and tests run as many jobs at once as obid says the Mac's memory leaves them (OBY_BUILD_JOBS,
 # CARGO_BUILD_JOBS, RUST_TEST_THREADS: one per 1.5 GiB of the room memory leaves, at most half the
-# cores), for Cargo, Rust's tests and xcodebuild (-jobs). Run by hand or by the nightly, outside
-# obid, every one gets the Mac's free CPUs as the check starts: its cores less its last minute's load
-# average, rounded up, and never under 4, the number it had before (docs/contracts/ci.md, CI-51). An
-# idle Mac gives the check all its cores, so a full run fits its limit; a busy one gives it what it
-# always had, never less, since fewer at once only makes the run longer.
+# cores), for Cargo, Rust's tests and xcodebuild (-jobs). Run by hand, outside obid, every one gets
+# 4, on purpose: obid runs one check at a time, and a Mac has other work. obid's test binaries are
+# the exception (test_binaries, docs/contracts/ci.md, CI-51): they mostly wait on stand-ins, so by
+# hand as many run at once as half the Mac's cores, 2 threads each, and a full run fits its limit.
 set -eo pipefail
 # The Mac's cores and its last minute's load average, as "<cores> <load>"; a load that can't be read
 # is 0.
@@ -79,8 +78,7 @@ cpus_and_load() {
     [[ -n "$load" ]] || load=$(awk '{ print $1 }' /proc/loadavg 2>/dev/null || true)
     echo "$cores ${load:-0}"
 }
-free_cpus() { cpus_and_load | awk '{ f = $1 - int($2 + 0.999); print (f < 4 ? 4 : f) }'; }
-jobs="${OBY_BUILD_JOBS:-$(free_cpus)}"
+jobs="${OBY_BUILD_JOBS:-4}"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$jobs}" RUST_TEST_THREADS="${RUST_TEST_THREADS:-$jobs}"
 cd "$(dirname "$0")/.."
 
@@ -365,7 +363,8 @@ plan_group() {
 # first, every one to its end. `cargo test` runs them one after another and stops at the first that
 # fails, and most of their time is spent waiting on an agent's stand-in, not working. Each binary
 # runs with OBY_TEST_THREADS test threads (2 by default) and `--quiet`, half as many binaries at once
-# as `jobs` (at least one), so threads in all stay within obid's memory budget; its output comes
+# as obid's `jobs` (at least one), so threads in all stay within obid's memory budget, or by hand half
+# the Mac's cores (at least 2: CI-51); its output comes
 # whole: the ones that passed first, the ones that failed last, so a failure stays in the check's
 # tail, each with the seconds it ran, and a last line says how long they all took and which took
 # longest (CI-52). Stopped (the check's 45 minutes), it names the binaries still running.
@@ -404,7 +403,12 @@ test_binaries() {
     trap stopped_binaries TERM
     # Where cargo runs them: the crate's folder. A binary's seconds are written before its status,
     # which says it ended.
-    at_once=$(((jobs + 1) / 2)) began=$SECONDS
+    if [[ -n "${OBY_BUILD_JOBS:-}" ]]; then
+        at_once=$(((jobs + 1) / 2))
+    else
+        at_once=$(cpus_and_load | awk '{ n = int($1 / 2); print (n < 2 ? 2 : n) }')
+    fi
+    began=$SECONDS
     echo "oby-check: $got test binaries, $at_once at once with ${OBY_TEST_THREADS:-2} threads each ($(cpus_and_load | awk '{ print $1 " CPUs, a load average of " $2 }'))"
     (cd core/crates/obid && tr '\n' '\0' <"$list" | RUST_TEST_THREADS="${OBY_TEST_THREADS:-2}" \
         xargs -0 -n 1 -P "$at_once" sh -c 's=$(date +%s); "$2" --quiet >"$1/${2##*/}.out" 2>&1; e=$?; echo $(($(date +%s) - s)) >"$1/${2##*/}.seconds"; echo $e >"$1/${2##*/}.status"' _ "$dir")

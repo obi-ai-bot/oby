@@ -668,16 +668,15 @@ for said in 'Running slow ([0-9]*s)' "obid's test binaries took [0-9]*s, the lon
         exit 1
     }
 done
-# CI-51: run by hand (no OBY_BUILD_JOBS), the check takes the Mac's cores less its last minute's load
-# average, rounded up, never under 4: 10 cores at a load of 0 run 5 binaries at once, at 3.4 three,
-# and at 9.5 two, as the fixed 4 before it did.
-printf '#!/bin/bash\ncase "$*" in *hw.ncpu*) echo 10 ;; *vm.loadavg*) echo "{ $OBY_FAKE_LOAD 1.00 1.00 }" ;; *) exit 1 ;; esac\n' >"$fake/sysctl"
+# CI-51: run by hand (no OBY_BUILD_JOBS), obid's test binaries run half the Mac's cores at once, at
+# least 2, whatever the load: 10 cores run 5, 6 run 3, 2 run 2.
+printf '#!/bin/bash\ncase "$*" in *hw.ncpu*) echo "$OBY_FAKE_CORES" ;; *vm.loadavg*) echo "{ 12.50 1.00 1.00 }" ;; *) exit 1 ;; esac\n' >"$fake/sysctl"
 chmod +x "$fake/sysctl"
-for load_at_once in '0.00 5' '3.40 3' '9.50 2'; do
-    read -r load at_once <<<"$load_at_once"
-    ran=$(env -u OBY_CHECK_PLAN -u OBY_BUILD_JOBS -u CARGO_BUILD_JOBS -u RUST_TEST_THREADS PATH="$fake:$PATH" TMPDIR="$fake/tmp" OBY_FAKE_LOAD="$load" scripts/oby-check.sh HEAD 2>&1) || true
-    grep -q "oby-check: [0-9]* test binaries, $at_once at once with 2 threads each (10 CPUs, a load average of $load)" <<<"$ran" || {
-        echo "oby-check-test: at a load of $load on 10 cores the check didn't run $at_once binaries at once: $ran" >&2
+for cores_at_once in '10 5' '6 3' '2 2'; do
+    read -r cores at_once <<<"$cores_at_once"
+    ran=$(env -u OBY_CHECK_PLAN -u OBY_BUILD_JOBS PATH="$fake:$PATH" TMPDIR="$fake/tmp" OBY_FAKE_CORES="$cores" scripts/oby-check.sh HEAD 2>&1) || true
+    grep -q "oby-check: [0-9]* test binaries, $at_once at once with 2 threads each ($cores CPUs, a load average of 12.50)" <<<"$ran" || {
+        echo "oby-check-test: on $cores cores the check didn't run $at_once binaries at once: $ran" >&2
         exit 1
     }
 done
