@@ -4674,6 +4674,8 @@ fn oby_github_lists_the_owners_pull_requests_and_dispatch_takes_one() {
 
 /// The owner's own servers the stand-in's `init` names after Oby's (tests/agents/fake-harness):
 /// a claude.ai connector, one that needs its sign-in, and a server of theirs that failed.
+// Only the macOS-only scenarios use it (own conversations, LANES-12).
+#[cfg(target_os = "macos")]
 fn own_servers(obid: &Obid) {
     std::fs::write(
         obid.home.join("accounts/stub/mcp-servers.json"),
