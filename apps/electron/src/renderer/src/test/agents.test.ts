@@ -113,4 +113,25 @@ describe('Settings › Agents on obid', () => {
     expect(left('agent.default')).toBe(null);
     expect(left('models.mine')).toEqual({ a1: { effort: 'ultra' } });
   });
+
+  it('CONVERSATION-AGENT-31: looking at usage again, when obid says what is already held, sets nothing (no list rebuilt, no screen woken)', async () => {
+    const { live } = await load({});
+    answers['GET /v1/status'] = { status: 200, body: status({ defaultAccount: null }) };
+    live.connect();
+    bridge.sync({ status: status({ defaultAccount: null }) });
+    for (let i = 0; i < 5; i++) await flush();
+    expect(live.liveState().connection).toBe('live');
+    // the first look can change what is held (the one the sync gave is not the answer's decoded form)
+    live.lookAtUsage(); for (let i = 0; i < 5; i++) await flush();
+    const held = live.liveState();
+    const asked = calls.filter((c) => c.path === '/v1/status').length;
+    live.lookAtUsage(); for (let i = 0; i < 5; i++) await flush();
+    expect(calls.filter((c) => c.path === '/v1/status').length).toBe(asked + 1);   // it asked
+    expect(live.liveState()).toBe(held);                                          // and nothing was set
+    // a changed answer is still taken
+    answers['GET /v1/status'] = { status: 200, body: status({ defaultAccount: null, running: 3 }) };
+    live.lookAtUsage(); for (let i = 0; i < 5; i++) await flush();
+    expect(live.liveState()).not.toBe(held);
+    expect(live.liveState().status?.running).toBe(3);
+  });
 });

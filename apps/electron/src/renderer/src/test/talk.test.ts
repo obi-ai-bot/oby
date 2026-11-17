@@ -128,3 +128,32 @@ describe('talking on any agent', () => {
     expect(talkChoices([x, out])).toEqual([['auto', 'Auto · Whichever has room'], ['x', 'Work · Codex']]);
   });
 });
+
+// A model list beside the message box's menu: one size from its models, a place in the window
+describe('modelMenuPlace (CONVERSATION-AGENT-28 to 30)', () => {
+  const at = { menuLeft: 500, menuRight: 880, menuTop: 300, rowTop: 446, windowWidth: 1024, windowHeight: 768 };
+  it('is as tall as all its models up to a cap, whatever a search leaves, and has room for its search from seven', async () => {
+    const { modelMenuPlace, hasModelSearch, MODEL_SEARCH_OVER, MODEL_MENU } = await load();
+    expect(MODEL_SEARCH_OVER).toBe(6);
+    expect([hasModelSearch(6), hasModelSearch(7)]).toEqual([false, true]);
+    const { row, gap, pad, border, search } = MODEL_MENU;
+    expect(modelMenuPlace({ ...at, count: 2 }).height).toBe(2 * (pad + border) + 2 * row + gap);
+    expect(modelMenuPlace({ ...at, count: 7 }).height).toBe(2 * (pad + border) + search + 7 * row + 6 * gap);
+    expect(modelMenuPlace({ ...at, count: 40 }).height).toBe(MODEL_MENU.max);
+    expect(modelMenuPlace({ ...at, count: 40, windowHeight: 300 }).height).toBe(300 - 2 * MODEL_MENU.edge);
+  });
+  it('goes on the left of its menu, else the right, else over it, level with its row, inside the window', async () => {
+    const { modelMenuPlace } = await load();
+    const left = modelMenuPlace({ ...at, count: 3 });
+    expect(left.side).toBe('left');
+    expect(left.top + 300 + 1).toBe(446 - 9);   // the menu's top and border, its padding above its first row
+    expect(modelMenuPlace({ ...at, menuLeft: 100, menuRight: 480, count: 3 }).side).toBe('right');
+    const over = modelMenuPlace({ ...at, menuLeft: 20, menuRight: 400, windowWidth: 420, count: 3 });
+    expect(over.side).toBe('over');
+    expect(over.width).toBeLessThanOrEqual(380 - 16);
+    // low in a short window: moved up to fit
+    const low = modelMenuPlace({ ...at, rowTop: 700, count: 40 });
+    expect(low.top + 300 + 1 + low.height).toBeLessThanOrEqual(768 - 8);
+    expect(low.top + 300 + 1).toBeGreaterThanOrEqual(8);
+  });
+});

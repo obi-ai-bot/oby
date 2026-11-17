@@ -1047,6 +1047,18 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .talk-choice-used.is-high { color: var(--full); }
 .talk-choice-used.is-over { color: var(--over); }
 .talk-choice-check { flex: none; color: var(--ink); }
+/* a model list beside the message box's menu: left-aligned rows of one line each (the full name in the
+   row's title), the current one checked, a search over them when it's long; one size, set from the
+   count of all its models (modelMenuPlace), so typing in the search never resizes it */
+.row-menu.row-submenu.model-menu { box-sizing: border-box; padding: 8px; overflow: hidden; }
+.model-search { flex: none; box-sizing: border-box; height: 32px; margin: 0 0 8px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); color: var(--ink); font: inherit; font-size: var(--text-md); outline: none; user-select: text; transition: border-color var(--fade); }
+.model-search:focus { border-color: var(--field-edge-on); }
+.model-search::placeholder { color: var(--muted); }
+.model-list { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; overscroll-behavior: contain; }
+.row-menu button.model-row { flex: none; justify-content: flex-start; gap: 10px; height: 34px; margin-top: 0; padding: 0 10px; font-size: var(--text-md); text-align: left; }
+.model-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-row .menu-check { flex: none; margin-left: auto; color: var(--ink); }
+.model-empty { padding: 8px 10px; color: var(--muted); font-size: var(--text-sm); }
 /* just past the gauge's top right corner, clear of its line */
 .usage-dot { position: absolute; top: 5px; right: 4px; width: 6px; height: 6px; border-radius: 50%; }
 .usage-dot.is-high { background: var(--full); }
@@ -1624,9 +1636,13 @@ button.connector { width: 100%; text-align: left; }
   transition: background-color var(--fade), color var(--fade);
 }
 .row-menu button:hover { background: rgba(255, 255, 255, 0.08); color: var(--ink); }
+/* a row the keyboard is on is lit like a hover, as a macOS menu's rows are (the + menu's too, .add-panel).
+   The global focus ring (outline-offset 2px) is clipped by a menu's own scrolling box (.menu-scroll,
+   .is-scroll), leaving only its bottom edge as a stray line under the first row */
+.row-menu button:focus-visible { outline: 0; background: rgba(255, 255, 255, 0.08); color: var(--ink); }
 .row-menu button + button { margin-top: 2px; }  /* items 2px apart */
 .row-menu .is-danger { color: var(--danger); }
-.row-menu .is-danger:hover { background: rgba(240, 113, 103, 0.12); color: var(--danger); }
+.row-menu .is-danger:is(:hover, :focus-visible) { background: rgba(240, 113, 103, 0.12); color: var(--danger); }
 /* a menu's heading: what it's for (an Obysphere's logo, name and address) */
 .row-menu .menu-head { display: flex; align-items: center; gap: 10px; padding: 6px 12px 4px; }
 .menu-head-text { min-width: 0; display: flex; flex-direction: column; gap: 1px; }

@@ -580,7 +580,9 @@ export function patchStatus(patch: Partial<Status>) {
 // the usage panel opened: obid asks the tools for usage it hasn't read in 10 minutes, which comes
 // in an `accounts` event a few seconds later
 export function lookAtUsage() {
-  if (state.connection === 'live') void api.status().then((status) => set(answerStatus(state, status)), () => {});
+  // an answer that says what's already held changes nothing: setting it would rebuild every list
+  // and wake every screen (publish) for nothing, each time the message box's menu opens
+  if (state.connection === 'live') void api.status().then((status) => { if (JSON.stringify(status) !== JSON.stringify(state.status)) set(answerStatus(state, status)); }, () => {});
 }
 
 // --- events
