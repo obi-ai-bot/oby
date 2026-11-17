@@ -73,8 +73,8 @@
 .agent-layer > .lt-thread { grid-row: 1 / -1; min-height: 0; display: grid; grid-template-rows: 1fr auto; gap: 0; padding: 0; border: 0; border-radius: 0; background: none; }
 .agent-layer .lt-thread-scroll { min-height: 0; }
 .agent-layer .lt-thread-lines { position: absolute; inset: 0; max-height: none; padding: 16px var(--gutter) 24px; }
-.agent-layer .lt-thread-column { max-width: 540px; margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
+.agent-layer .lt-thread-column { max-width: var(--column); margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
 .agent-layer .agent-head { cursor: default; user-select: text; }
 .agent-layer .lt-thread-todos { padding: 4px 0 10px; }
 .agent-layer .lt-thread-ask { padding-top: 0; border-top: 0; }
-.agent-layer .chat-composer.lt-box { max-width: calc(540px + 2 * var(--gutter)); margin: 0 auto; padding: 8px var(--gutter) 16px; width: 100%; box-sizing: border-box; }
+.agent-layer .chat-composer.lt-box { max-width: calc(var(--column) + 2 * var(--gutter)); margin: 0 auto; padding: 8px var(--gutter) 16px; width: 100%; box-sizing: border-box; }
