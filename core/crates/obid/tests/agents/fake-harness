@@ -41,6 +41,7 @@
 //   SLOWFAIL <ms>  waits that long, then ends the turn with an error result
 //   FAIL           ends the turn with an error result
 //   USAGE          says "used" in a result line with usage: 11 in, 7 out, 5 cache read, 3 written
+//   (with `startup-hooks` in its account's folder, it writes a SessionStart hook's lines as it starts)
 //   (an own session's first turn waits for the owner's slowest MCP server as Claude Code 2.1.325
 //   does, below: `slow-mcp-ms` in its account's folder says how long that server takes)
 //   FULL ON <w>    on an account whose login's access token holds <w>, says the account is full
@@ -83,6 +84,14 @@ const conversation = (flag("--mcp-config") ?? "").endsWith("oby-mcp.json");
 const own = !argv.includes("--setting-sources");
 const records = conversation && own ? join(process.cwd(), "..", "config") : process.env.CLAUDE_CONFIG_DIR;
 if (conversation && own) mkdirSync(records, { recursive: true });
+// As Claude Code 2.1.325 with the owner's hooks on (CONVERSATION-AGENT-25): when `startup-hooks` is in
+// its account's folder, it writes a SessionStart hook's lines as it starts, before any prompt, and
+// before it records its start.
+if (conversation && existsSync(join(process.env.CLAUDE_CONFIG_DIR ?? ".", "startup-hooks"))) {
+  for (const subtype of ["hook_started", "hook_response"]) {
+    emit({ type: "system", subtype, hook_id: "h1", hook_name: "SessionStart:startup", hook_event: "SessionStart", session_id: "" });
+  }
+}
 if (process.env.CLAUDE_CONFIG_DIR && !argv.includes("--json-schema")) {
   const config = process.env.CLAUDE_CONFIG_DIR;
   appendFileSync(join(records, "started.jsonl"), JSON.stringify({ id: procId, pid: process.pid, config, cwd: process.cwd(), at: Date.now() }) + "\n");

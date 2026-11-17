@@ -870,13 +870,15 @@ impl Jobs {
                     );
                 }
                 if (broker.is_some() || tetrix.is_some()) && tool == Tool::Claude {
+                    // Each `alwaysLoad`: connected before the first turn, which waits for none of
+                    // the owner's own servers (LANES-24, `agent::MCP_STARTUP_WAIT`).
                     let file = mcp_config_path(own, &spec.temp, &self.login_path(id))?;
                     let mut config = json!({"mcpServers": {}});
                     if let Some((url, token)) = broker.as_ref().filter(|_| tool == Tool::Claude) {
-                        config["mcpServers"]["oby"] = json!({"type":"http","url":url,"headers":{"Authorization":format!("Bearer {token}")}});
+                        config["mcpServers"]["oby"] = json!({"type":"http","url":url,"alwaysLoad":true,"headers":{"Authorization":format!("Bearer {token}")}});
                     }
                     if let Some((url, token)) = tetrix.as_ref().filter(|_| tool == Tool::Claude) {
-                        config["mcpServers"]["tetrix"] = json!({"type":"http","url":url,"headers":{"Authorization":format!("Bearer {token}")}});
+                        config["mcpServers"]["tetrix"] = json!({"type":"http","url":url,"alwaysLoad":true,"headers":{"Authorization":format!("Bearer {token}")}});
                     }
                     let text = serde_json::to_vec(&config).map_err(|e| e.to_string())?;
                     let _ = std::fs::remove_file(&file);

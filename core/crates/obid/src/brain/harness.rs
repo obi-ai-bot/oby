@@ -71,13 +71,7 @@ const TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write,Edi
 /// the owner's MCP servers' tools load when a turn needs them, as in their terminal, instead of
 /// every one in every prompt (some 700 tools, half a million tokens, on the owner's Mac).
 const OWN_TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write,Edit,MultiEdit,NotebookEdit,Task,TodoWrite,Bash,BashOutput,KillShell,Skill,ToolSearch,ListMcpResourcesTool,ReadMcpResourceTool,ReadMcpResourceDirTool";
-/// What tells an own session's Claude Code not to hold its first turn for the owner's MCP servers
-/// (CONVERSATION-AGENT-24). Given any `--mcp-config` server, Claude Code 2.1.325 holds the first
-/// turn of a headless session until every MCP server answers or its 30 s timeout passes: one slow
-/// server of the owner's held every new conversation's first words 30 s. `0` lifts that hold, as
-/// in the owner's terminal, where a server that connects later adds its tools then; Oby's own
-/// servers are still connected first ([`write_mcp`]'s `alwaysLoad`).
-const MCP_STARTUP_WAIT: (&str, &str) = ("CLAUDE_CODE_MCP_STARTUP_WAIT_MS", "0");
+use crate::agent::MCP_STARTUP_WAIT;
 /// How long a call of Oby's tools waits for obid's reader to reach the line where the agent wrote
 /// it, counting only while the reader holds no line ([`Session::heard`]).
 pub const READ_WAIT: Duration = Duration::from_secs(5);
@@ -847,6 +841,17 @@ fn claude_launch(
         flags,
         stderr,
     )
+}
+
+/// Whether `line` is one Claude Code writes of a hook it runs (`hook_started`, `hook_progress`,
+/// `hook_response`), which a waiting one may write before any prompt, its `SessionStart` hooks'
+/// as it starts (CONVERSATION-AGENT-25): never a turn's words, steps or end.
+fn hook_line(line: &Value) -> bool {
+    line["type"] == "system"
+        && matches!(
+            line["subtype"].as_str(),
+            Some("hook_started" | "hook_progress" | "hook_response")
+        )
 }
 
 /// Sets [`MCP_STARTUP_WAIT`] in an own session's environment, in place of any value it had.
@@ -1817,14 +1822,14 @@ async fn attempts(
         // too (it loads nothing again, but the rule is the turn's).
         place.scrub();
         // Its Claude Code is given the turn when it was started as this run would be, its login
-        // copy is good for the turn, and it wrote nothing while it waited (a line read now would be
-        // taken for this turn's); else it ends, and the turn starts one.
+        // copy is good for the turn, and it wrote nothing while it waited but its hooks' lines (a
+        // line read now would be taken for this turn's); else it ends, and the turn starts one.
         let warm = match warm.take() {
             Some(mut warm)
                 if warm.key == key
                     && (own || crate::jobs::login_copy_lasts(place.login_for(account))) =>
             {
-                if warm.conn.quiet().await {
+                if warm.conn.quiet_but(hook_line).await {
                     Some(warm)
                 } else {
                     warm.end();

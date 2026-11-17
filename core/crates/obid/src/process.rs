@@ -224,13 +224,14 @@ pub fn sandbox_env(
         env.retain(|(set, _)| set.as_os_str() != OsStr::new(name));
         env.push(((*name).into(), value.clone()));
     }
-    // obid's own CLAUDE_CODE_TMPDIR (a Claude Code run's, below), TODO_TOOLS, NO_CLAUDE_MDS and
-    // NO_AUTO_MEMORY are the only CLAUDE_CODE_* let in.
+    // obid's own CLAUDE_CODE_TMPDIR (a Claude Code run's, below), TODO_TOOLS, NO_CLAUDE_MDS,
+    // NO_AUTO_MEMORY and an own run's MCP_STARTUP_WAIT (LANES-24) are the only CLAUDE_CODE_* let in.
     env.retain(|(name, _)| {
         name == CLAUDE_TMPDIR
             || name == CLAUDE_TODO_TOOLS
             || name == NO_CLAUDE_MDS
             || name == NO_AUTO_MEMORY
+            || name == crate::agent::MCP_STARTUP_WAIT.0
             || !is_forbidden(&name.to_string_lossy())
     });
     env

@@ -459,6 +459,14 @@ pub async fn run_turn(
     Ok(turn_on(conn, prompt, decide, on_event, false).await.0)
 }
 
+/// What tells an own run's Claude Code, a conversation's or a job's, not to hold its first turn for
+/// the owner's MCP servers (CONVERSATION-AGENT-24, LANES-24). Given any `--mcp-config` server,
+/// Claude Code 2.1.325 holds a headless session's first turn until every MCP server answers or its
+/// 30 s timeout passes: one slow server of the owner's held each first turn 30 s. `0` lifts that
+/// hold, as in the owner's terminal, where a server that connects later adds its tools then;
+/// obid's own servers are still connected first (their `alwaysLoad`).
+pub const MCP_STARTUP_WAIT: (&str, &str) = ("CLAUDE_CODE_MCP_STARTUP_WAIT_MS", "0");
+
 /// The flags of Claude Code's own `/usage`, run by itself ([`read_usage`]): it answers from its
 /// account's usage without asking a model (claude 2.1.302), with no tool, setting or MCP server.
 /// A Claude Code without it would take `/usage` for a prompt: haiku and one turn at most, then.

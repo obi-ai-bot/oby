@@ -173,6 +173,7 @@ import { randomFillSync } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { getPriority, homedir } from "node:os";
 import { createInterface } from "node:readline";
+import { PassThrough } from "node:stream";
 
 // Its version, as `claude --version` prints it (docs/contracts/cli-versions.md).
 if (process.argv[2] === "--version") {
@@ -274,7 +275,7 @@ const background = () => {
 };
 
 const leaked = Object.keys(process.env).filter((name) =>
-  name === "CLAUDECODE" || (name.startsWith("CLAUDE_CODE_") && name !== "CLAUDE_CODE_TMPDIR" && name !== "CLAUDE_CODE_ENABLE_TODO_TOOLS") || name.startsWith("ANTHROPIC_") || name === "GH_TOKEN" || name === "GITHUB_TOKEN" || name === "OBID_API_TOKEN");
+  name === "CLAUDECODE" || (name.startsWith("CLAUDE_CODE_") && name !== "CLAUDE_CODE_TMPDIR" && name !== "CLAUDE_CODE_ENABLE_TODO_TOOLS" && name !== "CLAUDE_CODE_MCP_STARTUP_WAIT_MS") || name.startsWith("ANTHROPIC_") || name === "GH_TOKEN" || name === "GITHUB_TOKEN" || name === "OBID_API_TOKEN");
 
 // obid gives every job's Claude Code its to-do tools (docs/contracts/live-task.md, LIVETASK-14)
 if (process.env.CLAUDE_CODE_ENABLE_TODO_TOOLS !== "1") leaked.push("no CLAUDE_CODE_ENABLE_TODO_TOOLS");
@@ -291,7 +292,27 @@ const askNext = () => {
   asked = tool;
   emit({ type: "control_request", request_id: `r${said.length + 1}`, request: { subtype: "can_use_tool", tool_name: tool, input } });
 };
-const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+// As Claude Code 2.1.325, measured on a Mac on 2026-11-16 (LANES-24): a run that loads the owner's
+// own MCP servers (no --strict-mcp-config) and is given an --mcp-config holds its first turn until
+// each has answered, 30 s at most from its start, unless ToolSearch is among its --tools and
+// CLAUDE_CODE_MCP_STARTUP_WAIT_MS is 0. The owner's slowest server answers after the milliseconds
+// `slow-mcp-ms` in its config folder holds (none: at once). It reads no message until then.
+const tools = process.argv.includes("--tools") ? process.argv[process.argv.indexOf("--tools") + 1] : "";
+const lifted = tools.split(",").includes("ToolSearch") && process.env.CLAUDE_CODE_MCP_STARTUP_WAIT_MS === "0";
+const holds = process.argv.includes("--mcp-config") && !process.argv.includes("--strict-mcp-config") && !lifted;
+const slowest = (() => {
+  try {
+    return Number(readFileSync(`${process.env.CLAUDE_CONFIG_DIR ?? `${homedir()}/.claude`}/slow-mcp-ms`, "utf8")) || 0;
+  } catch {
+    return 0;
+  }
+})();
+const held = holds && slowest > 0 ? new PassThrough() : null;
+// The owner's messages it has had: with the hold lifted, an --mcp-config server that isn't
+// `alwaysLoad` isn't connected yet on the first.
+let heard = 0;
+if (held) setTimeout(() => process.stdin.pipe(held), Math.min(slowest, 30000));
+const rl = createInterface({ input: held ?? process.stdin, crlfDelay: Infinity });
 // Its stdin closed: obid is done with it or was killed, so a turn told to wait forever (QUIET, LOOP)
 // ends too. Not at once: Claude Code goes on with its turn, and a test watches it outlive a killed
 // obid until the next obid ends its group. Unref'd, so it holds nothing open by itself.
@@ -325,6 +346,7 @@ rl.on("line", (line) => {
     return;
   }
   if (message.type !== "user") return;
+  heard += 1;
   let prompt = typeof message.message.content === "string" ? message.message.content : "";
   const told = prompt;
   if (prompt.includes("What you were last sent")) prompt = prompt.slice(0, prompt.indexOf("What you were last sent"));
@@ -894,6 +916,10 @@ async function report(prompt) {
   const shapes = {};
   for (const [name, server] of Object.entries(mcp?.mcpServers ?? {})) {
     if (server.type !== "http") continue;
+    if (lifted && heard === 1 && server.alwaysLoad !== true) {
+      answers[name] = { error: { code: -32000, message: `MCP server ${name} isn't connected yet` } };
+      continue;
+    }
     try {
       const response = await fetch(server.url, {
         method: "POST",
