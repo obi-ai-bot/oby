@@ -12,9 +12,9 @@ const rule = (file: string, selector: string) => {
 };
 
 describe('the conversation column (CHATFIRST-34)', () => {
-  it('chatfirst_34_column_grows_from_540_to_1152', () => {
+  it('chatfirst_34_column_grows_from_540_to_768', () => {
     const tokens = css('tokens.css');
-    expect(tokens).toMatch(/--column:\s*clamp\(540px,\s*calc\(540px \+ \(100vw - 994px\) \* 0\.6\),\s*1152px\);/);
+    expect(tokens).toMatch(/--column:\s*clamp\(540px,\s*calc\(540px \+ \(100vw - 994px\) \* 0\.6\),\s*768px\);/);
   });
 
   it('chatfirst_34_thread_and_box_share_it', () => {
