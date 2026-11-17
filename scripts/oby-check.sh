@@ -43,6 +43,7 @@
 #                         the touched iOSTests suites on a Simulator, else a build-for-testing
 #   apps/electron/        npm run typecheck, npm test and npm run build there (its node_modules from npm install)
 #   scripts/oby-check*    scripts/oby-check-test.sh and the limits below
+#   scripts/oby-nightly*  scripts/oby-nightly-test.sh, the nightly's own tests (docs/contracts/ci.md, CI-53 to 55)
 #   AGENTS.md             the limits below, AGENTS.md's bytes among them (the root's only; CI-36 to 38)
 #   AGENTS.md, core/AGENTS.md, core/CLAUDE.md, docs/agents-rules-manifest.md and the files it names
 #                         AGENTS.md's rules: each line the manifest lists is in its home, with no cargo
@@ -63,10 +64,23 @@
 #
 # Builds and tests run as many jobs at once as obid says the Mac's memory leaves them (OBY_BUILD_JOBS,
 # CARGO_BUILD_JOBS, RUST_TEST_THREADS: one per 1.5 GiB of the room memory leaves, at most half the
-# cores), for Cargo, Rust's tests and xcodebuild (-jobs). Run by hand, outside obid,
-# every one gets 4, on purpose: obid runs one check at a time, and a Mac has other work.
+# cores), for Cargo, Rust's tests and xcodebuild (-jobs). Run by hand or by the nightly, outside
+# obid, every one gets the Mac's free CPUs as the check starts: its cores less its last minute's load
+# average, rounded up, and never under 2 (docs/contracts/ci.md, CI-51). An idle Mac gives the check
+# all its cores, so a full run fits its limit; a Mac busy with other work gives it fewer, so its
+# tests' own timeouts aren't the ones the other work spends.
 set -eo pipefail
-jobs="${OBY_BUILD_JOBS:-4}"
+# The Mac's cores and its last minute's load average, as "<cores> <load>"; a load that can't be read
+# is 0.
+cpus_and_load() {
+    local cores load
+    cores=$(sysctl -n hw.ncpu 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
+    load=$({ sysctl -n vm.loadavg 2>/dev/null || true; } | awk '{ print $2 }')
+    [[ -n "$load" ]] || load=$(awk '{ print $1 }' /proc/loadavg 2>/dev/null || true)
+    echo "$cores ${load:-0}"
+}
+free_cpus() { cpus_and_load | awk '{ f = $1 - int($2 + 0.999); print (f < 2 ? 2 : f) }'; }
+jobs="${OBY_BUILD_JOBS:-$(free_cpus)}"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$jobs}" RUST_TEST_THREADS="${RUST_TEST_THREADS:-$jobs}"
 cd "$(dirname "$0")/.."
 
@@ -353,10 +367,11 @@ plan_group() {
 # runs with OBY_TEST_THREADS test threads (2 by default) and `--quiet`, half as many binaries at once
 # as `jobs` (at least one), so threads in all stay within obid's memory budget; its output comes
 # whole: the ones that passed first, the ones that failed last, so a failure stays in the check's
-# tail. Stopped (the check's 45 minutes), it names the binaries still running.
+# tail, each with the seconds it ran, and a last line says how long they all took and which took
+# longest (CI-52). Stopped (the check's 45 minutes), it names the binaries still running.
 # ponytail: the longest first by its source's lines; keep each binary's last time if that's off.
 test_binaries() {
-    local dir list status=0 exe name want got flaky again test
+    local dir list status=0 exe name want got flaky again test at_once began
     # In TMPDIR, named: macOS's `mktemp -d` alone ignores TMPDIR, and a job's box can't write the
     # Mac's own temporary folder.
     dir=$(mktemp -d "${TMPDIR:-/tmp}/oby-check.XXXXXX")
@@ -387,9 +402,12 @@ test_binaries() {
         exit 143
     }
     trap stopped_binaries TERM
-    # Where cargo runs them: the crate's folder.
+    # Where cargo runs them: the crate's folder. A binary's seconds are written before its status,
+    # which says it ended.
+    at_once=$(((jobs + 1) / 2)) began=$SECONDS
+    echo "oby-check: $got test binaries, $at_once at once with ${OBY_TEST_THREADS:-2} threads each ($(cpus_and_load | awk '{ print $1 " CPUs, a load average of " $2 }'))"
     (cd core/crates/obid && tr '\n' '\0' <"$list" | RUST_TEST_THREADS="${OBY_TEST_THREADS:-2}" \
-        xargs -0 -n 1 -P "$(((jobs + 1) / 2))" sh -c '"$2" --quiet >"$1/${2##*/}.out" 2>&1; echo $? >"$1/${2##*/}.status"' _ "$dir")
+        xargs -0 -n 1 -P "$at_once" sh -c 's=$(date +%s); "$2" --quiet >"$1/${2##*/}.out" 2>&1; e=$?; echo $(($(date +%s) - s)) >"$1/${2##*/}.seconds"; echo $e >"$1/${2##*/}.status"' _ "$dir")
     trap - TERM
     # Then, one at a time, a binary whose failed tests are all on the flaky list runs them once more,
     # and passes if they do (CI-26, CI-27).
@@ -414,7 +432,7 @@ test_binaries() {
                 [[ $pass == failed ]] || continue
                 status=1
             fi
-            echo "     Running ${name%-*}"
+            echo "     Running ${name%-*} ($(cat "$dir/$name.seconds" 2>/dev/null)s)"
             cat "$dir/$name.out"
             if [[ -f "$dir/$name.again" ]]; then
                 echo "     Running ${name%-*} again, its listed flaky tests only"
@@ -424,6 +442,11 @@ test_binaries() {
             [[ $pass == ok ]] || echo "oby-check: tests/${name%-*}.rs failed" >&2
         done <"$list"
     done
+    while IFS= read -r exe; do
+        name=${exe##*/}
+        printf '%s\t%s\n' "$(cat "$dir/$name.seconds" 2>/dev/null || echo 0)" "${name%-*}"
+    done <"$list" | sort -rn |
+        awk -F '\t' -v all=$((SECONDS - began)) 'NR == 1 { print "oby-check: obid'"'"'s test binaries took " all "s, the longest tests/" $2 ".rs at " $1 "s" }'
     rm -rf "$dir"
     return "$status"
 }
@@ -456,7 +479,7 @@ suites() {
 }
 
 # What each part needs, one per line.
-rust='' blok='' electron='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' check_script='' factory='' agents_md='' agents_rules=''
+rust='' blok='' electron='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' check_script='' nightly_script='' factory='' agents_md='' agents_rules=''
 add() { printf '%s\n%s' "$1" "$2"; }
 while IFS= read -r file; do
     case "$file" in
@@ -517,6 +540,7 @@ while IFS= read -r file; do
     case "$file" in
         apps/electron/*) electron=1 ;;
         scripts/oby-check*) check_script=1 ;;
+        scripts/oby-nightly*) nightly_script=1 ;;
         AGENTS.md) agents_md=1 agents_rules=1 ;;
         core/AGENTS.md | core/CLAUDE.md | docs/agents-rules-manifest.md) agents_rules=1 ;;
         factory/bin/* | factory/checks.sh | factory/tests/* | factory/config.json) factory=1 ;;
@@ -541,7 +565,7 @@ fi
 # Electron app and the Apple apps' build (no suites named: build-for-testing). The secret scan still
 # covers what changed against the base, which on the base itself is nothing.
 if [[ -n "${OBY_CHECK_ALL:-}" ]]; then
-    rust=1 blok=1 lib_all=1 check_script=1 electron=1 ios=1 factory=1 agents_rules=1
+    rust=1 blok=1 lib_all=1 check_script=1 nightly_script=1 electron=1 ios=1 factory=1 agents_rules=1
     tests=$(ls core/crates/obid/tests/*.rs 2>/dev/null || true)
     crates=$(ls core/crates 2>/dev/null || true)
 fi
@@ -563,6 +587,7 @@ fi
 
 group=rust
 if [[ -n "$check_script" ]] && first_shard; then step bash scripts/oby-check-test.sh; fi
+if [[ -n "$nightly_script" ]] && first_shard; then step bash scripts/oby-nightly-test.sh; fi
 
 # OBY_CHECK_ONLY=limits runs this block alone, whatever changed (CI-35); a change to AGENTS.md alone
 # runs it too, with no cargo step (CI-38).
