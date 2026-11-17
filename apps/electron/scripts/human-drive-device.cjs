@@ -1,9 +1,9 @@
-// The human drive's own device with obid, run by human-drive.mjs as a one-shot Electron app (only
-// Electron's safeStorage opens the key): `register` adds it, the way main adds a new key on the
+// The human drive's own device with obid, run by human-drive.mjs as a one-shot Electron app beside
+// the driven one, with the same key file (main/device.ts: PKCS#8 PEM, 0600): `register` adds it, the way main adds a new key on the
 // owner's click (home/pairing, then POST /v1/devices), and `revoke` forgets it with its own signature
 // (DELETE /v1/devices/{id}). Apart from the driven app, so a revoke still happens once that app is
 // closed (Playwright closes it on Control-C). Prints `DEVICE <json>`: {id} or {id, revoked} or {error}.
-const { app, safeStorage } = require('electron');
+const { app } = require('electron');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -14,11 +14,11 @@ app.setPath('userData', path.join(path.dirname(keyPath), 'device-helper'));
 
 async function run() {
   let key;
-  if (fs.existsSync(keyPath)) key = crypto.createPrivateKey(safeStorage.decryptString(fs.readFileSync(keyPath)));
+  if (fs.existsSync(keyPath)) key = crypto.createPrivateKey(fs.readFileSync(keyPath));
   else if (action === 'register') {
-    // as main/device.ts keeps it: PKCS#8 PEM, sealed by safeStorage, 0600, never over one that's there
+    // as main/device.ts keeps it: PKCS#8 PEM, 0600, never over one that's there
     key = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey;
-    fs.writeFileSync(keyPath, safeStorage.encryptString(key.export({ type: 'pkcs8', format: 'pem' })), { flag: 'wx', mode: 0o600 });
+    fs.writeFileSync(keyPath, key.export({ type: 'pkcs8', format: 'pem' }), { flag: 'wx', mode: 0o600 });
   } else return { error: 'no device key' };
   const { x, y } = crypto.createPublicKey(key).export({ format: 'jwk' });
   const publicKey = Buffer.concat([Buffer.from([4]), Buffer.from(x, 'base64url'), Buffer.from(y, 'base64url')]).toString('base64');

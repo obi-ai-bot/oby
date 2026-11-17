@@ -39,10 +39,8 @@ until the next login (launchd exits 78: `copy_bundle_path … not a bundle`); th
 then runs the same obid as a job of this login session only. In development
 (`npm run dev`) it starts nothing; `OBID_PORT` and `OBID_HOME` point it at a
 scratch obid run by hand instead of 7777 (a packaged app ignores them). It keeps
-its own app folder and Keychain item, `oby-app-dev` (its own device key, paired
-on your click), never the installed Oby's `oby-app` (docs/contracts/keychain.md,
-KEYCHAIN-11): Electron's own binary is signed ad hoc and runs any script, so it
-stays off the installed item's access list.
+its own app folder, `oby-app-dev` (its own device key, paired on your click),
+never the installed Oby's `oby-app` (docs/contracts/keychain.md, KEYCHAIN-11).
 `node e2e/rig.mjs app` opens it on a test rig's obid, with a second Oby to talk to
 (docs/contracts/test-rig.md).
 
@@ -89,13 +87,13 @@ npm run test:account-limits  # real Electron signing + scratch obid, after build
 scripts/package.sh [arm64] [x64]   # signed, notarized DMGs in dist/ (below)
 ```
 
-The account-limit integration regression runs on macOS with an unlocked login Keychain. Run
+The account-limit integration regression runs on macOS. Run
 `cargo build --manifest-path ../../core/Cargo.toml -p obid`, `npm run build`, then
 `npm run test:account-limits`. It uses the bundled Electron and stand-in agents, creates isolated
 app and obid data, and exercises the actual preload, IPC, device key, signed HTTP and job
-continuation paths. It checks grouped stop, cross-tool move, reset opt-in, and a visible error
-when secure storage is unavailable. Electron retains the Mac's real `HOME` so macOS safeStorage
-can reach the login Keychain; only its `userData` and obid's home are temporary. No real agent
+continuation paths. It checks grouped stop, cross-tool move, reset opt-in, and that the owner's
+choice is still signed when every use of the Keychain fails (the device key is a 0600 file:
+docs/contracts/keychain.md, KEYCHAIN-12); only its `userData` and obid's home are temporary. No real agent
 login or installed job is used. `OBY_TEST_OBID` can select a separately built obid binary.
 
 `scripts/package.sh` packages the Mac app on this Mac, as `scripts/release.sh`
@@ -124,7 +122,7 @@ the link of a comment on #1879 that GitHub says exists.
 src/main/       the window (opens at 994×670, at least 420×520) and the cursor feed;
                 obid.ts: obid's API through main, which holds its token, and
                 starting the app's own obid;
-                device.ts: this Mac's device key (safeStorage), which signs a Confirm
+                device.ts: this Mac's device key (a 0600 file), which signs a Confirm
 src/preload/    window.app: the traffic lights' position, full screen, the cursor feed,
                 and obid (a call, and the event stream)
 src/renderer/   the screens; tokens.css holds the shared look. The icons are apps/icon's:

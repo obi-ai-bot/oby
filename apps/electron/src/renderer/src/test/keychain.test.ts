@@ -1,24 +1,51 @@
-import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { createPrivateKey, createPublicKey, generateKeyPairSync, type KeyObject } from 'node:crypto';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEV_NAME, SCRATCH_NAME, ownFolder } from '../../../main/appFolder';
+import { keptKey } from '../../../main/device';
 
-// The app's own Keychain item, "oby-app Safe Storage" (docs/contracts/keychain.md, KEYCHAIN-11 and 12)
+// The app's own keys and folder (docs/contracts/keychain.md, KEYCHAIN-11 to 13)
 
-const appData = '/Users/someone/Library/Application Support';
+const the = vi.hoisted(() => ({ dir: '', calls: [] as string[], opens: true }));
+vi.mock('electron', () => ({
+  app: { getPath: () => the.dir },
+  BrowserWindow: {}, dialog: {},
+  // the Keychain, stood in for: every use is counted; a sealed key is `sealed:` and its PEM
+  safeStorage: {
+    isEncryptionAvailable: () => { the.calls.push('isEncryptionAvailable'); return true; },
+    encryptString: (s: string) => { the.calls.push('encryptString'); return Buffer.from(`sealed:${s}`); },
+    decryptString: (b: Buffer) => {
+      the.calls.push('decryptString');
+      if (!the.opens) throw new Error('the user denied access');
+      return b.toString().replace(/^sealed:/, '');
+    },
+  },
+}));
+vi.mock('../../../main/obid', () => ({ HOME: '/nowhere', obid: async () => ({ status: 200, text: '{}' }), takesKeys: async () => false }));
 
-describe('KEYCHAIN-11: only the packaged Oby opens the installed Oby’s Keychain item', () => {
+const pem = (k: KeyObject) => k.export({ type: 'pkcs8', format: 'pem' }) as string;
+const pub = (k: KeyObject) => createPublicKey(k).export({ type: 'spki', format: 'der' }).toString('base64');
+const p256 = () => generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey;
+
+beforeEach(() => {
+  the.dir = mkdtempSync(join(tmpdir(), 'oby-keys-'));
+  the.calls.length = 0;
+  the.opens = true;
+});
+
+describe('KEYCHAIN-11: only the packaged Oby keeps the installed Oby’s folder and keys', () => {
+  const appData = () => '/Users/someone/Library/Application Support';
+
   it('keychain_11_the_packaged_oby_keeps_oby_app_and_its_folder', () => {
     expect(ownFolder({ packaged: true, name: 'oby-app', scratchHome: null, appData })).toBeNull();
   });
 
-  it('keychain_11_the_app_run_from_source_keeps_an_item_and_folder_of_its_own', () => {
+  it('keychain_11_the_app_run_from_source_keeps_a_folder_of_its_own', () => {
     const own = ownFolder({ packaged: false, name: 'oby-app', scratchHome: null, appData });
-    expect(own).toEqual({ name: DEV_NAME, userData: `${appData}/${DEV_NAME}` });
-    // never the installed Oby's: neither its item ("oby-app Safe Storage") nor its folder, whose
-    // device-key that item seals
-    expect(own!.name).not.toBe('oby-app');
-    expect(own!.userData).not.toBe(`${appData}/oby-app`);
+    expect(own).toEqual({ name: DEV_NAME, userData: `${appData()}/${DEV_NAME}` });
+    expect(own!.userData).not.toBe(`${appData()}/oby-app`);
   });
 
   it('keychain_11_a_scratch_install_keeps_its_own_beside_its_obid', () => {
@@ -30,50 +57,69 @@ describe('KEYCHAIN-11: only the packaged Oby opens the installed Oby’s Keychai
   it('keychain_11_a_test_launchers_own_name_and_folder_stay', () => {
     // the drives and tests launch Electron with a launcher of their own ("Electron") and set userData first
     expect(ownFolder({ packaged: false, name: 'Electron', scratchHome: null, appData })).toBeNull();
+    expect(ownFolder({ packaged: false, name: undefined, scratchHome: null, appData })).toBeNull();
   });
 });
 
-// scripts/sign-identity.sh, as scripts/run-dev.sh runs it: `security find-identity` lines in
-const script = fileURLToPath(new URL('../../../../../../scripts/sign-identity.sh', import.meta.url));
-const TEAM = 'TEAM000001';
-const devId = `  1) 1111111111111111111111111111111111111111 "Developer ID Application: Example Inc (${TEAM})"`;
-const otherDevId = '  2) 2222222222222222222222222222222222222222 "Developer ID Application: Someone Else (TEAM000002)"';
-const appleDev = '  3) 3333333333333333333333333333333333333333 "Apple Development: A Person (PERSON0001)"';
-const pick = (lines: string[], want?: string) => {
-  const env = { ...process.env };
-  delete env.OBY_SIGN_IDENTITY;
-  if (want !== undefined) env.OBY_SIGN_IDENTITY = want;
-  const r = spawnSync('/bin/sh', [script, TEAM], { input: [...lines, `     ${lines.length} valid identities found`].join('\n'), env, encoding: 'utf8' });
-  return { status: r.status, out: r.stdout.trim().split('\n'), err: r.stderr };
-};
-
-describe('KEYCHAIN-12: run-dev.sh signs Oby the same way build after build, never ad hoc by itself', () => {
-  it('keychain_12_the_teams_developer_id_comes_first', () => {
-    expect(pick([appleDev, otherDevId, devId])).toEqual({ status: 0, out: ['1111111111111111111111111111111111111111', `Developer ID Application: Example Inc (${TEAM})`], err: '' });
+describe('KEYCHAIN-12: the app’s keys are 0600 files in its folder, and the Keychain is never asked', () => {
+  it('keychain_12_a_new_key_is_a_0600_pem_file_and_the_keychain_is_never_asked', () => {
+    const made = p256();
+    const key = keptKey('device-key', () => made);
+    const file = join(the.dir, 'device-key.pem');
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(readFileSync(file, 'utf8')).toBe(pem(made));
+    expect(pub(key)).toBe(pub(made));
+    expect(the.calls).toEqual([]);
   });
 
-  it('keychain_12_else_this_macs_apple_development_identity', () => {
-    expect(pick([otherDevId, appleDev]).out).toEqual(['3333333333333333333333333333333333333333', 'Apple Development: A Person (PERSON0001)']);
+  it('keychain_12_the_same_key_every_start', () => {
+    const first = keptKey('owner-key', () => generateKeyPairSync('ed25519').privateKey);
+    const again = keptKey('owner-key', () => { throw new Error('made again'); });
+    expect(pub(again)).toBe(pub(first));
+    expect(the.calls).toEqual([]);
   });
 
-  it('keychain_12_no_identity_stops_rather_than_sign_ad_hoc', () => {
-    const r = pick([otherDevId]);
-    expect(r.status).toBe(1);
-    expect(r.out).toEqual(['']);
-    expect(r.err).toContain('"oby-app Safe Storage" after each one');
-    expect(r.err).toContain('OBY_SIGN_IDENTITY=-');
-    expect(pick([]).status).toBe(1);
+  it('keychain_12_never_through_a_link', () => {
+    const elsewhere = join(the.dir, 'elsewhere.pem');
+    writeFileSync(elsewhere, pem(p256()));
+    symlinkSync(elsewhere, join(the.dir, 'device-key.pem'));
+    expect(() => keptKey('device-key', p256)).toThrow();
   });
 
-  it('keychain_12_ad_hoc_only_when_asked', () => {
-    expect(pick([devId, appleDev], '-')).toEqual({ status: 0, out: ['-', '-'], err: '' });
-    expect(pick([], '-').out).toEqual(['-', '-']);
+  it('keychain_12_a_file_that_isnt_a_key_is_set_aside_for_a_new_one', () => {
+    writeFileSync(join(the.dir, 'device-key.pem'), 'not a key', { mode: 0o600 });
+    const made = p256();
+    expect(pub(keptKey('device-key', () => made))).toBe(pub(made));
+    expect(readdirSync(the.dir).some((f) => f.startsWith('device-key.pem.unreadable-'))).toBe(true);
+    expect(the.calls).toEqual([]);
+  });
+});
+
+describe('KEYCHAIN-13: a key an older Oby sealed in the Keychain is moved once, then the Keychain is never asked again', () => {
+  it('keychain_13_a_sealed_key_moves_to_the_file_once_and_stays_the_same_key', () => {
+    const old = p256();
+    writeFileSync(join(the.dir, 'device-key'), `sealed:${pem(old)}`, { mode: 0o600 });
+    const moved = keptKey('device-key', () => { throw new Error('made a new key'); });
+    expect(pub(moved)).toBe(pub(old));
+    expect(the.calls).toEqual(['isEncryptionAvailable', 'decryptString']);
+    expect(readFileSync(join(the.dir, 'device-key.pem'), 'utf8')).toBe(pem(old));
+    expect(statSync(join(the.dir, 'device-key.pem')).mode & 0o777).toBe(0o600);
+    expect(existsSync(join(the.dir, 'device-key'))).toBe(false);
+    // the next start: the file, and nothing asked of the Keychain
+    the.calls.length = 0;
+    expect(pub(keptKey('device-key', () => { throw new Error('made a new key'); }))).toBe(pub(old));
+    expect(the.calls).toEqual([]);
   });
 
-  it('keychain_12_a_named_identity_or_none', () => {
-    expect(pick([devId, appleDev], 'Apple Development: A Person').out[0]).toBe('3333333333333333333333333333333333333333');
-    const r = pick([devId], 'Apple Development: Nobody');
-    expect(r.status).toBe(1);
-    expect(r.err).toContain('no signing identity named Apple Development: Nobody');
+  it('keychain_13_a_sealed_key_that_cant_be_opened_is_set_aside_for_a_new_one', () => {
+    the.opens = false;
+    writeFileSync(join(the.dir, 'owner-key'), 'sealed:anything', { mode: 0o600 });
+    const made = generateKeyPairSync('ed25519').privateKey;
+    expect(pub(keptKey('owner-key', () => made))).toBe(pub(made));
+    expect(readdirSync(the.dir).some((f) => f.startsWith('owner-key.unreadable-'))).toBe(true);
+    expect(createPrivateKey(readFileSync(join(the.dir, 'owner-key.pem'))).asymmetricKeyType).toBe('ed25519');
+    the.calls.length = 0;
+    keptKey('owner-key', () => { throw new Error('made again'); });
+    expect(the.calls).toEqual([]);
   });
 });

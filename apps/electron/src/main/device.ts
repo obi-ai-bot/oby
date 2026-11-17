@@ -10,9 +10,9 @@ import { ipc } from './ipc';
 import { flag, oneOf, optional, safeInteger, string, type Decoder } from '../shared/decode';
 
 // This Mac's device key for obid (docs/runner-api.md, "POST /v1/devices"), which makes a Confirm
-// the owner's (#776). A P-256 key made here in main, kept encrypted by safeStorage (macOS: a key
-// in the login Keychain that only this app reads without asking) in the app's own folder; it
-// never leaves main. Nothing here signs what the page asks to: a Confirm is one open item by its
+// the owner's (#776). A P-256 key made here in main, kept in the app's own folder as a 0600 file,
+// as T3 Code keeps its secrets, with no Keychain, so macOS never asks for it (keptKey); it never
+// leaves main. Nothing here signs what the page asks to: a Confirm is one open item by its
 // id, on the owner's click, and main reads that item's title from obid itself and signs obid's own
 // sentence for it; words (ownersWords) are signed only when the preload saw the owner's own
 // keystroke or click hold them, and only on the routes that carry words.
@@ -25,29 +25,48 @@ export function writeOwn(path: string, data: string | Buffer, flags: number) {
   try { writeSync(fd, typeof data === 'string' ? Buffer.from(data) : data); } finally { closeSync(fd); }
 }
 
-// A key made here in main, kept encrypted by safeStorage in the app's own folder as `file`: this
-// Mac's device key, and the owner key (main/sphere.ts)
-export function keptKey(file: string, make: () => KeyObject): KeyObject {
-  const path = join(app.getPath('userData'), file);
-  if (!safeStorage.isEncryptionAvailable()) throw new Error('This Mac’s Keychain isn’t available to Oby, so it can’t keep a key to confirm with.');
-  let sealed: Buffer | null = null;
+// A file of the app's own, read never through a link; null when it isn't there
+function readOwn(path: string): Buffer | null {
   try {
     const fd = openSync(path, O.O_RDONLY | O.O_NOFOLLOW);
-    try { sealed = readFileSync(fd); } finally { closeSync(fd); }
+    try { return readFileSync(fd); } finally { closeSync(fd); }
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw e;
   }
-  if (sealed) {
-    try { return createPrivateKey(safeStorage.decryptString(sealed)); } catch {
-      // sealed by a key this app can't open anymore (another signature, a Keychain reset): set
-      // aside, and a new one, which pairs on the owner's click as the first did
+}
+
+// A key made here in main, kept in the app's own folder as `<file>.pem`: PKCS#8 PEM, 0600, never
+// through a link, as T3 Code keeps its secrets: this Mac's device key, and the owner key
+// (main/sphere.ts). No Keychain, so macOS never asks (docs/contracts/keychain.md, KEYCHAIN-12). The
+// one exception is a key an older Oby sealed with safeStorage as `<file>`: it is opened once, the
+// last time this app reads its Keychain item, moved to `<file>.pem` and removed, so the devices it
+// paired and the Obyspheres it joined stay valid (KEYCHAIN-13).
+export function keptKey(file: string, make: () => KeyObject): KeyObject {
+  const path = join(app.getPath('userData'), `${file}.pem`), sealed = join(app.getPath('userData'), file);
+  const pem = readOwn(path);
+  if (pem) {
+    try { return createPrivateKey(pem); } catch {
+      // not a key anymore: set aside, and a new one, which pairs on the owner's click as the first did
       renameSync(path, `${path}.unreadable-${Date.now()}`);
     }
   }
-  const made = make();
+  const moved = movedOnce(sealed);
+  const kept = moved ?? make();
   // O_EXCL: never over a key that's there
-  writeOwn(path, safeStorage.encryptString(made.export({ type: 'pkcs8', format: 'pem' }) as string), O.O_EXCL);
-  return made;
+  writeOwn(path, kept.export({ type: 'pkcs8', format: 'pem' }) as string, O.O_EXCL);
+  if (moved) rmSync(sealed, { force: true });
+  return kept;
+}
+
+// An older Oby's key, sealed by safeStorage, opened once to be moved (KEYCHAIN-13). One that can't
+// be opened (another signature denied, a Keychain reset) is set aside, and a new key made
+function movedOnce(sealed: string): KeyObject | null {
+  const was = readOwn(sealed);
+  if (!was) return null;
+  try { if (safeStorage.isEncryptionAvailable()) return createPrivateKey(safeStorage.decryptString(was)); } catch { /* set aside below */ }
+  renameSync(sealed, `${sealed}.unreadable-${Date.now()}`);
+  return null;
 }
 
 let key: KeyObject | null = null;

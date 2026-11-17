@@ -21,8 +21,7 @@
 #      apps/electron/electron-builder.yml: Oby.app, bundle ID com.deskree.oby.electron, obid inside
 #      it at Contents/Helpers/obid with its launch agent's plist, as every install has it. Signed
 #      with the Developer ID of OBY_TEAM_ID when this Mac has it, else this Mac's Apple Development
-#      identity (OBY_SIGN_IDENTITY names another; - is ad hoc, never picked by itself, since macOS
-#      asks for the Keychain again after each ad hoc build). Not notarized and not scanned for
+#      identity, else ad hoc (OBY_SIGN_IDENTITY names another). Not notarized and not scanned for
 #      secrets: it never leaves this Mac (apps/electron/scripts/package.sh makes releases);
 #   4. installed as /Applications/Oby.app, Oby quit first. An "Oby Electron.app" from the first
 #      releases goes: its app quit, its launch agent booted out, its folder removed, so this Mac
@@ -141,14 +140,23 @@ x86_64) arch=x64 target=x86_64-apple-darwin ;;
 *) die "$(uname -m) isn't a Mac architecture Oby builds for" ;;
 esac
 
-# The identity it's signed with (scripts/sign-identity.sh): its SHA-1 for helpers.sh, its name for
-# electron-builder. Never ad hoc unless OBY_SIGN_IDENTITY=- asks: an ad hoc build is a new app to the
-# Keychain every time (KEYCHAIN-12)
+# The identity it's signed with: its SHA-1 for helpers.sh, its name for electron-builder
 team=${OBY_TEAM_ID:-3UV9W5SV7W}
-# (find-identity may find nothing: || true, or pipefail would end the script here)
-picked=$({ security find-identity -v -p codesigning 2> /dev/null || true; } | /bin/sh "$repo/scripts/sign-identity.sh" "$team") \
-  || die "nothing to sign Oby with (above)"
-sign_hash=${picked%%$'\n'*} sign_name=${picked#*$'\n'}
+identities=$(security find-identity -v -p codesigning 2> /dev/null || true)
+# (each lookup may find nothing: || true, or pipefail would end the script here)
+if [[ -n "${OBY_SIGN_IDENTITY:-}" ]]; then
+  line=$(print -r -- "$identities" | grep -F "\"$OBY_SIGN_IDENTITY" | head -n 1 || true)
+  [[ -n "$line" ]] || die "no signing identity named $OBY_SIGN_IDENTITY in the keychain"
+else
+  line=$(print -r -- "$identities" | grep "Developer ID Application" | grep "($team)" | head -n 1 || true)
+  [[ -n "$line" ]] || line=$(print -r -- "$identities" | grep '"Apple Development' | head -n 1 || true)
+fi
+if [[ -n "$line" ]]; then
+  sign_hash=$(print -r -- "$line" | awk '{print $2}')
+  sign_name=$(print -r -- "$line" | sed 's/^[^"]*"\(.*\)"$/\1/')
+else
+  sign_hash=- sign_name=-
+fi
 say "Signing with ${sign_name/#-/an ad hoc signature}"
 
 # 2. obid, gh and gitleaks
@@ -191,7 +199,7 @@ if (( scratch )); then
 else
   dest=/Applications/Oby.app
   old="/Applications/Oby Electron.app"
-  pgrep -f "electron-vite dev" > /dev/null && say "Oby also runs from npm run dev: quit it (Ctrl-C in its terminal), it uses this Oby's engine on 7777"
+  pgrep -f "electron-vite dev" > /dev/null && say "Oby also runs from npm run dev: quit it (Ctrl-C in its terminal), it shares this Oby's folder"
   quit_app "$dest"
   if [[ -d "$old" ]]; then
     # the first releases' folder: one Oby on this Mac, named Oby. Its engine is stopped with it;

@@ -29,7 +29,7 @@ describe('the name', () => {
     // block is taken out before looking
     expect(builder).not.toMatch(/^extraMetadata:/m);
     const ownOnly = /\nif \(own\) \{\n  app\.setName\(own\.name\);\n  app\.setPath\('userData', own\.userData\);\n\}\n/;
-    expect(file('src/main/index.ts')).toMatch(/\nconst own = ownFolder\(\{ packaged: app\.isPackaged, name: app\.getName\(\), scratchHome: SCRATCH\?\.home \?\? null, appData: app\.getPath\('appData'\) \}\);\n/);
+    expect(file('src/main/index.ts')).toMatch(/\nconst own = ownFolder\(\{ packaged: app\.isPackaged, name: app\.name, scratchHome: SCRATCH\?\.home \?\? null, appData: \(\) => app\.getPath\('appData'\) \}\);\n/);
     expect(file('src/main/index.ts')).toMatch(ownOnly);
     for (const f of readdirSync(new URL('../../../main/', import.meta.url)))
       expect(file(`src/main/${f}`).replace(ownOnly, ''), f).not.toMatch(/app\.(name\s*=[^=]|setName\()/);

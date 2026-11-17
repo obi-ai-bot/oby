@@ -21,7 +21,7 @@ import { ownFolder } from './appFolder';
 // A scratch install (scripts/run-dev.sh --port --home, shared/build.ts) and the app run from source
 // (npm run dev) keep their own folder and Keychain item, never the installed Oby's (main/appFolder.ts,
 // KEYCHAIN-11): set before anything reads them
-const own = ownFolder({ packaged: app.isPackaged, name: app.getName(), scratchHome: SCRATCH?.home ?? null, appData: app.getPath('appData') });
+const own = ownFolder({ packaged: app.isPackaged, name: app.name, scratchHome: SCRATCH?.home ?? null, appData: () => app.getPath('appData') });
 if (own) {
   app.setName(own.name);
   app.setPath('userData', own.userData);

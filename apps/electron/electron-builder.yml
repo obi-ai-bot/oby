@@ -2,8 +2,9 @@
 # The bundle ID stays what every install has: Squirrel.Mac installs only an update meeting the
 # running app's designated requirement, and the login item, notifications and oby:// hang on it.
 # The name is here, never in package.json: there it would become app.name, which names the app's
-# folder (oby-app) and safeStorage's Keychain item ("oby-app Safe Storage", which seals the device
-# and owner keys), both package.json's `name` today (name.test.ts).
+# folder (oby-app), which holds the device and owner keys, and the Keychain item an older Oby sealed
+# them with ("oby-app Safe Storage", read once to move them), both package.json's `name` today
+# (name.test.ts).
 appId: com.deskree.oby.electron
 productName: Oby
 directories:
@@ -26,7 +27,10 @@ electronFuses:
   enableNodeCliInspectArguments: false
   enableEmbeddedAsarIntegrityValidation: true
   onlyLoadAppFromAsar: true
-  enableCookieEncryption: true
+  # Off: on, Chromium reads its key from the Keychain at every start, and macOS asks for the login
+  # password whenever Oby's signature changes. Oby keeps nothing in cookies it needs; the app's
+  # secrets are 0600 files in its folder (docs/contracts/keychain.md, KEYCHAIN-12)
+  enableCookieEncryption: false
 # Open in Oby on an Obysphere's join page (oby://join/<host>#…, main/sphere.ts)
 protocols:
   - name: Oby
