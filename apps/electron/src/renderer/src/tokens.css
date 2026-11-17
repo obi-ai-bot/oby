@@ -69,9 +69,10 @@
   --radius-pill: 999px;
   --gutter: 20px;
   /* the conversation column: the messages and the message box under them, one width. Sangam's 540px in
-     the window's own size (994px); a wider window widens it by 0.6px for each px of window, up to 1152px
-     (72rem), where T3 Code's "Wide" stops, so a line of text never runs the whole screen */
-  --column: clamp(540px, calc(540px + (100vw - 994px) * 0.6), 1152px);
+     the window's own size (994px); a wider window widens it by 0.6px for each px of window, up to 768px
+     (48rem), where the Claude app's conversation stops (its box about 770px, the owner's measure), so a
+     line of text never runs across the screen. A narrower window still narrows it: these are max-widths */
+  --column: clamp(540px, calc(540px + (100vw - 994px) * 0.6), 768px);
   /* title bar: tall enough to centre on the traffic lights, content starting
      just right of them. The desktop app overrides both with where macOS
      actually put the lights; these are for a plain browser. */
