@@ -59,6 +59,7 @@ DELETE /v1/jobs/{id}
 GET /v1/jobs/{id}
 PATCH /v1/jobs/{id}
 POST /v1/jobs/{id}/archive
+GET /v1/jobs/{id}/changes
 POST /v1/jobs/{id}/delete
 POST /v1/jobs/{id}/dismiss
 POST /v1/jobs/{id}/messages
