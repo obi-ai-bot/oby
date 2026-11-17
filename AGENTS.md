@@ -149,9 +149,9 @@ Claude Code's Keychain login, for boxed runs:
 Claude Code in the own lane:
 
 - Every Claude Code job of the owner's own (not another Oby's, not `untrusted`, not Oby's review) runs unboxed on its account's own folder and Keychain login, no copy, no egress proxy (LANE-1); its check then gets none of the declared secrets (LANE-3a).
-- Only its commands are kernel-sandboxed, in Claude Code's sandbox, kept by obid's settings out of obid's home, the person's home and every account's folder but the job's own paths, and off the git pointers.
-- Its Read, Edit and Write tools run outside any sandbox, on Claude Code's path checks and obid's refusal of paths outside the worktree; a link swapped between check and open isn't stopped, an accepted race (`claudeOwnSandbox`, `own_sandbox_probes`).
-- On macOS the owner's own Claude Code conversation runs the same way (LANES-12), its commands writing only its room; an untrusted read keeps it in the own lane and marks it (CONVO-1); elsewhere it stays boxed.
+- It runs under the owner's own settings, sandbox, hooks and permissions, as their terminal does; obid refuses nothing they hold, only pins its git and no-publish variables and denies file tools its secrets ([why](docs/decisions/2026-11-16-own-lane-trusts-the-cli.md)).
+- obid answers what Claude Code asks it, by the job's mode; an unsandboxed command reaches what the owner's user can.
+- On macOS the owner's own Claude Code conversation runs the same way (LANES-12); an untrusted read keeps it in the own lane and marks it (CONVO-1); elsewhere it stays boxed.
 - Another Oby's conversation, Codex's and Cursor's (CONVO-2) and the brain's planner (CONVO-5) stay boxed with a login copy.
 - obid's own git calls in a worktree are pinned to the job's git folders as obid checked them.
 

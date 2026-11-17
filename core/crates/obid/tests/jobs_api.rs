@@ -6643,10 +6643,8 @@ fn lanes_1_the_owners_job_runs_in_its_own_lane_and_another_obys_stays_boxed() {
 /// a branch and commit on it, and all of it stays in its worktree's own git folder: it never sees
 /// the owner's stash, the clone's `refs/heads` and `refs/stash` are unchanged, with no `try`, and
 /// another job sees neither its branch nor its stash. obid's view of the job is the clone's again
-/// after the run, its HEAD the commit on `try`. Where Seatbelt can run (not inside another sandbox)
-/// the fake runs them under the settings' writes, as Claude Code's sandbox does, and its writes to
-/// the clone's hooks, config, `refs/heads` and `refs/stash` and to its git folder's
-/// `config.worktree` and `commondir` fail; the settings keep them out of its writes everywhere.
+/// after the run, its HEAD the commit on `try`. obid sets no sandbox for it (LANES-23): its git
+/// keeps its branches and stash in the job's own folder through the environment obid pins.
 #[test]
 fn lanes_8_an_own_jobs_branches_and_stash_stay_in_its_worktree() {
     let folder = Folder::new("lanes-8");
@@ -6707,19 +6705,7 @@ fn lanes_8_an_own_jobs_branches_and_stash_stay_in_its_worktree() {
         .find_map(|word| word.strip_prefix("commit="))
         .unwrap_or_else(|| panic!("{said}"))
         .to_owned();
-    assert!(!said.contains("wrote"), "{said}");
-    // The denied writes were tried under Seatbelt wherever it can run here.
-    let seatbelt = Command::new("/usr/bin/sandbox-exec")
-        .args(["-p", "(version 1)(allow default)", "/usr/bin/true"])
-        .status()
-        .is_ok_and(|status| status.success());
-    let ran = if seatbelt { "seatbelt" } else { "none" };
-    assert!(said.contains(&format!("sandbox={ran}")), "{said}");
-    if !seatbelt {
-        eprintln!(
-            "LANES-8: Seatbelt can't run here (inside another sandbox, or not a Mac), so the writes it would deny weren't tried; the settings that deny them are still checked below"
-        );
-    }
+    assert!(said.contains("sandbox=none"), "{said}");
     // The clone's refs are obid's alone: no `try`, its stash the owner's, and every branch there
     // still a commit the clone has.
     assert_eq!(kept("refs/stash"), stash);
@@ -6751,28 +6737,6 @@ fn lanes_8_an_own_jobs_branches_and_stash_stay_in_its_worktree() {
     assert_eq!(admin.join(commondir.trim()).canonicalize().unwrap(), common);
     let head = std::fs::read_to_string(admin.join("HEAD")).unwrap();
     assert_eq!(head.trim(), on_try);
-    let (args, _) = last_launch(&folder.0);
-    let at = args.iter().position(|a| a == "--settings").unwrap();
-    let settings: Value = serde_json::from_str(&args[at + 1]).unwrap();
-    let has = |key: &str, path: PathBuf| {
-        settings["sandbox"]["filesystem"][key]
-            .as_array()
-            .unwrap()
-            .contains(&json!(path))
-    };
-    for closed in [
-        common.clone(),
-        common.join("refs"),
-        common.join("refs/heads"),
-        common.join("hooks"),
-        common.join("config"),
-    ] {
-        assert!(!has("allowWrite", closed.clone()), "{}", closed.display());
-    }
-    for kept in ["commondir", "config.worktree", "oby-common"] {
-        assert!(has("denyWrite", admin.join(kept)), "{kept}");
-    }
-
     // Another job sees neither: no `try` among its branches, so it makes its own, and only its own
     // stash.
     let (other, _) = job("STASH AND BRANCH");
@@ -6790,8 +6754,9 @@ fn lanes_8_an_own_jobs_branches_and_stash_stay_in_its_worktree() {
     assert_eq!(kept("refs/stash"), stash);
 }
 
-/// LANES-4 (docs/contracts/lanes.md): the owner's login shell exports a Bedrock gateway and its
-/// model: an own Claude Code job gets all three as written and obid names no model, while what
+/// LANES-4 and LANES-22 (docs/contracts/lanes.md): the owner's login shell exports a Bedrock
+/// gateway, its model and a `CLAUDE_CODE_*` name obid never heard of: an own Claude Code job gets
+/// all four as written and obid names no model, while what
 /// pushes stays out (LANES-2); once the job is foreign, its next run gets none and obid's model.
 #[test]
 fn lanes_4_an_own_job_gets_the_owners_login_environment() {
@@ -6806,7 +6771,8 @@ fn lanes_4_an_own_job_gets_the_owners_login_environment() {
         format!(
             "#!/bin/sh\nexport ANTHROPIC_BASE_URL=https://gateway.example/bedrock CLAUDE_CODE_USE_BEDROCK=1 \
              ANTHROPIC_MODEL={model} SSH_AUTH_SOCK=/tmp/agent.sock GH_TOKEN=not-a-token \
-             GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0=store LANES_4=kept\n\
+             GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0=store LANES_4=kept \
+             CLAUDE_CODE_LANES_21=kept\n\
              [ \"$1 $2\" = '-l -c' ] && exec /bin/sh -c \"$3\"\n"
         ),
     )
@@ -6827,7 +6793,7 @@ fn lanes_4_an_own_job_gets_the_owners_login_environment() {
     let own = format!(
         "ANTHROPIC_BASE_URL=https://gateway.example/bedrock CLAUDE_CODE_USE_BEDROCK=1 \
          ANTHROPIC_MODEL={model} SSH_AUTH_SOCK=none GH_TOKEN=none GIT_CONFIG_COUNT=none \
-         LANES_4=kept model=none"
+         LANES_4=kept CLAUDE_CODE_LANES_21=kept model=none"
     );
     assert!(said.contains(&own), "{job}");
 
@@ -6835,7 +6801,8 @@ fn lanes_4_an_own_job_gets_the_owners_login_environment() {
     assert_eq!(job["status"], "done", "{job}");
     let said = job["summary"].as_str().unwrap();
     let foreign = "ANTHROPIC_BASE_URL=none CLAUDE_CODE_USE_BEDROCK=none ANTHROPIC_MODEL=none \
-                   SSH_AUTH_SOCK=none GH_TOKEN=none GIT_CONFIG_COUNT=none LANES_4=none model=claude-";
+                   SSH_AUTH_SOCK=none GH_TOKEN=none GIT_CONFIG_COUNT=none LANES_4=none \
+                   CLAUDE_CODE_LANES_21=none model=claude-";
     assert!(said.contains(foreign), "{job}");
 }
 
@@ -6883,15 +6850,21 @@ fn lanes_10_a_foreign_job_keeps_the_box_and_its_copy() {
     assert!(!login.join(".credentials.json").exists());
 }
 
-/// LANES-5 (docs/contracts/lanes.md, the owner's decision LANE-6a): with a skill, an MCP server
-/// and `sandbox.enabled: false` in the owner's account folder, and a hook in the repository's
-/// `.claude/settings.json` and `.claude/settings.local.json` and an MCP server in its `.mcp.json`
-/// on its default branch, an own job's Claude Code loads the owner's only (`--setting-sources
-/// user`, no `--strict-mcp-config`), never the repository's, and obid's `--settings` keep its
-/// sandbox on; once marked untrusted, its next run loads none.
+/// The `loaded` report fake-claude wrote in job `id`'s worktree.
+fn loaded(obid: &Obid, id: &str) -> Value {
+    let report = obid.home.join(format!("worktrees/{id}/.obi/report.json"));
+    let report: Value = serde_json::from_slice(&std::fs::read(report).unwrap()).unwrap();
+    report["loaded"].clone()
+}
+
+/// LANES-23 (docs/contracts/lanes.md, the owner's decision of 2026-11-16): an own job's Claude
+/// Code loads every settings source as the owner's terminal does (no `--setting-sources`): the
+/// owner's skill and MCP server, and the repository's `.claude/settings.json`,
+/// `.claude/settings.local.json` and `.mcp.json`; the owner's `sandbox.enabled: false` stands, as
+/// obid's `--settings` set no sandbox. Once marked untrusted, its next run loads none (LANES-10).
 #[test]
-fn lanes_5_an_own_job_loads_the_owners_settings_never_the_repositorys() {
-    let folder = Folder::new("lanes-5");
+fn lanes_23_an_own_job_loads_every_settings_source_as_the_terminal_does() {
+    let folder = Folder::new("lanes-22");
     let remote = fixture(&folder.0.join("fixture"));
     let config = config(&folder.0, &remote);
     let (account, work) = (folder.0.join("home/accounts/stub"), folder.0.join("seed"));
@@ -6899,8 +6872,7 @@ fn lanes_5_an_own_job_loads_the_owners_settings_never_the_repositorys() {
     git(&folder.0, &["clone", "-q", remote_path, work_path]);
     let server = r#"{"mcpServers":{"owners-github":{"type":"http","url":"http://127.0.0.1:9/"}}}"#;
     let off = r#"{"sandbox":{"enabled":false}}"#;
-    let hook =
-        r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"touch /tmp/x"}]}]}}"#;
+    let hook = r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"true"}]}]}}"#;
     let repos = r#"{"mcpServers":{"repos-server":{"type":"http","url":"http://127.0.0.1:9/"}}}"#;
     for (file, text) in [
         (account.join("skills/owners-skill/SKILL.md"), "# Mine\n"),
@@ -6913,7 +6885,6 @@ fn lanes_5_an_own_job_loads_the_owners_settings_never_the_repositorys() {
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(file, text).unwrap();
     }
-    // Pushed to the path, not `origin`: in an agent's run its push URL is obid's invalid one.
     for args in [
         &["config", "user.name", "T"][..],
         &["config", "user.email", "t@example.com"],
@@ -6929,10 +6900,11 @@ fn lanes_5_an_own_job_loads_the_owners_settings_never_the_repositorys() {
     let posted = post_job(&obid, task);
     let id = posted.body["id"].as_str().unwrap();
     assert_eq!(wait(&obid, id)["status"], "done");
+    let all = json!(["user", "project", "local"]);
     assert_eq!(
         loaded(&obid, id),
-        json!({"sources": ["user"], "found": ["user"], "skills": ["owners-skill"],
-               "mcpServers": ["owners-github"], "sandbox": true})
+        json!({"sources": all, "found": all, "skills": ["owners-skill"],
+               "mcpServers": ["owners-github", "repos-server"], "sandbox": false})
     );
 
     let (obid, job) = marked_untrusted(&folder.0, &config, obid, id, "REPORT");
@@ -6943,25 +6915,23 @@ fn lanes_5_an_own_job_loads_the_owners_settings_never_the_repositorys() {
     assert_eq!(loaded["mcpServers"], json!([]), "{loaded}");
 }
 
-/// The `loaded` report fake-claude wrote in job `id`'s worktree.
-fn loaded(obid: &Obid, id: &str) -> Value {
-    let report = obid.home.join(format!("worktrees/{id}/.obi/report.json"));
-    let report: Value = serde_json::from_slice(&std::fs::read(report).unwrap()).unwrap();
-    report["loaded"].clone()
-}
-
-/// LANES-5: an owner's settings file that sets what obid's `--settings` can't take back
-/// (`sandbox.excludedCommands`, which runs those commands outside the sandbox) stops the run
-/// before Claude Code starts, saying which file and key.
+/// LANES-23: an owner's settings file with what obid used to refuse (commands out of the
+/// sandbox, more folders, a bare `Read` allow, a hook, any `CLAUDE_*` in its `env`) starts the
+/// run, and it ends `done`.
 #[test]
-fn lanes_5_a_settings_file_that_undoes_the_sandbox_stops_the_run() {
-    let folder = Folder::new("lanes-5-refused");
+fn lanes_23_an_own_job_starts_whatever_the_owners_settings_hold() {
+    let folder = Folder::new("lanes-22-starts");
     let remote = fixture(&folder.0.join("fixture"));
     let config = config(&folder.0, &remote);
     let account = folder.0.join("home/accounts/stub");
     std::fs::create_dir_all(&account).unwrap();
-    let set = r#"{"sandbox":{"excludedCommands":["git"]}}"#;
-    std::fs::write(account.join("settings.json"), set).unwrap();
+    let set = json!({
+        "sandbox": {"excludedCommands": ["git"], "network": {"allowUnixSockets": ["/tmp/s"]}},
+        "permissions": {"allow": ["Read", "Grep"], "additionalDirectories": ["/tmp"]},
+        "hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "true"}]}]},
+        "env": {"CLAUDE_CODE_MANAGED_SETTINGS_PATH": "/tmp/x.json", "CLAUDE_FOO": "1"},
+    });
+    std::fs::write(account.join("settings.json"), set.to_string()).unwrap();
     let obid = start(&folder.0, &config);
     let task = json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "REPORT"});
     let id = post_job(&obid, task).body["id"]
@@ -6969,14 +6939,9 @@ fn lanes_5_a_settings_file_that_undoes_the_sandbox_stops_the_run() {
         .unwrap()
         .to_owned();
     let job = wait(&obid, &id);
-    assert_ne!(job["status"], "done", "{job}");
-    let text = job.to_string();
-    assert!(
-        text.contains("settings.json sets sandbox.excludedCommands"),
-        "{job}"
-    );
+    assert_eq!(job["status"], "done", "{job}");
     let report = obid.home.join(format!("worktrees/{id}/.obi/report.json"));
-    assert!(!report.exists(), "Claude Code ran");
+    assert!(report.exists(), "Claude Code didn't run");
 }
 
 /// #626: routing skips an account whose login file isn't there (a login only in the macOS

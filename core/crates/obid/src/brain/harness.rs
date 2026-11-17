@@ -756,15 +756,14 @@ fn claude_flags(
     if own {
         orientation = orientation.replacen(NO_SHELL, OWN_SHELL, 1);
     }
-    // An own session loads the owner's user settings, skills and MCP servers (CONVO-4), never the
-    // room's, which it can't write either (`Jobs::ROOM_CONFIG`). No `--restricted` there:
-    // it drops user settings, skills and MCP servers (Claude Code 2.1.302). [`rule`] answers only
-    // what Claude Code asks, and an allow rule of the owner's skips that: so its `--settings` deny
-    // the file tools obid's secret places and the accounts' settings and hooks, and a user settings
-    // file that lets a file tool past the room is refused before it starts
+    // An own session loads every settings source, skills and MCP servers, as the owner's terminal
+    // does (CONVO-4, the owner's decision of 2026-11-16, LANES-23). No `--restricted` there: it
+    // drops user settings, skills and MCP servers (Claude Code 2.1.302). [`rule`] answers only what
+    // Claude Code asks, and an allow rule of the owner's skips that: so its `--settings` deny the
+    // file tools obid's secret places and the accounts' settings and hooks
     // (`Jobs::conversation_own_launch`).
     let lane: &[&str] = match own {
-        true => &["--setting-sources", "user"],
+        true => &[],
         false => &[
             "--setting-sources",
             "",

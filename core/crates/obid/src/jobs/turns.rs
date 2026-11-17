@@ -407,7 +407,9 @@ impl Jobs {
                 let mut argv: Vec<OsString> = vec![bin.into_os_string()];
                 argv.extend(flags);
                 if own {
-                    let settings = own_sandbox_settings(&spec, &self.login_path(&job.id), &extra)?;
+                    let login = self.login_path(&job.id);
+                    let secrets = self.secret_places();
+                    let settings = own_sandbox_settings(&spec, &login, &extra, &secrets)?;
                     argv.extend(["--tools", OWN_JOB_TOOLS, "--settings"].map(OsString::from));
                     argv.push(settings.into());
                 }

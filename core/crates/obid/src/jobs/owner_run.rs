@@ -805,16 +805,14 @@ impl Jobs {
                 .iter()
                 .map(OsString::from)
                 .collect();
-                // The own lane loads the owner's user settings, skills and MCP servers, under
-                // obid's `--settings`, which outrank them (`own_sandbox_settings`), and never the
-                // repository's own `.claude/`, `.mcp.json` or `CLAUDE.md` (the owner's decision
-                // LANE-6a; `user` alone loads none of them, measured with 2.1.302); the foreign
-                // lane loads none (LANES-5).
+                // The own lane loads every settings source, the owner's and the repository's, as
+                // their terminal does (the owner's decision of 2026-11-16, LANES-23); the foreign
+                // lane loads none (LANES-5, LANES-10).
                 let own = Self::own_lane(&job, tool);
-                let sources = if own { "user" } else { "" };
-                flags.extend(["--setting-sources", sources].map(OsString::from));
                 if !own {
-                    flags.push("--strict-mcp-config".into());
+                    flags.extend(
+                        ["--setting-sources", "", "--strict-mcp-config"].map(OsString::from),
+                    );
                 }
                 // On every run: a resumed one without them has no rules.
                 if let Some(rules) = standing_rules(&job) {

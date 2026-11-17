@@ -3129,8 +3129,9 @@ fn mcp_folder() -> &'static str {
     }
 }
 
-/// Whether `turn` ran in the own lane (LANES-12): on the account's own folder, with the owner's
-/// settings and MCP servers, Claude Code's own Bash and its sandbox's settings.
+/// Whether `turn` ran in the own lane (LANES-12): on the account's own folder, with every
+/// settings source and the owner's MCP servers (LANES-23), Claude Code's own Bash, and obid's
+/// `--settings` with no sandbox of obid's.
 fn ran_own(obid: &Obid, turn: &Value) -> bool {
     let argv: Vec<&str> = turn["argv"]
         .as_array()
@@ -3140,11 +3141,11 @@ fn ran_own(obid: &Obid, turn: &Value) -> bool {
         .collect();
     let after = |flag: &str| argv.iter().position(|a| *a == flag).map(|i| argv[i + 1]);
     turn["config"].as_str().map(PathBuf::from) == Some(obid.home.join("accounts/stub"))
-        && after("--setting-sources") == Some("user")
+        && !argv.contains(&"--setting-sources")
         && !argv.contains(&"--restricted")
         && !argv.contains(&"--strict-mcp-config")
         && after("--tools").is_some_and(|tools| tools.split(',').any(|t| t == "Bash"))
-        && after("--settings").is_some_and(|s| s.contains("failIfUnavailable"))
+        && after("--settings").is_some_and(|s| !s.contains("failIfUnavailable"))
 }
 
 /// LANES-12 (docs/contracts/lanes.md): the owner's conversation runs on its account's own folder
