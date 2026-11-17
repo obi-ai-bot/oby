@@ -22,7 +22,7 @@ import { everything } from './lean';
 import { keeper, leftInBox } from './drafts';
 import TalkPill from './TalkPill';
 import { useChats, type Chat } from './chats';
-import { useProjectsOn } from './projects';
+import { useProjects, useProjectsOn } from './projects';
 import { ProjectChip } from './ProjectSheet';
 
 // What a message carries besides its words: files or photos (a photo with a
@@ -128,16 +128,18 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   const canFolders = !everything && withRepos && !!window.app?.pickFolders;
   const kept = useFolders(conversation);
   const [homeFolders, setHomeFolders] = useState<string[]>([]);
-  // The project (docs/contracts/projects.md, PROJECTS-19 and 22): Home's chip picks the one its words
-  // start a conversation in, for this run only; a conversation in one works in its folders, shown
-  // as obid answers them, with no ×. Either way the box picks and sends no folders of its own
+  // The project (docs/contracts/projects.md, PROJECTS-19, 22 and 25): Home's chip picks the one its
+  // words start a conversation in, for this run only (one deleted since: none); a conversation in one
+  // works in its folders, which its title bar's chip stands for: the box shows no folder of it. Either
+  // way the box picks and sends no folders of its own
   const projectsOn = useProjectsOn();
+  const projects = useProjects();
   const [homeProject, setHomeProject] = useState<string | null>(null);
-  const project = home && projectsOn ? homeProject : null;
+  const project = home && projectsOn && projects.some((p) => p.id === homeProject) ? homeProject : null;
   const chats = useChats();
   const inProject = !!conversation && projectsOn && !!chats.find((c) => c.id === conversation)?.project;
   const ownFolders = canFolders && !project && !inProject;
-  const folders = !canFolders ? [] : conversation ? kept : project ? [] : homeFolders;
+  const folders = !canFolders || project || inProject ? [] : conversation ? kept : homeFolders;
   // from the list as it is when it's applied (a tag's × applies after its 140ms leave: two quick ×s
   // mustn't bring the first back)
   const putFolders = (next: (was: string[]) => string[]) => (conversation ? setFolders(conversation, next(foldersOf(conversation))) : setHomeFolders(next));
@@ -355,7 +357,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
                 <span key={f} data-glide={`folder:${f}`} className="composer-tag" title={f}>
                   <FolderOpen size={15} strokeWidth={1.7} />
                   <span className="composer-tag-text">{folderName(f)}</span>
-                  {!inProject && <button type="button" aria-label={`Remove ${folderName(f)}`} onClick={(e) => leave(e.currentTarget.parentElement, () => putFolders((was) => was.filter((x) => x !== f)))}><X size={13} strokeWidth={2} /></button>}
+                  <button type="button" aria-label={`Remove ${folderName(f)}`} onClick={(e) => leave(e.currentTarget.parentElement, () => putFolders((was) => was.filter((x) => x !== f)))}><X size={13} strokeWidth={2} /></button>
                 </span>
               ))}
               {repo && (

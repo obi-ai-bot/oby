@@ -312,6 +312,11 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     return next;
   });
   const [newProject, setNewProject] = useState(false);
+  // a project heading's menu (its ⋮, or a right-click: PROJECTS-26), and the sheet it opens on that
+  // project, to change it or at the ask before deleting it
+  const [projectMenu, setProjectMenu] = useState<{ id: string; at: DOMRect; atPointer?: boolean } | null>(null);
+  const [projectSheet, setProjectSheet] = useState<{ id: string; deleting: boolean } | null>(null);
+  const sheetProject = projects.find((p) => p.id === projectSheet?.id);
   // A conversation's tasks, nested under its row (LIVETASK-19 to 21): shown for the open conversation,
   // the one holding the open task and one whose task needs you, unless the owner folded it; what the
   // owner chose is kept (oby.kidsShown: conversation id to shown or not)
@@ -653,11 +658,28 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
               const shut = !q && projectsFolded.has(g.id);
               return (
                 <section key={g.id || 'none'} className={`sidebar-group project-group${shut ? ' is-folded' : ''}`}>
-                  <button className="sidebar-group-head" aria-expanded={!shut} onClick={() => toggleProject(g.id)}>
-                    {g.id && <Folder size={14} strokeWidth={1.6} className="project-mark" />}
-                    <h3>{g.name}</h3>
-                    <ChevronDown size={12} strokeWidth={1.8} className="sidebar-chevron" />
-                  </button>
+                  {/* a project's heading has its own ⋮ beside it, so the heading stays a <button> */}
+                  <div
+                    className={`project-group-row${projectMenu?.id === g.id ? ' is-menu-open' : ''}`}
+                    onContextMenu={g.id ? (e) => { e.preventDefault(); setProjectMenu({ id: g.id, at: new DOMRect(e.clientX, e.clientY, 0, 0), atPointer: true }); } : undefined}
+                  >
+                    <button className="sidebar-group-head" aria-expanded={!shut} onClick={() => toggleProject(g.id)}>
+                      {g.id && <Folder size={14} strokeWidth={1.6} className="project-mark" />}
+                      <h3>{g.name}</h3>
+                      <ChevronDown size={12} strokeWidth={1.8} className="sidebar-chevron" />
+                    </button>
+                    {g.id && (
+                      <button
+                        className="sidebar-item-more"
+                        aria-label={`More for ${g.name}`}
+                        aria-haspopup="menu"
+                        aria-expanded={projectMenu?.id === g.id}
+                        onClick={(e) => setProjectMenu(projectMenu?.id === g.id ? null : { id: g.id, at: e.currentTarget.getBoundingClientRect() })}
+                      >
+                        <EllipsisVertical size={14} strokeWidth={1.6} />
+                      </button>
+                    )}
+                  </div>
                   <div className="sidebar-group-body"><div>{g.rows.map(convoRow)}</div></div>
                 </section>
               );
@@ -898,6 +920,16 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
         <ProfileMenu list={profiles.list} kept={profiles.kept} at={profileMenu} onClose={() => setProfileMenu(null)} onNew={() => setNewProfile(true)} />
       )}
       {newProject && <ProjectSheet onClose={() => setNewProject(false)} onMade={() => setNewProject(false)} />}
+      {projectMenu && (
+        <Menu at={projectMenu.at} align={projectMenu.atPointer ? 'left' : 'right'} onClose={() => setProjectMenu(null)} height={94} width={180}>
+          <button role="menuitem" onClick={() => { setProjectSheet({ id: projectMenu.id, deleting: false }); setProjectMenu(null); }}>Edit project…</button>
+          <hr />
+          <button role="menuitem" className="is-danger" onClick={() => { setProjectSheet({ id: projectMenu.id, deleting: true }); setProjectMenu(null); }}>Delete project…</button>
+        </Menu>
+      )}
+      {sheetProject && projectSheet && (
+        <ProjectSheet key={`${sheetProject.id}:${projectSheet.deleting}`} editing={sheetProject} deleting={projectSheet.deleting} onClose={() => setProjectSheet(null)} onMade={() => setProjectSheet(null)} />
+      )}
       {newProfile && <NewProfileModal taken={(profiles.list ?? []).map((p) => p.color.toLowerCase())} onClose={() => setNewProfile(false)} />}
       {inviting && <InviteModal sphere={{ name: sphere.name, url: urlOf(sphere) }} domain={sphere.domain} onSent={(emails) => invite(sphere.id, emails)} onClose={() => setInviting(false)} />}
       {creating && <CreateSphereModal email={ME.email} onCreated={(id) => { setCreating(false); setSphereId(id); pick('obysphere'); }} onClose={() => setCreating(false)} />}

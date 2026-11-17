@@ -2318,6 +2318,12 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .project-row-remove { flex: none; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; color: var(--muted); transition: color var(--fade), background-color var(--fade); }
 .project-row-remove:hover { color: var(--ink); background: var(--hover); }
 .project-adds { display: flex; gap: 8px; }
+/* editing one: Delete project… at the left of its actions */
+.project-delete { margin-right: auto; }
+/* a project's heading in the side panel: its ⋮ on hover, as a conversation's row has (Edit project…, Delete project…) */
+.project-group-row { position: relative; }
+.project-group-row .sidebar-item-more { top: 2px; }
+.project-group-row:is(:hover, :has(:focus-visible), .is-menu-open) .sidebar-item-more { opacity: 1; }
 
 /* Continue with ChatGPT (docs/contracts/chatgpt-sign-in.md): its mark in its button, OpenAI's links */
 .chatgpt-logo { vertical-align: -2px; margin-right: 6px; }
