@@ -490,6 +490,9 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
         {
             tokens.priced.clone_from(&self.priced);
             (self.on_event)(Event::Tokens(tokens));
+            if let Some(context) = crate::usage::codex_context(&params["tokenUsage"]) {
+                (self.on_event)(Event::Context(context));
+            }
         }
         let item = &params["item"];
         // What an item obid never saw start did (LANES-13): its news first (a command's output) is

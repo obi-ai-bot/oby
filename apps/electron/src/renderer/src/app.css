@@ -679,6 +679,11 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .tc-meter { width: 72px; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); overflow: hidden; display: flex; gap: 1px; }
 .tc-meter > span { height: 100%; background: rgba(255, 255, 255, 0.4); }
 .tc-meter > .is-job { background: var(--ink); }
+/* the context window's (USAGE-15): its own row under the usage, yellow past 80%, red past 90% */
+.tc-context { margin-top: 8px; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.tc-context b { color: var(--ink); font-weight: 500; }
+.tc-meter.is-high > .is-job { background: var(--full); }
+.tc-meter.is-over > .is-job { background: var(--over); }
 .tc-out { margin-top: 14px; }
 .tc-out h4 { margin: 0 0 6px; color: var(--label); font-size: var(--text-sm); font-weight: 500; }
 @media (prefers-reduced-motion: reduce) { .tc-tools .is-running .tc-tool-verb { animation: none; background: none; color: var(--ink); } }

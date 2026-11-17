@@ -169,6 +169,7 @@ export function pageOf(j: Job, account?: Account, needs = false, now = Date.now(
     counts: counts.length ? counts : undefined,
     groups: j.activity?.groups.length ? groupsOf(j.activity, now) : undefined,
     usage: usageOf(j, account),
+    context: j.contextWindow && j.contextWindow.used > 0 ? { used: j.contextWindow.used, size: j.contextWindow.size ?? null } : undefined,
     outgoing: j.outgoing?.length ? j.outgoing.map((o) => ({ text: outgoingText(o, j.published), at: clock(o.date) })) : undefined,
   };
 }

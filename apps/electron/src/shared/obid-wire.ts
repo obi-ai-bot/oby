@@ -115,6 +115,9 @@ export type Job = {
   activity?: Activity;
   context?: string;
   usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; costUsd?: number; priced?: 'plan' | 'api' | (string & {}) };
+  // obid only: how full its agent's context window is, as its tool last said: tokens in use, and
+  // the window's size when the tool names it (docs/contracts/usage.md, USAGE-15); none until then
+  contextWindow?: { used: number; size?: number };
   windowShare?: { fiveHour: number | null; sevenDay: number | null; estimate: true };
   estimate?: { low: number; high: number; basis: string; samples: number; firstGiven?: { low: number; high: number } };
   // one more each time obid sends it changed: of two copies, the higher is the newer (#1709);

@@ -979,6 +979,10 @@ impl Jobs {
                     }
                 }
                 // The words and to-do list are the transcript's.
+                // How full its session's context is now (USAGE-15): the latest, whatever round
+                AgentEvent::Context(context) => {
+                    jobs.update(id, |job| job.context_window = Some(context));
+                }
                 AgentEvent::Delta(_)
                 | AgentEvent::Said(_)
                 | AgentEvent::Thought { .. }

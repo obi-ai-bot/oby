@@ -2531,7 +2531,8 @@ async fn one(
             | Event::Thinking { .. }
             | Event::Plan(_)
             | Event::Usage(_)
-            | Event::Tokens(_) => {}
+            | Event::Tokens(_)
+            | Event::Context(_) => {}
             // An own Claude Code session has the owner's own MCP servers and claude.ai connectors,
             // as their terminal does (LANES-12): Settings › Connectors shows them (CONNECTORS-1).
             // A boxed one's are obid's only, never theirs (CONNECTORS-3).
