@@ -42,11 +42,14 @@ fn caught(entry: &str) {
     assert!(caught_by(&path, entry));
 }
 
+// Each proof's unwind is its entry's length plus 5: the longest path it builds is the entry and 3
+// bytes, and every loop over it runs once more to end. Kani checks the bound: one too small fails
+// its proof with an unwinding assertion, never passes it unproved.
 macro_rules! each_entry {
-    ($($i:literal $name:ident),* $(,)?) => {
+    ($($i:literal $name:ident $unwind:literal),* $(,)?) => {
         $(
             #[kani::proof]
-            #[kani::unwind(40)]
+            #[kani::unwind($unwind)]
             fn $name() {
                 caught(SECURITY_PATHS[$i]);
             }
@@ -55,30 +58,30 @@ macro_rules! each_entry {
 }
 
 each_entry! {
-    0 agents_md_is_caught,
-    1 agents_override_md_is_caught,
-    2 claude_md_is_caught,
-    3 cursorrules_is_caught,
-    4 mcp_json_is_caught,
-    5 cursor_folder_is_caught,
-    6 claude_folder_is_caught,
-    7 codex_folder_is_caught,
-    8 agents_folder_is_caught,
-    9 gitleaks_toml_is_caught,
-    10 gitleaksignore_is_caught,
-    11 secretspec_toml_is_caught,
-    12 codeowners_is_caught,
-    13 github_workflows_is_caught,
-    14 github_actions_is_caught,
-    15 gitlab_ci_is_caught,
-    16 circleci_is_caught,
-    17 buildkite_is_caught,
-    18 azure_pipelines_is_caught,
-    19 bitbucket_pipelines_is_caught,
-    20 jenkinsfile_is_caught,
-    21 travis_is_caught,
-    22 agents_rules_manifest_is_caught,
-    23 build_and_run_is_caught,
-    24 agent_clis_is_caught,
-    25 publishing_contract_is_caught,
+    0 agents_md_is_caught 14,
+    1 agents_override_md_is_caught 23,
+    2 claude_md_is_caught 14,
+    3 cursorrules_is_caught 17,
+    4 mcp_json_is_caught 14,
+    5 cursor_folder_is_caught 13,
+    6 claude_folder_is_caught 13,
+    7 codex_folder_is_caught 12,
+    8 agents_folder_is_caught 13,
+    9 gitleaks_toml_is_caught 19,
+    10 gitleaksignore_is_caught 20,
+    11 secretspec_toml_is_caught 20,
+    12 codeowners_is_caught 15,
+    13 github_workflows_is_caught 23,
+    14 github_actions_is_caught 21,
+    15 gitlab_ci_is_caught 19,
+    16 circleci_is_caught 15,
+    17 buildkite_is_caught 16,
+    18 azure_pipelines_is_caught 24,
+    19 bitbucket_pipelines_is_caught 28,
+    20 jenkinsfile_is_caught 16,
+    21 travis_is_caught 16,
+    22 agents_rules_manifest_is_caught 34,
+    23 build_and_run_is_caught 26,
+    24 agent_clis_is_caught 23,
+    25 publishing_contract_is_caught 33,
 }
