@@ -87,6 +87,10 @@
 //                    item, ticks it 5 seconds later, then the second 5 seconds after that, and ends
 //                    the turn with "Did the list." (scripts/test-live-task.mjs)
 //   PAUSE: <ms>      waits that long, then ends the turn with "Paused."
+//   STEPS: <n> <ms>  runs n Bash calls of <ms> each, then ends the turn with "Stepped."; run with
+//                    --replay-user-messages, as Claude Code 2.1.325 it writes its prompt back
+//                    (isReplay) and takes the user lines that come while it works at its next step,
+//                    writing each back as it takes it, and ends the turn "heard: <their words>"
 //   ARTIFACTS        writes .obi/artifacts/ in the worktree: a page (a folder with index.html,
 //                    a stylesheet and a hidden file), notes.md, chart.png (bytes that aren't
 //                    UTF-8), leak.md holding a made-up AWS key, and away.md, a link out of the
@@ -313,6 +317,8 @@ const held = holds && slowest > 0 ? new PassThrough() : null;
 // The owner's messages it has had: with the hold lifted, an --mcp-config server that isn't
 // `alwaysLoad` isn't connected yet on the first.
 let heard = 0;
+// STEPS's words that came while its turn works, or null when none works.
+let stepping = null;
 if (held) setTimeout(() => process.stdin.pipe(held), Math.min(slowest, 30000));
 const rl = createInterface({ input: held ?? process.stdin, crlfDelay: Infinity });
 // Its stdin closed: obid is done with it or was killed, so a turn told to wait forever (QUIET, LOOP)
@@ -348,6 +354,8 @@ rl.on("line", (line) => {
     return;
   }
   if (message.type !== "user") return;
+  // STEPS's turn under way: the words wait for its next step (Claude Code 2.1.325).
+  if (stepping) return void stepping.push(message);
   heard += 1;
   let prompt = typeof message.message.content === "string" ? message.message.content : "";
   const told = prompt;
@@ -813,6 +821,30 @@ ${probes}`;
         result("Did the list.");
       }, 5000);
     }, 5000);
+  } else if (prompt.match(/STEPS: (\d+) (\d+)/)) {
+    const [, n, ms] = prompt.match(/STEPS: (\d+) (\d+)/).map(Number);
+    const replays = process.argv.includes("--replay-user-messages");
+    if (replays) emit({ ...message, session_id: session, isReplay: true });
+    stepping = [];
+    const step = (k) => {
+      const taken = replays ? stepping.splice(0) : [];
+      for (const words of taken) emit({ ...words, session_id: session, isReplay: true });
+      if (taken.length || k >= n) {
+        const left = stepping ?? [];
+        stepping = null;
+        result(taken.length ? `heard: ${taken.map((w) => w.message.content).join(" / ")}` : "Stepped.");
+        // Words that came too late for its turn are its next ones, in this process.
+        for (const words of left) rl.emit("line", JSON.stringify(words));
+        return;
+      }
+      const id = `s${k}`;
+      emit({ type: "assistant", session_id: session, message: { role: "assistant", content: [{ type: "tool_use", id, name: "Bash", input: { command: `sleep ${ms / 1000}; echo ${k}` } }] } });
+      setTimeout(() => {
+        emit({ type: "user", session_id: session, message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: "" }] } });
+        step(k + 1);
+      }, ms);
+    };
+    step(0);
   } else if (prompt.match(/PAUSE: (\d+)/)) {
     setTimeout(() => result("Paused."), Number(prompt.match(/PAUSE: (\d+)/)[1]));
   } else if (prompt.match(/HOG: (\d+) (\d+)/)) {

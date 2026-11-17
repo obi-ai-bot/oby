@@ -1026,6 +1026,29 @@ fn recovery_2_the_words_a_run_went_down_with_go_with_the_next() {
     assert!(told[2].contains("use SQLite"), "{told:?}");
 }
 
+/// TASKCONV-29: the owner's words to a Claude Code job at work reach its agent in the turn under
+/// way, at its next step: no wait for the turn to end, no second launch, and they aren't heard
+/// again in a later turn.
+#[test]
+fn taskconv_29_words_reach_a_claude_code_job_in_the_turn_under_way() {
+    let (_folder, obid) = obid("taskconv-29");
+    let id = post_job(&obid, "STEPS: 60 250 KEEP PROMPTS");
+    at_work(&obid, &id);
+    let answer = call_typed(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        &json!({"text": "use SQLite"}),
+    );
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    let summary = job["summary"].as_str().unwrap_or_default();
+    assert!(summary.contains("heard: use SQLite"), "{job}");
+    let told = prompts(&job);
+    assert_eq!(told.len(), 1, "{told:?}");
+}
+
 /// RECOVERY-2: after a panic before publishing began (`jobs::tests::recovery_2_a_real_panic_is_
 /// scheduled_again`), its next run goes on in its session, told what happened.
 #[test]

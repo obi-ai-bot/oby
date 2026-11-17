@@ -995,11 +995,15 @@ impl Jobs {
         let run = async {
             match tool {
                 Tool::Claude => {
-                    agent::run_turn(
+                    // The owner's words go into it as they come, while its run opened that
+                    // (crate::steer, TASKCONV-29).
+                    let steer = self.lock().steers.get(id).cloned();
+                    agent::run_turn_steered(
                         launch,
                         prompt,
                         limit.clone(),
                         signal.clone(),
+                        steer,
                         decide,
                         on_event,
                     )

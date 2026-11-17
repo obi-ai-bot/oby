@@ -106,7 +106,8 @@ export default function AgentThread({ id, onFollowUp, head }: { id: string; onFo
   const send = (text: string, att: Parameters<typeof tell>[2]) => {
     const { job } = replyTarget({ card: id });
     if (!onObid) return void tell(job, text, att);
-    void tellAgent(job, text, att?.files).then((next) => { if (next) onFollowUp(next); });
+    // the box keeps words obid refused (ATTACH-20); a finished task's follow-up opens
+    return tellAgent(job, text, att?.files).then((told) => { if (typeof told === 'string') onFollowUp(told); return told !== false; });
   };
   return (
     <div className="lt-thread" role="group" aria-label={`Conversation with ${agent.name}`}>

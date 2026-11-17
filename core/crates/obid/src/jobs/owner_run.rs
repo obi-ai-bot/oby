@@ -788,6 +788,9 @@ impl Jobs {
                     "--verbose",
                     // The words as the agent writes them, for the transcript (Event::Delta).
                     "--include-partial-messages",
+                    // Each line obid writes, back as it's taken: the owner's words reach it mid-turn
+                    // (crate::steer, TASKCONV-29).
+                    "--replay-user-messages",
                     "--permission-prompt-tool",
                     "stdio",
                     "--permission-mode",
@@ -1016,6 +1019,8 @@ impl Jobs {
                 // Read just before the run, so only its agent's commits count, never obid's own
                 // rebase between rounds: a run that moved it got somewhere (RECOVERY-1).
                 let head_before = self.worktree_head(id).await;
+                // A Claude Code turn takes the owner's words as they come (TASKCONV-29).
+                let steer = (tool == Tool::Claude).then(|| self.steer_open(id));
                 let turn = self
                     .turn(
                         id,
@@ -1036,7 +1041,11 @@ impl Jobs {
                         },
                         Some(&ran),
                     )
-                    .await?;
+                    .await;
+                if let Some(steer) = &steer {
+                    self.steer_close(id, steer);
+                }
+                let turn = turn?;
                 self.update(id, |job| job.ran_secs = Some(ran()));
                 if *signal.borrow() != Signal::Run {
                     return Ok(());

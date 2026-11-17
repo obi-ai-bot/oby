@@ -102,6 +102,7 @@ mod slots;
 mod turns;
 mod unjudged;
 mod versions;
+mod words;
 mod worktree_git;
 pub use logins::person_homes;
 pub(crate) use logins::*;
@@ -959,6 +960,8 @@ struct State {
     workers: HashMap<String, watch::Sender<Signal>>,
     /// The jobs whose agent had its last turn: they take no more words until they end.
     wrapping: std::collections::HashSet<String>,
+    /// The words each Claude Code job's turn under way takes as they come (crate::steer).
+    steers: HashMap<String, Arc<crate::steer::Steer>>,
     /// Each job's prompts waiting for the owner, the one shown first.
     asks: HashMap<String, VecDeque<Ask>>,
     /// The prompts a parked job's agent waited on ([`Jobs::park`]), held unanswered until its
@@ -1054,6 +1057,8 @@ pub struct Jobs {
     /// How many jobs run at once (Settings, `home/settings.json`).
     max_running: std::sync::atomic::AtomicUsize,
     shutting_down: std::sync::atomic::AtomicBool,
+    /// obid's last stop was clean, as it opened (`STOPPED_CLEANLY`): what a cut word's line says.
+    pub stopped_cleanly: bool,
     /// Who jobs' commits are by ([`commit_identity`], [`Jobs::identity`]).
     identity: Mutex<(String, String)>,
     /// One check at a time per repository, made on first use ([`Jobs::check`], PUBLISHING-25).
@@ -1355,6 +1360,7 @@ impl Jobs {
                 jobs,
                 workers: HashMap::new(),
                 wrapping: std::collections::HashSet::new(),
+                steers: HashMap::new(),
                 asks: HashMap::new(),
                 held: HashMap::new(),
                 asked: HashMap::new(),
@@ -1373,6 +1379,7 @@ impl Jobs {
             transcripts,
             max_running: std::sync::atomic::AtomicUsize::new(max_running),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
+            stopped_cleanly,
             identity: Mutex::new(identity),
             checking: Mutex::new(HashMap::new()),
             base_runs: Mutex::new(HashMap::new()),
@@ -3094,6 +3101,10 @@ impl Jobs {
                 {
                     heard(&mut job);
                     job.owners.extend(owners(false));
+                    // Its Claude Code hears them now, in the turn under way (TASKCONV-29).
+                    if let Some(steer) = state.steers.get(id) {
+                        steer.offer(text);
+                    }
                 } else if starting || (worker && source.direct()) {
                     job.notes.get_or_insert_with(Vec::new).push(text.to_owned());
                     job.heard.push(text.to_owned());
@@ -3327,50 +3338,6 @@ impl Jobs {
             },
             obi_protocol::time::now(),
         ));
-    }
-
-    /// The owner's words the agent hasn't heard yet, taken: what its next turn hears.
-    fn take_heard(&self, id: &str) -> Vec<String> {
-        self.take_words(id).0
-    }
-
-    /// [`Self::take_heard`], and whether the owner's own words were among them (#1661).
-    fn take_words(&self, id: &str) -> (Vec<String>, bool) {
-        let mut taken = (Vec::new(), false);
-        self.update(id, |job| {
-            taken = (
-                std::mem::take(&mut job.heard),
-                !std::mem::take(&mut job.owners).is_empty(),
-            );
-        });
-        taken
-    }
-
-    /// The agent's last turn is over: the owner's words that came meanwhile, taken (its next
-    /// turn), and whether the owner's own were among them, or none, and from now on the job
-    /// takes no more until it ends.
-    fn last_turn(&self, id: &str) -> (Vec<String>, bool) {
-        let (words, owners) = {
-            let mut state = self.lock();
-            let (words, owners) = state
-                .jobs
-                .get_mut(id)
-                .map(|job| {
-                    (
-                        std::mem::take(&mut job.heard),
-                        !std::mem::take(&mut job.owners).is_empty(),
-                    )
-                })
-                .unwrap_or_default();
-            if words.is_empty() {
-                state.wrapping.insert(id.to_owned());
-            }
-            (words, owners)
-        };
-        if !words.is_empty() {
-            self.update(id, |_| {});
-        }
-        (words, owners)
     }
 
     /// Who is told about permissions (once; a second call changes nothing).
