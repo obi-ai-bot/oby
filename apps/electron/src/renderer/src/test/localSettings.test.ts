@@ -49,6 +49,8 @@ vi.mock('../../../main/obid', async (original) => ({
   obid: async () => ({ status: 200, text: '[]' }),
   send: () => new Promise(() => {}),
   takesKeys: async () => false,
+  chooseProfile: () => false,
+  openedProfile: () => null,
 }));
 
 // the window's own page, and a frame that isn't it

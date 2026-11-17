@@ -139,6 +139,8 @@ export async function launch() {
       return new Response(new ReadableStream<Uint8Array>({ start: (c) => { stream = c; } }));
     },
     takesKeys: async () => mac.receipts,
+    chooseProfile: () => false,
+    openedProfile: () => null,
     streamEnded: () => {},
     reason: (e: unknown) => ({ status: 0, text: String(e) }),
   }));

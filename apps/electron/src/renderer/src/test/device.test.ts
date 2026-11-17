@@ -32,6 +32,8 @@ vi.mock('../../../main/obid', () => ({
     return { status: 200, text: '{}' };
   },
   takesKeys: async () => the.receipts,
+  chooseProfile: () => false,
+  openedProfile: () => null,
 }));
 
 describe('obid-confirm', () => {
