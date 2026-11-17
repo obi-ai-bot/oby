@@ -616,8 +616,9 @@ jobs:
         run: env -u RUSTUP_TOOLCHAIN cargo kani -p obid --tests --only-codegen
 
       - name: Prove what the change requires
-        # Four at a time, each within 20 minutes; nightly and on demand also the harnesses on
-        # core/.config/kani-slow.txt, each within 150 (docs/proofs.md).
+        # Two at a time (four ran the runner out of memory), each within 20 minutes; nightly and
+        # on demand also the harnesses on core/.config/kani-slow.txt, each within 150
+        # (docs/proofs.md).
         env:
           KANI_SLOW: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'prove' || '' }}
           KANI_HARNESS_TIMEOUT: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '150m' || '20m' }}

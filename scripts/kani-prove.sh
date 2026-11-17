@@ -7,6 +7,8 @@
 #
 # KANI_SLOW=prove also proves the harnesses on core/.config/kani-slow.txt, which are otherwise left
 # out and named; KANI_HARNESS_TIMEOUT (by default 20m) is each harness's limit, past which it fails.
+# KANI_JOBS (by default 2) runs that many at once: CBMC takes several GB a harness, and four at once
+# ran GitHub's 16 GB runner out of memory.
 set -euo pipefail
 cd "$(dirname "$0")/../core"
 filters=${1:-}
@@ -52,4 +54,4 @@ args=()
 while IFS= read -r name; do args+=(--harness "$name"); done <<< "$names"
 echo "kani-prove: proving $(wc -l <<< "$names" | tr -d ' ') harnesses, each within ${KANI_HARNESS_TIMEOUT:-20m}"
 exec env -u RUSTUP_TOOLCHAIN cargo kani -p obid --tests --output-format terse --exact "${args[@]}" \
-    --jobs "${KANI_JOBS:-4}" -Z unstable-options --harness-timeout "${KANI_HARNESS_TIMEOUT:-20m}"
+    --jobs "${KANI_JOBS:-2}" -Z unstable-options --harness-timeout "${KANI_HARNESS_TIMEOUT:-20m}"

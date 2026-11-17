@@ -42,7 +42,7 @@ conversation state, and the limits. Each is a proof of its own.
   `scripts/kani-prove.sh` or `core/.config/kani-slow.txt` requires `all`.
 
 GitHub's `proofs` job (docs/ci.md) compiles every harness, then `scripts/kani-prove.sh` proves the
-ones the change requires, four at a time and each within 20 minutes, in every run that tests: the
+ones the change requires, two at a time (four ran GitHub's runner out of memory) and each within 20 minutes, in every run that tests: the
 merge queue, so nothing merges into `dev` with a required proof failing, and pull requests into
 `main` or labelled `full-ci`. A harness too slow for GitHub's runner is on
 `core/.config/kani-slow.txt`, with why: those runs leave it out and say so, and nightly and on
