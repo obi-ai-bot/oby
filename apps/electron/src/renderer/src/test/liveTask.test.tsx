@@ -2,14 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { Job as JobView } from '../view';
 import type { Entry } from '../session';
-import { around, knownUpTo, lastSteps, thoughtWords, withEntries, withLine } from '../liveTask';
+import { knownUpTo, withEntries, withLine } from '../liveTask';
 import { parseEvent } from '../../../shared/obid-wire';
 import { detailOf, sessionOf } from '../jobPage';
 import type { TranscriptEntry } from '../obid';
 import type { Chat } from '../chats';
 import type { Task } from '../tasks';
 
-// A task's live card in its conversation, and its own thread, a conversation of its own (docs/contracts/live-task.md).
+// A task in its conversation (docs/contracts/live-task.md): its card, progress only, and what it did under
+// it, in the conversation (TaskLog); the decisions over the message box.
 // Each box (Composer) is a marker that keeps what it's given, by its label; what the boxes send to is spied on,
 // and onObid is read when a box sends, so the same render sends on obid or off it.
 type Props = { placeholder: string; label: string; onSend: (text: string, att: object) => void; onStop?: () => void };
@@ -25,7 +26,6 @@ vi.mock('../Composer', () => ({
 }));
 vi.mock('../Menu', async (original) => ({ ...await original<typeof import('../Menu')>(), Menu: ({ children }: { children: React.ReactNode }) => <div role="menu">{children}</div> }));
 vi.mock('../chats', async (original) => ({ ...await original<typeof import('../chats')>(), useChats: () => page.chats, tellChat: vi.fn() }));
-vi.mock('../live', async (original) => ({ ...await original<typeof import('../live')>(), tellAgent: vi.fn(async () => undefined) }));
 vi.mock('../tasks', async (original) => ({ ...await original<typeof import('../tasks')>(), tell: vi.fn() }));
 vi.mock('../lean', async (original) => ({ ...await original<typeof import('../lean')>(), get onObid() { return page.obid; } }));
 const read = (html: string) => html.replaceAll('<!-- -->', '');
@@ -50,20 +50,23 @@ async function taskOf(id: string, more: Partial<JobView> = {}, status: 'running'
   } as JobView;
   return { id, type: 'issues', title: job.title, brand: AGENTS.claude.brand, status, job } as Task;
 }
-// the card, and the task's own thread (TaskThread)
+// the card, what it did under it (TaskLog), and the conversation it's in (c1, whose answer started it)
 const WORKING = [{ id: 'prepare', title: 'Prepare', state: 'done' }, { id: 'work', title: 'Work', state: 'current' }, { id: 'check', title: 'Check', state: 'upcoming' }] as JobView['stages'];
-async function views(entries: Entry[], more: Partial<JobView> = {}, status: 'running' | 'needs' | 'done' = 'running', onOpenAgent: (id: string) => void = () => {}) {
+async function views(entries: Entry[], more: Partial<JobView> = {}, status: 'running' | 'needs' | 'done' = 'running', extra: Partial<Task> = {}) {
   stub();
-  const { ThreadTask } = await import('../ChatView');
-  const { default: TaskThread } = await import('../TaskThread');
+  const { default: ChatView, ThreadTask } = await import('../ChatView');
+  const { default: TaskLog } = await import('../TaskLog');
   const { SESSIONS } = await import('../session');
   const { replaceTasks } = await import('../tasks');
   SESSIONS.j1 = entries;
-  const task = await taskOf('j1', more, status);
+  const task = { ...await taskOf('j1', more, status), ...extra };
   replaceTasks([task]);
+  page.chats = [{ id: 'c1', title: 'One fix', said: [{ who: 'you', text: 'fix it', ago: 5 }, { who: 'oby', text: 'On it.', ago: 4, jobs: ['j1'] }] } satisfies Chat];
+  const none = () => {};
   return {
-    card: read(renderToStaticMarkup(<ThreadTask task={task} current={false} onOpen={() => {}} />)),
-    opened: read(renderToStaticMarkup(<TaskThread id="j1" leaving={false} onBack={() => {}} onGone={() => {}} onOpenAgent={onOpenAgent} />)),
+    card: read(renderToStaticMarkup(<ThreadTask task={task} />)),
+    log: read(renderToStaticMarkup(<TaskLog task={task} />)),
+    convo: read(renderToStaticMarkup(<ChatView kind="oby" id="c1" leaving={false} onBack={none} onGone={none} />)),
   };
 }
 // a conversation with Oby (c1) whose answer started two tasks: j1 at work, j2 needing the owner
@@ -79,10 +82,12 @@ async function conversation(tasks?: string[]) {
   replaceTasks(all.filter((t) => !tasks || tasks.includes(t.id)));
   page.chats = [{ id: 'c1', title: 'Two fixes', said: [{ who: 'you', text: 'fix both', ago: 5 }, { who: 'oby', text: 'On it.', ago: 4, jobs: ['j1', 'j2'] }] } satisfies Chat];
   const none = () => {};
-  return read(renderToStaticMarkup(<ChatView kind="oby" id="c1" leaving={false} onBack={none} onGone={none} onOpenTask={none} />));
+  return read(renderToStaticMarkup(<ChatView kind="oby" id="c1" leaving={false} onBack={none} onGone={none} />));
 }
-// one card's own part of a conversation's markup, up to the next card or the message's time
-const cardOf = (html: string, title: string) => html.slice(html.indexOf(`aria-label="Open ${title}"`)).split(/class="msg-task-work|class="msg-time"/)[0];
+// one card's own part of a conversation's markup, up to what it did, the next card or the message's time
+const cardOf = (html: string, title: string) => html.slice(html.indexOf(`<div class="msg-task" role="group" aria-label="${title}"`)).split(/class="lt-log"|class="msg-task-work|class="msg-time"/)[0];
+// what a task did, as the conversation shows it under its card
+const logOf = (html: string, title: string) => html.slice(html.indexOf(`aria-label="${title}"`)).split(/class="lt-log"/)[1]?.split(/class="msg-task-work|class="msg-time"/)[0] ?? '';
 const tool = (verb: string, target: string, state: 'running' | 'done' | 'failed' = 'done'): Entry => ({ kind: 'tool', tool: 'Read', verb, target, state, seconds: 1 });
 const plan: Entry = { kind: 'plan', todos: [{ text: 'Read the test', state: 'done' }, { text: 'Replace the timer', state: 'running' }, { text: 'Run the check', state: 'pending' }] };
 const wire = (n: number, more: Partial<TranscriptEntry> = {}): TranscriptEntry => ({ n, at: '2026-11-02T10:00:00Z', kind: 'tool', summary: 'Reading a.ts', state: 'running', ...more });
@@ -91,48 +96,41 @@ describe('a task at work', () => {
   beforeEach(() => { page.boxes = {}; page.obid = false; vi.clearAllMocks(); });
   afterEach(() => { vi.unstubAllGlobals(); });
 
-  it('LIVETASK-1: the card says what it is on and its stages; its thread shows its to-dos with the one it is on lit, and what it did', async () => {
-    const { card, opened } = await views([{ kind: 'said', text: 'Looking.', at: '1:50 PM' }, tool('Read', 'a.ts'), tool('Read', 'b.ts'), plan, { kind: 'thought', text: '', seconds: 6 }, tool('Editing', 'session.ts', 'running')], { step: 'Editing session.ts', stages: WORKING });
+  it('LIVETASK-1: the card says how it stands and its stages; under it, its newest list with the one it is on, and its last lines', async () => {
+    const { card, log } = await views([{ kind: 'said', text: 'Looking.', at: '1:50 PM' }, tool('Read', 'a.ts'), tool('Read', 'b.ts'), plan, { kind: 'thought', text: '', seconds: 6 }, tool('Editing', 'session.ts', 'running')], { step: 'Editing session.ts', stages: WORKING });
     expect(card).toContain('>Running · Claude Code · obi<');
-    expect(card).toMatch(/msg-task-now"><span class="sheen">Work · Editing session\.ts</);
     expect(card).toMatch(/tc-progress msg-task-stages" role="img" aria-label="Stage 2 of 3: Work"><span class="is-done"><\/span><span class="is-current"><\/span><span><\/span>/);
-    // the card holds no list: the thread does, on top
-    expect(card).not.toContain('What it’s doing');
-    expect(opened).toContain('What it’s doing');
-    expect(opened).toMatch(/is-done.*Read the test/);
-    expect(opened).toMatch(/is-on is-working.*sheen">Replace the timer/);
-    expect(opened).toMatch(/is-up.*Run the check/);
-    expect(opened).toContain('b.ts');
-    expect(opened).toContain('Thought for 6s');
-    expect(opened).toContain('session.ts');
+    // the card holds no list and no line: what it did is under it
+    for (const word of ['Replace the timer', 'session.ts', 'ss-entries', 'sheen']) expect(card).not.toContain(word);
+    expect(log).toMatch(/ss-plan-head">To do · 1 of 3 done<.*is-done.*Read the test.*is-running.*Replace the timer.*is-pending.*Run the check/);
+    // its last four lines, the one before them a click away
+    expect(log).toContain('>Show 1 more<');
+    expect(log).not.toContain('Looking.');
+    for (const word of ['a.ts', 'b.ts', 'Thought for 6s', 'session.ts']) expect(log).toContain(word);
+    // what it was told to start with is Oby's answer above it already; what it's told since shows
+    const told = (await views([{ kind: 'you', text: 'The whole prompt', at: '1:49 PM' }, tool('Read', 'a.ts'), { kind: 'you', text: 'go on', at: '1:52 PM' }])).log;
+    expect(told).not.toContain('The whole prompt');
+    expect(told).toContain('go on');
   });
 
-  it('LIVETASK-1: a long list on a card shows the part around the one it is on', () => {
-    const todos = Array.from({ length: 20 }, (_, i) => ({ text: `T${i}`, state: i < 10 ? 'done' as const : i === 10 ? 'running' as const : 'pending' as const }));
-    const { todos: shown, before, after } = around(todos);
-    expect(shown.map((t) => t.text)).toEqual(['T8', 'T9', 'T10', 'T11', 'T12', 'T13', 'T14', 'T15']);
-    expect([before, after]).toEqual([8, 4]);
-    expect(around(todos.slice(0, 5)).before).toBe(0);
-  });
-
-  it('LIVETASK-2: with no list from the agent it shows only its steps, and invents no to-do', async () => {
-    const { card, opened } = await views([tool('Read', 'a.ts'), tool('Running', 'npm test', 'running')], { step: 'Running npm test' });
-    expect(card).not.toContain('What it’s doing');
-    expect(opened).not.toContain('lt-thread-todos');
-    expect(card).toContain('npm test');
-    // and before it has done anything, what obid says it's on; nothing said, no line for it
-    expect((await views([], { step: 'Waiting for a free slot' })).card).toContain('Waiting for a free slot');
-    expect((await views([], { step: '', waiting: undefined })).card).not.toContain('msg-task-now');
+  it('LIVETASK-2: with no list from the agent it shows only its lines, and invents no to-do', async () => {
+    const { card, log } = await views([tool('Read', 'a.ts'), tool('Running', 'npm test', 'running')], { step: 'Running npm test' });
+    expect(log).not.toContain('ss-plan');
+    expect(card).not.toContain('npm test');
+    expect(log).toContain('npm test');
+    // and before it has done anything, what obid says it's on; nothing said, nothing under the card
+    expect((await views([], { step: 'Waiting for a free slot' })).log).toContain('sheen">Waiting for a free slot<');
+    expect((await views([], { step: '', waiting: undefined })).log).toBe('');
   });
 
   it('RECOVERY-5: a job being tried again says so, under the steps it already has', async () => {
     const trying = 'Trying again in 5 minutes (2 of 3)';
     const reading = { ...tool('Read', 'a.ts'), summary: 'Reading a.ts' } as Entry;
-    expect((await views([reading], { step: trying })).card).toContain(trying);
-    expect((await views([reading, plan], { step: trying })).card).toContain(trying);
-    // on the card, what it's on is said once
-    const times = (card: string, text: string) => card.split(text).length - 1;
-    expect(times((await views([reading], { step: 'Reading a.ts' })).card, 'Reading a.ts')).toBe(1);
+    expect((await views([reading], { step: trying })).log).toMatch(/a\.ts.*Trying again in 5 minutes \(2 of 3\)/);
+    expect((await views([reading, plan], { step: trying })).log).toContain(trying);
+    // under the card, what it's on is said once
+    const times = (html: string, text: string) => html.split(text).length - 1;
+    expect(times((await views([reading], { step: 'Reading a.ts' })).log, 'Reading a.ts')).toBe(0);
   });
 
   it('LIVETASK-3: obid\'s transcript events are read, entries update by n, and words never go back', () => {
@@ -162,76 +160,42 @@ describe('a task at work', () => {
     expect(card).toContain('>Done · Claude Code · obi<');
     expect(card).toContain('2 commits on oby/fix-1');
     expect(card).toContain('obi#9');
-    expect(card).not.toContain('lt-now');
     expect((await views([plan], { status: 'stopped' }, 'done')).card).toContain('>Stopped · Claude Code');
     expect((await views([plan], { status: 'failed' }, 'done')).card).toContain('>Failed · Claude Code');
   });
 
-  it('LIVETASK-5: a click on the card opens its own thread, which holds its words, steps, thinking and to-dos, and a box with Stop in it', async () => {
-    const { card, opened } = await views([
-      { kind: 'start', text: 'Started on Claude Code', at: '1:50 PM' }, { kind: 'you', text: 'Fix the login test', at: '1:50 PM' }, tool('Read', 'a.ts'),
-      { kind: 'said', text: 'It races a timer.', at: '1:53 PM' }, plan, { kind: 'thought', text: '', seconds: 8 }, tool('Editing', 'session.ts', 'running'),
-    ]);
-    // a page of its own, its head as the card's, not a card opened in place
-    expect(opened).toMatch(/^<div class="chat-layer agent-layer"><div class="lt-thread" role="group" aria-label="Conversation with Claude Code">.*<div class="msg-task agent-head">.*Fix the login test/);
-    expect(opened.replace(/<[^>]+>/g, '')).toContain('It races a timer.');
-    expect(opened).toContain('1:53 PM');
-    expect(opened).toContain('Thought for 8s');
-    expect(opened).toContain('session.ts');
-    expect(opened).toMatch(/lt-thread-todos.*Replace the timer/);
-    // the list is on top once: not a line of the conversation as well
-    expect(opened.split('Replace the timer')).toHaveLength(2);
-    expect(opened).not.toContain('ss-plan');
-    expect(opened).toContain('placeholder="Tell Claude Code…"');
-    expect(page.boxes['Tell the agent about Fix the login test'].onStop).toBeTypeOf('function');
-    // no close or Stop button of its own: Stop is the box's
-    expect(opened).not.toContain('>Stop<');
-    expect(opened).not.toContain('Close this conversation');
-    // the card: none of it, and nothing that opens in place
-    expect(card).not.toContain('aria-expanded');
-    expect(card).not.toContain('lt-thread');
-    expect(card).not.toContain('ss-entries');
-    expect(card).not.toContain('1:53 PM');
-    expect(card).not.toContain('placeholder=');
-    // a click on it opens the task's thread, by its id
-    const { ThreadTask } = await import('../ChatView');
-    const onOpen = vi.fn();
-    const el = ThreadTask({ task: await taskOf('j1'), current: false, onOpen }) as React.ReactElement<{ children: React.ReactElement<{ onClick: () => void }> }>;
-    el.props.children.props.onClick();
-    expect(onOpen).toHaveBeenCalledWith('j1');
-    // finished: no Stop, and what the box does then
-    page.boxes = {};
-    const done = (await views([tool('Read', 'a.ts')], {}, 'done')).opened;
-    expect(done).not.toContain('data-stop');
-    expect(page.boxes['Tell the agent about Fix the login test'].onStop).toBeUndefined();
-    expect(done).toContain('placeholder="Ask for a follow-up…"');
+  it('LIVETASK-31: ended, its last words show under the card (what changed, the test run, the commit), its steps folded behind Show more', async () => {
+    const result = 'Changes\n- Added divide(a, b)\n\nTest run\n- 4 passed\n\nCommit abc123\n\nGOAL MET';
+    const { card, log } = await views([plan, tool('Read', 'a.ts'), tool('Edited', 'math.ts'), { kind: 'said', text: result, at: '2:10 PM' }], {}, 'done');
+    expect(log).toContain('>Show 2 more<');
+    for (const word of ['a.ts', 'math.ts', 'ss-plan']) expect(log).not.toContain(word);
+    const text = log.replace(/<[^>]+>/g, '');
+    for (const word of ['Added divide(a, b)', '4 passed', 'Commit abc123', 'GOAL MET']) expect(text).toContain(word);
+    // long words are cut to a few lines with Show more (lt-fold), and none of it is on the card
+    expect(log).toContain('class="lt-fold');
+    expect(card).not.toContain('GOAL MET');
   });
 
-  it('LIVETASK-7: told something once finished, the follow-up it started opens as its own thread', async () => {
-    const live = await import('../live');
-    const followed = vi.fn();
-    await views([tool('Read', 'a.ts')], {}, 'done', followed);
-    vi.mocked(live.tellAgent).mockResolvedValueOnce('j9');
-    page.obid = true;
-    page.boxes['Tell the agent about Fix the login test'].onSend('one more thing', {});
-    await vi.waitFor(() => expect(followed).toHaveBeenCalledWith('j9'));
-    expect(live.tellAgent).toHaveBeenCalledWith('j1', 'one more thing', undefined);
+  it('LIVETASK-5: what it did shows in the conversation under its card, outside it, with the box talking to Oby', async () => {
+    const html = await conversation();
+    const card = cardOf(html, 'Fix the login test');
+    expect(card).not.toContain('ss-entries');
+    expect(card).not.toContain('placeholder=');
+    expect(card).not.toContain('aria-expanded');
+    expect(logOf(html, 'Fix the login test')).toContain('a.ts');
+    expect(logOf(html, 'Run the tests').replace(/<[^>]+>/g, '')).toContain('It needs the tests run.');
+    // its card and what it did sit together, where opening the conversation at it scrolls to
+    expect(html).toMatch(/<div class="msg-task-work is-live" data-task="j1"><div class="msg-task" role="group" aria-label="Fix the login test">.*<\/div><div class="lt-log"/);
+    expect(Object.keys(page.boxes)).toEqual(['Reply to Oby']);
   });
 
   it('LIVETASK-6: thinking shows only what its tool gave', async () => {
     const thought = (more: Partial<TranscriptEntry>) => sessionOf([wire(1, { kind: 'thought', summary: 'Thinking', state: undefined, ...more })])[0] as Extract<Entry, { kind: 'thought' }>;
-    // going on
-    expect(thoughtWords(thought({ state: 'running' }))).toBe('Thinking');
-    // Claude Code: how long, with no words
-    expect(thoughtWords(thought({ state: 'done', seconds: 8 }))).toBe('Thought for 8s');
-    // Codex or Cursor: their words, and never a made-up time
-    expect(thoughtWords(thought({ state: 'done', text: 'Only the project file sets this.' }))).toBe('Only the project file sets this.');
-    expect(thoughtWords(thought({ state: 'done' }))).toBe('Thought');
-    const { opened } = await views([thought({ state: 'running' }), thought({ state: 'done', seconds: 8 }), thought({ state: 'done', text: 'Only the project file.' })]);
-    expect(opened).toContain('sheen">Thinking');
-    expect(opened).toContain('<span>Thought for 8s</span>');
-    expect(opened).toContain('<p>Only the project file.</p>');
-    expect(opened).not.toContain('Thought for 0');
+    const { log } = await views([thought({ state: 'running' }), thought({ state: 'done', seconds: 8 }), thought({ state: 'done', text: 'Only the project file.' })]);
+    expect(log).toContain('sheen">Thinking');
+    expect(log).toContain('<span>Thought for 8s</span>');
+    expect(log).toContain('<p>Only the project file.</p>');
+    expect(log).not.toContain('Thought for 0');
   });
 
   it('LIVETASK-11: a line opens to what it ran and gave back, from obid\'s own detail', () => {
@@ -275,29 +239,13 @@ describe('a task at work', () => {
     expect(sessionOf([running])[0]).not.toBe(sessionOf([running])[0]);
   });
 
-  it('LIVETASK-5: the mock\'s running card has a conversation to review', async () => {
-    const { SESSIONS } = await import('../session');
-    // t1: a running job the mock's first conversation has a card for
-    const { opened } = await views(SESSIONS.t1);
-    expect(opened).toContain('Fix the flags route');
-    expect(opened).toContain('Thought for 6s');
-    // s1, at work, in the conversation that has a card needing you too (screen 03)
-    const s1 = (await views(SESSIONS.s1)).opened;
-    expect(s1).toContain('core/crates/obid/src/publish.rs');
-    expect(s1).toContain('data-stop="yes"');
-  });
-
-  it('LIVETASK-9: waiting on you, the card says so, and its own thread carries the decision over its box', async () => {
-    const { card, opened } = await views([plan], { ask }, 'needs');
+  it('LIVETASK-9: waiting on you, the card says so with no sheen and no decision; the decision waits over the box', async () => {
+    const { card, convo } = await views([plan], { ask }, 'needs');
     expect(card).toContain('>Needs you · Claude Code');
-    // the card says so with its mark, no running sheen, and no decision under it (LIVETASK-25)
-    expect(card).toMatch(/^<div class="msg-task-work is-live"><button class="msg-task is-link".*status-dot is-needs/);
+    expect(card).toMatch(/^<div class="msg-task" role="group" aria-label="Fix the login test">.*status-dot is-needs/);
     expect(card).not.toContain('sheen');
     expect(card).not.toContain('tc-ask');
-    // in its own thread: the decision over its box, then the box with send and no Stop
-    expect(opened).toMatch(/^<div class="chat-layer agent-layer">.*<\/section>.*class="decision-bar".*Run npm test\?.*>Allow<.*>Deny<.*placeholder="Tell Claude Code…"/);
-    expect(opened).not.toContain('data-stop');
-    expect(page.boxes['Tell the agent about Fix the login test'].onStop).toBeUndefined();
+    expect(convo).toMatch(/<\/section>.*class="decision-bar".*Run npm test\?.*>Allow<.*>Deny<.*placeholder="Reply to Oby…"/);
   });
 
   it('LIVETASK-15: a card goes with its job, its decision too', async () => {
@@ -307,12 +255,12 @@ describe('a task at work', () => {
     expect(gone).not.toContain('decision-bar');
   });
 
-  it('LIVETASK-16: no card shows a decision, at work or waiting on you, and none opens in place', async () => {
+  it('LIVETASK-16: no card shows a decision, at work or waiting on you, and nothing opens in place', async () => {
     const html = await conversation();
     expect(cardOf(html, 'Run the tests')).not.toContain('tc-ask');
     expect(cardOf(html, 'Fix the login test')).not.toContain('tc-ask');
-    expect(html).not.toContain('lt-thread');
     expect(html).not.toContain('aria-expanded="true"');
+    expect(html).not.toContain('is-link');
   });
 
   it('LIVETASK-24: a conversation\'s pending decision waits over its message box, on one line, from its task, with its buttons and Later', async () => {
@@ -336,7 +284,7 @@ describe('a task at work', () => {
     const bash = { ...ask, headline: 'Run a command?', detail: 'npm test -- --watch=false\nAllowing it lets this task run the tests.' };
     replaceTasks([{ ...await taskOf('j1', { ask: bash }, 'needs'), title: 'First' }, { ...await taskOf('j2', { ask }, 'needs'), title: 'Second' }]);
     page.chats = [{ id: 'c1', title: 'Two', said: [{ who: 'oby', text: 'On it.', ago: 4, jobs: ['j1', 'j2'] }] } satisfies Chat];
-    const html = read(renderToStaticMarkup(<ChatView kind="oby" id="c1" leaving={false} onBack={() => {}} onGone={() => {}} onOpenTask={() => {}} />));
+    const html = read(renderToStaticMarkup(<ChatView kind="oby" id="c1" leaving={false} onBack={() => {}} onGone={() => {}} />));
     expect(html).toMatch(/Run a command\?<span class="tc-ask-from"> · First<\/span><\/p><span class="decision-count">1 of 2<button type="button" class="decision-next" aria-label="Next decision"/);
     expect(html).toContain('<code class="tc-ask-command" title="npm test -- --watch=false\nAllowing it lets this task run the tests.">npm test -- --watch=false</code>');
     expect(html).not.toContain('>Allowing it');
@@ -349,11 +297,11 @@ describe('a task at work', () => {
     const { replaceTasks } = await import('../tasks');
     replaceTasks([{ ...await taskOf('j2', { ask, conversation: 'c1' }, 'needs'), title: 'Run the tests' }]);
     page.chats = [{ id: 'c1', title: 'Two', said: [] } satisfies Chat];
-    const html = read(renderToStaticMarkup(<ChatView kind="oby" id="c1" leaving={false} onBack={() => {}} onGone={() => {}} onOpenTask={() => {}} />));
+    const html = read(renderToStaticMarkup(<ChatView kind="oby" id="c1" leaving={false} onBack={() => {}} onGone={() => {}} />));
     expect(html).toMatch(/class="decision-bar".*Run npm test\?<span class="tc-ask-from"> · Run the tests/);
     // another conversation's task isn't this one's
     page.chats = [{ id: 'c2', title: 'Other', said: [] } satisfies Chat];
-    const other = read(renderToStaticMarkup(<ChatView kind="oby" id="c2" leaving={false} onBack={() => {}} onGone={() => {}} onOpenTask={() => {}} />));
+    const other = read(renderToStaticMarkup(<ChatView kind="oby" id="c2" leaving={false} onBack={() => {}} onGone={() => {}} />));
     expect(other).not.toContain('decision-bar');
   });
 
@@ -382,31 +330,24 @@ describe('a task at work', () => {
   it('LIVETASK-25: the card stays lean: its head alone, whatever it waits on, while the decision waits over the box', async () => {
     const merge = { kind: 'merge' as const, label: 'Ready to merge', headline: 'Merge oby-scratch #4 into main?', text: 'No check ran on its head (this repository has none).\nIts base is main, which Oby merges into only on your word.', options: ['Merge', 'Dismiss'] };
     const stages = [{ id: 'work', title: 'Work', state: 'done' }, { id: 'publish', title: 'Publish', state: 'current' }] as JobView['stages'];
-    const { card, opened } = await views([], { ask: merge, stages, repo: 'acme/oby-scratch' }, 'needs');
+    const { card, convo } = await views([], { ask: merge, stages, repo: 'acme/oby-scratch' }, 'needs');
     // title, "Needs you · Claude Code · oby-scratch", its stages with the one it waits on orange: nothing else
     expect(card).toContain('>Needs you · Claude Code · oby-scratch<');
     expect(card).toMatch(/aria-label="Stage 2 of 2: Publish, needs you"><span class="is-done"><\/span><span class="is-needs"><\/span>/);
     for (const word of ['Merge oby-scratch', 'No check ran', 'Its base is main', '>Merge<', '>Later<']) expect(card).not.toContain(word);
-    // the decision waits over the thread's box, on one line, its holds behind Details
-    expect(opened).toMatch(/class="decision-bar".*<span class="tc-ask-kind is-merge">Ready to merge<\/span><p class="tc-ask-head" title="Merge oby-scratch #4 into main\?">.*>Details<.*>Merge<.*>Dismiss<.*>Later</);
-    expect(opened).not.toContain('No check ran');
+    // the decision waits over the conversation's box, on one line, its holds behind Details
+    expect(convo).toMatch(/class="decision-bar".*<span class="tc-ask-kind is-merge">Ready to merge<\/span><p class="tc-ask-head" title="Merge oby-scratch #4 into main\?">.*>Details<.*>Merge<.*>Dismiss<.*>Later</);
+    expect(convo).not.toContain('No check ran');
   });
 
-  it('LIVETASK-27: answered in its own thread, one line stays where it was asked: its kind and the answer', async () => {
-    stub();
-    const { default: TaskThread } = await import('../TaskThread');
-    const { replaceTasks } = await import('../tasks');
-    const { SESSIONS } = await import('../session');
-    SESSIONS.j1 = [tool('Read', 'a.ts')];
-    replaceTasks([{ ...await taskOf('j1', { ask }), answer: 'Allow' }]);
-    const html = read(renderToStaticMarkup(<TaskThread id="j1" leaving={false} onBack={() => {}} onGone={() => {}} onOpenAgent={() => {}} />));
-    expect(html).toMatch(/<p class="lt-answered"><svg.*<\/svg>Permission · Allow<\/p>/);
-    expect(html).not.toContain('decision-bar');
+  it('LIVETASK-27: answered, one line stays under its card where it was asked: its kind and the answer', async () => {
+    const { log, convo } = await views([tool('Read', 'a.ts')], { ask }, 'running', { answer: 'Allow' });
+    expect(log).toMatch(/<p class="lt-answered"><svg.*<\/svg>Permission · Allow<\/p>/);
+    expect(convo).not.toContain('decision-bar');
     // put off (Later, from an earlier build or obid): no record, it still waits
-    replaceTasks([{ ...await taskOf('j1', { ask }, 'needs'), answer: 'Later' }]);
-    const waiting = read(renderToStaticMarkup(<TaskThread id="j1" leaving={false} onBack={() => {}} onGone={() => {}} onOpenAgent={() => {}} />));
-    expect(waiting).not.toContain('lt-answered');
-    expect(waiting).toMatch(/class="decision-bar".*>Allow<.*>Deny<.*>Later</);
+    const waiting = await views([tool('Read', 'a.ts')], { ask }, 'needs', { answer: 'Later' });
+    expect(waiting.log).not.toContain('lt-answered');
+    expect(waiting.convo).toMatch(/class="decision-bar".*>Allow<.*>Deny<.*>Later</);
   });
 
   it('LIVETASK-17: words in a card\'s box reach that job alone; the foot box\'s reach Oby, whatever card is open', async () => {
@@ -419,8 +360,8 @@ describe('a task at work', () => {
     expect(replyTarget({ foot: { kind: 'peer', id: 'p1' } })).toStrictEqual({ peer: 'p1' });
   });
 
-  it('LIVETASK-17: in a conversation with a card that needs you, its box talks to Oby alone; the task\'s thread\'s box to its job alone', async () => {
-    const chats = await import('../chats'), live = await import('../live'), tasks = await import('../tasks');
+  it('LIVETASK-17: in a conversation with a card that needs you, its box talks to Oby alone; a task\'s own thread\'s box to its job alone', async () => {
+    const chats = await import('../chats'), tasks = await import('../tasks');
     await conversation();
     // the conversation's one box
     expect(Object.keys(page.boxes)).toEqual(['Reply to Oby']);
@@ -428,40 +369,41 @@ describe('a task at work', () => {
     page.boxes['Reply to Oby'].onSend('hi', {});
     expect(chats.tellChat).toHaveBeenCalledTimes(1);
     expect(chats.tellChat).toHaveBeenCalledWith('c1', 'hi', {});
-    expect(live.tellAgent).not.toHaveBeenCalled();
     expect(tasks.tell).not.toHaveBeenCalled();
-    // the needing task's own thread: its job and nothing else, on obid and off it
-    const { default: TaskThread } = await import('../TaskThread');
-    renderToStaticMarkup(<TaskThread id="j2" leaving={false} onBack={() => {}} onGone={() => {}} onOpenAgent={() => {}} />);
-    page.obid = true;
-    page.boxes['Tell the agent about Run the tests'].onSend('go on', {});
-    expect(live.tellAgent).toHaveBeenCalledTimes(1);
-    expect(live.tellAgent).toHaveBeenCalledWith('j2', 'go on', undefined);
-    page.obid = false;
+    // a task in no conversation (from GitHub): its own thread's box tells its job and nothing else
+    const { default: ChatView } = await import('../ChatView');
+    renderToStaticMarkup(<ChatView kind="task" id="j2" leaving={false} onBack={() => {}} onGone={() => {}} />);
     page.boxes['Tell the agent about Run the tests'].onSend('go on', {});
     expect(tasks.tell).toHaveBeenCalledTimes(1);
     expect(tasks.tell).toHaveBeenCalledWith('j2', 'go on', {});
     expect(chats.tellChat).toHaveBeenCalledTimes(1);
   });
 
-  it('LIVETASK-18: the task\'s page opens from the card\'s menu, View details', async () => {
+  it('LIVETASK-29: the card is progress only: its ⋯ and a right-click open its menu, which tells its agent or stops it', async () => {
     stub();
     const { default: TaskMenu } = await import('../TaskMenu');
     const { ThreadTask } = await import('../ChatView');
     const task = await taskOf('j1');
-    const menu = renderToStaticMarkup(<TaskMenu task={task} at={new DOMRect(0, 0, 0, 0)} onClose={() => {}} onViewDetails={() => {}} />);
-    expect(menu).toContain('>View details<');
-    expect(menu).toContain('>Stop task<');
-    expect(menu).toContain('>Delete task<');
-    expect(menu).not.toContain('Open conversation');
-    expect(menu).not.toContain('Rename');
-    // a right-click on the card: its menu, at the pointer
     const onMenu = vi.fn();
-    const card = ThreadTask({ task, current: false, onOpen: () => {}, onMenu }) as React.ReactElement<{ children: React.ReactElement<{ onContextMenu: (e: object) => void }> }>;
+    const html = read(renderToStaticMarkup(<ThreadTask task={task} onMenu={onMenu} />));
+    expect(html).toMatch(/<button type="button" class="icon-button msg-task-more" aria-label="More for Fix the login test" aria-haspopup="menu">/);
+    // no link and no chevron: a click on it opens nothing
+    expect(html).not.toContain('is-link');
+    expect(html).not.toContain('msg-task-go');
+    // a right-click: its menu, at the pointer
+    const card = ThreadTask({ task, onMenu }) as React.ReactElement<{ onContextMenu: (e: object) => void }>;
     const preventDefault = vi.fn();
-    card.props.children.props.onContextMenu({ preventDefault, clientX: 40, clientY: 60 });
+    card.props.onContextMenu({ preventDefault, clientX: 40, clientY: 60 });
     expect(preventDefault).toHaveBeenCalled();
     expect(onMenu).toHaveBeenCalledWith(expect.objectContaining({ x: 40, y: 60 }));
+    // its menu: tell its agent, Stop, Delete; never a page of its own
+    const menu = renderToStaticMarkup(<TaskMenu task={task} at={new DOMRect(0, 0, 0, 0)} onClose={() => {}} onTell={() => {}} />);
+    expect(menu).toMatch(/>Tell Claude Code…<.*>Stop task<.*>Delete task</);
+    expect(menu).not.toContain('View details');
+    expect(menu).not.toContain('Open conversation');
+    // ended, telling it asks for a follow-up
+    const done = renderToStaticMarkup(<TaskMenu task={await taskOf('j1', {}, 'done')} at={new DOMRect(0, 0, 0, 0)} onClose={() => {}} onTell={() => {}} />);
+    expect(done).toContain('>Ask for a follow-up…<');
   });
 
   it('LIVETASK-10: a step reads as what it is doing, then as what it did', () => {
@@ -474,6 +416,5 @@ describe('a task at work', () => {
     // refused isn't failed
     expect(lines[3]).toMatchObject({ meta: 'Declined', state: 'declined' });
     expect(lines[2]).toMatchObject({ state: 'failed' });
-    expect(lastSteps(lines, 2)).toHaveLength(2);
   });
 });
