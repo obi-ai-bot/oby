@@ -18,11 +18,11 @@ import Said from './Said';
 import { convoTitle, threadOf } from './mock';
 import { ENDED, agentOf, type Message } from './view';
 import { asksWaiting, markSeen, tell, tellPlaceholder, useTasks, type Task } from './tasks';
-import { obys, ofObid, stopChat, tellChat, useChats, type Chat } from './chats';
+import { cancelQueued, obys, ofObid, stopChat, tellChat, useChats, type Chat } from './chats';
 import SetupCard from './SetupCard';
 import OfferCard from './OfferCard';
 import { WELCOME, typedFirst } from './onboarding';
-import { cancelWords, openConversation, talkReady, useLimitAsks } from './live';
+import { openConversation, talkReady, useLimitAsks } from './live';
 import { onObid } from './lean';
 import { box as draftBox } from './drafts';
 import { useHelpers } from './helpers';
@@ -311,7 +311,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
         onStop={talk && typing && ofObid(talk.id) && talkReady(talk.id) ? () => stopChat(talk.id) : undefined}
         // words sent while Oby answers here, waiting their turn (COMPOSER-8 to 10)
         queued={talk?.queued}
-        onCancelQueued={talk && ofObid(talk.id) ? (q) => cancelWords(talk.id, q.id) : undefined}
+        onCancelQueued={talk ? (q) => cancelQueued(talk.id, q.id) : undefined}
       />
       {/* a card's menu: its page, then Stop or Archive, and Delete */}
       {menu && menuTask && <TaskMenu task={menuTask} at={menu.at} align="left" onClose={() => setMenu(null)} onViewDetails={() => onOpenTask(menu.id)} />}
