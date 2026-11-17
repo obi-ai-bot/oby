@@ -123,7 +123,8 @@ export default function ChangesPanel() {
             </pre>
           </section>
         ))}
-        {shown?.truncated && <p className="changes-empty">The diff is too big to show whole: Oby cut it here.</p>}
+        {/* cut at obid's cap; or none at all, too big or not readable just now (its job at work): the files stand */}
+        {shown?.truncated && <p className="changes-empty">{shown.diff ? 'The diff is too big to show whole: Oby cut it here.' : 'Oby couldn’t read the diff whole just now: the files are above.'}</p>}
       </div>
     </aside>
   );
