@@ -8,7 +8,8 @@
 #   - A changed core/crates/obid/src/<a>/<b>.rs holding a `#[kani::proof]` requires its own,
 #     `<a>::<b>::proofs::` (`<a>::proofs::` for a mod.rs).
 #   - What every harness is built from (obid's Cargo.toml or build.rs, the workspace's Cargo.toml
-#     or Cargo.lock, rust-toolchain, src/lib.rs, src/proofs.rs) or this script requires `all`.
+#     or Cargo.lock, rust-toolchain, src/lib.rs, src/proofs.rs), this script, scripts/kani-prove.sh or
+#     core/.config/kani-slow.txt requires `all`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 src=core/crates/obid/src
@@ -17,7 +18,8 @@ while IFS= read -r file; do
     [[ -n "$file" ]] || continue
     case "$file" in
         core/Cargo.toml | core/Cargo.lock | core/crates/obid/Cargo.toml | core/crates/obid/build.rs | \
-            rust-toolchain* | "$src/lib.rs" | "$src/proofs.rs" | scripts/kani-required.sh)
+            rust-toolchain* | "$src/lib.rs" | "$src/proofs.rs" | scripts/kani-required.sh | \
+            scripts/kani-prove.sh | core/.config/kani-slow.txt)
             echo all
             exit 0 ;;
     esac

@@ -593,7 +593,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.rust == 'true' && needs.plan.outputs.tests == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 340 || 90 }}
     env:
       KANI_VERSION: 0.68.0
       PROOFS: ${{ needs.plan.outputs.proofs }}
@@ -616,18 +616,12 @@ jobs:
         run: env -u RUSTUP_TOOLCHAIN cargo kani -p obid --tests --only-codegen
 
       - name: Prove what the change requires
-        working-directory: core
-        run: |
-          if [ -z "$PROOFS" ]; then
-            echo "No harness proves what this change touched: compiled only."
-          elif [ "$PROOFS" = all ]; then
-            env -u RUSTUP_TOOLCHAIN cargo kani -p obid --tests --output-format terse
-          else
-            args=()
-            for filter in $PROOFS; do args+=(--harness "$filter"); done
-            echo "Proving: $PROOFS"
-            env -u RUSTUP_TOOLCHAIN cargo kani -p obid --tests --output-format terse "${args[@]}"
-          fi
+        # Four at a time, each within 20 minutes; nightly and on demand also the harnesses on
+        # core/.config/kani-slow.txt, each within 150 (docs/proofs.md).
+        env:
+          KANI_SLOW: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'prove' || '' }}
+          KANI_HARNESS_TIMEOUT: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '150m' || '20m' }}
+        run: scripts/kani-prove.sh "$PROOFS"
 
   check:
     # The run's one status: the merge queue requires it (R01-03).

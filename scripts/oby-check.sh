@@ -553,6 +553,8 @@ while IFS= read -r file; do
     case "$file" in
         tools/brain/*) brain=1 brain_own=1 ;;
         core/crates/obid/src/* | apps/electron/src/* | apps/shared/* | docs/api/* | docs/runner-api.md | AGENTS.md) brain=1 ;;
+    esac
+    case "$file" in
         AGENTS.md) agents_md=1 agents_rules=1 ;;
         core/AGENTS.md | core/CLAUDE.md | docs/agents-rules-manifest.md) agents_rules=1 ;;
         factory/bin/* | factory/checks.sh | factory/tests/* | factory/config.json) factory=1 ;;
