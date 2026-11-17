@@ -1357,33 +1357,48 @@ pub fn fits(anchor: Anchor, fit: Fit) -> bool {
     }
 }
 
-/// The files of `changed` on a security path ([`SECURITY_PATHS`]), or that the check `command`
-/// runs.
+/// The files of `changed` on a security path ([`SECURITY_PATHS`], [`caught_by`]), or that the
+/// check `command` runs.
 pub fn security_paths(changed: &[String], command: Option<&str>) -> Vec<String> {
     let own = command.map(check_files).unwrap_or_default();
     changed
         .iter()
         .filter(|path| {
-            let lower = path.to_ascii_lowercase();
-            let name = lower.rsplit('/').next().unwrap_or(&lower);
             own.iter().any(|f| f.eq_ignore_ascii_case(path))
-                || SECURITY_PATHS.iter().any(|p| {
-                    let p = p.to_ascii_lowercase();
-                    let anchor = match (p.ends_with('/'), p.contains('/')) {
-                        (true, _) => Anchor::Folder,
-                        (false, true) => Anchor::Whole,
-                        (false, false) => Anchor::Name,
-                    };
-                    let fit = Fit {
-                        name: name == p,
-                        folder: lower.starts_with(&p) || lower.contains(&format!("/{p}")),
-                        whole: lower == p,
-                    };
-                    fits(anchor, fit)
-                })
+                || SECURITY_PATHS.iter().any(|entry| caught_by(path, entry))
         })
         .cloned()
         .collect()
+}
+
+/// Whether the changed `path` is on the [`SECURITY_PATHS`] `entry`, in any letter case: the same
+/// file name, inside the entry's folder at any depth, or the same whole path from the root, as the
+/// entry is anchored (docs/proofs.md: its proof is still to come).
+pub(crate) fn caught_by(path: &str, entry: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    let p = entry.to_ascii_lowercase();
+    let anchor = match (p.ends_with('/'), p.contains('/')) {
+        (true, _) => Anchor::Folder,
+        (false, true) => Anchor::Whole,
+        (false, false) => Anchor::Name,
+    };
+    // Only the anchor's own test runs, byte by byte: the same answers as `rsplit` and
+    // `match_indices`, without the character searches Kani can't get through.
+    let fit = Fit {
+        name: anchor == Anchor::Name && {
+            let start = lower.bytes().rposition(|b| b == b'/').map_or(0, |i| i + 1);
+            lower[start..] == p
+        },
+        // At the root, or after any `/`: `/` and the entry, with nothing built.
+        folder: anchor == Anchor::Folder
+            && (lower.starts_with(&p)
+                || lower
+                    .bytes()
+                    .enumerate()
+                    .any(|(i, b)| b == b'/' && lower[i + 1..].starts_with(&p))),
+        whole: anchor == Anchor::Whole && lower == p,
+    };
+    fits(anchor, fit)
 }
 
 /// Why `job`'s pull request merges only after two approving reviews of its head, each by a

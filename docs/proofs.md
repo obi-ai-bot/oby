@@ -1,0 +1,71 @@
+# obid's proofs
+
+obid's Kani harnesses prove that a decider keeps its rule for every input in a bounded space, not
+for the handful a test picks. They live in two places:
+
+- **Beside the code they prove**, in a `#[cfg(test)] mod proofs { #![cfg(kani)] … }` at the end of
+  its file (`merge.rs`, `push.rs`, `job/chain.rs` and the others): the factory's harnesses, named
+  after their contract scenarios.
+- **In `core/crates/obid/src/proofs/`**, one file per security decider. Each names the files it
+  proves on its `//! Proves:` lines, so a change to any of them requires it.
+
+## What `src/proofs/` proves
+
+Every input is any bytes, any case, any combination of a job's marks, up to the bound named; nothing
+narrows it further with `kani::assume` but what a type requires (a `&str` is UTF-8, an index is in
+range). The bounds are small (strings of 4 to 6 bytes) because CBMC's cost grows fast with symbolic
+string length: past them a single proof ran for tens of minutes on the Mac. Each harness was shown to catch a planted bug
+(the rule broken in the code, the proof run and seen to fail, the code restored), but the
+per-domain `tools_own` proofs: their one-proof-for-every-domain predecessor ran out of memory before
+it could, and the split ones haven't been run against the bug yet. The pull request that added them
+lists each run.
+
+| File | Decider | What holds |
+| --- | --- | --- |
+| `token.rs` | `token::same` | The runner's token is accepted exactly when it is the token (any two strings up to 6 bytes). |
+| `within.rs` | `egress::within`, `egress::tools_own` | A host is a domain's only when it is the domain or a true subdomain, never a look-alike such as `xopenai.com`; each tool's own domain (one proof each) is its service on 443 only. |
+| `lanes.rs` | `Jobs::own_lane` (LANES-1, 18, 19) | Another Oby's job, an untrusted one, a review and every Cursor run are boxed; an own Codex run is Bypass on macOS and never a build; every Claude Code job of the owner's own, and only those, runs in the own lane. |
+| `publish.rs` | `publish::may_force` (PUBLISHING-13) | Without the owner's signed force, obid force-pushes only an `oby/` branch or a branch it made, never a `main` it didn't make (branch names up to 4 bytes). |
+
+Not proved yet, highest risk first: the security paths' match (`merge::caught_by`, MERGING-15)
+and the secret scan's verdict (`scan::verdict`), the permission rules' shell reading
+(`permissions.rs`), the gateway's allowlist (`gateway::allows`), signed approvals (`approval.rs`),
+the vault, job and conversation state, and the limits. Each is a proof of its own. The first two
+were written and taken out again: their strings (each path's lowercase copy, each finding's name
+compared with `memcmp`) ran CBMC out of memory on GitHub's 16 GB runner and on the Mac, before
+any check failed. `caught_by` and `verdict` stay split out for them, with the same results, and
+their unit tests (`merge::tests`, `scan::tests`) still cover them.
+
+## Required by path
+
+`scripts/kani-required.sh` reads the changed files and prints the harness filters they require:
+
+- a file a `src/proofs/<name>.rs` names on a `//! Proves:` line, or that file itself, requires
+  `proofs::<name>::`;
+- a changed `src/<a>/<b>.rs` that holds a `#[kani::proof]` requires its own, `<a>::<b>::proofs::`;
+- what every harness is built from (obid's `Cargo.toml` and `build.rs`, the workspace's `Cargo.toml`
+  and `Cargo.lock`, `rust-toolchain`, `src/lib.rs`, `src/proofs.rs`), the script,
+  `scripts/kani-prove.sh` or `core/.config/kani-slow.txt` requires `all`.
+
+GitHub's `proofs` job (docs/ci.md) compiles every harness, then `scripts/kani-prove.sh` proves the
+ones the change requires, two at a time, each within 20 minutes and 6 GB (a harness past either fails and is named; without the memory ceiling GitHub's runner died with no log), in every run that tests: the
+merge queue, so nothing merges into `dev` with a required proof failing, and pull requests into
+`main` or labelled `full-ci`. A harness too slow for GitHub's runner is on
+`core/.config/kani-slow.txt`, with why: those runs leave it out and say so, and nightly and on
+demand, when the job proves every harness, it proves those too, each within 150 minutes. One there
+now: `job::lifecycle::proofs::jobstate_7_holds_in_every_status`, past 100 minutes on GitHub's
+runner. The factory's own `prove` stage (docs/contracts/factory.md) is unchanged: it still runs the
+harnesses a task names on its gate VM, on top of these.
+
+## Run them
+
+```bash
+cd core
+cargo kani -p obid --tests --harness proofs::     # this folder's
+cargo kani -p obid --tests                        # every harness
+git diff --name-only origin/dev | scripts/kani-required.sh   # what a change requires (from the root)
+scripts/kani-prove.sh "proofs::token:: merge::proofs::"     # as GitHub proves them, after --only-codegen
+```
+
+Kani is 0.68.0 (`cargo install --locked kani-verifier --version 0.68.0 && cargo kani setup`). A first
+build of obid under Kani takes about 7 minutes on the Mac and a few GB in `core/target/kani`.

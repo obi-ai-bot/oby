@@ -47,6 +47,13 @@ fn id_of(feed: &Value, list: &str, number: u64) -> String {
 /// Turns `githubEveryRepo` on or off (`PUT /v1/settings/jobs`): with it on, the feed keeps work in
 /// every repository, not only the listed ones (docs/contracts/github-work.md).
 fn every_repo(obid: &Obid, on: bool) {
+    // obid's own read at its start ends first (its feed then has a next check): one that began
+    // with the old setting and read the fixture written after it would note only the connected
+    // repositories, and the next read would offer the rest as new.
+    within(30, "obid's first read of GitHub work", || {
+        let feed = call(obid, "GET", "/v1/github/work", None);
+        (!feed.body["nextCheck"].is_null()).then_some(())
+    });
     let set = call(
         obid,
         "PUT",

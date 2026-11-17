@@ -1,0 +1,5 @@
+# Kani harnesses too slow for GitHub's runner: the proofs job leaves them out of pull requests and
+# the merge queue, and proves them nightly and on demand (docs/proofs.md, CI-58 and 59). One exact
+# harness name per line, then why; a harness leaves this list once it proves within the job's
+# 20 minutes a harness.
+job::lifecycle::proofs::jobstate_7_holds_in_every_status  # past 100 minutes on GitHub's runner; the factory's gate VM proves it

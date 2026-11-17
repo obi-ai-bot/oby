@@ -42,6 +42,10 @@
 #   apps/ios/, apps/watch/, apps/shared/, apps/Oby.xcodeproj, character/
 #                         the touched iOSTests suites on a Simulator, else a build-for-testing
 #   apps/electron/        npm run typecheck, npm test and npm run build there (its node_modules from npm install)
+#   tools/brain/, obid's src/, apps/electron/src, apps/shared/, docs/api/, docs/runner-api.md, AGENTS.md
+#                         tools/brain's npm test, in the electron group: the Brain's map read from the
+#                         code, so it can't drift (docs/contracts/ci.md, CI-56); in a job's box only for
+#                         a change to tools/brain itself
 #   scripts/oby-check*    scripts/oby-check-test.sh and the limits below
 #   scripts/oby-nightly*  scripts/oby-nightly-test.sh, the nightly's own tests (docs/contracts/ci.md, CI-53 to 55)
 #   AGENTS.md             the limits below, AGENTS.md's bytes among them (the root's only; CI-36 to 38)
@@ -483,7 +487,7 @@ suites() {
 }
 
 # What each part needs, one per line.
-rust='' blok='' electron='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' check_script='' nightly_script='' factory='' agents_md='' agents_rules=''
+rust='' blok='' electron='' brain='' brain_own='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' check_script='' nightly_script='' factory='' agents_md='' agents_rules=''
 add() { printf '%s\n%s' "$1" "$2"; }
 while IFS= read -r file; do
     case "$file" in
@@ -545,6 +549,12 @@ while IFS= read -r file; do
         apps/electron/*) electron=1 ;;
         scripts/oby-check*) check_script=1 ;;
         scripts/oby-nightly*) nightly_script=1 ;;
+    esac
+    case "$file" in
+        tools/brain/*) brain=1 brain_own=1 ;;
+        core/crates/obid/src/* | apps/electron/src/* | apps/shared/* | docs/api/* | docs/runner-api.md | AGENTS.md) brain=1 ;;
+    esac
+    case "$file" in
         AGENTS.md) agents_md=1 agents_rules=1 ;;
         core/AGENTS.md | core/CLAUDE.md | docs/agents-rules-manifest.md) agents_rules=1 ;;
         factory/bin/* | factory/checks.sh | factory/tests/* | factory/config.json) factory=1 ;;
@@ -569,7 +579,7 @@ fi
 # Electron app and the Apple apps' build (no suites named: build-for-testing). The secret scan still
 # covers what changed against the base, which on the base itself is nothing.
 if [[ -n "${OBY_CHECK_ALL:-}" ]]; then
-    rust=1 blok=1 lib_all=1 check_script=1 nightly_script=1 electron=1 ios=1 factory=1 agents_rules=1
+    rust=1 blok=1 lib_all=1 check_script=1 nightly_script=1 electron=1 brain=1 ios=1 factory=1 agents_rules=1
     tests=$(ls core/crates/obid/tests/*.rs 2>/dev/null || true)
     crates=$(ls core/crates 2>/dev/null || true)
 fi
@@ -829,6 +839,18 @@ if selected && [[ -n "$electron" ]]; then
     step npm --prefix apps/electron run --silent typecheck
     step npm --prefix apps/electron run --silent test
     step npm --prefix apps/electron run --silent build
+fi
+# The Brain's map (CI-56). In a job's box its node_modules and its extractor's crates may not be
+# there, so only a change to the Brain itself runs it; the Mac's check and the merge queue's run
+# it for the code it reads.
+if selected && [[ -n "$brain" ]]; then
+    if [[ -n "$nested" && -z "$brain_own" ]]; then
+        plan_group
+        echo "oby-check: the Brain's map isn't checked in a job's box: the Mac's check and the merge queue run it"
+    else
+        [[ -d tools/brain/node_modules ]] || echo "oby-check: tools/brain has no node_modules: run npm install there first" >&2
+        step npm --prefix tools/brain run --silent test
+    fi
 fi
 
 # The factory's own tests (factory/tests), in a job's box too: they need no network, no lock and no
