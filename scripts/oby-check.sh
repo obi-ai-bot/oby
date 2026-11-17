@@ -66,9 +66,9 @@
 # CARGO_BUILD_JOBS, RUST_TEST_THREADS: one per 1.5 GiB of the room memory leaves, at most half the
 # cores), for Cargo, Rust's tests and xcodebuild (-jobs). Run by hand or by the nightly, outside
 # obid, every one gets the Mac's free CPUs as the check starts: its cores less its last minute's load
-# average, rounded up, and never under 2 (docs/contracts/ci.md, CI-51). An idle Mac gives the check
-# all its cores, so a full run fits its limit; a Mac busy with other work gives it fewer, so its
-# tests' own timeouts aren't the ones the other work spends.
+# average, rounded up, and never under 4, the number it had before (docs/contracts/ci.md, CI-51). An
+# idle Mac gives the check all its cores, so a full run fits its limit; a busy one gives it what it
+# always had, never less, since fewer at once only makes the run longer.
 set -eo pipefail
 # The Mac's cores and its last minute's load average, as "<cores> <load>"; a load that can't be read
 # is 0.
@@ -79,7 +79,7 @@ cpus_and_load() {
     [[ -n "$load" ]] || load=$(awk '{ print $1 }' /proc/loadavg 2>/dev/null || true)
     echo "$cores ${load:-0}"
 }
-free_cpus() { cpus_and_load | awk '{ f = $1 - int($2 + 0.999); print (f < 2 ? 2 : f) }'; }
+free_cpus() { cpus_and_load | awk '{ f = $1 - int($2 + 0.999); print (f < 4 ? 4 : f) }'; }
 jobs="${OBY_BUILD_JOBS:-$(free_cpus)}"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$jobs}" RUST_TEST_THREADS="${RUST_TEST_THREADS:-$jobs}"
 cd "$(dirname "$0")/.."
