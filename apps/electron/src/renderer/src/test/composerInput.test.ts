@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 vi.mock('../live', () => ({ conversationFiles: async () => [] }));
+vi.mock('../lean', () => ({ onObid: true }));
+vi.mock('../mock', () => ({ FILES: [] }));
 import { dropped, fileWords, isFileDrag, noCommands, slashOf } from '../composerInput';
 
 // What the message box takes besides typing (docs/contracts/composer.md, COMPOSER-13, 14 and 16)
