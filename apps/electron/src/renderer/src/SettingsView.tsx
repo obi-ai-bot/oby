@@ -254,7 +254,8 @@ function Notifications() {
         <Row label="Finished tasks"><Switch on={kinds?.finished ?? true} onChange={turnKind('finished')} label="Finished tasks" /></Row>
         <Row label="Merged pull requests"><Switch on={kinds?.merged ?? true} onChange={turnKind('merged')} label="Merged pull requests" /></Row>
         <Row label="Accounts at their limit"><Switch on={kinds?.limit ?? true} onChange={turnKind('limit')} label="Accounts at their limit" /></Row>
-        <Row label="Banners, sounds and Focus"><button className="set-button" onClick={bridge.openSystemSettings}>Open System Settings</button></Row>
+        {/* no arguments: the bridge can't clone React's click event, and the press did nothing (ALERTS-19) */}
+        <Row label="Banners, sounds and Focus"><button className="set-button" onClick={() => bridge.openSystemSettings()}>Open System Settings</button></Row>
       </> : <Row label="Alerts"><Value>Allowed</Value></Row>}
     </Group>
   );
