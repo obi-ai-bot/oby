@@ -65,7 +65,13 @@ pub(super) fn result_of(request: &Value, job: &Job) -> Value {
             body["head_sha"] = json!(head);
         }
     }
-    if let (Some(pr), Some(_)) = (job.pr, &job.published) {
+    // The pull request it opened (`published`), one of the handoff's repository's; `pr` is the one
+    // a review job reads, never set for a build job.
+    if let Some(pr) = job
+        .published
+        .as_deref()
+        .and_then(|url| job.pull_request_number(url))
+    {
         body["pr"] = json!(pr);
     }
     let summary: String = job.summary.trim().chars().take(4000).collect();
@@ -257,5 +263,42 @@ impl Link {
         };
         self.save_exchange(&queued);
         self.send_now(&cid).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ended(published: Option<&str>) -> Job {
+        Job {
+            repo: "obi-e2e/fixture-app".into(),
+            branch: "oby/build-1a2b3c4d".into(),
+            status: Status::Done,
+            check: Some("node --test".into()),
+            checked_head: Some("d47ff1420ed8cacf89f507188528d00707d80acb".into()),
+            commits: Some(1),
+            published: published.map(str::to_owned),
+            summary: "Added power(a, b), with tests.".into(),
+            ..Job::default()
+        }
+    }
+
+    // HANDOFF-3: the result names the pull request the job opened, by its number, so the asker
+    // can find it; none when it opened none, or published somewhere that isn't the repository's.
+    #[test]
+    fn handoff_3_the_result_names_the_pull_request_the_job_opened() {
+        let request = json!({"goal": "G", "repo": "obi-e2e/fixture-app", "base_branch": "main",
+                             "acceptance": [{"kind": "tests_pass"}]});
+        let body = result_of(
+            &request,
+            &ended(Some("https://github.com/obi-e2e/fixture-app/pull/10")),
+        );
+        assert_eq!(body["outcome"], "done");
+        assert_eq!(body["head_branch"], "oby/build-1a2b3c4d");
+        assert_eq!(body["pr"], 10);
+        assert!(result_of(&request, &ended(None)).get("pr").is_none());
+        let elsewhere = ended(Some("https://github.com/someone/else/pull/10"));
+        assert!(result_of(&request, &elsewhere).get("pr").is_none());
     }
 }

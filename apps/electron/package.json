@@ -16,6 +16,7 @@
     "postinstall": "install-electron && (node -e \"process.platform==='darwin'&&process.exit(1)\" || npm run build:native)",
     "test:account-limits": "node scripts/test-account-limits.mjs",
     "test:sphere": "jiti scripts/test-sphere.mjs",
+    "test:sphere-join": "jiti scripts/test-sphere-join.mjs",
     "test:core": "node scripts/test-core.mjs",
     "test:chat-first": "node scripts/test-chat-first.mjs",
     "test:live-task": "node scripts/test-live-task.mjs",
