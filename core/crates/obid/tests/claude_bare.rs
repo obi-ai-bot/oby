@@ -110,10 +110,29 @@ fn never_bare(what: &str, launches: &[Launch], which: impl Fn(&Launch) -> bool) 
                         && name != "CLAUDE_CODE_ENABLE_TODO_TOOLS"
                         && name != "CLAUDE_CODE_DISABLE_CLAUDE_MDS"
                         // An own conversation's auto-memory off (LANES-12, process::NO_AUTO_MEMORY).
-                        && name != "CLAUDE_CODE_DISABLE_AUTO_MEMORY")),
+                        && name != "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
+                        // An own run's first turn waiting for none of the owner's MCP servers
+                        // (LANES-24, agent::MCP_STARTUP_WAIT): not what `--bare` sets, and it
+                        // never reaches a foreign launch (`own_only`).
+                        && name != OWN_ONLY)),
                 "{what}: {name} reached Claude Code"
             );
         }
+    }
+}
+
+/// What only an own run of the owner's gets (LANES-24): an own job or conversation loads the
+/// owner's MCP servers, so its first turn waits for none of them.
+const OWN_ONLY: &str = "CLAUDE_CODE_MCP_STARTUP_WAIT_MS";
+
+/// No launch `which` picks, another Oby's work, got [`OWN_ONLY`].
+fn own_only(what: &str, launches: &[Launch], which: impl Fn(&Launch) -> bool) {
+    for launch in launches.iter().filter(|l| which(l)) {
+        assert!(
+            !launch.env.iter().any(|name| name == OWN_ONLY),
+            "{what}: {OWN_ONLY} reached a launch that isn't the owner's own: {:?}",
+            flags(launch)
+        );
     }
 }
 
@@ -373,6 +392,10 @@ fn issue_1867_the_refresh_never_runs_bare() {
             .iter()
             .any(|name| name == "CLAUDE_SECURESTORAGE_CONFIG_DIR")
     });
+    // The untrusted job's own turns run in Oby's box: not the owner's own work (LANES-24).
+    own_only("an untrusted job", &launches(&folder.0), |l| {
+        l.has("--max-turns")
+    });
 }
 
 /// The model that writes an answer to another Oby's question by itself (`sphere::answering`): a
@@ -413,6 +436,7 @@ async fn issue_1867_an_answer_to_another_oby_never_runs_bare() {
         })
     });
     never_bare("an answer", &seen, |l| l.has("--permission-prompts"));
+    own_only("an answer", &seen, |l| l.has("--permission-prompts"));
 }
 
 /// KEYCHAIN-10 (docs/contracts/keychain.md): with no keeper, the answer to another Oby's question

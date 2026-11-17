@@ -272,10 +272,11 @@ fn obid_signs_in_to_tetrix_once_and_agents_use_it_without_its_login() {
     // The context Tetrix gave before the agent started, quoted as data, and the prompt.
     let context = std::fs::read_to_string(worktree.join(".obi/context/tetrix.md")).unwrap();
     // Byte for byte what obid gave before plug-ins went (the strip plan's step 3): the MCP config, the
-    // rules, the context file and the prompt's note.
+    // rules, the context file and the prompt's note. The MCP config's one addition since: an own job's
+    // servers are `alwaysLoad`, as its first turn waits for none of the owner's (LANES-24).
     assert_eq!(
         report["mcp"],
-        json!({"mcpServers": {"tetrix": {"type": "http", "url": server["url"],
+        json!({"mcpServers": {"tetrix": {"type": "http", "url": server["url"], "alwaysLoad": true,
                                          "headers": {"Authorization": job_token}}}})
     );
     assert_eq!(
