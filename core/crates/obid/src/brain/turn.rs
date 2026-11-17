@@ -449,7 +449,7 @@ mod tests {
                 .await
                 .map(|n| n.words.defaults)
         });
-        while turns.waiting().len() < 1 {
+        while turns.waiting().is_empty() {
             tokio::task::yield_now().await;
         }
         let late = tokio::spawn(async move {
