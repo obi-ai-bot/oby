@@ -236,6 +236,12 @@ else
   if launchctl print "gui/$uid/$agent" > /dev/null 2>&1; then
     say "Restarting obid ($agent) on the new build"
     launchctl kickstart -k "gui/$uid/$agent"
+    # the app's same-login stand-in for that agent (main/obid.ts, "$agent.session") can hold 7777
+    # with the old binary while the agent waits to spawn: restart it too, so step 6 meets the new one
+    if launchctl print "gui/$uid/$agent.session" > /dev/null 2>&1; then
+      say "Restarting obid ($agent.session) on the new build"
+      launchctl kickstart -k "gui/$uid/$agent.session"
+    fi
   elif launchctl print "gui/$uid/com.deskree.obid" > /dev/null 2>&1; then
     say "install.sh's obid (com.deskree.obid) runs here: Oby uses it, and this script doesn't update it (sh install/install.sh uninstall removes it)"
   else
