@@ -428,7 +428,9 @@ fn status_answers_with_engine_obid() {
     // (scripts/run-dev.sh sets OBY_BUILD_COMMIT for obid and this test alike).
     assert_eq!(
         status["runner"].get("commit"),
-        Some(&json!(option_env!("OBY_BUILD_COMMIT").filter(|c| !c.is_empty())))
+        Some(&json!(
+            option_env!("OBY_BUILD_COMMIT").filter(|c| !c.is_empty())
+        ))
     );
     assert!(
         status["runner"]["host"]
