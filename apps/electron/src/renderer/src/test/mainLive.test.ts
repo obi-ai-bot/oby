@@ -35,6 +35,8 @@ vi.mock('../../../main/obid', () => ({
   takesKeys: async () => false,
   streamEnded: () => {},
   reason: (e: unknown) => ({ status: 0, text: String(e) }),
+  chooseProfile: () => false,
+  openedProfile: () => null,
 }));
 
 const job = (more: Record<string, unknown> = {}) => ({

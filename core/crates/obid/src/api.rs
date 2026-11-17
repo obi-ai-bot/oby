@@ -37,7 +37,7 @@ pub struct Shared {
     pub devices: crate::devices::Devices,
     /// Chrome-style profiles on this Mac (`/v1/profiles`): crate::profiles::root_of reads them for
     /// the profile a request names, and the start's reconcile for every profile's projects.
-    pub profiles: crate::profiles::Profiles,
+    pub profiles: Arc<crate::profiles::Profiles>,
     /// The owner's helpers (`/v1/helpers`).
     pub helpers: crate::helpers::Helpers,
     /// The phones paired with the gateway, and the open invitation (crate::gateway).
@@ -407,6 +407,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
         )
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
+        .layer(middleware::from_fn_with_state(
+            shared.clone(),
+            crate::profile_scope::scoped,
+        ))
         .layer(middleware::from_fn(crate::vault::answers))
         .layer(middleware::from_fn_with_state(shared.clone(), gate))
         .with_state(shared)
@@ -650,6 +654,7 @@ pub const CAPABILITIES: &[&str] = &[
     "events-replay-v1",
     "folders-v1",
     "profile-projects-v1",
+    "profile-scope-v1",
     "project-jobs-v1",
     "projects-v1",
     "revisions-v1",
@@ -1010,7 +1015,11 @@ async fn model_options(State(shared): State<Arc<Shared>>) -> axum::Json<serde_js
     axum::Json(serde_json::Value::Object(options.into_iter().collect()))
 }
 
-async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>, ApiError> {
+async fn status(
+    State(shared): State<Arc<Shared>>,
+    scope: Option<axum::Extension<crate::profiles::Scope>>,
+) -> Result<axum::Json<Status>, ApiError> {
+    let scope = crate::profile_scope::of(&shared, scope);
     // A tool installed or signed in since obid started (first launch on a fresh Mac) shows up here,
     // looked for at most every 2 seconds.
     let agents = shared.config.agents.clone();
@@ -1018,7 +1027,9 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
     // An app looks at the accounts: their usage is asked of their tools if it's stale, and comes
     // in the `accounts` event.
     shared.jobs.want_usage();
-    let accounts = crate::accounts::list_now(&shared).await;
+    let mut accounts = crate::accounts::list_now(&shared).await;
+    // Only the profile's own accounts (B00-40).
+    accounts.retain(|account| shared.profiles.accounts.holds(&scope, &account.id));
     // Off the runtime as the list is: whether an account can run can ask the macOS Keychain.
     let talk_next = {
         let shared = shared.clone();

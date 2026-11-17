@@ -304,7 +304,9 @@ fn find(shared: &Shared, session: &Session, args: Value) -> Result<String, Strin
     if words.is_empty() || query.chars().count() > crate::conversation::QUERY {
         return Err("query is 1 to 200 characters, with a word to find.".into());
     }
+    let scope = crate::profile_scope::of_conversation(shared, &session.conversation);
     let found = shared.conversations.search(
+        Some(&scope),
         &words,
         Some(&session.conversation),
         None,
@@ -761,7 +763,8 @@ fn continue_job(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<
 
 /// oby_conversations with no query: every conversation obid keeps, newest first, a line each.
 fn conversations(shared: &Shared, session: &Session) -> String {
-    let mut listed = shared.conversations.list(None, usize::MAX);
+    let scope = crate::profile_scope::of_conversation(shared, &session.conversation);
+    let mut listed = shared.conversations.list(Some(&scope), None, usize::MAX);
     listed.sort_by(|a, b| b["lastActivity"].as_str().cmp(&a["lastActivity"].as_str()));
     let lines: Vec<String> = listed
         .iter()
@@ -784,7 +787,8 @@ fn delete_conversations(
 ) -> Result<String, String> {
     ids.sort();
     ids.dedup();
-    let kept = shared.conversations.list(None, usize::MAX);
+    let scope = crate::profile_scope::of_conversation(shared, &session.conversation);
+    let kept = shared.conversations.list(Some(&scope), None, usize::MAX);
     let mut going = Vec::new();
     for id in &ids {
         match kept.iter().find(|c| c["id"] == id.as_str()) {

@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { anything, boolean, flag, https, method, oneOf, optional, orUndefined, safeInteger, string, v1Path } from '../../../shared/decode';
+import { anything, boolean, flag, https, method, oneOf, optional, orUndefined, profileId, safeInteger, string, v1Path } from '../../../shared/decode';
 import { input, takeInput } from '../../../main/words';
 
 // docs/contracts/ipc.md: every channel the page reaches main on, through main's one helper
@@ -99,6 +99,7 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'open-login-items': { args: [], refusal: undefined },
   'obid-snapshot': { args: [], refusal: null },
   'obid-load': { args: [{ conversation: 'c1' }], refusal: null },
+  'obid-profile': { args: ['bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'], refusal: null },
   'obid-confirm': { args: ['confirm-1', true], refusal: FORBIDDEN },
   'obid-pair-invite': { args: [], refusal: FORBIDDEN },
   'obid-publish': { args: ['j1', 'Publish this', {}], refusal: FORBIDDEN },
@@ -274,6 +275,11 @@ describe('IPC-3', () => {
     expect(method('get')).toBeUndefined();
     expect(v1Path('/v1/x')).toEqual({ value: '/v1/x' });
     expect(v1Path('/v1')).toBeUndefined();
+    // a profile's id as obid lists it, or none (B00-40)
+    const id = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    expect(profileId(id)).toEqual({ value: id });
+    expect(profileId(null)).toEqual({ value: null });
+    for (const v of [id.toUpperCase(), id.slice(1), '../x', '', 1, undefined]) expect(profileId(v)).toBeUndefined();
     // the lenient ones never fail
     for (const v of [undefined, null, 0, 'x', true, {}, []]) {
       expect(flag(v)).toEqual({ value: v === true });

@@ -48,6 +48,7 @@
 |---|---|---|
 | `events-replay-v1` | `GET /v1/events` numbers its events with an `id: <epoch>-<seq>` line, and resumes a client that sends the last one it had (`?after=` or the `Last-Event-ID` header): it replays what the client missed, or sends one `resync` when it can't. | R06-02 |
 | `folders-v1` | obid takes working folders: `folders` on `POST /v1/plans`, on conversations and on `PATCH /v1/conversations/{id}`, the same behaviour `folders: true` announces. | The behaviour since #1572, listed since R06-01 |
+| `profile-scope-v1` | obid reads `Oby-Profile` on every `/v1` route and on `GET /v1/events`, and keeps conversations, jobs, helpers, accounts and vault secrets per profile ([profiles.md](profiles.md)). | B00-40 |
 | `profile-projects-v1` | obid reads the `Oby-Profile` header on `GET`/`POST /v1/projects`, `PATCH`/`DELETE /v1/projects/{id}` and on `project` in `PATCH /v1/conversations/{id}` and `POST /v1/plans`, and keeps projects per profile ([profiles.md](profiles.md)). An app sends the header only to an obid that lists it. | A00-79 |
 | `project-jobs-v1` | obid keeps a job's `project` and answers `GET /v1/jobs?project=<id>` ([projects.md](projects.md), PROJECTS-13, PROJECTS-14). | A00-73 |
 | `projects-v1` | obid keeps projects: `GET`/`POST /v1/projects`, `PATCH`/`DELETE /v1/projects/{id}`, a conversation's `project`, and `project` on `PATCH /v1/conversations/{id}` and `POST /v1/plans` ([projects.md](projects.md)). | A00-70 |

@@ -590,9 +590,11 @@ async fn start_next(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
     let chosen = crate::settings::load(&shared.config.home)
         .talk_account
         .filter(|id| id != super::talk::AUTO);
+    // Readied for a conversation of the default profile, on one of its accounts (B00-40).
+    let scope = shared.profiles.default_scope();
     let account = match super::talk::accounts(shared, chosen.as_deref(), None, None)
         .into_iter()
-        .next()
+        .find(|(_, account)| shared.profiles.accounts.holds(&scope, &account.id))
     {
         Some((Tool::Claude, account)) => account,
         _ => return Ok(()),
@@ -921,7 +923,12 @@ pub async fn run(
     let chosen = super::talk::chosen(shared, &control.conversation)
         .filter(|id| only.is_none_or(|only| tool_of(id) == Some(only)));
     let on = kept_on(&place);
-    let accounts = super::talk::accounts(shared, chosen.as_deref(), on.as_deref(), only);
+    // Only the accounts of the conversation's profile (B00-40), the owner's choice too.
+    let scope = crate::profile_scope::of_conversation(shared, &control.conversation);
+    let mine = |id: &str| shared.profiles.accounts.holds(&scope, id);
+    let chosen = chosen.filter(|id| mine(id));
+    let mut accounts = super::talk::accounts(shared, chosen.as_deref(), on.as_deref(), only);
+    accounts.retain(|(_, account)| mine(&account.id));
     let mut full = Vec::new();
     let mut failed: Option<String> = None;
     let mut why = String::new();

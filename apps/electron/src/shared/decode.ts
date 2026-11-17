@@ -32,6 +32,12 @@ export const loadWhat: Decoder<LoadWhat> = (v) => {
   return undefined;
 };
 
+// The profile the window has open (main/live.ts, obid-profile): a profile's id as obid lists it
+// (a lower-case UUID), or null for none
+const PROFILE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export const profileId: Decoder<string | null> = (v) =>
+  (v === null || (typeof v === 'string' && PROFILE_ID.test(v)) ? { value: v } : undefined);
+
 // Lenient, for arguments main took as they came before it decoded them: these never fail.
 // true only for exactly true
 export const flag: Decoder<boolean> = (v) => ({ value: v === true });

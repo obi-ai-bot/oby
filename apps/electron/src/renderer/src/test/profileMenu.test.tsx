@@ -30,9 +30,12 @@ const DESKREE = { id: 'a1b2c3d4-0000-4000-8000-000000000002', name: 'Deskree', c
 const ACME = { id: 'a1b2c3d4-0000-4000-8000-000000000003', name: 'Acme', color: '#8c5a3a', default: false, waiting: false };
 type Answer = { status: number; text: string };
 
-// main's bridge, as obid answers: its profiles (or an answer for them), a create (made, it's listed); the rest 404
-function obid(profiles: unknown[] | Answer) {
+// main's bridge, as obid answers: its profiles (or an answer for them), a create (made, it's listed); the rest 404.
+// The profile the page tells main is open (obid.profile) is kept in told; main answers changed
+function obid(profiles: unknown[] | Answer, changed = false) {
   const said = { profiles, create: undefined as Answer | undefined };
+  const told: (string | null)[] = [];
+  const profile = vi.fn(async (id: string | null) => { told.push(id); return changed; });
   const calls: { method: string; path: string; body?: unknown }[] = [];
   const call = vi.fn(async (method: string, path: string, body?: unknown) => {
     calls.push({ method, path, body });
@@ -45,7 +48,7 @@ function obid(profiles: unknown[] | Answer) {
     }
     return { status: 404, text: '{"error":"Not found."}' };
   });
-  return { app: { obid: { call }, onSphere: () => () => {}, sphereLeave: async () => null }, calls, said };
+  return { app: { obid: { call, profile }, onSphere: () => () => {}, sphereLeave: async () => null }, calls, said, told };
 }
 // obid's conversations, in the panel as live.ts puts them
 const TALKS = [{ id: 'c1', title: 'Talk one', said: [], at: 5 }, { id: 'c2', title: 'Talk two', said: [], at: 50 }, { id: 'c3', title: 'Talk three', said: [], at: 500 }];
@@ -129,10 +132,34 @@ describe('PROFILES-20', () => {
     expect(talks()).toEqual(before);
     await openMenu();
     expect(checked()).toEqual(['Acme']);
-    // nothing asked of obid but its list again, and nothing names the profile
+    // nothing asked of obid but its list again; main is told Acme is open (B00-40, PROFILES-41)
     const since = o.calls.slice(sent);
     expect(since.every((c) => c.method === 'GET' && c.path === '/v1/profiles' && c.body === undefined)).toBe(true);
     expect(JSON.stringify(o.calls)).not.toContain(ACME.id);
+    expect(o.told.at(-1)).toBe(ACME.id);
+  });
+});
+
+describe('PROFILES-41', () => {
+  it('PROFILES-41: profiles_41_main_is_told_the_open_profile', async () => {
+    // the app opens on its kept profile: main is told it, and changed to it, the page reads everything again
+    localStorage.setItem('oby.profile', DESKREE.id);
+    const o = obid([DEFAULT, DESKREE, ACME], true);
+    const reload = vi.fn();
+    (window as { app?: unknown }).app = o.app;
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    vi.stubGlobal('location', { search: '', reload });
+    // profiles.ts reads obid's list as it loads
+    await import('../profiles');
+    await until(() => expect(o.told).toEqual([DESKREE.id]));
+    await until(() => expect(reload).toHaveBeenCalledTimes(1));
+    // the same profile again: main doesn't change, nothing is read again
+    const same = obid([DEFAULT, DESKREE, ACME], false);
+    (window as { app?: unknown }).app = same.app;
+    const { chooseProfile } = await import('../profiles');
+    chooseProfile(DESKREE.id);
+    await until(() => expect(same.told).toEqual([DESKREE.id]));
+    expect(reload).toHaveBeenCalledTimes(1);
   });
 });
 

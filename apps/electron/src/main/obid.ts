@@ -112,6 +112,18 @@ async function listener(): Promise<'mine' | 'foreign' | 'none'> {
   return 'foreign';
 }
 
+// The profile the window has open (docs/contracts/profiles.md, B00-40): every call and the stream
+// name it with Oby-Profile, so obid answers only that profile's conversations, jobs and accounts.
+// null names none: obid's default profile
+let profile: string | null = null;
+export const openedProfile = () => profile;
+// Whether `id` is another profile than the one open, which it becomes
+export function chooseProfile(id: string | null) {
+  const changed = id !== profile;
+  profile = id;
+  return changed;
+}
+
 // What a call or the stream came back with: obid's status and body, or (status 0) why it didn't answer
 export type Answer = { status: number; text: string; why?: 'waiting' | 'approval' };
 // a call that isn't to obid's API
@@ -137,6 +149,7 @@ export async function send(method: string, path: string, body: unknown, signal?:
         Accept: path.split('?')[0] === '/v1/events' ? 'text/event-stream' : 'application/json',
         ...(body === undefined ? {} : { 'Content-Type': raw ? 'application/octet-stream' : 'application/json' }),
         ...(words ? { 'X-Oby-Words': words } : {}),
+        ...(profile ? { 'Oby-Profile': profile } : {}),
       },
       body: body === undefined ? undefined : raw ? Buffer.from(body) : JSON.stringify(body),
     });

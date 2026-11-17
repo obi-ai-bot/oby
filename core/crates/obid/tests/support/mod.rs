@@ -809,10 +809,22 @@ pub fn ended_within(obid: &Obid, id: &str, seconds: u64) -> Value {
 
 /// Follows `GET /v1/events`: every event, `(name, data)`, as it comes.
 pub fn follow_events(obid: &impl Listens) -> std::sync::mpsc::Receiver<(String, Value)> {
+    follow_events_as(obid, &[])
+}
+
+/// [`follow_events`], the request carrying `headers` too (an `Oby-Profile`).
+pub fn follow_events_as(
+    obid: &impl Listens,
+    headers: &[(&str, &str)],
+) -> std::sync::mpsc::Receiver<(String, Value)> {
     let mut stream = TcpStream::connect(("127.0.0.1", obid.port())).unwrap();
+    let more: String = headers
+        .iter()
+        .map(|(n, v)| format!("{n}: {v}\r\n"))
+        .collect();
     stream
         .write_all(
-            format!("GET /v1/events HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}\r\n\r\n")
+            format!("GET /v1/events HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}\r\n{more}\r\n")
                 .as_bytes(),
         )
         .unwrap();

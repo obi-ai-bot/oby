@@ -1104,13 +1104,19 @@ fn api_name_problem(name: &str) -> Option<&'static str> {
     })
 }
 
-/// `GET /v1/obid/vault`: `{"names": [...]}`, sorted, without obid's own `oby.` names.
-async fn list(vault: Option<axum::Extension<Arc<Vault>>>) -> Answer {
+/// `GET /v1/obid/vault`: `{"names": [...]}`, sorted, without obid's own `oby.` names: only the
+/// profile's own (B00-40).
+async fn list(
+    axum::extract::State(state): axum::extract::State<Arc<crate::api::Shared>>,
+    scope: Option<axum::Extension<crate::profiles::Scope>>,
+    vault: Option<axum::Extension<Arc<Vault>>>,
+) -> Answer {
+    let scope = crate::profile_scope::of(&state, scope);
     let names: Vec<String> = found(vault)?
         .names()
         .map_err(unavailable)?
         .into_iter()
-        .filter(|name| !name.starts_with("oby."))
+        .filter(|name| !name.starts_with("oby.") && state.profiles.secrets.holds(&scope, name))
         .collect();
     Ok(axum::Json(serde_json::json!({ "names": names })).into_response())
 }
@@ -1118,6 +1124,7 @@ async fn list(vault: Option<axum::Extension<Arc<Vault>>>) -> Answer {
 /// `PUT /v1/obid/vault/{name}` with `{"value": "…"}`, signed by the owner's app.
 async fn put_value(
     axum::extract::State(state): axum::extract::State<Arc<crate::api::Shared>>,
+    scope: Option<axum::Extension<crate::profiles::Scope>>,
     vault: Option<axum::Extension<Arc<Vault>>>,
     axum::extract::Path(name): axum::extract::Path<String>,
     uri: axum::http::Uri,
@@ -1144,13 +1151,24 @@ async fn put_value(
     if let Some(problem) = value_problem(trimmed(&value)) {
         return Err(unprocessable(problem));
     }
-    found(vault)?.add(&value, &name).map_err(unavailable)?;
+    // A name another profile keeps is that profile's: never read, written over or used here.
+    let (scope, vault) = (crate::profile_scope::of(&state, scope), found(vault)?);
+    let kept = vault.names().map_err(unavailable)?.contains(&name);
+    if kept && !state.profiles.secrets.holds(&scope, &name) {
+        return Err(crate::api::ApiError::new(
+            StatusCode::CONFLICT,
+            "Another profile keeps a secret by that name: choose another name.",
+        ));
+    }
+    (state.profiles.secrets.made_in(&scope, &name)).map_err(unavailable)?;
+    vault.add(&value, &name).map_err(unavailable)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// `DELETE /v1/obid/vault/{name}`, with no body, signed by the owner's app.
 async fn remove_value(
     axum::extract::State(state): axum::extract::State<Arc<crate::api::Shared>>,
+    scope: Option<axum::Extension<crate::profiles::Scope>>,
     vault: Option<axum::Extension<Arc<Vault>>>,
     axum::extract::Path(name): axum::extract::Path<String>,
     uri: axum::http::Uri,
@@ -1163,8 +1181,14 @@ async fn remove_value(
     if let Some(problem) = api_name_problem(&name) {
         return Err(unprocessable(problem));
     }
-    match found(vault)?.remove(&name).map_err(unavailable)? {
-        true => Ok(StatusCode::NO_CONTENT.into_response()),
+    // Another profile's is none of this one's (B00-40).
+    let scope = crate::profile_scope::of(&state, scope);
+    let theirs = !state.profiles.secrets.holds(&scope, &name);
+    match !theirs && found(vault)?.remove(&name).map_err(unavailable)? {
+        true => {
+            state.profiles.secrets.forget(&name);
+            Ok(StatusCode::NO_CONTENT.into_response())
+        }
         false => Err(crate::api::ApiError::new(
             StatusCode::NOT_FOUND,
             format!("The vault has no secret named {name}."),

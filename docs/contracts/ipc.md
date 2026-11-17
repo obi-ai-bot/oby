@@ -33,6 +33,7 @@ A decoder answers `{ value }` or `undefined` when it can't read the value, so `o
 - `string`, `boolean`, `safeInteger`, `https` (a string starting `https://`), `optional(d)` (`undefined` too), `oneOf(...values)`.
 - `method` (exactly `GET`, `POST`, `PUT`, `PATCH` or `DELETE`) and `v1Path` (a string starting `/v1/`), for `obid`.
 - `loadWhat`, for `obid-load`: an object with exactly one key, `{ conversation: <non-empty string> }`, `{ job: <non-empty string> }` or `{ limits: true }`; anything else (`{}`, an empty id, `limits` that isn't `true`, two keys) fails.
+- `profileId`, for `obid-profile`: a profile's id as obid lists it (a lower-case UUID), or `null`; anything else (an upper-case or partial id, a number, a path) fails.
 - Lenient, never failing, for arguments that were lenient before: `flag` (true only for exactly `true`), `orUndefined(d)` (d's value, or `undefined`) and `anything` (as it came: `obid`'s body).
 - Built from them in their own files: `publishChoices` (`device.ts`), `showing`'s place and `kindsChange` (`notify.ts`), `pick-folders`' folder (`index.ts`: an absolute path, else none), and a Settings row's `rowKey` (a string matching `^[A-Za-z][A-Za-z0-9._-]{0,63}$`) and `rowValue` (plain JSON of at most 65,536 characters, read back as `JSON.parse` of it) (`settings.ts`, [live-state.md](live-state.md), LIVE-25).
 
@@ -54,6 +55,7 @@ A decoder answers `{ value }` or `undefined` when it can't read the value, so `o
 | `device.ts` | `obid-limit-answer` | `handle` | `string`, `safeInteger`, `oneOf('move', 'resume', 'stop')`, `optional(string)` | `{ status: 403, text: '' }` |
 | `live.ts` | `obid-snapshot` | `handle` | none | `null` |
 | `live.ts` | `obid-load` | `handle` | `loadWhat` | `null` |
+| `live.ts` | `obid-profile` | `handle` | `profileId` | `null` |
 | `notify.ts` | `showing` | `on` | the place: an object gives `{ job, conversation }` (non-strings `undefined`), else `null` (never fails) | nothing |
 | `notify.ts` | `opened` | `handle` | none | `null` |
 | `notify.ts` | `notifications` | `handle` | `orUndefined(boolean)` | `null` |
@@ -80,7 +82,7 @@ A decoder answers `{ value }` or `undefined` when it can't read the value, so `o
 
 ## Interfaces and dependencies
 
-- **Renderer ↔ main:** the preload's `window.app` (`src/preload/index.ts`), unchanged: the same channel names, arguments and answers. Since R06-13 it also has `settings` (`local()`, `keep(key, value)`) for `local-settings` and `local-setting` ([live-state.md](live-state.md)), since A00-90 `loginItem(on?)` for `login-item` ([live-state.md](live-state.md)), since R10-06 `spherePolicy()` and `sphereSetPolicy(version)` for `sphere-policy` and `sphere-set-policy` ([sphere-policy.md](sphere-policy.md)), since R06-08 `obid.live` and `obid.load` for `obid-snapshot` and `obid-load` ([live-state.md](live-state.md), LIVE-10), and since A00-91 `renderError(name, message, componentStack)` for `render-error` ([engine.md](engine.md), ENGINE-20).
+- **Renderer ↔ main:** the preload's `window.app` (`src/preload/index.ts`), unchanged: the same channel names, arguments and answers. Since R06-13 it also has `settings` (`local()`, `keep(key, value)`) for `local-settings` and `local-setting` ([live-state.md](live-state.md)), since A00-90 `loginItem(on?)` for `login-item` ([live-state.md](live-state.md)), since R10-06 `spherePolicy()` and `sphereSetPolicy(version)` for `sphere-policy` and `sphere-set-policy` ([sphere-policy.md](sphere-policy.md)), since R06-08 `obid.live` and `obid.load` for `obid-snapshot` and `obid-load` ([live-state.md](live-state.md), LIVE-10), since A00-91 `renderError(name, message, componentStack)` for `render-error` ([engine.md](engine.md), ENGINE-20), and since B00-40 `obid.profile(id)` for `obid-profile` ([profiles.md](profiles.md)).
 - No runner API change (`docs/runner-api.md` is unchanged).
 
 ## Acceptance scenarios

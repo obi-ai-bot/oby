@@ -2,7 +2,8 @@
 //! `home/profiles.json`, never an identity. PROF-1 keeps the registry and `GET /v1/profiles`;
 //! PROF-3a creates and renames profiles, each with its own folder. A request names its profile
 //! with the `Oby-Profile` header ([`root_of`], A00-79): the project routes, and a conversation's
-//! `project`, read that profile's own projects; nothing else is kept per profile yet.
+//! `project`, read that profile's own projects. Its conversations, jobs, helpers, accounts and vault
+//! secrets are its own too ([`Scope`], crate::profile_scope, B00-40).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -56,6 +57,10 @@ struct Saved {
 /// The profiles kept in `home/profiles.json` (0600).
 pub struct Profiles {
     file: PathBuf,
+    /// Which profile each account belongs to, by its id (crate::profile_scope, B00-40).
+    pub accounts: crate::profile_scope::Tags,
+    /// Which profile each vault secret belongs to, by its name.
+    pub secrets: crate::profile_scope::Tags,
     /// `profiles.json` didn't read at `open`: nothing writes over it until obid starts again.
     unreadable: bool,
     saved: Mutex<Saved>,
@@ -98,6 +103,8 @@ impl Profiles {
             }
         }
         Profiles {
+            accounts: crate::profile_scope::Tags::open(home.join("account-profiles.json")),
+            secrets: crate::profile_scope::Tags::open(home.join("vault-profiles.json")),
             file,
             unreadable,
             saved: Mutex::new(saved),
@@ -137,15 +144,7 @@ impl Profiles {
     /// or sent twice is refused, `400`, never the default. The registry's lock goes on return.
     pub(crate) fn root_of(&self, home: &Path, headers: &HeaderMap) -> Result<PathBuf, ApiError> {
         let saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
-        let mut sent = headers.get_all("oby-profile").iter();
-        let (first, twice) = (sent.next(), sent.next().is_some());
-        let named = match first.map(|value| value.to_str()) {
-            None => Named::Nothing,
-            Some(Ok(id)) if !twice && !id.is_empty() => (saved.profiles.iter())
-                .position(|p| p.id == id)
-                .map_or(Named::Unknown, Named::At),
-            Some(_) => Named::Unknown,
-        };
+        let (named, twice) = named(&saved, headers);
         let default_at = saved.profiles.iter().position(|p| p.default);
         let root = match root_for(named, default_at) {
             Root::Home => Some(home.to_path_buf()),
@@ -156,6 +155,46 @@ impl Profiles {
             true => bad("Send one Oby-Profile."),
             false => bad("There's no such profile on this Mac."),
         })
+    }
+
+    /// The profile a request is for (B00-40), as [`Self::root_of`] reads its `Oby-Profile`: none
+    /// is the default profile, and one this Mac doesn't have, empty, not text or sent twice is
+    /// refused, `400`, never the default.
+    pub(crate) fn scope_of(&self, headers: &HeaderMap) -> Result<Scope, ApiError> {
+        let saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
+        let (named, twice) = named(&saved, headers);
+        let default_at = saved.profiles.iter().position(|p| p.default);
+        let at = match (named, default_at) {
+            (Named::At(at), _) => Some(at),
+            (Named::Nothing, at) => at,
+            (Named::Unknown, _) => None,
+        };
+        let refused = || match twice {
+            true => bad("Send one Oby-Profile."),
+            false => bad("There's no such profile on this Mac."),
+        };
+        match at {
+            Some(at) => Ok(Scope::of(&saved.profiles[at])),
+            // A registry with no default answers what was there before profiles.
+            None if named == Named::Nothing => Ok(Scope::before_profiles()),
+            None => Err(refused()),
+        }
+    }
+
+    /// The default profile's scope: what a request naming none, a phone's, a job's own work and
+    /// everything kept before profiles belong to.
+    pub fn default_scope(&self) -> Scope {
+        let saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
+        (saved.profiles.iter().find(|p| p.default)).map_or_else(Scope::before_profiles, Scope::of)
+    }
+
+    /// The scope of the profile `id` (a thing's tag), or the default's for none.
+    pub fn scope_by(&self, id: Option<&str>) -> Option<Scope> {
+        let Some(id) = id.filter(|id| !id.is_empty()) else {
+            return Some(self.default_scope());
+        };
+        let saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
+        saved.profiles.iter().find(|p| p.id == id).map(Scope::of)
     }
 
     /// A new profile, not the default, with its own empty folder under `home` (0700), kept.
@@ -210,6 +249,67 @@ impl Profiles {
         keep(&self.file, &next).map_err(Refused::Unwritten)?;
         *saved = next;
         Ok(profile)
+    }
+}
+
+/// What a request's `Oby-Profile` names in `saved`, and whether it was sent twice.
+fn named(saved: &Saved, headers: &HeaderMap) -> (Named, bool) {
+    let mut sent = headers.get_all("oby-profile").iter();
+    let (first, twice) = (sent.next(), sent.next().is_some());
+    let named = match first.map(|value| value.to_str()) {
+        None => Named::Nothing,
+        Some(Ok(id)) if !twice && !id.is_empty() => (saved.profiles.iter())
+            .position(|p| p.id == id)
+            .map_or(Named::Unknown, Named::At),
+        Some(_) => Named::Unknown,
+    };
+    (named, twice)
+}
+
+/// The profile a request is for, or a thing belongs to (B00-40): its id, and whether it's the
+/// default. A thing kept with no profile (made before profiles, or in the default profile) is the
+/// default's, so an upgrade loses nothing and the default profile's files keep their shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scope {
+    pub id: String,
+    pub default: bool,
+}
+
+impl Scope {
+    fn of(profile: &Profile) -> Scope {
+        Scope {
+            id: profile.id.clone(),
+            default: profile.default,
+        }
+    }
+
+    /// The default profile's, as a test's own `Conversations` has it.
+    #[cfg(test)]
+    pub fn before_profiles_for_tests() -> Scope {
+        Scope::before_profiles()
+    }
+
+    /// A home whose registry has no default: everything is as before profiles.
+    fn before_profiles() -> Scope {
+        Scope {
+            id: String::new(),
+            default: true,
+        }
+    }
+
+    /// Whether a thing kept with the profile `tag` belongs to this profile: none, or empty, is the
+    /// default's.
+    pub fn holds(&self, tag: Option<&str>) -> bool {
+        match tag.filter(|tag| !tag.is_empty()) {
+            None => self.default,
+            Some(tag) => tag == self.id,
+        }
+    }
+
+    /// What a thing made in this profile keeps: none in the default profile, so its record reads as
+    /// one made before profiles; else the profile's id.
+    pub fn tag(&self) -> Option<String> {
+        (!self.default).then(|| self.id.clone())
     }
 }
 

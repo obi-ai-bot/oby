@@ -54,6 +54,7 @@ pub mod permissions;
 pub mod policy;
 pub mod power;
 pub mod process;
+pub mod profile_scope;
 pub mod profiles;
 pub mod projects;
 pub mod providers;
@@ -452,7 +453,8 @@ pub async fn serve(
     stopwatch.lap("sphere");
     let cleared = clear::Cleared::open(&config.home);
     let devices = devices::Devices::open(&config.mac_home);
-    let profiles = profiles::Profiles::open(&config.home);
+    let profiles = std::sync::Arc::new(profiles::Profiles::open(&config.home));
+    profile_scope::register(&config.home, profiles.clone());
     let helpers = helpers::Helpers::open(&config.home);
     let paired = gateway::Gateway::open(&config.mac_home);
     let relay = relay::Relay::open(&config.mac_home);

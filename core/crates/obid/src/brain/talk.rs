@@ -214,9 +214,11 @@ pub fn next(shared: &Shared) -> Option<String> {
     let chosen = chosen.filter(|id| {
         id != AUTO && crate::accounts::find(&shared.config.agents.get(), id).is_some()
     });
+    // A new conversation of the default profile's: one of its accounts (B00-40).
+    let scope = shared.profiles.default_scope();
     accounts(shared, chosen.as_deref(), None, None)
         .into_iter()
-        .next()
+        .find(|(_, account)| shared.profiles.accounts.holds(&scope, &account.id))
         .map(|(_, account)| account.id)
 }
 

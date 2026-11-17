@@ -496,9 +496,18 @@ fn profiles_26_a_project_is_kept_in_its_own_profile() {
 #[test]
 fn profiles_27_a_conversation_joins_only_a_project_of_its_profile() {
     let folder = Folder::new("profiles-27");
-    kept_conversation(&folder.0.join("home"), ONE, json!({}));
+    let home = folder.0.join("home");
+    std::fs::create_dir_all(home.join("profiles").join(B)).unwrap();
+    let registry = json!({"profiles": [
+        {"id": "3f0c2a4e-9b1d-4c8e-a7f2-5d6e8b9c0a1f", "name": "Personal", "color": "#3a5a8c",
+         "default": true},
+        {"id": B, "name": "Acme", "color": "#7a4a8c", "default": false}]});
+    std::fs::write(home.join("profiles.json"), registry.to_string()).unwrap();
+    // ONE is the default profile's; TWO was made in B (PROFILES-33).
+    kept_conversation(&home, ONE, json!({}));
+    kept_conversation(&home, TWO, json!({"profile": B}));
     let obid = harness_obid(&folder);
-    let (_, b) = two_profiles(&obid);
+    let b = B.to_owned();
     let project = made_in(&obid, Some(&b), "Acme app");
     let before = conversation(&obid, ONE);
     let path = format!("/v1/conversations/{ONE}");
@@ -509,10 +518,13 @@ fn profiles_27_a_conversation_joins_only_a_project_of_its_profile() {
     assert_eq!(conversation(&obid, ONE), before);
     assert_eq!(before["project"], Value::Null);
 
+    let path = format!("/v1/conversations/{TWO}");
     let joined = as_profile(&obid, Some(&b), "PATCH", &path, Some(&put));
     assert_eq!(joined.status, 200, "{}", joined.text);
     assert_eq!(joined.body["project"], project["id"]);
-    assert_eq!(conversation(&obid, ONE)["project"], project["id"]);
+    let listed = as_profile(&obid, Some(&b), "GET", "/v1/conversations", None);
+    assert_eq!(listed.body[0]["id"], TWO, "{}", listed.text);
+    assert_eq!(listed.body[0]["project"], project["id"]);
 
     let plan = json!({"said": "tidy up", "new": true, "project": project["id"]});
     let started = as_profile(&obid, None, "POST", "/v1/plans", Some(&plan));

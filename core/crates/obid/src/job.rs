@@ -510,6 +510,10 @@ pub struct Job {
     /// job's (TASKCONV-26). It keeps the id when that conversation is deleted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
+    /// The profile it was made in (crate::profile_scope, B00-40), set once ([`Job::start_in`]):
+    /// none is the default's, as is every job made before profiles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     /// The project its conversation was in when it started (crate::projects, PROJECTS-13), set
     /// once ([`Job::start_in`]) and never changed; none when that conversation was in no project,
     /// or there was none.
@@ -1025,8 +1029,16 @@ pub struct OwnersWords {
 
 impl Job {
     /// It starts in `conversation`, taking the project that conversation is in now, as kept in
-    /// `home` (PROJECTS-13): the only place a job's project is set.
-    pub fn start_in(&mut self, home: &std::path::Path, conversation: Option<String>) {
+    /// `home` (PROJECTS-13): the only place a job's project is set. It's made in `profile`, else
+    /// that conversation's (B00-40): the only place a job's profile is set.
+    pub fn start_in(
+        &mut self,
+        home: &std::path::Path,
+        profile: Option<String>,
+        conversation: Option<String>,
+    ) {
+        let kept = |id: &str| crate::conversation::kept_profile(home, id);
+        self.profile = profile.or_else(|| conversation.as_deref().and_then(kept));
         self.project = conversation
             .as_deref()
             .and_then(|id| crate::conversation::kept_project(home, id));
@@ -1714,6 +1726,10 @@ impl Job {
             "revision": self.revision,
         });
         value["resumeCommand"] = json!(self.resume_command());
+        // Only for a profile that isn't the default (B00-40).
+        if let Some(profile) = &self.profile {
+            value["profile"] = json!(profile);
+        }
         if let Some(activity) = &self.activity {
             value["activity"] = activity.clone();
         }
@@ -2298,7 +2314,7 @@ mod tests {
         std::fs::write(home.join("x.json"), json!({"project": "p"}).to_string()).unwrap();
         let started = |conversation: Option<&str>| {
             let mut job = job();
-            job.start_in(&home, conversation.map(str::to_owned));
+            job.start_in(&home, None, conversation.map(str::to_owned));
             assert_eq!(job.conversation.as_deref(), conversation);
             job.project
         };
