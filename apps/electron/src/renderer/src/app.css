@@ -175,6 +175,8 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .asks.is-empty { height: 0 !important; margin: -8px 0; }
 .ask-card { position: relative; z-index: 3; padding: 16px 18px; border-radius: 22px; background: var(--chip); text-align: left; user-select: text; }
 .ask-card .tc-ask { margin-top: 12px; padding-top: 12px; }
+/* a GitHub offer's card starts its work when clicked anywhere but its buttons (GITHUBWORK-10) */
+.ask-card.is-startable { cursor: pointer; }
 /* Home keeps it short: what happened in 3 lines at most, the command or plan in
    2 (it scrolls); the task’s page has all of it. Oby's escalation shows whole,
    scrolling inside the card (TASKS-17) */
