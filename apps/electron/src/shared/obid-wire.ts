@@ -177,6 +177,9 @@ export type LimitDecision = {
 // attachments: on your turn, the names of the files that went with the words (obid only)
 // relayed: Oby's turn about another Oby. asks: the cards of questions to other Obys it tells of (AskMark)
 export type Turn = { id: string; who: 'user' | 'oby'; text: string; at: string; jobs: string[]; conversation?: string; ended?: boolean; routine?: unknown; attachments?: string[]; relayed?: boolean; asks?: AskMark[];
+  // obid only (docs/contracts/deliveries.md): where the owner's words stand. status: an open string
+  // (queued, starting, running, answered, failed, interrupted, cancelled); read one you don't know as nothing
+  delivery?: { status: string; by?: string; why?: string; error?: string };
   // one more each time obid sends it changed, as a job's: the higher is the newer; none from an older obid
   revision?: number };
 // A question to another Oby as obid says it stands (docs/contracts/ask-an-oby.md): one per `exchange`, the
@@ -327,7 +330,15 @@ export type TetrixTarget = { preset: string } | { url: string };
 export type ConnectorSeen = { name: string; status: string };
 export type Connectors = { claude: { seenAt: string; servers: ConnectorSeen[] } | null };
 
-// "POST /v1/plans"
+// "POST /v1/plans"'s `defaults` (obid only, composer-v1; docs/contracts/composer.md): the message box's
+// chips, the mode, tool, model and effort of the jobs the words start. A key left out is the owner's usual
+export type PlanDefaults = { mode?: string; agent?: string; model?: string; effort?: string };
+// "GET /v1/conversations/{id}/files" (obid only, composer-v1): a file of the conversation's folders,
+// its path from the folder
+export type ConversationFile = { folder: string; path: string };
+// "POST /v1/plans/cancel" (dropped: obid only, composer-v1, with `turn`: the words it dropped, none
+// when a turn had taken them already)
+export type Cancelled = { cancelled: true; dropped?: string[] };
 export type Question = { text: string; options: string[]; recommended: number | null };
 // obid only (#858): the agent's question on its job's permission (Claude Code's AskUserQuestion,
 // Codex's and Cursor's own as the same shape): header and a description left out when empty;

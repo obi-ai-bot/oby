@@ -412,7 +412,7 @@ mod tests {
                 publish_step, outgoing, pull_request, pull_request_error, review_error, reviewing,
                 review, approvals, review_of, security_paths, no_reviewer, review_failed,
                 summaries, issue, agent_version, check, check_asked, checked, model, effort,
-                model_from_account, complex, issue_unread, notes, files, attachments,
+                model_from_account, effort_named, complex, issue_unread, notes, files, attachments,
                 attachments_gone, start_commit, checked_head, mode, cut, after_pr_rebase,
                 checks_rounds, changes_rounds, crash_resumes, recovery, worktree, obi,
                 conversation, profile, project, turn, review_result, approvable, obi_request, permission,

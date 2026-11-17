@@ -148,6 +148,17 @@ function offersOf(s: Live, c?: string, items = s.inbox): Offer[] {
   }));
 }
 
+// The owner's words waiting in a conversation for the turn under way there (obid's delivery,
+// docs/contracts/deliveries.md): queued behind words a turn has taken (starting or running). Words
+// queued with nothing under way are about to be taken, and show in the conversation as ever
+// (COMPOSER-8). An obid with no delivery: none.
+export function waitingWords(turns: readonly Turn[]): Turn[] {
+  const mine = turns.filter((t) => t.who === 'user');
+  let taken = -1;
+  mine.forEach((t, i) => { if (t.delivery?.status === 'starting' || t.delivery?.status === 'running') taken = i; });
+  return taken < 0 ? [] : mine.slice(taken + 1).filter((t) => t.delivery?.status === 'queued');
+}
+
 export function chatOf(s: Live, c: Conversation): Chat {
   // a task's card under the answer that started it, not again under each that mentions it. A
   // job your words started or were offered (its turn), and what Oby offered for them (the offer's
@@ -172,7 +183,9 @@ export function chatOf(s: Live, c: Conversation): Chat {
     const kept = byTurn.filter((j) => j.turn === asked && !carded.has(j.id) && carded.add(j.id)).map((j) => j.id);
     if (kept.length && askedWords) askedWords.jobs = [...(askedWords.jobs ?? []), ...kept];
   };
-  const turns = (s.turns[c.id] ?? []).filter((t) => t.id !== p?.turn);
+  // words waiting for the turn under way show over the box (COMPOSER-8), and words cancelled there nowhere (COMPOSER-9)
+  const queued = waitingWords(s.turns[c.id] ?? []);
+  const turns = (s.turns[c.id] ?? []).filter((t) => t.id !== p?.turn && t.delivery?.status !== 'cancelled' && !queued.includes(t));
   // and so do the last words once no answer to them is on its way (a Stop, #1788), even under a
   // report later: anything else under way (the next words, a supervisor's turn) isn't for them
   const lastWords = turns.map((t) => t.who).lastIndexOf('user');
@@ -217,6 +230,7 @@ export function chatOf(s: Live, c: Conversation): Chat {
   return {
     id: s.alias[c.id] ?? c.id, title: c.title, pinned: c.pinned, at: minutesAgo(c.lastActivity), said, fromObys: c.fromObys, helper: c.helper, talkAccount: c.talkAccount, talkedOn: c.talkedOn, movedOff: c.movedOff,
     project: c.project, about: tasksLine(s, c.tasks),
+    ...(queued.length ? { queued: queued.map((t) => ({ id: t.id, text: t.text, files: t.attachments ?? [] })) } : {}),
     typing: c.id in s.working, step: p || words ? undefined : s.working[c.id],
     waiting: q ? { question: q.text, options: q.options } : undefined,
     // waiting on you with no task to say so (a task's says it itself, Sidebar.tsx): Oby's question back,
@@ -825,7 +839,7 @@ export async function openConversation(shown: string) {
 // (POST /v1/attachments), and the words carry an id of their own: sent again while obid doesn't
 // answer, obid takes them once, files and tasks included.
 let made = 0;
-export function ask(said: string, shown?: string, repo?: string, folders?: string[], att?: Pick<Attachments, 'files' | 'jobs' | 'project'>): string | undefined {
+export function ask(said: string, shown?: string, repo?: string, folders?: string[], att?: Pick<Attachments, 'files' | 'jobs' | 'project' | 'defaults'>): string | undefined {
   const files = att?.files?.filter((f) => f.path) ?? [], jobs = att?.jobs ?? [];
   if (!said.trim() && !files.length && !jobs.length) return;
   const id = shown ?? `new:${++made}`;
@@ -850,7 +864,9 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
       // the project chosen for it, once obid has projects (docs/api/projects.md)
       const project = !c && takesProjects() ? att?.project : undefined;
       const a = await sent(() => api.plan(q ? q.said : words, q ? { question: q.text, option: words } : undefined, c ? { conversation: c } : { new: true },
-        has(state.status, 'folders-v1') && !c ? folders : undefined, { id: turn, attachments: paths, jobs, project }));
+        has(state.status, 'folders-v1') && !c ? folders : undefined, { id: turn, attachments: paths, jobs, project,
+          // the box's chips, once obid takes them (COMPOSER-3); an answer to Oby's question starts no job of its own
+          ...(has(state.status, 'composer-v1') && !q ? { defaults: att?.defaults } : {}) }));
       planned = true;
       const where = a.conversation ?? c;
       // Oby's turn is in a reply or a question (its event may land after this answer, and the card
@@ -944,6 +960,17 @@ export async function pinConversation(shown: string, pinned: boolean) {
   try { const c = await api.editConversation(realId(shown), { pinned }); take({ kind: 'conversation', conversation: c }); } catch (e) { say(e); }
 }
 // Stop (CHATFIRST-33): Oby's turn event ends the working line, as any answer's does
+// One message waiting for the turn under way, cancelled alone (COMPOSER-9 and 10): obid drops it
+// and the turn goes on. True when obid dropped it; false when a turn had taken it already (it shows
+// in the conversation), or obid refused, which it says
+export async function cancelWords(shown: string, turn: string): Promise<boolean> {
+  try { return !!(await api.cancelWords(realId(shown), turn)).dropped?.includes(turn); } catch (e) { say(e); return false; }
+}
+// The files of a conversation's folders for an @ (COMPOSER-14): none from an obid without them
+export async function conversationFiles(shown: string, typed: string) {
+  if (!has(state.status, 'composer-v1')) return [];
+  try { return (await api.conversationFiles(realId(shown), typed)).files; } catch { return []; }
+}
 export async function stopConversation(shown: string) {
   try { await api.stopConversation(realId(shown)); } catch (e) { say(e); }
 }

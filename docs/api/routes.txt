@@ -31,6 +31,7 @@ POST /v1/conversation/stop
 GET /v1/conversations
 DELETE /v1/conversations/{id}
 PATCH /v1/conversations/{id}
+GET /v1/conversations/{id}/files
 POST /v1/devices
 DELETE /v1/devices/{id}
 GET /v1/devices/{id}/pairing

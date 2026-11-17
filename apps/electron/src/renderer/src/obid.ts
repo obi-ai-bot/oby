@@ -16,7 +16,7 @@ import type {
   InboxItem,
   Job,
   LimitDecision,
-  PlanAnswer,
+  PlanAnswer, PlanDefaults, ConversationFile, Cancelled,
   Profile,
   Project,
   Repo,
@@ -147,12 +147,17 @@ export const api = {
   // words to Oby: in a conversation, or starting a new one. with: the words' id (sent again with
   // the same id, nothing happens twice), the files uploaded for them and the tasks attached
   plan: (said: string, answer: { question: string; option: string } | undefined, where: { conversation: string } | { new: true }, folders?: string[],
-    with_: { id?: string; attachments?: string[]; jobs?: string[]; project?: string } = {}) =>
+    with_: { id?: string; attachments?: string[]; jobs?: string[]; project?: string; defaults?: PlanDefaults } = {}) =>
     call<PlanAnswer>('POST', '/v1/plans', {
       said, ...(answer ? { answer } : {}), ...where, ...(folders?.length ? { folders } : {}), ...(with_.id ? { id: with_.id } : {}),
       ...(with_.attachments?.length ? { attachments: with_.attachments } : {}), ...(with_.jobs?.length ? { jobs: with_.jobs } : {}),
       ...(with_.project ? { project: with_.project } : {}),
+      ...(with_.defaults && Object.keys(with_.defaults).length ? { defaults: with_.defaults } : {}),
     }),
+  // one message waiting in a conversation, dropped alone (composer-v1, COMPOSER-9 and 10)
+  cancelWords: (conversation: string, turn: string) => call<Cancelled>('POST', '/v1/plans/cancel', { conversation, turn }),
+  // the files of a conversation's folders matching what's typed after an @ (composer-v1, COMPOSER-14)
+  conversationFiles: (c: string, typed: string) => call<{ files: ConversationFile[] }>('GET', `/v1/conversations/${id(c)}/files${q({ q: typed })}`),
   // a file picked or pasted, kept by obid for the words it goes with: its path there; one over
   // obid's 25 MB isn't read at all, and says so in obid's words
   upload: async (file: File, name: string) => {

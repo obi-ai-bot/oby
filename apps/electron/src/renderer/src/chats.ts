@@ -25,7 +25,9 @@ type Ask = { question: string; options: string[] };
 // profile: the mock's only, the profile it's in (none: the default; profiles.ts)
 // helper: a helper's own conversation, its id (helpers.ts): under Agents, never among the chats
 // project: the project it's in, or null (projects.ts): its group in the side panel
-export type Chat = { id: string; title: string; said: Message[]; typing?: boolean; step?: string; waiting?: Ask; needs?: boolean; pinned?: boolean; fromObys?: boolean; at?: number; about?: string; local?: boolean; talkAccount?: string | null; talkedOn?: string | null; movedOff?: string | null; profile?: string; helper?: string; project?: string | null };
+// queued: the owner's words waiting for the turn under way (obid's, COMPOSER-8), shown over the box
+export type Queued = { id: string; text: string; files: string[] };
+export type Chat = { id: string; title: string; said: Message[]; queued?: Queued[]; typing?: boolean; step?: string; waiting?: Ask; needs?: boolean; pinned?: boolean; fromObys?: boolean; at?: number; about?: string; local?: boolean; talkAccount?: string | null; talkedOn?: string | null; movedOff?: string | null; profile?: string; helper?: string; project?: string | null };
 
 
 // The mock's past conversations: your log with Oby (mock.ts), a new one each

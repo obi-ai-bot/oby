@@ -895,6 +895,8 @@ fn new_job(job: &Map<String, Value>) -> Result<NewJob, String> {
         rounds: rounds.map(|r| u32::try_from(r).unwrap_or(u32::MAX)),
         check: text("check")?,
         model: text("model")?,
+        // The chips' effort comes only with words to Oby (brain::defaults, COMPOSER-5).
+        effort: None,
         complex: false,
         files,
         attachments: None,
