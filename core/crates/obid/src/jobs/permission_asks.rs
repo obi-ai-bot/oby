@@ -1122,6 +1122,15 @@ impl Jobs {
             } else {
                 job.permission = next.clone();
             }
+            // Asked with `oby_ask_owner` in a turn still open (PERMISSIONS-23): obid ends that turn
+            // as a shutdown does, its session kept, and the answer starts the next once its worker
+            // is gone ([`Jobs::schedule`] passes over a job with a worker).
+            if picked_up
+                && state.asked.remove(id).is_some()
+                && let Some(worker) = state.workers.get(id)
+            {
+                let _ = worker.send(Signal::Shutdown);
+            }
             (next, said, picked_up)
         };
         if let Some(qa) = qa {
@@ -1143,8 +1152,11 @@ impl Jobs {
     }
 
     /// Job `id`'s agent asks the owner with `oby_ask_owner` (a Codex or Cursor job): what the tool
-    /// answers at once. The question is asked once its turn ends ([`End::Asked`]); it can only ask,
-    /// never answer or allow anything. A second one in the same turn takes the first's place.
+    /// answers at once. The question shows the moment the call comes (PERMISSIONS-22), while its
+    /// turn may still be open: an answer then ends that turn and resumes its session with it
+    /// (PERMISSIONS-23, [`Jobs::answer_kept_question`]); a turn that ends first waits for it with no
+    /// agent ([`End::Asked`]). It can only ask, never answer or allow anything. A second one in the
+    /// same turn takes the first's place.
     pub fn ask_owner(&self, id: &str, arguments: &Value) -> Result<&'static str, String> {
         let job = self.get(id).ok_or("The job is gone.")?;
         if !asks_through_oby(&job) {
@@ -1153,10 +1165,44 @@ impl Jobs {
         let call = permissions::ask_owner_call(arguments).ok_or(
             "Ask one question, its whole text in `question` (up to 1,000 characters), with `options` (each a `label`, and a `description` if it helps) when there are a few clear choices.",
         )?;
-        self.lock().asked.insert(id.to_owned(), call);
+        self.lock().asked.insert(id.to_owned(), call.clone());
+        self.show_asked(id, call);
         Ok(
             "Asked the owner. End your turn now with a one-line summary; Oby will resume this session with the answer.",
         )
+    }
+
+    /// Job `id` shows what its agent asked with `oby_ask_owner` now, its turn still open
+    /// (PERMISSIONS-22): the card, its inbox item and the step, as a question its ended turn waits
+    /// on shows ([`Jobs::wait_for_answer`]). A live prompt the job shows stays first: the question
+    /// shows when its turn ends. An earlier question of the same turn is settled unanswered.
+    fn show_asked(&self, id: &str, call: permissions::QuestionCall) {
+        if self.lock().asks.get(id).is_some_and(|a| !a.is_empty()) {
+            return;
+        }
+        let Some(job) = self.get(id).filter(|j| j.status == Status::Running) else {
+            return;
+        };
+        let earlier = job
+            .permission
+            .as_ref()
+            .filter(|p| p.is_question() && job.question_call.as_ref().is_some_and(|c| c.ended_turn))
+            .map(|p| p.id.clone());
+        let card = permissions::question_card(&call.questions, &permissions::new_id(), 0);
+        // The inbox has it before the job shows it, as [`Jobs::show`] does.
+        self.note(PermissionNote::Waiting(Box::new(job), card.clone()));
+        self.update(id, |job| {
+            job.permission = Some(card);
+            job.question_call = Some(call);
+            job.step = codex_plan::ASKED_STEP.into();
+        });
+        if let Some(earlier) = earlier {
+            self.note(PermissionNote::Settled {
+                job: id.to_owned(),
+                permission: earlier,
+                answer: None,
+            });
+        }
     }
 
     /// Changes how much the job asks, from now on: the prompts waiting now that the new mode
@@ -1179,8 +1225,10 @@ impl Jobs {
     /// The job's waiting prompts go: nobody will answer them (it was stopped, or ended), a
     /// question a restart kept among them. obid shutting down (`shutdown`) keeps the question the
     /// job shows, and its inbox item, for the next start to keep waiting (#858), and so does a
-    /// worker ending for [`Jobs::park`] with the call it parked the job for.
-    pub(super) fn drop_asks(&self, id: &str, shutdown: bool) {
+    /// worker ending for [`Jobs::park`] with the call it parked the job for, and a run that ended
+    /// on the owner's answer (`asked`, [`End::Asked`]) with the `oby_ask_owner` question it showed
+    /// while its turn was open (PERMISSIONS-22): the same card, never a new one.
+    pub(super) fn drop_asks(&self, id: &str, shutdown: bool, asked: bool) {
         let dropped = {
             let mut state = self.lock();
             // What its agent asked with `oby_ask_owner` in a turn that didn't end well goes too.
@@ -1196,9 +1244,13 @@ impl Jobs {
             .as_ref()
             .and_then(|j| j.parked.as_ref())
             .is_some_and(|p| !p.answered);
-        let kept = shown
+        let asked_shown = job
             .as_ref()
-            .filter(|p| shutdown && (p.is_question() || parked));
+            .and_then(|j| j.question_call.as_ref())
+            .is_some_and(|c| c.ended_turn);
+        let kept = shown.as_ref().filter(|p| {
+            shutdown && (p.is_question() || parked) || asked && asked_shown && p.is_question()
+        });
         let mut settled: Vec<&str> = dropped.iter().map(|a| a.permission.id.as_str()).collect();
         // A question a restart kept has no ask of its own.
         if let Some(p) = &shown
@@ -1218,11 +1270,14 @@ impl Jobs {
         }
         // It ended (a shutdown isn't an end): a parked call the owner answered goes.
         let ended = !shutdown && job.is_some_and(|j| j.parked.is_some());
-        if shown.is_some() && kept.is_none() || ended {
+        let clear = shown.is_some() && kept.is_none();
+        if clear || ended {
             self.update(id, |job| {
-                job.permission = None;
-                job.question_call = None;
-                if !shutdown {
+                if clear {
+                    job.permission = None;
+                    job.question_call = None;
+                }
+                if ended {
                     job.parked = None;
                 }
             });

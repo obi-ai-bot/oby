@@ -2665,7 +2665,7 @@ impl Jobs {
         let publishing = self.lock().publishing.remove(id);
         let _ = std::fs::remove_file(self.temp_path(id).join(MCP_CONFIG_FILE));
         forget_login_secrets(&self.login_path(id));
-        self.drop_asks(id, false);
+        self.drop_asks(id, false, false);
         // It had ended (a panic in what comes after its run): it stays as it ended, the bug noted.
         if self.get(id).is_some_and(|j| !j.status.is_active()) {
             self.update(id, |job| {
@@ -2780,7 +2780,7 @@ impl Jobs {
             }
             None => false,
         };
-        self.drop_asks(id, false);
+        self.drop_asks(id, false, false);
         let stopped = self.update(id, |job| {
             job.status = Status::Stopped;
             job.stopped_by = Some(by);
@@ -6172,7 +6172,7 @@ fn standing_rules(job: &Job) -> Option<String> {
         lines.push(format!("If you can't commit, say why in your summary's first line: a {} job that ends with no commits counts as nothing committed.", job.kind));
     }
     if asks_goal_line(job) {
-        lines.push("End your summary with a last line that is exactly `GOAL MET` when the user's goal is fully met, or `GOAL NOT MET: <what's left>` when it isn't.".into());
+        lines.push("End your summary with a last line that is exactly `GOAL MET` when the user's goal is fully met, or `GOAL NOT MET: <what's left>` when it isn't. Pushing, the pull request and linking it to its issue are obid's, done after you end with `GOAL MET`, even when the task asks for them: they are never what's left.".into());
     }
     lines.push("To show the user something to look at (a page, a document, a chart, an image, a PDF), put it in .obi/artifacts/: one file, or one folder with an index.html, per thing. obid shows each one when the job ends; keep secrets out, or it shows none of it.".into());
     // Claude Code's own background tasks wake it when they end, and obid waits for them
@@ -8382,6 +8382,29 @@ mod tests {
         );
         job.kind = "review".into();
         assert!(!standing_rules(&job).unwrap().contains("GOAL MET"));
+    }
+
+    /// ISSUETASK-6: a task that asks for a pull request (as the brain writes an issue's: "…and open
+    /// a pull request that references the issue") isn't told two things: its rules say the push,
+    /// the pull request and its link to the issue are obid's, after `GOAL MET`, never what's left.
+    #[test]
+    fn issuetask_6_the_pull_request_is_never_the_agents_goal() {
+        let mut job = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "build".into(),
+            "Resolve issue #6 as described in the issue, and open a pull request that references the issue.".into(),
+            "codex".into(),
+            "default".into(),
+        );
+        job.issue = Some(6);
+        let rules = standing_rules(&job).unwrap();
+        assert!(rules.contains("`GOAL NOT MET: <what's left>`"), "{rules}");
+        assert!(
+            rules.contains("Pushing, the pull request and linking it to its issue are obid's, done after you end with `GOAL MET`, even when the task asks for them: they are never what's left."),
+            "{rules}"
+        );
+        assert!(rules.contains("Don't push, open pull requests"), "{rules}");
     }
 
     /// A follow-up starts from the first job's unmerged work: on its branch while its pull request
@@ -11400,7 +11423,7 @@ mod tests {
         assert_eq!(jobs.lock().workers.len(), 1);
 
         // Its worker ends, as `work` ends it: only now does the agent's wait let go.
-        jobs.drop_asks("p", true);
+        jobs.drop_asks("p", true, false);
         assert!(matches!(reply.try_recv(), Err(TryRecvError::Closed)));
         let parked = jobs.get("p").unwrap().parked.unwrap();
         assert!(parked.answered && parked.allowed);
@@ -13359,7 +13382,7 @@ mod tests {
         let Ruling::Ask(dropped) = ask() else {
             panic!("the question went through by itself");
         };
-        jobs.drop_asks("j", false);
+        jobs.drop_asks("j", false, false);
         assert!(dropped.await.is_err());
         assert!(jobs.get("j").unwrap().permission.is_none());
         // A call with no question to ask is refused at once.
