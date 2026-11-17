@@ -336,7 +336,7 @@ function MockRemote() {
 // session: the 5-hour window's use (null: none reported) and when it starts over; weekly: whether
 // used is the week's
 // chatgpt: signed in with Continue with ChatGPT (docs/contracts/chatgpt-sign-in.md)
-export type Account = { chatgpt?: boolean; background?: boolean; signingIn?: boolean; id: string; agent: Agent | (string & {}); name: string; payer: string; who?: string; used: number | null; resets: string; plan?: Plan; signedIn?: boolean; label?: string | null; session?: number | null; sessionResets?: string | null; weekly?: boolean; full?: boolean; models?: { id: string; name: string }[]; modelsRead?: boolean; cantRun?: string };
+export type Account = { chatgpt?: boolean; background?: boolean; signingIn?: boolean; id: string; agent: Agent | (string & {}); name: string; payer: string; who?: string; used: number | null; resets: string; plan?: Plan; signedIn?: boolean; label?: string | null; session?: number | null; sessionResets?: string | null; weekly?: boolean; full?: boolean; fullTill?: string | null; models?: { id: string; name: string }[]; modelsRead?: boolean; cantRun?: string };
 // how full an account (or an agent) is: past 80% yellow, past 90% red
 export const fullness = (used: number) => (used > 90 ? 'is-over' : used > 80 ? 'is-high' : '');
 // what a card's bar shows: its 5-hour session, else its week
@@ -349,6 +349,9 @@ export const weekWords = (a: Account) => (a.weekly && a.used != null ? `This wee
   : a.weekly === false && a.session != null ? 'No weekly use reported yet' : a.resets);
 // a reset this week by its day; further off (a monthly plan's), by its date
 const resetDay = (at: string, now: number) => new Date(at).toLocaleDateString([], Date.parse(at) - now < 7 * 86_400_000 ? { weekday: 'long' } : { month: 'short', day: 'numeric' });
+// when a full account takes work again: its time today, else its day and time
+const fullWords = (at: string, now: number) => new Date(at).toLocaleString([], Date.parse(at) - now < 86_400_000 && new Date(at).getDate() === new Date(now).getDate()
+  ? { hour: 'numeric', minute: '2-digit' } : { weekday: 'short', hour: 'numeric', minute: '2-digit' });
 // an account as obid's status says it (docs/contracts/usage.md, USAGE-1 and USAGE-6): its week's
 // share (else its session's), its 5-hour session (signed in only; a session past its reset reads
 // 0 with no week, and with one isn't shown) and when it starts over, and what to say when there's no figure ("No usage" for Cursor, whose
@@ -359,18 +362,22 @@ export function accountRow(a: Status['accounts'][number], now: number): Account 
   const used = a.sevenDay ?? (ultra ? null : a.fiveHour);
   const over = !!a.fiveHourResets && Date.parse(a.fiveHourResets) <= now;
   // a session that ended says nothing beside a week (an old reading, or a plan with no 5-hour window): the week is what's left
+  // obid holds it full (its `fullUntil` ahead), whatever its tool: a ChatGPT login or any other (USAGE-14)
+  const full = a.signedIn && !!a.fullUntil && Date.parse(a.fullUntil) > now;
   const session = ultra || !a.signedIn || a.fiveHour == null ? null : over ? (a.sevenDay != null ? null : 0) : Math.round(a.fiveHour * 100);
   return {
     id: a.id, agent: a.agent, name: a.name, payer: a.payer ?? 'You', who: [a.email, a.org, a.plan && a.plan[0].toUpperCase() + a.plan.slice(1)].filter(Boolean).join(' · ') || undefined, signedIn: a.signedIn, label: a.label ?? null, used: used == null ? null : Math.round(used * 100),
     chatgpt: a.login === 'chatgpt',
     background: a.backgroundConsent === true,
     signingIn: a.signingIn,
-    resets: !a.signedIn ? a.label ?? 'Not signed in' : a.login === 'chatgpt' && a.fullUntil ? LIMIT_REACHED : used == null ? (a.agent === 'cursor' ? 'No usage' : 'No use reported yet')
+    resets: !a.signedIn ? a.label ?? 'Not signed in' : a.login === 'chatgpt' && full ? LIMIT_REACHED : used == null ? (a.agent === 'cursor' ? 'No usage' : 'No use reported yet')
       : a.sevenDayResets ? `Resets ${resetDay(a.sevenDayResets, now)}` : 'No reset reported',
     session,
     sessionResets: session != null && !over && a.fiveHourResets ? new Date(a.fiveHourResets).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null,
     weekly: a.sevenDay != null && a.agent !== 'cursor',
-    full: !!a.fullUntil && Date.parse(a.fullUntil) > now,
+    full,
+    // when obid lets it take work again, in the Mac's time (USAGE-14)
+    fullTill: full ? fullWords(a.fullUntil!, now) : null,
     models: a.models,
     modelsRead: a.modelsRead,
     cantRun: a.cantRun,
@@ -904,6 +911,8 @@ export function Agents() {
               </span>
               {x.who && <span className="set-about">{x.who}</span>}
               {x.chatgpt && !out && <span className="set-about">{x.full ? LIMIT_REACHED : USING_PLAN} · <ManageUsage /></span>}
+              {/* any other tool's account obid holds full says so too, with when it takes work again (USAGE-14) */}
+              {x.full && !x.chatgpt && !out && !sign && <span className="set-about set-problem">{`${LIMIT_REACHED}${x.fullTill ? ` · until ${x.fullTill}` : ''}`}</span>}
               {sign
                 ? <span className="set-about">{sign === 'opening' ? `Opening ${tool}’s sign-in page` : sign.code ? `Signing in to ${tool}` : `Finish on ${tool}’s sign-in page${sign.userCode ? ` · enter ${sign.userCode}` : ''}`}</span>
                 : out ? <span className="set-about">{x.label ?? 'Not signed in'}{own && !x.label ? `: sign in with ${tool} itself on this Mac` : ''}</span>
