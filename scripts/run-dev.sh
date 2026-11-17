@@ -177,6 +177,7 @@ say "Building the app"
 npm run build --silent
 [[ -f native/window-style/build/Release/window_style.node ]] || npm run build:native --silent
 say "Packaging Oby.app"
+mkdir -p dist
 signing=(-c.mac.identity="$sign_name")
 [[ "$sign_name" == - ]] || signing=(-c.mac.identity="${sign_name#*: }")
 CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac dir "--$arch" --publish never "${signing[@]}" > dist/electron-builder.log 2>&1 \
