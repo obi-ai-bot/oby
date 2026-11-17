@@ -240,20 +240,20 @@ if (( scratch )); then open -n "$dest"; else open "$dest"; fi
 # 6. obid answers, built from the same commit
 token=${home:-$HOME/Library/Application Support/Oby/Runner}/api-token
 say "Waiting for obid on 127.0.0.1:$port"
-status=""
+answer=""
 for i in {1..240}; do
   if [[ -r "$token" ]]; then
     # the token goes in a header read from a pipe, never an argument
-    status=$(curl -q -fsS --max-time 2 -H @<(printf 'Authorization: Bearer %s\n' "$(<"$token")") "http://127.0.0.1:$port/v1/status" 2> /dev/null) && break
+    answer=$(curl -q -fsS --max-time 2 -H @<(printf 'Authorization: Bearer %s\n' "$(<"$token")") "http://127.0.0.1:$port/v1/status" 2> /dev/null) && break
   fi
-  status=""
+  answer=""
   sleep 0.5
 done
-if [[ -z "$status" ]]; then
+if [[ -z "$answer" ]]; then
   (( scratch )) && die "obid doesn't answer on 127.0.0.1:$port: ${home:h}/obid.log says why"
   die "obid doesn't answer on 127.0.0.1:$port. If Oby asks, turn it on in System Settings › General › Login Items; ~/Library/Logs/obid.log says why"
 fi
-engine=$(print -r -- "$status" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).runner?.commit??""))')
+engine=$(print -r -- "$answer" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).runner?.commit??""))')
 say "obid answers on 127.0.0.1:$port"
 print -r -- "Oby.app built from: $sha"
 print -r -- "obid built from:    ${engine:-(it doesn't say: an obid older than this script)}"
