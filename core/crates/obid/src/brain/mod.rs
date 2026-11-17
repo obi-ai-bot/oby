@@ -290,6 +290,7 @@ pub async fn plan(
     };
     // The turn goes on by itself: a client that stops waiting can't be told from a slow one, so
     // what the plan does still happens, and is kept (docs/runner-api.md, `POST /v1/plans`).
+    let own = words.turn.clone();
     let turn = tokio::spawn(async move {
         let conversation = begun.conversation;
         // One answer at a time in a conversation: words said while Oby answers wait for that turn
@@ -339,6 +340,16 @@ pub async fn plan(
         let (talk, details) = (answered.talk, answered.details);
         let answer = respond(&shared, &conversation, talk, details, recap, made);
         deliver(change);
+        // These words were cancelled on their own while they waited (COMPOSER-11): their waiter
+        // still answers the words before them, whose own requests answered none, but its request
+        // answers none too; the answer is Oby's turn in the conversation.
+        if !next.turns.contains(&own) {
+            return Ok((
+                StatusCode::OK,
+                axum::Json(json!({"kind": "none", "jobs": [], "drafts": [], "conversation": conversation})),
+            )
+                .into_response());
+        }
         answer
     });
     turn.await.map_err(|_| {

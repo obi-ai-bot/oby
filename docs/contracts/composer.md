@@ -27,7 +27,7 @@ The business behavior contract for what the message box takes besides typing, do
 ### Words that wait (COMPOSER-8 to 11)
 
 - Words sent while a turn is under way in a conversation wait for it (one answer at a time). Every waiting message, as obid reports it (`delivery.status` `queued` behind words a turn has taken), shows as a row over the box (its words, "Waiting", Edit and Cancel), not in the conversation; a turn taking them puts them in the conversation.
-- **Cancel** sends `POST /v1/plans/cancel` with the conversation and the words' `turn`: obid drops those words alone (their request answers `none`, they read `cancelled`), and the turn under way and other waiting words go on. A cancelled message shows nowhere in the conversation.
+- **Cancel** sends `POST /v1/plans/cancel` with the conversation and the words' `turn`: obid drops those words alone (their request answers `none`, they read `cancelled`), and the turn under way and other waiting words go on; the words left are answered as Oby's turn in the conversation. A cancelled message shows nowhere in the conversation.
 - **Edit** cancels them the same way, then puts their words back in the box, before anything typed there. When a turn took them first (`dropped` empty), nothing changes: they're in the conversation.
 
 ### Stop (COMPOSER-12)

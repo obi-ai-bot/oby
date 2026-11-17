@@ -3264,10 +3264,15 @@ fn composer_9_one_waiting_message_is_cancelled_alone() {
         (running.join().unwrap(), kept.join().unwrap(), dropped.join().unwrap())
     });
     assert_ne!(running["kind"], "none", "the turn under way went on: {running}");
+    // The dropped words' request answers none; the words before them, which waited on it, are
+    // answered all the same, in the conversation (their own request answered none, as words
+    // answered together do).
     assert_eq!(dropped["kind"], "none", "{dropped}");
-    assert_eq!(kept["text"], "kept", "{kept}");
+    assert_eq!(kept["kind"], "none", "{kept}");
     assert_eq!(user_turn(&obid, &id, "SAY dropped")["delivery"]["status"], "cancelled");
     assert_eq!(user_turn(&obid, &id, "SAY kept")["delivery"]["status"], "answered");
+    let turns = call(&obid, "GET", &format!("/v1/conversation?id={id}"), None).body;
+    assert!(turns.as_array().unwrap().iter().any(|t| t["who"] == "oby" && t["text"] == "kept"), "{turns}");
     // A turn needs its conversation; Stop takes none.
     let lone = call(&obid, "POST", "/v1/plans/cancel", Some(&json!({"turn": "x"})));
     assert_eq!(lone.status, 422, "{:?}", lone.body);
