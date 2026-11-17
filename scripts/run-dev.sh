@@ -23,8 +23,10 @@
 #      with the Developer ID of OBY_TEAM_ID when this Mac has it, else this Mac's Apple Development
 #      identity, else ad hoc (OBY_SIGN_IDENTITY names another). Not notarized and not scanned for
 #      secrets: it never leaves this Mac (apps/electron/scripts/package.sh makes releases);
-#   4. installed over the Oby in /Applications (its folder, "Oby Electron.app" or "Oby.app", is
-#      kept: docs/contracts/updates.md, UPDATES-10), Oby quit first;
+#   4. installed as /Applications/Oby.app, Oby quit first. An "Oby Electron.app" from the first
+#      releases goes: its app quit, its launch agent booted out, its folder removed, so this Mac
+#      has one Oby and it's named Oby (the owner's word, 2026-11-17). UPDATES-10 keeps a release's
+#      updates in that old folder; a build from here replaces it;
 #   5. obid restarted: the app's launch agent (com.deskree.oby.electron.obid) kicked onto the new
 #      Contents/Helpers/obid when launchd has it; an obid you started by hand on 7777 stopped, so
 #      the app registers and starts its own; then Oby opened;
@@ -196,9 +198,20 @@ if (( scratch )); then
   stop_scratch
 else
   dest=/Applications/Oby.app
-  [[ -d "/Applications/Oby Electron.app" ]] && dest="/Applications/Oby Electron.app"
+  old="/Applications/Oby Electron.app"
   pgrep -f "electron-vite dev" > /dev/null && say "Oby also runs from npm run dev: quit it (Ctrl-C in its terminal), it shares this Oby's folder"
   quit_app "$dest"
+  if [[ -d "$old" ]]; then
+    # the first releases' folder: one Oby on this Mac, named Oby. Its engine is stopped with it;
+    # the new Oby registers its own agent from its own folder when it opens (step 5)
+    quit_app "$old"
+    if launchctl print "gui/$uid/$agent" > /dev/null 2>&1; then
+      say "Stopping ${old:t}'s obid ($agent)"
+      launchctl bootout "gui/$uid/$agent" 2> /dev/null || true
+    fi
+    say "Removing $old: Oby is Oby.app from now on"
+    rm -rf "$old"
+  fi
 fi
 say "Installing $dest"
 rm -rf "$dest.new"
