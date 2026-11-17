@@ -911,7 +911,7 @@ pub(crate) async fn git_in(clone: &Path, args: &[&str]) -> Result<String, String
 
 /// What the scan's git reads with: only obid's clone's own configuration, never the system's or
 /// the person's (a `log.showRoot = false` there would hide a root commit's files from the scan).
-const SCAN_ENV: &[(&str, &str)] = &[
+pub(crate) const SCAN_ENV: &[(&str, &str)] = &[
     ("GIT_CONFIG_NOSYSTEM", "1"),
     ("GIT_CONFIG_GLOBAL", "/dev/null"),
     // Nor what obid's own environment would add (`git -c` from a parent, `GIT_CONFIG_KEY_<n>`).

@@ -490,3 +490,53 @@ fn changes_13_a_round_pushed_to_a_branch_oby_didnt_make_isnt_force_pushed() {
     );
     assert_eq!(remote_branch(&remote, "feature/hello"), pushed);
 }
+
+/// CHANGES-15: a done job on a remote with no pull requests has its worktree freed at once
+/// (CLEANUP-3), and `changes` still answers its files, its diff and its round, read in obid's clone
+/// at the branch obid kept for it against the base.
+#[test]
+fn changes_15_a_freed_worktree_still_lists_its_files_and_rounds() {
+    let folder = Folder::new("changes-15");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agent());
+    config["repos"][0]["pullRequests"] = json!(false);
+    let obid = start(&folder.0, &config, None);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt",
+               "check": "test -f hello.txt", "title": "Hello file"}),
+    );
+    let done = ended(&obid, &id);
+    assert_eq!(done["status"], "done", "{done}\n{}", obid.log());
+    let worktree = obid.home.join("worktrees").join(&id);
+    within(30, "obid frees the done job's worktree", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job.get("worktreeFreed").is_some() && !worktree.exists()).then_some(())
+    });
+    let clone = obid.home.join("clones/obi-e2e/fixture-app");
+    let head = git(
+        &clone,
+        &["rev-parse", &format!("refs/heads/oby/build-{id}")],
+    );
+
+    let whole = changes(&obid, &id, "");
+    assert_eq!(paths(&whole), ["hello.txt"], "{whole}\n{}", obid.log());
+    assert_eq!(whole["base"], "main");
+    assert_eq!(whole["head"], head.as_str());
+    assert_eq!(whole["files"][0]["status"], "added");
+    assert!(
+        whole["diff"].as_str().unwrap().contains("+++ b/hello.txt"),
+        "{whole}"
+    );
+    let rounds = whole["rounds"].as_array().unwrap();
+    assert_eq!(rounds.len(), 1, "{whole}");
+    assert_eq!(rounds[0]["to"], head.as_str());
+    let one = changes(&obid, &id, "?round=1&whitespace=ignore");
+    assert_eq!(paths(&one), ["hello.txt"], "{one}");
+    let only = changes(&obid, &id, "?path=hello.txt");
+    assert_eq!(paths(&only), ["hello.txt"], "{only}");
+    let other = changes(&obid, &id, "?path=nothing.txt");
+    assert_eq!(other["files"], json!([]));
+    assert_eq!(other["diff"], "");
+    drop(folder);
+}

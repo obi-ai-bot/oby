@@ -47,7 +47,8 @@ The business behavior contract for seeing everything a task changed, opening its
 
 ### Failure and recovery
 
-- No worktree (a queued job, one cleaned up): no files, no rounds, no Changes, no Open in, and Undo says why.
+- No worktree yet (a queued job): no files, no rounds, no Changes, no Open in, and Undo says why.
+- A worktree obid freed once the job ended (CLEANUP-3, at once when no pull request is open): its files, diff and rounds are read in obid's own clone at the commit the job's branch is kept at, against the base as the clone has it, with the same flags, redaction and cut; Open in and Undo stay the worktree's.
 - The push fails (the remote moved, no network): obid answers `409` with git's words, and nothing local changed.
 - The sentence changed between the menu and the click (the task ran again): main refuses and the menu reads it again.
 
@@ -71,6 +72,8 @@ The business behavior contract for seeing everything a task changed, opening its
 - **CHANGES-12** Words to a task after an Undo start a follow-up whose agent hears that the owner undid its rounds and where its branch is back. (`rounds::undo::tests::changes_12_a_follow_up_after_an_undo_hears_of_it`)
 - **CHANGES-13** A round that went out to a branch the owner named, not an `oby/` one, isn't force-pushed back: `409` saying why, and the remote branch stays. (`task_changes::changes_13_a_round_pushed_to_a_branch_oby_didnt_make_isnt_force_pushed`)
 - **CHANGES-14** The menu offers **Undo this round…** only while obid has a sentence for it; the click asks main with that sentence, and main signs only on **Undo** in its own dialog, after an input it saw, for the sentence it read from obid itself. (`taskChanges.test.tsx`, `CHANGES-14`; `device.test.ts`, `CHANGES-14`)
+
+- **CHANGES-15** A done job on a remote with no pull requests, whose worktree obid freed at once (CLEANUP-3), still answers its files, its diff and its round on `changes`, read in obid's clone at its branch's commit (`head`), `?round=`, `?whitespace=ignore` and `?path=` as before. (`task_changes::changes_15_a_freed_worktree_still_lists_its_files_and_rounds`)
 
 ### Test it when it's done (a real Mac)
 

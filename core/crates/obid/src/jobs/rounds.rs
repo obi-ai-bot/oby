@@ -51,12 +51,18 @@ impl Jobs {
 
     /// The task's rounds as job `job`'s HEAD `head` has them, oldest first and numbered: its own
     /// and the jobs' it follows up on its branch, each a round whose end is still on `head`
-    /// (CHANGES-1). A round a rebase rewrote, or one undone, isn't one any more.
-    pub(crate) async fn rounds_at(&self, job: &Job, head: &str) -> Vec<Round> {
+    /// (CHANGES-1). A round a rebase rewrote, or one undone, isn't one any more. Read in its
+    /// worktree, or in obid's `clone` once that was freed (CHANGES-15).
+    pub(crate) async fn rounds_at(
+        &self,
+        job: &Job,
+        head: &str,
+        clone: Option<&Path>,
+    ) -> Vec<Round> {
         let mut rounds = Vec::new();
         for of in self.task_chain(job) {
             for c in &of.checkpoints {
-                if c.to == head || self.is_ancestor(&job.id, &c.to, head).await {
+                if self.is_ancestor_at(&job.id, clone, &c.to, head).await {
                     rounds.push(Round {
                         number: rounds.len() + 1,
                         job: of.id.clone(),
@@ -90,6 +96,18 @@ impl Jobs {
         }
         chain.reverse();
         chain
+    }
+
+    /// [`Self::is_ancestor`], or in obid's `clone` when given (a freed worktree's, CHANGES-15).
+    async fn is_ancestor_at(&self, id: &str, clone: Option<&Path>, commit: &str, of: &str) -> bool {
+        let Some(clone) = clone else {
+            return self.is_ancestor(id, commit, of).await;
+        };
+        git::is_sha(commit)
+            && (commit == of
+                || super::changes::in_clone(clone, &["merge-base", "--is-ancestor", commit, of])
+                    .await
+                    .is_ok())
     }
 
     /// Whether `commit` is `of` or comes before it, in job `id`'s worktree.
