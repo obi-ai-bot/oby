@@ -71,6 +71,14 @@ if [ -d "$work" ]; then
           f="$work/contents/${2#*/contents/}"
           if [ -f "$f" ]; then cat "$f"; exit 0; fi
           echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+        */actions/jobs/*/logs)
+          f="$work/logs/$(echo "$2" | sed 's#.*/actions/jobs/##; s#/logs$##')"
+          # as gh 2.100 and later: a log with escape sequences prints only when allowed
+          if [ -f "$f" ] && grep -q "$(printf '\033')" "$f" && ! printf '%s\n' "$@" | grep -qx -- --allow-escape-sequences; then
+            echo "the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway" >&2; exit 1
+          fi
+          if [ -f "$f" ]; then cat "$f"; exit 0; fi
+          echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
         */pulls/*/files) cat "$work/files.json" 2>/dev/null || echo '[]'; exit 0 ;;
         */pulls/*/reviews) cat "$work/reviews.json" 2>/dev/null || echo '[]'; exit 0 ;;
         */pulls/*) cat "$work/pull.json" 2>/dev/null || echo '{}'; exit 0 ;;

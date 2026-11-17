@@ -1084,6 +1084,127 @@ fn taskconv_2_a_task_from_github_gets_its_own_conversation() {
     assert_eq!(turns.last().unwrap()["jobs"], json!([id]));
 }
 
+/// TASKCONV-29 (docs/contracts/task-conversations.md): Fix CI on a `CI failed` card starts the fix
+/// job on the pull request's branch in a conversation of its own, as the feed's tap does
+/// (TASKCONV-2), so the app shows it at once; its quoted file holds each failed check's name and
+/// the end of its log, as data.
+#[test]
+fn taskconv_29_fix_ci_on_its_card_starts_a_task_in_its_own_conversation() {
+    let folder = Folder::new("taskconv-29");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &agents().join("fake-claude"));
+    let obid = start(&folder.0, &config, Some(&agents()));
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(gh.join("logs")).unwrap();
+    std::fs::write(
+        gh.join("view.json"),
+        json!({"title": "Login fix", "body": "", "author": {"login": "wellington"},
+               "labels": [], "comments": [], "headRefName": "fix-login", "isCrossRepository": false,
+               "statusCheckRollup": [
+                   {"__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "FAILURE",
+                    "detailsUrl": format!("https://github.com/{REPO}/actions/runs/11/job/22")},
+                   {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "SUCCESS",
+                    "detailsUrl": format!("https://github.com/{REPO}/actions/runs/11/job/23")},
+                   {"__typename": "CheckRun", "name": "elsewhere", "status": "COMPLETED", "conclusion": "FAILURE",
+                    "detailsUrl": "https://github.com/someone/else/actions/runs/1/job/99"}]})
+        .to_string(),
+    )
+    .unwrap();
+    let log: String = (1..=300)
+        .map(|n| format!("2026-11-17T12:00:00.0000000Z line {n}\n"))
+        .collect::<String>()
+        + "2026-11-17T12:00:01.0000000Z \u{1b}[31;1mFAILED\u{1b}[0m test_calc.py::test_negate - assert 1 == -1\n";
+    std::fs::write(gh.join("logs/22"), log).unwrap();
+    std::fs::write(gh.join("logs/23"), "a passed check's log\n").unwrap();
+    std::fs::write(gh.join("logs/99"), "not this repository's\n").unwrap();
+    let a = "a".repeat(40);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "SUCCESS")],
+    );
+    refresh(&obid);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "FAILURE")],
+    );
+    refresh(&obid);
+    let offer = github_items(&obid, "open")
+        .into_iter()
+        .find(|i| i["github"]["number"] == 5)
+        .expect("a CI failed card");
+
+    let answered = call(
+        &obid,
+        "POST",
+        &format!("/v1/inbox/{}/answer", offer["id"].as_str().unwrap()),
+        Some(&json!({"answer": "Fix CI"})),
+    );
+    assert_eq!(answered.status, 200, "{}", answered.text);
+    let id = answered.body["job"].as_str().unwrap().to_owned();
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(
+        (&job["kind"], &job["pr"], &job["base"]),
+        (&json!("fix"), &json!(5), &json!("fix-login"))
+    );
+    let conversation = job["conversation"]
+        .as_str()
+        .expect("a task from a Fix CI card has a conversation")
+        .to_owned();
+    let listed = call(&obid, "GET", "/v1/conversations", None).body;
+    let it = (listed.as_array().unwrap().iter())
+        .find(|c| c["id"] == conversation.as_str())
+        .expect("listed");
+    assert_eq!(it["title"], job["title"]);
+    let turns = call(
+        &obid,
+        "GET",
+        &format!("/v1/conversation?id={conversation}"),
+        None,
+    )
+    .body;
+    let turns = turns.as_array().unwrap();
+    assert!(turns.iter().all(|t| t["who"] != "user"), "{turns:?}");
+    assert_eq!(turns.last().unwrap()["jobs"], json!([id]));
+
+    let quoted = within(10, "the quoted file", || {
+        std::fs::read_dir(obid.home.join("attachments/github"))
+            .ok()?
+            .flatten()
+            .find_map(|dir| {
+                std::fs::read_to_string(dir.path().join("github-fixture-app-5.md")).ok()
+            })
+    });
+    assert!(quoted.contains("test: FAILURE"), "{quoted}");
+    assert_eq!(
+        quoted.matches("## The end of a failed check's log").count(),
+        1,
+        "only test's: {quoted}"
+    );
+    assert!(
+        quoted.contains("FAILED test_calc.py::test_negate - assert 1 == -1"),
+        "{quoted}"
+    );
+    assert!(
+        quoted.contains("line 300") && !quoted.contains("line 200\n"),
+        "only its end: {quoted}"
+    );
+    assert!(
+        !quoted.contains("2026-11-17T12:00:00"),
+        "no timestamps: {quoted}"
+    );
+    assert!(!quoted.contains('\u{1b}'), "no escape sequences: {quoted}");
+    assert!(
+        !quoted.contains("not this repository's"),
+        "a log is read only from the pull request's own repository: {quoted}"
+    );
+}
+
 /// MERGING-54 (docs/contracts/merging.md): GitHub work a tap starts isn't the owner's own work,
 /// even sent signed: its job's file holds no own mark, so its pull request keeps its card
 /// (`merge_api::merging_46_work_not_from_the_owners_conversation_keeps_its_card`).
