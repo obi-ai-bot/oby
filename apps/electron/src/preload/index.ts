@@ -77,6 +77,12 @@ contextBridge.exposeInMainWorld('app', {
     ipcRenderer.on('full-screen', listener);
     return () => { ipcRenderer.off('full-screen', listener); };
   },
+  // a shortcut item of the Mac's menu bar, clicked (shared/menu.ts): its command (renderer shortcuts.ts)
+  onShortcut(fn: (command: string) => void) {
+    const listener = (_: unknown, command: string) => fn(command);
+    ipcRenderer.on('shortcut', listener);
+    return () => { ipcRenderer.off('shortcut', listener); };
+  },
   // the cursor in window coordinates, even when it's outside the window
   onCursor(fn: (p: Point) => void) {
     const listener = (_: unknown, p: Point) => fn(p);

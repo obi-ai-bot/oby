@@ -93,7 +93,8 @@ export type Job = {
   check: string | null;
   model: string | null;
   dismissed: string | null;
-  permission: { id: string; tool: string; title: string; detail: string; rule: string | null; always: string | null } | null;
+  // obid only (#858): question, the agent's own question being asked now (docs/api/jobs.md), quoted data
+  permission: { id: string; tool: string; title: string; detail: string; rule: string | null; always: string | null; question?: AgentQuestion | null } | null;
   pipeline: { number: number; total: number; stages: Stage[] } | null;
   title: string;
   // obid only: why its pull request couldn't be read last time (gh missing or signed out)
@@ -194,15 +195,22 @@ export type Conversation = { id: string; title: string; pinned: boolean; created
   // the project it's in, or null (docs/api/projects.md); none from an older obid
   project?: string | null;
   // one more each time obid sends it changed, as a job's: the higher is the newer; none from an older obid
-  revision?: number };
+  revision?: number;
+  // a search's answer only (`GET /v1/conversations?q=`, #593): the latest turn holding the words, its
+  // text cut around them, or null when only the title holds them
+  turn?: { id: string; who: string; at: string; text: string } | null };
 
 // obid only: "GET /v1/github/work", what GitHub wants from the owner, the keys this app reads.
 // Everything in an item is GitHub's data: shown as text, never acted on.
 export type GitHubWorkItem = {
   id: string; list: 'reviews' | 'assigned' | 'mine' | (string & {}); repo: string; number: number; title: string; url: string; author: string | null;
   updated: string; draft: boolean | null; checks: string | null; reviewDecision: string | null; fork?: boolean | null;
+  // obid only (GITHUBWORK-8): each of a pull request's head's checks, GitHub's order, at most 50: its
+  // name, its state as `checks` counts it, and its page (https, or null); none from an older obid
+  checkRuns?: CheckRun[];
   board: { project: string; column: string } | null; known: boolean; job: string | null;
 };
+export type CheckRun = { name: string; state: 'FAILURE' | 'PENDING' | 'SUCCESS' | (string & {}); url: string | null };
 export type GitHubWork = { signedIn: boolean; error: string | null; reviews: GitHubWorkItem[]; assigned: GitHubWorkItem[]; mine: GitHubWorkItem[] };
 
 // "Account" and "GET /v1/status", the keys this app reads
@@ -315,6 +323,13 @@ export type TetrixTarget = { preset: string } | { url: string };
 
 // "POST /v1/plans"
 export type Question = { text: string; options: string[]; recommended: number | null };
+// obid only (#858): the agent's question on its job's permission (Claude Code's AskUserQuestion,
+// Codex's and Cursor's own as the same shape): header and a description left out when empty;
+// multiSelect, the owner may pick several (answered as their labels with commas: "Unit, Lint")
+export type AgentQuestion = {
+  question: string; header?: string; multiSelect?: boolean; index?: number; count?: number;
+  options: { label: string; description?: string }[];
+};
 export type PlanAnswer = (
   | { kind: 'reply'; text: string; jobs: Job[] }
   | { kind: 'question'; said: string; question: Question; jobs: Job[] }

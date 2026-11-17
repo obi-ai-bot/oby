@@ -11,6 +11,8 @@ import { Menu } from './Menu';
 import RepoTicks from './RepoTicks';
 import { confirmIsOff } from './sharing';
 import { seeItem } from './live';
+import QuestionChoices, { listsChoices } from './QuestionChoices';
+import PrChecks from './PrChecks';
 
 // A task as a card in its group: where it came from and what it is, which
 // agent has it where, then what's happening now: the live step while it runs,
@@ -250,9 +252,10 @@ export function AskBlock({ task, inChat = false, onAnswer, bar }: {
   // in the drawer: a permission's command on one line (its first: obid's why may follow it), and
   // behind Details what's left (obid's words, the rest of the command, a check's or review's text)
   const command = ask.kind === 'permission' && ask.detail ? ask.detail.split('\n')[0] : undefined;
-  const more = !!bar && (!!ask.text || (!!ask.detail && ask.detail !== command));
+  const more = !!bar && (!!ask.text || !!ask.checks || (!!ask.detail && ask.detail !== command));
   // (the task it's from, unless the headline says it already)
   const from = bar?.from && bar.from !== ask.headline ? bar.from : undefined;
+  const choices = listsChoices(ask) ? ask.options.filter((o) => o !== TELL) : undefined;
   return (
     <div className={`tc-ask${ask.fullText ? ' is-full' : ''}${ask.steer ? ' is-steer' : ''}${bar ? ' is-bar' : ''}`}>
       {bar ? (
@@ -273,6 +276,7 @@ export function AskBlock({ task, inChat = false, onAnswer, bar }: {
       {(!bar || open) && ask.text && <p className="tc-ask-text">{ask.text}</p>}
       {bar && command && editing === null && !open && <code className="tc-ask-command" title={ask.detail}>{command}</code>}
       {ask.detail && editing === null && (!bar || open) && <pre className="tc-code">{ask.detail}</pre>}
+      {ask.checks && (!bar || open) && <PrChecks runs={ask.checks} />}
       {ask.repos && !task.answer && <RepoTicks {...ask.repos} onCard={seeItem} onHold={setHold} />}
       {task.answer ? (
         !inChat && <p className="tc-answered"><Check size={14} strokeWidth={1.8} />{task.answer}</p>
@@ -288,8 +292,11 @@ export function AskBlock({ task, inChat = false, onAnswer, bar }: {
             // a settle-only, never a button of what the model recommended
             <CheckField initial="" label={STEER} use="Send" max={2000} onUse={(words) => words && pick(STEER, words)} />
           )}
+          {/* an agent's question with descriptions, a recommended option or several to pick: a list
+              of its own (BYPASS-10 and 11), Tell it something and Later in the row under it */}
+          {choices && <QuestionChoices ask={ask} choices={choices} onPick={(o, words) => (words ? pick(TELL, words) : pick(o))} />}
           <div className="tc-options">
-            {ask.options.map((o, i) => (
+            {ask.options.map((o, i) => !choices?.includes(o) && (
               <button
                 key={o}
                 // a Confirm looks preferred only when Oby recommends it (obid never does), and a

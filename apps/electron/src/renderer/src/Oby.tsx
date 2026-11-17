@@ -14,6 +14,8 @@ declare global {
       chrome: { lightsCenterY: number; lightsRight: number } | null;
       fullScreen: boolean;
       onFullScreen(fn: (on: boolean) => void): () => void;
+      // the Mac's menu bar's shortcut items, clicked (shared/menu.ts, shortcuts.ts)
+      onShortcut?(fn: (command: string) => void): () => void;
       openExternal(url: string): void;
       renderError?(name: string, message: string, componentStack: string): void;  // a render error the root caught (preload, main/runMarker.ts)
       pickFolders?(from?: string): Promise<string[]>;  // the Mac's folder picker (main), several at once, opening in from

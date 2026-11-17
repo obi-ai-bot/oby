@@ -37,6 +37,7 @@ import { useHelpers } from './helpers';
 import { hasAttachments, type Attachments } from './view';
 import { box as draftBox } from './drafts';
 import { panelFit } from './panelFit';
+import { registerCommands } from './shortcuts';
 import { TYPES, renameTask, tell, countOf, runningCount, firstTab, hasFresh, toDoOf, useTasks, asksWaiting, type Tab } from './tasks';
 
 // the Settings tip over the message box: off for now (its bar, SettingsTip.tsx, kept for tips to come)
@@ -357,6 +358,14 @@ export default function Home() {
   // (the box can't take the focus while a page is still over it)
   const [focusHome, setFocusHome] = useState(false);
   const newChat = useCallback(() => { closeAll(); setFocusHome(true); }, [closeAll]);
+  // The window's shortcuts (SHORTCUTS-1, 2 and 4): ⌘N a new conversation, ⌘K the side panel's
+  // search, opened if it's shut, and ⌘, Settings (⌘F is the conversation's own, ChatView)
+  useEffect(() => registerCommands({
+    'chat.new': newChat,
+    // (docked, or floating over a narrow window, as the panel's toggle opens it)
+    'search.open': () => { togglePanel(true); dispatchEvent(new Event('oby:search')); },
+    'settings.open': () => start({ kind: 'settings', id: 'general' }),
+  }), [newChat, fit.docked]);
   useEffect(() => {
     if (!focusHome || layers.length) return;
     document.querySelector<HTMLElement>('.composer .composer-input')?.focus();

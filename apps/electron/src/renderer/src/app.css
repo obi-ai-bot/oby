@@ -497,6 +497,36 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .tc-report.is-problem { color: var(--danger); }
 .tc-option.is-quiet { background: none; color: var(--muted); }
 .tc-option.is-quiet:hover { color: var(--ink); background: var(--hover); }
+/* a pull request's checks, each its own line (PrChecks.tsx): failed first, Details at the end */
+.pr-checks { margin-top: 10px; }
+.pr-checks-line { color: var(--muted); font-size: var(--text-sm); line-height: 18px; }
+.pr-checks-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.pr-checks-list li { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: var(--text-md); line-height: 18px; color: var(--text); }
+.pr-checks-list .tc-mark-done { width: 12px; height: 12px; }
+.pr-checks-list .tc-mark .status-dot { width: 8px; height: 8px; }
+.pr-check-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+.pr-check-state { color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
+.pr-checks-list .is-failed .pr-check-name, .pr-checks-list .is-failed .pr-check-state { color: var(--danger); }
+.pr-check-details, .pr-checks-all { margin-left: auto; color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
+.pr-checks-all { margin: 6px 0 0; }
+.pr-check-details:hover, .pr-checks-all:hover { color: var(--ink); }
+/* an agent's question's options as a list (QuestionChoices.tsx): each its label (a button whose
+   ::after takes a click anywhere on the row) and, under it, its description; the recommended one
+   ringed; a multiple choice's ticks, then its answer's box and Send */
+.tc-choices { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.tc-choice { position: relative; display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border: 1px solid transparent; border-radius: 10px; background: rgba(255, 255, 255, 0.06); color: var(--item); transition: color var(--fade), background-color var(--fade), border-color var(--fade); }
+.tc-choice:hover, .tc-choice:has(.tc-choice-pick:focus-visible) { background: rgba(255, 255, 255, 0.11); color: var(--ink); }
+.tc-choice.is-recommended { border-color: rgba(255, 255, 255, 0.3); }
+.tc-choice.is-on { background: rgba(255, 255, 255, 0.13); color: var(--ink); }
+.tc-choice-pick { color: inherit; font-size: var(--text-md); line-height: 18px; text-align: left; outline: 0; }
+.tc-choice-pick::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+.tc-choice-about { color: var(--muted); font-size: var(--text-sm); line-height: 16px; pointer-events: none; }
+.tc-choice:has(.tc-choice-box) { padding-left: 36px; }
+.tc-choice-box { position: absolute; left: 12px; top: 9px; display: grid; place-items: center; width: 16px; height: 16px; border: 1px solid rgba(255, 255, 255, 0.35); border-radius: 4px; pointer-events: none; }
+.tc-choice.is-on .tc-choice-box { background: var(--ink); border-color: var(--ink); color: #111; }
+.tc-choices-send { margin-top: 4px; }
+.tc-choices .tc-choices-send .set-field { flex: 1 1 200px; min-width: 0; width: auto; font-family: inherit; }
+.tc-choices-send .tc-option:disabled { opacity: 0.4; cursor: default; }
 /* a check's Edit: the command in Settings' field, as wide as the card leaves it */
 .tc-options .set-field { flex: 1 1 200px; min-width: 0; width: auto; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
 /* Change check, after "Done when"'s command; its field in the row's place */
@@ -770,6 +800,13 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 /* as wide as the group's cards (540px in a normal window), the message box under it too, so the three
    line up; in a wide window the thread and its box grow together (--column, tokens.css) */
 .chat-column { max-width: var(--column); margin: 0 auto; }
+/* ⌘F's find bar (FindBar.tsx), over the thread's top right; its matches lit with CSS highlights */
+.find-bar { position: absolute; top: 8px; right: calc(var(--gutter) / 2 + 8px); z-index: 5; display: flex; align-items: center; gap: 2px; padding: 4px 4px 4px 10px; border: 1px solid var(--surface-edge); border-radius: 8px; background: var(--surface); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3); }
+.find-field { width: 200px; height: 26px; border: 0; background: none; color: var(--ink); font: inherit; font-size: var(--text-md); outline: 0; }
+.find-count { min-width: 56px; padding: 0 6px; color: var(--muted); font-size: var(--text-sm); text-align: right; white-space: nowrap; }
+.find-bar .icon-button { width: 26px; height: 26px; }
+::highlight(oby-find) { background-color: rgba(255, 214, 10, 0.3); color: inherit; }
+::highlight(oby-find-current) { background-color: rgba(255, 159, 10, 0.85); color: #000; }
 .chat-thread { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; user-select: text; }
 /* Bubbles, 18px round, at most 80% of the column, for yours on the right;
    Oby's replies on the left beside its face (below). A question and its response sit
@@ -1460,6 +1497,12 @@ button.connector { width: 100%; text-align: left; }
 .sidebar-new.is-stacked { margin-bottom: 0; }
 .sidebar-new.is-stacked:not(:has(+ .sidebar-new)) { margin-bottom: 8px; }  /* the last of a stack keeps the room under it */
 .sidebar-new.is-stacked, .sidebar-new.is-stacked + .sidebar-new { height: 30px; }
+/* a shortcut's key at a row's end (shortcuts.ts, data-kbd), drawn so it's no part of the row's own
+   text (its label, what a click holds): a menu's always, the New conversation row's as the pointer's
+   on it, so the panel stays as quiet as his design */
+.has-kbd::after { content: attr(data-kbd); flex: none; margin-left: auto; padding-left: 12px; color: var(--muted); font-size: var(--text-sm); }
+.sidebar-new.has-kbd::after { opacity: 0; transition: opacity var(--fade); }
+.sidebar-new.has-kbd:hover::after, .sidebar-new.has-kbd:focus-visible::after { opacity: 1; }
 /* the search field slides open under the title */
 .sidebar-search-wrap {
   display: grid;

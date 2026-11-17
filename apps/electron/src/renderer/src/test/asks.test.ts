@@ -24,7 +24,8 @@ const answered = (body: unknown) => ({ status: 200, text: JSON.stringify(body) }
 describe('BYPASS-5: the agent’s question is Sangam’s Question card', () => {
   it('bypass_5_shows_the_question_as_its_headline_with_the_agents_options_and_tell_it_something', () => {
     const ask = live.itemAsk(item('agentQuestion', { text: 'Which store?', options: ['SQLite', 'Postgres'], details: ['One file', ''] }));
-    expect(ask).toEqual({ kind: 'question', headline: 'Which store?', text: '', options: ['SQLite', 'Postgres', 'Tell it something'] });
+    // (each option's description too: BYPASS-10, questions.test.tsx)
+    expect(ask).toEqual({ kind: 'question', headline: 'Which store?', text: '', options: ['SQLite', 'Postgres', 'Tell it something'], about: ['One file', ''] });
   });
 
   it('bypass_5_a_question_with_no_options_can_still_be_answered', () => {

@@ -49,7 +49,8 @@ rateLimit { cost remaining resetAt } viewer { login } } \
 fragment work on SearchResultItem { \
 ... on Issue { number title updatedAt state author { login } authorAssociation repository { nameWithOwner } labels(first: 20) { nodes { name } } milestone { title } BOARD } \
 ... on PullRequest { number title updatedAt state isDraft isCrossRepository reviewDecision author { login } authorAssociation repository { nameWithOwner } labels(first: 20) { nodes { name } } milestone { title } BOARD \
-commits(last: 1) { nodes { commit { oid statusCheckRollup { state } } } } } }";
+commits(last: 1) { nodes { commit { oid statusCheckRollup { state contexts(first: 50) { nodes { __typename \
+... on CheckRun { name status conclusion detailsUrl } ... on StatusContext { context state targetUrl } } } } } } } } }";
 
 /// Each item's boards, but those it's archived from, and their Status column: needs gh's
 /// `read:project` scope.
@@ -94,11 +95,25 @@ pub struct Item {
     /// On pull requests, whether its branch is a fork's.
     #[serde(default)]
     pub fork: Option<bool>,
+    /// On pull requests, each of the head's check runs and statuses (at most 50, GitHub's
+    /// order), which `checks` sums up; empty on issues and before this was read.
+    #[serde(default)]
+    pub check_runs: Vec<CheckRun>,
     /// Its board column, or null: on no board, or on none with a Status.
     pub board: Option<Board>,
     /// The milestone's title, or none.
     #[serde(default)]
     pub milestone: Option<String>,
+}
+
+/// One check of a pull request's head, GitHub's data shown as text: a check run's name or a
+/// status's context, its state as `checks` counts it (`FAILURE`, `PENDING` or `SUCCESS`,
+/// [`crate::github::check_state`]), and its page, only an `https` one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CheckRun {
+    pub name: String,
+    pub state: String,
+    pub url: Option<String>,
 }
 
 /// The board an item is on and its Status column there.
@@ -525,6 +540,28 @@ fn board(node: &Value) -> Option<Board> {
         })
 }
 
+/// A pull request's head's checks ([`CheckRun`]), those with a name, at most 50.
+fn check_runs(node: &Value) -> Vec<CheckRun> {
+    node["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| {
+            let name = c["name"].as_str().or(c["context"].as_str())?.trim();
+            (!name.is_empty()).then(|| CheckRun {
+                name: cut(name, 200),
+                state: crate::github::check_state(c).into(),
+                url: c["detailsUrl"]
+                    .as_str()
+                    .or(c["targetUrl"].as_str())
+                    .filter(|u| u.starts_with("https://") && u.len() <= 2000)
+                    .map(str::to_owned),
+            })
+        })
+        .take(50)
+        .collect()
+}
+
 fn item(list: &str, node: &Value) -> Option<Item> {
     let repo = node["repository"]["nameWithOwner"].as_str()?;
     let number = node["number"].as_u64().filter(|n| *n > 0)?;
@@ -590,6 +627,7 @@ fn item(list: &str, node: &Value) -> Option<Item> {
         } else {
             None
         },
+        check_runs: if pr { check_runs(node) } else { Vec::new() },
         board: board(node),
         milestone: text(&node["milestone"]["title"]),
     })
@@ -1811,6 +1849,62 @@ mod tests {
             Got::Read { lists, rate, .. } => (lists, rate),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// GITHUBWORK-8: a pull request's head comes with each of its checks, a check run's name or a
+    /// status's context, its state as `checks` counts it, and its page only when it's https; an
+    /// issue has none.
+    #[test]
+    fn githubwork_8_a_pull_request_lists_each_check_with_its_state_and_page() {
+        let mut pr = node("obi-ai-bot/obi", 702, "2026-10-18T08:40:11Z");
+        pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"] = json!({"state": "FAILURE", "contexts": {"nodes": [
+            {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "SUCCESS",
+             "detailsUrl": "https://github.com/obi-ai-bot/obi/actions/runs/1"},
+            {"__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "TIMED_OUT",
+             "detailsUrl": "https://github.com/obi-ai-bot/obi/actions/runs/2"},
+            {"__typename": "CheckRun", "name": "lint", "status": "IN_PROGRESS", "conclusion": null, "detailsUrl": "javascript:alert(1)"},
+            {"__typename": "StatusContext", "context": "ci/circleci", "state": "ERROR", "targetUrl": "https://circleci.com/x"},
+            {"__typename": "CheckRun", "name": "  ", "status": "COMPLETED", "conclusion": "FAILURE"}]}});
+        let (lists, _) = read(&answer(
+            vec![pr],
+            vec![node("obi-ai-bot/obi", 640, "2026-10-17T08:00:00Z")],
+            1,
+        ));
+        let runs: Vec<(&str, &str, Option<&str>)> = lists.reviews[0]
+            .check_runs
+            .iter()
+            .map(|c| (c.name.as_str(), c.state.as_str(), c.url.as_deref()))
+            .collect();
+        assert_eq!(
+            runs,
+            [
+                (
+                    "build",
+                    "SUCCESS",
+                    Some("https://github.com/obi-ai-bot/obi/actions/runs/1")
+                ),
+                (
+                    "test",
+                    "FAILURE",
+                    Some("https://github.com/obi-ai-bot/obi/actions/runs/2")
+                ),
+                ("lint", "PENDING", None),
+                ("ci/circleci", "FAILURE", Some("https://circleci.com/x")),
+            ]
+        );
+        assert!(
+            lists.assigned[0].check_runs.is_empty(),
+            "an issue has no checks"
+        );
+        // An answer from before (no contexts) reads as none, and it's sent as `checkRuns`.
+        let (old, _) = read(&answer(
+            vec![node("obi-ai-bot/obi", 7, "2026-10-18T08:40:11Z")],
+            vec![],
+            0,
+        ));
+        assert!(old.reviews[0].check_runs.is_empty());
+        let sent = serde_json::to_value(&lists.reviews[0]).unwrap();
+        assert_eq!(sent["checkRuns"][1]["name"], "test");
     }
 
     #[test]

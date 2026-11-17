@@ -26,6 +26,7 @@ import { openConversation, talkReady, useLimitAsks } from './live';
 import { onObid } from './lean';
 import { box as draftBox } from './drafts';
 import { useHelpers } from './helpers';
+import FindBar from './FindBar';
 
 // how long the way out takes (the sink animation in app.css)
 const LEAVE_MS = 220;
@@ -177,6 +178,8 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   return (
     <div className={`chat-layer${leaving ? ' is-leaving' : ''}${covered ? ' is-covered' : ''}`} inert={covered}>
       <div className="chat-scroll">
+        {/* ⌘F: find in this conversation (SHORTCUTS-3) */}
+        <FindBar root={list} shown={thread.length} off={covered} />
         <section ref={list} className="chat" aria-label={task ? `Conversation about ${task.title}` : name} onScroll={(e) => { onScroll(); const el = e.currentTarget; atEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
           <div className="chat-column">
             <div role="list" onCopy={(e) => copyPlain(e)} className="chat-thread rise" style={{ '--i': 1 } as React.CSSProperties}>
