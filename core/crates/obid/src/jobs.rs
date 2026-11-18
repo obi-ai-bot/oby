@@ -89,7 +89,7 @@ use lanes::{own_codex_settings, own_run_env, owners_for};
 mod logins;
 mod merge_by_owner;
 mod metering;
-mod moves;
+pub(crate) mod moves;
 mod obi_review;
 pub(crate) mod onto_pr;
 mod own_refs;
