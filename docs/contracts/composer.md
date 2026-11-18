@@ -5,7 +5,7 @@ The business behavior contract for what the message box takes besides typing, do
 ## Feature and status
 
 - **Outcome:** The owner sets the mode the tasks their words start will run in right in the box, before they start, without changing Settings, and picks the model and effort on the one account menu (one Auto); sees the words they sent while Oby was still answering, and can take them back or change them; sees Stop being honoured; and brings files in by dropping them or naming them with `@`.
-- **Status:** Implemented (COMPOSER-1 and 3 to 18; COMPOSER-2 retired by COMPOSER-17). The `/` list is honest about what's missing: obid lists no agent's own commands yet (COMPOSER-16).
+- **Status:** Implemented (COMPOSER-1 and 3 to 19; COMPOSER-2 retired by COMPOSER-17). The `/` list is honest about what's missing: obid lists no agent's own commands yet (COMPOSER-16).
 - **Scope:** The Electron app's message box on Home and in a conversation with Oby, and obid's `defaults` on `POST /v1/plans`, `turn` on `POST /v1/plans/cancel`, and `GET /v1/conversations/{id}/files`. **Out of scope:** a task's own box and a conversation with other people's Obys (no chips, no waiting row); running an agent's slash commands; the iPhone and Apple Watch apps (frozen).
 
 ## Behavior
@@ -38,6 +38,7 @@ The business behavior contract for what the message box takes besides typing, do
 ### Words that wait (COMPOSER-8 to 11)
 
 - Words sent while a turn is under way in a conversation wait for it (one answer at a time). Every waiting message, as obid reports it (`delivery.status` `queued` behind words a turn has taken), shows as a row over the box (its words, "Waiting", Edit and Cancel), not in the conversation; a turn taking them puts them in the conversation.
+- The app follows each move as it happens, from obid's `turnDelivery` event (docs/api/events.md): the turn again, kept as the newer by its `revision`, in main's copy and the window's alike. It's no new turn and says nothing about a turn under way (COMPOSER-19).
 - **Cancel** sends `POST /v1/plans/cancel` with the conversation and the words' `turn`: obid drops those words alone (their request answers `none`, they read `cancelled`), and the turn under way and other waiting words go on; the words left are answered as Oby's turn in the conversation. A cancelled message shows nowhere in the conversation.
 - **Edit** cancels them the same way, then puts their words back in the box, before anything typed there. When a turn took them first (`dropped` empty), nothing changes: they're in the conversation.
 
@@ -93,6 +94,7 @@ The business behavior contract for what the message box takes besides typing, do
 - **COMPOSER-16:** `/` at the start says what's missing for the chosen tool. Test: `composer_16_slash_says_what_is_missing`.
 - **COMPOSER-17:** Given the box, then it has one Auto (the talk pill's) and no model chip; an account's `>` list has its efforts under its models (none for Cursor), its own checked, and picking one keeps it on the account; a model an earlier build's chip kept is nothing. Tests: `composer_17_one_auto_the_accounts`, `composer_17_a_model_an_earlier_build_kept_is_nothing` (`chips.test.ts`), `COMPOSER-17: an account's efforts are under its models…`, `COMPOSER-17: Cursor's effort is in its model's name…` (`talkMenu.test.tsx`).
 - **COMPOSER-18:** Given the usage gauge pressed, then its panel is the account menu's width, its right edge on the gauge's, 4 px over it. Test: `composer_18_the_usage_panel_is_the_account_menus_width_on_its_gauge`.
+- **COMPOSER-19:** Given words sent while Oby answers, when obid sends their `turn` (queued) and the first words' `turnDelivery` moves (starting, running), then the later words show in the waiting row, not the thread, and move into the thread when their own `turnDelivery` says a turn took them; an older copy come late moves nothing back. Tests: `composer_19_waiting_words_follow_obids_delivery_events`, `composer_19_main_keeps_the_delivery_too` (`composerLive.test.ts`).
 
 ### Test it when it's done (real Mac)
 

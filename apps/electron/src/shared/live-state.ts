@@ -16,7 +16,7 @@ export type ObidState = {
 };
 
 // The kinds the rule takes
-export type ObidEvent = Extract<Event, { kind: 'job' | 'jobGone' | 'conversation' | 'conversationGone' | 'turn' | 'turnAsks' | 'inbox' | 'accounts' | 'github' }>;
+export type ObidEvent = Extract<Event, { kind: 'job' | 'jobGone' | 'conversation' | 'conversationGone' | 'turn' | 'turnAsks' | 'turnDelivery' | 'inbox' | 'accounts' | 'github' }>;
 
 // Of two copies of one object, from an event or an answer, whether the incoming one is taken: the
 // newer by obid's revision, as an answer can come after an event that's newer than it (#1709), the
@@ -63,8 +63,9 @@ export function apply(s: ObidState, e: ObidEvent): ObidState {
       const { [e.id]: _, ...turns } = s.turns;
       return { ...s, conversations: s.conversations.filter((c) => c.id !== e.id), turns, goneConversations: new Set([...s.goneConversations, e.id]) };
     }
-    // a question's card on a turn is the turn again, as far as what obid has goes
-    case 'turn': case 'turnAsks':
+    // a question's card on a turn, and its words' delivery (docs/api/events.md), are the turn again,
+    // as far as what obid has goes
+    case 'turn': case 'turnAsks': case 'turnDelivery':
       return e.turn.conversation ? turnTaken(s, e.turn.conversation, e.turn) : s;
     case 'inbox': return itemTaken(s, e.item);
     case 'accounts': return s.status ? { ...s, status: { ...s.status, accounts: e.accounts } } : s;

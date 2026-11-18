@@ -452,6 +452,8 @@ export type Event =
   | { kind: 'inbox'; item: InboxItem }
   | { kind: 'turn'; turn: Turn }
   | { kind: 'turnAsks'; turn: Turn }
+  // a delivery of the owner's words changed (queued, starting, running…): that turn again, no new one (COMPOSER-19)
+  | { kind: 'turnDelivery'; turn: Turn }
   | { kind: 'step'; step: Step }
   | { kind: 'delta'; delta: Delta }
   | { kind: 'accounts'; accounts: Account[] }
@@ -506,6 +508,7 @@ export function parseEvent(name: string, data: string): Event | null {
     case 'inbox': return typeof v.id === 'string' ? { kind: 'inbox', item: value as InboxItem } : null;
     case 'turn': return typeof v.id === 'string' ? { kind: 'turn', turn: value as Turn } : null;
     case 'turnAsks': return typeof v.id === 'string' ? { kind: 'turnAsks', turn: value as Turn } : null;
+    case 'turnDelivery': return typeof v.id === 'string' ? { kind: 'turnDelivery', turn: value as Turn } : null;
     // a step of the turn, and its brain's thinking: both say what it's on
     case 'step': case 'thinking': return typeof v.text === 'string' && typeof v.turn === 'string' ? { kind: 'step', step: value as Step } : null;
     case 'delta': return typeof v.text === 'string' && typeof v.conversation === 'string' ? { kind: 'delta', delta: value as Delta } : null;
