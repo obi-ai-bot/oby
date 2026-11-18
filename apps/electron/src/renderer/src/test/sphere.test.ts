@@ -3,10 +3,11 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join as path } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
-  ACCEPTS, NotThisKey, SCOPES, addStarterRule, inviteLink, setAdmin, listInvitations, makeInvitation, withdrawInvitation, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, readPolicy,
+  ACCEPTS, NotThisKey, SCOPES, addStarterRule, getBackIn, inviteLink, rebindOffer, setAdmin, listInvitations, makeInvitation, withdrawInvitation, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, readPolicy,
   starterRule, writePolicy, type Answer, type Call, type PolicyAnswer, type Rule,
 } from '../../../shared/sphere';
 import { withStarterRule } from '../../../shared/policy';
+import { sphereAddress } from '../../../shared/invite';
 import { canAddProgress, canChangeRepos, canOpenRoom, confirmIsOff, repoTicks, tickRepo, whatItTells, type SharingRule } from '../sharing';
 
 // docs/contracts/obysphere.md: each test is named after its scenario. SPHERE-5 (two real obids on
@@ -586,6 +587,117 @@ describe('the app’s Obysphere (sphere-app.md)', () => {
     const member = fakeSphere({ admins: ['dmytro'] });
     expect(await setAdmin(obid(), () => key, 'dana', true, member.http)).toEqual({ admins: null, refused: 'not_admin', why: 'Only the Obysphere’s admins can change who’s admin.' });
     expect(member.requests.some((r) => r.url.includes('/admins/'))).toBe(false);
+  });
+
+  it('sphereapp_12_an_obysphere_s_address_is_an_invite_link_or_host_and_id', () => {
+    expect(sphereAddress(OPEN)).toEqual({ url: 'https://sphere.example.com', host: 'sphere.example.com', sphere: 'demo' });
+    expect(sphereAddress('obysphere.example.com/deskree')).toEqual({ url: 'https://obysphere.example.com', host: 'obysphere.example.com', sphere: 'deskree' });
+    expect(sphereAddress('https://obysphere.example.com:8443/spheres/deskree/')).toMatchObject({ url: 'https://obysphere.example.com:8443', sphere: 'deskree' });
+    expect(sphereAddress('http://127.0.0.1:7860/e2e')).toMatchObject({ url: 'http://127.0.0.1:7860', sphere: 'e2e' });
+    for (const no of ['http://obysphere.example.com/deskree', 'obysphere.example.com', 'obysphere.example.com/Not_A_Slug', 'hello']) expect(sphereAddress(no), no).toBeNull();
+  });
+
+  it('sphereapp_12_a_sign_in_shows_only_where_the_obysphere_offers_owner_rebind', async () => {
+    const at = (features: string[], signin?: Response) => vi.fn(async (url: string) => (url.endsWith('/features')
+      ? new Response(JSON.stringify({ features }), { status: 200 })
+      : signin ?? new Response(JSON.stringify({ providers: [{ id: 'google', name: 'Google' }, { id: 'acme-sso', name: 'Acme' }] }), { status: 200 }))) as unknown as typeof fetch;
+    expect(await rebindOffer(at(['card_runtime']), 'https://s.example.com')).toBeNull();
+    expect(await rebindOffer(at(['owner_rebind']), 'https://s.example.com')).toEqual([{ id: 'google', name: 'Google' }, { id: 'acme-sso', name: 'Acme' }]);
+    // a Sphere from before the providers' list signs in with Google alone
+    expect(await rebindOffer(at(['owner_rebind'], new Response('', { status: 404 })), 'https://s.example.com')).toEqual([{ id: 'google', name: 'Google' }]);
+    expect(await rebindOffer(vi.fn(async () => { throw new Error('down'); }) as unknown as typeof fetch, 'https://s.example.com')).toBeNull();
+  });
+
+  describe('sphereapp_12: getting back in', () => {
+    const WHERE = { url: 'https://sphere.example.com', sphere: 'demo' };
+    // the Obysphere: a sign-in started and a rebind, as obi-sphere answers them
+    function rebindSphere(answer: { status: number; body: unknown } = { status: 200, body: null }) {
+      const requests: { url: string; init: RequestInit }[] = [];
+      const http = vi.fn(async (url: string, init: RequestInit = {}) => {
+        requests.push({ url, init });
+        if (url === `${WHERE.url}/v0.1/signin/google`) return new Response(JSON.stringify({ url: 'https://accounts.example.com/auth?x', state: 'S1' }), { status: 201 });
+        if (url === `${WHERE.url}/v0.1/spheres/demo/owners/wellington/rebind`) {
+          const sent = JSON.parse(String(init.body)) as { owner_key: string };
+          return new Response(JSON.stringify(answer.body ?? { sphere: 'demo', owner: 'wellington', owner_key: sent.owner_key, owner_key_id: 'ed25519:x', admin: true, event: {} }), { status: answer.status });
+        }
+        return new Response('{}', { status: 404 });
+      }) as unknown as typeof fetch;
+      return { http, requests, sent: (end: string) => JSON.parse(String(requests.find((r) => r.url.endsWith(end))!.init.body)) as Record<string, unknown> };
+    }
+    function deps(back: { state?: string; code?: string; error?: string } = { state: 'S1', code: 'C1' }) {
+      const newKey = generateKeyPairSync('ed25519').privateKey;
+      const order: string[] = [];
+      return {
+        order, newKey,
+        d: {
+          newKey,
+          listen: async () => { order.push('listen'); return { returnTo: 'http://127.0.0.1:49152/oby-signin', back: Promise.resolve(back), close: () => order.push('close') }; },
+          open: async (url: string) => { order.push(`open ${url}`); },
+          keep: (k: KeyObject) => { order.push(k === newKey ? 'keep new' : 'keep other'); },
+        },
+      };
+    }
+    const obidFor = (state = 'none') => {
+      const o = fakeObid('wellington', state);
+      const call: Call = async (m, p, b) => (m === 'POST' && p === '/v1/obid/sphere/join' ? (o.calls.push({ method: m, path: p, body: b }), { status: 200, text: '{"state":"joined"}' }) : o.call(m, p, b));
+      return { ...o, call };
+    };
+
+    it('sphereapp_12_a_sign_in_binds_a_new_owner_key_and_this_oby_joins_with_it', async () => {
+      const sphere = rebindSphere(), obid = obidFor(), { d, order, newKey } = deps();
+      expect(await getBackIn(obid.call, sphere.http, WHERE, 'google', d)).toEqual({ kind: 'back', owner: 'wellington', admin: true });
+      // the sign-in, for the new key, back to main's listener; the browser opens the provider's page
+      expect(sphere.sent('/v0.1/signin/google')).toEqual({ owner_key: publicOf(newKey), return_to: 'http://127.0.0.1:49152/oby-signin' });
+      expect(order).toEqual(['listen', 'open https://accounts.example.com/auth?x', 'keep new', 'close']);
+      // the rebind: no Authorization, the sign-in's state and code, a card signed by the new key
+      const rebind = sphere.requests.find((r) => r.url.endsWith('/rebind'))!;
+      expect((rebind.init.headers as Record<string, string>).authorization).toBeUndefined();
+      const sent = sphere.sent('/rebind') as { owner_key: string; signin: unknown; card: Record<string, unknown> & { signatures: { protected: string; signature: string }[] } };
+      expect(sent.owner_key).toBe(publicOf(newKey));
+      expect(sent.signin).toEqual({ state: 'S1', code: 'C1' });
+      const { signatures, ...card } = sent.card;
+      expect(verifies(`${signatures[0].protected}.${Buffer.from(canonical(card)).toString('base64url')}`, signatures[0].signature, newKey)).toBe(true);
+      // obid: its key, the card with the new owner key, then the membership the rebind made, with a delegation from the new key
+      expect(obid.calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /v1/obid/sphere', 'POST /v1/obid/sphere/key', 'POST /v1/obid/sphere/card', 'POST /v1/obid/sphere/join']);
+      expect(obid.sent('/v1/obid/sphere/card')).toMatchObject({ ownerKey: publicOf(newKey), sphere: 'demo', accepts: ACCEPTS });
+      const join = obid.sent('/v1/obid/sphere/join') as { rebound: boolean; delegation: string; invitation?: unknown };
+      expect(join.rebound).toBe(true);
+      expect(join.invitation).toBeUndefined();
+      expect(part(join.delegation.split('.')[1])).toMatchObject({ sub: 'wellington', aud: 'obi-sphere:demo' });
+      expect(verifies(join.delegation.split('.').slice(0, 2).join('.'), join.delegation.split('.')[2], newKey)).toBe(true);
+    });
+
+    it('sphereapp_12: each refusal says why in words, and the new key is never kept', async () => {
+      for (const [status, code, words] of [
+        [404, 'not_found', 'This Obysphere has no owner by that id.'],
+        [403, 'forbidden', 'That sign-in can’t get you back in.'],
+        [409, 'conflict', 'That account is linked to someone else in this Obysphere'],
+        [429, 'rate_limited', 'Too many sign-ins at once'],
+        [400, 'card_invalid', 'The Obysphere didn’t take this Oby’s card.'],
+      ] as const) {
+        const sphere = rebindSphere({ status, body: { error: { code, message: 'raw words never shown' } } }), { d, order } = deps();
+        const r = await getBackIn(obidFor().call, sphere.http, WHERE, 'google', d);
+        expect(r.kind).toBe('failed');
+        expect((r as { why: string }).why).toContain(words);
+        expect((r as { why: string }).why).not.toContain('raw words');
+        expect(order).not.toContain('keep new');
+        expect(order.at(-1)).toBe('close');
+      }
+    });
+
+    it('sphereapp_12: a sign-in that didn’t finish, or came back for another state, rebinds nothing', async () => {
+      for (const back of [{ state: 'S1', error: 'failed' }, { state: 'OTHER', code: 'C1' }, { error: 'timeout' }]) {
+        const sphere = rebindSphere(), { d, order } = deps(back);
+        expect((await getBackIn(obidFor().call, sphere.http, WHERE, 'google', d)).kind).toBe('failed');
+        expect(sphere.requests.some((r) => r.url.endsWith('/rebind'))).toBe(false);
+        expect(order).not.toContain('keep new');
+      }
+      // an Oby already in an Obysphere: nothing starts
+      const sphere = rebindSphere(), { d, order } = deps();
+      expect(await getBackIn(obidFor('joined').call, sphere.http, WHERE, 'google', d)).toEqual({ kind: 'failed', why: expect.stringContaining('already in an Obysphere') });
+      expect(order).toEqual([]);
+      expect(sphere.requests).toEqual([]);
+    });
   });
 
   it('sphereapp_2_a_membership_from_before_handoffs_renews_its_card_and_delegation_once', async () => {

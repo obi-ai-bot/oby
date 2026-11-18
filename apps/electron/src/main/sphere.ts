@@ -1,15 +1,16 @@
-import { app, BrowserWindow, dialog } from 'electron';
+import { app, BrowserWindow, dialog, shell } from 'electron';
+import { createServer } from 'node:http';
 import { generateKeyPairSync, type KeyObject } from 'node:crypto';
-import { keptKey } from './device';
+import { keptKey, replaceKey } from './device';
 import { obid, type Trusted } from './obid';
 import { ipc } from './ipc';
 import { takeInput } from './words';
 import { boolean, safeInteger, string, type Decoder } from '../shared/decode';
-import { NotThisKey, addStarterRule, join, joinWarning, keepMembership, leave, listInvitations, makeInvitation, parseInvite, readPolicy, setAdmin, withdrawInvitation, type AdminsAnswer, type InvitesAnswer, type PolicyAnswer } from '../shared/sphere';
+import { NotThisKey, addStarterRule, join, joinWarning, keepMembership, leave, getBackIn, listInvitations, makeInvitation, parseInvite, readPolicy, rebindOffer, setAdmin, withdrawInvitation, type AdminsAnswer, type InvitesAnswer, type PolicyAnswer } from '../shared/sphere';
 import { withStarterRule } from '../shared/policy';
 import { SCRATCH } from '../shared/build';
 import { HANDOFF_OPEN, handoffBody, type HandoffAsk } from '../shared/handoff';
-import type { Joined } from '../shared/invite';
+import { sphereAddress, type Joined } from '../shared/invite';
 
 // Joining an Obysphere by a private link (docs/contracts/obysphere.md). The owner key, Ed25519, is
 // made here in main and kept as the device key is (device.ts): it never leaves main, and the page
@@ -69,6 +70,31 @@ export async function handOff(ask: HandoffAsk, call: typeof obid = obid): Promis
   const why = said502(sent.text);
   if (why.includes('policy_denied')) return 'This Obysphere’s rules don’t allow handing over tasks yet. An admin can change that.';
   return why;
+}
+
+// The browser's way back from a sign-in (SPHEREAPP-12): a listener on 127.0.0.1 only, on a port the
+// system picks, for one GET of its path, at most 10 minutes; its query is all it reads. RFC 8252 7.3.
+const SIGNIN_PATH = '/oby-signin';
+export function signinListener(): Promise<{ returnTo: string; back: Promise<{ state?: string; code?: string; error?: string }>; close: () => void }> {
+  return new Promise((ready, refused) => {
+    let done: (v: { state?: string; code?: string; error?: string }) => void = () => {};
+    const back = new Promise<{ state?: string; code?: string; error?: string }>((r) => { done = r; });
+    const server = createServer((req, res) => {
+      const u = new URL(req.url ?? '/', 'http://127.0.0.1');
+      if (req.method !== 'GET' || u.pathname !== SIGNIN_PATH) { res.writeHead(404).end(); return; }
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      res.end('<!doctype html><meta charset="utf-8"><title>Oby</title><p style="font:16px -apple-system,sans-serif;margin:40px">You can close this tab and go back to Oby.</p>');
+      const q = (k: string) => u.searchParams.get(k) ?? undefined;
+      done({ state: q('state'), code: q('code'), error: q('error') });
+    });
+    const timer = setTimeout(() => done({ error: 'timeout' }), 10 * 60_000);
+    const close = () => { clearTimeout(timer); server.close(); };
+    server.on('error', refused);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as { port: number };
+      ready({ returnTo: `http://127.0.0.1:${port}${SIGNIN_PATH}`, back, close });
+    });
+  });
 }
 
 export function sphering(trusted: Trusted, show: () => BrowserWindow) {
@@ -179,6 +205,38 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
       return { ...made, handoffs: !!now.policy && !withStarterRule(now.policy.rules) };
     });
   }, null);
+  // Getting back in with a sign-in (SPHEREAPP-12): what the Obysphere at an address offers (no
+  // click: two public reads); then, right after a click main saw and the owner's Sign in in main's
+  // own dialog, a new owner key, the browser, the rebind, and this Oby's place. The new key replaces
+  // the kept one only once the Obysphere has bound it.
+  ipc(trusted).handle('sphere-rebind-offer', [string], async (_e, text) => {
+    const where = sphereAddress(text);
+    return where ? { sphere: where.sphere, host: where.host, providers: await rebindOffer(fetch, where.url) } : null;
+  }, null);
+  ipc(trusted).handle('sphere-rebind', [string, string], async (e, text, provider): Promise<string | null> => {
+    if (!takeInput()) return 'Getting back in takes your own click.';
+    const where = sphereAddress(text);
+    if (!where) return 'That isn’t an Obysphere’s address.';
+    const w = BrowserWindow.fromWebContents(e.sender) ?? show();
+    const owner = await ownerNow();
+    const { response } = await dialog.showMessageBox(w, {
+      type: 'question', message: `Get back into ${where.sphere}${owner ? ` as ${owner}` : ''}?`,
+      detail: `You’ll sign in in your browser. Your Obys there under your old key stop working, and your teammates’ Obys ask them to compare your new key. Do this only if you lost the Mac you joined from.`,
+      buttons: ['Sign in', 'Cancel'], defaultId: 1, cancelId: 1,
+    });
+    if (response !== 0) return null;
+    const r = await getBackIn(obid, fetch, where, provider, {
+      newKey: generateKeyPairSync('ed25519').privateKey,
+      listen: signinListener,
+      open: async (url) => { if (/^https:\/\//.test(url)) await shell.openExternal(url); },
+      keep: (k) => { replaceKey('owner-key', k); key = k; },
+    });
+    if (r.kind === 'failed') return r.why;
+    void keep();
+    if (!w.isDestroyed()) w.webContents.send('sphere', { sphere: where.sphere, name: where.sphere });
+    return null;
+  }, 'Not this app’s page.');
+
   // Make admin, Remove admin (SPHEREAPP-11): with the owner's admin token, only right after a click
   // or key main saw itself, one each
   ipc(trusted).handle('sphere-admin', [string, boolean], async (_e, owner, on): Promise<AdminsAnswer> => (

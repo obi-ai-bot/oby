@@ -77,3 +77,18 @@ export type Joined = { kind: 'joined'; name: string } | { kind: 'cancelled' } | 
 // What a link the admin makes allows (SPHEREAPP-10): 5 people, for 14 days
 export const INVITE_USES = 5;
 export const INVITE_DAYS = 14;
+
+// An Obysphere's address, for getting back in with a sign-in (SPHEREAPP-12): an invite link, used
+// up or not, or `<host>/<sphere>` (https:// optional; plain http only on this machine, as a local
+// Obysphere's). Its base URL, host and id, or null
+const LOCAL = /^(127\.0\.0\.1|localhost|\[::1\])(:[0-9]{1,5})?$/;
+export function sphereAddress(text: string): { url: string; host: string; sphere: string } | null {
+  const link = parseInvite(text);
+  if (link) return { url: link.url, host: link.host, sphere: link.sphere };
+  const m = /^(?:(https?):\/\/)?([A-Za-z0-9.-]+(?::[0-9]{1,5})?|\[[0-9A-Fa-f:.]+\](?::[0-9]{1,5})?)\/(?:spheres\/)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)\/?$/.exec(text.trim());
+  if (!m || (m[1] === 'http' && !LOCAL.test(m[2]))) return null;
+  try {
+    const u = new URL(`${m[1] ?? 'https'}://${m[2]}`);
+    return { url: u.origin, host: u.host, sphere: m[3] };
+  } catch { return null; }
+}

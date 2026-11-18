@@ -94,6 +94,8 @@ vi.mock('../../../shared/sphere', async (original) => ({
   makeInvitation: async () => { the.invites++; return { invitations: [], link: 'oby://join/x#…', refused: null, why: null }; },
   withdrawInvitation: async () => { the.invites++; return { invitations: [], link: null, refused: null, why: null }; },
   setAdmin: async () => { the.invites++; return { admins: ['dana', 'wellington'], refused: null, why: null }; },
+  rebindOffer: async () => [{ id: 'google', name: 'Google' }],
+  getBackIn: async () => { the.invites++; return { kind: 'back', owner: 'wellington', admin: false }; },
 }));
 
 const FORBIDDEN = { status: 403, text: '' };
@@ -135,6 +137,8 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'sphere-invite': { args: [], refusal: null },
   'sphere-withdraw': { args: ['9187a87a-3126-424c-8861-8811bba1a5ec'], refusal: null },
   'sphere-admin': { args: ['dana', true], refusal: null },
+  'sphere-rebind-offer': { args: ['sphere.example.com/demo'], refusal: null },
+  'sphere-rebind': { args: ['sphere.example.com/demo', 'google'], refusal: 'Not this app’s page.' },
   'sphere-join': { args: [LINK], refusal: { kind: 'failed', name: '', why: 'Not this app’s page.' } },
   'sphere-handoff': { args: [{ to: 'dana', goal: 'Add a name option', repo: 'acme/app', base: 'main' }], refusal: 'Not this app’s page.' },
   'render-error': { args: ['TypeError', 'm', ''], refusal: undefined },
@@ -468,5 +472,23 @@ describe('SPHEREAPP-11', () => {
     expect(the.invites).toBe(before + 1);
     // the page's owner and choice are read as a string and a boolean, nothing else
     expect(await call('sphere-admin', own(), 'dana', 'yes')).toBeNull();
+  });
+});
+
+describe('SPHEREAPP-12', () => {
+  it('sphereapp_12_getting_back_in_starts_only_right_after_a_click_main_saw_and_main_s_own_dialog', async () => {
+    while (takeInput()) { /* other tests' */ }
+    const before = { dialogs: the.dialogs, invites: the.invites };
+    // what an address offers takes no click
+    expect(await call('sphere-rebind-offer', own(), 'sphere.example.com/demo')).toEqual({ sphere: 'demo', host: 'sphere.example.com', providers: [{ id: 'google', name: 'Google' }] });
+    expect(await call('sphere-rebind-offer', own(), 'not an address')).toBeNull();
+    // the sign-in: refused without a click, no dialog
+    expect(await call('sphere-rebind', own(), 'sphere.example.com/demo', 'google')).toBe('Getting back in takes your own click.');
+    expect(the.dialogs).toBe(before.dialogs);
+    // a click: main's own dialog; its Cancel starts nothing
+    input();
+    expect(await call('sphere-rebind', own(), 'sphere.example.com/demo', 'google')).toBeNull();
+    expect(the.dialogs).toBe(before.dialogs + 1);
+    expect(the.invites).toBe(before.invites);
   });
 });

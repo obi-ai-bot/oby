@@ -402,3 +402,49 @@ describe('SPHEREAPP-11: Make admin, Remove admin, and the sole-admin notice', ()
     expect(host.textContent).toContain('You’re the only admin of demo.');
   });
 });
+
+describe('SPHEREAPP-12: Sign in to get back in, beside the invite link', () => {
+  const sphereRebindOffer = vi.fn();
+  const sphereRebind = vi.fn();
+  async function step(offered: boolean) {
+    sphereRebindOffer.mockReset(); sphereRebind.mockReset();
+    sphereRebindOffer.mockImplementation(async (a: string) => (a.includes('demo') ? { sphere: 'demo', host: 'sphere.example.com', providers: offered ? [{ id: 'google', name: 'Google' }] : null } : null));
+    Object.assign((window as unknown as { app: Record<string, unknown> }).app, { sphereRebindOffer, sphereRebind });
+    vi.stubGlobal('location', { search: '?onboarding=sphere' });
+    const { default: FirstRun } = await import('../FirstRun');
+    await act(async () => root.render(<FirstRun />));
+    await settle();
+  }
+
+  it('sphereapp_12_an_address_whose_obysphere_offers_it_shows_sign_in_and_gets_back_in', async () => {
+    await step(true);
+    // its address, not a link: no Join, no problem, and the way back in
+    await type(field('Invite link'), 'sphere.example.com/demo');
+    await settle();
+    expect(button('Join')!.disabled).toBe(true);
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    expect(host.querySelector('.join-link-back')!.textContent).toBe('Lost the Mac you joined from? Sign in with Google to get back in.');
+    sphereRebind.mockResolvedValueOnce(null);
+    await act(async () => button('Sign in with Google')!.click());
+    await settle();
+    expect(sphereRebind).toHaveBeenCalledWith('sphere.example.com/demo', 'google');
+    expect(host.querySelector('[role="status"]')!.textContent).toBe('You’re back in demo.');
+  });
+
+  it('sphereapp_12: an Obysphere that doesn’t offer it shows no sign-in; a refusal says why', async () => {
+    await step(false);
+    await type(field('Invite link'), LINK);
+    await settle();
+    expect(host.querySelector('.join-link-back')).toBeNull();
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    vi.resetModules();
+    await step(true);
+    await type(field('Invite link'), LINK);
+    await settle();
+    sphereRebind.mockResolvedValueOnce('That sign-in can’t get you back in. Use the account you joined with, or one from a domain this Obysphere allows.');
+    await act(async () => button('Sign in with Google')!.click());
+    await settle();
+    expect(host.querySelector('[role="alert"]')!.textContent).toContain('That sign-in can’t get you back in.');
+  });
+});

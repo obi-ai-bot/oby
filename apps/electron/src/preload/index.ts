@@ -165,6 +165,10 @@ contextBridge.exposeInMainWorld('app', {
   sphereWithdraw: (id: string) => ipcRenderer.invoke('sphere-withdraw', id) as Promise<InvitesAnswer | null>,
   // Make admin (on) or Remove admin, right after the owner's click (main/sphere.ts, SPHEREAPP-11)
   sphereAdmin: (owner: string, on: boolean) => ipcRenderer.invoke('sphere-admin', owner, on) as Promise<AdminsAnswer | null>,
+  // getting back in with a sign-in (main/sphere.ts, SPHEREAPP-12): what an Obysphere's address
+  // offers, and the sign-in itself, right after the owner's click (null once back in, else why not)
+  sphereRebindOffer: (address: string) => ipcRenderer.invoke('sphere-rebind-offer', address) as Promise<{ sphere: string; host: string; providers: { id: string; name: string }[] | null } | null>,
+  sphereRebind: (address: string, provider: string) => ipcRenderer.invoke('sphere-rebind', address, provider) as Promise<string | null>,
   // obid, through main, which holds its token (main/obid.ts): one call; and what main's one follower
   // of obid's events holds (main/live.ts), then each message it sends, and what it reads for the page
   obid: {

@@ -381,3 +381,96 @@ export async function setAdmin(call: Call, ownerKey: () => KeyObject, owner: str
   } catch (e) { return { admins: null, refused: 'failed', why: e instanceof Error ? e.message : String(e) }; }
 }
 const ONLY_ADMINS_CHANGE = 'Only the Obysphere’s admins can change who’s admin.';
+
+// Getting back into an Obysphere with a sign-in (SPHEREAPP-12; obi-sphere's sphere-api.md section
+// 3.2, `owner_rebind`): for an owner whose key is lost with their Mac. A new owner key, a sign-in for
+// it at the Sphere's provider in the person's browser, back to main's own listener on this Mac; a new
+// Oby card signed by the new key; then the Sphere binds the new key to the owner, revoking the old
+// key's Obys, and this Oby joins in the same step. Only what the Sphere says comes back, in words.
+export type SigninProvider = { id: string; name: string };
+const sphereCode = async (r: Response) => ((await r.json().catch(() => null)) as { error?: { code?: unknown } } | null)?.error?.code;
+
+// The providers to get back in with, when the Sphere offers it (`owner_rebind` in its features),
+// else null. A Sphere from before the providers' list signs in with Google alone.
+export async function rebindOffer(http: typeof fetch, url: string): Promise<SigninProvider[] | null> {
+  try {
+    const f = await http(`${url}/v0.1/features`, { redirect: 'error' });
+    const features = f.ok ? ((await f.json()) as { features?: unknown }).features : null;
+    if (!Array.isArray(features) || !features.includes('owner_rebind')) return null;
+    const p = await http(`${url}/v0.1/signin`, { redirect: 'error' });
+    if (p.status === 404) return [{ id: 'google', name: 'Google' }];
+    const listed = p.ok ? ((await p.json()) as { providers?: unknown }).providers : null;
+    const providers = (Array.isArray(listed) ? listed : []).flatMap((x) => {
+      const o = x as { id?: unknown; name?: unknown };
+      return typeof o.id === 'string' && /^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/.test(o.id) ? [{ id: o.id, name: plainLine(o.name) || o.id }] : [];
+    });
+    return providers.length ? providers : null;
+  } catch { return null; }
+}
+
+// What main lends getBackIn: the new key, a listener on this Mac for the browser's way back, the
+// browser, and keeping the new key once the Sphere has bound it
+export type BackInDeps = {
+  newKey: KeyObject;
+  listen: () => Promise<{ returnTo: string; back: Promise<{ state?: string; code?: string; error?: string }>; close: () => void }>;
+  open: (url: string) => Promise<void>;
+  keep: (key: KeyObject) => void;
+};
+export type BackIn = { kind: 'back'; owner: string; admin: boolean } | { kind: 'failed'; why: string };
+const REBIND_WORDS: Record<number, string> = {
+  404: 'This Obysphere has no owner by that id. Check its address and the owner id you’re getting back in as.',
+  403: 'That sign-in can’t get you back in. Use the account you joined with, or one from a domain this Obysphere allows.',
+  409: 'That account is linked to someone else in this Obysphere, or this Mac already holds your key there.',
+  429: 'Too many sign-ins at once right now. Try again in a minute.',
+};
+const isSecure = (u: string) => { try { const x = new URL(u); return x.protocol === 'https:' || (x.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(x.hostname)); } catch { return false; } };
+
+export async function getBackIn(call: Call, http: typeof fetch, where: { url: string; sphere: string }, provider: string, d: BackInDeps): Promise<BackIn> {
+  const failed = (why: string): BackIn => ({ kind: 'failed', why });
+  let owner = '';
+  let listener: Awaited<ReturnType<BackInDeps['listen']>> | null = null;
+  try {
+    const now = await must(call, 'GET', '/v1/obid/sphere');
+    owner = String(now.owner ?? '');
+    if (now.state === 'joined') return failed(ALREADY);
+    const ownerKey = publicOf(d.newKey);
+    listener = await d.listen();
+    const started = await http(`${where.url}/v0.1/signin/${encodeURIComponent(provider)}`, {
+      method: 'POST', redirect: 'error', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ owner_key: ownerKey, return_to: listener.returnTo }),
+    });
+    if (started.status === 429) return failed(REBIND_WORDS[429]);
+    const signin = started.ok ? ((await started.json()) as { url?: unknown; state?: unknown }) : {};
+    if (typeof signin.url !== 'string' || typeof signin.state !== 'string' || !isSecure(signin.url)) return failed('This Obysphere couldn’t start a sign-in. Try again later.');
+    await d.open(signin.url);
+    const back = await listener.back;
+    if (back.error === 'timeout') return failed('The sign-in took too long. Try again.');
+    if (back.state !== signin.state || back.error || !back.code) return failed('The sign-in didn’t finish. Try again.');
+    // this Oby's own key and card, signed by the new owner key; obid's membership, if revoked, goes first
+    if (now.state === 'revoked') await must(call, 'DELETE', '/v1/obid/sphere');
+    await must(call, 'POST', '/v1/obid/sphere/key');
+    const obi = `obi-${randomUUID()}`;
+    const made = await must(call, 'POST', '/v1/obid/sphere/card', { url: where.url, sphere: where.sphere, obiId: obi, name: `${owner}’s Oby`, ownerKey, accepts: ACCEPTS });
+    const card = signCard(made.card as Record<string, unknown>, d.newKey);
+    const r = await http(`${where.url}/v0.1/spheres/${encodeURIComponent(where.sphere)}/owners/${encodeURIComponent(owner)}/rebind`, {
+      method: 'POST', redirect: 'error', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ owner_key: ownerKey, signin: { state: back.state, code: back.code }, card }),
+    });
+    if (!r.ok) {
+      const code = await sphereCode(r);
+      if (code === 'card_invalid' || code === 'feature_not_taken') return failed('The Obysphere didn’t take this Oby’s card. Update Oby, then try again.');
+      return failed(REBIND_WORDS[r.status] ?? `The Obysphere answered ${r.status}. Try again later.`);
+    }
+    const bound = (await r.json()) as { owner_key?: unknown; admin?: unknown };
+    if (bound.owner_key !== ownerKey) return failed('The Obysphere answered with another key. Nothing was kept.');
+    // bound: from here the new key is the owner's, so it's kept before anything else can fail
+    d.keep(d.newKey);
+    await must(call, 'POST', '/v1/obid/sphere/join', {
+      url: where.url, sphere: where.sphere, rebound: true, card, delegation: assertion(d.newKey, owner, where.sphere, SCOPES, obi),
+    }).catch((e) => { throw new Error(`You’re back in as ${owner}, but this Oby couldn’t take its place yet: ${e instanceof Error ? e.message : String(e)}`); });
+    return { kind: 'back', owner, admin: bound.admin === true };
+  } catch (e) {
+    return failed(e instanceof Refused ? plain(e.message, owner, where.sphere) : e instanceof Error ? e.message : String(e));
+  } finally {
+    listener?.close();
+  }
+}
