@@ -4,6 +4,9 @@
 
 use super::*;
 
+/// How long a click's start waits for usage reads before it routes on what's kept (#2484).
+const FRESH_USAGE_WAIT: Duration = Duration::from_secs(20);
+
 impl Jobs {
     /// The configuration of `tool`'s adapter, when obid has one, with its accounts as they are now
     /// (crate::accounts).
@@ -64,6 +67,24 @@ impl Jobs {
             .into_iter()
             .map(|(_, _, _, account)| account)
             .collect()
+    }
+
+    /// Before a task the owner started with a click is routed (Fix CI, the GitHub feed's work):
+    /// every account whose kept usage is older than obid's read interval, or missing, is asked of
+    /// its tool now, for at most [`FRESH_USAGE_WAIT`] in all, so routing never takes an account it
+    /// hasn't read lately for one with room (#2484, LIMITS-25). obid reads usage only while an app
+    /// looks; a click from a card, the iPhone or a notification may come when none has.
+    /// `OBID_USAGE_READS=off` (obid's tests) reads none.
+    pub async fn fresh_usage(self: &Arc<Self>) {
+        if std::env::var_os("OBID_USAGE_READS").is_some_and(|v| v == "off") {
+            return;
+        }
+        if tokio::time::timeout(FRESH_USAGE_WAIT, self.read_usages(true))
+            .await
+            .is_err()
+        {
+            tracing::info!("usage reads before routing took too long: routing on what's kept");
+        }
     }
 
     /// Whether `account` takes `background` work now (crate::limits::holds).

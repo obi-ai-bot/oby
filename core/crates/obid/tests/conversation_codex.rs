@@ -237,7 +237,19 @@ fn a_codex_turn_streams_its_words_and_ends_in_a_turn() {
         json!(["auth.json", "threads"]),
         "{recorded:?}"
     );
-    assert!(!folder.join("config/auth.json").exists());
+    // Its Codex waits for the next turn with its copy, as a waiting Claude Code does
+    // (CONVERSATION-AGENT-44); the copy goes when it ends, here with the conversation.
+    assert!(folder.join("config/auth.json").exists());
+    let deleted = call(
+        &obid,
+        "DELETE",
+        &format!("/v1/conversations/{conversation}"),
+        None,
+    );
+    assert!(deleted.status < 300, "{}", deleted.text);
+    within(10, "the login copy to go with its Codex", || {
+        (!folder.join("config/auth.json").exists()).then_some(())
+    });
 }
 
 /// What a turn leaves for the next Codex to load (its settings, instructions) is gone before the
@@ -532,7 +544,7 @@ fn a_codex_conversation_resumes_its_thread() {
 /// turn's answer too, and the owner's pick goes to its thread as their next words.
 #[test]
 fn conversation_agent_48_codex_asks_with_choices() {
-    let (_folder, obid) = obid("codex-conv-ask", true);
+    let (_folder, obid) = obid("codex-conv-choices", true);
     let asked = said(
         &obid,
         json!({"said": "ASK English or French? | English | French", "new": true}),
@@ -550,9 +562,113 @@ fn conversation_agent_48_codex_asks_with_choices() {
         &obid,
         json!({"said": "REMEMBER", "conversation": conversation}),
     );
-    assert!(words(&picked).starts_with("resume="), "{}", picked.text);
     let turns = turns(&obid);
     assert_eq!(turns.len(), 2, "{turns:?}");
+    // Its waiting app-server took the next words, on the same thread (CONVERSATION-AGENT-44).
+    assert_eq!(turns[1]["proc"], turns[0]["proc"], "{turns:?}");
+    assert!(words(&picked).starts_with("resume="), "{}", picked.text);
+    assert_ne!(words(&picked), "resume=none", "{}", picked.text);
+}
+
+/// The pattern of `conversation`'s `app-server` command lines: its stand-in's, and its box's
+/// around it (bubblewrap's on Linux, the watcher on macOS), each naming the conversation's MCP
+/// endpoint before `app-server`. Looked for from outside the box: inside a pid namespace of its own
+/// (Linux) the stand-in's own pid is another.
+fn codex_of(conversation: &str) -> String {
+    format!("conversation-{conversation}.*app-server")
+}
+
+/// Whether a process of `conversation`'s Codex is running.
+fn codex_running(conversation: &str) -> bool {
+    std::process::Command::new("pgrep")
+        .args(["-f", &codex_of(conversation)])
+        .stdout(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// CONVERSATION-AGENT-44: a Codex conversation's `app-server` waits for its next turn, as its Claude
+/// Code does: a follow-up is a `turn/start` written to the same process, on the thread it has
+/// loaded, never a new Codex reading its thread again (docs/fast-replies.md).
+#[test]
+fn conversation_agent_44_codex_follow_ups_go_to_its_running_app_server() {
+    let (_folder, obid) = obid("codex-conv-warm", true);
+    let first = said(&obid, json!({"said": "HELLO", "new": true}));
+    assert_eq!(words(&first), "Hello there.", "{}", first.text);
+    let conversation = first.body["conversation"].as_str().unwrap().to_owned();
+    let session = obid
+        .home
+        .join(format!("conversations/{conversation}/session.json"));
+    let kept: Value = serde_json::from_slice(&std::fs::read(&session).unwrap()).unwrap();
+    let thread = kept["session"].as_str().unwrap().to_owned();
+    for _ in 0..2 {
+        let again = said(
+            &obid,
+            json!({"said": "REMEMBER", "conversation": conversation}),
+        );
+        assert_eq!(words(&again), format!("resume={thread}"), "{}", again.text);
+    }
+    let turns = turns(&obid);
+    assert_eq!(turns.len(), 3, "{turns:?}");
+    let process = turns[0]["proc"].as_str().unwrap();
+    assert!(
+        turns.iter().all(|t| t["proc"] == process),
+        "one app-server for every turn: {turns:?}"
+    );
+    // Its later turns resumed nothing: the thread was loaded already.
+    assert!(turns.iter().all(|t| t["resumed"].is_null()), "{turns:?}");
+    assert!(codex_running(&conversation), "it waits for the next turn");
+    let log = obid.log();
+    assert_eq!(
+        log.lines()
+            .filter(|l| l.contains("ended in its session") && l.contains("its Codex was running"))
+            .count(),
+        2,
+        "{log}"
+    );
+
+    // The conversation goes: so does its Codex.
+    let deleted = call(
+        &obid,
+        "DELETE",
+        &format!("/v1/conversations/{conversation}"),
+        None,
+    );
+    assert!(deleted.status < 300, "{}", deleted.text);
+    within(15, "its Codex to end with it", || {
+        (!codex_running(&conversation)).then_some(())
+    });
+}
+
+/// CONVERSATION-AGENT-45: a waiting Codex that died isn't the next turn's: that turn starts Codex
+/// again and picks the thread up (`thread/resume`), as before it waited.
+#[test]
+fn conversation_agent_45_a_waiting_codex_that_died_picks_its_thread_up_again() {
+    let (_folder, obid) = obid("codex-conv-warm-died", true);
+    let first = said(&obid, json!({"said": "HELLO", "new": true}));
+    let conversation = first.body["conversation"].as_str().unwrap().to_owned();
+    assert!(codex_running(&conversation), "it waits for the next turn");
+    std::process::Command::new("pkill")
+        .args(["-KILL", "-f", &codex_of(&conversation)])
+        .status()
+        .unwrap();
+    within(15, "the waiting Codex to die", || {
+        (!codex_running(&conversation)).then_some(())
+    });
+    let again = said(
+        &obid,
+        json!({"said": "REMEMBER", "conversation": conversation}),
+    );
+    let turns = turns(&obid);
+    assert!(turns[0]["resumed"].is_null(), "{turns:?}");
+    assert_ne!(turns[1]["proc"], turns[0]["proc"], "{turns:?}");
+    assert!(turns[1]["resumed"].is_string(), "{turns:?}");
+    assert_eq!(
+        words(&again),
+        format!("resume={}", turns[1]["resumed"].as_str().unwrap()),
+        "{}",
+        again.text
+    );
 }
 
 /// Codex gets the same Oby tools: oby_dispatch, approved by obid's rule, starts a job whose card

@@ -16,6 +16,9 @@ pub const RERUNS_PER_HEAD: u32 = 2;
 pub const REQUEUES_PER_HEAD: u32 = 3;
 /// How long red may last with nothing green before it gives up (AUTOFIX-9).
 pub const GIVE_UP_AFTER: i64 = 24 * 3600;
+/// Rounds that merge the base into a pull request that conflicts with it, per pull request, one
+/// per head (AUTOFIX-18).
+pub const MERGES: usize = 2;
 
 /// How long after a rerun the same head's red is GitHub's old answer, not the rerun's: 90
 /// seconds, or `OBID_RERUN_SETTLE_SECONDS` (obid's tests set 0).
@@ -60,6 +63,16 @@ pub struct AutoFix {
     /// How many of `lines` the conversation was told.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub told: u32,
+    /// The heads a round merging the base into its conflicting pull request started at
+    /// (AUTOFIX-18).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub merges: Vec<String>,
+    /// The head it said still conflicts, past its merge rounds (AUTOFIX-19).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict_at: Option<String>,
+    /// The head it said passes on GitHub, for a pull request it pushed onto (AUTOFIX-17).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub green_at: Option<String>,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -253,6 +266,32 @@ impl AutoFix {
         true
     }
 
+    /// Whether a round may merge the base into its conflicting pull request at `head`: none yet at
+    /// this head, and fewer than [`MERGES`] (AUTOFIX-18, 19).
+    pub fn may_merge(&self, head: &str) -> bool {
+        !self.merges.iter().any(|h| h == head) && self.merges.len() < MERGES
+    }
+
+    /// A round merging the base in started at `head`.
+    pub fn merging(&mut self, head: &str) {
+        self.merges.push(head.to_owned());
+    }
+
+    /// It stops at `head`, which still conflicts: true the first time, when its line is said.
+    pub fn still_conflicts(&mut self, head: &str) -> bool {
+        let first = self.conflict_at.as_deref() != Some(head);
+        self.conflict_at = Some(head.to_owned());
+        first
+    }
+
+    /// GitHub's checks pass at `head`: true the first time, when its line is said (AUTOFIX-17).
+    pub fn green_at(&mut self, head: &str) -> bool {
+        self.red_since = None;
+        let first = self.green_at.as_deref() != Some(head);
+        self.green_at = Some(head.to_owned());
+        first
+    }
+
     /// Says `line` in the job's conversation (crate::conversation, AUTOFIX-1).
     pub fn say(&mut self, line: impl Into<String>) {
         self.lines.push(line.into());
@@ -304,6 +343,22 @@ pub fn give_up_line(why: GaveUp, allowed: u32) -> String {
         GaveUp::NoRound => "Its failed checks couldn't be handed to its agent.".into(),
     };
     format!("{why} Over to you.")
+}
+
+/// The line a pull request that conflicts with `base` says as its round merges `base` in, in
+/// obid's words (AUTOFIX-18).
+pub fn conflict_line(base: &str) -> String {
+    format!(
+        "Its pull request conflicts with {base}, so GitHub runs none of its checks. Merging {base} into it."
+    )
+}
+
+/// Why a pull request that still conflicts with `base` waits on the owner (AUTOFIX-19): its
+/// conversation's line ends with `Over to you.`, and its card says what to do.
+pub fn still_conflicts(base: &str) -> String {
+    format!(
+        "Its pull request still conflicts with {base}, so GitHub runs none of its checks. Merge {base} into its branch and resolve the conflicts, or tell Oby to."
+    )
 }
 
 #[cfg(test)]
@@ -421,6 +476,39 @@ mod tests {
         state.more();
         assert_eq!(state.allowed(), 2 * FIX_ROUNDS);
         assert_eq!(state.next(&red("a", &test, 0)), Step::Fix);
+    }
+
+    #[test]
+    fn autofix_18_a_conflict_gets_one_merge_round_per_head_two_in_all() {
+        let mut state = AutoFix::default();
+        assert!(state.may_merge("a"));
+        state.merging("a");
+        assert!(!state.may_merge("a"), "one per head");
+        assert!(state.may_merge("b"));
+        state.merging("b");
+        assert!(!state.may_merge("c"), "{MERGES} in all");
+        assert!(conflict_line("main").contains("Merging main into it."));
+    }
+
+    #[test]
+    fn autofix_19_still_conflicting_is_said_once_per_head() {
+        let mut state = AutoFix::default();
+        assert!(state.still_conflicts("c"));
+        assert!(!state.still_conflicts("c"), "said once");
+        assert!(state.still_conflicts("d"), "a new head says it again");
+        assert!(still_conflicts("main").starts_with("Its pull request still conflicts with main"));
+    }
+
+    #[test]
+    fn autofix_17_green_is_said_once_per_head() {
+        let mut state = AutoFix {
+            red_since: Some(1),
+            ..AutoFix::default()
+        };
+        assert!(state.green_at("a"));
+        assert_eq!(state.red_since, None);
+        assert!(!state.green_at("a"));
+        assert!(state.green_at("b"));
     }
 
     #[test]
