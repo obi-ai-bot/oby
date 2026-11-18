@@ -621,8 +621,8 @@ if { selected && first_shard && [[ -n "$rust$check_script$agents_md" ]]; } || [[
     fi
     jobs_lines=$(jobs_rs_lines)
     if ((jobs_lines > jobs_rs_limit)); then
-        echo "oby-check: jobs.rs has $jobs_lines production lines, past its limit of $jobs_rs_limit: it may only shrink: put new code in a module of its own, and lower jobs_rs_limit in this script when jobs.rs shrinks$(moved jobs_rs_limit)" >&2
-        failed+=("jobs.rs's line limit")
+        # Reported, never a failure (the owner's word, 2026-11-17): only build, tests, lint and the scan block.
+        echo "oby-check: jobs.rs has $jobs_lines production lines, past its limit of $jobs_rs_limit (reported, not a failure): it should only shrink: put new code in a module of its own, and lower jobs_rs_limit in this script when jobs.rs shrinks$(moved jobs_rs_limit)" >&2
     else
         echo "oby-check: jobs.rs has $jobs_lines production lines, within its limit of $jobs_rs_limit"
     fi
