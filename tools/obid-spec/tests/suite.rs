@@ -295,6 +295,26 @@ async fn obidspec_8_a_scratch_obid_sees_only_its_stand_ins_and_stops_by_pid() {
         "{env}"
     );
     assert!(env.contains("OBID_SECURITY_BIN="), "{env}");
+    // The login shell obid reads the person's PATH from is a stand-in answering this obid's own.
+    let shell = env
+        .lines()
+        .find_map(|l| l.strip_prefix("OBID_LOGIN_SHELL="))
+        .unwrap();
+    let said = std::process::Command::new(shell)
+        .args(["-l", "-c", "/usr/bin/env -0"])
+        .env_clear()
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&said.stdout).to_string();
+    let login_path = said
+        .split('\0')
+        .find_map(|l| l.strip_prefix("PATH="))
+        .unwrap();
+    assert_eq!(login_path, path, "{said}");
+    assert!(
+        !login_path.contains("homebrew") && !login_path.contains(".local"),
+        "{login_path}"
+    );
     let mode = std::fs::metadata(folder.join("home/api-token"))
         .unwrap()
         .permissions()
