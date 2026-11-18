@@ -24,7 +24,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { appOwnerKey, askInThread, firstVisible, goHome as home, openApp, openMember, openSphere, showing, threadText, until } from "./lib/app-driver.mjs";
+import { appOwnerKey, askInThread, firstVisible, goHome as home, openApp, openMember, openSphere, showing, showSidebar, threadText, until } from "./lib/app-driver.mjs";
 import { confirmOf, reviewBody, RULES, wordsOf } from "./lib/rig-review.mjs";
 import { loadSphereSpec } from "./lib/sphere-spec.mjs";
 
@@ -141,13 +141,15 @@ async function linkField(page) {
   // the side panel's Obysphere place, and a Join there (Sangam's words aren't settled: any of these)
   const join = await firstVisible([page.getByRole("button", { name: /Obysphere|Join/i })], 1500);
   if (join) { await join.click({ timeout: 5000 }).catch(() => {}); found = await field(); if (found) return found; }
+  // Settings › Obysphere (#2515), from a side panel shown first: a fresh app opens with it folded
+  await showSidebar(page);
   const settings = await firstVisible([page.getByRole("button", { name: "Settings", exact: true })], 1500);
   if (settings) {
     await settings.click({ timeout: 5000 }).catch(() => {});
-    const place = await firstVisible([page.getByRole("button", { name: /Obysphere/ })], 1500);
+    const place = await firstVisible([page.getByRole("button", { name: "Obysphere", exact: true })], 3000);
     if (place) await place.click({ timeout: 5000 }).catch(() => {});
     found = await field();
-    await home(page);
+    if (!found) await home(page);
   }
   return found;
 }
@@ -155,6 +157,22 @@ async function linkField(page) {
 // The link, opened as macOS hands an oby:// link to the app (main/sphere.ts, `open-url`), and
 // main's own "Join …?" answered Join for the person: the rig's one stand-in for a click, until the
 // app has a field of its own (L1). The join itself is main's, with the app's owner key.
+// main's next native message box answered with its first button, Join; answers a function that
+// says what it asked, or null while it hasn't
+async function answerMainsJoin() {
+  await ctx.app.evaluate(({ dialog }) => {
+    const was = dialog.showMessageBox;
+    globalThis.__rigAsked = null;
+    dialog.showMessageBox = async (...a) => {
+      dialog.showMessageBox = was;
+      const o = a.find((x) => x && typeof x === "object" && "message" in x) ?? {};
+      globalThis.__rigAsked = { message: String(o.message ?? ""), detail: String(o.detail ?? "") };
+      return { response: 0, checkboxChecked: false };
+    };
+  });
+  return () => ctx.app.evaluate(() => globalThis.__rigAsked);
+}
+
 async function joinByOpenUrl(link) {
   await ctx.app.evaluate(({ app, dialog }, url) => {
     const was = dialog.showMessageBox;
@@ -191,19 +209,28 @@ const SCENARIOS = [
     ok("a fresh home: not joined, no owner key yet");
     const field = await linkField(page);
     if (!field) red("no field in the app to enter an invite link (B2 wave 1: Join with a link in the app and on first run)");
-    // the owner id shown before the key is made
-    check(/\balex\b/.test(await page.locator("body").innerText()), "the join screen doesn't show the owner id (alex) before the key is made");
-    check(!appOwnerKey(ctx.userData), "the owner key was made before Join");
-    ok("the link field, with the owner id shown and no key made yet");
     await field.click();
     await page.keyboard.insertText(ctx.link);
+    // the owner id it will join as, shown once the link reads, before any key is made
+    await showing(page, /\balex\b/, 10).catch(() => red("with the link in, the app doesn't show the owner id it joins as (alex)"));
+    check(!appOwnerKey(ctx.userData), "the owner key was made before Join");
+    ok("the link in the app's field, the owner id alex shown, no key made yet");
     const join = await firstVisible([page.getByRole("button", { name: /^Join\b/ })], 5000);
     if (!join) red("the link is in, and there's no Join button");
+    // Join hands the link to main, whose own native "Join …?" no click of the rig's can reach: the rig
+    // answers it Join, the one click it stands in for, and keeps what it said
+    const asked = await answerMainsJoin();
+    await sleep(600);
     await join.click();
-    // an in-app confirm (Sangam's), if one follows
     const confirm = await firstVisible([page.getByRole("dialog").getByRole("button", { name: /^Join\b/ })], 2000);
     if (confirm) await confirm.click();
-    if (!(await joined(30))) red("Join was clicked and you didn't join within 30 s (a native dialog the rig can't click?)");
+    if (!(await joined(30))) red(`Join was clicked and you didn't join within 30 s${(await asked()) ? "" : " (main asked nothing)"}`);
+    const said = await asked();
+    if (said) ok(`main's own dialog asked "${said.message}" (${said.detail.replace(/\s+/g, " ").slice(0, 120)}), answered Join by the rig`);
+    ok("joined from the link in the app, with a real click on Join");
+    const card = await member((await you.get("/v1/obid/sphere")).obiId);
+    check(card?.owner_key && card.owner_key === appOwnerKey(ctx.userData), "the Sphere binds alex to a key that isn't the app's");
+    ok("the Sphere binds alex to the key the app's main made");
     ctx.joinedBy = "the app's link field";
   } },
   { id: "L2", rig: "RIG-28", title: "Members see each other within 60 s; a look-alike is named in the Confirm", run: async () => {
@@ -235,6 +262,11 @@ const SCENARIOS = [
     ok(`obid's Confirm: "${confirm.title}"`);
     await showing(ctx.page, /not dama/, 30).catch(() => red("the Confirm naming dama isn't on the app's screen"));
     ok("the app shows it");
+    // settled with your click, so it doesn't stand over what comes to Home next
+    const cancel = await firstVisible([ctx.page.getByRole("button", { name: /^(Cancel|Don.t ask|No)$/ })], 5000);
+    if (cancel) { await sleep(600); await cancel.click(); }
+    await until("the Confirm settled", async () => !(await you.get("/v1/inbox")).some((i) => i.id === confirm.id && i.state === "open"), 30_000)
+      .catch(() => say("  note the look-alike Confirm is still open: it may stand over Home's next cards"));
     // a rotated owner key: on the pinned Sphere an owner's key is bound for good (sphere-api.md 4:
     // a card update keeps the bound owner_key), so a new key can only be refused
     const rotated = await dama.rejoinWithNewKey();
@@ -287,11 +319,7 @@ const SCENARIOS = [
     };
     // first, your click: before an unsigned "remember" could make later ones accept themselves
     const first = await request();
-    await goHome();
-    const card = await until("the review card on Home", async () => {
-      const accept = ctx.page.getByRole("button", { name: "Accept", exact: true });
-      return (await accept.count()) ? accept.first() : null;
-    }, 60_000).catch(() => red("no Accept on your Home for Dana's review request"));
+    const card = await acceptOn(/review/i).catch(() => red(`no Accept under Waiting for you for Dana's review request; on screen: ${JSON.stringify(ctx.lastButtons)}`));
     await sleep(600); // a card takes no click in its first half second
     await card.click();
     const ended = await until("Dana's exchange ending", async () => {
@@ -331,11 +359,7 @@ const SCENARIOS = [
     }, 90_000).catch(() => red("the handoff neither reached your inbox nor was refused within 90 s"));
     if (where.theirs) red(`the handoff was ${where.theirs.state} (the starter rule ${spec.starterRule().actions.includes("handoff") ? "has" : "lacks"} handoff: B2 wave 1, shared/policy.ts; #2429)`);
     ok(`on your Home: "${where.mine.title}"`);
-    await goHome();
-    const accept = await until("Accept on the task card", async () => {
-      const b = ctx.page.getByRole("button", { name: "Accept", exact: true });
-      return (await b.count()) ? b.first() : null;
-    }, 60_000).catch(() => red("no Accept on your Home for Dana's task"));
+    const accept = await acceptOn(/task/i).catch(() => red(`no Accept under Waiting for you for Dana's task; on screen: ${JSON.stringify(ctx.lastButtons)}`));
     await sleep(600);
     await accept.click();
     const ended = await until("Dana's exchange ending", async () => {
@@ -347,7 +371,7 @@ const SCENARIOS = [
     check(result.branch ?? result.head_branch, "the result has no branch");
     ok(`the result came back: ${result.branch ?? result.head_branch} at ${(result.sha ?? result.head_sha).slice(0, 7)}`);
   } },
-  { id: "L7", rig: "RIG-33", title: "A peer offline says so at 20 s and answers later; a Sphere down mid-send gives one answer", run: async () => {
+  { id: "L7", rig: "RIG-33", title: "A peer offline says so at 20 s and answers later; an ask sent while the Sphere is down goes once it is back, one answer", run: async () => {
     await writePolicy(RULES);
     rig("dana", "stop");
     const words = `Status check while you're away ${randomBytes(3).toString("hex")}`;
@@ -362,15 +386,13 @@ const SCENARIOS = [
     await until("the answer once Dana is back", async () => /wasn’t bothered|wasn't bothered/.test((await threadText(ctx.page)).split(words).pop()), 120_000)
       .catch(async () => red(`no answer in your thread within 2 minutes of Dana coming back: ${(await threadText(ctx.page)).slice(-300)}`));
     ok("Dana came back, and the answer landed in the same thread");
-    // the Sphere goes down the moment you click Send, and comes back
+    // the Sphere down as you click Send (stopped just before, so the outcome never hangs on a race
+    // with the click), and back 5 s later: what you sent goes once, and one answer comes
     const again = `One more while the Sphere blinks ${randomBytes(3).toString("hex")}`;
     await openMember(ctx.page, "dana");
     const before = new Set((await exchangesOf(you)).map((e) => e.correlationId));
-    const layer = ctx.page.locator(".room-layer").last();
-    await layer.getByRole("textbox", { name: /^Ask / }).click();
-    await ctx.page.keyboard.insertText(again);
-    await layer.getByRole("button", { name: "Send" }).click();
     rig("sphere", "stop");
+    await askInThread(ctx.page, again);
     await sleep(5000);
     rig("sphere", "start");
     await until("the answer after the Sphere came back", async () => /wasn’t bothered|wasn't bothered/.test((await threadText(ctx.page)).split(again).pop()), 180_000)
@@ -493,6 +515,20 @@ function scanFolder(dir, needle) {
 }
 
 const goHome = () => home(ctx.page);
+// The side panel's Waiting for you, where another Oby's request waits for the owner, and its Accept:
+// the card's own button, found again until it shows
+async function acceptOn(what) {
+  return until(`Accept under Waiting for you (${what})`, async () => {
+    await goHome();
+    await showSidebar(ctx.page);
+    const waiting = await firstVisible([ctx.page.getByRole("button", { name: /^Waiting for you/ }), ctx.page.getByText(/^Waiting for you$/)], 2000);
+    if (waiting) await waiting.click({ timeout: 5000 }).catch(() => {});
+    await sleep(500);
+    const accept = ctx.page.getByRole("button", { name: "Accept", exact: true });
+    ctx.lastButtons = await buttons();
+    return (await accept.count()) ? accept.first() : null;
+  }, 60_000);
+}
 // What the person could click, for a red that needs to say what was on screen instead
 const buttons = () => ctx.page.getByRole("button").evaluateAll((els) => els.filter((e) => e.offsetParent).map((e) => (e.getAttribute("aria-label") || e.innerText || "").trim().slice(0, 40)));
 

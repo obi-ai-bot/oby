@@ -54,9 +54,13 @@ export async function firstVisible(locators, ms = 3000) {
 // The side panel on the Obysphere: its tile, a button named for it (the rig's is "The rig"), as the
 // person clicks it, only when its section (Members) isn't open already: a click on the tile of the
 // open section folds the side panel away. A folded panel is shown first. Answers whether it's there.
-export async function openSphere(page, name = "The rig") {
+export async function showSidebar(page) {
   const folded = await firstVisible([page.getByRole("button", { name: "Show sidebar", exact: true })], 300);
   if (folded) await folded.click({ timeout: 5000 }).catch(() => {});
+}
+
+export async function openSphere(page, name = "The rig") {
+  await showSidebar(page);
   if (await firstVisible([page.getByRole("button", { name: "Members", exact: true })], 300)) return true;
   const tile = await firstVisible([page.getByRole("button", { name, exact: true })], 2000);
   if (tile) await tile.click({ timeout: 5000 }).catch(() => {});

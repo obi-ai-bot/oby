@@ -116,7 +116,7 @@ The folder is `~/Library/Application Support/oby-rig`, or `OBY_RIG_DIR`: an empt
 - **RIG-30** L4: words holding `need-owner` land on Dana's Home; an unsigned answer is `403`; Dana's signed answer comes back to your thread as "dana answered this one", with Dana's words.
 - **RIG-31** L5: Dana's review request, accepted with your click on Home's Accept, comes back `approved` with the fixture's two findings; an unsigned Accept, and an unsigned "Accept, and remember for this repo", on two more requests, are each `403`.
 - **RIG-32** L6: with the Sphere's policy the app's own starter rule and the app launched again (main renews the membership), Dana's task handoff reaches your Home, your click on Accept runs it on the stand-in, and its result comes back to Dana with a branch and a sha.
-- **RIG-33** L7: with Dana's obid down, your ask's thread says Dana's Oby hasn't answered yet, no sooner than 15 s; Dana back, the answer lands in the same thread. The Sphere stopped the moment you click Send and started 5 s later: one exchange on each side, one answer, the ask shown once.
+- **RIG-33** L7: with Dana's obid down, your ask's thread says Dana's Oby hasn't answered yet, no sooner than 15 s; Dana back, the answer lands in the same thread. The Sphere down as you click Send (stopped just before it, so no race decides the outcome) and back 5 s later: the ask goes once it's back, with one exchange on each side, one answer, the ask shown once.
 - **RIG-34** L8: Dana leaves; your obid and the side panel drop dana. The admin revokes you; obid says so and the app shows a line saying you were removed. A new link rejoins.
 
 ### Test it when it's done
