@@ -2781,6 +2781,38 @@ impl Link {
         self.owner.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// `PUT /v1/obid/sphere/owner` `{"owner"}`: who obid joins its first Sphere as, chosen by the
+    /// person before they join (SPHERE-21), so a stranger without `gh` doesn't fall back to the
+    /// Mac's login name, which two people's Macs often share. An owner id the Sphere takes (the
+    /// spec's slug), kept in `home/owner` as a join keeps it. `409` once obid keeps a membership,
+    /// joined or revoked: its keys and card are that owner's.
+    pub fn set_owner(&self, body: &[u8]) -> Result<Value, ApiError> {
+        let map = object(body, &["owner"])?;
+        let owner = match map.get("owner") {
+            Some(Value::String(owner)) if is_slug(owner) => owner.clone(),
+            _ => {
+                return Err(api(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "owner is an owner id: 1 to 63 lower-case letters, digits and dashes, not starting or ending with a dash.",
+                ));
+            }
+        };
+        if self.has_membership() {
+            return Err(api(
+                StatusCode::CONFLICT,
+                "This Oby is already in an Obysphere as its owner: leave it first to join as someone else.",
+            ));
+        }
+        self.files.save_owner(&owner).map_err(|e| {
+            api(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("obid couldn't keep the owner: {e}"),
+            )
+        })?;
+        *self.owner.lock().unwrap_or_else(|e| e.into_inner()) = owner.clone();
+        Ok(json!({"owner": owner}))
+    }
+
     /// Until obid first joins a Sphere, its owner becomes `github`, the login gh is signed in as,
     /// when config's `owner` is still the Mac's login name obid wrote at its first start (#1214): a
     /// Sphere binds one owner key per owner id, and two people's Macs often share a login name
