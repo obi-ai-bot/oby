@@ -1,5 +1,6 @@
 {
   "L5": "B1 wave 1 (SPHERE-17 to 20, no pull request yet): an unsigned Accept and an unsigned 'Accept, and remember for this repo' answer 200, not 403",
   "L7": "obid's Sphere link, unassigned in the launch plan: an ask sent while the Sphere is down is refused ('the Obysphere can't be reached') and isn't sent once the Sphere is back",
-  "L8": "B1 wave 1 (revoked state in the membership answer): obid still says joined 90 s after the admin's revoke, so the app's revoked line (#2515) never shows"
+  "L8": "B1 wave 1 (revoked state in the membership answer): obid still says joined 90 s after the admin's revoke, so the app's revoked line (#2515) never shows",
+  "L9": "The @ ask (ASK-37 to 41, its own pull request, not on dev yet): on obid the @ list in Home's box reads no live members, so a member of the joined Sphere can't be picked"
 }
