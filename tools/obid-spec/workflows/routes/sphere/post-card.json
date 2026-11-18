@@ -1,0 +1,191 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/obid/sphere/card",
+  "version": "1.0.0",
+  "description": "The card the owner is to sign, built by obid around its own key: 409 before the key exists, 422 for a type obid doesn't take or a URL in the clear off this Mac; its URL, card_seq, one skill per accepted type and no signature (SPHERE-1).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/obid/sphere/card"
+    }
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/card",
+        "body": {
+          "url": "${state.sphere.url}",
+          "sphere": "${state.sphere.sphere}",
+          "obiId": "obi-card-test",
+          "name": "Alex's Oby",
+          "ownerKey": "${state.alex-key.public}",
+          "accepts": [
+            "review_request",
+            "question",
+            "handoff"
+          ]
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "before-the-key-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/card",
+        "body": {
+          "url": "${state.sphere.url}",
+          "sphere": "${state.sphere.sphere}",
+          "obiId": "obi-card-test",
+          "name": "Alex's Oby",
+          "ownerKey": "${state.alex-key.public}",
+          "accepts": [
+            "review_request",
+            "question",
+            "handoff"
+          ]
+        },
+        "expect": {
+          "status": 409
+        }
+      }
+    },
+    {
+      "id": "key",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/key",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-type-obid-doesnt-take-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/card",
+        "body": {
+          "url": "${state.sphere.url}",
+          "sphere": "${state.sphere.sphere}",
+          "obiId": "obi-card-test",
+          "name": "Alex's Oby",
+          "ownerKey": "${state.alex-key.public}",
+          "accepts": [
+            "run_request"
+          ]
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "http-off-this-mac-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/card",
+        "body": {
+          "url": "http://10.1.2.3:8787",
+          "sphere": "${state.sphere.sphere}",
+          "obiId": "obi-card-test",
+          "name": "Alex's Oby",
+          "ownerKey": "${state.alex-key.public}",
+          "accepts": [
+            "review_request",
+            "question",
+            "handoff"
+          ]
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "sphere-1-the-card-to-sign",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/card",
+        "body": {
+          "url": "${state.sphere.url}",
+          "sphere": "${state.sphere.sphere}",
+          "obiId": "obi-card-test",
+          "name": "Alex's Oby",
+          "ownerKey": "${state.alex-key.public}",
+          "accepts": [
+            "review_request",
+            "question",
+            "handoff"
+          ]
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "card": {
+              "url": "${state.sphere.url}/v0.1/spheres/${state.sphere.sphere}/members/obi-card-test",
+              "name": "Alex's Oby",
+              "description": "A personal delegate for an engineer.",
+              "signatures": {
+                "$exists": false
+              },
+              "skills": {
+                "$len": 3
+              }
+            }
+          },
+          "paths": {
+            "card.capabilities.extensions.0.params.card_seq": 1,
+            "card.capabilities.extensions.0.params.key_id": "${state.key.body.keyId}",
+            "card.capabilities.extensions.0.params.public_key": "${state.key.body.publicKey}",
+            "card.capabilities.extensions.0.params.owner": "alex",
+            "card.capabilities.extensions.0.params.owner_key": "${state.alex-key.public}",
+            "card.capabilities.extensions.0.params.accepts": [
+              "review_request",
+              "question",
+              "handoff"
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-1"
+        ]
+      }
+    }
+  ]
+}

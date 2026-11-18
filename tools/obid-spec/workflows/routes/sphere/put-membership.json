@@ -1,0 +1,209 @@
+{
+  "schemaVersion": "2",
+  "name": "PUT /v1/obid/sphere/membership",
+  "version": "1.0.0",
+  "description": "A new delegation or card signed by the owner: 409 before joining, 422 for one that fails the checks; a delegation renewed (SPHERE-6), and the card obid asks for (card_needed) signed, after which its words are sealed (SPHERE-6).",
+  "trigger": {
+    "http": {
+      "method": "PUT",
+      "path": "/v1/obid/sphere/membership"
+    }
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "PUT",
+        "path": "/v1/obid/sphere/membership",
+        "body": {},
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "before-joining-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "PUT",
+        "path": "/v1/obid/sphere/membership",
+        "body": {
+          "delegation": "x"
+        },
+        "expect": {
+          "status": 409
+        }
+      }
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}"
+      }
+    },
+    {
+      "id": "sphere-6-obid-asks-for-a-card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere",
+        "expect": {
+          "status": 200,
+          "body": {
+            "sealing": "card_needed"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-6"
+        ]
+      }
+    },
+    {
+      "id": "renewal",
+      "use": "runtime.rust:delegation",
+      "inputs": {
+        "ownerKey": "${state.alex-key}",
+        "owner": "alex",
+        "sphere": "${state.sphere.sphere}",
+        "obi": "${state.alex-joined.obiId}",
+        "life": 864000
+      }
+    },
+    {
+      "id": "for-another-obi",
+      "use": "runtime.rust:delegation",
+      "inputs": {
+        "ownerKey": "${state.alex-key}",
+        "owner": "alex",
+        "sphere": "${state.sphere.sphere}",
+        "obi": "obi-someone-else"
+      }
+    },
+    {
+      "id": "a-delegation-for-another-obi-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "PUT",
+        "path": "/v1/obid/sphere/membership",
+        "body": {
+          "delegation": "${state.for-another-obi.jwt}"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "sphere-6-a-new-delegation-same-scope",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "PUT",
+        "path": "/v1/obid/sphere/membership",
+        "body": {
+          "delegation": "${state.renewal.jwt}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "joined"
+          },
+          "paths": {
+            "delegation.expiresAt": {
+              "$ne": "${state.alex-joined.delegation.expiresAt}"
+            },
+            "delegation.scope": "${state.alex-joined.delegation.scope}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-6"
+        ]
+      }
+    },
+    {
+      "id": "old-card-seq-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "PUT",
+        "path": "/v1/obid/sphere/membership",
+        "body": {
+          "card": "${state.alex-joined.card}"
+        },
+        "expect": {
+          "status": [
+            409,
+            422
+          ]
+        }
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          }
+        ],
+        "seconds": 60
+      }
+    },
+    {
+      "id": "sphere-6-sealing-on-with-the-new-card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere",
+        "expect": {
+          "status": 200,
+          "body": {
+            "sealing": "on"
+          },
+          "paths": {
+            "card.capabilities.extensions.0.params.card_seq": {
+              "$ne": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-6"
+        ]
+      }
+    }
+  ]
+}

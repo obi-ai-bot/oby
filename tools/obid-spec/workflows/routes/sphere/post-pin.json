@@ -1,0 +1,182 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/obid/sphere/pins/{owner}",
+  "version": "1.0.0",
+  "description": "The owner verifies a pinned key with the fingerprint they compared: 422 for any other; the pinned key's own verifies it, in pins and members.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/obid/sphere/pins/{owner}"
+    }
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/pins/dana",
+        "body": {
+          "fingerprint": "${state.dana-key.keyId}"
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "another-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "another-fingerprint-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/pins/dana",
+        "body": {
+          "fingerprint": "${state.another-key.keyId}"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "still-unverified",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/pins",
+        "expect": {
+          "status": 200,
+          "body": {
+            "$any": {
+              "owner": "dana",
+              "verified": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "verified",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/pins/dana",
+        "body": {
+          "fingerprint": "${state.dana-key.keyId}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "pins-say-verified",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/pins",
+        "expect": {
+          "status": 200,
+          "body": {
+            "$any": {
+              "owner": "dana",
+              "verified": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "members-say-verified",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "owner": "dana",
+              "verified": true
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

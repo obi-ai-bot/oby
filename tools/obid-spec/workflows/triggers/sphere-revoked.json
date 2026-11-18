@@ -1,0 +1,147 @@
+{
+  "schemaVersion": "2",
+  "name": "Sphere long-poll: a revoked membership",
+  "version": "1.0.0",
+  "description": "The Obysphere's admin revokes a member: its obid sees it on its next poll and says revoked; the other members' obids stop listing it, and an ask to it is refused (SPHERE-5's leave, seen from both sides).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "revoke-dana",
+      "use": "runtime.rust:sphere-admin",
+      "inputs": {
+        "sphere": "${state.sphere}",
+        "method": "DELETE",
+        "path": "/v0.1/spheres/${state.sphere.sphere}/members/${state.dana-joined.obiId}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "sphere-5-danas-obid-says-revoked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/obid/sphere",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "revoked"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-5"
+        ],
+        "expectedRed": "#2524: the real Sphere refuses a removed member's token exchange, so obid never reads the directory and stays joined"
+      }
+    },
+    {
+      "id": "alex-no-longer-lists-dana",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "an-ask-to-dana-is-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.dana-joined.obiId}",
+          "type": "question",
+          "body": {
+            "text": "What are you working on?"
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": [
+            409,
+            422,
+            502
+          ]
+        }
+      }
+    }
+  ]
+}

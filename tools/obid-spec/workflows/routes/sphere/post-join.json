@@ -1,0 +1,430 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/obid/sphere/join",
+  "version": "1.0.0",
+  "description": "Joins with an invitation: obid checks the owner-signed card and the delegation (422 for each that fails), the Obysphere's refusal is quoted (502), an Obysphere it can't reach is 504, a join while joined is 409 (SPHERE-2); a good one is joined, and the Obysphere lists it active (SPHERE-1).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/obid/sphere/join"
+    }
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/join",
+        "body": {},
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "key",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/key",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/card",
+        "body": {
+          "url": "${state.sphere.url}",
+          "sphere": "${state.sphere.sphere}",
+          "obiId": "obi-join-test",
+          "name": "Alex's Oby",
+          "ownerKey": "${state.alex-key.public}",
+          "accepts": [
+            "review_request",
+            "question",
+            "handoff"
+          ]
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "signed",
+      "use": "runtime.rust:sign-card",
+      "inputs": {
+        "ownerKey": "${state.alex-key}",
+        "card": "${state.card.body.card}"
+      }
+    },
+    {
+      "id": "delegation",
+      "use": "runtime.rust:delegation",
+      "inputs": {
+        "ownerKey": "${state.alex-key}",
+        "owner": "alex",
+        "sphere": "${state.sphere.sphere}",
+        "obi": "obi-join-test"
+      }
+    },
+    {
+      "id": "stranger-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "signed-by-a-stranger",
+      "use": "runtime.rust:sign-card",
+      "inputs": {
+        "ownerKey": "${state.stranger-key}",
+        "card": "${state.card.body.card}"
+      }
+    },
+    {
+      "id": "delegation-by-a-stranger",
+      "use": "runtime.rust:delegation",
+      "inputs": {
+        "ownerKey": "${state.stranger-key}",
+        "owner": "alex",
+        "sphere": "${state.sphere.sphere}",
+        "obi": "obi-join-test"
+      }
+    },
+    {
+      "id": "delegation-without-reply",
+      "use": "runtime.rust:delegation",
+      "inputs": {
+        "ownerKey": "${state.alex-key}",
+        "owner": "alex",
+        "sphere": "${state.sphere.sphere}",
+        "obi": "obi-join-test",
+        "scope": "receive directory:read"
+      }
+    },
+    {
+      "id": "delegation-for-another-obi",
+      "use": "runtime.rust:delegation",
+      "inputs": {
+        "ownerKey": "${state.alex-key}",
+        "owner": "alex",
+        "sphere": "${state.sphere.sphere}",
+        "obi": "obi-someone-else"
+      }
+    },
+    {
+      "id": "delegation-expired",
+      "use": "runtime.rust:delegation",
+      "inputs": {
+        "ownerKey": "${state.alex-key}",
+        "owner": "alex",
+        "sphere": "${state.sphere.sphere}",
+        "obi": "obi-join-test",
+        "life": -60
+      }
+    },
+    {
+      "id": "an-unsigned-card-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/join",
+        "body": {
+          "url": "${state.sphere.url}",
+          "sphere": "${state.sphere.sphere}",
+          "invitation": {
+            "id": "${state.sphere.invitation.id}",
+            "secret": "${state.sphere.invitation.secret}"
+          },
+          "card": "${state.card.body.card}",
+          "delegation": "${state.delegation.jwt}"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "a-card-signed-by-another-key-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/join",
+        "body": {
+          "url": "${state.sphere.url}",
+          "sphere": "${state.sphere.sphere}",
+          "invitation": {
+            "id": "${state.sphere.invitation.id}",
+            "secret": "${state.sphere.invitation.secret}"
+          },
+          "card": "${state.signed-by-a-stranger}",
+          "delegation": "${state.delegation.jwt}"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "a-delegation-by-another-key-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/join",
+        "body": {
+          "url": "${state.sphere.url}",
+          "sphere": "${state.sphere.sphere}",
+          "invitation": {
+            "id": "${state.sphere.invitation.id}",
+            "secret": "${state.sphere.invitation.secret}"
+          },
+          "card": "${state.signed}",
+          "delegation": "${state.delegation-by-a-stranger.jwt}"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "a-delegation-without-reply-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/join",
+        "body": {
+          "url": "${state.sphere.url}",
+          "sphere": "${state.sphere.sphere}",
+          "invitation": {
+            "id": "${state.sphere.invitation.id}",
+            "secret": "${state.sphere.invitation.secret}"
+          },
+          "card": "${state.signed}",
+          "delegation": "${state.delegation-without-reply.jwt}"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "a-delegation-for-another-obi-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/join",
+        "body": {
+          "url": "${state.sphere.url}",
+          "sphere": "${state.sphere.sphere}",
+          "invitation": {
+            "id": "${state.sphere.invitation.id}",
+            "secret": "${state.sphere.invitation.secret}"
+          },
+          "card": "${state.signed}",
+          "delegation": "${state.delegation-for-another-obi.jwt}"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "an-expired-delegation-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/join",
+        "body": {
+          "url": "${state.sphere.url}",
+          "sphere": "${state.sphere.sphere}",
+          "invitation": {
+            "id": "${state.sphere.invitation.id}",
+            "secret": "${state.sphere.invitation.secret}"
+          },
+          "card": "${state.signed}",
+          "delegation": "${state.delegation-expired.jwt}"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "sphere-2-the-obysphere-refuses-502",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/join",
+        "body": {
+          "url": "${state.sphere.url}",
+          "sphere": "${state.sphere.sphere}",
+          "invitation": {
+            "id": "${state.sphere.invitation.id}",
+            "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+          },
+          "card": "${state.signed}",
+          "delegation": "${state.delegation.jwt}"
+        },
+        "expect": {
+          "status": 502,
+          "paths": {
+            "error": {
+              "$contains": "invitation_invalid"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-2"
+        ]
+      }
+    },
+    {
+      "id": "sphere-2-nothing-joined-after-a-refusal",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere",
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "none"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-2"
+        ]
+      }
+    },
+    {
+      "id": "joined",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/join",
+        "body": {
+          "url": "${state.sphere.url}",
+          "sphere": "${state.sphere.sphere}",
+          "invitation": {
+            "id": "${state.sphere.invitation.id}",
+            "secret": "${state.sphere.invitation.secret}"
+          },
+          "card": "${state.signed}",
+          "delegation": "${state.delegation.jwt}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "joined",
+            "obiId": "obi-join-test",
+            "owner": "alex",
+            "sphere": "${state.sphere.sphere}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-1"
+        ]
+      }
+    },
+    {
+      "id": "sphere-1-the-obysphere-lists-it-active",
+      "use": "runtime.rust:sphere-admin",
+      "inputs": {
+        "sphere": "${state.sphere}",
+        "method": "GET",
+        "path": "/v0.1/spheres/${state.sphere.sphere}/members/obi-join-test",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "active",
+            "owner": "alex",
+            "owner_key": "${state.alex-key.public}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-1"
+        ]
+      }
+    },
+    {
+      "id": "sphere-2-already-joined-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/join",
+        "body": {
+          "url": "${state.sphere.url}",
+          "sphere": "${state.sphere.sphere}",
+          "invitation": {
+            "id": "${state.sphere.invitation.id}",
+            "secret": "${state.sphere.invitation.secret}"
+          },
+          "card": "${state.signed}",
+          "delegation": "${state.delegation.jwt}"
+        },
+        "expect": {
+          "status": 409
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-2"
+        ]
+      }
+    },
+    {
+      "id": "the-membership-kept-0600",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.alex}",
+        "path": "sphere/membership.json",
+        "expect": {
+          "exists": true,
+          "mode": "0600"
+        }
+      }
+    }
+  ]
+}
