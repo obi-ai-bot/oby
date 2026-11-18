@@ -3118,6 +3118,12 @@ fn tasks_24_a_diff_over_a_mebibyte_is_cut_at_the_cap_and_says_so() {
     );
     assert_eq!(answer["diff"], "");
     assert_eq!(answer["truncated"], true);
+    // Why there's none (#2529): too much to read, not a diff passed off as empty.
+    let error = answer["error"].as_str().unwrap_or_default();
+    assert!(
+        error.starts_with("Oby couldn't read its diff:") && error.contains("more than"),
+        "{answer}"
+    );
 }
 
 /// TASKS-30: a vault secret and obid's API token written into a changed file are taken out of

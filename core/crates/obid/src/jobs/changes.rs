@@ -53,16 +53,35 @@ impl Jobs {
                 }
             },
         };
-        let Some(mut files) = self.changed_over(id, &range, ask.ignore_whitespace).await else {
-            return Some(empty(listed));
+        let mut files = match self.changed_over(id, &range, ask.ignore_whitespace).await {
+            Ok(files) => files,
+            Err(why) => {
+                tracing::warn!("job {id}: its changed files couldn't be read: {why}");
+                let mut none = empty(listed);
+                none["error"] = json!(
+                    crate::secrets::known()
+                        .redact(&format!("Oby couldn't read its changed files: {why}"))
+                );
+                return Some(none);
+            }
         };
         if let Some(path) = ask.path {
             files.retain(|f| f.0 == path);
         }
-        let (diff, truncated) = if ask.path.is_some() && files.is_empty() {
-            (String::new(), false)
+        let (diff, truncated, error) = if ask.path.is_some() && files.is_empty() {
+            (String::new(), false, None)
         } else {
-            self.change_diff(id, &range, ask).await
+            match self.change_diff(id, &range, ask).await {
+                Ok((diff, truncated)) => (diff, truncated, None),
+                Err(why) => {
+                    tracing::warn!("job {id}: its diff couldn't be read: {why}");
+                    (
+                        String::new(),
+                        true,
+                        Some(format!("Oby couldn't read its diff: {why}")),
+                    )
+                }
+            }
         };
         let known = crate::secrets::known();
         let files: Vec<Value> = files
@@ -72,10 +91,12 @@ impl Jobs {
                        "additions": additions, "deletions": deletions})
             })
             .collect();
-        Some(
-            json!({"base": base, "head": head, "files": files, "diff": diff,
-                    "truncated": truncated, "round": ask.round, "rounds": listed}),
-        )
+        let mut answer = json!({"base": base, "head": head, "files": files, "diff": diff,
+                                "truncated": truncated, "round": ask.round, "rounds": listed});
+        if let Some(error) = error {
+            answer["error"] = json!(crate::secrets::known().redact(&error));
+        }
+        Some(answer)
     }
 
     /// The job's base and its worktree's HEAD, read once; none when either can't be read.
@@ -101,13 +122,13 @@ impl Jobs {
         Some((base, head))
     }
 
-    /// The files `range` changes, in git's order; none when they can't be read.
+    /// The files `range` changes, in git's order; why not, when they can't be read.
     async fn changed_over(
         &self,
         id: &str,
         range: &str,
         ignore_whitespace: bool,
-    ) -> Option<Vec<Changed>> {
+    ) -> Result<Vec<Changed>, String> {
         let mut args = vec![
             "diff",
             "--raw",
@@ -123,8 +144,7 @@ impl Jobs {
         args.extend([range, "--"]);
         let out = self
             .sandboxed_git_within(id, &args, None, DIFF_LIMIT, DIFF_OUTPUT_MAX)
-            .await
-            .ok()?;
+            .await?;
         // `:<modes> <shas> <letter>` then its path, for each file; then `<added>\t<deleted>\t<path>`.
         let mut files: Vec<Changed> = Vec::new();
         let mut fields = out.split(|b| *b == 0).filter(|f| !f.is_empty());
@@ -136,7 +156,10 @@ impl Jobs {
                     Some('D') => "deleted",
                     _ => "modified",
                 };
-                let path = String::from_utf8_lossy(fields.next()?).into_owned();
+                let Some(path) = fields.next() else {
+                    return Err(format!("git listed {raw} with no path"));
+                };
+                let path = String::from_utf8_lossy(path).into_owned();
                 files.push((path, status, 0, 0));
             } else if let Some((added, rest)) = field.split_once('\t')
                 && let Some((deleted, path)) = rest.split_once('\t')
@@ -147,12 +170,18 @@ impl Jobs {
                 file.3 = deleted.parse().unwrap_or(0);
             }
         }
-        Some(files)
+        Ok(files)
     }
 
     /// The diff over `range` (only `ask`'s path's, taken literally), redacted and then cut to
-    /// [`CHANGES_DIFF_MAX`], and whether any was cut: none, and cut, when it can't be read whole.
-    async fn change_diff(&self, id: &str, range: &str, ask: &ChangesAsk<'_>) -> (String, bool) {
+    /// [`CHANGES_DIFF_MAX`], and whether any was cut; why not, when it can't be read whole (over
+    /// [`CHANGED_MAX`], or git failed).
+    async fn change_diff(
+        &self,
+        id: &str,
+        range: &str,
+        ask: &ChangesAsk<'_>,
+    ) -> Result<(String, bool), String> {
         let mut args = vec![
             "--literal-pathspecs",
             "diff",
@@ -166,16 +195,13 @@ impl Jobs {
         }
         args.extend([range, "--"]);
         args.extend(ask.path);
-        let Ok(out) = self
+        let out = self
             .sandboxed_git_within(id, &args, None, DIFF_LIMIT, CHANGED_MAX)
-            .await
-        else {
-            return (String::new(), true);
-        };
+            .await?;
         let mut text = crate::secrets::known().redact(&String::from_utf8_lossy(&out));
         let (keep, truncated) = diff_cut(&text, CHANGES_DIFF_MAX);
         text.truncate(keep);
-        (text, truncated)
+        Ok((text, truncated))
     }
 }
 
