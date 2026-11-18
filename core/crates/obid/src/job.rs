@@ -2131,11 +2131,15 @@ impl Job {
                     self.publish_error.as_deref(),
                 );
             } else if self.pushed_only() {
+                // Onto the owner's own pull request's branch (TASKCONV-31): that one (AUTOFIX-20).
+                let onto = (self.onto.as_ref().zip(self.pr))
+                    .map(|(_, pr)| format!("Secret scan clean · pushed onto pull request #{pr}"));
+                let detail = "Secret scan clean · pushed · no pull request for this remote";
                 set(
                     &mut stages,
                     "publish",
                     "done",
-                    Some("Secret scan clean · pushed · no pull request for this remote"),
+                    Some(onto.as_deref().unwrap_or(detail)),
                     None,
                 );
                 for id in ["review", "merged"] {

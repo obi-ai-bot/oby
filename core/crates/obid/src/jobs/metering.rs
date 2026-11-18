@@ -50,15 +50,30 @@ impl Jobs {
 
     /// [`Jobs::want_usage`]'s reads.
     pub(super) async fn read_due_usages(&self) {
+        self.read_usages(false).await;
+    }
+
+    /// Each signed-in account's usage not asked in the last [`usage_every`]; `routing` (a task about
+    /// to be routed, #2484), only those whose kept reading is older than that or missing, which
+    /// routing would otherwise take for room, and never a figure that holds nothing (Cursor's) nor
+    /// the models.
+    pub(super) async fn read_usages(&self, routing: bool) {
         use crate::usage::Asked;
         let home = login_home();
         let every = usage_every();
+        let now = obi_protocol::time::now();
         for tool in Tool::ALL {
             for account in self.accounts(tool) {
                 if self.shutting_down.load(Ordering::Relaxed) {
                     return;
                 }
                 let id = account.id.clone();
+                let kept = self.usage.get(&id);
+                let seen = kept.five_hour_observed_at.max(kept.seven_day_observed_at);
+                let fresh = seen.is_some_and(|at| now - at < every.as_secs() as i64);
+                if routing && (fresh || kept.advisory || tool == Tool::Cursor) {
+                    continue;
+                }
                 let due = {
                     let reads = self.usage_reads();
                     !reads.never.contains(&id)
@@ -114,7 +129,10 @@ impl Jobs {
                     Err(why) => tracing::info!("{name} account {id}: usage not read: {why}"),
                 }
                 // Same cadence as usage: each account's own model list, never blocking a turn or job.
-                if !self.being_changed(&id) && self.accounts(tool).iter().any(|a| a.id == id) {
+                if !routing
+                    && !self.being_changed(&id)
+                    && self.accounts(tool).iter().any(|a| a.id == id)
+                {
                     self.refresh_models(tool, &account).await;
                 }
             }
