@@ -37,8 +37,10 @@ const LEAVE_MS = 220;
 // Agents takes Accounts' and Models' place: each agent's accounts with its model and efforts,
 // and which one new tasks go to (the old two stay with ?everything)
 // On obid, Remote access shows only pairing an iPhone (Pairing), as the Swift Mac app's Settings › Runner had it;
-// the owner's order of 2026-11-01: no word a person sees says Runner, so that page went
-const LATER = new Set([...(onObid ? [] : ['remote']), 'sharing', 'vault', 'accounts', 'models']);
+// the owner's order of 2026-11-01: no word a person sees says Runner, so that page went.
+// Hidden on obid too while the iPhone app is off the table (the owner's word, 2026-11-18): it comes back
+// with the iPhone app; ?everything still shows it (PAIRING-12)
+const LATER = new Set(['remote', 'sharing', 'vault', 'accounts', 'models']);
 export const SETTINGS_PAGES = [
   { id: 'general', label: 'General' },
   { id: 'agents', label: 'Agents' },
