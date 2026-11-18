@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { bridge, startObid, type Trusted } from './obid';
 import { living } from './live';
 import { confirming, ownersWords } from './device';
+import { worktrees } from './worktree';
 import { input, space, picked } from './words';
 import { notifying, windowLeft, windowSeen } from './notify';
 import { updating } from './updates';
@@ -84,6 +85,7 @@ let last = '';
 const trusted: Trusted = (e) => !!win && e.sender === win.webContents && e.senderFrame === win.webContents.mainFrame;
 bridge(trusted, ownersWords);
 confirming(trusted);
+worktrees(trusted);
 const channels = ipc(trusted);
 // the page asks for both before it draws, to lay its title bar out around the lights
 channels.on('window-chrome', [], () => chrome, null);

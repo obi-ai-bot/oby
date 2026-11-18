@@ -17,10 +17,15 @@ const the = vi.hoisted(() => ({
   lost: 0,
   // obid's answer to main's own read of its projects (WORDS-18)
   projects: { status: 200, text: '[]' },
+  // Undo this round (CHANGES-14): obid's sentence, and the button main's dialog answers (0: Undo)
+  undo: 'oby/fix-1 goes back to abc1234, as it was before this round. Nothing is pushed.',
+  dialog: 1,
+  asked: [] as { message: string; detail: string }[],
 }));
 vi.mock('electron', () => ({
   app: { getPath: () => mkdtempSync(join(tmpdir(), 'oby-device-')) },
-  BrowserWindow: {}, dialog: {},
+  BrowserWindow: { fromWebContents: () => null },
+  dialog: { showMessageBox: async (asked: { message: string; detail: string }) => { the.asked.push(asked); return { response: the.dialog }; } },
   ipcMain: { handle: (name: string, f: (...args: unknown[]) => Promise<{ status: number; text: string }>) => the.handlers.set(name, f) },
   safeStorage: { isEncryptionAvailable: () => true, encryptString: (s: string) => Buffer.from(s), decryptString: (b: Buffer) => b.toString() },
 }));
@@ -31,6 +36,7 @@ vi.mock('../../../main/obid', () => ({
     if (path === '/v1/inbox') return { status: 200, text: JSON.stringify([the.item]) };
     if (path === '/v1/devices') return { status: 200, text: JSON.stringify({ id: 'd1' }) };
     if (path === '/v1/projects') return the.projects;
+    if (path === '/v1/jobs/j1/undo' && method === 'GET') return { status: 200, text: JSON.stringify({ action: the.undo }) };
     if (path.endsWith('/messages') && the.lost > 0) { the.lost--; return { status: 0, text: 'obid closed the connection.' }; }
     return { status: 200, text: '{}' };
   },
@@ -232,5 +238,35 @@ describe('main reads a project’s folders itself', () => {
     // words with no project: no read of main's
     expect(await signedOnInput({ said: 'Fix the login', new: true })).toMatch(/^d1 /);
     expect(the.calls.some((c) => c.path === '/v1/projects')).toBe(false);
+  });
+});
+
+// Undo this round (docs/contracts/task-changes.md, CHANGES-14): main signs `oby-undo` only on Undo in
+// its own dialog, after an input it saw, for the sentence it read from obid itself.
+describe('obid-undo', () => {
+  confirming(() => true);
+  const undo = (action: string) => the.handlers.get('obid-undo')!({ sender: {} }, 'j1', action);
+  const posted = () => the.calls.filter((c) => c.method === 'POST' && c.path === '/v1/jobs/j1/undo');
+  beforeEach(() => { the.calls.length = 0; the.asked.length = 0; the.dialog = 1; while (takeInput()) { /* other tests' */ } });
+
+  it('changes_14_main_signs_undo_only_on_undo_in_its_own_dialog', async () => {
+    // a script's call, with no input of the owner's: no dialog, nothing reaches obid
+    expect((await undo(the.undo)).status).toBe(403);
+    expect(the.asked).toEqual([]);
+    // the page showed other words than obid's: refused before any dialog
+    input();
+    expect((await undo('Undo it all.')).status).toBe(409);
+    expect(the.asked).toEqual([]);
+    // Not now in main's dialog: nothing signed
+    input();
+    expect((await undo(the.undo)).status).toBe(409);
+    expect(the.asked.at(-1)).toMatchObject({ message: 'Undo this round?', detail: the.undo });
+    expect(posted()).toEqual([]);
+    // Undo there: signed obid's sentence
+    the.dialog = 0;
+    input();
+    expect((await undo(the.undo)).status).toBe(200);
+    expect(posted()).toHaveLength(1);
+    expect(posted()[0].body).toMatchObject({ device: 'd1', action: the.undo, signedAt: expect.any(String), signature: expect.any(String) });
   });
 });

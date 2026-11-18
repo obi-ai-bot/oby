@@ -15,6 +15,8 @@ import type {
   Helper,
   InboxItem,
   Job,
+  JobChanges,
+  UndoAction,
   LimitDecision,
   PlanAnswer,
   Profile,
@@ -101,6 +103,8 @@ export const api = {
   job: (j: string) => call<Job>('GET', `/v1/jobs/${id(j)}`),
   stop: (j: string, key?: string) => call<Job>('POST', `/v1/jobs/${id(j)}/stop`, key ? { clientRequestId: key } : undefined),
   dismiss: (j: string) => call<Job>('POST', `/v1/jobs/${id(j)}/dismiss`),
+  // another account (LIMITS-16): queued, it starts there; ended, its Try again runs there
+  move: (j: string, account: string) => call<Job>('POST', `/v1/jobs/${id(j)}/move`, { account }),
   // obid only, the task's menu: rename (whatever it's doing), archive or unarchive (ended, needing
   // nothing), delete (ended, for good: obid's 409 says why not); a job with commits that aren't
   // published isn't deleted yet: obid's Confirm (ask) asks the owner first
@@ -125,6 +129,12 @@ export const api = {
   // exactly that on their click
   publishAction: (j: string, c: PublishChoices = {}) => call<PublishAction>('GET', `/v1/jobs/${id(j)}/publish${q(c)}`),
   publish: (j: string, action: string, c: PublishChoices = {}) => call<{ url?: string }>('POST', `/v1/jobs/${id(j)}/publish`, undefined, (b) => b.publish(j, action, c)),
+  // A task's changes, whole or one round's, whitespace left out or not (CHANGES-1 to 3); Undo this
+  // round's sentence, then main signs exactly that on the owner's click in its own dialog (CHANGES-14)
+  changes: (j: string, o: { round?: number; ignoreWhitespace?: boolean } = {}) =>
+    call<JobChanges>('GET', `/v1/jobs/${id(j)}/changes${q({ round: o.round, whitespace: o.ignoreWhitespace ? 'ignore' : undefined })}`),
+  undoAction: (j: string) => call<UndoAction>('GET', `/v1/jobs/${id(j)}/undo`),
+  undo: (j: string, action: string) => call<Job>('POST', `/v1/jobs/${id(j)}/undo`, undefined, (b) => b.undo(j, action)),
   // Confirm on a confirm item: main signs it with this Mac's device key (main/device.ts)
   confirm: (i: string) => call<InboxItem>('POST', `/v1/inbox/${id(i)}/answer`, undefined, (b) => b.confirm(i)),
   // What this Oby tells other Obys by itself (docs/contracts/peer-thread.md, PEER-16 to 18): the
@@ -165,6 +175,9 @@ export const api = {
   // obid only: the profiles on this Mac (docs/api/profiles.md), and a new one; older runners answer 404
   profiles: () => call<Profile[]>('GET', '/v1/profiles'),
   createProfile: (name: string, color: string) => call<Profile>('POST', '/v1/profiles', { name, color }),
+  // its new name or colour, only what changed; and deleting it (its own become the default's)
+  changeProfile: (p: string, change: { name?: string; color?: string }) => call<Profile>('PATCH', `/v1/profiles/${id(p)}`, change),
+  deleteProfile: (p: string) => call<null>('DELETE', `/v1/profiles/${id(p)}`),
   // obid only: the projects (docs/api/projects.md), a new one, a change and a delete
   projects: () => call<Project[]>('GET', '/v1/projects'),
   createProject: ({ name, folders, repos }: { name: string; folders: string[]; repos: string[] }) => call<Project>('POST', '/v1/projects', { name, folders, repos }),
@@ -231,7 +244,7 @@ export const api = {
   peerAsk: (owner: string, text: string) => call<unknown>('POST', `/v1/obid/sphere/peers/${id(owner)}/ask`, { text }),
   // q: obid's own search over every conversation it keeps, their words and titles (#593)
   conversations: (opts: { after?: string; limit?: number; q?: string } = {}) => call<Conversation[]>('GET', `/v1/conversations${q(opts)}`),
-  editConversation: (c: string, change: { title?: string; pinned?: boolean; folders?: string[]; talkAccount?: string | null; project?: string | null }) => call<Conversation>('PATCH', `/v1/conversations/${id(c)}`, change),
+  editConversation: (c: string, change: { title?: string; pinned?: boolean; folders?: string[]; talkAccount?: string | null; project?: string | null; seen?: boolean; archived?: boolean }) => call<Conversation>('PATCH', `/v1/conversations/${id(c)}`, change),
   deleteConversation: (c: string) => call<null>('DELETE', `/v1/conversations/${id(c)}`),
   // Stop: the turn under way in this conversation ends at once, its answer what Oby said until then
   stopConversation: (c: string) => call<{ stopped: true }>('POST', '/v1/conversation/stop', { conversation: c }),

@@ -284,6 +284,31 @@ export function confirming(trusted: Trusted) {
     }
   }, REFUSED);
 
+  // Undo this round, on the owner's click (docs/contracts/task-changes.md, CHANGES-14): as Publish by
+  // hand, main reads obid's own sentence for it itself, refuses when it isn't the one the page showed,
+  // asks in main's own dialog, which the page can't click or word, and signs (`oby-undo`) only on
+  // Undo there. Asked only right after an input main saw.
+  channels.handle('obid-undo', [string, string], async (e, id, action): Promise<Answer> => {
+    if (!takeInput()) return { status: 403, text: JSON.stringify({ error: 'Undo takes your own click.' }) };
+    try {
+      const path = `/v1/jobs/${encodeURIComponent(id)}/undo`;
+      const sentence = await obid('GET', path);
+      if (sentence.status !== 200) return sentence;
+      const read = JSON.parse(sentence.text) as { action?: string };
+      if (read.action !== action) {
+        return { status: 409, text: JSON.stringify({ error: 'What Undo would do changed since it showed. Look at it again.' }) };
+      }
+      const w = BrowserWindow.fromWebContents(e.sender);
+      const asked = { type: 'warning' as const, message: 'Undo this round?', detail: action, buttons: ['Undo', 'Not now'], defaultId: 1, cancelId: 1 };
+      const { response } = await (w ? dialog.showMessageBox(w, asked) : dialog.showMessageBox(asked));
+      if (response !== 0) return { status: 409, text: JSON.stringify({ error: 'Not undone: you said not now.' }) };
+      const device = await register(), signedAt = now();
+      return obid('POST', path, { device, action, signedAt, signature: signed(`oby-undo\n${id}\n${action}\n${signedAt}`) });
+    } catch (err) {
+      return { status: 500, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) };
+    }
+  }, REFUSED);
+
   // A usage-limit answer is bound to the exact decision revision, option and destination.
   // Read the options from obid in main; never sign an arbitrary renderer-provided sentence.
   channels.handle('obid-limit-answer', [string, safeInteger, oneOf('move', 'resume', 'stop'), optional(string)],

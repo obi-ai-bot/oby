@@ -7,7 +7,7 @@
  "maxRunning": 6, "running": 4, "defaultAgent": "auto", "defaultAccount": null,
  "clearedAt": "2026-10-10T08:12:00Z",
  "github": "app", "checks": "ok", "permissions": {"mode": "sandbox"},
- "scanner": {"gitleaks": true}, "receipts": true, "capabilities": ["events-replay-v1", "folders-v1", "profile-projects-v1", "project-jobs-v1", "projects-v1", "revisions-v1"],
+ "scanner": {"gitleaks": true}, "receipts": true, "capabilities": ["conversation-marks-v1", "events-replay-v1", "folders-v1", "profile-projects-v1", "project-jobs-v1", "projects-v1", "revisions-v1"],
  "tools": [{"agent": "claude", "path": "/Users/me/.local/bin/claude", "version": "2.1.317"},
            {"agent": "codex", "path": "/opt/homebrew/bin/codex", "version": "0.163.0"},
            {"agent": "cursor", "path": null, "version": null}],
@@ -30,7 +30,9 @@
 
 `vaultProblem` (obid only): why the vault can't be read, as "obid only: the vault" says; meanwhile every other `/v1` answer is `503`, but for the event stream once obid has read the vault. Left out while it reads. On obid the status looks again for a tool installed or signed in since it started at most every 2 seconds.
 
-`availableLogins` (obid only): the tools' own logins obid found on this Mac that aren't accounts (looked for at start and again at every status, so a tool installed and signed in since, as during first launch, shows up without a restart), `[{"agent": "codex", "id": "codex", "name": "Codex"}]`; `POST /v1/accounts` `{"agent", "default": true}` lists one on the owner's word (obid only: accounts, "Logins already on the Mac"). Empty when there's none.
+`availableLogins` (obid only): the tools' own logins obid found on this Mac that aren't accounts (looked for at start and again at every status, so a tool installed and signed in since, as during first launch, shows up without a restart), `[{"agent": "codex", "id": "codex", "name": "Codex"}]`; `POST /v1/accounts` `{"agent", "default": true}` lists one on the owner's word (obid only: accounts, "Logins already on the Mac"). Empty when there's none. A login an account already holds, in any profile, isn't offered (an account is in one profile only, B00-40).
+
+`otherProfileLogins` (obid only, PROFILES-43): the tools' own logins on this Mac that another profile than the request's holds as an account, `[{"agent": "claude", "id": "default", "profile": "3f0c…", "profileName": "Default"}]`, so an app can say where the login is and offer another account with its own login. Empty when there's none; older obids don't send it.
 
 `scanner` (obid only): the secret scanner publishing needs, `{"gitleaks": true}`. `gitleaks` is `false` when obid has no gitleaks that runs: none in Oby.app or on its `PATH` (with the login shell's and the usual folders), or one that doesn't answer `gitleaks version` within 5 seconds. Then nothing with text is published (the scan couldn't run, Publishing), as before; this only says so from the start instead of at the first publish, and obid's log warns once when it starts. Each status looks for it again, as publishing does, so a gitleaks installed, removed or replaced since shows up without a restart; a run that worked is reused for at most 60 seconds, and only while the same file (path, size, modified time) is there, so one that stops running in place shows up within a minute. Older runners don't send the key.
 
@@ -46,6 +48,7 @@
 
 | Name | What it means | Since |
 |---|---|---|
+| `conversation-marks-v1` | A conversation carries `seen`, `unread` and `archived`, and `PATCH /v1/conversations/{id}` takes `seen` and `archived` ([conversations.md](conversations.md), [conversation-states.md](../contracts/conversation-states.md), CHATSTATE-6 to 10). An app sends them only to an obid that lists it. | CHATSTATE-6 |
 | `events-replay-v1` | `GET /v1/events` numbers its events with an `id: <epoch>-<seq>` line, and resumes a client that sends the last one it had (`?after=` or the `Last-Event-ID` header): it replays what the client missed, or sends one `resync` when it can't. | R06-02 |
 | `folders-v1` | obid takes working folders: `folders` on `POST /v1/plans`, on conversations and on `PATCH /v1/conversations/{id}`, the same behaviour `folders: true` announces. | The behaviour since #1572, listed since R06-01 |
 | `profile-scope-v1` | obid reads `Oby-Profile` on every `/v1` route and on `GET /v1/events`, and keeps conversations, jobs, helpers, accounts and vault secrets per profile ([profiles.md](profiles.md)). | B00-40 |

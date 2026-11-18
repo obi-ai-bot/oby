@@ -406,7 +406,9 @@ function useSignIns(accounts: Account[], setAccounts: (a: Account[]) => void) {
   // GET /v1/status has them, read as the page opens and after a change (obid also reads the usage
   // shown here then, which comes in its `accounts` event)
   const [offered, setOffered] = useState<Found[]>(onObid ? [] : [{ agent: 'codex', id: 'codex', name: 'Codex' }]);
-  const look = () => { if (onObid) api.status().then((s) => setOffered(s.availableLogins ?? []), () => {}); };
+  // and those another profile holds (an account is in one profile only, B00-40: PROFILES-50)
+  const [elsewhere, setElsewhere] = useState<NonNullable<Status['otherProfileLogins']>>([]);
+  const look = () => { if (onObid) api.status().then((s) => { setOffered(s.availableLogins ?? []); setElsewhere(s.otherProfileLogins ?? []); }, () => {}); };
   useEffect(look, []);
   // sign-ins under way, by account: opening, then its page (with Codex's code, or Claude Code's to
   // paste), then that code on its way ('sending') or sent with no answer in time ('sent')
@@ -485,7 +487,7 @@ function useSignIns(accounts: Account[], setAccounts: (a: Account[]) => void) {
       put(gone.id); look();
       if (said?.revoked === false) setProblems((p) => ({ ...p, [ADD]: `ChatGPT didn’t confirm ending ${gone.name}’s session. You can disconnect it in ChatGPT settings.` }));
     }))} onClose={() => setRemoving(null)} />;
-  return { offered, setOffered, look, signing, put, problems, busy, tried, signIn, signInChatGpt, sendCode, cancel, remove, removeWindow };
+  return { offered, setOffered, elsewhere, look, signing, put, problems, busy, tried, signIn, signInChatGpt, sendCode, cancel, remove, removeWindow };
 }
 
 function Accounts() {
@@ -837,6 +839,22 @@ export async function moveKeptChoices(status: Status): Promise<boolean> {
   }
   return moved;
 }
+// Sign in from a conversation's line (CHATSTATE-2): Settings › Agents opens and starts that
+// account's own sign-in, as its Sign In does; one obid doesn't sign in (the tool's own login on this
+// Mac) opens at its row, which says how
+let signInNext: string | null = null;
+// what Sign in starts for an account, as its row's own button would: Continue with ChatGPT where it
+// offers that, else Sign In; none for the tool's own login (the tool signs it in) or one that can run
+export function signInAction(x: Account, chatgptOffered: boolean): 'signIn' | 'chatgpt' | null {
+  const out = x.signedIn === false, plan = x.agent === 'codex' && out && (!!x.chatgpt || (chatgptOffered && !x.label));
+  if (!isAgent(x.agent) || (ownLogin(x) && !plan) || !(out || x.cantRun)) return null;
+  return plan ? 'chatgpt' : 'signIn';
+}
+export function signInFromChat(id: string) {
+  signInNext = id;
+  dispatchEvent(new CustomEvent('oby:open-setting', { detail: everything ? 'accounts' : 'agents' }));
+}
+
 // a pop-up's choices, the one set kept even when the choices don't (yet) have it
 const choices = (list: { id: string; name: string }[], set: string | undefined) =>
   [...(set && !list.some((m) => m.id === set) ? [{ id: set, name: set }] : []), ...list].map((m) => [m.id, m.name] as const);
@@ -849,9 +867,23 @@ export function Agents() {
   const [chosen, setChosen] = useDefaultAccount();
   const [talking, setTalking] = useTalkDefault();
   // signing in, as Settings › Accounts does (useSignIns): its states, its problems, the tool's own login
-  const { offered, setOffered, look, signing, problems, signIn, signInChatGpt, sendCode, cancel, remove, removeWindow } = useSignIns(accounts, setAccounts);
+  const { offered, setOffered, elsewhere, look, signing, problems, signIn, signInChatGpt, sendCode, cancel, remove, removeWindow } = useSignIns(accounts, setAccounts);
   const [adding, setAdding] = useState(false);
+  // under Add account: what was found on this Mac, and where each login another profile holds is
+  // (the words are proposals, Sangam's to rewrite)
+  const found = [
+    ...(offered.length ? [`Found on this Mac: ${offered.map((l) => agentOf(l.agent).name).join(', ')}`] : []),
+    ...elsewhere.map((l) => `${agentOf(l.agent).name}’s login on this Mac is in ${l.profileName}. Add another account to sign in with a different login here.`),
+  ];
   const { status } = useLive();
+  useEffect(() => {
+    const x = signInNext ? accounts.find((a) => a.id === signInNext) : undefined;
+    if (!x) return;
+    signInNext = null;
+    document.querySelector(`[data-account="${CSS.escape(x.id)}"]`)?.scrollIntoView({ block: 'center' });
+    const how = signInAction(x, offersChatGpt(status));
+    if (how) void (how === 'chatgpt' ? signInChatGpt(x.id) : signIn(x.id));
+  }, [accounts]);
   // the question again, when its switch is turned on: only its own button's click says yes
   const [asking, setAsking] = useState<Account | null>(null);
   const background = (x: Account, given: boolean) => {
@@ -878,7 +910,7 @@ export function Agents() {
         </Row>
       )}
     </Group>
-    <Group i={2} footer={problems[ADD] ? <span className="set-problem" role="alert">{problems[ADD]}</span> : offered.length ? `Found on this Mac: ${offered.map((l) => agentOf(l.agent).name).join(', ')}` : undefined}>
+    <Group i={2} footer={problems[ADD] ? <span className="set-problem" role="alert">{problems[ADD]}</span> : found.length ? <>{found.map((line) => <span key={line} className="set-footer-line">{line}</span>)}</> : undefined}>
       {/* the card's action, not a row's: on the left */}
       <div className="set-row is-action">
         <button className="set-button is-primary" onClick={() => setAdding(true)}>Add account</button>
@@ -895,7 +927,7 @@ export function Agents() {
       const week = weekWords(x), bar = barOf(x);
       return (
         <Group key={x.id} i={3 + k} title={x.name}>
-          <div className="set-row set-usage">
+          <div className="set-row set-usage" data-account={x.id}>
             <BrandMark brand={agentOf(x.agent).brand} size={16} mono />
             <span className="set-label">
               <span className="set-usage-name">

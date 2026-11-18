@@ -3,6 +3,10 @@
 
 use super::*;
 
+/// How often the words being written and a running command's lines go out, when they changed
+/// (LIVETASK-32, 34): about as often as T3 Code batches its deltas.
+const STREAM_EVERY: Duration = Duration::from_millis(100);
+
 impl Jobs {
     /// Runs a job to its end, unless it is stopped or obid shuts down.
     pub(super) async fn work(self: &Arc<Self>, id: &str, signal: watch::Receiver<Signal>) {
@@ -790,13 +794,17 @@ impl Jobs {
     ) -> Result<agent::Turn, String> {
         // What an owner's job's turn commits goes in obid's record of what it made, only while
         // its check would get values (crate::secretspec).
-        let records = matches!(gate, Gate::Owner { .. })
+        let owner = matches!(gate, Gate::Owner { .. });
+        let records = owner
             && self
                 .get(id)
                 .is_some_and(|job| job.someone_elses().is_none());
+        // Every owner's job's turn that may commit: where its round starts (CHANGES-1). A review
+        // only reads, so it makes no round.
+        let rounds = owner && self.get(id).is_some_and(|job| !job.read_only());
         // LANES-8: an own run's refs are its own; obid reads the clone's before and after it.
         let own_run = self.own_turn(id, launch.own_sandbox).await?;
-        let before = match records {
+        let before = match records || rounds {
             true => Box::pin(self.sandboxed_git(id, &["rev-parse", "--verify", "HEAD"], None))
                 .await
                 .ok(),
@@ -812,7 +820,13 @@ impl Jobs {
             run.settle().await?;
         }
         if let Some(before) = before {
-            Box::pin(self.record_turn(id, String::from_utf8_lossy(&before).trim(), started)).await;
+            let before = String::from_utf8_lossy(&before).trim().to_owned();
+            if records {
+                Box::pin(self.record_turn(id, &before, started)).await;
+            }
+            if rounds {
+                Box::pin(self.checkpoint(id, &before, started)).await;
+            }
         }
         turn
     }
@@ -840,6 +854,13 @@ impl Jobs {
             } => (false, mcp, park, session_only),
         };
         let worktree = launch.cwd.clone();
+        // Where Claude Code keeps what a running command prints (crate::spill, LIVETASK-34).
+        let spill_temp = launch
+            .env
+            .iter()
+            .rev()
+            .find(|(name, _)| name == process::CLAUDE_TMPDIR)
+            .map(|(_, temp)| std::path::PathBuf::from(temp));
         let job = self.get(id).ok_or("the job is gone")?;
         let jobs = self;
         // In Claude Code's own sandbox its tools run unboxed (LANES-14, `own_reach`).
@@ -981,8 +1002,10 @@ impl Jobs {
                         let _ = cut.send(Signal::Stop);
                     }
                 }
-                // The words and to-do list are the transcript's.
+                // The words, to-do list and a running command's output are the transcript's.
                 AgentEvent::Delta(_)
+                | AgentEvent::Output { .. }
+                | AgentEvent::Spilled { .. }
                 | AgentEvent::Said(_)
                 | AgentEvent::Thought { .. }
                 | AgentEvent::Thinking { .. }
@@ -1086,10 +1109,20 @@ impl Jobs {
             }
         };
         tokio::pin!(run);
+        // The words being written and a running command's lines stream about every tenth of a
+        // second (LIVETASK-32, 34); the job's activity once a second.
+        let mut streaming = tokio::time::interval(STREAM_EVERY);
+        streaming.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut activity =
+            tokio::time::interval_at(tokio::time::Instant::now() + ACTIVITY_EVERY, ACTIVITY_EVERY);
+        activity.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let ran = loop {
             tokio::select! {
                 ran = &mut run => break ran,
-                () = tokio::time::sleep(ACTIVITY_EVERY) => {
+                _ = streaming.tick() => {
+                    self.transcribed(id, self.transcripts.tick(id, spill_temp.as_deref()));
+                }
+                _ = activity.tick() => {
                     self.glanced(id);
                     // A call of its agent's that waits for the owner past `parkAfter` parks it.
                     if parks {
@@ -1359,6 +1392,12 @@ impl Jobs {
                 crate::transcript::Change::Entry(entry) => json!({"job": id, "entry": entry}),
                 crate::transcript::Change::Append { n, text } => {
                     json!({"job": id, "n": n, "append": text})
+                }
+                crate::transcript::Change::Tail { n, text } => {
+                    json!({"job": id, "n": n, "tail": text})
+                }
+                crate::transcript::Change::Output { n, text, lines } => {
+                    json!({"job": id, "n": n, "output": {"text": text, "lines": lines}})
                 }
             };
             self.events.send("transcript", data);

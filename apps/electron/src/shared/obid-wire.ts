@@ -41,6 +41,10 @@ export type TranscriptEntry = {
   todos?: { text: string; state: 'pending' | 'running' | 'done' | (string & {}) }[];
   // this app's, not obid's: it came from a fetch, not an event (liveTask.ts, withLine)
   fetched?: boolean;
+  // this app's too, from obid's events while it runs (LIVETASK-32, 34): a said entry's words past
+  // its last whole line, and a running call's last lines and how many it printed so far
+  tail?: string;
+  output?: { text: string; lines: number };
 };
 // What a call took in and gave back (GET /v1/jobs/{id}/transcript/{n}), masked as the transcript is; kept: false, past what obid keeps
 export type EntryDetail = {
@@ -117,10 +121,29 @@ export type Job = {
   usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; costUsd?: number; priced?: 'plan' | 'api' | (string & {}) };
   windowShare?: { fiveHour: number | null; sevenDay: number | null; estimate: true };
   estimate?: { low: number; high: number; basis: string; samples: number; firstGiven?: { low: number; high: number } };
+  // obid only: its worktree, an absolute path, once it exists (a task's Changes and Open in, CHANGES-4, 6)
+  worktree?: string | null;
   // one more each time obid sends it changed: of two copies, the higher is the newer (#1709);
   // none from an older obid
   revision?: number;
 };
+
+// GET /v1/jobs/{id}/changes (docs/contracts/tasks.md, TASKS-23; task-changes.md, CHANGES-1 to 3):
+// the files and the diff of the whole task, or of one of its rounds, and its rounds
+export type ChangedFile = { path: string; status: 'added' | 'deleted' | 'modified' | (string & {}); additions: number; deletions: number };
+export type ChangeRound = { round: number; job: string; from: string; to: string; at: string };
+export type JobChanges = {
+  base: string | null;
+  head: string | null;
+  files: ChangedFile[];
+  diff: string;
+  truncated: boolean;
+  // none from an obid before CHANGES-1
+  round?: number | null;
+  rounds?: ChangeRound[];
+};
+// GET /v1/jobs/{id}/undo (CHANGES-8): obid's own sentence for Undo this round
+export type UndoAction = { action: string; from: string; to: string; branch: string; push: boolean };
 
 // "Inbox item"
 // An owner id with anything but plain ASCII shows those characters as codes, so a Cyrillic i in "dima"
@@ -198,7 +221,10 @@ export type Conversation = { id: string; title: string; pinned: boolean; created
   revision?: number;
   // a search's answer only (`GET /v1/conversations?q=`, #593): the latest turn holding the words, its
   // text cut around them, or null when only the title holds them
-  turn?: { id: string; who: string; at: string; text: string } | null };
+  turn?: { id: string; who: string; at: string; text: string } | null;
+  // obid only (docs/contracts/conversation-states.md): when the owner last looked at it, a turn
+  // since (unread), and put away under Archived; each left out until there's something to say
+  seen?: string; unread?: boolean; archived?: boolean };
 
 // obid only: "GET /v1/github/work", what GitHub wants from the owner, the keys this app reads.
 // Everything in an item is GitHub's data: shown as text, never acted on.
@@ -260,8 +286,14 @@ export type Status = {
   // obid only: the account conversations talk through (none: Auto), and the one a new one's first turn would
   talkAccount?: string | null;
   talkNext?: string | null;
-  // obid only: the tools' own logins found on this Mac that aren't accounts yet
+  // obid only: the tools' own logins found on this Mac that aren't accounts yet (held by no profile)
   availableLogins?: { agent: Agent; id: string; name: string }[];
+  // obid only: the tools' own logins on this Mac that another profile holds, by its id and name
+  // (docs/contracts/profiles.md, PROFILES-43); an older obid sends none
+  otherProfileLogins?: { agent: Agent; id: string; profile: string; profileName: string }[];
+  // obid only: each tool's binary (path null when it isn't found) and its version (CLIVERSIONS);
+  // an older obid sends none
+  tools?: { agent: string; path: string | null; version: string | null; versionStatus: string; knownBadReason?: string }[];
   models: Record<string, { model: string }>;
   maxRunning: number;
   running: number;
@@ -411,7 +443,10 @@ export type Event =
   | { kind: 'github'; work: GitHubWork }
   // obid only: an entry of a job's session that came or changed, and a line its agent just wrote
   | { kind: 'transcript'; job: string; entry: TranscriptEntry }
-  | { kind: 'transcriptLine'; job: string; n: number; append: string };
+  | { kind: 'transcriptLine'; job: string; n: number; append: string }
+  // ...the words it's writing past that line, and a running command's last lines (LIVETASK-32, 34)
+  | { kind: 'transcriptTail'; job: string; n: number; tail: string }
+  | { kind: 'transcriptOutput'; job: string; n: number; output: { text: string; lines: number } };
 
 // Server-Sent Events, as the stream's text comes in a piece at a time: each event's name and data
 // to `onEvent`; comments (`: ping`) and other fields are skipped (apps/web/src/api.ts).
@@ -468,6 +503,11 @@ export function parseEvent(name: string, data: string): Event | null {
     case 'transcript':
       if (typeof v.job !== 'string') return null;
       if (typeof v.n === 'number' && typeof v.append === 'string') return { kind: 'transcriptLine', job: v.job, n: v.n, append: v.append };
+      if (typeof v.n === 'number' && typeof v.tail === 'string') return { kind: 'transcriptTail', job: v.job, n: v.n, tail: v.tail };
+      if (typeof v.n === 'number' && typeof (v.output as { text?: unknown } | undefined)?.text === 'string') {
+        const o = v.output as { text: string; lines?: unknown };
+        return { kind: 'transcriptOutput', job: v.job, n: v.n, output: { text: o.text, lines: typeof o.lines === 'number' ? o.lines : 0 } };
+      }
       return typeof (v.entry as TranscriptEntry | undefined)?.n === 'number' ? { kind: 'transcript', job: v.job, entry: v.entry as TranscriptEntry } : null;
     default: return null;
   }

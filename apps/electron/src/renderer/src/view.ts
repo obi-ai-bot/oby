@@ -107,6 +107,7 @@ export type Job = {
   request: string;     // your own words, or the message it came from
   agent: Agent | (string & {});  // obid's; one this build doesn't know shows by agentOf
   account: string;     // which of the accounts it runs on (Personal, Deskree, or someone's shared one)
+  accountId?: string;  // obid's: that account's id
   on?: string;         // whose Mac it runs on, when not this one ("Wellington’s Mac")
   model: string;
   repo: string;
@@ -127,6 +128,7 @@ export type Job = {
   published?: string;  // the pull request it opened
   publish?: { label: string; anyway?: true; why?: string };  // obid only: Publish by hand (jobPage.ts, publishOf)
   nothingDone?: boolean;  // obid's: it ended with nothing done (TASKS-12)
+  worktree?: boolean;  // obid's: it has a worktree on disk: Changes and Open in (CHANGES-4, 6)
   log?: LogLine[];
   page?: Page;         // the job page's extra data, once obid serves it
   conversation?: string;  // obid's: the conversation whose words started it

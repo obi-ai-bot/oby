@@ -60,7 +60,7 @@ describe('GITHUBWORK-10: a GitHub offer’s card starts its work when clicked', 
     await shown();
     const card = host.querySelector<HTMLElement>('.ask-card')!;
     expect(card.classList).toContain('is-startable');
-    await act(async () => card.querySelector<HTMLElement>('.tc-ask-head')!.click());
+    await act(async () => card.querySelector<HTMLElement>('.gh-title')!.click());
     expect(answers()).toHaveLength(1);
     expect(answers()[0][1]).toBe(`/v1/inbox/${OFFER.id}/answer`);
     expect(answers()[0][2]).toMatchObject({ answer: 'Fix CI' });
@@ -71,18 +71,19 @@ describe('GITHUBWORK-10: a GitHub offer’s card starts its work when clicked', 
     call.mockResolvedValue({ status: 200, text: JSON.stringify({ ...OFFER, state: 'done', answer: 'Dismiss' }) });
     await render([{ id: OFFER.id, title: '#812 Retry jitter', url: OFFER.github!.url, ask: live.homeAsk(OFFER) }]);
     await shown();
+    // Open on GitHub opens its page and answers nothing; Dismiss answers Dismiss, once
+    await act(async () => host.querySelector<HTMLElement>('.gh-open')!.click());
+    expect(answers()).toHaveLength(0);
     const dismiss = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Dismiss')!;
     await act(async () => dismiss.click());
     expect(answers().map((a) => a[2].answer)).toEqual(['Dismiss']);
-    await act(async () => host.querySelector<HTMLElement>('.ask-open')!.click());
-    expect(answers()).toHaveLength(1);
   });
 
   it('githubwork_10_a_card_with_its_conversation_opens_it', async () => {
     vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'Date'] });
     await render([{ id: OFFER.id, title: '#812 Retry jitter', url: OFFER.github!.url, talk: 'c1', ask: live.homeAsk(OFFER) }]);
     await shown();
-    await act(async () => host.querySelector<HTMLElement>('.tc-ask-head')!.click());
+    await act(async () => host.querySelector<HTMLElement>('.gh-title')!.click());
     expect(onOpenTalk).toHaveBeenCalledWith('c1');
     expect(answers()).toHaveLength(0);
   });

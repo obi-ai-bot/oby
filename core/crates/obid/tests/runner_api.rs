@@ -2974,3 +2974,224 @@ fn caps_3_old_status_decoders_still_read() {
         status["unreadable"].as_array().unwrap().len()
     );
 }
+
+/// What `git` prints in `dir`, as it printed it.
+fn git_text(dir: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git {args:?}");
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// Writes `name` in `worktree` and commits it there with the test's own git.
+fn commit_file(worktree: &Path, name: &str, text: &str) {
+    std::fs::write(worktree.join(name), text).unwrap();
+    git(worktree, &["add", name]);
+    let who = [
+        "-c",
+        "user.name=Author",
+        "-c",
+        "user.email=author@example.com",
+    ];
+    let commit = ["-c", "commit.gpgsign=false", "commit", "-q", "-m", name];
+    git(worktree, &[&who[..], &commit[..]].concat());
+}
+
+/// A build job that edited `src/greet.js` and committed `a.txt`, ended: its id and worktree.
+fn changed_job(obid: &Obid) -> (String, PathBuf) {
+    let task = json!({"repo": "obi-e2e/fixture-app", "kind": "build",
+                      "task": "EDIT: src/greet.js COMMIT: a.txt"});
+    let id = dispatch(obid, task)["id"].as_str().unwrap().to_owned();
+    ended(obid, &id);
+    let worktree = obid.home.join("worktrees").join(&id);
+    (id, worktree)
+}
+
+fn changes(obid: &Obid, id: &str, query: &str) -> Value {
+    let answer = call(obid, "GET", &format!("/v1/jobs/{id}/changes{query}"), None);
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    answer.body
+}
+
+/// The whole diff the worktree's HEAD makes against its merge-base with `origin/<base>`.
+fn whole_diff(worktree: &Path, base: &str) -> String {
+    let remote = format!("refs/remotes/origin/{base}");
+    let merge_base = git_out(worktree, &["merge-base", &remote, "HEAD"]);
+    let head = git_out(worktree, &["rev-parse", "HEAD"]);
+    let diff = [
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "--no-renames",
+    ];
+    git_text(worktree, &[&diff[..], &[&merge_base, &head]].concat())
+}
+
+/// TASKS-23: a job's two committed files answer with their status and counts, and the diff is
+/// the branch's against its merge-base; `?path=` narrows both to one file, and one not changed
+/// answers none.
+#[test]
+fn tasks_23_two_committed_files_answer_with_their_counts_and_the_diff() {
+    let folder = Folder::new("tasks-23");
+    let (obid, _) = obid(&folder);
+    let (id, worktree) = changed_job(&obid);
+    let base = job(&obid, &id)["base"].as_str().unwrap().to_owned();
+    let answer = changes(&obid, &id, "");
+    let mut files = answer["files"].as_array().unwrap().clone();
+    files.sort_by_key(|f| f["path"].as_str().unwrap().to_owned());
+    assert_eq!(
+        files,
+        vec![
+            json!({"path": "a.txt", "status": "added", "additions": 1, "deletions": 0}),
+            json!({"path": "src/greet.js", "status": "modified", "additions": 1, "deletions": 0}),
+        ],
+        "{answer}"
+    );
+    assert_eq!(
+        answer["head"],
+        git_out(&worktree, &["rev-parse", "HEAD"]).as_str()
+    );
+    assert_eq!(answer["base"], base.as_str());
+    assert_eq!(answer["truncated"], false);
+    assert_eq!(answer["diff"], whole_diff(&worktree, &base).as_str());
+
+    let one = changes(&obid, &id, "?path=a.txt");
+    assert_eq!(
+        one["files"],
+        json!([{"path": "a.txt", "status": "added", "additions": 1, "deletions": 0}])
+    );
+    let diff = one["diff"].as_str().unwrap();
+    assert!(
+        diff.contains("a.txt") && !diff.contains("src/greet.js"),
+        "{diff}"
+    );
+    let none = changes(&obid, &id, "?path=nope.txt");
+    assert_eq!(none["files"], json!([]));
+    assert_eq!(none["diff"], "");
+    assert_eq!(none["truncated"], false);
+    assert_eq!(none["head"], answer["head"]);
+}
+
+/// TASKS-24: a diff over 1 MiB is cut on a character at the cap and says so; one past the 4 MiB
+/// read keeps its files, with no diff, truncated.
+#[test]
+fn tasks_24_a_diff_over_a_mebibyte_is_cut_at_the_cap_and_says_so() {
+    let folder = Folder::new("tasks-24");
+    let (obid, _) = obid(&folder);
+    let (id, worktree) = changed_job(&obid);
+    let base = job(&obid, &id)["base"].as_str().unwrap().to_owned();
+    let line = format!("{}\n", "é".repeat(99));
+    commit_file(&worktree, "wide.txt", &line.repeat(8_000));
+    let whole = whole_diff(&worktree, &base);
+    assert!(whole.len() > 1_500_000);
+    let answer = changes(&obid, &id, "");
+    let diff = answer["diff"].as_str().unwrap();
+    assert!(
+        (1_048_573..=1_048_576).contains(&diff.len()),
+        "{}",
+        diff.len()
+    );
+    assert!(whole.starts_with(diff));
+    assert_eq!(answer["truncated"], true);
+
+    commit_file(
+        &worktree,
+        "long.txt",
+        &format!("{}\n", "x".repeat(99)).repeat(30_000),
+    );
+    let answer = changes(&obid, &id, "");
+    let paths: Vec<&str> = answer["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
+        .collect();
+    assert!(
+        paths.contains(&"wide.txt") && paths.contains(&"long.txt"),
+        "{paths:?}"
+    );
+    assert_eq!(answer["diff"], "");
+    assert_eq!(answer["truncated"], true);
+}
+
+/// TASKS-30: a vault secret and obid's API token written into a changed file are taken out of
+/// the diff, each marked by name.
+#[test]
+fn tasks_30_a_secret_in_a_changed_file_is_redacted_in_the_diff() {
+    let folder = Folder::new("tasks-30");
+    let (obid, _) = obid(&folder);
+    let (id, worktree) = changed_job(&obid);
+    let value = format!("key/{}+R8n3=c0dZ", std::process::id() % 1_000_000 + 100_000);
+    let mut child = std::process::Command::new(OBID)
+        .args(["vault", "--config"])
+        .arg(folder.0.join("config.json"))
+        .args(["add", "deploy-key"])
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(value.as_bytes())
+        .unwrap();
+    assert!(child.wait().unwrap().success());
+    commit_file(
+        &worktree,
+        "leak.txt",
+        &format!("deploy {value}\ntoken {TOKEN}\n"),
+    );
+    let answer = call(&obid, "GET", &format!("/v1/jobs/{id}/changes"), None);
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    assert!(!answer.text.contains(&value), "{}", answer.text);
+    assert!(!answer.text.contains(TOKEN), "{}", answer.text);
+    let diff = answer.body["diff"].as_str().unwrap();
+    assert!(diff.contains("deploy-key]"), "{diff}");
+    assert!(diff.contains("[redacted: api-token]"), "{diff}");
+}
+
+/// TASKS-29: a job still queued, with no worktree yet, answers no files, and no such job `404`.
+#[test]
+fn tasks_29_a_queued_job_answers_no_files_and_no_job_404() {
+    let folder = Folder::new("tasks-29");
+    let (obid, _) = obid(&folder);
+    let one = call(
+        &obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"maxRunning": 1})),
+    );
+    assert_eq!(one.status, 200, "{}", one.text);
+    let sleeper = || {
+        let task = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"});
+        dispatch(&obid, task)["id"].as_str().unwrap().to_owned()
+    };
+    sleeper();
+    let queued = sleeper();
+    within(30, "the second waits for a slot", || {
+        (job(&obid, &queued)["waiting"]["kind"] == "cap").then_some(())
+    });
+    assert!(!obid.home.join("worktrees").join(&queued).exists());
+    assert_eq!(
+        changes(&obid, &queued, ""),
+        json!({"base": null, "head": null, "files": [], "diff": "", "truncated": false,
+               "round": null, "rounds": []})
+    );
+    let missing = call(&obid, "GET", "/v1/jobs/not-a-job/changes", None);
+    assert_eq!(missing.status, 404, "{}", missing.text);
+    assert!(
+        missing.text.contains("There's no such job."),
+        "{}",
+        missing.text
+    );
+    call(&obid, "POST", "/v1/stop-all", None);
+}

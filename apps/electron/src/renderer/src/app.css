@@ -361,6 +361,10 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .archive-who { margin-right: 6px; color: var(--text); }
 .archive-about, .archive-ago { color: var(--muted); font-size: var(--text-sm); }
 .archive-ago { flex: none; }
+/* an archived conversation (CHATSTATE-9): its row, and Restore beside it */
+.archive-talk { display: flex; align-items: center; gap: 8px; }
+.archive-talk > .archive-row { flex: 1; min-width: 0; }
+.archive-restore { flex: none; }
 /* Waiting for you (WaitingView.tsx, Sangam's screen 17): one card per thing that needs your word */
 .waiting-head { width: 100%; margin-bottom: 12px; display: flex; align-items: center; gap: 12px; }
 .waiting-head .group-title { margin: 0; }
@@ -1622,6 +1626,21 @@ button.connector { width: 100%; text-align: left; }
 .convo-row > .status-dot { position: absolute; right: 12px; bottom: 11px; }  /* under when it moved, as on the canvas */
 .convo-row:has(.connector-about:empty) > .sidebar-item-ago { align-self: center; margin-top: 0; }  /* a line of its own, beside its name */
 .convo-row:has(.connector-about:empty) > .status-dot { bottom: 6px; }
+/* its latest task done: a small grey check in the dot's spot (CHATSTATE-5); unread: its name bold */
+.convo-row > .convo-done { position: absolute; right: 10px; bottom: 8px; display: grid; place-items: center; color: rgba(255, 255, 255, 0.4); }
+.convo-row:has(.connector-about:empty) > .convo-done { bottom: 3px; }
+.convo-row.is-unread .connector-name { color: var(--ink); font-weight: 600; }
+/* over the message box: why its account can't run, and the way on (CHATSTATE-1 to 3) */
+.cant-run, .refusal { display: flex; align-items: center; gap: 8px; box-sizing: border-box; width: calc(100% - 2 * var(--gutter)); max-width: var(--column); margin: 8px auto 0; padding: 8px 10px 8px 12px; border-radius: 12px; font-size: var(--text-sm); animation: rise 280ms var(--warm) both; }
+.cant-run { background: var(--hover); color: var(--item); }
+.cant-run > svg { flex: none; }
+.cant-run-text, .refusal-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cant-run-action { flex: none; padding: 3px 9px; border-radius: 8px; color: var(--ink); background: rgba(255, 255, 255, 0.08); font-size: var(--text-sm); }
+.cant-run-action:hover { background: rgba(255, 255, 255, 0.14); }
+/* what obid refused of a click here, until dismissed (CHATSTATE-4) */
+.refusal { color: var(--ink); background: color-mix(in srgb, var(--danger) 16%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 40%, transparent); }
+.refusal-text { white-space: normal; }
+.refusal-close { flex: none; }
 .convo-row.is-menu-open { background: var(--hover); }
 .convo-row.is-menu-open .connector-name { color: var(--ink); }
 /* renaming: the name becomes a field in place, the line under it stays */
@@ -1746,6 +1765,8 @@ button.connector { width: 100%; text-align: left; }
 .set-head { margin: 0 0 8px; padding: 0 16px; color: var(--item); font-size: var(--text-md); font-weight: 500; }
 .set-card { border: 1px solid var(--surface-edge); border-radius: 16px; background: var(--surface); }
 .set-foot { margin: 8px 0 0; padding: 0 16px; color: var(--muted); font-size: var(--text-sm); line-height: 1.45; }
+.set-foot .set-footer-line { display: block; }
+.set-foot .set-footer-line + .set-footer-line { margin-top: 4px; }
 .set-row { min-height: 56px; padding: 12px 16px; display: flex; align-items: center; gap: 16px; }
 .set-row + .set-row { border-top: 1px solid var(--divider); }
 .set-label { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; color: var(--ink); font-size: var(--text-base); }
@@ -2266,6 +2287,10 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 /* the field for the address of the person's own Tetrix (TetrixAddress.tsx), under its row's name; its problem under it */
 .setup-field { height: 36px; padding: 0 12px; border-radius: 10px; font-size: var(--text-sm); }
 .wl-below .setup-field + .wl-sub { display: block; margin-top: 6px; }
+/* an agent not installed (FIRSTRUN-2): the vendor's command, to copy, and what to do with it */
+.setup-install-line { display: flex; align-items: center; gap: 8px; }
+.setup-install-command { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 8px; background: rgba(0, 0, 0, 0.25); font: 400 var(--text-sm)/1.3 ui-monospace, "SF Mono", Menlo, monospace; color: var(--ink); user-select: all; overflow-wrap: anywhere; }
+.setup-install .wl-sub { display: block; margin-top: 6px; }
 .wl-two .setup-field { margin-top: 8px; }
 .connector-address .setup-field { height: 44px; padding: 0 14px; font-size: var(--text-base); }
 .connector-address .wl-sub { display: block; margin-top: 6px; white-space: normal; }
@@ -2421,3 +2446,4 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .profile-sheet .modal-label { margin-top: 16px; }
 .profile-sheet .modal-lede + .modal-label { margin-top: 0; }
 .profile-sheet .profile-swatches { margin-top: 0; }
+.profile-sheet .profile-delete { margin-right: auto; }

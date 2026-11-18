@@ -611,7 +611,7 @@ export default function Home() {
         if (l.kind === 'group') return <GroupView key={l.key} group={TYPES.find((t) => t.id === l.id)!} tab={l.tab} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenTask={openTask} onOpenArchive={() => push({ kind: 'archive' })} />;
         if (l.kind === 'task') return <TaskView key={l.key} id={l.id} leaving={leaving} covered={covered} onBack={back} onHome={home} onGone={onGone} onTell={tellFromTask} onSession={(id) => push({ kind: 'session', id })} />;
         if (l.kind === 'session') return <SessionView key={l.key} id={l.id} leaving={leaving} covered={covered} onBack={back} onGone={onGone} onTell={tellFromTask} />;
-        if (l.kind === 'archive') return <ArchiveView key={l.key} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenTask={openTask} />;
+        if (l.kind === 'archive') return <ArchiveView key={l.key} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenTask={openTask} onOpenTalk={(id) => push({ kind: 'talk', id })} />;
         if (l.kind === 'waiting') return <WaitingView key={l.key} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenTask={(id) => openAt(id, push)} onOpenTalk={(id) => push({ kind: 'talk', id })} />;
         if (l.kind === 'settings') return <SettingsView key={l.key} page={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;
         if (l.kind === 'sphere') return <SphereSettings key={l.key} id={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;

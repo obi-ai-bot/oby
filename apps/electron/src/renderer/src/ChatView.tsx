@@ -12,6 +12,7 @@ import DecisionBar, { type Pending } from './DecisionBar';
 import { useScrollThumb } from './useScrollThumb';
 import TaskMenu from './TaskMenu';
 import TaskLog from './TaskLog';
+import { ChangesPill } from './ChangesPanel';
 import { replyTarget, type Box } from './replyTarget';
 import Composer, { typingIn } from './Composer';
 import Formatted from './Formatted';
@@ -19,7 +20,9 @@ import Said from './Said';
 import { convoTitle, threadOf } from './mock';
 import { ENDED, agentOf, type Message } from './view';
 import { asksWaiting, markSeen, stop, tell, tellPlaceholder, useTasks, type Task } from './tasks';
-import { obys, ofObid, stopChat, tellChat, useChats, type Chat } from './chats';
+import { obys, ofObid, seeChat, stopChat, tellChat, useChats, type Chat } from './chats';
+import CantRunLine from './CantRunLine';
+import Refusals from './Refusals';
 import SetupCard from './SetupCard';
 import OfferCard from './OfferCard';
 import { WELCOME, typedFirst } from './onboarding';
@@ -124,6 +127,9 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
 
   // opened, it's seen; it opens at the latest message, and anything new scrolls into view
   useEffect(() => { if (kind === 'task') markSeen(id); if (kind === 'peer') markRead(id); if (kind === 'oby' && ofObid(id)) void openConversation(id); }, [id, kind]);
+  // in sight, a conversation is seen: obid's unread goes, and a turn that comes while it shows is
+  // seen too (CHATSTATE-6)
+  useEffect(() => { if (talk && !covered && !leaving) seeChat(talk.id); }, [talk?.id, talk?.unread, talk?.seen, covered, leaving]);
   const first = useRef(true);
   useLayoutEffect(() => {
     const l = list.current;
@@ -340,6 +346,10 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
       {/* what this conversation's tasks, or this task, wait on the owner for, and an account's limit
           stopping its work: one line each, over the message box (LIVETASK-24 to 27) */}
       <DecisionBar key={openings} pending={pending} />
+      {/* what obid refused of a click here, until dismissed; and the account it goes to, when that
+          can't run (CHATSTATE-1 to 4) */}
+      <Refusals where={talk ? [talk.id, ...tasks.filter((t) => t.job.conversation === talk.id).map((t) => t.id)] : task ? [task.id] : []} />
+      {(talk && !talk.local && !talk.helper) || task ? <CantRunLine chat={talk ?? undefined} task={task ?? undefined} /> : null}
       {toTask ? <>
         {/* talking to one task's agent: its chip over the box, × back to Oby (LIVETASK-30) */}
         <div className="composer-to" role="status">
@@ -444,12 +454,14 @@ export function ThreadTask({ task, onMenu }: { task: Task; onMenu?: (at: DOMRect
   );
 }
 
-// A task in the conversation: its card, and what it did under it, outside the card (TaskLog); data-task is
+// A task in the conversation: its card, its Changes (CHANGES-4), and what it did under it, outside the card (TaskLog); data-task is
 // where opening the conversation at the task scrolls to (LIVETASK-28)
 export function TaskEntry({ task, lit = false, onMenu }: { task: Task; lit?: boolean; onMenu?: (at: DOMRect) => void }) {
   return (
     <div className={`msg-task-work${task.status === 'running' || task.status === 'needs' ? ' is-live' : ''}${lit ? ' is-lit' : ''}`} data-task={task.id}>
       <ThreadTask task={task} onMenu={onMenu} />
+      {/* what it changed, in the side panel beside the conversation (CHANGES-4) */}
+      <ChangesPill task={task} />
       <TaskLog task={task} />
     </div>
   );
