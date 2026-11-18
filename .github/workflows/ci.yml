@@ -685,7 +685,10 @@ jobs:
           if flaky:
               lines += ["", "### Flaky", "", "Passed only on a retry:", ""] + [f"- `{t}`" for t in flaky]
 
-          bad = [job for job, need in needs.items() if need["result"] in ("failure", "cancelled")]
+          # The Brain's map is reported, never a failure (the owner's word, 2026-11-17; CI-56).
+          if needs.get("brain", {}).get("result") == "failure":
+              lines += ["", "The Brain's map is out of date with this change: reported, not a failure. Fix tools/brain in a follow-up."]
+          bad = [job for job, need in needs.items() if job != "brain" and need["result"] in ("failure", "cancelled")]
           if plan["result"] != "success":
               verdict = f"Failed: plan {plan['result']}, so no lane can be trusted."
           elif bad:
