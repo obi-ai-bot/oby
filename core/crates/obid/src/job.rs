@@ -455,6 +455,10 @@ pub struct Job {
     /// naming its own.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub model_from_account: bool,
+    /// The effort the owner's chip named for it (docs/contracts/composer.md, COMPOSER-5): it holds
+    /// over its account's on its own tool. Kept in its file, never in the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_named: Option<String>,
     /// Its plan called it complex: it runs at its account's complex-task effort (#1574). Kept in
     /// its file, never in the API.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

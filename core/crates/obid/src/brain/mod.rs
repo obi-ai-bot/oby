@@ -17,6 +17,7 @@ pub mod actions;
 pub mod ask;
 pub mod briefing;
 pub mod calls;
+pub mod defaults;
 pub mod find;
 pub mod harness;
 pub mod harness_codex;
@@ -75,6 +76,9 @@ struct Request {
     /// The project a new conversation starts in (crate::projects), by id; only with `new`, and
     /// only from the owner's Mac app.
     project: Option<String>,
+    /// The message box's chips (docs/contracts/composer.md, COMPOSER-3 to 7): the mode, tool,
+    /// model and effort of the jobs these words start. Never written to Settings or an account.
+    defaults: Option<defaults::Defaults>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -117,6 +121,7 @@ pub async fn plan(
         req.attachments.as_deref().unwrap_or(&[]),
     )?;
     let jobs = attached_jobs(&shared, req.jobs.unwrap_or_default())?;
+    let defaults = req.defaults.map(defaults::Defaults::checked).transpose()?;
     // No length of obid's own, as in Claude Code: the request's body is at most axum's 2 MB, and
     // the model says when words are more than it can read at once ([`TOO_LONG`]). Files or tasks
     // attached are a message without words too (Sangam's message box sends them alone).
@@ -281,6 +286,7 @@ pub async fn plan(
         attachments,
         jobs,
         signed,
+        defaults,
     };
     // The turn goes on by itself: a client that stops waiting can't be told from a slow one, so
     // what the plan does still happens, and is kept (docs/runner-api.md, `POST /v1/plans`).
@@ -305,6 +311,7 @@ async fn answer(
     back: Option<i64>,
     now: i64,
 ) -> Result<Response, ApiError> {
+    let own = words.turn.clone();
     // One answer at a time in a conversation: words said while Oby answers wait for that turn
     // to end, and the next turn answers all that came meanwhile, as the latest's. The others',
     // and words a cancel dropped, answer nothing.
@@ -331,6 +338,7 @@ async fn answer(
         conversation: &conversation,
         turn: &control.turn,
         signed: next.words.signed,
+        defaults: next.words.defaults.as_ref(),
     };
     // The recap is written while the brain thinks; a background call is bounded and
     // tried once, and when it fails the answer is the same as without it.
@@ -351,6 +359,18 @@ async fn answer(
     let (talk, details) = (answered.talk, answered.details);
     let answer = respond(&shared, &conversation, talk, details, recap, made);
     deliver(change);
+    // These words were cancelled on their own while they waited (COMPOSER-11): their waiter
+    // still answers the words before them, whose own requests answered none, but its request
+    // answers none too; the answer is Oby's turn in the conversation.
+    if !next.turns.contains(&own) {
+        return Ok((
+            StatusCode::OK,
+            axum::Json(
+                json!({"kind": "none", "jobs": [], "drafts": [], "conversation": conversation}),
+            ),
+        )
+            .into_response());
+    }
     answer
 }
 
@@ -369,6 +389,9 @@ pub fn recover(shared: &Arc<Shared>) {
                 attachments: replay.attachments,
                 jobs: said.jobs,
                 signed: replay.signed,
+                // The chips aren't kept on the file (COMPOSER-4): words sent again after a
+                // restart take the owner's usual mode, tool, model and effort.
+                defaults: None,
             })
             .collect();
         let Some(last) = words.pop() else { continue };
@@ -414,26 +437,36 @@ pub fn written_in(
 }
 
 /// Which conversation's turn Stop or cancel is for: `{"conversation": "<id>"}`, or, with no
-/// body (the apps from before #493), the conversation of the latest turn under way.
-fn underway(shared: &Shared, body: &Bytes) -> Result<Option<String>, ApiError> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Which {
-        conversation: Option<String>,
+/// body (the apps from before #493), the conversation of the latest turn under way. `turn`, on a
+/// cancel only, names the owner's words waiting there that it drops alone (COMPOSER-11).
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct Which {
+    conversation: Option<String>,
+    turn: Option<String>,
+}
+fn which(body: &Bytes) -> Result<Which, ApiError> {
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(Which::default());
     }
-    let named = if body.iter().all(u8::is_ascii_whitespace) {
-        None
-    } else {
-        serde_json::from_slice::<Which>(body)
-            .map_err(|_| {
-                ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    "The body is {\"conversation\": \"<id>\"}, or nothing.",
-                )
-            })?
-            .conversation
-    };
-    Ok(named.or_else(|| shared.turns.latest_conversation()))
+    serde_json::from_slice::<Which>(body).map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "The body is {\"conversation\": \"<id>\"}, or nothing.",
+        )
+    })
+}
+fn underway(shared: &Shared, body: &Bytes) -> Result<Option<String>, ApiError> {
+    let named = which(body)?;
+    if named.turn.is_some() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Stop takes {\"conversation\": \"<id>\"}, or nothing: turn is for POST /v1/plans/cancel.",
+        ));
+    }
+    Ok(named
+        .conversation
+        .or_else(|| shared.turns.latest_conversation()))
 }
 
 /// `POST /v1/conversation/stop`: the turn under way in one conversation ends after the action
@@ -449,7 +482,30 @@ pub async fn stop(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Resp
 /// `POST /v1/plans/cancel`: the turn under way in one conversation is dropped: what its plan
 /// would do doesn't happen, and its answer is `none`, as is the answer to words waiting for it,
 /// which read `cancelled` (the turn's own words do once it ends). What it did already stays done.
+///
+/// With `turn` (and its `conversation`), only those words go, while they still wait: the turn
+/// under way and other words go on, and the answer's `dropped` lists them, or is empty when a turn
+/// had taken them already (COMPOSER-11).
 pub async fn cancel(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Response, ApiError> {
+    if let Which {
+        conversation,
+        turn: Some(turn),
+    } = which(&body)?
+    {
+        let Some(id) = conversation else {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Name the conversation the words are waiting in.",
+            ));
+        };
+        let dropped = shared.turns.drop_waiting(&id, &turn);
+        shared.conversations.deliver(&id, &dropped, &Move::Cancel);
+        return Ok((
+            StatusCode::OK,
+            axum::Json(json!({"cancelled": true, "dropped": dropped})),
+        )
+            .into_response());
+    }
     if let Some(id) = underway(&shared, &body)? {
         let dropped = shared.turns.cancel(Some(&id));
         shared.conversations.deliver(&id, &dropped, &Move::Cancel);

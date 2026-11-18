@@ -25,6 +25,7 @@ pub mod conn;
 pub mod connections;
 pub mod connectors;
 pub mod conversation;
+pub mod conversation_files;
 pub mod cursor_usage;
 pub mod decisions;
 pub mod delivery;

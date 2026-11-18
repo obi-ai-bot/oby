@@ -63,6 +63,8 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
       conversation: id, new: flag, folders: strings, id, attachments: strings, jobs: strings,
       // the project the words start a conversation in: signed with the body, never one of the words
       project: id,
+      // the box's chips (COMPOSER-3): signed with the body, never one of the words
+      defaults: (d) => isBody(d) && shaped(d, { mode: text, agent: text, model: text, effort: text }),
     });
     // an answer to Oby's question: the words it answers, and the owner's answer
     return ok ? [body.said as string, ...(isBody(answer) ? [answer.option as string] : [])] : null;

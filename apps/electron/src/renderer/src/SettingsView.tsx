@@ -749,7 +749,7 @@ function Models() {
 // week) with the model and efforts its jobs run on, and its Remove; then Add an agent. obid keeps
 // the default agent and the models (#1573, #1574; docs/contracts/agents.md) once its status says
 // defaultAccount; an older obid, and the mock, keep them here (agent.default, models.mine)
-const EFFORT_NAMES: Record<string, string> = { none: 'None', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max', ultra: 'Ultra' };
+export const EFFORT_NAMES: Record<string, string> = { none: 'None', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max', ultra: 'Ultra' };
 const MOCK_MODELS: Models = {
   claude: { model: 'claude-opus-5-5', effort: 'xhigh', complexEffort: 'xhigh' },
   codex: { model: 'gpt-6.1-sol', effort: 'high', complexEffort: 'high' },

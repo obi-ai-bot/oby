@@ -258,6 +258,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
             axum::routing::patch(crate::conversation::update).delete(crate::conversation::remove),
         )
         .route(
+            "/v1/conversations/{id}/files",
+            get(crate::conversation_files::search),
+        )
+        .route(
             "/v1/routines",
             get(crate::routines::list).post(crate::routines::create),
         )
@@ -666,6 +670,7 @@ async fn method_not_allowed() -> ApiError {
 /// name one behaviour forever (a changed behaviour gets a new name, such as `-v2`). A new optional
 /// feature adds its name here and its row in docs/runner-api.md's Capabilities table together.
 pub const CAPABILITIES: &[&str] = &[
+    "composer-v1",
     "conversation-marks-v1",
     "events-replay-v1",
     "folders-v1",

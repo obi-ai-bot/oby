@@ -197,7 +197,9 @@ export type SetupStep = 'agents' | 'github' | 'extras' | 'first' | 'sphere' | 's
 // folders: the working folders picked (folders.ts: obid's once it takes them, else the app's)
 // a file's file: what was picked or pasted; path: where obid keeps it, once uploaded (live.ts)
 // project: the project Home's box chose for the conversation its words start (projects.ts)
-export type Attachments = { files?: { name: string; preview?: string; file?: File; path?: string }[]; obys?: string[]; jobs?: string[]; on?: string; repo?: string; folders?: string[]; project?: string };
+export type Attachments = { files?: { name: string; preview?: string; file?: File; path?: string }[]; obys?: string[]; jobs?: string[]; on?: string; repo?: string; folders?: string[]; project?: string;
+  // the box's chips (docs/contracts/composer.md, COMPOSER-3): the jobs these words start, never the account's
+  defaults?: { mode?: string; agent?: string; model?: string; effort?: string } };
 export const hasAttachments = (a?: Attachments) => !!(a?.files?.length || a?.obys?.length || a?.jobs?.length);
 
 // The Obysphere: the other Obys in your workspace (whose they are), and your conversations with them, each about a task. who: 'you',
