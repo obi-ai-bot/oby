@@ -186,6 +186,6 @@ assumes they do:
 ## What real Cursor needs (cursor-agent 2026.10.01, proven 2026-11-02)
 
 - **A refresh token in its login file.** With an access token and none, `status` says "Partially authenticated (missing refresh token)" and ACP's `session/new` answers -32000 "Authentication required". A run's copy has a stand-in, `CURSOR_NO_REFRESH`, never the real one: Cursor then logs in and opens a session.
-- **Room for its sockets.** `CURSOR_DATA_DIR` (or `~/.cursor`), then `projects`, must fit in 84 characters, or it uses `/tmp/.cursor`, which the box denies, and it dies at once. `acp::cursor::data_dir` keeps it short.
+- **Room for its sockets.** cursor-agent 2026.11.13 keeps them in `$CURSOR_DATA_DIR/projects`, else `$CURSOR_DATA_DIR` (or `~/.cursor`), else `$TMPDIR/.cursor`, the first of 83 characters or fewer; past all three it uses `/tmp/.cursor`, which the box denies, and it dies at once (an `EPERM` on stderr, exit 1, which the box's watcher reported as `killed by signal 9`). `acp::cursor::data_dir` keeps the data folder short; a conversation's Cursor also gets a short `TMPDIR` of its own in the Mac's per-user temporary folder, for a home too long for that (docs/contracts/conversation-agent.md, CONVERSATION-AGENT-41).
 - **An MCP tool's title** is `<server>-<tool>: <tool>` (`oby-oby_jobs: oby_jobs`), of kind `other`.
 - **A turn takes 30 to 40 seconds** in Oby's box, where Claude Code and Codex take 4 to 6. The proxy refuses nothing in that time: only `api2.cursor.sh` and `agentn.global.api5.cursor.sh` are asked for. Why isn't known.
