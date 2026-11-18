@@ -15,6 +15,11 @@
 #   control-plane   cloud/control-plane: pnpm test (vitest inside Miniflare) and pnpm check
 #   electron        apps/electron: npm ci, typecheck, test and build
 #   tools           tools/oby-check-blok (its own Cargo workspace): cargo test
+#   obid-spec       tools/obid-spec (its own Cargo workspace): its tests and coverage gate, then its
+#                   workflows against this commit's obid on stand-in agents and the pinned Sphere,
+#                   black-box: the merge queue the `launch` ones (the Obysphere's and the launch
+#                   flows'), nightly and on demand all of them, a pull request all of them only for
+#                   a change to tools/obid-spec/ or with `full-suite` (docs/contracts/ci.md, CI-67)
 #   brain           tools/brain: its map of obid and the app, read from the code, typechecked and
 #                   tested, so it can't drift from them (docs/contracts/ci.md, CI-56)
 #   proofs          obid's Kani harnesses: every one compiled, and the ones the change requires by
@@ -95,6 +100,7 @@ jobs:
       control-plane: ${{ steps.lanes.outputs.control-plane }}
       tools: ${{ steps.lanes.outputs.tools }}
       brain: ${{ steps.lanes.outputs.brain }}
+      obid-spec: ${{ steps.lanes.outputs.obid-spec }}
       proofs: ${{ steps.lanes.outputs.proofs }}
       selector: ${{ steps.lanes.outputs.selector }}
       rust-tests: ${{ steps.lanes.outputs.rust-tests }}
@@ -174,13 +180,24 @@ jobs:
                 apps/electron/*) electron=true ;;
                 cloud/control-plane/*) control_plane=true ;;
                 tools/oby-check-blok/*) tools=true ;;
-                tools/brain/*) ;;
+                tools/brain/*|tools/obid-spec/*) ;;
                 docs/*|factory/*|.claude/*|design/*|character/*|apps/ios/*|apps/watch/*|apps/shared/*|apps/Oby.xcodeproj/*|mcp/*) ;;
                 *.md) ;;
                 *) every_lane ;;
               esac
             done <<< "$files"
           fi
+          # obid-spec (CI-67): the merge queue runs its `launch` workflows when the change reaches obid
+          # (the rust lane) or the suite; nightly and on demand, every workflow; a pull request, every
+          # workflow only for a change to tools/obid-spec/ or with full-suite, else none.
+          obid_spec=none suite_changed=false
+          if grep -q '^tools/obid-spec/' <<< "$files"; then suite_changed=true; fi
+          case "$GITHUB_EVENT_NAME" in
+            merge_group) if [ "$rust" = true ] || [ "$suite_changed" = true ]; then obid_spec=launch; fi ;;
+            pull_request) if [ "$suite_changed" = true ] || [ "$FULL_SUITE" = true ]; then obid_spec=all; fi ;;
+            *) obid_spec=all ;;
+          esac
+
           # Which Rust tests: with the rust lane, the mode's (in a run that tests) or the guards (in
           # one that doesn't); without it, the guards when the change reaches what they read. A run
           # that reaches every lane has no diff to map, and tests everything.
@@ -198,6 +215,7 @@ jobs:
           echo "mode=$mode tests=$tests"
           echo "rust=$rust e2e=$e2e electron=$electron control-plane=$control_plane tools=$tools brain=$brain"
           echo "proofs required: ${proofs:-none}"
+          echo "obid-spec: $obid_spec"
           echo "$rust_out"
           echo "$rust_out" >> "$GITHUB_OUTPUT"
           {
@@ -211,6 +229,7 @@ jobs:
             echo "brain=$brain"
             echo "proofs=$proofs"
             echo "selector=$selector"
+            echo "obid-spec=$obid_spec"
           } >> "$GITHUB_OUTPUT"
 
       # scripts/ci-rust-tests.sh's own tests (CI-60 to 65), on this checkout's tree and history.
@@ -621,6 +640,124 @@ jobs:
       - name: cargo test
         run: cargo test --manifest-path tools/oby-check-blok/Cargo.toml --locked
 
+  obid-spec:
+    # obid's routes and background triggers, each proven black-box by a workflow against this
+    # commit's obid (docs/contracts/obid-spec.md; docs/contracts/ci.md, CI-67): scratch obids on
+    # stand-in agents, never a real CLI or login, and the Sphere at e2e/sphere.ref. plan says which:
+    # `launch` (the merge queue: the Obysphere's and the launch flows' workflows) or `all`. A known
+    # bug's step (expectedRed, flaky, each with its issue) doesn't fail it; an expected red that
+    # passes, or any other failed step, does.
+    name: obid-spec
+    needs: plan
+    if: needs.plan.outputs.obid-spec == 'launch' || needs.plan.outputs.obid-spec == 'all'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      OBID_SPEC_SPHERE_CLONE: ${{ github.workspace }}/oby-sphere
+      OBID_SPEC_SET: ${{ needs.plan.outputs.obid-spec }}
+    defaults:
+      run:
+        working-directory: oby
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: oby
+          persist-credentials: false
+
+      # The Sphere at the one commit oby pins (e2e/sphere.ref), as the e2e job takes it.
+      - name: The oby-sphere commit oby is tested with
+        id: sphere
+        run: |
+          ref=$(tr -d '[:space:]' < e2e/sphere.ref)
+          [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::e2e/sphere.ref isn't a commit id: $ref"; exit 1; }
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: obi-ai-bot/oby-sphere
+          ref: ${{ steps.sphere.outputs.ref }}
+          path: oby-sphere
+          persist-credentials: false
+
+      - name: Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: |
+            oby/core
+            oby/tools/obid-spec
+          shared-key: obid-spec
+          save-if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+
+      # obid runs each job's agent (here a stand-in) in its bubblewrap sandbox: see rust-test.
+      - name: bubblewrap for obid's job sandbox
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap slirp4netns
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --ro-bind / / --unshare-all --die-with-parent true
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: oby-sphere/server/package.json
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: oby-sphere/server/pnpm-lock.yaml
+
+      # OBID_SPEC_SPHERE_CLONE names a clone that is ready: its server's packages installed.
+      - name: The Sphere's packages
+        working-directory: oby-sphere/server
+        run: pnpm install --frozen-lockfile
+
+      # obid's own secret scan runs gitleaks; the suite clones it into each scratch obid's PATH.
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$archive" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive"
+          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/gitleaks" gitleaks
+          echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
+
+      - name: Build obid
+        run: cargo build --manifest-path core/Cargo.toml -p obid --bin obid --locked
+
+      - name: The suite's own tests
+        run: cargo test --manifest-path tools/obid-spec/Cargo.toml --locked
+
+      - name: Build the suite
+        run: cargo build --manifest-path tools/obid-spec/Cargo.toml --bins --locked
+
+      # Every route and trigger has a workflow and every scenario is classified; the scenarios still
+      # waiting for an assertion are the backlog, reported, never a failure (OBIDSPEC-11).
+      - name: obid-spec coverage --gate
+        run: tools/obid-spec/target/debug/obid-spec coverage --gate
+
+      # Four at a time on the runner's four cores; a failed workflow's folder is kept under TMPDIR.
+      - name: obid-spec run
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          only=()
+          [ "$OBID_SPEC_SET" = all ] || only=(--tag "$OBID_SPEC_SET")
+          tools/obid-spec/target/debug/obid-spec run --jobs 4 "${only[@]}" --obid "$PWD/core/target/debug/obid"
+
+      # A failed workflow's scratch homes and logs (stand-in agents and test values only), 7 days.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: obid-spec-failed
+          path: ${{ runner.temp }}/obid-spec-*/
+          retention-days: 7
+          if-no-files-found: ignore
+
   brain:
     # The Brain's map of obid and the app (tools/brain), read from this commit's code: its tests hold
     # every route, module, app call, kept choice and rule to the code (CI-56).
@@ -702,7 +839,7 @@ jobs:
   check:
     # The run's one status: the merge queue requires it (R01-03).
     name: Check
-    needs: [plan, lint, limits, rust-build, rust-test, control-plane, e2e, electron, tools, brain, proofs]
+    needs: [plan, lint, limits, rust-build, rust-test, control-plane, e2e, electron, tools, obid-spec, brain, proofs]
     if: always() && (github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'full-suite'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -736,6 +873,7 @@ jobs:
               f"- Mode: {out.get('mode') or 'unknown: plan gave none'}",
               f"- Lanes: {', '.join(reached) or 'none'}",
               f"- Rust tests: {rust_tests}, {out.get('rust-why') or 'plan gave no reason'}",
+              f"- obid-spec: {out.get('obid-spec') or 'none'}",
           ]
           if rust_tests != "none":
               lines.append(f"- Ran: {out.get('rust-selected') or 'unknown'}")

@@ -17,6 +17,7 @@ Checks run in two places: GitHub's `CI` workflow (`.github/workflows/ci.yml`) an
 | `control-plane` | In `cloud/control-plane/`: `pnpm test` and `pnpm check`. |
 | `electron` | In `apps/electron/`: `npm ci`, `npm run typecheck`, `npm test`, `npm run build` (Node 22, with zsh installed: the ChatGPT gate's test runs `scripts/package.sh` with `/bin/zsh`). |
 | `tools` | `cargo test` in `tools/oby-check-blok/`, its own Cargo workspace, with the tool installed and gitleaks on `PATH`, since its tests run `scripts/oby-check.sh`. |
+| `obid-spec` | In `tools/obid-spec/`, its own Cargo workspace: obid built, the suite's own tests, `obid-spec coverage --gate` (every route and trigger has a workflow, every scenario is classified; the scenarios still waiting for an assertion are reported, not a failure), then `obid-spec run` against this commit's obid, four workflows at a time, on stand-in agents and the oby-sphere commit in `e2e/sphere.ref`, with bubblewrap and gitleaks set up (docs/contracts/obid-spec.md; CI-67). Which workflows, from `plan`: in the merge queue the `launch` ones (the Obysphere's and the launch flows', `--tag launch`) when the change reaches the `rust` lane or the suite; nightly and on demand every one; on a pull request every one only when it changes `tools/obid-spec/` or carries `full-suite`, else none. A step marked as a known bug (`expectedRed`, `flaky`, each with its issue) doesn't fail it; an expected red that passes does. A failed workflow's scratch folders are uploaded as `obid-spec-failed`, kept 7 days. |
 | `brain` | In `tools/brain/`: `npm ci`, `npm run typecheck`, `npm test` (the Brain's map of obid and the app, read from the code) and the extractor's `cargo test` (CI-56). Reported, never a failure: `Check` ignores its result. |
 | `proofs` | Kani at its pin: every obid harness compiled (`cargo kani -p obid --tests --only-codegen`, CI-57), then the harnesses the change requires by path proved (`scripts/kani-required.sh` and `scripts/kani-prove.sh`, CI-58), each within 20 minutes, but those on `core/.config/kani-slow.txt`; every one nightly and on demand (CI-59). docs/proofs.md says what they prove. |
 | `Check` | Needs every job above. Fails when a guard `plan` named ran no test. |
@@ -45,6 +46,7 @@ A newer push to the same pull request cancels the run it supersedes; merge queue
 | `cloud/control-plane/**` | `control-plane` |
 | `tools/oby-check-blok/**` | `tools` |
 | `tools/brain/**` | none but `brain` |
+| `tools/obid-spec/**` | none (`obid-spec` runs by its own rule, in the `obid-spec` row above) |
 | `docs/**`, `factory/**`, `.claude/**`, `design/**`, `character/**`, `apps/ios/**`, `apps/watch/**`, `apps/shared/**`, `apps/Oby.xcodeproj/**`, `mcp/**`, `*.md` | none: `plan` and `Check` only |
 | any other path | every lane |
 | a diff that can't be read (a missing commit, `git diff` failing) | every lane |
@@ -125,6 +127,7 @@ The Mac's `scripts/oby-check.sh` runs the suites each change reaches, tests incl
 | Electron app | In `apps/electron/`: `npm run typecheck`, `npm test`, `npm run build`. |
 | iPhone and Watch | `xcodebuild -project apps/Oby.xcodeproj -scheme ObyPhone -destination 'platform=iOS Simulator,name=iPhone 17' test`. |
 | E2E | `make e2e` with obi-sphere checked out beside this repository (or `OBI_SPHERE_DIR`). |
+| obid-spec | For a change to `tools/obid-spec/`: the suite's `cargo fmt`, `clippy` and `test`, then obid and the suite built, `obid-spec coverage --gate` and `obid-spec run`, every workflow (CI-66). In a job's box only the suite's own steps, since scratch obids and a Sphere on loopback don't fit there. A change to obid alone doesn't plan it here: GitHub's merge queue runs the `launch` workflows and the nightly run all of them. |
 | Secrets | `gitleaks git --log-opts=origin/dev..HEAD`. |
 | obi-sphere | In `server/`: `pnpm run check`, `pnpm test`, `pnpm run check:validators`, `pnpm run test:client`, and `pnpm run conformance` with `spec/` installed. |
 
