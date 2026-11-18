@@ -4121,15 +4121,17 @@ async fn sphere_23_a_key_rebound_by_sign_in_says_so_and_still_asks() {
     let (sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
     tokio::task::block_in_place(|| read_members(&obid));
     let first = obi_protocol::keys::Keypair::from_seed_string("ernesto's new Mac");
-    let event = |id: &str, kind: &str, new_key_id: &str| {
-        json!({"id": id, "owner": "ernesto", "kind": kind, "at": "2026-11-18T12:00:00Z",
+    let event = |id: u64, reason: &str, new_key_id: &str| {
+        json!({"id": id, "owner": "ernesto", "reason": reason, "at": "2026-11-18T12:00:00Z",
                "old_key_id": ernesto.owner.key.key_id(), "new_key_id": new_key_id,
                "account_linked": true, "revoked": ["obi-ernesto"]})
     };
-    // Events the card must not take: one of a kind obid doesn't know, and a re-bind to another key.
+    // Events the card must not take: the reserved `rotated`, a reason obid doesn't know, and a
+    // sign-in to another key.
     sphere.lock().owner_events = vec![
-        event("e1", "something_new", &first.key_id()),
-        event("e2", "rebound", "ed25519:not-this-key"),
+        event(1, "rotated", &first.key_id()),
+        event(2, "something_new", &first.key_id()),
+        event(3, "signed_in_again", "ed25519:not-this-key"),
     ];
     serve_owner_key(&sphere, &ernesto, &first, 2);
     tokio::task::block_in_place(|| {
@@ -4140,7 +4142,7 @@ async fn sphere_23_a_key_rebound_by_sign_in_says_so_and_still_asks() {
         assert_eq!(
             cards[0]["confirm"]["payload"],
             json!({"owner": "ernesto", "fingerprint": fingerprint}),
-            "no reason from an unknown kind or another key"
+            "no reason from rotated, an unknown reason or another key"
         );
         assert!(
             !cards[0]["text"]
@@ -4156,7 +4158,7 @@ async fn sphere_23_a_key_rebound_by_sign_in_says_so_and_still_asks() {
     sphere
         .lock()
         .owner_events
-        .push(event("e3", "rebound", &second.key_id()));
+        .push(event(4, "signed_in_again", &second.key_id()));
     serve_owner_key(&sphere, &ernesto, &second, 3);
     tokio::task::block_in_place(|| {
         read_members(&obid);
@@ -4179,7 +4181,7 @@ async fn sphere_23_a_key_rebound_by_sign_in_says_so_and_still_asks() {
         assert_eq!(
             card["text"],
             format!(
-                "The Obysphere says ernesto signed in again with a new key. ernesto's owner key changed. Compare its fingerprint with them before you trust it: {fingerprint}."
+                "The Obysphere says ernesto signed in again. ernesto's owner key changed. Compare its fingerprint with them before you trust it: {fingerprint}."
             )
         );
         // Still the owner's call: nothing is trusted by itself.
@@ -4189,6 +4191,28 @@ async fn sphere_23_a_key_rebound_by_sign_in_says_so_and_still_asks() {
             ernestos_pin(&obid)["fingerprint"],
             ernesto.owner.key.key_id()
         );
+    });
+    // An admin's reset, read from where the last read ended (the event ids are numbers).
+    let third = obi_protocol::keys::Keypair::from_seed_string("ernesto's key after a reset");
+    sphere
+        .lock()
+        .owner_events
+        .push(event(5, "admin_reset", &third.key_id()));
+    serve_owner_key(&sphere, &ernesto, &third, 4);
+    tokio::task::block_in_place(|| {
+        read_members(&obid);
+        let cards = trust_cards(&obid, "");
+        assert_eq!(cards.len(), 1, "{cards:#?}");
+        let fingerprint = third.key_id();
+        assert_eq!(cards[0]["confirm"]["payload"]["reason"], "admin_reset");
+        assert!(
+            cards[0]["text"].as_str().unwrap().starts_with(
+                "The Obysphere says an admin reset their key. ernesto's owner key changed."
+            ),
+            "{:#}",
+            cards[0]
+        );
+        assert!(cards[0]["text"].as_str().unwrap().contains(&fingerprint));
     });
 }
 

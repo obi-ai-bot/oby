@@ -1856,7 +1856,12 @@ async fn owner_events(
             state
                 .owner_events
                 .iter()
-                .position(|e| e["id"] == after.as_str())
+                // An id is a number, or text: the cursor matches it either way.
+                .position(|e| match &e["id"] {
+                    Value::String(id) => id == after,
+                    Value::Number(id) => after.parse::<u64>().ok() == id.as_u64(),
+                    _ => false,
+                })
         })
         .map_or(0, |at| at + 1);
     let events: Vec<Value> = state

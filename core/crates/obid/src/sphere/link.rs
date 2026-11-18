@@ -176,7 +176,7 @@ struct State {
     /// When obid last asked the Sphere's `GET /v0.1/features`, while it didn't list `card_runtime`.
     features_read: i64,
     /// The owner events read so far (SPHERE-23): the last one's id, and each re-bind as (owner, new
-    /// owner key id, obid's own reason code). Only kinds obid knows are kept.
+    /// owner key id, obid's own reason code). Only reasons obid knows are kept.
     owner_events: (Option<String>, Vec<(String, String, &'static str)>),
     /// The Sphere's `GET /v0.1/features` and when obid read it (an answer that isn't the list counts
     /// as none): the token exchange and the card's runtime both read it from here.
@@ -723,11 +723,13 @@ fn membership_refused(error: &ClientError, delegation: &str, now: i64) -> Option
 /// about it, not the membership (SPHERE-22).
 const DELEGATION_GRACE: i64 = 300;
 
-/// obid's closed reason codes for an owner event's `kind` (SPHERE-23): a kind obid doesn't know is
-/// no reason, so the Sphere can never put words of its own on the card.
-fn owner_event_reason(kind: &str) -> Option<&'static str> {
-    match kind {
-        "rebound" => Some(inbox::SIGNED_IN_AGAIN),
+/// obid's closed reason codes for an owner event's `reason` (SPHERE-23): `rotated` (reserved) and a
+/// value obid doesn't know are no reason, so the Sphere can never put words of its own on the card.
+fn owner_event_reason(reason: &str) -> Option<&'static str> {
+    match reason {
+        inbox::SIGNED_IN_AGAIN => Some(inbox::SIGNED_IN_AGAIN),
+        inbox::ADMIN_RESET => Some(inbox::ADMIN_RESET),
+        inbox::OPERATOR_RESET => Some(inbox::OPERATOR_RESET),
         _ => None,
     }
 }
@@ -2154,15 +2156,18 @@ impl Link {
             {
                 let mut state = self.lock();
                 for event in &page {
-                    if let Some(id) = event["id"].as_str() {
-                        state.owner_events.0 = Some(id.to_owned());
+                    // The event's id, a number (or text), is the cursor for the next read.
+                    match &event["id"] {
+                        Value::Number(id) => state.owner_events.0 = Some(id.to_string()),
+                        Value::String(id) => state.owner_events.0 = Some(id.clone()),
+                        _ => {}
                     }
                     let (Some(owner), Some(new_key)) =
                         (event["owner"].as_str(), event["new_key_id"].as_str())
                     else {
                         continue;
                     };
-                    if let Some(code) = owner_event_reason(event["kind"].as_str().unwrap_or("")) {
+                    if let Some(code) = owner_event_reason(event["reason"].as_str().unwrap_or("")) {
                         state
                             .owner_events
                             .1

@@ -159,9 +159,26 @@ pub mod action {
     pub const TRUST_KEY: &str = "trust_key";
 }
 
-/// A `trust_key` card's `reason` (SPHERE-23): the Obysphere's owner event says the owner signed in
-/// again and bound a new key (`kind` `rebound`). One of a closed set, each with obid's own words.
+/// A `trust_key` card's `reason` (SPHERE-23): what the Obysphere's owner event says changed the
+/// owner's key. A closed set, each with obid's own words; the Sphere's `rotated` (reserved, never
+/// sent in obi/0.1) and any value obid doesn't know are no reason.
+/// The owner signed in again and the Sphere bound their new key.
 pub const SIGNED_IN_AGAIN: &str = "signed_in_again";
+/// An admin of the Sphere reset the owner's key.
+pub const ADMIN_RESET: &str = "admin_reset";
+/// The Sphere's operator reset the owner's key.
+pub const OPERATOR_RESET: &str = "operator_reset";
+
+/// obid's own words for each reason it knows, as the Obysphere's claim (SPHERE-23).
+fn reason_words(owner: &str, reason: &str) -> Option<String> {
+    let what = match reason {
+        SIGNED_IN_AGAIN => format!("{owner} signed in again"),
+        ADMIN_RESET => "an admin reset their key".to_owned(),
+        OPERATOR_RESET => "the Obysphere's operator reset their key".to_owned(),
+        _ => return None,
+    };
+    Some(format!("The Obysphere says {what}. "))
+}
 
 /// Oby's ask to trust `owner`'s changed owner key (SPHERE-8): obid's own fixed words with only the
 /// owner id and the new key's fingerprint, so nothing the Sphere or a card says goes on the card.
@@ -169,16 +186,12 @@ pub const SIGNED_IN_AGAIN: &str = "signed_in_again";
 /// happened: a claim, never a fact, since the Sphere is who could swap a key, and the ask to
 /// compare stays.
 pub fn trust_key_item(owner: &str, fingerprint: &str, reason: Option<&str>, now: i64) -> Item {
-    let said = match reason {
-        Some(SIGNED_IN_AGAIN) => {
-            format!("The Obysphere says {owner} signed in again with a new key. ")
-        }
-        _ => String::new(),
-    };
+    let said = reason.and_then(|r| reason_words(owner, r));
     let mut payload = json!({"owner": owner, "fingerprint": fingerprint});
-    if let Some(reason @ SIGNED_IN_AGAIN) = reason {
+    if let (Some(reason), Some(_)) = (reason, &said) {
         payload["reason"] = json!(reason);
     }
+    let said = said.unwrap_or_default();
     let mut item = confirm_item(
         "",
         format!("New key for {owner}: compare with them ({fingerprint})"),
