@@ -540,6 +540,36 @@ fn a_codex_conversation_resumes_its_thread() {
     assert_eq!(other.body["text"], "resume=none", "{}", other.text);
 }
 
+/// CONVERSATION-AGENT-48: a Codex conversation's question with choices (request_user_input) is the
+/// turn's answer too, and the owner's pick goes to its thread as their next words.
+#[test]
+fn conversation_agent_48_codex_asks_with_choices() {
+    let (_folder, obid) = obid("codex-conv-choices", true);
+    let asked = said(
+        &obid,
+        json!({"said": "ASK English or French? | English | French", "new": true}),
+    );
+    assert_eq!(asked.body["kind"], "question", "{}", asked.text);
+    assert_eq!(asked.body["question"]["text"], "English or French?");
+    assert_eq!(
+        asked.body["question"]["options"],
+        json!(["English", "French"]),
+        "{}",
+        asked.text
+    );
+    let conversation = asked.body["conversation"].as_str().unwrap().to_owned();
+    let picked = said(
+        &obid,
+        json!({"said": "REMEMBER", "conversation": conversation}),
+    );
+    let turns = turns(&obid);
+    assert_eq!(turns.len(), 2, "{turns:?}");
+    // Its waiting app-server took the next words, on the same thread (CONVERSATION-AGENT-44).
+    assert_eq!(turns[1]["proc"], turns[0]["proc"], "{turns:?}");
+    assert!(words(&picked).starts_with("resume="), "{}", picked.text);
+    assert_ne!(words(&picked), "resume=none", "{}", picked.text);
+}
+
 /// The pattern of `conversation`'s `app-server` command lines: its stand-in's, and its box's
 /// around it (bubblewrap's on Linux, the watcher on macOS), each naming the conversation's MCP
 /// endpoint before `app-server`. Looked for from outside the box: inside a pid namespace of its own

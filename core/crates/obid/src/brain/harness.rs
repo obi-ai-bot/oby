@@ -64,13 +64,15 @@ const MAX_TURNS: &str = "50";
 /// The built-in tools a boxed conversation's session gets (`--restricted --tools`): read, search,
 /// the web, writes in the room, a to-do list and sub-agents. No Bash or other code-running tool, so
 /// nothing the session runs can read its login copy and send it out; it runs no commands (CONVO-2).
-const TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write,Edit,MultiEdit,NotebookEdit,Task,TodoWrite";
+/// And AskUserQuestion: a question with choices, which obid puts to the owner as the turn's answer
+/// ([`Session::put_question`], CONVERSATION-AGENT-47).
+const TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write,Edit,MultiEdit,NotebookEdit,Task,TodoWrite,AskUserQuestion";
 /// An own Claude Code session's (LANES-12): those, its own Bash, which runs in Claude Code's own
 /// sandbox and has no login copy to read, the owner's skills, and their MCP servers' resources.
 /// And ToolSearch, Claude Code's own lookup of a deferred MCP tool (CONVERSATION-AGENT-24): with it
 /// the owner's MCP servers' tools load when a turn needs them, as in their terminal, instead of
 /// every one in every prompt (some 700 tools, half a million tokens, on the owner's Mac).
-const OWN_TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write,Edit,MultiEdit,NotebookEdit,Task,TodoWrite,Bash,BashOutput,KillShell,Skill,ToolSearch,ListMcpResourcesTool,ReadMcpResourceTool,ReadMcpResourceDirTool";
+const OWN_TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write,Edit,MultiEdit,NotebookEdit,Task,TodoWrite,AskUserQuestion,Bash,BashOutput,KillShell,Skill,ToolSearch,ListMcpResourcesTool,ReadMcpResourceTool,ReadMcpResourceDirTool";
 use crate::agent::MCP_STARTUP_WAIT;
 /// How long a call of Oby's tools waits for obid's reader to reach the line where the agent wrote
 /// it, counting only while the reader holds no line ([`Session::heard`]).
@@ -135,6 +137,9 @@ pub struct Session {
     pub written: Mutex<Vec<(String, String, Value)>>,
     /// obid's reader of the agent's output, as a call waits on it ([`Session::heard`]).
     pub reader: Reader,
+    /// The question with choices the agent asked the owner this turn ([`Session::put_question`]):
+    /// the turn's answer.
+    pub question: Mutex<Option<super::plan::Question>>,
 }
 
 /// Where obid's reader is: the lines it holds, how long it has held none, and a wake-up for a
@@ -194,7 +199,36 @@ impl Drop for Reading<'_> {
     }
 }
 
+/// What the agent hears when obid puts its question to the owner (CONVERSATION-AGENT-47).
+const QUESTION_PUT: &str = "Oby has put this question to the owner, with its choices, over the message box. End your turn now without asking it again or answering it yourself: their answer comes as their next words.";
+
 impl Session {
+    /// The agent asks the owner a question with choices (Claude Code's AskUserQuestion, Codex's
+    /// request_user_input; CONVERSATION-AGENT-47): obid keeps its first question, which ends the
+    /// turn as a question the apps show with its choices, and tells the agent so. The owner's pick,
+    /// or their own words, comes back as their next words. What the agent wrote there is data for
+    /// the owner to read: the question and its options' labels, cut as a job's question card's.
+    fn put_question(&self, input: &Value) -> Answer {
+        let call = Call::new(crate::permissions::ASK_USER_QUESTION, input);
+        let Some(asked) = call.questions.first() else {
+            return Answer::Deny("obid couldn't read that question: ask it in your answer.".into());
+        };
+        let details: Vec<String> = asked
+            .options
+            .iter()
+            .map(|o| o.description.clone())
+            .collect();
+        let question = super::plan::Question {
+            text: asked.question.clone(),
+            options: asked.options.iter().map(|o| o.label.clone()).collect(),
+            details: details.iter().any(|d| !d.is_empty()).then_some(details),
+            recommended: None,
+            plan: None,
+        };
+        *self.question.lock().unwrap_or_else(|e| e.into_inner()) = Some(question);
+        Answer::Deny(QUESTION_PUT.into())
+    }
+
     /// obid's reader has a line of the agent's in hand, until the guard drops.
     pub fn reading(&self) -> Reading<'_> {
         {
@@ -1610,6 +1644,7 @@ async fn session(
         artifacts: Mutex::new(vec![]),
         written: Mutex::default(),
         reader: Reader::default(),
+        question: Mutex::default(),
     });
     // One that read something before the conversation kept that too.
     if session.web.load(Ordering::SeqCst) {
@@ -1707,6 +1742,19 @@ async fn session(
             end: End::Cancelled,
         });
     }
+    // A question the agent asked with choices is the turn's answer (CONVERSATION-AGENT-47), said
+    // in its own words, not the agent's after it; with jobs started, their cards stay on a reply
+    // that asks it in words.
+    let question = session
+        .question
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    let text = match &question {
+        Some(question) if jobs.is_empty() => question.text.clone(),
+        Some(question) => format!("{text}\n\n{}", question.text).trim().to_owned(),
+        None => text,
+    };
     super::acknowledge(shared, control, &text);
     let end = match end {
         End::Answered if !jobs.is_empty() => End::StartedJobs(
@@ -1722,12 +1770,16 @@ async fn session(
         end.as_str(),
         watch.line()
     );
-    Ok(Answered {
-        talk: if text.is_empty() && jobs.is_empty() && !published {
-            Talk::None
-        } else {
-            Talk::Reply { text, jobs }
+    let talk = match question {
+        Some(question) if jobs.is_empty() => Talk::Question {
+            said: said.to_owned(),
+            question,
         },
+        None if text.is_empty() && jobs.is_empty() && !published => Talk::None,
+        _ => Talk::Reply { text, jobs },
+    };
+    Ok(Answered {
+        talk,
         details: None,
         end,
     })
@@ -1868,6 +1920,8 @@ async fn attempts(
     let mut cut: Option<String> = None;
     // The one new session a turn gets when the one it's on won't do (CONVERSATION-AGENT-15, 16).
     let mut renewed = resume.is_none();
+    // The words went again to an agent that answered nothing (CONVERSATION-AGENT-46).
+    let mut again = false;
     let mut attempt = 0;
     while attempt < 2 {
         attempt += 1;
@@ -1917,7 +1971,7 @@ async fn attempts(
         // login copy is good for the turn, and it wrote nothing while it waited but its
         // housekeeping (a line read now would be taken for this turn's); else it ends, and the
         // turn starts one.
-        let warm = match warm.take() {
+        let waiting = match warm.take() {
             Some(mut warm) if warm.key == key && (own || login_lasts(tool, place, account)) => {
                 if warm.waiting.quiet().await {
                     Some(warm)
@@ -1932,7 +1986,7 @@ async fn attempts(
             }
             None => None,
         };
-        let (run, protocol) = match warm {
+        let (run, protocol) = match waiting {
             Some(Warm {
                 waiting: Waiting::Codex(kept),
                 ..
@@ -2073,6 +2127,38 @@ async fn attempts(
                 &session.kept,
                 &serde_json::to_vec(&kept).unwrap_or_default(),
             );
+        }
+        // An answer of no model turn and no words isn't one (CONVERSATION-AGENT-46): a session cut
+        // mid-turn by obid's end answers the first prompt of the next process that resumes it so
+        // (Claude Code, #2504), and that same process takes the words when they come again. Once.
+        if !again
+            && answered_nothing(&turn, &streamed)
+            && session
+                .jobs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty()
+            && control.live()
+        {
+            again = true;
+            failures.push(format!(
+                "attempt {attempt}: answered nothing, no model turn"
+            ));
+            if let (Some(waiting), Some(id)) = (running, &turn.session) {
+                warm = Some(Warm {
+                    waiting,
+                    token: token.to_owned(),
+                    account: account.id.clone(),
+                    config_dir: account.config_dir.clone(),
+                    session: Some(id.clone()),
+                    key,
+                    place: place.clone(),
+                    since: Instant::now(),
+                });
+            }
+            resume = turn.session.clone().or(resume.take());
+            attempt -= 1;
+            continue;
         }
         // Kept for the conversation's next turn when this one answered; else it ends.
         let kept_for = match (running, &turn.session) {
@@ -2229,6 +2315,20 @@ async fn attempts(
         cant_start,
         ..Unanswered::moves(FAILED_TWICE)
     })
+}
+
+/// Whether a turn that succeeded answered nothing at all: its result says no model turn ran
+/// (`num_turns` 0, as Claude Code's does), and it said no word.
+fn answered_nothing(turn: &agent::Turn, streamed: &str) -> bool {
+    turn.succeeded()
+        && turn
+            .result
+            .as_ref()
+            .and_then(|r| r.get("num_turns"))
+            .and_then(Value::as_u64)
+            == Some(0)
+        && turn.text().trim().is_empty()
+        && streamed.trim().is_empty()
 }
 
 /// What the macOS box's first process writes in its `TMPDIR` before it ends everything in the box,
@@ -2733,6 +2833,9 @@ async fn one(
         false => Vec::new(),
     };
     let decide = |tool: &str, input: &Value| {
+        if tool == crate::permissions::ASK_USER_QUESTION {
+            return Ruling::Now(session.put_question(input));
+        }
         let quiet = crate::jobs::Jobs::OWN_QUIET.contains(&tool);
         if own
             && (quiet || crate::jobs::claude_place(tool, input, &place.room, None, &folders, false))
@@ -4042,6 +4145,7 @@ mod tests {
             artifacts: Mutex::new(vec![]),
             written: Mutex::default(),
             reader: Reader::default(),
+            question: Mutex::default(),
         };
         // The run names its session: kept at once, unmarked.
         session.keep(Some("c0000000-0000-4000-8000-000000000001"));
@@ -4201,6 +4305,7 @@ mod tests {
             artifacts: Mutex::new(vec![]),
             written: Mutex::default(),
             reader: Reader::default(),
+            question: Mutex::default(),
         }
     }
 
@@ -4824,6 +4929,7 @@ mod tests {
             artifacts: Mutex::new(vec![]),
             written: Mutex::default(),
             reader: Reader::default(),
+            question: Mutex::default(),
         }));
         assert!(sessions.session("conversation-c1", &token).is_some());
         assert!(sessions.session("conversation-c2", &token).is_none());

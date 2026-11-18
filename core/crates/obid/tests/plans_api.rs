@@ -3481,6 +3481,44 @@ fn delivery_7_a_turn_cut_by_a_kill_reads_interrupted_and_is_not_sent_again() {
     );
 }
 
+/// CONVERSATION-AGENT-46: the owner's first new words after obid went down mid-turn get their
+/// answer. The resumed session answers its first prompt with nothing, no model turn and no word, as
+/// Claude Code did (#2504, which the stand-in follows): that isn't an answer, so the words go again
+/// to the same process, which takes them.
+#[test]
+fn conversation_agent_46_the_first_words_after_a_restart_get_their_answer() {
+    let folder = Folder::new("talk-46");
+    let obid = started_harness(&folder);
+    let id = said_anew(&obid, "SAY Ready.")["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    plan_cut_short(&obid, json!({"said": "LINGER 60000", "conversation": id}));
+    reads(&obid, &id, "LINGER 60000", "running");
+    within(15, "the agent's turn with the words", || {
+        (agent_turns_with(&obid, &id, "LINGER 60000") == 1).then_some(())
+    });
+    let obid = stopped_and_started(&folder, obid, false);
+    reads(&obid, &id, "LINGER 60000", "interrupted");
+    let banana = call(
+        &obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "SAY banana.", "conversation": id})),
+    );
+    assert_eq!(banana.status, 200, "{}", banana.text);
+    assert_eq!(banana.body["kind"], "reply", "{}", banana.text);
+    assert_eq!(banana.body["text"], "banana.", "{}", banana.text);
+    assert_eq!(
+        user_turn(&obid, &id, "SAY banana.")["delivery"]["status"],
+        "answered"
+    );
+    // Once to the process that answered nothing, once more to the same one.
+    assert_eq!(agent_turns_with(&obid, &id, "SAY banana."), 2);
+    let turns = conversation_turns(&obid, &id);
+    assert_eq!(turns.last().unwrap()["text"], "banana.", "{turns:?}");
+}
+
 /// CONVERSATION-AGENT-49: the owner's waiting words are the conversation's queued words on its
 /// file and nowhere else, and one drain per conversation answers them. After a restart the words
 /// that waited get one turn of their own, and words sent while it runs wait on the file too: one

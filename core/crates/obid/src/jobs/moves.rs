@@ -7,8 +7,9 @@
 
 use super::*;
 
-/// Who stopped a running job to move it: its run starts over on the new choice.
-const MOVING: &str = "Moved to another account";
+/// Who stopped a running job to move it: its run starts over on the new choice, and its
+/// conversation hears the move, never that it stopped (crate::conversation, #2485).
+pub(crate) const MOVING: &str = "Moved to another account";
 
 /// Where jobs.rs's tests still find it.
 #[cfg(test)]
