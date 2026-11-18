@@ -64,6 +64,16 @@ The owner's words of 2026-11-16: when an account can't run, say why, on the acco
 - While it's kept, `GET /v1/status` and the `accounts` event carry it as the account's `cantRun`, and routing passes over the account as over a signed-out one: work goes to one that can start, and to it only when nothing else can. A job that names it, and a conversation the owner pointed at it, still try it first.
 - **The Electron app** shows it on the account's row in Settings › Agents, `<tool> can’t start: <reason>` (proposed, Sangam's to rewrite), and doesn't show that account as where new tasks go while another can start. A failed task's line, on its card, is obid's reason with each path down to its last name.
 
+### Where a task goes
+
+The owner's words of 2026-11-17: as simple and honest as T3 Code, which runs the provider you picked or tells you it can't.
+
+- **obid** decides where every new task goes, by one rule, whichever way it started: the owner's words, a conversation's dispatch, Fix CI and the GitHub feed's other starts, a routine's run (`Jobs::create`, `routing::route_new`). An account **can't take** a task while its tool's CLI isn't on this Mac, it isn't signed in, or its `cantRun` is kept; routing passes over one as over a signed-out account, and then takes the one with the most room.
+- **An account the owner named** is where the task goes. One named in that request (not a follow-up's, which keeps its first task's account and runs as before) whose tool's CLI isn't on this Mac, so nothing could ever run it, is refused before anything starts (`422`), in plain words with what to do: `Cursor isn't installed on this Mac, so this task didn't start: install it, or ask for another account.` (proposed words, Sangam's to rewrite). Never a tool's raw error or a path. One signed out, or whose `cantRun` is kept, still goes there (ACCOUNTS-20), its run saying why in plain words (ACCOUNTS-19): a login obid can't see, such as one in the environment, may still work. One at its limit keeps the job and its wait (#871).
+- **An agent the owner named** (`agent: "claude"`, "on Claude Code") whose accounts all can't take it, or have no room, hands the task to the account with the most room of any tool at once, while `accountFailover` is on, and the task says so: its `routed` line, `Claude Code is at 97% of its week until Thu 9:00 AM, so this runs on Codex · Personal.` (proposed words), shown on its card under its agent and said in the reply that started it, after the plan's own words when the plan had some (CONVERSATION-AGENT-40). With nothing else that can take it, it starts there and its run says why it couldn't, in plain words (ACCOUNTS-19 and 20); a limit waits as LIMITS-18 says; work nobody watches asked of Codex, its login only waiting for the owner's yes, waits for that yes (CHATGPT-20).
+- **Auto** (no agent or account named) takes the account with the most room that can take it; with none, it waits for room (LIMITS-18) or, when nothing could ever run it, starts on the first and its run says why it couldn't, in plain words (ACCOUNTS-19 and 20).
+- **A wait says what it waits for.** `Every account is at its limit: …` only while no account of any tool could take the job; otherwise the line names the account it waits on: `Claude Code is at its limit: resuming when it has room, at the latest Thu 9:00 AM` (proposed words).
+
 ### Signing out
 
 The gap analysis of 2026-11-17: an account could be removed but not signed out.
@@ -119,6 +129,12 @@ The gap analysis of 2026-11-17: a tool's binary could be set only in obid's `con
 - **ACCOUNTS-27:** a value that isn't a path from `/` or a bare command name is `422` `badBin`, and one obid can't find `422` `notFound`, said on the tool's row; nothing changes.
 - **ACCOUNTS-28:** `{"bin": null}` (`Use default`) goes back to the configuration's; a kept value that doesn't read (an unknown tool, a relative path) is left out at start and logged.
 - **ACCOUNTS-18:** a boxed Codex copy whose access token's JWT `exp` has passed, ending on a bare 401, says `run codex once` and stays signed in; a revocation on that expired copy, or a 401 or revocation while `exp` is still ahead, still ends the login (`run codex login`).
+
+- **ACCOUNTS-30 (`accounts_30_*`):** routing passes over an account whose tool's CLI isn't on this Mac, as over a signed-out one, even when it's where new tasks go; the task carries no `routed` line, since the owner named nothing.
+- **ACCOUNTS-31 (`accounts_31_*`):** a task asked of an agent with no room (at 95% of a window) runs at once on the account with the most room of any tool, `routed` naming why and where; its step never says every account is at its limit while one has room. `accountFailover` off keeps it on the agent asked for, waiting.
+- **ACCOUNTS-32 (`accounts_32_*`, `jobs::cant_take::tests`):** a new task (not a follow-up) named to an account whose CLI isn't on this Mac is refused (`422`) before anything starts, saying why and what to do with no path; nothing is made. One named to a signed-out account still goes there, routed nowhere else (ACCOUNTS-20). An agent asked for that isn't installed hands the task to one that is, saying so.
+- **ACCOUNTS-33 (`accounts_31_*`):** a task waiting on its own account while another has room says that account's name in its line; `Every account is at its limit` only when none has room.
+- **ACCOUNTS-34 (`github_work::accounts_34_*`):** Fix CI's task is routed like any task: past an account at 95% of its week, the one new tasks go to included, onto one with room. (It held before this contract too: Fix CI names no agent or account, so it always took Auto's routing.)
 
 **Test it when it's done (real Mac):**
 

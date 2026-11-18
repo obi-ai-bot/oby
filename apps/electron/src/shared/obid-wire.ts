@@ -87,6 +87,8 @@ export type Job = {
   publishError?: string | null;
   // obid only (TASKS-12): it ended done with nothing done (no commits, nothing published)
   nothingDone?: boolean;
+  // obid only (ACCOUNTS-31): why it runs on another agent than the one your words named
+  routed?: string | null;
   rounds: number;
   round: number;
   // obid only: how big its change is (docs/api/jobs.md, `diff`), and Oby's reviews of its published

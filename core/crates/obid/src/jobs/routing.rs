@@ -221,7 +221,7 @@ impl Jobs {
         if let Some(id) = &preferred {
             tools.sort_by_key(|t| !self.accounts(*t).iter().any(|a| &a.id == id));
         }
-        let (home, now) = (login_home(), obi_protocol::time::now());
+        let now = obi_protocol::time::now();
         let mut first = None;
         let (mut held, mut ready) = (Vec::new(), Vec::new());
         let mut not_yet = None;
@@ -246,10 +246,9 @@ impl Jobs {
                 // Routing skips an account that isn't signed in (#626), and one without room.
                 None => {
                     for account in accounts {
-                        // One whose agent couldn't start is passed over too (ACCOUNTS-20).
-                        if !signed_in(*tool, &account, home.as_deref())
-                            || self.cant_run_why(&account.id).is_some()
-                        {
+                        // One whose agent couldn't start, or whose CLI isn't on this Mac, is
+                        // passed over too (ACCOUNTS-20, ACCOUNTS-30).
+                        if self.cant_take(*tool, &account).is_some() {
                             first.get_or_insert((*tool, account));
                         } else if work.background && !self.takes_background(&account) {
                             not_yet.get_or_insert(account.name);
@@ -295,6 +294,195 @@ impl Jobs {
             ),
             (None, _) => "obid has no account to run the job on.".into(),
         }))
+    }
+
+    /// Why `account` of `tool` can't take a task now (ACCOUNTS-30), or none when it can: its CLI
+    /// isn't on this Mac, it isn't signed in, or its agent couldn't start a moment ago (`cantRun`,
+    /// ACCOUNTS-19). Plain words, never a path or a tool's raw error.
+    pub(crate) fn cant_take(
+        &self,
+        tool: Tool,
+        account: &crate::config::Account,
+    ) -> Option<CantTake> {
+        if self.agent_bin(tool).is_none() {
+            return Some(CantTake::Missing(tool.name().to_owned()));
+        }
+        let home = login_home();
+        if !signed_in(tool, account, home.as_deref()) {
+            let label = self.label(tool, account);
+            return Some(match login_problem(tool, account, home.as_deref()) {
+                Some(problem) => CantTake::Failed(format!(
+                    "{label} can't run now: {}",
+                    cant_run::plain(&problem)
+                )),
+                None => CantTake::SignedOut(label),
+            });
+        }
+        let why = self.cant_run_why(&account.id)?;
+        Some(CantTake::Failed(format!(
+            "{} couldn't start: {why}",
+            self.label(tool, account)
+        )))
+    }
+
+    /// How the owner calls `account` in a line: its tool alone when that has no other account,
+    /// else `<tool> · <account>`.
+    pub(crate) fn label(&self, tool: Tool, account: &crate::config::Account) -> String {
+        match self.accounts(tool).len() {
+            1 => tool.name().to_owned(),
+            _ => format!("{} · {}", tool.name(), account.name),
+        }
+    }
+
+    /// Where a new task goes (ACCOUNTS-30 to 33), and the line that says so when it isn't where
+    /// the owner's words put it. Every way a task starts comes here (`Jobs::create`): the owner's
+    /// words, a conversation's dispatch, Fix CI and the GitHub feed, a routine.
+    /// - An account the owner named is where it goes. One named in this request (`asked_now`: not a
+    ///   follow-up's, which keeps its first task's) whose tool's CLI isn't on this Mac is refused
+    ///   before anything starts, saying why and what to do; one signed out or whose agent couldn't
+    ///   start goes there and its run says why (ACCOUNTS-19, 20); one at its limit waits there
+    ///   (#871).
+    /// - An agent the owner named whose accounts all can't take it, or have no room, hands it to
+    ///   the account with the most room of any tool, saying why, while `accountFailover` is on.
+    /// - With nowhere else to go, it starts where it was put and its run says why it couldn't.
+    pub(super) fn route_new(
+        &self,
+        agent: Option<&str>,
+        named: Option<&str>,
+        asked_now: bool,
+        work: &Work,
+    ) -> Result<Routed, Refused> {
+        let chosen = |v: Option<&str>| {
+            v.map(str::trim)
+                .filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("auto"))
+                .map(str::to_owned)
+        };
+        let (asked, named) = (chosen(agent), chosen(named));
+        let routed = |tool, account, waiting| Routed {
+            tool,
+            account,
+            waiting,
+            line: None,
+        };
+        // An agent the owner asked for that can't take it: the account with the most room of any
+        // tool takes it, saying why (ACCOUNTS-31).
+        let elsewhere = |asked: &str| -> Option<Routed> {
+            let tool = Tool::from_id(asked)?;
+            if named.is_some() || !self.account_failover() {
+                return None;
+            }
+            let (to, account) = self.pick_for(None, None, work).ok()?;
+            if to == tool || self.cant_take(to, &account).is_some() {
+                return None;
+            }
+            if work.background && self.waits_for_yes(to, &account) {
+                return None;
+            }
+            let line = format!(
+                "{}, so this runs on {} · {}.",
+                self.why_not(tool, work),
+                to.name(),
+                account.name
+            );
+            Some(Routed {
+                tool: to,
+                account,
+                waiting: None,
+                line: Some(line),
+            })
+        };
+        match self.pick_for(asked.as_deref(), named.as_deref(), work) {
+            Ok((tool, account)) => {
+                if let Some(cant) = self.cant_take(tool, &account) {
+                    // An account the owner named in this request whose tool's CLI isn't on this
+                    // Mac could never run it: refused, saying why (ACCOUNTS-32). One signed out or
+                    // whose agent couldn't start still goes there (ACCOUNTS-20), its run saying why
+                    // in plain words (ACCOUNTS-19): a login obid can't see may still work. A
+                    // follow-up keeps its first task's account, and an agent can hand off.
+                    if named.is_some() && asked_now && matches!(cant, CantTake::Missing(_)) {
+                        return Err(Refused(cant.refusal()));
+                    }
+                    if let Some(moved) = asked.as_deref().and_then(elsewhere) {
+                        return Ok(moved);
+                    }
+                }
+                if work.background && self.waits_for_yes(tool, &account) {
+                    let wait = consent_wait(&account, asked.as_deref());
+                    return Ok(routed(tool, account, Some(wait)));
+                }
+                Ok(routed(tool, account, None))
+            }
+            Err(refused) if named.is_none() => {
+                // Codex asked for, its login only waiting for the owner's yes, waits for it there
+                // (CHATGPT-20); held back by anything else, it hands off (ACCOUNTS-31).
+                let for_yes = asked.as_deref().filter(|_| work.background);
+                if let Some((tool, account, waiting)) =
+                    for_yes.and_then(|a| self.first_not_yet(Some(a)))
+                {
+                    return Ok(routed(tool, account, waiting));
+                }
+                if let Some(moved) = asked.as_deref().and_then(elsewhere) {
+                    return Ok(moved);
+                }
+                // Held back by weekly reserves alone, it waits for one to be lifted, or for room
+                // (#872); by limits, as a limit's job waits (LIMITS-18); by a ChatGPT login the
+                // owner hasn't said yes to alone, for their yes (CHATGPT-20).
+                match self
+                    .in_reserve(asked.as_deref(), work.background)
+                    .or_else(|| self.no_room(asked.as_deref(), work))
+                    .or_else(|| {
+                        work.background
+                            .then(|| self.first_not_yet(asked.as_deref()))?
+                    }) {
+                    Some((tool, account, waiting)) => Ok(routed(tool, account, waiting)),
+                    None => Err(refused),
+                }
+            }
+            Err(refused) => Err(refused),
+        }
+    }
+
+    /// Why none of `tool`'s accounts takes `work` now, each in a few words: "Claude Code is at 97%
+    /// of its week until Thu 9:00 AM" (ACCOUNTS-31).
+    fn why_not(&self, tool: Tool, work: &Work) -> String {
+        let (now, zone) = (obi_protocol::time::now(), jiff::tz::TimeZone::system());
+        let reasons: Vec<String> = self
+            .accounts(tool)
+            .into_iter()
+            .filter(|a| !self.being_changed(&a.id) && self.in_profile(a, work))
+            .filter_map(|account| match self.cant_take(tool, &account) {
+                Some(cant) => Some(cant.clause()),
+                None => self.holds().held(&account.id, work, now).map(|(why, _)| {
+                    let why = super::account_limits::in_local_time(&why, &zone);
+                    format!("{} {why}", self.label(tool, &account))
+                }),
+            })
+            .collect();
+        match reasons.is_empty() {
+            true => format!("{} has no account that can take it", tool.name()),
+            false => reasons.join("; "),
+        }
+    }
+
+    /// Whether every account that could take `job`'s work is at its limit or can't take work, so
+    /// its wait says "every account" (LIMITS-5); none when another account has room: its line then
+    /// names its own account, which it waits for (ACCOUNTS-33).
+    pub(super) fn held_alone(&self, job: &Job) -> Option<String> {
+        let work = Work::of(job);
+        let now = obi_protocol::time::now();
+        let free = Tool::ALL
+            .into_iter()
+            .filter(|t| self.agent_config(*t).is_some())
+            .flat_map(|tool| self.accounts(tool).into_iter().map(move |a| (tool, a)))
+            .any(|(tool, a)| {
+                !self.being_changed(&a.id)
+                    && self.in_profile(&a, &work)
+                    && self.cant_take(tool, &a).is_none()
+                    && (!work.background || self.takes_background(&a))
+                    && self.holds().held(&a.id, &work, now).is_none()
+            });
+        let (tool, account) = crate::accounts::find(&self.config.agents.get(), &job.account)?;
+        free.then(|| self.label(tool, &account))
     }
 
     /// Whether obid moves work past an account's usage limit to another account with room by

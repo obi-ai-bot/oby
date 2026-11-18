@@ -581,6 +581,7 @@ export function taskOf(s: Live, j: Job): Task {
     round: j.rounds > 1 ? [j.round, j.rounds] : undefined,
     stages: stagesOf(j),
     ask, summary: j.summary || undefined, reason: j.reason || undefined, canTryAgain: !unknown && stoppedHere(s, j), commits: j.commits ?? undefined, published: j.published ?? undefined, nothingDone: j.nothingDone || undefined, worktree: !!j.worktree || undefined,
+    routed: j.routed || undefined,
     created: minutesAgo(j.created), finished: j.finished ? minutesAgo(j.finished) : undefined, conversation: j.conversation ? shownId(j.conversation) : undefined,
     noConversation: !s.conversations.some((c) => c.id === j.conversation),
     archived: !!j.archived, publish: publishOf(j, carriedOn(j, Object.values(s.jobs))),

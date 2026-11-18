@@ -94,6 +94,8 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
           </Menu>
         )}
       </p>
+      {/* obid's line when it runs on another agent than your words named (ACCOUNTS-31) */}
+      {j.routed && <p className="tc-routed">{j.routed}</p>}
 
       {task.status === 'running' && (
         // the step, shimmering while it works, as the stage's name does on its page

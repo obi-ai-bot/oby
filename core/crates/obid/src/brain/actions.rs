@@ -357,7 +357,12 @@ async fn dispatch(
     let mut text = match (started.is_empty(), plan.reply.is_empty()) {
         (true, _) => String::new(),
         (false, true) => started_line(shared, &started),
-        (false, false) => plan.reply.clone(),
+        // The plan's words were written before routing: where a job went elsewhere, it says so.
+        (false, false) => [plan.reply.clone(), routed_lines(&started)]
+            .into_iter()
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join(" "),
     };
     if !waiting.is_empty() {
         let line = format!(
@@ -490,7 +495,18 @@ pub(crate) fn started_line(shared: &Shared, jobs: &[Job]) -> String {
             )
         })
         .collect();
-    format!("On it. {}.", list(&parts))
+    let routed = routed_lines(jobs);
+    match routed.is_empty() {
+        true => format!("On it. {}.", list(&parts)),
+        false => format!("On it. {}. {routed}", list(&parts)),
+    }
+}
+
+/// Why each of `jobs` runs elsewhere than the agent the owner named (ACCOUNTS-31,
+/// CONVERSATION-AGENT-40): obid's own line, one per job routed, or nothing.
+fn routed_lines(jobs: &[Job]) -> String {
+    let lines: Vec<&str> = jobs.iter().filter_map(|j| j.routed.as_deref()).collect();
+    lines.join(" ")
 }
 
 /// "oby #12 (Login screen)", "oby PR #33".
