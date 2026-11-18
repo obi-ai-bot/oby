@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowUp, Check, ChevronLeft, File, FolderGit2, FolderOpen, Gauge, Laptop, ListChecks, Plus, Search, Settings, Square, X } from 'lucide-react';
 import { ObyIcon, OwnerAvatar } from './ObyFace';
-import { OBYS, PLACES, SHARED_WITH_ME } from './mock';
+import { PLACES, SHARED_WITH_ME } from './mock';
+import { aboutOf, askableFor, useAskable, type Askable } from './askable';
 import { agentOf, type Attachments } from './view';
 
 import MessageEditor, { type EditorHandle, type MentionKey } from './MessageEditor';
@@ -198,13 +199,15 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   const [at, setAt] = useState<string | null>(null);
   const [lit, setLit] = useState(0);
   const [atClosed, setAtClosed] = useState(false);
+  // whom @ asks: on obid, the Obysphere's members that take questions (ASK-37)
+  const askable = useAskable();
   // a name typed out in full is done: the list goes, and Enter sends
-  const fullName = at !== null && OBYS.some((o) => o.name.toLowerCase() === at.toLowerCase());
+  const fullName = at !== null && askable.some((o) => o.name.toLowerCase() === at.toLowerCase());
   const listing = !(wordsOnly || at === null || atClosed || view || fullName);
   // after the Obys, the files of the conversation's folders (COMPOSER-14)
   const atFiles = useMentionFiles(listing && conversation ? conversation : undefined, listing ? at : null);
-  const matches: ({ kind: 'oby'; name: string } | { kind: 'file'; file: ConversationFile })[] = listing
-    ? [...obysFor(at!).map((o) => ({ kind: 'oby' as const, name: o.name })), ...atFiles.map((file) => ({ kind: 'file' as const, file }))] : [];
+  const matches: ({ kind: 'oby' } & Askable | { kind: 'file'; file: ConversationFile })[] = listing
+    ? [...askableFor(at!, askable).map((o) => ({ kind: 'oby' as const, ...o })), ...atFiles.map((file) => ({ kind: 'file' as const, file }))] : [];
   const slashShown = slash !== null && !slashClosed && !view;
   useClicksEverywhere(matches.length > 0 || slashShown);
   const pickOby = (name: string) => { setView(null); box.current?.mention(name); box.current?.focus(); };
@@ -450,9 +453,9 @@ export default function Composer({ placeholder, prompts = false, note, label, on
                 onClick={() => pickMatch(m)}
                 title={m.kind === 'file' ? `${m.file.folder}/${m.file.path}` : undefined}
               >
-                {m.kind === 'oby' ? <OwnerAvatar name={m.name} size={22} /> : <File size={16} strokeWidth={1.6} />}
+                {m.kind === 'oby' ? <OwnerAvatar name={m.card ?? m.name} size={22} /> : <File size={16} strokeWidth={1.6} />}
                 {m.kind === 'oby'
-                  ? <span className="add-item-text">{m.name}’s Oby</span>
+                  ? <ObyRow oby={m} />
                   : <span className="add-item-text">{m.file.path.split('/').pop()}<span className="add-item-about">{fileWords(m.file, workFolders)}</span></span>}
               </button>
             ))}
@@ -585,6 +588,7 @@ function AddPanel({ view, opening, tasks, repos, onView, onBlur, onFiles, onFold
   isPicked: (a: Attached) => boolean;
   isNamed: (name: string) => boolean;  // already @named in the words
 }) {
+  const askable = useAskable();
   const [query, setQuery] = useState('');
   useEffect(() => setQuery(''), [view]);
   const { list, onScroll, thumbProps } = useScrollThumb<HTMLDivElement>();
@@ -619,7 +623,7 @@ function AddPanel({ view, opening, tasks, repos, onView, onBlur, onFiles, onFold
       <div ref={menu} className={`add-panel${opening ? ' is-opening' : ''}`} role="menu" onKeyDown={onMenuKey} onBlur={onBlur}>
         <button type="button" role="menuitem" tabIndex={-1} onClick={onFiles}><File size={16} strokeWidth={1.6} />Add files or photos</button>
         {/* no other Obys, or no Macs to run on (on obid, for now): not offered */}
-        {OBYS.length > 0 && <button type="button" role="menuitem" tabIndex={-1} data-view="oby" onClick={() => onView('oby')}><ObyIcon size={16} />Add other Obys<kbd className="add-hint">@</kbd></button>}
+        {askable.length > 0 && <button type="button" role="menuitem" tabIndex={-1} data-view="oby" onClick={() => onView('oby')}><ObyIcon size={16} />Add other Obys<kbd className="add-hint">@</kbd></button>}
         <button type="button" role="menuitem" tabIndex={-1} data-view="task" onClick={() => onView('task')}><ListChecks size={16} strokeWidth={1.6} />Attach tasks</button>
         {/* Sharing (a preview): run it on a teammate's Mac that's free, with your own accounts */}
         {PLACES.length > 0 && <button type="button" role="menuitem" tabIndex={-1} data-view="where" onClick={() => onView('where')}><Laptop size={16} strokeWidth={1.6} />Run on another Mac</button>}
@@ -631,7 +635,7 @@ function AddPanel({ view, opening, tasks, repos, onView, onBlur, onFiles, onFold
   }
 
   const q = query.trim().toLowerCase();
-  const obys = obysFor(q);
+  const obys = askableFor(q, askable);
   const found = tasks.filter((t) => `${t.who ?? ''} ${t.title}`.toLowerCase().includes(q));
   const places = PLACES.filter((p) => p.name.toLowerCase().includes(q));
   const inRepos = repos.filter((r) => r.toLowerCase().includes(q));
@@ -664,8 +668,8 @@ function AddPanel({ view, opening, tasks, repos, onView, onBlur, onFiles, onFold
       <div ref={list} className={`add-list${view === 'folder' ? ' is-folders' : ''}`} role="listbox" aria-multiselectable={view === 'folder' || undefined} onScroll={onScroll}>
         {view === 'oby' && obys.map((o) => (
           <button type="button" role="option" aria-selected={isNamed(o.name)} key={o.name} onClick={() => onPickOby(o.name)}>
-            <OwnerAvatar name={o.name} size={22} />
-            <span className="add-item-text">{o.name}’s Oby</span>
+            <OwnerAvatar name={o.card ?? o.name} size={22} />
+            <ObyRow oby={o} />
             {isNamed(o.name) && <Check size={14} strokeWidth={1.8} className="add-check" />}
           </button>
         ))}
@@ -727,11 +731,12 @@ function AddPanel({ view, opening, tasks, repos, onView, onBlur, onFiles, onFold
   );
 }
 
-// The Obys a name typed so far could be: those it starts, then those it's in
-function obysFor(typed: string) {
-  const q = typed.trim().toLowerCase();
-  const name = (o: { name: string }) => o.name.toLowerCase();
-  return [...OBYS.filter((o) => name(o).startsWith(q)), ...OBYS.filter((o) => !name(o).startsWith(q) && name(o).includes(q))];
+// An Oby in the @ list or + › Add other Obys: whose it is, by their card's name, their owner id beside
+// it when that differs, and, for a member whose owner id looks like another's, who it isn't (ASK-38),
+// as the ASK-34 Confirm says it. A mention picked is always the owner id
+function ObyRow({ oby }: { oby: Askable }) {
+  const about = aboutOf(oby);
+  return <span className="add-item-text">{oby.card ?? oby.name}’s Oby{about ? <span className="add-item-about">{about}</span> : null}</span>;
 }
 
 // Esc while there's something typed in a message box is the box's (it would

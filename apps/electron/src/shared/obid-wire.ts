@@ -371,6 +371,11 @@ export type Connectors = { claude: { seenAt: string; servers: ConnectorSeen[] } 
 // "POST /v1/plans"'s `defaults` (obid only, composer-v1; docs/contracts/composer.md): the message box's
 // chips, the mode, tool, model and effort of the jobs the words start. A key left out is the owner's usual
 export type PlanDefaults = { mode?: string; agent?: string; model?: string; effort?: string };
+// "GET /v1/obid/sphere/members" (docs/api/obysphere.md): another active member of the Sphere, by
+// exact owner id; name, what obid calls them to the owner (their card's name, or their owner id when
+// that could be mistaken for someone else's; absent from an obid before it); accepts, what their card
+// takes; lookalike, the owner ids that look like theirs (ASK-35), absent when none
+export type SphereMember = { obi: string; owner: string; name?: string; accepts?: string[]; sealed?: boolean; verified?: boolean; lookalike?: string[] };
 // "GET /v1/conversations/{id}/files" (obid only, composer-v1): a file of the conversation's folders,
 // its path from the folder
 export type ConversationFile = { folder: string; path: string };

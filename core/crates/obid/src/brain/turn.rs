@@ -28,6 +28,19 @@ pub struct Control {
     signed: AtomicBool,
     /// When it began: an inbox item made since is one the owner hasn't seen yet.
     pub begun: i64,
+    /// The members the owner's words `@`-name (`POST /v1/plans`'s `ask`, ASK-40), until the turn
+    /// asks them: taken once, so a turn that moves to another account never asks twice.
+    mentioned: Mutex<Option<Mentioned>>,
+    /// What came of asking them, in obid's words, for every prompt of this turn.
+    asked_mentioned: Mutex<Option<String>>,
+}
+
+/// The members the owner's words `@`-name, by exact owner id, and the question: the words without
+/// the mentions they start with (docs/contracts/ask-an-oby.md, ASK-40).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Mentioned {
+    pub owners: Vec<String>,
+    pub question: String,
 }
 
 impl Control {
@@ -51,6 +64,34 @@ impl Control {
 
     pub fn set_signed(&self, signed: bool) {
         self.signed.store(signed, Ordering::SeqCst);
+    }
+
+    /// The members the words this turn answers `@`-name (ASK-40).
+    pub fn set_mentioned(&self, mentioned: Option<Mentioned>) {
+        *self.mentioned.lock().unwrap_or_else(|e| e.into_inner()) = mentioned;
+    }
+
+    /// Whom to ask, the first time only.
+    pub fn take_mentioned(&self) -> Option<Mentioned> {
+        self.mentioned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+    }
+
+    pub fn set_asked_mentioned(&self, said: String) {
+        *self
+            .asked_mentioned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(said);
+    }
+
+    /// What came of asking the members the words named, for the model.
+    pub fn asked_mentioned(&self) -> Option<String> {
+        self.asked_mentioned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 }
 
@@ -102,6 +143,9 @@ impl Words {
 #[derive(Debug, Clone, Default)]
 pub struct Asking {
     pub defaults: Option<super::defaults::Defaults>,
+    /// The members the words `@`-name, to ask (`POST /v1/plans`'s `ask`, ASK-40): the latest
+    /// words', with those words alone as the question; a restart loses it, as the chips.
+    pub ask: Option<Mentioned>,
     pub turns: Option<Vec<crate::conversation::Turn>>,
     pub back: Option<i64>,
     pub now: i64,
@@ -190,6 +234,8 @@ impl Turns {
             cancelled: AtomicBool::new(false),
             signed: AtomicBool::new(false),
             begun: obi_protocol::time::now(),
+            mentioned: Mutex::new(None),
+            asked_mentioned: Mutex::new(None),
         });
         self.lock().push(control.clone());
         control

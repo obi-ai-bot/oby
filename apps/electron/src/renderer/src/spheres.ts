@@ -5,6 +5,8 @@ import { everything, onObid } from './lean';
 import { forgetRoom, lookAtRoom } from './room';
 import { forgetThreads } from './peers';
 import type { Rule } from '../../shared/sphere';
+import type { SphereMember } from '../../shared/obid-wire';
+import { askableOf, setAskable } from './askable';
 
 // The Obyspheres you're in: each a place where your Oby works with other
 // people's. Its picture in the icon strip is its logo (an image you gave it,
@@ -120,7 +122,10 @@ async function loadLive() {
   if (m.status !== 200) return;
   const membership = JSON.parse(m.text) as Membership;
   const r = membership.state === 'joined' ? await call('GET', '/v1/obid/sphere/members') : null;
-  const live = liveSphere(membership, r?.status === 200 ? JSON.parse(r.text) : [], names());
+  const members: SphereMember[] = r?.status === 200 ? JSON.parse(r.text) : [];
+  const live = liveSphere(membership, members, names());
+  // whom `@` in the message box asks (ASK-37): none out of a Sphere, or revoked
+  setAskable(live && !live.revoked ? askableOf(members) : []);
   set([...spheres.filter((s) => !s.live), ...(live ? [live] : [])]);
   // whether it has a room, and what came since: with this minute's look at the directory, below
   if (live && !live.revoked) { if (ROOM_SHOWS) void lookAtRoom(live.slug); } else { forgetRoom(); forgetThreads(); }

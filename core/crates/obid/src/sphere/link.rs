@@ -3176,8 +3176,18 @@ impl Link {
                 })
                 .collect()
         };
-        // Once the state is let go: who looks alike reads it again.
+        // Once the state is let go: who looks alike reads it again. `name` is what obid calls them to
+        // the owner, as a thread does: their card's name, or their owner id when that could be
+        // mistaken for someone else's (add-only, for the message box's @ list, ASK-37).
+        let names: std::collections::HashMap<String, String> = self
+            .ask_members()
+            .into_iter()
+            .map(|m| (m.obi, m.name))
+            .collect();
         for item in &mut list {
+            if let Some(name) = item["obi"].as_str().and_then(|obi| names.get(obi)) {
+                item["name"] = json!(name);
+            }
             let alike = self.lookalikes(item["owner"].as_str().unwrap_or_default());
             if !alike.is_empty() {
                 item["lookalike"] = json!(alike);

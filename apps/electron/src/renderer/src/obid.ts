@@ -157,12 +157,14 @@ export const api = {
   // words to Oby: in a conversation, or starting a new one. with: the words' id (sent again with
   // the same id, nothing happens twice), the files uploaded for them and the tasks attached
   plan: (said: string, answer: { question: string; option: string } | undefined, where: { conversation: string } | { new: true }, folders?: string[],
-    with_: { id?: string; attachments?: string[]; jobs?: string[]; project?: string; defaults?: PlanDefaults } = {}) =>
+    with_: { id?: string; attachments?: string[]; jobs?: string[]; project?: string; defaults?: PlanDefaults; ask?: string[] } = {}) =>
     call<PlanAnswer>('POST', '/v1/plans', {
       said, ...(answer ? { answer } : {}), ...where, ...(folders?.length ? { folders } : {}), ...(with_.id ? { id: with_.id } : {}),
       ...(with_.attachments?.length ? { attachments: with_.attachments } : {}), ...(with_.jobs?.length ? { jobs: with_.jobs } : {}),
       ...(with_.project ? { project: with_.project } : {}),
       ...(with_.defaults && Object.keys(with_.defaults).length ? { defaults: with_.defaults } : {}),
+      // the members the words @-name (ask-mentions-v1, ASK-39): obid asks them as oby_ask does
+      ...(with_.ask?.length ? { ask: with_.ask } : {}),
     }),
   // one message waiting in a conversation, dropped alone (composer-v1, COMPOSER-9 and 10)
   cancelWords: (conversation: string, turn: string) => call<Cancelled>('POST', '/v1/plans/cancel', { conversation, turn }),

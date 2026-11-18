@@ -7,7 +7,7 @@
  "maxRunning": 6, "running": 4, "defaultAgent": "auto", "defaultAccount": null,
  "clearedAt": "2026-10-10T08:12:00Z",
  "github": "app", "checks": "ok", "permissions": {"mode": "sandbox"},
- "scanner": {"gitleaks": true}, "receipts": true, "capabilities": ["composer-v1", "conversation-marks-v1", "events-replay-v1", "folders-v1", "profile-projects-v1", "project-jobs-v1", "projects-v1", "revisions-v1"],
+ "scanner": {"gitleaks": true}, "receipts": true, "capabilities": ["ask-mentions-v1", "composer-v1", "conversation-marks-v1", "events-replay-v1", "folders-v1", "profile-projects-v1", "project-jobs-v1", "projects-v1", "revisions-v1"],
  "tools": [{"agent": "claude", "path": "/Users/me/.local/bin/claude", "version": "2.1.317"},
            {"agent": "codex", "path": "/opt/homebrew/bin/codex", "version": "0.163.0"},
            {"agent": "cursor", "path": null, "version": null}],
@@ -48,6 +48,7 @@
 
 | Name | What it means | Since |
 |---|---|---|
+| `ask-mentions-v1` | obid takes `ask` on `POST /v1/plans`: the owner ids of the Obysphere members the words `@`-mention, asked before the model runs as `oby_ask` asks ([conversations.md](conversations.md); [ask-an-oby.md](../contracts/ask-an-oby.md), ASK-39 to 41). An app sends none until obid lists it. | ASK-40 |
 | `composer-v1` | obid takes the message box's chips as `defaults` on `POST /v1/plans` (the mode, tool, model and effort of the jobs the words start), drops one message waiting in a conversation with `turn` on `POST /v1/plans/cancel`, and answers `GET /v1/conversations/{id}/files?q=` ([conversations.md](conversations.md); [composer.md](../contracts/composer.md), COMPOSER-3 to 15). An app sends none of them until obid lists it. | COMPOSER-3 |
 | `conversation-marks-v1` | A conversation carries `seen`, `unread` and `archived`, and `PATCH /v1/conversations/{id}` takes `seen` and `archived` ([conversations.md](conversations.md), [conversation-states.md](../contracts/conversation-states.md), CHATSTATE-6 to 10). An app sends them only to an obid that lists it. | CHATSTATE-6 |
 | `events-replay-v1` | `GET /v1/events` numbers its events with an `id: <epoch>-<seq>` line, and resumes a client that sends the last one it had (`?after=` or the `Last-Event-ID` header): it replays what the client missed, or sends one `resync` when it can't. | R06-02 |

@@ -73,7 +73,7 @@ The business behavior contract for what the Electron app does in an Obysphere at
 ### Hidden for launch
 
 - The room: the app never looks for one, so its tile click, Settings' "Also post in the room" and its posts never show (`ROOM_SHOWS` in `spheres.ts`).
-- Other Obys in the message box: on obid `OBYS` is empty, so "Add other Obys" and `@` offer no teammates.
+- Other Obys in the message box are no longer hidden: on obid, "Add other Obys" and `@` list the live members that take questions, and a mention asks them (ask-an-oby.md, "Asking by @ in the message box", ASK-37 to 41). Out of a Sphere they list no one and + has no "Add other Obys".
 
 ### Failures and recovery
 

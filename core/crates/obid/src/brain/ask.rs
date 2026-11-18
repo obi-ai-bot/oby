@@ -204,6 +204,33 @@ pub(super) async fn ask(
     ))
 }
 
+/// The members the owner's words `@`-name (`POST /v1/plans`'s `ask`, ASK-40), asked before the
+/// model runs, each exactly as `oby_ask` asks with that owner id: the owner's word, a look-alike's
+/// or unsigned words' Confirm, the scan and the card all hold. Once a turn; what came of it is kept
+/// on the turn for the model, in words that name only the owner ids the owner picked.
+pub(super) async fn by_mention(shared: &Arc<Shared>, session: &Session) {
+    let Some(mentioned) = session.control.take_mentioned() else {
+        return;
+    };
+    let mut heard = vec![];
+    for owner in &mentioned.owners {
+        let args = json!({"to": owner, "question": mentioned.question});
+        heard.push(match ask(shared, session, args).await {
+            Ok(said) | Err(said) => said,
+        });
+    }
+    let who = mentioned
+        .owners
+        .iter()
+        .map(|o| format!("@{o}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    session.control.set_asked_mentioned(format!(
+        "The owner's words name {who} with @: Oby's app asked for them, as oby_ask does, with their words as the question. Don't call oby_ask for this question again. What came of it:\n{}",
+        heard.join("\n")
+    ));
+}
+
 /// Why a question didn't go, for the owner, saying who can change it: `name` who was asked for. Of what
 /// the Sphere wrote, only its code, when it is one.
 pub fn refusal(name: &str, error: &ApiError) -> String {
