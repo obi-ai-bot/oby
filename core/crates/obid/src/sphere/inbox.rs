@@ -159,20 +159,37 @@ pub mod action {
     pub const TRUST_KEY: &str = "trust_key";
 }
 
+/// A `trust_key` card's `reason` (SPHERE-23): the Obysphere's owner event says the owner signed in
+/// again and bound a new key (`kind` `rebound`). One of a closed set, each with obid's own words.
+pub const SIGNED_IN_AGAIN: &str = "signed_in_again";
+
 /// Oby's ask to trust `owner`'s changed owner key (SPHERE-8): obid's own fixed words with only the
 /// owner id and the new key's fingerprint, so nothing the Sphere or a card says goes on the card.
-pub fn trust_key_item(owner: &str, fingerprint: &str, now: i64) -> Item {
+/// With a `reason` (SPHERE-23), its own fixed sentence for that code says what the Obysphere claims
+/// happened: a claim, never a fact, since the Sphere is who could swap a key, and the ask to
+/// compare stays.
+pub fn trust_key_item(owner: &str, fingerprint: &str, reason: Option<&str>, now: i64) -> Item {
+    let said = match reason {
+        Some(SIGNED_IN_AGAIN) => {
+            format!("The Obysphere says {owner} signed in again with a new key. ")
+        }
+        _ => String::new(),
+    };
+    let mut payload = json!({"owner": owner, "fingerprint": fingerprint});
+    if let Some(reason @ SIGNED_IN_AGAIN) = reason {
+        payload["reason"] = json!(reason);
+    }
     let mut item = confirm_item(
         "",
         format!("New key for {owner}: compare with them ({fingerprint})"),
         // Home's card shows the title on one line: the fingerprint shows whole here.
         format!(
-            "{owner}'s owner key changed. Compare its fingerprint with them before you trust it: {fingerprint}."
+            "{said}{owner}'s owner key changed. Compare its fingerprint with them before you trust it: {fingerprint}."
         ),
         Confirmed {
             action: action::TRUST_KEY.into(),
             target: owner.into(),
-            payload: json!({"owner": owner, "fingerprint": fingerprint}),
+            payload,
         },
         now,
     );

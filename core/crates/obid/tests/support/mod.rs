@@ -1427,6 +1427,9 @@ pub struct SphereState {
     pub url_aud: Option<String>,
     /// Every actor assertion's `aud`, in the order exchanged.
     pub actor_auds: Vec<String>,
+    /// What `GET …/owner-events` serves, oldest first (oby-sphere#102): what happened to owners'
+    /// keys. Empty unless a test adds some.
+    pub owner_events: Vec<Value>,
     /// The `token_type` the token endpoint answers, when not `Bearer`.
     pub token_type: Option<String>,
     /// What `GET /v0.1/features` answers instead, as a status and a body.
@@ -1500,6 +1503,7 @@ impl FakeSphere {
             .route("/v0.1/health", get(health))
             .route("/v0.1/features", get(features))
             .route("/v0.1/spheres/{sphere}/members", get(members))
+            .route("/v0.1/spheres/{sphere}/owner-events", get(owner_events))
             .route("/v0.1/spheres/{sphere}/messages", post(send))
             .route("/v0.1/spheres/{sphere}/deliveries", get(deliveries))
             .route("/v0.1/spheres/{sphere}/deliveries/ack", post(ack))
@@ -1817,6 +1821,40 @@ async fn features(State(state): State<Arc<Mutex<SphereState>>>) -> Response {
     } else {
         axum::Json(json!({"features": listed})).into_response()
     }
+}
+
+/// `GET …/owner-events?after=&limit=` (oby-sphere#102): the events after the one `after` names,
+/// oldest first, at most `limit`, to any member's token.
+async fn owner_events(
+    State(state): State<Arc<Mutex<SphereState>>>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let state = state.lock().unwrap();
+    if bearer(&state, &headers).is_none() {
+        return sphere_error(StatusCode::UNAUTHORIZED, "unauthorized", "no token");
+    }
+    let limit = query
+        .get("limit")
+        .and_then(|l| l.parse::<usize>().ok())
+        .unwrap_or(100);
+    let from = query
+        .get("after")
+        .and_then(|after| {
+            state
+                .owner_events
+                .iter()
+                .position(|e| e["id"] == after.as_str())
+        })
+        .map_or(0, |at| at + 1);
+    let events: Vec<Value> = state
+        .owner_events
+        .iter()
+        .skip(from)
+        .take(limit)
+        .cloned()
+        .collect();
+    axum::Json(json!({"sphere": SPHERE, "events": events})).into_response()
 }
 
 async fn members(State(state): State<Arc<Mutex<SphereState>>>, headers: HeaderMap) -> Response {

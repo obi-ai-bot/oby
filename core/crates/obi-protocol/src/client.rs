@@ -321,6 +321,35 @@ impl Client {
         Ok(body["members"].as_array().cloned().unwrap_or_default())
     }
 
+    /// A page of the Sphere's owner events after `after` (oby-sphere#102, sphere-api.md 3): what
+    /// happened to owners' keys, oldest first, `{"id", "owner", "kind", "at", "old_key_id",
+    /// "new_key_id", "account_linked", "revoked"}`. A Sphere from before answers `404`: none. Its
+    /// schema isn't in this copy of the spec yet, so the caller reads only the typed fields it knows.
+    pub async fn owner_events(
+        &self,
+        token: &str,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<Value>, ClientError> {
+        let mut url = reqwest::Url::parse(&self.sphere_path("/owner-events"))
+            .map_err(|e| ClientError::Protocol(e.to_string()))?;
+        {
+            let mut query = url.query_pairs_mut();
+            query.append_pair("limit", &limit.to_string());
+            if let Some(after) = after {
+                query.append_pair("after", after);
+            }
+        }
+        let (status, body) = self
+            .call(|| self.http.get(url.clone()).bearer_auth(token))
+            .await?;
+        match status {
+            404 => Ok(Vec::new()),
+            200 => Ok(body["events"].as_array().cloned().unwrap_or_default()),
+            _ => Err(Client::refused(status, &body)),
+        }
+    }
+
     /// A page of the audit chain from `from_seq` (sphere-api.md section 7): `{sphere, entries, head}`.
     pub async fn audit(
         &self,

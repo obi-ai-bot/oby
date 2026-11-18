@@ -175,6 +175,9 @@ struct State {
     team_takes_card_runtime: bool,
     /// When obid last asked the Sphere's `GET /v0.1/features`, while it didn't list `card_runtime`.
     features_read: i64,
+    /// The owner events read so far (SPHERE-23): the last one's id, and each re-bind as (owner, new
+    /// owner key id, obid's own reason code). Only kinds obid knows are kept.
+    owner_events: (Option<String>, Vec<(String, String, &'static str)>),
     /// The Sphere's `GET /v0.1/features` and when obid read it (an answer that isn't the list counts
     /// as none): the token exchange and the card's runtime both read it from here.
     features: Option<(Instant, Vec<String>)>,
@@ -648,6 +651,15 @@ fn membership_refused(error: &ClientError, delegation: &str, now: i64) -> Option
 /// about it, not the membership (SPHERE-22).
 const DELEGATION_GRACE: i64 = 300;
 
+/// obid's closed reason codes for an owner event's `kind` (SPHERE-23): a kind obid doesn't know is
+/// no reason, so the Sphere can never put words of its own on the card.
+fn owner_event_reason(kind: &str) -> Option<&'static str> {
+    match kind {
+        "rebound" => Some(inbox::SIGNED_IN_AGAIN),
+        _ => None,
+    }
+}
+
 fn delegation_json(delegation: &str) -> Value {
     let claims = obi_protocol::jwt::parse(delegation).map(|p| p.claims);
     let claims = claims.as_ref();
@@ -917,6 +929,7 @@ impl Link {
             features: None,
             url_aud_refused: false,
             features_read: 0,
+            owner_events: (None, Vec::new()),
             membership,
             delegation,
             client,
@@ -2048,10 +2061,65 @@ impl Link {
         Ok(pinned)
     }
 
+    /// Reads the Sphere's owner events after the last one read (SPHERE-23), at most 20 pages, and
+    /// keeps the re-binds among them. Only a changed key reads them, so a quiet directory costs
+    /// nothing. A Sphere from before has none; one that can't be read now leaves the card with no
+    /// reason, never a wrong one.
+    async fn read_owner_events(&self, token: &str) {
+        let Ok(client) = self.client() else {
+            return;
+        };
+        for _ in 0..20 {
+            let after = self.lock().owner_events.0.clone();
+            let page = match client.owner_events(token, after.as_deref(), 100).await {
+                Ok(page) => page,
+                Err(e) => {
+                    tracing::warn!("sphere: owner events can't be read: {e}");
+                    return;
+                }
+            };
+            let full = page.len() == 100;
+            {
+                let mut state = self.lock();
+                for event in &page {
+                    if let Some(id) = event["id"].as_str() {
+                        state.owner_events.0 = Some(id.to_owned());
+                    }
+                    let (Some(owner), Some(new_key)) =
+                        (event["owner"].as_str(), event["new_key_id"].as_str())
+                    else {
+                        continue;
+                    };
+                    if let Some(code) = owner_event_reason(event["kind"].as_str().unwrap_or("")) {
+                        state
+                            .owner_events
+                            .1
+                            .push((owner.to_owned(), new_key.to_owned(), code));
+                    }
+                }
+            }
+            if !full {
+                return;
+            }
+        }
+    }
+
+    /// obid's own reason for `owner`'s key changing to the one whose fingerprint (its key id) is
+    /// `fingerprint`, when an owner event the Sphere served names exactly that change (SPHERE-23).
+    fn rebound_reason(&self, owner: &str, fingerprint: &str) -> Option<&'static str> {
+        self.lock()
+            .owner_events
+            .1
+            .iter()
+            .rev()
+            .find(|(o, key, _)| o == owner && key == fingerprint)
+            .map(|(_, _, code)| *code)
+    }
+
     /// One `trust_key` card for `owner`'s changed key, `fingerprint` (SPHERE-8): none while one for
     /// it is open, and a card for an earlier key closes. None at all after the owner's Cancel on one,
     /// until that member leaves the Sphere and comes back.
-    fn ask_to_trust(&self, owner: &str, fingerprint: &str) {
+    fn ask_to_trust(&self, owner: &str, fingerprint: &str, reason: Option<&'static str>) {
         let _one = self.trusting.lock().unwrap_or_else(|e| e.into_inner());
         if self.pins.declined(owner) {
             return;
@@ -2061,7 +2129,7 @@ impl Link {
             return;
         }
         self.close_trust_cards(|c| c.target == owner && c.payload["fingerprint"] != fingerprint);
-        let item = inbox::trust_key_item(owner, fingerprint, time::now());
+        let item = inbox::trust_key_item(owner, fingerprint, reason, time::now());
         let _ = self.add_new(item, |i| {
             i.done.is_none()
                 && i.confirm.as_deref().is_some_and(|c| {
@@ -2593,6 +2661,9 @@ impl Link {
         };
         let now = time::now();
         let mut directory = Directory::default();
+        // Owners whose key changed: asked once the loop is done, with what the Sphere's owner
+        // events say happened (SPHERE-23).
+        let mut changed: Vec<(String, String)> = Vec::new();
         for member in &members {
             let obi = member["obi"].as_str().unwrap_or("");
             let owner = member["owner"].as_str().unwrap_or("");
@@ -2622,7 +2693,7 @@ impl Link {
             if !self.pins.check(owner, owner_key, now) {
                 // A changed key: the owner is asked, once, whether to trust it.
                 if member["status"] == "active" {
-                    self.ask_to_trust(owner, &super::pins::fingerprint(owner_key));
+                    changed.push((owner.to_owned(), super::pins::fingerprint(owner_key)));
                 }
                 continue;
             }
@@ -2708,6 +2779,13 @@ impl Link {
                         .and_then(|p| p.get("issued_at")?.as_str().and_then(time::parse)),
                 },
             );
+        }
+        if !changed.is_empty() {
+            self.read_owner_events(&token).await;
+            for (owner, fingerprint) in &changed {
+                let reason = self.rebound_reason(owner, fingerprint);
+                self.ask_to_trust(owner, fingerprint, reason);
+            }
         }
         // Whether obid may put its seal key in a card (identity.md section 2): every other active
         // member's obid reads one, whatever obid trusts of it, and the Sphere takes one (asked
