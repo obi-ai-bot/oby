@@ -103,6 +103,7 @@ mod slots;
 mod turns;
 mod unjudged;
 mod versions;
+mod words;
 mod worktree_git;
 pub use logins::person_homes;
 pub(crate) use logins::*;
@@ -960,6 +961,8 @@ struct State {
     workers: HashMap<String, watch::Sender<Signal>>,
     /// The jobs whose agent had its last turn: they take no more words until they end.
     wrapping: std::collections::HashSet<String>,
+    /// The words each Claude Code job's turn under way takes as they come (crate::steer).
+    steers: HashMap<String, Arc<crate::steer::Steer>>,
     /// Each job's prompts waiting for the owner, the one shown first.
     asks: HashMap<String, VecDeque<Ask>>,
     /// The prompts a parked job's agent waited on ([`Jobs::park`]), held unanswered until its
@@ -1055,6 +1058,8 @@ pub struct Jobs {
     /// How many jobs run at once (Settings, `home/settings.json`).
     max_running: std::sync::atomic::AtomicUsize,
     shutting_down: std::sync::atomic::AtomicBool,
+    /// obid's last stop was clean, as it opened (`STOPPED_CLEANLY`): what a cut word's line says.
+    pub stopped_cleanly: bool,
     /// Who jobs' commits are by ([`commit_identity`], [`Jobs::identity`]).
     identity: Mutex<(String, String)>,
     /// One check at a time per repository, made on first use ([`Jobs::check`], PUBLISHING-25).
@@ -1356,6 +1361,7 @@ impl Jobs {
                 jobs,
                 workers: HashMap::new(),
                 wrapping: std::collections::HashSet::new(),
+                steers: HashMap::new(),
                 asks: HashMap::new(),
                 held: HashMap::new(),
                 asked: HashMap::new(),
@@ -1374,6 +1380,7 @@ impl Jobs {
             transcripts,
             max_running: std::sync::atomic::AtomicUsize::new(max_running),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
+            stopped_cleanly,
             identity: Mutex::new(identity),
             checking: Mutex::new(HashMap::new()),
             base_runs: Mutex::new(HashMap::new()),
@@ -2666,7 +2673,7 @@ impl Jobs {
         let publishing = self.lock().publishing.remove(id);
         let _ = std::fs::remove_file(self.temp_path(id).join(MCP_CONFIG_FILE));
         forget_login_secrets(&self.login_path(id));
-        self.drop_asks(id, false);
+        self.drop_asks(id, false, false);
         // It had ended (a panic in what comes after its run): it stays as it ended, the bug noted.
         if self.get(id).is_some_and(|j| !j.status.is_active()) {
             self.update(id, |job| {
@@ -2781,7 +2788,7 @@ impl Jobs {
             }
             None => false,
         };
-        self.drop_asks(id, false);
+        self.drop_asks(id, false, false);
         let stopped = self.update(id, |job| {
             job.status = Status::Stopped;
             job.stopped_by = Some(by);
@@ -3095,6 +3102,10 @@ impl Jobs {
                 {
                     heard(&mut job);
                     job.owners.extend(owners(false));
+                    // Its Claude Code hears them now, in the turn under way (TASKCONV-33).
+                    if let Some(steer) = state.steers.get(id) {
+                        steer.offer(text);
+                    }
                 } else if starting || (worker && source.direct()) {
                     job.notes.get_or_insert_with(Vec::new).push(text.to_owned());
                     job.heard.push(text.to_owned());
@@ -3328,50 +3339,6 @@ impl Jobs {
             },
             obi_protocol::time::now(),
         ));
-    }
-
-    /// The owner's words the agent hasn't heard yet, taken: what its next turn hears.
-    fn take_heard(&self, id: &str) -> Vec<String> {
-        self.take_words(id).0
-    }
-
-    /// [`Self::take_heard`], and whether the owner's own words were among them (#1661).
-    fn take_words(&self, id: &str) -> (Vec<String>, bool) {
-        let mut taken = (Vec::new(), false);
-        self.update(id, |job| {
-            taken = (
-                std::mem::take(&mut job.heard),
-                !std::mem::take(&mut job.owners).is_empty(),
-            );
-        });
-        taken
-    }
-
-    /// The agent's last turn is over: the owner's words that came meanwhile, taken (its next
-    /// turn), and whether the owner's own were among them, or none, and from now on the job
-    /// takes no more until it ends.
-    fn last_turn(&self, id: &str) -> (Vec<String>, bool) {
-        let (words, owners) = {
-            let mut state = self.lock();
-            let (words, owners) = state
-                .jobs
-                .get_mut(id)
-                .map(|job| {
-                    (
-                        std::mem::take(&mut job.heard),
-                        !std::mem::take(&mut job.owners).is_empty(),
-                    )
-                })
-                .unwrap_or_default();
-            if words.is_empty() {
-                state.wrapping.insert(id.to_owned());
-            }
-            (words, owners)
-        };
-        if !words.is_empty() {
-            self.update(id, |_| {});
-        }
-        (words, owners)
     }
 
     /// Who is told about permissions (once; a second call changes nothing).
@@ -6173,7 +6140,7 @@ fn standing_rules(job: &Job) -> Option<String> {
         lines.push(format!("If you can't commit, say why in your summary's first line: a {} job that ends with no commits counts as nothing committed.", job.kind));
     }
     if asks_goal_line(job) {
-        lines.push("End your summary with a last line that is exactly `GOAL MET` when the user's goal is fully met, or `GOAL NOT MET: <what's left>` when it isn't.".into());
+        lines.push("End your summary with a last line that is exactly `GOAL MET` when the user's goal is fully met, or `GOAL NOT MET: <what's left>` when it isn't. Pushing, the pull request and linking it to its issue are obid's, done after you end with `GOAL MET`, even when the task asks for them: they are never what's left.".into());
     }
     lines.push("To show the user something to look at (a page, a document, a chart, an image, a PDF), put it in .obi/artifacts/: one file, or one folder with an index.html, per thing. obid shows each one when the job ends; keep secrets out, or it shows none of it.".into());
     // Claude Code's own background tasks wake it when they end, and obid waits for them
@@ -8383,6 +8350,29 @@ mod tests {
         );
         job.kind = "review".into();
         assert!(!standing_rules(&job).unwrap().contains("GOAL MET"));
+    }
+
+    /// ISSUETASK-6: a task that asks for a pull request (as the brain writes an issue's: "…and open
+    /// a pull request that references the issue") isn't told two things: its rules say the push,
+    /// the pull request and its link to the issue are obid's, after `GOAL MET`, never what's left.
+    #[test]
+    fn issuetask_6_the_pull_request_is_never_the_agents_goal() {
+        let mut job = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "build".into(),
+            "Resolve issue #6 as described in the issue, and open a pull request that references the issue.".into(),
+            "codex".into(),
+            "default".into(),
+        );
+        job.issue = Some(6);
+        let rules = standing_rules(&job).unwrap();
+        assert!(rules.contains("`GOAL NOT MET: <what's left>`"), "{rules}");
+        assert!(
+            rules.contains("Pushing, the pull request and linking it to its issue are obid's, done after you end with `GOAL MET`, even when the task asks for them: they are never what's left."),
+            "{rules}"
+        );
+        assert!(rules.contains("Don't push, open pull requests"), "{rules}");
     }
 
     /// A follow-up starts from the first job's unmerged work: on its branch while its pull request
@@ -11401,7 +11391,7 @@ mod tests {
         assert_eq!(jobs.lock().workers.len(), 1);
 
         // Its worker ends, as `work` ends it: only now does the agent's wait let go.
-        jobs.drop_asks("p", true);
+        jobs.drop_asks("p", true, false);
         assert!(matches!(reply.try_recv(), Err(TryRecvError::Closed)));
         let parked = jobs.get("p").unwrap().parked.unwrap();
         assert!(parked.answered && parked.allowed);
@@ -13360,7 +13350,7 @@ mod tests {
         let Ruling::Ask(dropped) = ask() else {
             panic!("the question went through by itself");
         };
-        jobs.drop_asks("j", false);
+        jobs.drop_asks("j", false, false);
         assert!(dropped.await.is_err());
         assert!(jobs.get("j").unwrap().permission.is_none());
         // A call with no question to ask is refused at once.

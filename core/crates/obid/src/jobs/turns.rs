@@ -111,7 +111,8 @@ impl Jobs {
             let _ = std::fs::remove_file(temp.join(MCP_CONFIG_FILE));
         }
         forget_login_secrets(&self.login_path(id));
-        self.drop_asks(id, *signal.borrow() == Signal::Shutdown);
+        let asked = matches!(outcome, Err(End::Asked(_)));
+        self.drop_asks(id, *signal.borrow() == Signal::Shutdown, asked);
         // It ended (a shutdown isn't an end): an old crash never counts against a later run.
         if *signal.borrow() != Signal::Shutdown
             && self.get(id).is_some_and(|j| !j.crash_resumes.is_empty())
@@ -119,7 +120,6 @@ impl Jobs {
             self.update(id, |job| job.crash_resumes.clear());
         }
         let stopped = *signal.borrow() != Signal::Run;
-        let asked = matches!(outcome, Err(End::Asked(_)));
         match outcome {
             // The owner stopped it: its exchange gets a failed result. A shutdown leaves it be.
             _ if stopped => {
@@ -961,7 +961,10 @@ impl Jobs {
                 }
                 AgentEvent::Step(step) | AgentEvent::Denied(step) => {
                     jobs.update(id, |job| {
-                        job.step = step;
+                        // What it asked with `oby_ask_owner` waits on the owner (PERMISSIONS-22).
+                        if !job.question_call.as_ref().is_some_and(|c| c.ended_turn) {
+                            job.step = step;
+                        }
                         // The run's time so far, kept as it goes: a crash loses little of it.
                         if let Some(ran) = ran_secs {
                             job.ran_secs = Some(ran());
@@ -1005,11 +1008,15 @@ impl Jobs {
         let run = async {
             match tool {
                 Tool::Claude => {
-                    agent::run_turn(
+                    // The owner's words go into it as they come, while its run opened that
+                    // (crate::steer, TASKCONV-33).
+                    let steer = self.lock().steers.get(id).cloned();
+                    agent::run_turn_steered(
                         launch,
                         prompt,
                         limit.clone(),
                         signal.clone(),
+                        steer,
                         decide,
                         on_event,
                     )

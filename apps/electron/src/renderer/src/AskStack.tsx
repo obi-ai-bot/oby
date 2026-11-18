@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { BrandMark } from './brands';
-import { AskBlock } from './TaskCard';
+import { AskBlock, startsOnClick } from './TaskCard';
 import { OfferBlock } from './OfferCard';
 import { QuestionBlock } from './QuestionCard';
 import { answerQuestion } from './live';
@@ -123,10 +123,8 @@ function AskCard({ entry, count, many, className = 'is-up', ref, onOpen, onOpenT
   const start = entry.url && entry.ask?.kind === 'start' && !entry.answer && onAnswer ? entry.ask.options[0] : undefined;
   const [shownAt] = useState(() => performance.now());
   const onCard = (e: React.MouseEvent) => {
-    if (!start || (e.target as Element).closest('button, a, input, textarea, select, summary, [role="button"]')) return;
-    if (window.getSelection?.()?.toString()) return;
+    if (!start || !startsOnClick(e, shownAt)) return;
     if (entry.talk) return onOpenTalk?.(entry.talk);
-    if (performance.now() - shownAt < 500) return;
     answer(entry.id, start);
     onAnswer?.(start);
   };

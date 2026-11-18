@@ -116,6 +116,8 @@ pub struct Conn {
     /// An own run's temp, working and `login` folders and its tag, to sweep it by (LANES-16).
     leftovers: Option<(PathBuf, PathBuf, PathBuf, PathBuf)>,
     stdin: Option<ChildStdin>,
+    /// Words written into its turn as they come (crate::steer, TASKCONV-33): a job's Claude Code.
+    pub steer: Option<std::sync::Arc<crate::steer::Steer>>,
     lines: BufReader<ChildStdout>,
     copying: Option<tokio::task::JoinHandle<()>>,
     stop: watch::Receiver<process::Signal>,
@@ -232,6 +234,7 @@ impl Conn {
             pgid,
             leftovers,
             stdin,
+            steer: None,
             lines: BufReader::new(stdout),
             copying,
             stop,
@@ -362,6 +365,7 @@ impl Conn {
                 }
                 continue;
             }
+            let steer = self.steer.clone();
             tokio::select! {
                 read = self.lines.read_until(b'\n', &mut self.buffer) => {
                     match read {
@@ -412,6 +416,12 @@ impl Conn {
                 changed = self.stop.changed() => {
                     if changed.is_err() || *self.stop.borrow() != process::Signal::Run {
                         self.stopped = true;
+                    }
+                }
+                // The owner's words to it, written as they come (crate::steer).
+                () = async { if let Some(steer) = &steer { steer.came().await } }, if steer.is_some() => {
+                    for text in steer.as_ref().map(|s| s.to_write()).unwrap_or_default() {
+                        self.send(&crate::agent::user_message(&text)).await;
                     }
                 }
             }

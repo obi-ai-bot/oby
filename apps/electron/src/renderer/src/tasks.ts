@@ -141,9 +141,10 @@ function reply(id: string, text: () => string, start?: () => string[] | undefine
 // Oby says what it did with it. Running, it's passed on; still waiting on your
 // decision, it's passed on with a nudge; done, it starts a follow-up task,
 // whose card shows under Oby's reply.
-export function tell(id: string, text: string, att?: Attachments) {
+// On obid, whether obid took them: the message box keeps words obid refused (ATTACH-20).
+export function tell(id: string, text: string, att?: Attachments): Promise<boolean> | undefined {
   // on obid, from the task's page or thread: into its conversation, made now if it has none
-  if (onObid) return live.tellJob(id, text, att?.files, true).then(() => undefined);
+  if (onObid) return live.tellJob(id, text, att?.files, true).then((j) => j !== undefined);
   const t = text.trim(), r = relay(id, t);
   if ((!t && !hasAttachments(att)) || !r) return;
   say(id, { who: 'you', text: t, ago: 0, ...att });

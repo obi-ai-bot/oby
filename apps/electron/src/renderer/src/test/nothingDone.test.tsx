@@ -20,7 +20,7 @@ async function cards(more: Partial<JobView>) {
   // the words as they read, without React's markers between them
   const read = (html: string) => html.replaceAll('<!-- -->', '');
   return {
-    thread: read(renderToStaticMarkup(<ThreadTask task={task} current onOpen={() => {}} />)),
+    thread: read(renderToStaticMarkup(<ThreadTask task={task} />)),
     home: read(renderToStaticMarkup(<TaskCard task={task} />)),
   };
 }

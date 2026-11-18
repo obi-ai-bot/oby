@@ -4155,6 +4155,41 @@ fn uncommitted_work_gets_one_commit_turn() {
     );
 }
 
+/// PUBLISHING-43 (docs/contracts/publishing.md): what a tool's run leaves behind that is never
+/// source (Python's `__pycache__/`, a test runner's cache, `node_modules/`, `.DS_Store`) doesn't hold
+/// a job's publish in a repository with no `.gitignore`: obid's own clone excludes them in its
+/// `.git/info/exclude`, never in the repository's files, so the check still vouches for the commits
+/// alone (PUBLISHING-5). Anything else left uncommitted still does.
+#[test]
+fn publishing_43_build_droppings_dont_hold_a_publish() {
+    let folder = Folder::new("droppings");
+    let remote = fixture(&folder.0.join("fixture"));
+    let bin = fake_gh(&folder.0);
+    let obid = start_with(&folder.0, &config(&folder.0, &remote), Some(&bin));
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix",
+               "task": "DRAFT: src/__pycache__/calc.cpython-312.pyc COMMIT: hello.txt",
+               "check": "test -f hello.txt"}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["reason"], Value::Null, "{job}");
+    assert!(job["published"].is_string(), "{job}");
+    let branch = format!("oby/fix-{id}");
+    let files = git(&remote, &["ls-tree", "-r", "--name-only", &branch]);
+    assert!(files.lines().any(|f| f == "hello.txt"), "{files}");
+    assert!(!files.contains("__pycache__"), "never committed: {files}");
+    assert!(
+        !files.contains(".gitignore"),
+        "the repository's files untouched: {files}"
+    );
+}
+
 /// A job's agent is told how wide to build from the Mac's free memory (crate::process,
 /// `build_jobs`): the same count for Cargo's jobs, Rust's test threads and the repository's own
 /// scripts, at least one and at most half the cores.

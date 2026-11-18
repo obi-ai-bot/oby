@@ -11,6 +11,9 @@ use super::*;
 /// What a job's step says while its plan waits for the owner.
 pub(super) const PLAN_WAITS: &str = "Waiting for your OK on the plan";
 
+/// What a job's step says while what its agent asked with `oby_ask_owner` waits for the owner.
+pub(super) const ASKED_STEP: &str = "Waiting for your answer";
+
 /// What a run that ended on the owner's answer waits on ([`End::Asked`]).
 #[derive(Debug)]
 pub(super) enum Asked {
@@ -78,6 +81,17 @@ impl Jobs {
         let Some(job) = self.get(id).filter(|j| j.status == Status::Running) else {
             return;
         };
+        // Shown already, while its turn was open (PERMISSIONS-22): the same card waits on.
+        if let Asked::Question(call) = &asked
+            && job.permission.as_ref().is_some_and(Permission::is_question)
+            && job
+                .question_call
+                .as_ref()
+                .is_some_and(|shown| shown.ended_turn && shown.questions == call.questions)
+        {
+            self.update(id, |job| job.step = ASKED_STEP.into());
+            return;
+        }
         let permission = match &asked {
             Asked::Question(call) => {
                 permissions::question_card(&call.questions, &permissions::new_id(), 0)
@@ -95,7 +109,7 @@ impl Jobs {
             match asked {
                 Asked::Question(call) => {
                     job.question_call = Some(call);
-                    job.step = "Waiting for your answer".into();
+                    job.step = ASKED_STEP.into();
                 }
                 Asked::Plan(plan) => {
                     job.parked = Some(permissions::Parked {

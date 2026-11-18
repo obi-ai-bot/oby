@@ -20,7 +20,7 @@ describe('the conversation column (CHATFIRST-34)', () => {
   it('chatfirst_34_thread_and_box_share_it', () => {
     for (const [file, selector] of [
       ['app.css', '.chat-column'], ['app.css', '.chat-composer'], ['app.css', '.chat-ask'],
-      ['liveTask.css', '.agent-layer .lt-thread-column'], ['liveTask.css', '.agent-layer .chat-composer.lt-box'],
+      ['liveTask.css', '.decision-bar'], ['liveTask.css', '.composer-to'],
     ] as const) {
       const r = rule(file, selector);
       expect(r, `${selector} uses --column`).toContain('var(--column)');
