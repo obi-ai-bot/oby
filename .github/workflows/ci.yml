@@ -399,14 +399,15 @@ jobs:
           path: oby
           persist-credentials: false
 
-      # The Sphere side of the scenario: oby-sphere (public, no token) at the commit oby records in
-      # e2e/oby-sphere.ref, never its moving dev, so a push there can't turn oby's checks red.
+      # The Sphere side of the scenario: oby-sphere (public, no token) at the one commit oby pins in
+      # e2e/sphere.ref, the deployed Sphere's (docs/contracts/test-rig.md, RIG-27), never its moving
+      # dev, so a push there can't turn oby's checks red.
       # Moving to a newer oby-sphere is a change here, with this run as its test.
       - name: The oby-sphere commit oby is tested with
         id: sphere
         run: |
-          ref=$(tr -d '[:space:]' < e2e/oby-sphere.ref)
-          [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::e2e/oby-sphere.ref isn't a commit id: $ref"; exit 1; }
+          ref=$(tr -d '[:space:]' < e2e/sphere.ref)
+          [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::e2e/sphere.ref isn't a commit id: $ref"; exit 1; }
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

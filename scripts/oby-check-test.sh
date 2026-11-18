@@ -608,6 +608,23 @@ said=$(OBY_CHECK_PATHS=apps/electron/src/renderer/src/test/x.test.ts OBY_CHECK_P
     exit 1
 }
 rm core/crates/obid/tests/routes_guard.rs
+# RIG-35: the Obysphere's code and the rig plan the rig's tests and the launch list in the electron
+# group; a job's box says it leaves the launch list to the Mac; other app code plans neither.
+for path in e2e/launch.mjs core/crates/obid/src/sphere/link.rs apps/electron/src/shared/sphere.ts apps/electron/src/main/sphere.ts; do
+    said=$(OBY_CHECK_PATHS=$path OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
+    grep -q -- '==> node --test e2e/rig.test.mjs' <<<"$said" && grep -q -- 'test:sphere-join' <<<"$said" \
+        && { grep -q -- 'node e2e/launch.mjs --gate' <<<"$said" || grep -q "launch list don't run in a job's box" <<<"$said"; } || {
+        echo "oby-check-test: RIG-35: a change to $path didn't plan the Obysphere's tests:" >&2
+        sed 's/^/| /' <<<"$said" >&2
+        exit 1
+    }
+done
+said=$(OBY_CHECK_PATHS=apps/electron/src/renderer/src/Sidebar.tsx OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
+! grep -q 'e2e/launch.mjs\|test:sphere' <<<"$said" || {
+    echo "oby-check-test: RIG-35: a change to the side panel planned the Obysphere's tests:" >&2
+    sed 's/^/| /' <<<"$said" >&2
+    exit 1
+}
 # CI-56: what the Brain reads plans its tests, in the electron group; a doc it doesn't read doesn't;
 # in a job's box only a change to the Brain itself runs them.
 for path in tools/brain/brain.config.ts core/crates/obid/src/jobs/lanes.rs apps/electron/src/renderer/src/Sidebar.tsx \
