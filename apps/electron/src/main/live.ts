@@ -121,7 +121,7 @@ function queueLimits() {
 
 // --- following obid
 
-const RULE = new Set<Event['kind']>(['job', 'jobGone', 'conversation', 'conversationGone', 'turn', 'turnAsks', 'inbox', 'accounts', 'github']);
+const RULE = new Set<Event['kind']>(['job', 'jobGone', 'conversation', 'conversationGone', 'turn', 'turnAsks', 'turnDelivery', 'inbox', 'accounts', 'github']);
 const ruled = (e: Event): e is ObidEvent => RULE.has(e.kind);
 // An event: through the rule when it's the rule's, then passed on; an item that waits on you
 // brings its job

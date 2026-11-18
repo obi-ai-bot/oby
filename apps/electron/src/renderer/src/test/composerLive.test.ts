@@ -3,7 +3,8 @@ import { liveBridge } from './liveBridge';
 
 // The message box's words through live.ts to obid (docs/contracts/composer.md): the chips as
 // `defaults` (COMPOSER-3), the words waiting for a turn as obid's delivery says (COMPOSER-8), one
-// cancelled alone (COMPOSER-9) and @'s files (COMPOSER-14), each only from an obid with composer-v1.
+// cancelled alone (COMPOSER-9), as obid's delivery events move them (COMPOSER-19), and @'s files
+// (COMPOSER-14), each only from an obid with composer-v1.
 
 const calls: { method: string; path: string; body?: unknown }[] = [];
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -69,6 +70,45 @@ describe('the box’s words through live.ts', () => {
     // a cancelled message shows nowhere; an obid with no delivery, as before
     expect(of([turn('t1', 'user', 'running'), turn('t2', 'user', 'cancelled')]).said.map((m) => m.text)).toEqual(['words t1']);
     expect(of([turn('t1', 'user'), turn('t2', 'user')]).queued).toBeUndefined();
+  });
+
+  it('composer_19_waiting_words_follow_obids_delivery_events', async () => {
+    const { live, bridge } = await onObid(['composer-v1']);
+    // obid's own events, as it sends them while Oby answers (docs/api/events.md): each message a
+    // `turn`, added queued; its moves (starting, running, answered) each a `turnDelivery`, the turn again
+    const said = (id: string, status: string, revision: number) => ({ ...turn(id, 'user', status), conversation: 'c1', revision });
+    const chat = () => live.chatOf(live.liveState(), conversation as never);
+    bridge.event('turn', said('t1', 'queued', 1));
+    bridge.event('turnDelivery', said('t1', 'starting', 2));
+    bridge.event('turnDelivery', said('t1', 'running', 3));
+    bridge.event('turn', said('t2', 'queued', 1));
+    bridge.event('turn', said('t3', 'queued', 1));
+    await flush();
+    // the first is the turn under way; the two sent meanwhile wait over the box, not in the thread
+    expect(chat().queued?.map((q) => q.id)).toEqual(['t2', 't3']);
+    expect(chat().said.map((m) => m.text)).toEqual(['words t1']);
+    // a turn takes them: into the conversation, the row gone
+    bridge.event('turnDelivery', said('t1', 'answered', 4));
+    bridge.event('turnDelivery', said('t2', 'starting', 2));
+    bridge.event('turnDelivery', said('t3', 'starting', 2));
+    await flush();
+    expect(chat().queued).toBeUndefined();
+    expect(chat().said.map((m) => m.text)).toEqual(['words t1', 'words t2', 'words t3']);
+    // an older copy, come late, doesn't move one back
+    bridge.event('turnDelivery', said('t2', 'queued', 1));
+    await flush();
+    expect(chat().queued).toBeUndefined();
+  });
+
+  it('composer_19_main_keeps_the_delivery_too', async () => {
+    // main's own copy (the snapshot a reconnecting window starts from) takes the event as the window does
+    const { apply } = await import('../../../shared/live-state');
+    const { parseEvent } = await import('../../../shared/obid-wire');
+    const t1 = { ...turn('t1', 'user', 'queued'), conversation: 'c1', revision: 1 };
+    const e = parseEvent('turnDelivery', JSON.stringify({ ...t1, delivery: { status: 'running' }, revision: 2 }));
+    expect(e).toEqual({ kind: 'turnDelivery', turn: { ...t1, delivery: { status: 'running' }, revision: 2 } });
+    const held = { jobs: {}, gone: new Set<string>(), status: null, github: null, inbox: [], conversations: [], turns: { c1: [t1] }, goneConversations: new Set<string>(), settledInbox: {} };
+    expect(apply(held as never, e as never).turns.c1.map((t) => t.delivery?.status)).toEqual(['running']);
   });
 
   it('composer_9_cancel_drops_the_waiting_words', async () => {
