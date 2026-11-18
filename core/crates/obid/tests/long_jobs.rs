@@ -1026,6 +1026,31 @@ fn recovery_2_the_words_a_run_went_down_with_go_with_the_next() {
     assert!(told[2].contains("use SQLite"), "{told:?}");
 }
 
+/// LIVETASK-37: a task's steps are saved with its activity, at most once a second, never once per
+/// step: 30 commands in about a second bring a few of their steps in `job` events, not 30.
+#[test]
+fn livetask_37_a_tasks_steps_are_saved_at_most_once_a_second() {
+    let (_folder, obid) = obid("livetask-37");
+    let events = follow_events(&obid);
+    let id = post_job(&obid, "STEPS: 30 30");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    // The agent's own steps as the `job` events brought them, each new one once.
+    let mut steps: Vec<String> = vec![];
+    while let Ok((name, data)) = events.recv_timeout(std::time::Duration::from_millis(200)) {
+        let step = data["step"].as_str().unwrap_or_default();
+        if name == "job"
+            && data["id"] == id.as_str()
+            && step.starts_with("Running sleep")
+            && steps.last().is_none_or(|last| last != step)
+        {
+            steps.push(step.to_owned());
+        }
+    }
+    assert!(!steps.is_empty(), "a step reached the window");
+    assert!(steps.len() < 10, "{} steps saved: {steps:?}", steps.len());
+}
+
 /// TASKCONV-33: the owner's words to a Claude Code job at work reach its agent in the turn under
 /// way, at its next step: no wait for the turn to end, no second launch, and they aren't heard
 /// again in a later turn.

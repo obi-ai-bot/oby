@@ -920,6 +920,10 @@ impl Jobs {
         let over_budget = std::sync::atomic::AtomicBool::new(false);
         // What the job used before this turn: each report of the turn's own counts goes on top.
         let before = job.usage.clone().unwrap_or_default();
+        // The agent's latest step and the run's time so far, kept here and saved with the job's
+        // activity once a second and at the turn's end, never once per step: a step reaches the
+        // window within a second, and a crash loses at most that second of them, never a status.
+        let stepped: Mutex<Option<Stepped>> = Mutex::default();
         let on_event = |event: AgentEvent| {
             let entries = jobs
                 .transcripts
@@ -972,16 +976,15 @@ impl Jobs {
                     jobs.update(id, |job| job.session = Some(session));
                 }
                 AgentEvent::Step(step) | AgentEvent::Denied(step) => {
-                    jobs.update(id, |job| {
-                        // What it asked with `oby_ask_owner` waits on the owner (PERMISSIONS-22).
-                        if !job.question_call.as_ref().is_some_and(|c| c.ended_turn) {
-                            job.step = step;
-                        }
-                        // The run's time so far, kept as it goes: a crash loses little of it.
-                        if let Some(ran) = ran_secs {
-                            job.ran_secs = Some(ran());
-                        }
-                    });
+                    let ran = ran_secs.map(|ran| ran());
+                    Stepped::keep(
+                        &stepped,
+                        || jobs.get(id),
+                        |kept| {
+                            kept.step = Some(step);
+                            kept.ran = ran.or(kept.ran);
+                        },
+                    );
                 }
                 // The calls are the transcript's too; obid watches them for a loop.
                 AgentEvent::Tool {
@@ -990,7 +993,7 @@ impl Jobs {
                     input,
                 } => {
                     let doing = crate::agent::told_step(&name, &input);
-                    jobs.update(id, |job| job.doing = Some(doing));
+                    Stepped::keep(&stepped, || jobs.get(id), |kept| kept.doing = Some(doing));
                     looping.called(call, name, input);
                 }
                 AgentEvent::ToolDone {
@@ -1133,6 +1136,7 @@ impl Jobs {
                     self.transcribed(id, self.transcripts.tick(id, spill_temp.as_deref()));
                 }
                 _ = activity.tick() => {
+                    self.stepped(id, &stepped);
                     self.glanced(id);
                     // A call of its agent's that waits for the owner past `parkAfter` parks it.
                     if parks {
@@ -1145,6 +1149,7 @@ impl Jobs {
             }
         };
         self.transcribed(id, self.transcripts.end_turn(id));
+        self.stepped(id, &stepped);
         self.glanced(id);
         self.transcripts.forget(id);
         forward.abort();
@@ -1426,6 +1431,37 @@ impl Jobs {
     }
 
     /// Keeps the job's `activity` and `context` up to date with its transcript, when they changed.
+    /// Saves the agent's latest step and the run's time so far, kept since the last save
+    /// (`stepped`), in one write and one `job` event: at most once a second while it works. A step
+    /// obid set since the first of them is newer, and stays.
+    fn stepped(&self, id: &str, stepped: &Mutex<Option<Stepped>>) {
+        let Some(Stepped {
+            step,
+            doing,
+            ran,
+            before,
+        }) = stepped.lock().unwrap_or_else(|e| e.into_inner()).take()
+        else {
+            return;
+        };
+        self.update(id, |job| {
+            // What it asked with `oby_ask_owner` waits on the owner (PERMISSIONS-22).
+            if let Some(step) = step
+                && job.step == before
+                && !job.question_call.as_ref().is_some_and(|c| c.ended_turn)
+            {
+                job.step = step;
+            }
+            if doing.is_some() {
+                job.doing = doing;
+            }
+            // The run's time so far, kept as it goes: a crash loses little of it.
+            if ran.is_some() {
+                job.ran_secs = ran;
+            }
+        });
+    }
+
     fn glanced(&self, id: &str) {
         let (activity, context) = self.transcripts.glance(id);
         let job = self.get(id);
@@ -1447,5 +1483,33 @@ impl Jobs {
     ) -> Option<(Vec<crate::transcript::Entry>, Option<u64>)> {
         self.get(id)?;
         Some(self.transcripts.read(id, after, limit))
+    }
+}
+
+/// What the agent did that isn't saved yet ([`Jobs::stepped`]): its latest step and call, the run's
+/// time so far, and the job's step when the first of them came.
+#[derive(Default)]
+struct Stepped {
+    step: Option<String>,
+    doing: Option<String>,
+    ran: Option<u64>,
+    before: String,
+}
+
+impl Stepped {
+    /// `change` made on what `kept` holds, started from the job as `job` reads it when nothing was
+    /// kept yet: a step obid sets after that (a permission, a plan, the owner's words) is newer.
+    fn keep(
+        kept: &Mutex<Option<Stepped>>,
+        job: impl FnOnce() -> Option<crate::job::Job>,
+        change: impl FnOnce(&mut Stepped),
+    ) {
+        let held = kept.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let mut held = held.unwrap_or_else(|| Stepped {
+            before: job().map(|job| job.step).unwrap_or_default(),
+            ..Stepped::default()
+        });
+        change(&mut held);
+        *kept.lock().unwrap_or_else(|e| e.into_inner()) = Some(held);
     }
 }

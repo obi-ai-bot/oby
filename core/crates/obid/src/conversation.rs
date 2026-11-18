@@ -210,6 +210,20 @@ struct Thread {
     /// Keys this obid doesn't know (a newer one's), kept as they were when it saves. Never shown.
     #[serde(flatten)]
     extra: serde_json::Map<String, Value>,
+    /// The turn under way there, as it goes ([`Underway`], CONVERSATION-AGENT-50): obid's own
+    /// memory, never kept, since a restart cuts the turn.
+    #[serde(skip)]
+    underway: Option<Underway>,
+}
+
+/// A conversation's turn under way (CONVERSATION-AGENT-50): the owner's words it answers (their
+/// user turn), its step now and the words it has said so far, so an app shows "working" from
+/// obid's own word, never guessed from events it may have missed.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Underway {
+    pub turn: String,
+    pub step: String,
+    pub text: String,
 }
 
 /// Where conversation `id`'s Cursor keeps its login copy and sessions: short, under `logins/` as a
@@ -377,6 +391,9 @@ impl Thread {
         }
         if let Some(profile) = &self.profile {
             summary["profile"] = json!(profile);
+        }
+        if let Some(underway) = &self.underway {
+            summary["underway"] = json!(underway);
         }
         self.show_marks(&mut summary);
         summary
@@ -1018,18 +1035,20 @@ impl Conversations {
     /// `id` (crate::delivery), in one write; a refused move leaves its turn as it was, and a turn
     /// with none (kept before deliveries) is left alone. Each turn moved goes out on a
     /// `turnDelivery`, never a `turn` again, which would take back the answer's alert.
-    pub fn deliver(&self, id: &str, turns: &[String], change: &Move) {
+    pub fn deliver(&self, id: &str, turns: &[String], change: &Move) -> Vec<String> {
         let mut threads = self.lock();
         let Some(thread) = threads.iter_mut().find(|t| t.id == id) else {
-            return;
+            return vec![];
         };
         let kept = thread.clone();
         let mut moved = vec![];
+        let mut ids = vec![];
         for turn in thread.turns.iter_mut().filter(|t| turns.contains(&t.id)) {
             let Some(delivery) = turn.delivery.as_mut() else {
                 continue;
             };
             if delivery.apply(change) {
+                ids.push(turn.id.clone());
                 moved.push(serde_json::to_value(turn.revised()).unwrap_or_default());
             } else {
                 let (turn, status) = (&turn.id, &delivery.status);
@@ -1037,40 +1056,126 @@ impl Conversations {
             }
         }
         if moved.is_empty() {
-            return;
+            return vec![];
         }
         if let Err(e) = self.write(thread) {
             *thread = kept;
             tracing::warn!("conversation {id}: its words' delivery wasn't kept: {e}");
-            return;
+            return vec![];
         }
         for turn in moved {
             self.events.send("turnDelivery", turn);
         }
+        ids
+    }
+
+    /// The owner's words waiting in the conversation `id`, oldest first, each with what a turn
+    /// needs of it that the turn doesn't hold ([`Replay`]): those whose delivery reads `queued`,
+    /// the conversation's one queue (CONVERSATION-AGENT-49).
+    pub fn queued(&self, id: &str) -> Vec<(Turn, Replay)> {
+        let threads = self.lock();
+        let Some(thread) = threads.iter().find(|t| t.id == id) else {
+            return vec![];
+        };
+        (thread.turns.iter())
+            .filter(|t| t.delivery.as_ref().is_some_and(|d| d.status == "queued"))
+            .map(|t| {
+                let replay = thread.replays.get(&t.id).cloned().unwrap_or_default();
+                (t.clone(), replay)
+            })
+            .collect()
+    }
+
+    /// The conversation `id`'s turn for the owner's words of `turn` begins (CONVERSATION-AGENT-50):
+    /// it's under way at its first step.
+    pub fn begin_underway(&self, id: &str, turn: &str, step: &str) {
+        self.underway(id, |underway| {
+            *underway = Some(Underway {
+                turn: turn.to_owned(),
+                step: step.to_owned(),
+                text: String::new(),
+            });
+            true
+        });
+    }
+
+    /// The conversation `id`'s turn under way for `turn` is at `step` now.
+    pub fn underway_step(&self, id: &str, turn: &str, step: &str) {
+        self.underway(id, |underway| match underway {
+            Some(u) if u.turn == turn && u.step != step => {
+                u.step = step.to_owned();
+                true
+            }
+            _ => false,
+        });
+    }
+
+    /// The conversation `id`'s turn under way for `turn` said `words` more: kept, sent with its
+    /// `delta` and not again.
+    pub fn underway_words(&self, id: &str, turn: &str, words: &str) {
+        let mut threads = self.lock();
+        if let Some(Some(u)) = threads
+            .iter_mut()
+            .find(|t| t.id == id)
+            .map(|t| t.underway.as_mut())
+            && u.turn == turn
+        {
+            u.text.push_str(words);
+        }
+    }
+
+    /// The conversation `id`'s turn for `turn` ended, `end` saying why (`turn::End`): it's under way
+    /// no more, and an `underway` event with `ended` says so.
+    pub fn end_underway(&self, id: &str, turn: &str, end: &str) {
+        let mut threads = self.lock();
+        let Some(thread) = threads.iter_mut().find(|t| t.id == id) else {
+            return;
+        };
+        if thread.underway.as_ref().is_none_or(|u| u.turn != turn) {
+            return;
+        }
+        thread.underway = None;
+        drop(threads);
+        self.events.send(
+            "underway",
+            json!({"conversation": id, "turn": turn, "ended": true, "end": end}),
+        );
+    }
+
+    /// Changes the conversation `id`'s turn under way with `change`; when it says it changed, an
+    /// `underway` event sends it, never a `conversation` event: nothing of it is written, so no
+    /// revision moves (EVENTS-7).
+    fn underway(&self, id: &str, change: impl FnOnce(&mut Option<Underway>) -> bool) {
+        let mut threads = self.lock();
+        let Some(thread) = threads.iter_mut().find(|t| t.id == id) else {
+            return;
+        };
+        if !change(&mut thread.underway) {
+            return;
+        }
+        let Some(underway) = thread.underway.clone() else {
+            return;
+        };
+        drop(threads);
+        let mut event = json!(underway);
+        event["conversation"] = json!(id);
+        self.events.send("underway", event);
     }
 
     /// At start (DELIVERY-7 to 10): the owner's words a stop cut read `interrupted` (those that
     /// were `starting` or `running`), and each conversation with any gets one Oby turn in obid's
     /// words ([`cut_line`]: `clean` when obid was stopped, not gone down), in one write with them.
-    /// Words still `queued` come back by conversation, oldest first, with what a replay needs
-    /// ([`Replay`]), for one turn to answer (`crate::brain::recover`). A turn with no `delivery`
-    /// is left as it is.
-    pub fn recover(&self, clean: bool) -> Vec<(String, Vec<(Turn, Replay)>)> {
+    /// The conversations with words still `queued` come back, for their drains to answer
+    /// (`crate::brain::recover`, CONVERSATION-AGENT-49). A turn with no `delivery` is left as it is.
+    pub fn recover(&self, clean: bool) -> Vec<String> {
         let mut threads = self.lock();
         let mut queued = vec![];
         for index in 0..threads.len() {
             let thread = &mut threads[index];
-            let waiting: Vec<(Turn, Replay)> = (thread.turns.iter())
-                .filter(|t| t.delivery.as_ref().is_some_and(|d| d.status == "queued"))
-                .map(|t| {
-                    (
-                        t.clone(),
-                        thread.replays.get(&t.id).cloned().unwrap_or_default(),
-                    )
-                })
-                .collect();
-            if !waiting.is_empty() {
-                queued.push((thread.id.clone(), waiting));
+            if (thread.turns.iter())
+                .any(|t| t.delivery.as_ref().is_some_and(|d| d.status == "queued"))
+            {
+                queued.push(thread.id.clone());
             }
             let kept = thread.clone();
             let mut cut = vec![];

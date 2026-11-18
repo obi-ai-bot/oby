@@ -2612,6 +2612,8 @@ async fn one(
     let homes = homes(shared);
     let delta = |text: String| {
         if !text.is_empty() && control.live() {
+            // What the turn under way has said so far (CONVERSATION-AGENT-50), redacted as sent.
+            (shared.conversations).underway_words(&control.conversation, &control.turn, &text);
             shared.events.send(
                 "delta",
                 json!({"conversation": control.conversation, "turn": control.turn, "text": text}),
@@ -2991,8 +2993,13 @@ fn step(
     state: State,
 ) {
     let secrets = crate::secrets::known();
+    let text = secrets.redact(text);
+    // The conversation's turn under way is at the step that runs (CONVERSATION-AGENT-50).
+    if state == State::Running {
+        (shared.conversations).underway_step(&control.conversation, &control.turn, &text);
+    }
     let event = json!({"turn": control.turn, "conversation": control.conversation,
-           "index": index, "action": "tool", "text": secrets.redact(text), "tool": tool,
+           "index": index, "action": "tool", "text": text, "tool": tool,
            "detail": secrets.redact(detail), "state": state.as_str(),
            "at": obi_protocol::time::format(obi_protocol::time::now())});
     shared.events.send("step", event);
