@@ -1,0 +1,46 @@
+[workspace]
+
+[package]
+name = "obid-spec"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "obid's endpoints and background triggers proven black-box, as BLOK workflows and Rust nodes, against the real obid binary"
+
+[[bin]]
+name = "obid-spec"
+path = "src/main.rs"
+
+[[bin]]
+name = "obid-spec-nodes"
+path = "src/bin/obid-spec-nodes.rs"
+
+[dependencies]
+blok-rs = { git = "https://github.com/well-prado/blok", rev = "3ab281d3", default-features = false, features = ["grpc"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+schemars = "0.8"
+anyhow = "1"
+async-trait = "0.1"
+tonic = "0.12"
+# gRPC over the nodes child's stdin and stdout, as oby-check-blok's (BLOK-3): no port, no socket.
+hyper-util = { version = "0.1", features = ["tokio"] }
+tokio-stream = { version = "0.1", default-features = false }
+tower = { version = "0.4", features = ["util"] }
+# The owner's side, written apart from obid's own crates so the suite checks obid from outside:
+# the owner key (Ed25519) signs cards and delegations as the Electron app's shared/sphere.ts does,
+# and the device key (P-256) signs the owner's words as its main/words.ts does.
+ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
+p256 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdsa", "std"] }
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+uuid = { version = "1", features = ["v4"] }
+hex = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+libc = "0.2"
+regex = { version = "1", default-features = false, features = ["std", "unicode-perl"] }
+
+[dev-dependencies]
+tempfile = "3"

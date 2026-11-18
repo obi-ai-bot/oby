@@ -1,0 +1,194 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/obid/sphere/peers/{owner}",
+  "version": "1.0.0",
+  "description": "A member's thread: 409 before joining, 404 for someone who isn't a member, 422 for a limit out of range; the member's flags, and each exchange's posts as they happen.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/obid/sphere/peers/{owner}"
+    }
+  },
+  "steps": [
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/peers/dana",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "before-joining-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/peers/dana",
+        "expect": {
+          "status": 409
+        }
+      }
+    },
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "not-a-member-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/peers/nobody",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "limit-0-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/peers/dana?limit=0",
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "empty-thread",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/peers/dana",
+        "expect": {
+          "status": 200,
+          "body": {
+            "owner": "dana",
+            "member": true,
+            "takesQuestions": true,
+            "verified": false,
+            "posts": []
+          }
+        }
+      }
+    },
+    {
+      "id": "asked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.dana-joined.obiId}",
+          "type": "question",
+          "body": {
+            "text": "What are you working on?"
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 202
+        }
+      }
+    },
+    {
+      "id": "the-question-as-a-post",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/peers/dana",
+        "expect": {
+          "status": 200,
+          "body": {
+            "posts": [
+              {
+                "kind": "question",
+                "direction": "sent",
+                "by": "obi",
+                "text": "What are you working on?",
+                "state": "sent",
+                "exchange": {
+                  "id": "${state.asked.body.correlationId}",
+                  "type": "question",
+                  "direction": "outgoing"
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

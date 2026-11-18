@@ -1,0 +1,232 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/obid/sphere/peers/{owner}/ask",
+  "version": "1.0.0",
+  "description": "The owner's own question to a member's Oby, signed by their device: unsigned is 403 and sends nothing; 404 for someone who isn't a member, 422 for blank words or another key; signed, a question by the owner that reaches the other Oby.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/obid/sphere/peers/{owner}/ask"
+    }
+  },
+  "steps": [
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.alex}"
+      }
+    },
+    {
+      "id": "before-joining-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/peers/dana/ask",
+        "body": {
+          "text": "hi"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 409
+        }
+      }
+    },
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unsigned-403",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/peers/dana/ask",
+        "body": {
+          "text": "What are you on?"
+        },
+        "expect": {
+          "status": 403
+        }
+      }
+    },
+    {
+      "id": "unsigned-sent-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "not-a-member-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/peers/nobody/ask",
+        "body": {
+          "text": "hi"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "blank-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/peers/dana/ask",
+        "body": {
+          "text": "   "
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "another-key-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/peers/dana/ask",
+        "body": {
+          "text": "hi",
+          "to": "x"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "signed-202-by-the-owner",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/peers/dana/ask",
+        "body": {
+          "text": "What are you on?"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 202,
+          "body": {
+            "kind": "question",
+            "by": "owner",
+            "direction": "sent",
+            "text": "What are you on?"
+          }
+        }
+      }
+    },
+    {
+      "id": "it-reaches-danas-oby",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "obiRequest",
+                "obi": {
+                  "type": "question",
+                  "fromOwner": "alex",
+                  "quoted": {
+                    "text": "What are you on?"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
