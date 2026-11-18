@@ -100,6 +100,12 @@ impl Turns {
         self.waiting.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// `words` wait in `conversation` for the next turn there to take them, as words said while a
+    /// turn runs do ([`Self::wait_turn`]): what obid answers after a restart (DELIVERY-8).
+    pub fn hold(&self, conversation: &str, words: Words) {
+        self.waiting().push((conversation.to_owned(), words));
+    }
+
     /// Waits for the owner's turn under way in `conversation` to end, then takes every word said
     /// there that no turn took yet, `words` last: the next turn answers them all at once. None
     /// when later words came meanwhile (their turn answers these with theirs) or a cancel dropped

@@ -544,6 +544,9 @@ function workOf(w: GitHubWork | null): GitHubItem[] {
   });
 }
 
+// The branch a task's commits went to (TASKCONV-32): its last push's (a Fix CI job's onto its
+// owner's pull request's own branch, TASKCONV-31; the owner's Publish to another), else none yet
+const pushedTo = (j: Job) => (j.outgoing ?? []).filter((o) => o.action === 'push' && o.branch).at(-1)?.branch;
 export function taskOf(s: Live, j: Job): Task {
   // a status this build doesn't know: placed as done, with no ask, shown neutral (WIRE-3)
   const unknown = !isJobStatus(j.status);
@@ -556,7 +559,7 @@ export function taskOf(s: Live, j: Job): Task {
   const job: JobView = {
     id: j.id, type: j.kind === 'review' ? 'review' : j.issue != null ? 'issues' : 'tasks', title: j.title, request: j.request,
     agent: j.agent, account: s.status?.accounts.find((a) => a.id === j.account)?.name ?? j.account,
-    model: j.model ?? s.status?.models[j.agent]?.model ?? 'default', repo: j.repo, branch: j.branch || '—', base: j.base ?? '—',
+    model: j.model ?? s.status?.models[j.agent]?.model ?? 'default', repo: j.repo, branch: pushedTo(j) || j.branch || '—', base: j.base ?? '—',
     check: j.check ?? undefined, repoCheck: s.repos.find((r) => r.repo === j.repo)?.check, status: j.status, step: j.step, waiting: j.waiting ?? undefined,
     round: j.rounds > 1 ? [j.round, j.rounds] : undefined,
     stages: stagesOf(j),
@@ -972,11 +975,6 @@ export async function tellJob(id: string, text: string, files: { path?: string }
     say(e);
   }
 }
-// Told from the agent's own conversation, opened in place under its card (AgentThread.tsx): the follow-up it started, if it had finished
-export const tellAgent = async (id: string, text: string, files?: { path?: string }[]) => {
-  const j = await tellJob(id, text, files, true);
-  return j && j.id !== id ? j.id : undefined;
-};
 // A task's Mode menu: how much it asks from now on (POST /v1/jobs/{id}/mode)
 export async function changeMode(id: string, mode: string) {
   try { const j = await api.mode(id, mode); take({ kind: 'job', job: j }); } catch (e) { say(e); }

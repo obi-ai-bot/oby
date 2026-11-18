@@ -176,7 +176,7 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .ask-card { position: relative; z-index: 3; padding: 16px 18px; border-radius: 22px; background: var(--chip); text-align: left; user-select: text; }
 .ask-card .tc-ask { margin-top: 12px; padding-top: 12px; }
 /* a GitHub offer's card starts its work when clicked anywhere but its buttons (GITHUBWORK-10) */
-.ask-card.is-startable { cursor: pointer; }
+.ask-card.is-startable, .waiting-row.is-startable { cursor: pointer; }
 /* Home keeps it short: what happened in 3 lines at most, the command or plan in
    2 (it scrolls); the task’s page has all of it. Oby's escalation shows whole,
    scrolling inside the card (TASKS-17) */
@@ -903,18 +903,15 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .msg-file > span:last-child { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* a task this message started: a card under it, the thread's full width */
 .msg-task { width: 100%; padding: 10px 12px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 14px; background: rgba(255, 255, 255, 0.06); color: var(--muted); text-align: left; user-select: none; transition: background-color var(--fade), border-color var(--fade); }
-/* the agent's icon, the status mark and the arrow sit on the title's line (18px) */
+/* the agent's icon, the status mark and the ⋯ sit on the title's line (18px) */
 .msg-task > svg:first-child { flex: none; align-self: flex-start; margin-top: 1px; }
 .msg-task > .status { align-self: flex-start; margin-top: 3px; }
-.msg-task.is-link:hover { background: rgba(255, 255, 255, 0.1); border-color: var(--line-strong); }  /* over its white 6% at rest */
 .msg-task-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .msg-task-title { color: var(--ink); font-size: var(--text-md); font-weight: 500; line-height: 18px; white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
 .msg-task-title .tc-who { margin-right: 5px; }
 .msg-task-meta { color: var(--muted); font-size: var(--text-sm); white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
 .msg-task .tc-result { margin: 2px 0 0; }
 .msg-task .tc-result a { white-space: nowrap; }
-.msg-task-go { flex: none; align-self: flex-start; margin: 2px 0 0 -2px; opacity: 0.6; }
-.msg-task.is-link:hover .msg-task-go { opacity: 1; color: var(--text); }
 /* new messages ease in from just below */
 .msg.is-new { animation: msg-in 360ms var(--warm) both; }
 @keyframes msg-in { from { opacity: 0; transform: translateY(8px); } }

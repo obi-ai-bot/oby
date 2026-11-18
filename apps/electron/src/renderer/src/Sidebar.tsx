@@ -69,7 +69,7 @@ const SEARCHABLE: Section[] = ['oby', 'conversations'];
 // ?home: Home and Conversations, ?everything also + and your account picture),
 // the column beside them shows it. Search, on the tabs that have it, sits by the panel icon.
 // It opens from the left and pushes the view over.
-export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOpenGroup, onOpenTask, onOpenAgent, activeAgent = null, onOpenChat, onOpenOby, onOpenMember, onOpenTalk, onOpenArchive, onOpenSetting, onOpenSphereSetting, onOpenKnowledge, onOpenRoom, onOpenWaiting, activeWaiting = false, activeOby = null, activeTalk = null, activeSetting = null, activeSphereSetting = null, activeKnowledge = null, active = null, width, onResize }: {
+export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOpenGroup, onOpenTask, onOpenAgent, onOpenChat, onOpenOby, onOpenMember, onOpenTalk, onOpenArchive, onOpenSetting, onOpenSphereSetting, onOpenKnowledge, onOpenRoom, onOpenWaiting, activeWaiting = false, activeOby = null, activeTalk = null, activeSetting = null, activeSphereSetting = null, activeKnowledge = null, active = null, width, onResize }: {
   open: boolean;
   onClose: () => void;  // the panel closes (its tab's icon again, while that tab is showing)
   onNewChat: () => void;
@@ -77,8 +77,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   atHome: boolean;  // on Home's own page, nothing open over it
   onOpenGroup: (id: string) => void;  // chat first: a kind of work's cards (Home's chips, on Home)
   onOpenTask: (id: string) => void;  // a task's page, on its own
-  onOpenAgent?: (id: string, chat: string) => void;  // a nested task's own thread, over the conversation that started it
-  activeAgent?: string | null;  // the nested task whose thread is showing: its row is highlighted
+  onOpenAgent?: (id: string) => void;  // a nested task: the conversation that started it, at its card (LIVETASK-28)
   onOpenChat: (id: string) => void;  // a task's conversation, from its menu or its row's icon
   onOpenOby: (name: string) => void;  // someone else's Oby, from the mock's Obysphere: its conversations
   onOpenMember: (owner: string) => void;  // a member of the live Obysphere, by owner id: their thread
@@ -374,8 +373,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   ].filter((g) => g.rows.length || (g.id && !q));
   const convoRow = (c: Chat) => {
     const kids = chatFirst ? kidsOf(tasks, c.id, chatIdOf) : [];
-    const lit = kids.some((k) => k.id === activeAgent);
-    const shown = kids.length > 0 && (kidsShown[c.id] ?? (activeTalk === c.id || lit || kids.some((k) => k.status === 'needs')));
+    const shown = kids.length > 0 && (kidsShown[c.id] ?? (activeTalk === c.id || kids.some((k) => k.status === 'needs')));
     return (
     <div key={c.id} className={`convo-nest${kids.length ? ' has-kids' : ''}`}>
     {kids.length > 0 && (
@@ -429,16 +427,15 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
         <EllipsisVertical size={14} strokeWidth={1.6} />
       </button>
     </div>
-    {/* its tasks, each a session of its own: its agent, its title, what it's on, its state (screen 03) */}
+    {/* its tasks, each a mark of its progress: its agent, its title, what it's on, its state (screen 03); a click opens this conversation at its card */}
     {shown && (
       <div className="convo-kids" role="group" aria-label={`${c.title}’s tasks`}>
         {kids.map((k) => (
           <button
             key={k.id}
-            className={`convo-kid${activeAgent === k.id ? ' is-active' : ''}`}
-            aria-current={activeAgent === k.id || undefined}
+            className="convo-kid"
             title={kidTitle(k)}
-            onClick={() => { markSeen(k.id); onOpenAgent?.(k.id, c.id); }}
+            onClick={() => { markSeen(k.id); onOpenAgent?.(k.id); }}
             onContextMenu={(e) => { e.preventDefault(); setTaskMenu({ id: k.id, at: new DOMRect(e.clientX, e.clientY, 0, 0), atPointer: true }); }}
           >
             <BrandMark brand={k.brand} size={14} />
