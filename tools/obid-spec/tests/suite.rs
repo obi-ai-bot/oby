@@ -427,3 +427,56 @@ fn obidspec_10_a_flaky_step_fails_quietly_and_passes_as_a_pass() {
     assert_eq!(code, 0, "{out}");
     assert!(!out.contains("flaky, failed"), "{out}");
 }
+
+/// No shipped workflow ever has obid look for a tool by a bare name (a `bin` in `PUT
+/// /v1/settings/agents/{agent}` or an `obid-start` configuration): obid would search the person's
+/// install folders for it and run what it finds (OBIDSPEC-8).
+#[test]
+fn obidspec_8_no_workflow_asks_obid_to_search_for_a_tool() {
+    fn bins(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::Object(m) => {
+                for (k, x) in m {
+                    if k == "bin" {
+                        if let Some(s) = x.as_str() {
+                            out.push(s.to_string());
+                        }
+                    }
+                    bins(x, out);
+                }
+            }
+            Value::Array(a) => a.iter().for_each(|x| bins(x, out)),
+            _ => {}
+        }
+    }
+    let all = workflow::load_all(&suite().join("workflows"), &node_names()).unwrap();
+    for w in &all {
+        for s in &w.steps {
+            let mut found = vec![];
+            bins(&s.inputs, &mut found);
+            for b in found {
+                assert!(
+                    b.starts_with('/') || b.starts_with("${"),
+                    "{} › {}: bin {b:?} would have obid search the person's folders",
+                    w.name,
+                    s.id
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn obidspec_8_a_bare_tool_name_is_refused_before_obid_starts() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = obid::Run {
+        obid: "/bin/echo".into(),
+        root: root(),
+        scratch: dir.path().join("wf"),
+        sphere_url: None,
+        sphere_operator: None,
+    };
+    let input = json!({"name": "o", "config": {"agents": {"codex": {"bin": "codex"}}}});
+    let refused = obid::start(&run, serde_json::from_value(input).unwrap()).await;
+    assert!(format!("{:#}", refused.unwrap_err()).contains("absolute path only"));
+}

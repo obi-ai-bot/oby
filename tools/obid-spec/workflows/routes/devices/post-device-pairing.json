@@ -1,0 +1,60 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/devices/{id}/pairing",
+  "version": "1.0.0",
+  "description": "Links a paired phone's signing key to its pairing: only the paired phone's own request, through the gateway, reaches it; on obid's loopback it's refused.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/devices/{id}/pairing"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/devices/${state.device.id}/pairing",
+        "body": {},
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "on-loopback-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/devices/${state.device.id}/pairing",
+        "body": {},
+        "expect": {
+          "status": [
+            403,
+            422
+          ]
+        }
+      }
+    }
+  ]
+}

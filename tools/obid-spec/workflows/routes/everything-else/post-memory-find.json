@@ -1,0 +1,56 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/memory/find",
+  "version": "1.0.0",
+  "description": "Looks for what to remember: with too little to compare it asks no model and answers what it read.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/memory/find"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/memory/find",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "read",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/memory/find",
+        "expect": {
+          "status": [
+            200,
+            503
+          ],
+          "paths": {
+            "suggestions": {
+              "$type": "array"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

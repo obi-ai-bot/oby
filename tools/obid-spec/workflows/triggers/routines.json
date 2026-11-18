@@ -1,0 +1,94 @@
+{
+  "schemaVersion": "2",
+  "name": "Routines",
+  "version": "1.0.0",
+  "description": "obid runs a routine when it's due, by itself: one due at start (yesterday's run still to come) starts its job at once, in the routine's own conversation, with its run recorded.",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "clock",
+      "use": "runtime.rust:clock"
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "files": {
+          "routines/ffff0001.json": {
+            "id": "ffff0001",
+            "name": "Check ffff0001",
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "Say what the README covers.",
+            "agent": "auto",
+            "account": "auto",
+            "mode": null,
+            "check": null,
+            "rounds": 1,
+            "schedule": {
+              "every": "daily",
+              "at": "00:00"
+            },
+            "zone": "UTC",
+            "enabled": true,
+            "created": "${state.clock.tenDaysAgo}",
+            "createdBy": "mac",
+            "conversation": null,
+            "lastFire": "${state.clock.yesterday}",
+            "failuresInARow": 0,
+            "runs": []
+          }
+        }
+      }
+    },
+    {
+      "id": "started-by-itself",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/routines/ffff0001",
+        "within": 90,
+        "expect": {
+          "status": 200,
+          "body": {
+            "runs": {
+              "$any": {
+                "outcome": "started",
+                "job": {
+                  "$type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "its-job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "routine": {
+                  "id": "ffff0001"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

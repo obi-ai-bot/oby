@@ -80,7 +80,8 @@ pub fn merge(base: &mut Value, over: &Value) {
 }
 
 /// The folder of tools a scratch obid may run besides its stand-ins: `node` (the stand-ins are
-/// Node scripts) and `gitleaks` (the secret scan), each a link to the one found, and nothing else.
+/// Node scripts, the fixture's check is `node --test`) and `gitleaks` (the secret scan), each a
+/// clone of the one found, and nothing else.
 fn tools(run: &Run) -> Result<PathBuf> {
     let bin = run.scratch.join("bin");
     private_dir(&bin)?;
@@ -90,7 +91,18 @@ fn tools(run: &Run) -> Result<PathBuf> {
             continue;
         }
         let found = which(name).with_context(|| format!("{name} isn't on PATH"))?;
-        std::os::unix::fs::symlink(found, &link)?;
+        let found = std::fs::canonicalize(&found).unwrap_or(found);
+        // A copy, cloned on APFS (free on disk), not a link: a job's box reads the tools on its
+        // PATH, never where a link points (a check's `node` living under ~/.nvm).
+        let cloned = std::process::Command::new("/bin/cp")
+            .arg("-c")
+            .arg(&found)
+            .arg(&link)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !cloned {
+            std::os::unix::fs::symlink(&found, &link)?;
+        }
     }
     Ok(bin)
 }
@@ -239,6 +251,14 @@ pub async fn start(run: &Run, input: StartInput) -> Result<Value> {
     if let Some(over) = &input.config {
         merge(&mut config, over);
     }
+    // A tool given by a bare name is looked for where the person's real CLIs live: refused.
+    for (tool, agent) in config["agents"].as_object().into_iter().flatten() {
+        let bin = agent["bin"].as_str().unwrap_or_default();
+        anyhow::ensure!(
+            Path::new(bin).is_absolute(),
+            "agents.{tool}.bin is {bin:?}: a scratch obid takes a stand-in by absolute path only"
+        );
+    }
     let config_path = folder.join("config.json");
     private_file(&config_path, &serde_json::to_string_pretty(&config)?)?;
     for (base, files) in [(&home, &input.files), (&person, &input.person)] {
@@ -334,6 +354,22 @@ pub async fn start(run: &Run, input: StartInput) -> Result<Value> {
             tail.into_iter().rev().collect::<Vec<_>>().join("\n")
         );
     };
+    // With a `gateway` in its configuration, the second line says where the paired phones' listener is.
+    let mut gateway = None;
+    if config.get("gateway").is_some() {
+        let mut said = String::new();
+        let _ = tokio::time::timeout(Duration::from_secs(30), stdout.read_line(&mut said)).await;
+        gateway = said
+            .trim()
+            .strip_prefix("obid gateway listening on http://127.0.0.1:")
+            .and_then(|p| p.parse::<u16>().ok())
+            .map(|p| format!("http://127.0.0.1:{p}"));
+        anyhow::ensure!(
+            gateway.is_some(),
+            "obid's gateway didn't say where it listens: {:?}",
+            said.trim()
+        );
+    }
     // Its stdout is drained in the background, so it never blocks writing.
     tokio::spawn(async move {
         let mut sink = String::new();
@@ -345,7 +381,7 @@ pub async fn start(run: &Run, input: StartInput) -> Result<Value> {
     Ok(json!({
         "name": name, "pid": pid, "port": port, "base": format!("http://127.0.0.1:{port}"),
         "token": token, "home": home, "folder": folder, "person": person, "log": log,
-        "owner": config["owner"], "restarted": restart,
+        "owner": config["owner"], "restarted": restart, "gatewayBase": gateway,
     }))
 }
 

@@ -27,7 +27,7 @@ pub fn routes(root: &Path) -> Result<Vec<String>> {
 pub fn scenarios(text: &str) -> Vec<String> {
     let re =
         // `- **SPHERE-21** …`, `- **ACCOUNTS-1:** …`, `- **HOME-1.** …`, or a table's first cell.
-        regex::Regex::new(r"^\s*(?:-\s+\*\*([A-Z][A-Z0-9]*(?:-[A-Z][A-Z0-9]*)*-[0-9]+)(?:\s*\([^)]*\))?[:.]?\*\*|\|\s*([A-Z][A-Z0-9]*(?:-[A-Z][A-Z0-9]*)*-[0-9]+)\s*\|)").unwrap();
+        regex::Regex::new(r"^\s*(?:-\s+\*\*([A-Z][A-Z0-9]*(?:-[A-Z][A-Z0-9]*)*-[0-9]+)(?:[\s,(:.][^*]*)?\*\*|\|\s*([A-Z][A-Z0-9]*(?:-[A-Z][A-Z0-9]*)*-[0-9]+)\s*\|)").unwrap();
     let mut seen = BTreeSet::new();
     text.lines()
         .filter_map(|l| {
@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn reads_scenarios_and_ranges() {
-        let text = "## Acceptance\n\n- **SPHERE-1** A link.\n- **CONVERSATION-AGENT-41:** x\n  - **SPHERE-1** again\nnot - **SPHERE-9**\n- **HOME-1.** y\n- **PUBLISHING-27 (implemented):** z\n| JOBSTATE-2 | Given |\n| x | JOBSTATE-3 |\n";
+        let text = "## Acceptance\n\n- **SPHERE-1** A link.\n- **CONVERSATION-AGENT-41:** x\n  - **SPHERE-1** again\nnot - **SPHERE-9**\n- **HOME-1.** y\n- **PUBLISHING-27 (implemented):** z\n- **PROJECTS-1, create and list (implemented).** w\n| JOBSTATE-2 | Given |\n| x | JOBSTATE-3 |\n";
         assert_eq!(
             scenarios(text),
             [
@@ -333,6 +333,7 @@ mod tests {
                 "CONVERSATION-AGENT-41",
                 "HOME-1",
                 "PUBLISHING-27",
+                "PROJECTS-1",
                 "JOBSTATE-2"
             ]
         );

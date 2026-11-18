@@ -1,0 +1,100 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/notifications",
+  "version": "1.0.0",
+  "description": "A phone's push token: 422 for a body that isn't one; without Oby's push service in the vault, a token is answered push false and nothing kept.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/notifications"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/notifications",
+        "body": {
+          "token": "x"
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "not-a-token-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/notifications",
+        "body": {
+          "push": true
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "another-platform-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/notifications",
+        "body": {
+          "token": "abc",
+          "platform": "sms"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "no-push-service",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/notifications",
+        "body": {
+          "token": "abc",
+          "platform": "fcm"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "push": false
+          }
+        }
+      }
+    },
+    {
+      "id": "nothing-kept",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "push/fcm.json",
+        "expect": {
+          "exists": false
+        }
+      }
+    }
+  ]
+}

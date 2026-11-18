@@ -1,0 +1,107 @@
+{
+  "schemaVersion": "2",
+  "name": "DELETE /v1/obid/sharing/rules/{id}",
+  "version": "1.0.0",
+  "description": "Forgets a sharing rule, with the token alone since it shares less: 204, then it's gone; 404 for one obid doesn't have.",
+  "trigger": {
+    "http": {
+      "method": "DELETE",
+      "path": "/v1/obid/sharing/rules/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "made",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/obid/sharing/rules",
+        "body": {
+          "for": [
+            "dana"
+          ],
+          "repos": [
+            "obi-e2e/fixture-app"
+          ],
+          "tells": [
+            "jobStatus"
+          ]
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/obid/sharing/rules/${state.made.body.id}",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/obid/sharing/rules/s-000000000000",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "forgotten-204",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/obid/sharing/rules/${state.made.body.id}",
+        "expect": {
+          "status": 204
+        }
+      }
+    },
+    {
+      "id": "gone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/obid/sharing",
+        "expect": {
+          "status": 200,
+          "body": {
+            "rules": []
+          }
+        }
+      }
+    }
+  ]
+}

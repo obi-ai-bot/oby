@@ -1,0 +1,59 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/github",
+  "version": "1.0.0",
+  "description": "Whether gh is signed in, the owner's and the reviewer's: with the stand-in gh signed out, false and no sign-in under way.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/github"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/github",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "signed-out",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/github",
+        "expect": {
+          "status": 200,
+          "body": {
+            "gh": true,
+            "signedIn": false,
+            "user": null,
+            "signIn": null,
+            "reviewer": {
+              "signedIn": false,
+              "user": null,
+              "signIn": null
+            }
+          }
+        }
+      }
+    }
+  ]
+}

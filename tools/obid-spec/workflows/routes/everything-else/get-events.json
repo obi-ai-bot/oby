@@ -1,0 +1,182 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/events",
+  "version": "1.0.0",
+  "description": "The live stream: numbered events, epoch and sequence (EVENTS-1); a stream that starts after an id replays what came after it, in order (EVENTS-2); an id from another run answers resync first (EVENTS-3).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/events"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/events",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "follow",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "first-clear",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/clear",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "events-1-numbered",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "clear",
+        "expect": {
+          "body": {
+            "clearedAt": "${state.first-clear.body.clearedAt}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "EVENTS-1"
+        ]
+      }
+    },
+    {
+      "id": "events-1-epoch-and-sequence",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.events-1-numbered.id}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$matches": "^[0-9a-zA-Z]+-[0-9]+$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "EVENTS-1"
+        ]
+      }
+    },
+    {
+      "id": "tick",
+      "use": "runtime.rust:next-second"
+    },
+    {
+      "id": "second-clear",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/clear",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "events-2-replayed-after-the-first",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}",
+        "name": "replay",
+        "after": "${state.events-1-numbered.id}"
+      }
+    },
+    {
+      "id": "events-2-the-second-comes-again",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "name": "replay",
+        "event": "clear",
+        "expect": {
+          "body": {
+            "clearedAt": "${state.second-clear.body.clearedAt}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "EVENTS-2"
+        ]
+      }
+    },
+    {
+      "id": "not-the-first-again",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "name": "replay",
+        "event": "clear",
+        "none": true,
+        "seconds": 2,
+        "expect": {
+          "body": {
+            "clearedAt": "${state.first-clear.body.clearedAt}"
+          }
+        }
+      }
+    },
+    {
+      "id": "events-3-another-run",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}",
+        "name": "stale",
+        "after": "deadbeef-7"
+      }
+    },
+    {
+      "id": "events-3-resync-first",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "name": "stale",
+        "event": "resync",
+        "expect": {
+          "paths": {
+            "epoch": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "EVENTS-3"
+        ]
+      }
+    }
+  ]
+}

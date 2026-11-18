@@ -58,7 +58,7 @@
         "method": "PUT",
         "path": "/v1/settings/agents/codex",
         "body": {
-          "bin": "rm -rf"
+          "bin": "/"
         },
         "expect": {
           "status": 422,

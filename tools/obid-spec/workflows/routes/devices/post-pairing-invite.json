@@ -1,0 +1,93 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/pairing/invite",
+  "version": "1.0.0",
+  "description": "Makes a one-time pairing invitation for a phone: 400 for a url that isn't http or https, 409 with no Obysphere and no url; 200 with a six-digit code and a secret.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/pairing/invite"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "gateway": "127.0.0.1:0"
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/pairing/invite",
+        "body": {},
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "no-url-and-no-sphere-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/pairing/invite",
+        "body": {},
+        "expect": {
+          "status": 409
+        }
+      }
+    },
+    {
+      "id": "not-http-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/pairing/invite",
+        "body": {
+          "url": "ftp://mac"
+        },
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "invite",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/pairing/invite",
+        "body": {
+          "url": "https://mac.example.invalid",
+          "name": "Test Mac"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "code": {
+              "$matches": "^[0-9]{6}$"
+            },
+            "secret": {
+              "$type": "string"
+            },
+            "url": "https://mac.example.invalid"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,191 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/github/work/{id}/start",
+  "version": "1.0.0",
+  "description": "Starts a task for an item of the owner's GitHub work: 404 for one not in it; a review request starts a review job in a conversation of its own (TASKCONV-2), its text quoted 0600 for the agent, and asking again answers the same job.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/github/work/{id}/start"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "person": {
+          "github/work.json": {
+            "data": {
+              "reviews": {
+                "issueCount": 1,
+                "nodes": [
+                  {
+                    "number": 702,
+                    "title": "Thing 702",
+                    "updatedAt": "2026-10-18T08:42:00Z",
+                    "state": "OPEN",
+                    "author": {
+                      "login": "sangam"
+                    },
+                    "repository": {
+                      "nameWithOwner": "obi-e2e/fixture-app"
+                    },
+                    "labels": {
+                      "nodes": [
+                        {
+                          "name": "bug"
+                        }
+                      ]
+                    },
+                    "isDraft": false,
+                    "reviewDecision": "REVIEW_REQUIRED",
+                    "commits": {
+                      "nodes": [
+                        {
+                          "commit": {
+                            "statusCheckRollup": {
+                              "state": "PENDING"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              "assigned": {
+                "issueCount": 0,
+                "nodes": []
+              },
+              "mine": {
+                "issueCount": 0,
+                "nodes": []
+              },
+              "rateLimit": {
+                "remaining": 4900,
+                "resetAt": "2030-10-18T10:00:00Z"
+              },
+              "viewer": {
+                "login": "alex"
+              }
+            }
+          },
+          "github/view.json": {
+            "title": "Thing 702",
+            "body": "Please look at the average helper.",
+            "author": {
+              "login": "sangam"
+            },
+            "labels": [],
+            "comments": []
+          }
+        }
+      }
+    },
+    {
+      "id": "read",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/refresh",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "work",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/github/work",
+        "pick": {
+          "from": "reviews",
+          "where": {
+            "number": 702
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/${state.work.picked.id}/start",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "not-in-the-work-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/0000000000000000/start",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "taskconv-2-a-review-in-its-own-conversation",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/${state.work.picked.id}/start",
+        "expect": {
+          "status": 201,
+          "body": {
+            "kind": "review",
+            "pr": 702,
+            "title": "Review fixture-app #702",
+            "conversation": {
+              "$type": "string"
+            },
+            "task": {
+              "$contains": "Review pull request #702 in obi-e2e/fixture-app."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-2"
+        ]
+      }
+    },
+    {
+      "id": "again-the-same-job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/${state.work.picked.id}/start",
+        "expect": {
+          "status": [
+            200,
+            201
+          ],
+          "body": {
+            "id": "${state.taskconv-2-a-review-in-its-own-conversation.body.id}"
+          }
+        }
+      }
+    }
+  ]
+}

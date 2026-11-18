@@ -1,0 +1,117 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/status",
+  "version": "1.0.0",
+  "description": "What obid is: its runner, accounts, models, permissions mode and capabilities, sorted and unique (CAPS-1), with nothing it couldn't read.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/status"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "caps-1-capabilities",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "body": {
+            "capabilities": {
+              "$contains": "folders-v1"
+            },
+            "folders": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CAPS-1"
+        ]
+      }
+    },
+    {
+      "id": "caps-1-sorted-and-unique",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "body": {
+            "capabilities": [
+              "composer-v1",
+              "conversation-marks-v1",
+              "events-replay-v1",
+              "folders-v1",
+              "profile-projects-v1",
+              "profile-scope-v1",
+              "project-jobs-v1",
+              "projects-v1",
+              "revisions-v1"
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CAPS-1"
+        ]
+      }
+    },
+    {
+      "id": "its-parts",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "body": {
+            "runner": {
+              "engine": "obid"
+            },
+            "permissions": {
+              "mode": "bypass"
+            },
+            "unreadable": [],
+            "accounts": [
+              {
+                "id": "stand-in",
+                "agent": "claude",
+                "signedIn": true
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

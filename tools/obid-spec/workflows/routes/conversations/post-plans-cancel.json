@@ -78,7 +78,7 @@
         "method": "POST",
         "path": "/v1/plans",
         "body": {
-          "said": "LINGER 4000\nSAY done",
+          "said": "LINGER 15000",
           "conversation": "${state.said.body.conversation}"
         },
         "background": true

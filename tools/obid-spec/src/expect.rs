@@ -277,6 +277,33 @@ fn sentinel() -> Value {
     serde_json::json!({ "obid-spec": "mutated" })
 }
 
+/// A value that matches `want`, for a mutant that must hold what a `$none` refuses: literals as
+/// they are, `$contains` its text, `$oneOf` its first, other matchers a string.
+fn materialize(want: &Value) -> Value {
+    if let Some((op, arg)) = matcher(want) {
+        return match op {
+            "$contains" | "$matches" if arg.is_string() => arg.clone(),
+            "$oneOf" => arg
+                .as_array()
+                .and_then(|a| a.first())
+                .cloned()
+                .unwrap_or(Value::Null),
+            "$any" => Value::Array(vec![materialize(arg)]),
+            "$type" if arg == "array" => Value::Array(vec![]),
+            "$type" if arg == "object" => serde_json::json!({}),
+            "$type" if arg == "number" => serde_json::json!(1),
+            "$type" if arg == "boolean" => Value::Bool(true),
+            _ => Value::String(MUTATED.into()),
+        };
+    }
+    match want {
+        Value::Object(m) => {
+            Value::Object(m.iter().map(|(k, v)| (k.clone(), materialize(v))).collect())
+        }
+        other => other.clone(),
+    }
+}
+
 /// A value the leaf `want` refuses.
 fn refused_by(want: &Value) -> Value {
     if let Some((op, arg)) = matcher(want) {
@@ -288,7 +315,7 @@ fn refused_by(want: &Value) -> Value {
                 Some([w, n]) if n.as_u64() == Some(0) => Value::Array(vec![w.clone()]),
                 _ => Value::Array(vec![]),
             },
-            "$none" => Value::Array(vec![arg.clone()]),
+            "$none" => Value::Array(vec![materialize(arg)]),
             "$any" => Value::Array(vec![]),
             // One more than it wants, whatever it counts.
             "$len" => Value::Array(vec![Value::Null; arg.as_u64().unwrap_or(0) as usize + 1]),
@@ -413,9 +440,9 @@ mod mutant_tests {
 
     #[test]
     fn obidspec_6_every_mutant_of_a_real_assertion_fails() {
-        let body = json!({"state": "joined", "list": [{"k": 1}], "missing": null, "n": 3, "s": "hello", "one": [1]});
+        let body = json!({"state": "joined", "list": [{"k": 1}], "missing": null, "n": 3, "s": "hello", "one": [1], "nothing": [{"t": "#4"}]});
         let expect = json!({"status": 200, "body": {"state": "joined", "list": {"$any": {"k": 1}}, "one": {"$len": 1}},
-            "paths": {"gone": {"$exists": false}, "n": {"$ne": 4}, "s": {"$contains": "ell"}, "list": {"$count": [{"k": 1}, 1]}},
+            "paths": {"gone": {"$exists": false}, "n": {"$ne": 4}, "s": {"$contains": "ell"}, "list": {"$count": [{"k": 1}, 1]}, "nothing": {"$none": {"t": {"$contains": "#5"}}}},
             "text": {"$not": {"$contains": "secret"}}});
         assert!(judge(
             &expect,
@@ -428,7 +455,7 @@ mod mutant_tests {
         )
         .is_empty());
         let all = mutants(&expect, 200, &body, "ok");
-        assert_eq!(all.len(), 9);
+        assert_eq!(all.len(), 10);
         for m in &all {
             assert!(!judge(&expect, m).is_empty(), "{} passed", m.what);
         }

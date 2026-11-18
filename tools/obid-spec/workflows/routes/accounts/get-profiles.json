@@ -53,7 +53,8 @@
       },
       "ui": {
         "proves": [
-          "PROFILES-1"
+          "PROFILES-1",
+          "PROF-1"
         ]
       }
     },

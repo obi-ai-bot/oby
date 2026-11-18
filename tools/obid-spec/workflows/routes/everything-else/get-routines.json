@@ -1,0 +1,94 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/routines",
+  "version": "1.0.0",
+  "description": "The routines, by name: none, then the one made with its next run.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/routines"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/routines",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "none",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/routines",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "made",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Nightly check",
+          "repo": "obi-e2e/fixture-app",
+          "kind": "investigate",
+          "task": "Say what the README covers.",
+          "schedule": {
+            "every": "daily",
+            "at": "03:00"
+          },
+          "zone": "UTC"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "listed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/routines",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.made.body.id}",
+              "name": "Nightly check",
+              "enabled": true,
+              "nextRun": {
+                "$type": "string"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

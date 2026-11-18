@@ -1,0 +1,298 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/github/work",
+  "version": "1.0.0",
+  "description": "The owner's GitHub work as gh reads it: only what's in a repository obid works in (GITHUBWORK-1), each pull request's check runs (GITHUBWORK-8), kept 0600.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/github/work"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "person": {
+          "github/work.json": {
+            "data": {
+              "reviews": {
+                "issueCount": 2,
+                "nodes": [
+                  {
+                    "number": 702,
+                    "title": "Thing 702",
+                    "updatedAt": "2026-10-18T08:42:00Z",
+                    "state": "OPEN",
+                    "author": {
+                      "login": "sangam"
+                    },
+                    "repository": {
+                      "nameWithOwner": "obi-e2e/fixture-app"
+                    },
+                    "labels": {
+                      "nodes": [
+                        {
+                          "name": "bug"
+                        }
+                      ]
+                    },
+                    "isDraft": false,
+                    "reviewDecision": "REVIEW_REQUIRED",
+                    "commits": {
+                      "nodes": [
+                        {
+                          "commit": {
+                            "statusCheckRollup": {
+                              "state": "PENDING"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "number": 9,
+                    "title": "Thing 9",
+                    "updatedAt": "2026-10-18T08:09:00Z",
+                    "state": "OPEN",
+                    "author": {
+                      "login": "sangam"
+                    },
+                    "repository": {
+                      "nameWithOwner": "someone/else"
+                    },
+                    "labels": {
+                      "nodes": [
+                        {
+                          "name": "bug"
+                        }
+                      ]
+                    },
+                    "isDraft": false,
+                    "reviewDecision": "REVIEW_REQUIRED",
+                    "commits": {
+                      "nodes": [
+                        {
+                          "commit": {
+                            "statusCheckRollup": {
+                              "state": "PENDING"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              "assigned": {
+                "issueCount": 1,
+                "nodes": [
+                  {
+                    "number": 11,
+                    "title": "Thing 11",
+                    "updatedAt": "2026-10-18T08:11:00Z",
+                    "state": "OPEN",
+                    "author": {
+                      "login": "sangam"
+                    },
+                    "repository": {
+                      "nameWithOwner": "obi-e2e/fixture-app"
+                    },
+                    "labels": {
+                      "nodes": [
+                        {
+                          "name": "bug"
+                        }
+                      ]
+                    },
+                    "isDraft": false,
+                    "reviewDecision": "REVIEW_REQUIRED",
+                    "commits": {
+                      "nodes": [
+                        {
+                          "commit": {
+                            "statusCheckRollup": {
+                              "state": "PENDING"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              "mine": {
+                "issueCount": 1,
+                "nodes": [
+                  {
+                    "number": 5,
+                    "title": "Thing 5",
+                    "updatedAt": "2026-10-18T08:05:00Z",
+                    "state": "OPEN",
+                    "author": {
+                      "login": "sangam"
+                    },
+                    "repository": {
+                      "nameWithOwner": "obi-e2e/fixture-app"
+                    },
+                    "labels": {
+                      "nodes": [
+                        {
+                          "name": "bug"
+                        }
+                      ]
+                    },
+                    "isDraft": false,
+                    "reviewDecision": "REVIEW_REQUIRED",
+                    "commits": {
+                      "nodes": [
+                        {
+                          "commit": {
+                            "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            "statusCheckRollup": {
+                              "state": "FAILURE",
+                              "contexts": {
+                                "nodes": [
+                                  {
+                                    "__typename": "CheckRun",
+                                    "name": "test",
+                                    "status": "COMPLETED",
+                                    "conclusion": "FAILURE",
+                                    "detailsUrl": "https://github.com/obi-e2e/fixture-app/actions/runs/1/job/2"
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isCrossRepository": false
+                  }
+                ]
+              },
+              "rateLimit": {
+                "remaining": 4900,
+                "resetAt": "2030-10-18T10:00:00Z"
+              },
+              "viewer": {
+                "login": "alex"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/github/work",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "read",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/refresh",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "githubwork-1-only-repos-obid-works-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/github/work",
+        "expect": {
+          "status": 200,
+          "body": {
+            "login": "alex",
+            "counts": {
+              "reviews": 1,
+              "assigned": 1,
+              "mine": 1
+            },
+            "reviews": [
+              {
+                "repo": "obi-e2e/fixture-app",
+                "number": 702,
+                "list": "reviews"
+              }
+            ]
+          },
+          "paths": {
+            "reviews": {
+              "$none": {
+                "repo": "someone/else"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "GITHUBWORK-1"
+        ]
+      }
+    },
+    {
+      "id": "githubwork-8-a-pull-requests-check-runs",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/github/work",
+        "expect": {
+          "status": 200,
+          "body": {
+            "mine": [
+              {
+                "number": 5,
+                "checkRuns": [
+                  {
+                    "name": "test",
+                    "url": "https://github.com/obi-e2e/fixture-app/actions/runs/1/job/2"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "GITHUBWORK-8"
+        ]
+      }
+    },
+    {
+      "id": "kept-0600",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "github-work.json",
+        "expect": {
+          "exists": true,
+          "mode": "0600"
+        }
+      }
+    }
+  ]
+}

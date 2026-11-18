@@ -11,14 +11,24 @@
           "obid": [
             "SPHERE-1",
             "SPHERE-2",
-            "SPHERE-4..6",
-            "SPHERE-8..10",
-            "SPHERE-17..21"
+            "SPHERE-4",
+            "SPHERE-5",
+            "SPHERE-6",
+            "SPHERE-8",
+            "SPHERE-9",
+            "SPHERE-10",
+            "SPHERE-17",
+            "SPHERE-18",
+            "SPHERE-19",
+            "SPHERE-20",
+            "SPHERE-21"
           ],
           "elsewhere": {
             "SPHERE-3": "the Electron side panel showing the joined Obysphere (apps/electron sphere.test.ts)",
             "SPHERE-7": "the Electron app's member rows and settings (apps/electron)",
-            "SPHERE-14..16": "the Electron side panel's Invite and Leave menu (apps/electron sphereMenu.test.tsx)"
+            "SPHERE-14": "the Electron side panel's Invite and Leave menu (apps/electron sphereMenu.test.tsx)",
+            "SPHERE-15": "the Electron side panel's Invite and Leave menu (apps/electron sphereMenu.test.tsx)",
+            "SPHERE-16": "the Electron side panel's Invite and Leave menu (apps/electron sphereMenu.test.tsx)"
           }
         },
         "peer-thread.md": {
@@ -887,19 +897,12 @@
             "ACCOUNTS-9",
             "ACCOUNTS-17",
             "ACCOUNTS-18",
-            "ACCOUNTS-19",
-            "ACCOUNTS-20",
             "ACCOUNTS-23",
             "ACCOUNTS-24",
             "ACCOUNTS-25",
             "ACCOUNTS-26",
             "ACCOUNTS-27",
-            "ACCOUNTS-28",
-            "ACCOUNTS-30",
-            "ACCOUNTS-31",
-            "ACCOUNTS-32",
-            "ACCOUNTS-33",
-            "ACCOUNTS-34"
+            "ACCOUNTS-28"
           ],
           "elsewhere": {
             "ACCOUNTS-10": "Electron add-account sheet.",
@@ -969,7 +972,8 @@
             "PROFILES-40",
             "PROFILES-43",
             "PROFILES-44",
-            "PROFILES-45"
+            "PROFILES-45",
+            "PROF-1"
           ],
           "elsewhere": {
             "PROFILES-12": "internal `mac_home` ≠ `home` (not configurable black-box).",
@@ -987,7 +991,8 @@
             "PROFILES-47": "unit (harness prestart; OBID_PRESTART off in tests).",
             "PROFILES-48": "Electron.",
             "PROFILES-49": "Electron.",
-            "PROFILES-50": "Electron."
+            "PROFILES-50": "Electron.",
+            "PROF-2": "an internal refactor (one owner of profile state), not observable through obid's API"
           }
         },
         "agents.md": {
@@ -1129,7 +1134,120 @@
         "/v1/repos",
         "/v1/projects"
       ],
-      "contracts": {}
+      "contracts": {
+        "github-work.md": {
+          "obid": [
+            "GITHUBWORK-1",
+            "GITHUBWORK-2",
+            "GITHUBWORK-3",
+            "GITHUBWORK-4",
+            "GITHUBWORK-6",
+            "GITHUBWORK-7",
+            "GITHUBWORK-8",
+            "GITHUBWORK-28",
+            "GITHUBWORK-29"
+          ],
+          "elsewhere": {
+            "GITHUBWORK-5": "unit test of keeps and keep_connected.",
+            "GITHUBWORK-9": "Electron cards.",
+            "GITHUBWORK-10": "Electron cards.",
+            "GITHUBWORK-20": "Electron cards (githubCardLean.test.tsx).",
+            "GITHUBWORK-21": "Electron cards (githubCardLean.test.tsx).",
+            "GITHUBWORK-22": "Electron cards (githubCardLean.test.tsx).",
+            "GITHUBWORK-23": "Electron cards (githubCardLean.test.tsx).",
+            "GITHUBWORK-24": "Electron cards (githubCardLean.test.tsx).",
+            "GITHUBWORK-25": "Electron cards (githubCardLean.test.tsx).",
+            "GITHUBWORK-26": "Electron cards (githubCardLean.test.tsx).",
+            "GITHUBWORK-27": "Electron cards (githubCardLean.test.tsx)."
+          }
+        },
+        "projects.md": {
+          "obid": [
+            "PROJECTS-1",
+            "PROJECTS-2",
+            "PROJECTS-3",
+            "PROJECTS-4",
+            "PROJECTS-5",
+            "PROJECTS-6",
+            "PROJECTS-7",
+            "PROJECTS-8",
+            "PROJECTS-9",
+            "PROJECTS-10",
+            "PROJECTS-11",
+            "PROJECTS-12",
+            "PROJECTS-13",
+            "PROJECTS-14",
+            "PROJECTS-15"
+          ],
+          "elsewhere": {
+            "PROJECTS-16": "Electron side panel, chips and sheet.",
+            "PROJECTS-17": "Electron side panel, chips and sheet.",
+            "PROJECTS-18": "Electron side panel, chips and sheet.",
+            "PROJECTS-19": "Electron side panel, chips and sheet.",
+            "PROJECTS-20": "Electron side panel, chips and sheet.",
+            "PROJECTS-21": "Electron side panel, chips and sheet.",
+            "PROJECTS-22": "Electron side panel, chips and sheet.",
+            "PROJECTS-23": "Electron side panel, chips and sheet.",
+            "PROJECTS-24": "Electron side panel, chips and sheet.",
+            "PROJECTS-25": "Electron side panel, chips and sheet.",
+            "PROJECTS-26": "Electron side panel, chips and sheet.",
+            "PROJECTS-27": "Electron side panel, chips and sheet.",
+            "PROJECTS-28": "Electron side panel, chips and sheet.",
+            "PROJECTS-29": "Electron side panel, chips and sheet.",
+            "PROJECTS-30": "Electron side panel, chips and sheet.",
+            "PROJECTS-31": "Electron side panel, chips and sheet."
+          }
+        },
+        "folders.md": {
+          "obid": [
+            "FOLDERS-6",
+            "FOLDERS-7",
+            "FOLDERS-9",
+            "FOLDERS-10",
+            "FOLDERS-22"
+          ],
+          "elsewhere": {
+            "FOLDERS-11": "Electron folders gate (obid half: status folders-v1).",
+            "FOLDERS-1": "not built: proposed (folders for jobs, trust, failures).",
+            "FOLDERS-2": "not built: proposed (folders for jobs, trust, failures).",
+            "FOLDERS-3": "not built: proposed (folders for jobs, trust, failures).",
+            "FOLDERS-4": "not built: proposed (folders for jobs, trust, failures).",
+            "FOLDERS-5": "not built: proposed (folders for jobs, trust, failures).",
+            "FOLDERS-8": "not built: proposed (folders for jobs, trust, failures).",
+            "FOLDERS-12": "not built: proposed (folders for jobs, trust, failures).",
+            "FOLDERS-13": "not built: proposed (folders for jobs, trust, failures).",
+            "FOLDERS-14": "not built: proposed (folders for jobs, trust, failures).",
+            "FOLDERS-15": "not built: proposed (folders for jobs, trust, failures).",
+            "FOLDERS-16": "not built: proposed (folders for jobs, trust, failures).",
+            "FOLDERS-17": "not built: proposed (folders for jobs, trust, failures).",
+            "FOLDERS-18": "not built: proposed (folders for jobs, trust, failures).",
+            "FOLDERS-19": "not built: proposed (folders for jobs, trust, failures).",
+            "FOLDERS-20": "not built: proposed (folders for jobs, trust, failures).",
+            "FOLDERS-21": "not built: proposed (folders for jobs, trust, failures).",
+            "FOLDERS-23": "not built: proposed (folders for jobs, trust, failures)."
+          }
+        },
+        "setup.md": {
+          "obid": [
+            "SETUP-1"
+          ],
+          "elsewhere": {}
+        },
+        "teammate-review.md": {
+          "obid": [
+            "TEAMREVIEW-1",
+            "TEAMREVIEW-2",
+            "TEAMREVIEW-3",
+            "TEAMREVIEW-4"
+          ],
+          "elsewhere": {
+            "TEAMREVIEW-5": "not built: proposed.",
+            "TEAMREVIEW-6": "not built: proposed.",
+            "TEAMREVIEW-7": "not built: proposed.",
+            "TEAMREVIEW-8": "not built: proposed."
+          }
+        }
+      }
     },
     "devices": {
       "routes": [
@@ -1137,7 +1255,56 @@
         "/v1/pairing",
         "/v1/notifications"
       ],
-      "contracts": {}
+      "contracts": {
+        "phone-pairing.md": {
+          "obid": [
+            "PAIRING-5",
+            "PAIRING-6",
+            "PAIRING-7",
+            "PAIRING-8",
+            "PAIRING-9",
+            "PAIRING-10",
+            "PAIRING-11"
+          ],
+          "elsewhere": {
+            "PAIRING-1": "Electron Settings and a real iPhone.",
+            "PAIRING-2": "Electron Settings and a real iPhone.",
+            "PAIRING-3": "Electron Settings and a real iPhone.",
+            "PAIRING-4": "Electron Settings and a real iPhone.",
+            "PAIRING-12": "Electron Settings and a real iPhone."
+          }
+        },
+        "ios-new-oby.md": {
+          "obid": [],
+          "elsewhere": {
+            "IOSNEW-1": "the iPhone app.",
+            "IOSNEW-2": "the iPhone app.",
+            "IOSNEW-3": "the iPhone app.",
+            "IOSNEW-4": "the iPhone app.",
+            "IOSNEW-5": "the iPhone app.",
+            "IOSNEW-6": "the iPhone app.",
+            "IOSNEW-7": "the iPhone app.",
+            "IOSNEW-8": "the iPhone app.",
+            "IOSNEW-9": "the iPhone app.",
+            "IOSNEW-10": "the iPhone app.",
+            "IOSNEW-11": "the iPhone app.",
+            "IOSNEW-12": "the iPhone app.",
+            "IOSNEW-13": "the iPhone app.",
+            "IOSNEW-14": "the iPhone app.",
+            "IOSNEW-15": "the iPhone app."
+          }
+        },
+        "wire.md": {
+          "obid": [],
+          "elsewhere": {
+            "WIRE-1": "not built: iPhone (proposed).",
+            "WIRE-2": "Electron.",
+            "WIRE-3": "Electron.",
+            "WIRE-4": "Electron.",
+            "WIRE-5": "Electron."
+          }
+        }
+      }
     },
     "everything-else": {
       "routes": [
@@ -1153,7 +1320,634 @@
         "/v1/routines",
         "/v1/tetrix"
       ],
-      "contracts": {}
+      "contracts": {
+        "helpers.md": {
+          "obid": [
+            "HELPERS-1",
+            "HELPERS-2",
+            "HELPERS-3",
+            "HELPERS-4",
+            "HELPERS-5",
+            "HELPERS-6",
+            "HELPERS-7",
+            "HELPERS-9",
+            "HELPERS-10",
+            "HELPERS-11"
+          ],
+          "elsewhere": {
+            "HELPERS-8": "unit test and Kani on may_use.",
+            "HELPERS-12": "Electron Agents panel.",
+            "HELPERS-13": "Electron Agents panel.",
+            "HELPERS-14": "Electron Agents panel.",
+            "HELPERS-15": "Electron Agents panel.",
+            "HELPERS-16": "Electron Agents panel.",
+            "HELPERS-17": "Electron Agents panel.",
+            "HELPERS-18": "Electron Agents panel.",
+            "HELPERS-19": "Electron Agents panel.",
+            "HELPERS-20": "Electron Agents panel."
+          }
+        },
+        "routines.md": {
+          "obid": [
+            "ROUTINES-1",
+            "ROUTINES-2",
+            "ROUTINES-3",
+            "ROUTINES-4",
+            "ROUTINES-9",
+            "ROUTINES-10",
+            "ROUTINES-11",
+            "ROUTINES-12",
+            "ROUTINES-13",
+            "ROUTINES-14",
+            "ROUTINES-15",
+            "ROUTINES-16",
+            "ROUTINES-17"
+          ],
+          "elsewhere": {}
+        },
+        "cleanup.md": {
+          "obid": [
+            "CLEANUP-1",
+            "CLEANUP-3",
+            "CLEANUP-4",
+            "CLEANUP-5",
+            "CLEANUP-6"
+          ],
+          "elsewhere": {
+            "CLEANUP-2": "needs a disk under 20 GB free; a unit test."
+          }
+        },
+        "events.md": {
+          "obid": [
+            "EVENTS-1",
+            "EVENTS-2",
+            "EVENTS-3",
+            "EVENTS-4",
+            "EVENTS-5",
+            "EVENTS-6",
+            "EVENTS-7",
+            "EVENTS-8",
+            "EVENTS-9",
+            "EVENTS-10"
+          ],
+          "elsewhere": {}
+        },
+        "alerts.md": {
+          "obid": [
+            "ALERTS-1",
+            "ALERTS-4",
+            "ALERTS-5",
+            "ALERTS-6",
+            "ALERTS-7",
+            "ALERTS-12",
+            "ALERTS-13",
+            "ALERTS-14",
+            "ALERTS-15",
+            "ALERTS-16",
+            "ALERTS-17"
+          ],
+          "elsewhere": {
+            "ALERTS-2": "Electron notify memory; opening the app with open -g -j.",
+            "ALERTS-3": "Electron notify memory; opening the app with open -g -j.",
+            "ALERTS-8": "Electron window and live state.",
+            "ALERTS-9": "Electron window and live state.",
+            "ALERTS-10": "Electron window and live state.",
+            "ALERTS-11": "Electron window and live state.",
+            "ALERTS-18": "Electron banners and Settings.",
+            "ALERTS-19": "Electron banners and Settings.",
+            "ALERTS-20": "Electron banners and Settings.",
+            "ALERTS-21": "Electron banners and Settings."
+          }
+        },
+        "connectors.md": {
+          "obid": [
+            "CONNECTORS-1",
+            "CONNECTORS-2",
+            "CONNECTORS-3"
+          ],
+          "elsewhere": {
+            "CONNECTORS-4": "Electron Settings Connectors.",
+            "CONNECTORS-5": "Electron Settings Connectors."
+          }
+        },
+        "capabilities.md": {
+          "obid": [
+            "CAPS-1",
+            "CAPS-3"
+          ],
+          "elsewhere": {
+            "CAPS-2": "a doc-vs-code repository check.",
+            "CAPS-4": "Electron folders gate.",
+            "CAPS-5": "Electron folders gate."
+          }
+        },
+        "logs.md": {
+          "obid": [],
+          "elsewhere": {
+            "LOGS-1": "unit tests of the redacting writer.",
+            "LOGS-2": "unit tests of the redacting writer."
+          }
+        },
+        "vault.md": {
+          "obid": [
+            "VAULT-1",
+            "VAULT-2",
+            "VAULT-3",
+            "VAULT-4",
+            "VAULT-5"
+          ],
+          "elsewhere": {}
+        },
+        "tetrix-url.md": {
+          "obid": [],
+          "elsewhere": {
+            "TETRIX-URL-1": "Electron fields and source scan.",
+            "TETRIX-URL-2": "Electron fields and source scan.",
+            "TETRIX-URL-3": "Electron fields and source scan.",
+            "TETRIX-URL-4": "Electron fields and source scan."
+          }
+        },
+        "released-files.md": {
+          "obid": [
+            "RELEASED-1",
+            "RELEASED-2",
+            "RELEASED-3"
+          ],
+          "elsewhere": {}
+        },
+        "retired.md": {
+          "obid": [
+            "RETIRED-1"
+          ],
+          "elsewhere": {
+            "RETIRED-2": "install.sh, the cloud Worker and tools/brain checks.",
+            "RETIRED-3": "install.sh, the cloud Worker and tools/brain checks.",
+            "RETIRED-4": "install.sh, the cloud Worker and tools/brain checks.",
+            "RETIRED-5": "install.sh, the cloud Worker and tools/brain checks.",
+            "RETIRED-6": "install.sh, the cloud Worker and tools/brain checks.",
+            "RETIRED-7": "install.sh, the cloud Worker and tools/brain checks.",
+            "RETIRED-8": "install.sh, the cloud Worker and tools/brain checks.",
+            "RETIRED-9": "install.sh, the cloud Worker and tools/brain checks."
+          }
+        },
+        "ci.md": {
+          "obid": [],
+          "elsewhere": {
+            "CI-1": "GitHub Actions lanes and the Check summary.",
+            "CI-2": "GitHub Actions lanes and the Check summary.",
+            "CI-3": "GitHub Actions lanes and the Check summary.",
+            "CI-4": "GitHub Actions lanes and the Check summary.",
+            "CI-5": "GitHub Actions lanes and the Check summary.",
+            "CI-6": "GitHub Actions lanes and the Check summary.",
+            "CI-7": "not built: obid arming GitHub's merge queue (proposed).",
+            "CI-8": "not built: obid arming GitHub's merge queue (proposed).",
+            "CI-9": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-10": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-11": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-12": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-13": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-14": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-15": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-16": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-17": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-18": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-19": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-20": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-21": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-22": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-23": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-24": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-25": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-26": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-27": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-28": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-29": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-30": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-31": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-32": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-33": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-34": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-35": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-36": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-37": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-38": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-39": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-40": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-41": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-42": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-43": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-44": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-49": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-50": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-51": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-52": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-53": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-54": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-55": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-56": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-57": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-58": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
+            "CI-59": "repository checks, the Mac check, factory limits, nightly and Kani in CI."
+          }
+        },
+        "engine.md": {
+          "obid": [],
+          "elsewhere": {
+            "ENGINE-1": "Electron main, launchd adoption and the renderer.",
+            "ENGINE-2": "Electron main, launchd adoption and the renderer.",
+            "ENGINE-3": "Electron main, launchd adoption and the renderer.",
+            "ENGINE-4": "Electron main, launchd adoption and the renderer.",
+            "ENGINE-5": "Electron main, launchd adoption and the renderer.",
+            "ENGINE-6": "Electron main, launchd adoption and the renderer.",
+            "ENGINE-7": "Electron main, launchd adoption and the renderer.",
+            "ENGINE-8": "Electron main, launchd adoption and the renderer.",
+            "ENGINE-9": "Electron main, launchd adoption and the renderer.",
+            "ENGINE-10": "Electron main, launchd adoption and the renderer.",
+            "ENGINE-11": "Electron main, launchd adoption and the renderer.",
+            "ENGINE-12": "Electron main, launchd adoption and the renderer.",
+            "ENGINE-17": "Electron main, launchd adoption and the renderer.",
+            "ENGINE-18": "Electron main, launchd adoption and the renderer.",
+            "ENGINE-19": "Electron main, launchd adoption and the renderer.",
+            "ENGINE-20": "Electron main, launchd adoption and the renderer."
+          }
+        },
+        "factory.md": {
+          "obid": [],
+          "elsewhere": {
+            "PROVE-1": "the factory's scripts.",
+            "PROVE-2": "the factory's scripts.",
+            "PROVE-3": "the factory's scripts.",
+            "PROVE-4": "the factory's scripts.",
+            "PROVE-5": "the factory's scripts.",
+            "PROVE-6": "the factory's scripts.",
+            "PROVE-7": "the factory's scripts.",
+            "PROVE-8": "the factory's scripts.",
+            "PROVE-9": "the factory's scripts.",
+            "PROVE-10": "the factory's scripts.",
+            "PROVE-11": "the factory's scripts.",
+            "PROVE-12": "the factory's scripts.",
+            "PROVE-13": "the factory's scripts.",
+            "PROVE-14": "the factory's scripts.",
+            "PROVE-15": "the factory's scripts.",
+            "PROVE-16": "the factory's scripts.",
+            "PROVE-17": "the factory's scripts.",
+            "PROVE-18": "the factory's scripts.",
+            "PROVE-19": "the factory's scripts.",
+            "PROVE-20": "the factory's scripts.",
+            "MUTANTS-1": "the factory's scripts.",
+            "MUTANTS-2": "the factory's scripts.",
+            "MUTANTS-3": "the factory's scripts.",
+            "MUTANTS-4": "the factory's scripts.",
+            "MUTANTS-5": "the factory's scripts.",
+            "MUTANTS-6": "the factory's scripts.",
+            "MUTANTS-7": "the factory's scripts.",
+            "MUTANTS-8": "the factory's scripts.",
+            "MUTANTS-9": "the factory's scripts.",
+            "MUTANTS-10": "the factory's scripts.",
+            "MUTANTS-11": "the factory's scripts.",
+            "MUTANTS-12": "the factory's scripts.",
+            "MUTANTS-13": "the factory's scripts.",
+            "MUTANTS-14": "the factory's scripts.",
+            "MUTANTS-15": "the factory's scripts.",
+            "MUTANTS-16": "the factory's scripts.",
+            "MUTANTS-17": "the factory's scripts.",
+            "FEEDMODEL-1": "the factory's scripts.",
+            "FEEDMODEL-2": "the factory's scripts.",
+            "FEEDMODEL-3": "the factory's scripts.",
+            "FEEDMODEL-4": "the factory's scripts.",
+            "FEEDMODEL-5": "the factory's scripts.",
+            "FEEDKANI-1": "the factory's scripts.",
+            "FEEDKANI-2": "the factory's scripts.",
+            "FEEDKANI-3": "the factory's scripts.",
+            "FEEDKANI-4": "the factory's scripts.",
+            "FEEDKANI-5": "the factory's scripts.",
+            "FEEDKANI-6": "the factory's scripts.",
+            "FEEDKANI-7": "the factory's scripts.",
+            "FEEDKANI-8": "the factory's scripts.",
+            "FEEDKANI-9": "the factory's scripts.",
+            "FEEDALIVE-1": "the factory's scripts.",
+            "FEEDALIVE-2": "the factory's scripts.",
+            "FEEDALIVE-3": "the factory's scripts.",
+            "FEEDALIVE-4": "the factory's scripts.",
+            "FEEDALIVE-5": "the factory's scripts.",
+            "FEEDALIVE-6": "the factory's scripts.",
+            "FEEDGATE-1": "the factory's scripts.",
+            "FEEDGATE-2": "the factory's scripts.",
+            "FEEDGATE-3": "the factory's scripts.",
+            "FEEDGATE-4": "the factory's scripts.",
+            "FEEDGATE-5": "the factory's scripts.",
+            "FEEDGATE-6": "the factory's scripts.",
+            "FEEDGATE-7": "the factory's scripts.",
+            "FEEDSPEC-1": "the factory's scripts.",
+            "FEEDSPEC-2": "the factory's scripts.",
+            "FEEDSPEC-3": "the factory's scripts.",
+            "FEEDSPEC-4": "the factory's scripts.",
+            "FEEDSPEC-5": "the factory's scripts.",
+            "FEEDSPEC-6": "the factory's scripts.",
+            "FEEDSPEC-7": "the factory's scripts.",
+            "FEEDSPEC-8": "the factory's scripts.",
+            "FEEDSPEC-9": "the factory's scripts.",
+            "FEEDLOOP-1": "the factory's scripts.",
+            "FEEDLOOP-2": "the factory's scripts.",
+            "FEEDLOOP-3": "the factory's scripts.",
+            "FEEDLOOP-4": "the factory's scripts.",
+            "FEEDLOOP-5": "the factory's scripts.",
+            "FEEDLOOP-6": "the factory's scripts.",
+            "FEEDLOOP-7": "the factory's scripts.",
+            "FEEDAPPROVE-1": "the factory's scripts.",
+            "FEEDAPPROVE-2": "the factory's scripts.",
+            "FEEDAPPROVE-3": "the factory's scripts.",
+            "FEEDAPPROVE-4": "the factory's scripts.",
+            "FEEDAPPROVE-5": "the factory's scripts.",
+            "FEEDAPPROVE-6": "the factory's scripts.",
+            "FEEDAPPROVE-7": "the factory's scripts.",
+            "FEEDAPPROVE-8": "the factory's scripts.",
+            "FEEDLENS-1": "the factory's scripts.",
+            "FEEDLENS-2": "the factory's scripts.",
+            "FEEDLENS-3": "the factory's scripts.",
+            "FEEDLENS-4": "the factory's scripts.",
+            "FEEDLENS-5": "the factory's scripts.",
+            "FEEDLENS-6": "the factory's scripts.",
+            "FEEDLENS-7": "the factory's scripts.",
+            "FEEDLENS-8": "the factory's scripts.",
+            "FEEDLENS-9": "the factory's scripts.",
+            "FEEDSTOP-1": "the factory's scripts.",
+            "FEEDSTOP-2": "the factory's scripts.",
+            "FEEDSTOP-3": "the factory's scripts.",
+            "FEEDSTOP-4": "the factory's scripts.",
+            "FEEDSTOP-5": "the factory's scripts.",
+            "FEEDSTOP-6": "the factory's scripts.",
+            "FEEDSTOP-7": "the factory's scripts.",
+            "NOTHARNESS-1": "the factory's scripts.",
+            "NOTHARNESS-2": "the factory's scripts.",
+            "NOTHARNESS-3": "the factory's scripts.",
+            "NOTHARNESS-4": "the factory's scripts.",
+            "JOBREJECT-1": "the factory's scripts.",
+            "JOBREJECT-2": "the factory's scripts.",
+            "JOBREJECT-3": "the factory's scripts.",
+            "JOBREJECT-4": "the factory's scripts.",
+            "JOBREJECT-5": "the factory's scripts."
+          }
+        },
+        "first-run.md": {
+          "obid": [],
+          "elsewhere": {
+            "FIRSTRUN-1": "Electron first run.",
+            "FIRSTRUN-2": "Electron first run.",
+            "FIRSTRUN-3": "Electron first run.",
+            "FIRSTRUN-4": "Electron first run."
+          }
+        },
+        "ipc.md": {
+          "obid": [],
+          "elsewhere": {
+            "IPC-1": "Electron IPC.",
+            "IPC-2": "Electron IPC.",
+            "IPC-3": "Electron IPC.",
+            "IPC-4": "Electron IPC."
+          }
+        },
+        "linux-host.md": {
+          "obid": [],
+          "elsewhere": {
+            "LINUX-1": "the installer's systemd unit.",
+            "LINUX-2": "Linux only; no stand-in records oom_score_adj yet, and the suite runs on macOS."
+          }
+        },
+        "room-app.md": {
+          "obid": [],
+          "elsewhere": {
+            "ROOMAPP-1": "Electron room UI.",
+            "ROOMAPP-2": "Electron room UI.",
+            "ROOMAPP-3": "Electron room UI.",
+            "ROOMAPP-4": "Electron room UI.",
+            "ROOMAPP-5": "Electron room UI.",
+            "ROOMAPP-6": "Electron room UI.",
+            "ROOMAPP-7": "Electron room UI.",
+            "ROOMAPP-8": "Electron room UI.",
+            "ROOMAPP-9": "Electron room UI."
+          }
+        },
+        "shortcuts.md": {
+          "obid": [],
+          "elsewhere": {
+            "SHORTCUTS-1": "Electron keys.",
+            "SHORTCUTS-2": "Electron keys.",
+            "SHORTCUTS-3": "Electron keys.",
+            "SHORTCUTS-4": "Electron keys.",
+            "SHORTCUTS-5": "Electron keys.",
+            "SHORTCUTS-6": "Electron keys."
+          }
+        },
+        "signed-words.md": {
+          "obid": [
+            "WORDS-5"
+          ],
+          "elsewhere": {
+            "WORDS-1": "the Electron main's signing.",
+            "WORDS-2": "the Electron main's signing.",
+            "WORDS-3": "the Electron main's signing.",
+            "WORDS-4": "the Electron main's signing.",
+            "WORDS-6": "the Electron main's signing.",
+            "WORDS-7": "the Electron main's signing.",
+            "WORDS-8": "the Electron main's signing.",
+            "WORDS-9": "the Electron main's signing.",
+            "WORDS-10": "the Electron main's signing.",
+            "WORDS-11": "the Electron main's signing.",
+            "WORDS-12": "the Electron main's signing.",
+            "WORDS-13": "the Electron main's signing.",
+            "WORDS-14": "the Electron main's signing.",
+            "WORDS-15": "the Electron main's signing.",
+            "WORDS-16": "the Electron main's signing.",
+            "WORDS-17": "the Electron main's signing.",
+            "WORDS-18": "the Electron main's signing."
+          }
+        },
+        "sphere-app.md": {
+          "obid": [],
+          "elsewhere": {
+            "SPHEREAPP-1": "Electron Obysphere UI.",
+            "SPHEREAPP-2": "Electron Obysphere UI.",
+            "SPHEREAPP-3": "Electron Obysphere UI.",
+            "SPHEREAPP-4": "Electron Obysphere UI.",
+            "SPHEREAPP-5": "Electron Obysphere UI.",
+            "SPHEREAPP-6": "Electron Obysphere UI.",
+            "SPHEREAPP-7": "Electron Obysphere UI.",
+            "SPHEREAPP-8": "Electron Obysphere UI.",
+            "SPHEREAPP-9": "Electron Obysphere UI."
+          }
+        },
+        "test-rig.md": {
+          "obid": [],
+          "elsewhere": {
+            "RIG-1": "the e2e rig scripts and the app.",
+            "RIG-2": "the e2e rig scripts and the app.",
+            "RIG-3": "the e2e rig scripts and the app.",
+            "RIG-4": "the e2e rig scripts and the app.",
+            "RIG-5": "the e2e rig scripts and the app.",
+            "RIG-6": "the e2e rig scripts and the app.",
+            "RIG-7": "the e2e rig scripts and the app.",
+            "RIG-8": "the e2e rig scripts and the app.",
+            "RIG-9": "the e2e rig scripts and the app.",
+            "RIG-10": "the e2e rig scripts and the app.",
+            "RIG-11": "the e2e rig scripts and the app.",
+            "RIG-12": "the e2e rig scripts and the app.",
+            "RIG-13": "the e2e rig scripts and the app.",
+            "RIG-14": "the e2e rig scripts and the app.",
+            "RIG-15": "the e2e rig scripts and the app.",
+            "RIG-16": "the e2e rig scripts and the app.",
+            "RIG-17": "the e2e rig scripts and the app.",
+            "RIG-18": "the e2e rig scripts and the app.",
+            "RIG-19": "the e2e rig scripts and the app.",
+            "RIG-20": "the e2e rig scripts and the app.",
+            "RIG-21": "the e2e rig scripts and the app.",
+            "RIG-22": "the e2e rig scripts and the app.",
+            "RIG-23": "the e2e rig scripts and the app.",
+            "RIG-24": "the e2e rig scripts and the app.",
+            "RIG-25": "the e2e rig scripts and the app.",
+            "RIG-26": "the e2e rig scripts and the app.",
+            "RIG-27": "the e2e rig scripts and the app.",
+            "RIG-28": "the e2e rig scripts and the app.",
+            "RIG-29": "the e2e rig scripts and the app.",
+            "RIG-30": "the e2e rig scripts and the app.",
+            "RIG-31": "the e2e rig scripts and the app.",
+            "RIG-32": "the e2e rig scripts and the app.",
+            "RIG-33": "the e2e rig scripts and the app.",
+            "RIG-34": "the e2e rig scripts and the app.",
+            "RIG-35": "the e2e rig scripts and the app."
+          }
+        },
+        "updates.md": {
+          "obid": [],
+          "elsewhere": {
+            "UPDATES-1": "the Electron updater.",
+            "UPDATES-2": "the Electron updater.",
+            "UPDATES-3": "the Electron updater.",
+            "UPDATES-4": "the Electron updater.",
+            "UPDATES-5": "the Electron updater.",
+            "UPDATES-6": "the Electron updater.",
+            "UPDATES-7": "the Electron updater.",
+            "UPDATES-8": "the Electron updater.",
+            "UPDATES-9": "the Electron updater.",
+            "UPDATES-10": "the Electron updater.",
+            "UPDATES-11": "the Electron updater.",
+            "UPDATES-12": "the Electron updater.",
+            "UPDATES-13": "the Electron updater.",
+            "UPDATES-14": "the Electron updater.",
+            "UPDATES-15": "the Electron updater.",
+            "UPDATES-16": "the Electron updater.",
+            "UPDATES-17": "the Electron updater."
+          }
+        },
+        "usage.md": {
+          "obid": [
+            "USAGE-1",
+            "USAGE-3",
+            "USAGE-4",
+            "USAGE-11",
+            "USAGE-12",
+            "USAGE-13",
+            "USAGE-15",
+            "USAGE-16"
+          ],
+          "elsewhere": {
+            "USAGE-2": "Keychain login refresh.",
+            "USAGE-5": "Keychain, Electron and unit tests.",
+            "USAGE-6": "Keychain, Electron and unit tests.",
+            "USAGE-7": "Keychain, Electron and unit tests.",
+            "USAGE-8": "Keychain, Electron and unit tests.",
+            "USAGE-9": "Keychain, Electron and unit tests.",
+            "USAGE-10": "Keychain, Electron and unit tests.",
+            "USAGE-14": "Electron.",
+            "USAGE-17": "Electron."
+          }
+        },
+        "remote-gate.md": {
+          "obid": [],
+          "elsewhere": {
+            "REMOTE-1": "factory remote gate scripts, not obid.",
+            "REMOTE-2": "factory remote gate scripts, not obid.",
+            "REMOTE-3": "factory remote gate scripts, not obid.",
+            "REMOTE-4": "factory remote gate scripts, not obid.",
+            "REMOTE-5": "factory remote gate scripts, not obid.",
+            "REMOTE-6": "factory remote gate scripts, not obid.",
+            "REMOTE-7": "factory remote gate scripts, not obid.",
+            "REMOTE-8": "factory remote gate scripts, not obid.",
+            "REMOTE-9": "factory remote gate scripts, not obid.",
+            "REMOTE-10": "factory remote gate scripts, not obid.",
+            "REMOTE-11": "factory remote gate scripts, not obid.",
+            "REMOTE-12": "factory remote gate scripts, not obid.",
+            "REMOTE-13": "factory remote gate scripts, not obid.",
+            "REMOTE-14": "factory remote gate scripts, not obid.",
+            "REMOTE-15": "factory remote gate scripts, not obid.",
+            "REMOTE-16": "factory remote gate scripts, not obid.",
+            "REMOTE-17": "factory remote gate scripts, not obid.",
+            "REMOTE-18": "factory remote gate scripts, not obid.",
+            "REMOTE-19": "factory remote gate scripts, not obid.",
+            "REMOTE-20": "factory remote gate scripts, not obid.",
+            "REMOTE-21": "factory remote gate scripts, not obid.",
+            "REMOTE-22": "factory remote gate scripts, not obid.",
+            "REMOTE-23": "factory remote gate scripts, not obid.",
+            "REMOTE-24": "factory remote gate scripts, not obid.",
+            "REMOTE-25": "factory remote gate scripts, not obid.",
+            "REMOTE-26": "factory remote gate scripts, not obid.",
+            "REMOTE-27": "factory remote gate scripts, not obid.",
+            "REMOTE-28": "factory remote gate scripts, not obid.",
+            "REMOTE-29": "factory remote gate scripts, not obid.",
+            "REMOTE-30": "factory remote gate scripts, not obid.",
+            "REMOTE-31": "factory remote gate scripts, not obid.",
+            "REMOTE-32": "factory remote gate scripts, not obid.",
+            "REMOTE-33": "factory remote gate scripts, not obid.",
+            "REMOTE-34": "factory remote gate scripts, not obid.",
+            "REMOTE-35": "factory remote gate scripts, not obid.",
+            "REMOTE-36": "factory remote gate scripts, not obid.",
+            "REMOTE-37": "factory remote gate scripts, not obid.",
+            "REMOTE-38": "factory remote gate scripts, not obid.",
+            "REMOTE-39": "factory remote gate scripts, not obid.",
+            "REMOTE-40": "factory remote gate scripts, not obid.",
+            "REMOTE-41": "factory remote gate scripts, not obid.",
+            "REMOTE-42": "factory remote gate scripts, not obid.",
+            "REMOTE-43": "factory remote gate scripts, not obid.",
+            "REMOTE-44": "factory remote gate scripts, not obid.",
+            "REMOTE-45": "factory remote gate scripts, not obid.",
+            "REMOTE-46": "factory remote gate scripts, not obid.",
+            "REMOTE-47": "factory remote gate scripts, not obid.",
+            "REMOTE-48": "factory remote gate scripts, not obid.",
+            "REMOTE-49": "factory remote gate scripts, not obid.",
+            "REMOTE-50": "factory remote gate scripts, not obid.",
+            "REMOTE-51": "factory remote gate scripts, not obid.",
+            "REMOTE-52": "factory remote gate scripts, not obid.",
+            "REMOTE-53": "factory remote gate scripts, not obid.",
+            "REMOTE-54": "factory remote gate scripts, not obid.",
+            "REMOTE-55": "factory remote gate scripts, not obid.",
+            "REMOTE-56": "factory remote gate scripts, not obid.",
+            "REMOTE-57": "factory remote gate scripts, not obid.",
+            "REMOTE-58": "factory remote gate scripts, not obid.",
+            "REMOTE-59": "factory remote gate scripts, not obid.",
+            "REMOTE-60": "factory remote gate scripts, not obid.",
+            "REMOTE-61": "factory remote gate scripts, not obid.",
+            "REMOTE-62": "factory remote gate scripts, not obid.",
+            "REMOTE-63": "factory remote gate scripts, not obid.",
+            "REMOTE-64": "factory remote gate scripts, not obid.",
+            "REMOTE-65": "factory remote gate scripts, not obid."
+          }
+        },
+        "obid-spec.md": {
+          "obid": [],
+          "elsewhere": {
+            "OBIDSPEC-1": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)",
+            "OBIDSPEC-2": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)",
+            "OBIDSPEC-3": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)",
+            "OBIDSPEC-4": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)",
+            "OBIDSPEC-5": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)",
+            "OBIDSPEC-6": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)",
+            "OBIDSPEC-7": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)",
+            "OBIDSPEC-8": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)",
+            "OBIDSPEC-9": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)",
+            "OBIDSPEC-10": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)"
+          }
+        }
+      }
     }
   },
   "triggers": {
@@ -1175,11 +1969,15 @@
     },
     "the GitHub feed": {
       "area": "github",
-      "workflows": []
+      "workflows": [
+        "github-feed.json"
+      ]
     },
     "CI autofix rounds": {
       "area": "jobs",
-      "workflows": []
+      "workflows": [
+        "ci-autofix.json"
+      ]
     },
     "account-limit moves and waits": {
       "area": "jobs",
@@ -1197,11 +1995,15 @@
     },
     "cleanup": {
       "area": "everything-else",
-      "workflows": []
+      "workflows": [
+        "cleanup.json"
+      ]
     },
     "routines": {
       "area": "everything-else",
-      "workflows": []
+      "workflows": [
+        "routines.json"
+      ]
     }
   }
 }

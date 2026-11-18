@@ -1,0 +1,55 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/tetrix",
+  "version": "1.0.0",
+  "description": "Tetrix, connected once for every agent: with no Tetrix to reach, what this route answers, and its refusals.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/tetrix"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/tetrix",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "not-connected",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/tetrix",
+        "expect": {
+          "status": 200,
+          "body": {
+            "connected": false,
+            "signIn": null,
+            "presets": {
+              "$type": "array"
+            }
+          }
+        }
+      }
+    }
+  ]
+}
