@@ -85,7 +85,9 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   prompts?: boolean;  // no placeholder of its own: one of Oby's prompts, changing now and then (prompts.ts)
   note?: React.ReactNode;  // a line just over the box (Home's Settings tip), coming and going with it
   label: string;
-  onSend?: (text: string, attached: Attachments) => void;  // its words, and what went with them
+  // its words, and what went with them; a promise (words to a task) keeps them in the box until it
+  // settles, and all of them when it's false: obid refused them, and said why (ATTACH-20)
+  onSend?: (text: string, attached: Attachments) => unknown;
   // Words alone, which can be refused (the Sphere's room): no +, no @ list, no usage, no files pasted.
   // The box keeps them until they're answered, and for good on false
   say?: (text: string) => Promise<boolean>;
@@ -311,7 +313,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
         if (!left) { setFilled(false); setStacked(false); }
         return;
       }
-      onSend?.(b.text(), {
+      const went = onSend?.(b.text(), {
         files,
         obys: mentioned(b.text()),
         jobs: attached.flatMap((a) => (a.kind === 'task' ? [a.id] : [])),
@@ -322,6 +324,12 @@ export default function Composer({ placeholder, prompts = false, note, label, on
         // the chips go with the words, and stay for the next (COMPOSER-3)
         ...(chipsShown && defaultsOf(chipsOf(draft)) ? { defaults: defaultsOf(chipsOf(draft)) } : {}),
       });
+      if (went instanceof Promise) {
+        sending.current = true;
+        const taken = await went.catch(() => false);
+        sending.current = false;
+        if (taken === false) return;
+      }
       if (folders.length && !inProject) usedFolders(folders);
       // Home's go with the conversation they start; a conversation keeps its own
       if (!conversation) setHomeFolders([]);

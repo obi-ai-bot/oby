@@ -17,7 +17,7 @@ Checks run in two places: GitHub's `CI` workflow (`.github/workflows/ci.yml`) an
 | `control-plane` | In `cloud/control-plane/`: `pnpm test` and `pnpm check`. |
 | `electron` | In `apps/electron/`: `npm ci`, `npm run typecheck`, `npm test`, `npm run build` (Node 22, with zsh installed: the ChatGPT gate's test runs `scripts/package.sh` with `/bin/zsh`). |
 | `tools` | `cargo test` in `tools/oby-check-blok/`, its own Cargo workspace, with the tool installed and gitleaks on `PATH`, since its tests run `scripts/oby-check.sh`. |
-| `brain` | In `tools/brain/`: `npm ci`, `npm run typecheck`, `npm test` (the Brain's map of obid and the app, read from the code) and the extractor's `cargo test` (CI-56). |
+| `brain` | In `tools/brain/`: `npm ci`, `npm run typecheck`, `npm test` (the Brain's map of obid and the app, read from the code) and the extractor's `cargo test` (CI-56). Reported, never a failure: `Check` ignores its result. |
 | `proofs` | Kani at its pin: every obid harness compiled (`cargo kani -p obid --tests --only-codegen`, CI-57), then the harnesses the change requires by path proved (`scripts/kani-required.sh` and `scripts/kani-prove.sh`, CI-58), each within 20 minutes, but those on `core/.config/kani-slow.txt`; every one nightly and on demand (CI-59). docs/proofs.md says what they prove. |
 | `Check` | Needs every job above. |
 

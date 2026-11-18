@@ -22,6 +22,17 @@ use std::sync::Mutex;
 const KEPT: usize = 500;
 /// The conversations kept: past it, starting one forgets the oldest that isn't pinned.
 pub const CONVERSATIONS: usize = 200;
+
+/// Oby's line in a conversation whose words a stop cut (DELIVERY-7, DELIVERY-9): `clean` when obid
+/// was stopped (an update, a quit), else it went down. Not Sangam's words yet: the contract's.
+pub fn cut_line(clean: bool) -> &'static str {
+    if clean {
+        "Oby restarted before it finished answering that. Send it again to get an answer."
+    } else {
+        "Oby went down before it finished answering that. Send it again to get an answer."
+    }
+}
+
 /// The longest title a rename may set.
 const TITLE: usize = 100;
 /// The longest search a list takes, in characters (#593).
@@ -991,6 +1002,59 @@ impl Conversations {
         }
     }
 
+    /// At start (DELIVERY-7 to 10): the owner's words a stop cut read `interrupted` (those that
+    /// were `starting` or `running`), and each conversation with any gets one Oby turn in obid's
+    /// words ([`cut_line`]: `clean` when obid was stopped, not gone down), in one write with them.
+    /// Words still `queued` come back by conversation, oldest first, with what a replay needs
+    /// ([`Replay`]), for one turn to answer (`crate::brain::recover`). A turn with no `delivery`
+    /// is left as it is.
+    pub fn recover(&self, clean: bool) -> Vec<(String, Vec<(Turn, Replay)>)> {
+        let mut threads = self.lock();
+        let mut queued = vec![];
+        for index in 0..threads.len() {
+            let thread = &mut threads[index];
+            let waiting: Vec<(Turn, Replay)> = (thread.turns.iter())
+                .filter(|t| t.delivery.as_ref().is_some_and(|d| d.status == "queued"))
+                .map(|t| {
+                    (
+                        t.clone(),
+                        thread.replays.get(&t.id).cloned().unwrap_or_default(),
+                    )
+                })
+                .collect();
+            if !waiting.is_empty() {
+                queued.push((thread.id.clone(), waiting));
+            }
+            let kept = thread.clone();
+            let mut cut = vec![];
+            for turn in &mut thread.turns {
+                if let Some(delivery) = turn.delivery.as_mut()
+                    && matches!(delivery.status.as_str(), "starting" | "running")
+                    && delivery.apply(&Move::Interrupted)
+                {
+                    cut.push(serde_json::to_value(turn.revised()).unwrap_or_default());
+                }
+            }
+            if cut.is_empty() {
+                continue;
+            }
+            // obid's own words: nothing the conversation read is in them.
+            let line = Turn::of("oby", cut_line(clean).to_owned());
+            if let Err(e) = self.add(&mut threads, index, line, None) {
+                tracing::warn!(
+                    "conversation {}: the cut words weren't kept: {e:?}",
+                    kept.id
+                );
+                threads[index] = kept;
+                continue;
+            }
+            for turn in cut {
+                self.events.send("turnDelivery", turn);
+            }
+        }
+        queued
+    }
+
     /// Oby's turn telling the conversation `id` how the job `job` ended ([`job_report`], #351).
     /// `foreign`: why the job's summary isn't on obid's allowlist (the job's own reason).
     pub fn job_ended(
@@ -1718,9 +1782,11 @@ pub fn job_report(job: &Value) -> Option<(String, String)> {
         },
         ("failed", _) => format!("{title} failed."),
         ("stopped", _) => format!("{title} was stopped."),
+        // Stopped, as its card's mark says: no decision waits on it (TASKS-25, TASKS-29), so
+        // its line never says it needs the owner; its reason says what can be done.
         ("interrupted", _) => match first_line("reason") {
-            Some(why) => format!("{title} needs you: {why}"),
-            None => format!("{title} needs you."),
+            Some(why) => format!("{title} stopped: {why}"),
+            None => format!("{title} stopped."),
         },
         _ => return None,
     };
@@ -2726,16 +2792,22 @@ mod tests {
             job_report(&job("stopped")).unwrap().1,
             "Fix oby #351 was stopped."
         );
+        // TASKS-29: no decision waits on an interrupted task (TASKS-25), so its line says it
+        // stopped, never that it needs the owner.
         assert_eq!(
             job_report(&job("interrupted")).unwrap().1,
-            "Fix oby #351 needs you."
+            "Fix oby #351 stopped."
         );
-        let mut needs_you = job("interrupted");
-        needs_you["reason"] = json!("Stopped at a limit: the round ran past 45 minutes.");
+        let mut stopped = job("interrupted");
+        stopped["reason"] = json!(
+            "GOAL NOT MET: tests still fail The branch is kept and nothing was pushed: tell it what's left, or Publish it as it is."
+        );
+        let said = job_report(&stopped).unwrap().1;
         assert_eq!(
-            job_report(&needs_you).unwrap().1,
-            "Fix oby #351 needs you: Stopped at a limit: the round ran past 45 minutes."
+            said,
+            "Fix oby #351 stopped: GOAL NOT MET: tests still fail The branch is kept and nothing was pushed: tell it what's left, or Publish it as it is."
         );
+        assert!(!said.contains("needs you"), "{said}");
         let mut nothing = job("done");
         nothing["reason"] = json!("Nothing committed, so nothing was published.");
         assert_eq!(

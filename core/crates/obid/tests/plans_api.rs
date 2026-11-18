@@ -3376,3 +3376,202 @@ fn delivery_4_a_failed_turn_says_why_with_no_secret() {
     assert!(!error.contains("I couldn't answer"), "{error}");
     assert!(error.contains("[redacted:"), "{error}");
 }
+
+/// Sends `body` to `POST /v1/plans` on a thread of its own and never reads its answer: a request
+/// obid's stop cuts short.
+fn plan_cut_short(obid: &Obid, body: serde_json::Value) {
+    use std::io::{Read, Write};
+    let port = obid.port;
+    std::thread::spawn(move || {
+        let body = body.to_string();
+        let Ok(mut stream) = std::net::TcpStream::connect(("127.0.0.1", port)) else {
+            return;
+        };
+        let _ = write!(
+            stream,
+            "POST /v1/plans HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.read_to_end(&mut vec![]);
+    });
+}
+
+/// `obid` stopped (SIGTERM and its clean stop when `clean`, else SIGKILL) and started again on
+/// the same home and configuration.
+fn stopped_and_started(folder: &Folder, mut obid: Obid, clean: bool) -> Obid {
+    if clean {
+        assert!(obid.stop().success(), "{}", obid.log());
+    } else {
+        obid.child.kill().unwrap();
+        let _ = obid.child.wait();
+    }
+    drop(obid);
+    let config =
+        serde_json::from_slice(&std::fs::read(folder.0.join("config.json")).unwrap()).unwrap();
+    start(&folder.0, &config, None)
+}
+
+/// The conversation agent's turns in conversation `id` whose prompt holds `words` (the fake
+/// harness records each in its account's folder).
+fn agent_turns_with(obid: &Obid, id: &str, words: &str) -> usize {
+    read(
+        obid.home
+            .join(format!("conversations/{id}/config/turns.jsonl")),
+    )
+    .lines()
+    .filter(|line| line.contains(words))
+    .count()
+}
+
+/// DELIVERY-7: a turn under way when obid is killed reads `interrupted` once it starts again, its
+/// conversation gets one Oby turn saying it went down before answering, and no agent turn runs
+/// the words again. The same words sent again are a repeat that adds nothing, and the owner's next
+/// words get their answer.
+#[test]
+fn delivery_7_a_turn_cut_by_a_kill_reads_interrupted_and_is_not_sent_again() {
+    let folder = Folder::new("delivery-7");
+    let obid = started_harness(&folder);
+    let id = said_anew(&obid, "SAY Ready.")["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let words = "0b1e0c0a-0000-4000-8000-000000000007";
+    plan_cut_short(
+        &obid,
+        json!({"said": "LINGER 60000", "conversation": id, "id": words}),
+    );
+    reads(&obid, &id, "LINGER 60000", "running");
+    within(15, "the agent's turn with the words", || {
+        (agent_turns_with(&obid, &id, "LINGER 60000") == 1).then_some(())
+    });
+    let obid = stopped_and_started(&folder, obid, false);
+    let cut = reads(&obid, &id, "LINGER 60000", "interrupted");
+    assert_eq!(
+        cut["delivery"],
+        json!({"status": "interrupted", "by": words}),
+        "{cut}"
+    );
+    let turns = conversation_turns(&obid, &id);
+    let at = turns.iter().position(|t| t["id"] == words).unwrap();
+    let after: Vec<_> = turns[at + 1..].iter().collect();
+    assert_eq!(after.len(), 1, "{turns:?}");
+    assert_eq!(after[0]["who"], "oby", "{turns:?}");
+    let line = after[0]["text"].as_str().unwrap();
+    assert!(line.contains("went down"), "{line}");
+    // Sent again with its id, the words are a repeat: nothing runs them again.
+    let again = call(
+        &obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "LINGER 60000", "conversation": id, "id": words})),
+    );
+    assert_eq!(again.status, 200, "{}", again.text);
+    assert_eq!(again.body["repeated"], true, "{}", again.text);
+    let next = call(
+        &obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "SAY Back.", "conversation": id})),
+    );
+    assert_eq!(next.status, 200, "{}", next.text);
+    assert_eq!(next.body["text"], "Back.", "{}", next.text);
+    assert_eq!(agent_turns_with(&obid, &id, "LINGER 60000"), 1);
+    assert_eq!(
+        user_turn(&obid, &id, "SAY Back.")["delivery"]["status"],
+        "answered"
+    );
+}
+
+/// DELIVERY-8: words waiting behind a turn when obid is killed are answered by one turn of their
+/// own once it starts again; the cut turn's words are not in it.
+#[test]
+fn delivery_8_words_that_waited_are_answered_after_start() {
+    let folder = Folder::new("delivery-8");
+    let obid = started_harness(&folder);
+    let id = said_anew(&obid, "SAY Ready.")["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    plan_cut_short(&obid, json!({"said": "LINGER 60000", "conversation": id}));
+    reads(&obid, &id, "LINGER 60000", "running");
+    plan_cut_short(&obid, json!({"said": "SAY one", "conversation": id}));
+    reads(&obid, &id, "SAY one", "queued");
+    plan_cut_short(&obid, json!({"said": "SAY two", "conversation": id}));
+    reads(&obid, &id, "SAY two", "queued");
+    let obid = stopped_and_started(&folder, obid, false);
+    reads(&obid, &id, "LINGER 60000", "interrupted");
+    let two = reads(&obid, &id, "SAY two", "answered");
+    let one = reads(&obid, &id, "SAY one", "answered");
+    assert_eq!(one["delivery"]["by"], two["id"], "{one}");
+    assert_eq!(two["delivery"]["by"], two["id"], "{two}");
+    let turns = conversation_turns(&obid, &id);
+    assert_eq!(turns.last().unwrap()["text"], "two", "{turns:?}");
+    assert_eq!(agent_turns_with(&obid, &id, "LINGER 60000"), 1);
+}
+
+/// DELIVERY-9: after a clean stop (an update, a quit) the cut turn's line says Oby restarted,
+/// not that it went down.
+#[test]
+fn delivery_9_a_clean_restart_says_restarted() {
+    let folder = Folder::new("delivery-9");
+    let obid = started_harness(&folder);
+    let id = said_anew(&obid, "SAY Ready.")["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    plan_cut_short(&obid, json!({"said": "LINGER 60000", "conversation": id}));
+    reads(&obid, &id, "LINGER 60000", "running");
+    let obid = stopped_and_started(&folder, obid, true);
+    reads(&obid, &id, "LINGER 60000", "interrupted");
+    let turns = conversation_turns(&obid, &id);
+    let line = turns.last().unwrap();
+    assert_eq!(line["who"], "oby", "{turns:?}");
+    let text = line["text"].as_str().unwrap();
+    assert!(text.contains("restarted"), "{text}");
+    assert!(!text.contains("went down"), "{text}");
+}
+
+/// DELIVERY-10: conversations whose words were answered, or whose turns have no `delivery`, get
+/// nothing when obid starts.
+#[test]
+fn delivery_10_old_conversations_get_nothing_at_start() {
+    let folder = Folder::new("delivery-10");
+    let obid = started_harness(&folder);
+    let answered = said_anew(&obid, "SAY Ready.")["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let old = said_anew(&obid, "SAY Old.")["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut obid = obid;
+    assert!(obid.stop().success(), "{}", obid.log());
+    // The old one as a file from before deliveries: a turn left `running` with no key at all.
+    let file = obid.home.join(format!("conversations/{old}.json"));
+    let mut kept: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    for turn in kept["turns"].as_array_mut().unwrap() {
+        turn.as_object_mut().unwrap().remove("delivery");
+    }
+    std::fs::write(&file, serde_json::to_vec(&kept).unwrap()).unwrap();
+    let before = (
+        conversation_turns_on_disk(&obid, &answered),
+        conversation_turns_on_disk(&obid, &old),
+    );
+    let obid = stopped_and_started(&folder, obid, true);
+    assert_eq!(conversation_turns(&obid, &answered).len(), before.0);
+    assert_eq!(conversation_turns(&obid, &old).len(), before.1);
+    assert!(
+        conversation_turns(&obid, &old)
+            .iter()
+            .all(|t| t.get("delivery").is_none())
+    );
+}
+
+/// How many turns conversation `id`'s file keeps.
+fn conversation_turns_on_disk(obid: &Obid, id: &str) -> usize {
+    let file = obid.home.join(format!("conversations/{id}.json"));
+    let kept: serde_json::Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+    kept["turns"].as_array().unwrap().len()
+}

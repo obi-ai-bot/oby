@@ -89,18 +89,16 @@ async function answerCards(t, { done, ms = 25 * MIN, mine = () => false }) {
   throw new Error(`not done in ${ms / MIN} minutes`);
 }
 
-// a task's page, as the owner opens it: its card in its conversation, then View details in the card's
-// menu (a right-click). Its conversation is the latest few: they go down the list until its card shows
+// a task as the owner opens it: its card in the conversation that started it, what it did under it
+// (LIVETASK-28). Its conversation is the latest few: they go down the list until its card shows
 async function openTask(t, title) {
   await home(t);
-  const card = t.page.locator('.msg-task.is-link', { hasText: title }).first(), rows = t.page.locator('.convo-row');
+  const card = t.page.locator('.msg-task', { hasText: title }).first(), rows = t.page.locator('.convo-row');
   for (let i = 0; i < Math.min(20, await rows.count()) && !(await card.isVisible()); i++) {
     await rows.nth(i).click();
     await sleep(500);
   }
-  await card.click({ button: 'right' });
-  await t.page.getByRole('menuitem', { name: 'View details' }).click();
-  await t.see('Tell Oby about this task…', { label: 'its page' });
+  await t.see('Reply to Oby…', { label: 'its conversation' });
 }
 
 // this run's repository and pull request only, never another of the owner's: `<repo>#<n>`
@@ -134,7 +132,7 @@ async function rebaseThenMerge(t, url, merged) {
   const ref = new RegExp(`${escape(prRef(t, url))}(?!\\d)`, 'i'), mine = (title) => ref.test(title);
   await openTask(t, t.state.task.title);
   const since = Date.now();
-  await t.say(`Rebase it onto ${base}, then merge it.`, 'Tell Oby about this task…');
+  await t.say(`Rebase it onto ${base}, then merge it.`, 'Reply to Oby…');
   t.note(`Oby, told to rebase: ${(await t.reply({ ms: 5 * MIN })).replace(/\n+/g, ' ')}`);
   await t.shot('told-to-rebase');
   // a Confirm for this pull request under its answer (a rebase's or a merge's), if Oby made one
@@ -248,7 +246,7 @@ export default [
       await home(t);
       await answerCards(t, { done: () => { const j = t.job(id); return j?.published || ended(j); } });
       await openTask(t, t.state.task.title);
-      const seen = await t.see(PR_OPEN, { ms: 5 * MIN, label: 'its pull request on its page' });
+      const seen = await t.see(PR_OPEN, { ms: 5 * MIN, label: 'its pull request in its conversation' });
       await t.shot('pull-request');
       const job = t.job(id);
       t.state.job = job;
@@ -257,12 +255,12 @@ export default [
   },
   {
     id: 'follow-up',
-    title: 'A follow-up on its page: same kind, agent, account and repository',
+    title: 'A follow-up in its conversation: same kind, agent, account and repository',
     contract: 'task-conversations.md (TASKCONV-3)',
     needs: ['to-pr'],
     run: async (t) => {
       const since = Date.now();
-      await t.say('Add a second line "- follow-up" under it.', 'Tell Oby about this task…');
+      await t.say('Add a second line "- follow-up" under it.', 'Reply to Oby…');
       // its card in the task's conversation, which the app opens (Oby names it as it likes)
       const first = t.state.job, { job } = await newTask(t, since, [first.kind]);
       if (!job) throw new Error('no follow-up job');
@@ -295,7 +293,7 @@ export default [
         // no card merged it (a question with only "Done" can't): the owner tells Oby, as they would
         t.note(`not merged after the cards (${(t.state.cards ?? 0) - before} answered): the owner says so in words`);
         await openTask(t, t.state.task.title);
-        await t.say('Merge it as it is.', 'Tell Oby about this task…');
+        await t.say('Merge it as it is.', 'Reply to Oby…');
         t.note(`Oby: ${(await t.reply({ ms: 5 * MIN })).replace(/\n+/g, ' ')}`);
         await t.shot('told-to-merge');
         // words read with untrusted text make a Confirm: under Oby's answer (and on Home), answered
@@ -310,7 +308,7 @@ export default [
       if (!merged() && conflicts()) await rebaseThenMerge(t, url, merged);
       if (!merged()) throw new Error('not merged');
       await openTask(t, t.state.task.title);
-      await t.see(/Merged[^\n]*/, { ms: 3 * MIN, label: 'merged, on its page' });
+      await t.see(/Merged[^\n]*/, { ms: 3 * MIN, label: 'merged, in its conversation' });
       await t.shot('merged');
     },
   },

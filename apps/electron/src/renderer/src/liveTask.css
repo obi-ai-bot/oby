@@ -1,78 +1,56 @@
-/* A task at work: its live card and the agent's own conversation, opened in place under it
-   (docs/contracts/live-task.md), from Sangam's boards "Oby at work" and screens 03 and 04 (docs/design/oby-home/). */
+/* A task at work (docs/contracts/live-task.md): its card in the conversation, progress only, and what it
+   did under it, in the conversation (TaskLog); the decisions waiting over the message box. From Sangam's
+   screens 03 and 04 (docs/design/oby-home/) and T3 Code's thread, where the session's work is the thread. */
 
 /* the step being worked on: a sheen sweeps across it */
 @keyframes lt-sheen { from { background-position: 100% 0; } to { background-position: 0 0; } }
 .sheen { background: linear-gradient(90deg, var(--muted) 0%, var(--muted) 35%, var(--ink) 50%, var(--muted) 65%, var(--muted) 100%) 0 0 / 300% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: lt-sheen 1.6s linear infinite; }
 @media (prefers-reduced-motion: reduce) { .sheen { animation: none; background: none; color: var(--ink); } }
 
-/* the card: its head as it always was, its work joined under it */
-.msg-task-work { width: 100%; min-width: 0; }
-.msg-task-work.is-on .msg-task { border-color: var(--line-strong); background: rgba(255, 255, 255, 0.1); }
-.msg-task-work.is-live .msg-task:has(+ .lt-now) { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
-.lt-now { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--line); border-top: 0; border-radius: 0 0 14px 14px; background: rgba(255, 255, 255, 0.03); cursor: pointer; user-select: text; }
-.lt-needs { margin: 0; color: var(--needs); font-size: var(--text-sm); line-height: 16px; }
-.lt-more { margin: 0; color: var(--muted); font-size: var(--text-sm); line-height: 16px; }
+/* the card and what it did, one block in the message */
+.msg-task-work { width: 100%; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+/* opened at it (a notification, Waiting for you, its row): lit a moment (LIVETASK-28) */
+@keyframes lt-lit { 0%, 30% { border-color: var(--needs); box-shadow: 0 0 0 3px rgba(255, 159, 10, 0.25); } 100% { border-color: var(--line); box-shadow: 0 0 0 3px transparent; } }
+.msg-task-work.is-lit > .msg-task { animation: lt-lit 1.6s ease-out both; }
+@media (prefers-reduced-motion: reduce) { .msg-task-work.is-lit > .msg-task { animation: none; border-color: var(--line-strong); } }
+/* its ⋯, on the title's line: shown while the card is hovered or its menu is open */
+.msg-task-more { flex: none; align-self: flex-start; width: 24px; height: 24px; margin: -3px -4px -3px -2px; border-radius: 6px; opacity: 0; transition: opacity var(--fade), color var(--fade), background-color var(--fade); }
+.msg-task:hover .msg-task-more, .msg-task-more:focus-visible, .msg-task-more[aria-expanded="true"] { opacity: 1; }
 
-.lt-todos { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
-.lt-todo { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--text); font-size: var(--text-md); line-height: 20px; }
-.lt-todo > span:last-child { min-width: 0; overflow-wrap: anywhere; }
-.lt-todos .is-done .lt-todo { color: var(--muted); text-decoration: line-through; text-decoration-color: rgba(255, 255, 255, 0.25); }
-.lt-todos .is-on .lt-todo { color: var(--ink); font-weight: 500; }
-.lt-todos .is-on.is-failed .lt-todo { color: var(--danger); }
-.lt-todos .is-on.is-ended .lt-todo { color: var(--text); font-weight: 400; }
-.lt-todos .lt-steps { margin: 4px 0 6px 20px; padding-left: 10px; border-left: 1px solid var(--line); }
-
-.lt-steps { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-.lt-thought, .lt-said { margin: 0; color: var(--muted); font-size: var(--text-sm); line-height: 17px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
-.lt-thought { font-style: italic; }
-.lt-said { color: var(--text); }
-.lt-tool { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--muted); font-size: var(--text-md); line-height: 20px; }
-.lt-tool.is-failed { color: var(--danger); }
-.ss-tool.is-declined .ss-tool-meta { color: var(--muted); }
-.lt-tool-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
-.lt-tool .tok-path { font-size: 12px; }
-.lt-tool.is-running .lt-verb { background: linear-gradient(90deg, var(--muted) 0%, var(--muted) 35%, var(--ink) 50%, var(--muted) 65%, var(--muted) 100%) 0 0 / 300% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: lt-sheen 1.6s linear infinite; }
-
-/* a thought with nothing to open, in a session */
-.ss-thought > span { color: var(--muted); font-size: var(--text-md); font-style: italic; }
-
-/* the agent's own conversation, opened in place: under the card's head, inside its border, lined up
-   with its title (16px mark + 10px gap + 12px padding) */
-.msg-task-work.is-on .msg-task { border-bottom-color: var(--divider); border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
-.lt-thread { padding: 12px 12px 12px 38px; display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--line-strong); border-top: 0; border-radius: 0 0 14px 14px; background: rgba(255, 255, 255, 0.06); user-select: text; }
-.lt-thread-todos { padding-bottom: 10px; border-bottom: 1px solid var(--divider); }
-.lt-thread-scroll { position: relative; min-height: 0; }
-.lt-thread-lines { max-height: 420px; overflow-y: auto; scrollbar-width: none; }
-.lt-thread-lines::-webkit-scrollbar { display: none; }
-.lt-thread .ss-mark { display: none; }
-.lt-thread .ss-said { margin: 6px 0; }
-.lt-thread .ss-you p { overflow-wrap: anywhere; }
-.lt-thread .ss-tool, .lt-thread .ss-thought, .lt-thread .ss-asked { margin-left: 0; }
-.ss-earlier { align-self: center; }
-.ss-earlier button { padding: 4px 10px; border: 0; border-radius: var(--radius-pill); background: rgba(255, 255, 255, 0.08); color: var(--text); font: inherit; font-size: var(--text-sm); cursor: pointer; }
-.lt-thread .ss-clock { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 14px; font-variant-numeric: tabular-nums; }
-/* a decision answered here: one line where it was asked (LIVETASK-27) */
-.lt-answered { margin: 2px 0; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--text-sm); line-height: 17px; }
-.chat-composer.lt-box { max-width: none; margin: 0; padding: 0; }
-/* the card's box talks to its agent: no usage of Oby's accounts, no talking to Oby (screens 03 and 04) */
-.lt-box .composer-usage, .lt-box .composer-voice { display: none; }
-
-/* A task's card in the conversation (Sangam's screen 03): what it's on now, its stages as a bar; waiting
-   on the owner, its head alone (the decision waits over the message box: LIVETASK-25) */
-.msg-task-now { font-size: var(--text-sm); line-height: 17px; white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
+/* A task's card in the conversation (Sangam's screen 03): its stages as a bar; waiting on the owner, the
+   one it waits on orange (the decision waits over the message box: LIVETASK-25) */
 .msg-task .msg-task-stages { margin-top: 8px; max-height: none; }
 .msg-task-stages .is-needs { background: var(--needs); }
 
-/* A task's own thread (TaskThread, LIVETASK-22): the agent's conversation as a page of its own, its
-   head as its card shows it, its box at the foot as a conversation's */
-.agent-layer > .lt-thread { grid-row: 1 / -1; min-height: 0; display: grid; grid-template-rows: 1fr auto auto; gap: 0; padding: 0; border: 0; border-radius: 0; background: none; }
-.agent-layer .lt-thread-scroll { min-height: 0; }
-.agent-layer .lt-thread-lines { position: absolute; inset: 0; max-height: none; padding: 16px var(--gutter) 24px; }
-.agent-layer .lt-thread-column { max-width: var(--column); margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
-.agent-layer .agent-head { cursor: default; user-select: text; }
-.agent-layer .lt-thread-todos { padding: 4px 0 10px; }
-.agent-layer .chat-composer.lt-box { max-width: calc(var(--column) + 2 * var(--gutter)); margin: 0 auto; padding: 8px var(--gutter) 16px; width: 100%; box-sizing: border-box; }
+/* What it did, under its card and outside it (TaskLog, LIVETASK-31): short lines as they happen, the
+   rest a click away; its words folded past a few lines */
+.lt-log { display: flex; flex-direction: column; gap: 6px; padding: 0 2px 0 12px; user-select: text; }
+.lt-log .ss-tool, .lt-log .ss-thought, .lt-log .ss-asked, .lt-log .ss-plan { margin-left: 0; }
+.lt-log .ss-said { margin: 4px 0; }
+.lt-log .ss-mark { display: none; }
+.lt-log .ss-you p { overflow-wrap: anywhere; }
+.lt-log-more { align-self: flex-start; padding: 2px 8px; border: 0; border-radius: var(--radius-pill); background: rgba(255, 255, 255, 0.06); color: var(--muted); font: inherit; font-size: var(--text-sm); line-height: 18px; cursor: pointer; transition: color var(--fade), background-color var(--fade); }
+.lt-log-more:hover { color: var(--text); background: rgba(255, 255, 255, 0.1); }
+.lt-log-now { margin: 0; font-size: var(--text-sm); line-height: 17px; }
+.lt-fold { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.lt-fold-body { max-height: calc(1.5em * 10); overflow: hidden; }
+.lt-fold.is-long:not(.is-open) .lt-fold-body { mask-image: linear-gradient(to bottom, #000 70%, transparent); }
+.lt-fold.is-open .lt-fold-body { max-height: none; }
+.ss-earlier { align-self: center; }
+.ss-earlier button { padding: 4px 10px; border: 0; border-radius: var(--radius-pill); background: rgba(255, 255, 255, 0.08); color: var(--text); font: inherit; font-size: var(--text-sm); cursor: pointer; }
+/* a decision answered: one line where it was asked (LIVETASK-27) */
+.lt-answered { margin: 2px 0; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--text-sm); line-height: 17px; }
+
+/* a thought with nothing to open, in a session */
+.ss-thought > span { color: var(--muted); font-size: var(--text-md); font-style: italic; }
+.ss-tool.is-declined .ss-tool-meta { color: var(--muted); }
+
+/* The message box talking to one task's agent (LIVETASK-30): its chip just over the box, × back to Oby */
+.composer-to { width: 100%; max-width: calc(var(--column) + 2 * var(--gutter)); margin: 0 auto; padding: 8px var(--gutter) 0; box-sizing: border-box; animation: rise 280ms var(--warm) both; }
+.composer-to-chip { max-width: 100%; display: inline-flex; align-items: center; gap: 6px; padding: 3px 4px 3px 10px; border-radius: var(--radius-pill); background: var(--chip); color: var(--muted); font-size: var(--text-sm); line-height: 18px; white-space: nowrap; overflow: hidden; }
+.composer-to-chip b { color: var(--ink); font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.composer-to-chip button { flex: none; width: 20px; height: 20px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--muted); cursor: pointer; }
+.composer-to-chip button:hover { color: var(--ink); background: var(--hover); }
 
 /* The decisions waiting on the owner, a drawer on top of the message box (DecisionBar, LIVETASK-24; T3
    Code's composer drawer): one at a time, on one line, its buttons under it; Details opens the rest */
@@ -92,4 +70,3 @@
 .tc-ask.is-bar .tc-code { max-height: 160px; overflow-y: auto; }
 .tc-ask-command { display: block; margin: 6px 0 0; padding: 4px 8px; border-radius: 6px; background: rgba(0, 0, 0, 0.3); color: var(--text); font: 12px/18px ui-monospace, "SF Mono", Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tc-ask.is-bar .tc-options { margin-top: 8px; }
-.agent-layer .decision-bar { padding-top: 8px; }

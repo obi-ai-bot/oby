@@ -788,6 +788,9 @@ impl Jobs {
                     "--verbose",
                     // The words as the agent writes them, for the transcript (Event::Delta).
                     "--include-partial-messages",
+                    // Each line obid writes, back as it's taken: the owner's words reach it mid-turn
+                    // (crate::steer, TASKCONV-33).
+                    "--replay-user-messages",
                     "--permission-prompt-tool",
                     "stdio",
                     "--permission-mode",
@@ -1016,6 +1019,8 @@ impl Jobs {
                 // Read just before the run, so only its agent's commits count, never obid's own
                 // rebase between rounds: a run that moved it got somewhere (RECOVERY-1).
                 let head_before = self.worktree_head(id).await;
+                // A Claude Code turn takes the owner's words as they come (TASKCONV-33).
+                let steer = (tool == Tool::Claude).then(|| self.steer_open(id));
                 let turn = self
                     .turn(
                         id,
@@ -1036,7 +1041,11 @@ impl Jobs {
                         },
                         Some(&ran),
                     )
-                    .await?;
+                    .await;
+                if let Some(steer) = &steer {
+                    self.steer_close(id, steer);
+                }
+                let turn = turn?;
                 self.update(id, |job| job.ran_secs = Some(ran()));
                 if *signal.borrow() != Signal::Run {
                     return Ok(());
@@ -1289,6 +1298,10 @@ impl Jobs {
                 // which starts its next turn, the owner's words that came meanwhile with it.
                 if let Some(call) = self.lock().asked.remove(id) {
                     return Err(End::Asked(Asked::Question(call)));
+                }
+                // Its answer came first and ended this run (PERMISSIONS-23): the next run hears it.
+                if *signal.borrow() != Signal::Run {
+                    return Ok(());
                 }
                 if self.ends_on_plan(id, round, &said) {
                     return Err(End::Asked(Asked::Plan(said)));

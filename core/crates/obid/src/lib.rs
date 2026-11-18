@@ -77,6 +77,7 @@ pub mod secrets;
 pub mod secretspec;
 pub mod settings;
 pub mod sphere;
+pub mod steer;
 pub mod store;
 pub mod task_conversation;
 pub mod teammates;
@@ -605,6 +606,8 @@ pub async fn serve(
         let chatgpt = shared.chatgpt.clone();
         tokio::spawn(async move { chatgpt.sweep().await });
     }
+    // Words a stop cut say so, and words that only waited get their turn (DELIVERY-7 to 10).
+    brain::recover(&shared);
     // A job a conversation started tells it how it ended (#351).
     conversation::report_job_ends(shared.clone());
     // The owner's own work that merged past Oby's review says so there (MERGING-49).

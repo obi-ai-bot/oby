@@ -290,76 +290,117 @@ pub async fn plan(
     };
     // The turn goes on by itself: a client that stops waiting can't be told from a slow one, so
     // what the plan does still happens, and is kept (docs/runner-api.md, `POST /v1/plans`).
-    let own = words.turn.clone();
-    let turn = tokio::spawn(async move {
-        let conversation = begun.conversation;
-        // One answer at a time in a conversation: words said while Oby answers wait for that turn
-        // to end, and the next turn answers all that came meanwhile, as the latest's. The others',
-        // and words a cancel dropped, answer nothing.
-        let Some(next) = shared.turns.wait_turn(&conversation, words).await else {
-            if let Some(since) = back {
-                recap::keep(shared.clone(), since, now);
-            }
-            return respond(&shared, &conversation, Talk::None, None, None, vec![]);
-        };
-        // Every word this turn answers moves with it (crate::delivery).
-        let conversations = &shared.conversations;
-        let deliver = |change| conversations.deliver(&conversation, &next.turns, &change);
-        deliver(Move::Start);
-        let said = &next.words.said;
-        // The conversation as it is now, Oby's answer to the turn they waited for included.
-        let given = turns.unwrap_or_else(|| conversations.turns_but(&conversation, &next.turns));
-        let control = shared.turns.begin(&next.words.turn, &conversation);
-        deliver(Move::Confirm(next.words.turn.clone()));
-        control.set_signed(next.words.signed);
-        let asked = Asked {
-            said,
-            attachments: &next.words.attachments,
-            jobs: &next.words.jobs,
-            conversation: &conversation,
-            turn: &control.turn,
-            signed: next.words.signed,
-            defaults: next.words.defaults.as_ref(),
-        };
-        // The recap is written while the brain thinks; a background call is bounded and
-        // tried once, and when it fails the answer is the same as without it.
-        let (answered, recap) = tokio::join!(
-            harness::run(&shared, said, &given, &asked, &control),
-            recap::back(&shared, back, now)
-        );
-        shared.turns.end(&control);
-        let change = match &answered.talk {
-            _ if control.cancelled() => Move::Cancel,
-            Talk::Reply { text, .. } if answered.end == turn::End::BrainFailed => {
-                Move::Failed(crate::secrets::known().redact(text))
-            }
-            _ => Move::Answered,
-        };
-        let recap = recap.or_else(|| shared.presence.take());
-        let made = shared.harness.take_made(&control.turn);
-        let (talk, details) = (answered.talk, answered.details);
-        let answer = respond(&shared, &conversation, talk, details, recap, made);
-        deliver(change);
-        // These words were cancelled on their own while they waited (COMPOSER-11): their waiter
-        // still answers the words before them, whose own requests answered none, but its request
-        // answers none too; the answer is Oby's turn in the conversation.
-        if !next.turns.contains(&own) {
-            return Ok((
-                StatusCode::OK,
-                axum::Json(
-                    json!({"kind": "none", "jobs": [], "drafts": [], "conversation": conversation}),
-                ),
-            )
-                .into_response());
-        }
-        answer
-    });
+    let turn = tokio::spawn(answer(shared, begun.conversation, words, turns, back, now));
     turn.await.map_err(|_| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Oby's brain stopped before it answered.",
         )
     })?
+}
+
+/// The owner's `words` in `conversation` get their turn, once the one under way there ends: the
+/// answer to their `POST /v1/plans`, or to the words obid answers after a restart ([`recover`]).
+/// `turns`: what the client says the conversation holds, when it sends it; `back`: since when the
+/// owner was away, for a recap (#594).
+async fn answer(
+    shared: Arc<Shared>,
+    conversation: String,
+    words: turn::Words,
+    turns: Option<Vec<Turn>>,
+    back: Option<i64>,
+    now: i64,
+) -> Result<Response, ApiError> {
+    let own = words.turn.clone();
+    // One answer at a time in a conversation: words said while Oby answers wait for that turn
+    // to end, and the next turn answers all that came meanwhile, as the latest's. The others',
+    // and words a cancel dropped, answer nothing.
+    let Some(next) = shared.turns.wait_turn(&conversation, words).await else {
+        if let Some(since) = back {
+            recap::keep(shared.clone(), since, now);
+        }
+        return respond(&shared, &conversation, Talk::None, None, None, vec![]);
+    };
+    // Every word this turn answers moves with it (crate::delivery).
+    let conversations = &shared.conversations;
+    let deliver = |change| conversations.deliver(&conversation, &next.turns, &change);
+    deliver(Move::Start);
+    let said = &next.words.said;
+    // The conversation as it is now, Oby's answer to the turn they waited for included.
+    let given = turns.unwrap_or_else(|| conversations.turns_but(&conversation, &next.turns));
+    let control = shared.turns.begin(&next.words.turn, &conversation);
+    deliver(Move::Confirm(next.words.turn.clone()));
+    control.set_signed(next.words.signed);
+    let asked = Asked {
+        said,
+        attachments: &next.words.attachments,
+        jobs: &next.words.jobs,
+        conversation: &conversation,
+        turn: &control.turn,
+        signed: next.words.signed,
+        defaults: next.words.defaults.as_ref(),
+    };
+    // The recap is written while the brain thinks; a background call is bounded and
+    // tried once, and when it fails the answer is the same as without it.
+    let (answered, recap) = tokio::join!(
+        harness::run(&shared, said, &given, &asked, &control),
+        recap::back(&shared, back, now)
+    );
+    shared.turns.end(&control);
+    let change = match &answered.talk {
+        _ if control.cancelled() => Move::Cancel,
+        Talk::Reply { text, .. } if answered.end == turn::End::BrainFailed => {
+            Move::Failed(crate::secrets::known().redact(text))
+        }
+        _ => Move::Answered,
+    };
+    let recap = recap.or_else(|| shared.presence.take());
+    let made = shared.harness.take_made(&control.turn);
+    let (talk, details) = (answered.talk, answered.details);
+    let answer = respond(&shared, &conversation, talk, details, recap, made);
+    deliver(change);
+    // These words were cancelled on their own while they waited (COMPOSER-11): their waiter
+    // still answers the words before them, whose own requests answered none, but its request
+    // answers none too; the answer is Oby's turn in the conversation.
+    if !next.turns.contains(&own) {
+        return Ok((
+            StatusCode::OK,
+            axum::Json(
+                json!({"kind": "none", "jobs": [], "drafts": [], "conversation": conversation}),
+            ),
+        )
+            .into_response());
+    }
+    answer
+}
+
+/// At start (DELIVERY-7 to 10, R05-03): the words a stop cut get obid's line and read
+/// `interrupted`, and are never run again by themselves (they may have started jobs); the words
+/// that only waited behind them get one turn per conversation, oldest first, as the owner's own
+/// only when each was signed.
+pub fn recover(shared: &Arc<Shared>) {
+    let queued = shared.conversations.recover(shared.jobs.stopped_cleanly);
+    for (conversation, waiting) in queued {
+        let mut words: Vec<turn::Words> = waiting
+            .into_iter()
+            .map(|(said, replay)| turn::Words {
+                turn: said.id,
+                said: said.text,
+                attachments: replay.attachments,
+                jobs: said.jobs,
+                signed: replay.signed,
+                // The chips aren't kept on the file (COMPOSER-4): words sent again after a
+                // restart take the owner's usual mode, tool, model and effort.
+                defaults: None,
+            })
+            .collect();
+        let Some(last) = words.pop() else { continue };
+        for earlier in words {
+            shared.turns.hold(&conversation, earlier);
+        }
+        let now = obi_protocol::time::now();
+        tokio::spawn(answer(shared.clone(), conversation, last, None, None, now));
+    }
 }
 
 /// Why words Oby's brain wrote in `conversation` aren't on obid's allowlist (crate::secretspec):
