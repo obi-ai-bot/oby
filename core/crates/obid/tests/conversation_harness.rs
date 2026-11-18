@@ -269,6 +269,46 @@ fn a_turn_streams_its_words_and_ends_in_a_turn() {
 }
 
 /// Later turns resume the conversation's own session, also after obid restarts.
+/// CONVERSATION-AGENT-47: a Claude Code conversation asks the owner with choices: its
+/// AskUserQuestion is the turn's answer, a question with its options as the apps show one, and the
+/// owner's pick comes back to the same session as their next words.
+#[test]
+fn conversation_agent_47_claude_code_asks_with_choices() {
+    let (_folder, obid) = obid("harness-ask", true);
+    let asked = said(
+        &obid,
+        json!({"said": "ASK English or French? | English | French", "new": true}),
+    );
+    assert_eq!(asked.body["kind"], "question", "{}", asked.text);
+    assert_eq!(asked.body["question"]["text"], "English or French?");
+    assert_eq!(
+        asked.body["question"]["options"],
+        json!(["English", "French"]),
+        "{}",
+        asked.text
+    );
+    let conversation = asked.body["conversation"].as_str().unwrap().to_owned();
+    let picked = said(
+        &obid,
+        json!({"said": "French", "conversation": conversation}),
+    );
+    assert_eq!(picked.body["kind"], "reply", "{}", picked.text);
+    let turns = turns(&obid);
+    assert_eq!(turns.len(), 2, "{turns:?}");
+    assert!(
+        turns[0]["argv"].as_array().unwrap().iter().any(|a| a
+            .as_str()
+            .is_some_and(|a| a.split(',').any(|t| t == "AskUserQuestion"))),
+        "its tools: {turns:?}"
+    );
+    assert!(
+        turns[1]["prompt"].as_str().unwrap().ends_with("French"),
+        "{turns:?}"
+    );
+    // The same session, waiting, took the pick.
+    assert_eq!(turns[1]["id"], turns[0]["id"], "{turns:?}");
+}
+
 #[test]
 fn a_conversation_resumes_its_session() {
     let (folder, obid) = obid("harness-resume", true);
@@ -608,8 +648,16 @@ fn nothing_waits_after_a_stop_or_the_budget() {
     );
     let first = said(&obid, json!({"said": "SAY hi", "new": true}));
     let conversation = first.body["conversation"].as_str().unwrap().to_owned();
-    let turn = |n: usize| turns(&obid)[n].clone();
-    let id = |n: usize| turn(n)["id"].clone();
+    // The last turn that took `words`: a session cut mid-turn answers the next process's first
+    // prompt with nothing, and its words go to it again (CONVERSATION-AGENT-46), so turns are
+    // found by their words, not counted.
+    let turn = |words: &str| {
+        turns(&obid)
+            .into_iter()
+            .rfind(|t| t["prompt"].as_str().is_some_and(|p| p.ends_with(words)))
+            .unwrap_or_else(|| panic!("no turn took {words}"))
+    };
+    let id = |words: &str| turn(words)["id"].clone();
     let late = said(
         &obid,
         json!({"said": "LINGER 15000", "conversation": conversation}),
@@ -622,13 +670,17 @@ fn nothing_waits_after_a_stop_or_the_budget() {
         "{}",
         late.text
     );
-    assert_eq!(id(0), id(1), "the turn went to the waiting one");
-    assert!(ends_soon(&turn(1)), "the budget ended it");
+    assert_eq!(
+        id("SAY hi"),
+        id("LINGER 15000"),
+        "the turn went to the waiting one"
+    );
+    assert!(ends_soon(&turn("LINGER 15000")), "the budget ended it");
     said(
         &obid,
         json!({"said": "SAY again", "conversation": conversation}),
     );
-    assert_ne!(id(2), id(1));
+    assert_ne!(id("SAY again"), id("LINGER 15000"));
     std::thread::scope(|scope| {
         let slow = scope.spawn(|| {
             said(
@@ -637,7 +689,12 @@ fn nothing_waits_after_a_stop_or_the_budget() {
             )
         });
         let give_up_at = Instant::now() + Duration::from_secs(15);
-        while turns(&obid).len() < 4 && Instant::now() < give_up_at {
+        while !turns(&obid).iter().any(|t| {
+            t["prompt"]
+                .as_str()
+                .is_some_and(|p| p.ends_with("LINGER 20000"))
+        }) && Instant::now() < give_up_at
+        {
             std::thread::sleep(Duration::from_millis(100));
         }
         let stopped = call(
@@ -649,13 +706,13 @@ fn nothing_waits_after_a_stop_or_the_budget() {
         assert_eq!(stopped.status, 200, "{}", stopped.text);
         slow.join().unwrap();
     });
-    assert_eq!(id(3), id(2));
-    assert!(ends_soon(&turn(3)), "the stop ended it");
+    assert_eq!(id("LINGER 20000"), id("SAY again"));
+    assert!(ends_soon(&turn("LINGER 20000")), "the stop ended it");
     said(
         &obid,
         json!({"said": "SAY last", "conversation": conversation}),
     );
-    assert_ne!(id(4), id(3));
+    assert_ne!(id("SAY last"), id("LINGER 20000"));
 }
 
 /// obid's stop ends every waiting Claude Code.
