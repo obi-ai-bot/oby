@@ -927,6 +927,14 @@ impl Conversations {
         latest_in(&threads, scope).map(|index| threads[index].id.clone())
     }
 
+    /// The folders conversation `id` works in: its project's while it's in one, else its own
+    /// (crate::conversation_files, COMPOSER-15); none when obid has no such conversation.
+    pub fn working_folders(&self, id: &str) -> Option<Vec<String>> {
+        let threads = self.lock();
+        (threads.iter().find(|t| t.id == id))
+            .map(|t| answered(&t.folders, &t.project_folders, t.whose()).clone())
+    }
+
     /// The profile conversation `id` was made in (none: the default's), or none when obid has no
     /// such conversation (crate::profile_scope).
     pub fn profile_of(&self, id: &str) -> Option<Option<String>> {

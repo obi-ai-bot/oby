@@ -25,8 +25,9 @@ export type EditorHandle = {
   setText(text: string): void;  // the words put back (a draft), the cursor at their end
   mention(name: string): void;  // @name in place of the @ being typed (or at the cursor)
 };
-// the @ being typed, right before the cursor: what's after it so far
-const AT = /(?:^|\s)@(\w*)$/;
+// the @ being typed, right before the cursor: what's after it so far (an Oby's name, or a file's
+// path: COMPOSER-14)
+const AT = /(?:^|\s)@([\w./-]*)$/;
 
 export default function MessageEditor({ placeholder, label, autoFocus = false, onText, onEnter, onHeight, onPasteFiles, onMention, onMentionKey, handle }: {
   placeholder: string;

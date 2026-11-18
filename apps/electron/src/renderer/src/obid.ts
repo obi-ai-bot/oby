@@ -15,8 +15,10 @@ import type {
   Helper,
   InboxItem,
   Job,
+  JobChanges,
+  UndoAction,
   LimitDecision,
-  PlanAnswer,
+  PlanAnswer, PlanDefaults, ConversationFile, Cancelled,
   Profile,
   Project,
   Repo,
@@ -127,6 +129,12 @@ export const api = {
   // exactly that on their click
   publishAction: (j: string, c: PublishChoices = {}) => call<PublishAction>('GET', `/v1/jobs/${id(j)}/publish${q(c)}`),
   publish: (j: string, action: string, c: PublishChoices = {}) => call<{ url?: string }>('POST', `/v1/jobs/${id(j)}/publish`, undefined, (b) => b.publish(j, action, c)),
+  // A task's changes, whole or one round's, whitespace left out or not (CHANGES-1 to 3); Undo this
+  // round's sentence, then main signs exactly that on the owner's click in its own dialog (CHANGES-14)
+  changes: (j: string, o: { round?: number; ignoreWhitespace?: boolean } = {}) =>
+    call<JobChanges>('GET', `/v1/jobs/${id(j)}/changes${q({ round: o.round, whitespace: o.ignoreWhitespace ? 'ignore' : undefined })}`),
+  undoAction: (j: string) => call<UndoAction>('GET', `/v1/jobs/${id(j)}/undo`),
+  undo: (j: string, action: string) => call<Job>('POST', `/v1/jobs/${id(j)}/undo`, undefined, (b) => b.undo(j, action)),
   // Confirm on a confirm item: main signs it with this Mac's device key (main/device.ts)
   confirm: (i: string) => call<InboxItem>('POST', `/v1/inbox/${id(i)}/answer`, undefined, (b) => b.confirm(i)),
   // What this Oby tells other Obys by itself (docs/contracts/peer-thread.md, PEER-16 to 18): the
@@ -149,12 +157,17 @@ export const api = {
   // words to Oby: in a conversation, or starting a new one. with: the words' id (sent again with
   // the same id, nothing happens twice), the files uploaded for them and the tasks attached
   plan: (said: string, answer: { question: string; option: string } | undefined, where: { conversation: string } | { new: true }, folders?: string[],
-    with_: { id?: string; attachments?: string[]; jobs?: string[]; project?: string } = {}) =>
+    with_: { id?: string; attachments?: string[]; jobs?: string[]; project?: string; defaults?: PlanDefaults } = {}) =>
     call<PlanAnswer>('POST', '/v1/plans', {
       said, ...(answer ? { answer } : {}), ...where, ...(folders?.length ? { folders } : {}), ...(with_.id ? { id: with_.id } : {}),
       ...(with_.attachments?.length ? { attachments: with_.attachments } : {}), ...(with_.jobs?.length ? { jobs: with_.jobs } : {}),
       ...(with_.project ? { project: with_.project } : {}),
+      ...(with_.defaults && Object.keys(with_.defaults).length ? { defaults: with_.defaults } : {}),
     }),
+  // one message waiting in a conversation, dropped alone (composer-v1, COMPOSER-9 and 10)
+  cancelWords: (conversation: string, turn: string) => call<Cancelled>('POST', '/v1/plans/cancel', { conversation, turn }),
+  // the files of a conversation's folders matching what's typed after an @ (composer-v1, COMPOSER-14)
+  conversationFiles: (c: string, typed: string) => call<{ files: ConversationFile[] }>('GET', `/v1/conversations/${id(c)}/files${q({ q: typed })}`),
   // a file picked or pasted, kept by obid for the words it goes with: its path there; one over
   // obid's 25 MB isn't read at all, and says so in obid's words
   upload: async (file: File, name: string) => {
@@ -215,6 +228,11 @@ export const api = {
   setBackgroundConsent: (a: string, given: boolean) => call<Account>('POST', `/v1/accounts/${id(a)}/background`, { given }),
   signInCode: (a: string, code: string) => call<Account>('POST', `/v1/accounts/${id(a)}/sign-in`, { code }),
   endSignIn: (a: string) => call<null>('DELETE', `/v1/accounts/${id(a)}/sign-in`),
+  // obid only (ACCOUNTS-23): the tool's own logout for the account, its row staying
+  signOut: (a: string) => call<Account>('POST', `/v1/accounts/${id(a)}/sign-out`),
+  // obid only (ACCOUNTS-26): the binary a tool runs as, a path from / or a command's name; null: the configuration's
+  setAgentBin: (agent: string, bin: string | null) =>
+    call<{ agent: string; bin: string; binSet: boolean; path: string | null; version: string | null }>('PUT', `/v1/settings/agents/${id(agent)}`, { bin }),
   // obid only: GitHub's sign-in (gh's device flow), and Tetrix's
   github: () => call<GitHub>('GET', '/v1/github'),
   githubSignIn: () => call<SignIn>('POST', '/v1/github/sign-in'),

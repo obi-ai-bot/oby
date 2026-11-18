@@ -65,6 +65,7 @@ mod authors;
 mod budget;
 mod by_github;
 pub(crate) mod cant_run;
+pub(crate) mod changes;
 mod cant_take;
 pub(crate) use cant_take::CantTake;
 mod routed;
@@ -103,7 +104,9 @@ mod routing;
 mod secrets;
 mod setup;
 mod slots;
+mod tuning;
 mod turns;
+use tuning::{on_tool, tune};
 mod unjudged;
 mod versions;
 mod words;
@@ -666,6 +669,9 @@ pub struct NewJob {
     pub rounds: Option<u32>,
     pub check: Option<String>,
     pub model: Option<String>,
+    /// An effort the owner's chip named (brain::defaults): it holds over its account's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     /// The plan called it complex: it runs at its account's complex-task effort (#1574).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub complex: bool,
@@ -846,35 +852,6 @@ fn room_step(wait: &Waiting) -> String {
         "Waiting for {}. Use one anyway to start it now; otherwise it starts when an account has room.",
         wait.text
     )
-}
-
-/// A job waiting for room goes to `tool`: a model of another tool's gives way to the new tool's
-/// own, as a move's does, and its version to the next round's read (CLIVERSIONS-6).
-fn on_tool(job: &mut Job, tool: Tool) {
-    if job.agent != tool.id() {
-        job.agent = tool.id().into();
-        job.model = None;
-        job.agent_version = None;
-        job.model_from_account = false;
-    }
-}
-
-/// The model and effort `job` runs on, on its account as it is now (#1574): a model it named
-/// itself stays; else its account's, as Settings › Agents set them (`tuning`, by account); neither,
-/// the tool's own. Again whenever it changes account. `offered` is that account's own list, empty
-/// while none was read since obid started (`ModelLists::to_check`): the saved model stands.
-fn tune(
-    job: &mut Job,
-    tuning: &std::collections::BTreeMap<String, crate::settings::Tuning>,
-    offered: &[crate::model_lists::Offered],
-) {
-    let kept = tuning.get(&job.account).cloned().unwrap_or_default();
-    if job.model.is_none() || job.model_from_account {
-        let model = kept.offered_model(offered);
-        job.model_from_account = model.is_some();
-        job.model = model.map(str::to_owned);
-    }
-    job.effort = kept.effort(job.complex).map(str::to_owned);
 }
 
 /// Who adds the inbox's Confirm items (crate::sphere::link).
@@ -2323,6 +2300,7 @@ impl Jobs {
         // included, and counted.
         job.rounds = new.rounds;
         job.model = new.model.map(|m| m.trim().to_owned());
+        job.effort_named = new.effort;
         job.complex = new.complex;
         let offered = Tool::from_id(&job.agent)
             .map(|tool| self.model_lists.to_check(tool, &job.account))

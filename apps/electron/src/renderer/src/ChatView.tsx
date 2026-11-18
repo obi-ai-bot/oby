@@ -12,6 +12,7 @@ import DecisionBar, { type Pending } from './DecisionBar';
 import { useScrollThumb } from './useScrollThumb';
 import TaskMenu from './TaskMenu';
 import TaskLog from './TaskLog';
+import { ChangesPill } from './ChangesPanel';
 import { replyTarget, type Box } from './replyTarget';
 import Composer, { typingIn } from './Composer';
 import Formatted from './Formatted';
@@ -19,7 +20,7 @@ import Said from './Said';
 import { convoTitle, threadOf } from './mock';
 import { ENDED, agentOf, type Message } from './view';
 import { asksWaiting, markSeen, stop, tell, tellPlaceholder, useTasks, type Task } from './tasks';
-import { obys, ofObid, seeChat, stopChat, tellChat, useChats, type Chat } from './chats';
+import { cancelQueued, obys, ofObid, seeChat, stopChat, tellChat, useChats, type Chat } from './chats';
 import CantRunLine from './CantRunLine';
 import Refusals from './Refusals';
 import SetupCard from './SetupCard';
@@ -376,6 +377,9 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
           talk={talk && !talk.local && (!onObid || talkReady(talk.id)) ? talk : undefined}
           draft={task ? draftBox.task(task.id) : talk ? draftBox.conversation(talk.id) : draftBox.peer(convo!.id)}
           onStop={task ? (task.status === 'running' && !task.unknown ? () => stop(task.id) : undefined) : talk && typing && ofObid(talk.id) && talkReady(talk.id) ? () => stopChat(talk.id) : undefined}
+          // words sent while Oby answers here, waiting their turn (COMPOSER-8 to 10)
+          queued={talk?.queued}
+          onCancelQueued={talk ? (q) => cancelQueued(talk.id, q.id) : undefined}
         />
       )}
       {/* a card's menu: tell its agent something, Stop or Archive, and Delete */}
@@ -453,12 +457,14 @@ export function ThreadTask({ task, onMenu }: { task: Task; onMenu?: (at: DOMRect
   );
 }
 
-// A task in the conversation: its card, and what it did under it, outside the card (TaskLog); data-task is
+// A task in the conversation: its card, its Changes (CHANGES-4), and what it did under it, outside the card (TaskLog); data-task is
 // where opening the conversation at the task scrolls to (LIVETASK-28)
 export function TaskEntry({ task, lit = false, onMenu }: { task: Task; lit?: boolean; onMenu?: (at: DOMRect) => void }) {
   return (
     <div className={`msg-task-work${task.status === 'running' || task.status === 'needs' ? ' is-live' : ''}${lit ? ' is-lit' : ''}`} data-task={task.id}>
       <ThreadTask task={task} onMenu={onMenu} />
+      {/* what it changed, in the side panel beside the conversation (CHANGES-4) */}
+      <ChangesPill task={task} />
       <TaskLog task={task} />
     </div>
   );

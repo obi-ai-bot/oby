@@ -146,6 +146,14 @@ pub fn router(shared: Arc<Shared>) -> Router {
         )
         .route("/v1/accounts/{id}/reserve", post(crate::accounts::reserve))
         .route(
+            "/v1/accounts/{id}/sign-out",
+            post(crate::accounts::sign_out::sign_out),
+        )
+        .route(
+            "/v1/settings/agents/{agent}",
+            axum::routing::put(crate::accounts::bins::set),
+        )
+        .route(
             "/v1/accounts/{id}/background",
             post(crate::accounts::background),
         )
@@ -180,6 +188,11 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/v1/jobs/{id}/archive", post(crate::routes::archive))
         .route("/v1/jobs/{id}/delete", post(crate::routes::delete_asked))
         .route("/v1/jobs/{id}/wait", get(crate::routes::wait))
+        .route("/v1/jobs/{id}/changes", get(crate::routes::changes))
+        .route(
+            "/v1/jobs/{id}/undo",
+            get(crate::routes::undo_sentence).post(crate::routes::undo),
+        )
         .route("/v1/jobs/{id}/report", get(crate::routes::report))
         .route("/v1/jobs/{id}/transcript", get(crate::routes::transcript))
         .route(
@@ -243,6 +256,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route(
             "/v1/conversations/{id}",
             axum::routing::patch(crate::conversation::update).delete(crate::conversation::remove),
+        )
+        .route(
+            "/v1/conversations/{id}/files",
+            get(crate::conversation_files::search),
         )
         .route(
             "/v1/routines",
@@ -653,6 +670,7 @@ async fn method_not_allowed() -> ApiError {
 /// name one behaviour forever (a changed behaviour gets a new name, such as `-v2`). A new optional
 /// feature adds its name here and its row in docs/runner-api.md's Capabilities table together.
 pub const CAPABILITIES: &[&str] = &[
+    "composer-v1",
     "conversation-marks-v1",
     "events-replay-v1",
     "folders-v1",
@@ -730,6 +748,11 @@ pub struct Status {
 #[serde(rename_all = "camelCase")]
 pub struct ToolJson {
     pub agent: &'static str,
+    /// What obid runs it as before it's found: the configuration's `bin`, or the one the owner
+    /// set (ACCOUNTS-26). Older obids don't send it.
+    pub bin: String,
+    /// Whether that's the one the owner set in Settings, not the configuration's.
+    pub bin_set: bool,
     pub path: Option<String>,
     pub version: Option<String>,
     pub version_status: &'static str,
@@ -1151,6 +1174,8 @@ async fn status(
                     crate::cli_versions::status(tool, version.as_deref());
                 ToolJson {
                     agent: tool.id(),
+                    bin: crate::accounts::bin_of(&agents, tool).to_owned(),
+                    bin_set: shared.config.agents.bin_set(tool),
                     path: read.and_then(|r| Some(r.path?.display().to_string())),
                     version,
                     version_status,

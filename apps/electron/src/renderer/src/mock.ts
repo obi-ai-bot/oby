@@ -757,3 +757,8 @@ export const MOCK_ROOM: { sphere: string; status: 'available' | 'unavailable'; p
   ],
 };
 export const mockRoomScene = ROOM_SCENE;
+
+// A conversation's files for @ in a browser (COMPOSER-14): obid lists the real ones
+export const FILES: { folder: string; path: string }[] = [
+  'src/app.tsx', 'src/auth/login.tsx', 'src/auth/signup.tsx', 'src/auth/session.ts', 'src/api/client.ts', 'README.md',
+].map((path) => ({ folder: '/Users/you/Projects/web', path }));

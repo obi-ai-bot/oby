@@ -284,6 +284,96 @@ pub async fn report(
     Ok(json(StatusCode::OK, report))
 }
 
+#[derive(serde::Deserialize)]
+pub struct ChangesQuery {
+    path: Option<String>,
+    round: Option<usize>,
+    whitespace: Option<String>,
+}
+
+/// `GET /v1/jobs/{id}/changes?path=<path>&round=<n>&whitespace=ignore`: the files and the diff the
+/// job's branch makes against its base, or one of its task's rounds makes, and the task's rounds
+/// (docs/contracts/tasks.md, TASKS-23, 24, 29 and 30; docs/contracts/task-changes.md, CHANGES-1 to
+/// 4). `whitespace` is `ignore` or left out.
+pub async fn changes(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+    Query(query): Query<ChangesQuery>,
+) -> Result<Response, ApiError> {
+    let ignore_whitespace = match query.whitespace.as_deref() {
+        None => false,
+        Some("ignore") => true,
+        Some(_) => {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "\"whitespace\" is \"ignore\", or left out.",
+            ));
+        }
+    };
+    let ask = crate::jobs::changes::ChangesAsk {
+        path: query.path.as_deref(),
+        round: query.round,
+        ignore_whitespace,
+    };
+    let changes = shared
+        .jobs
+        .changes(&id, &ask)
+        .await
+        .ok_or_else(|| no_job(&shared, &id))?;
+    Ok(json(StatusCode::OK, changes))
+}
+
+/// `GET /v1/jobs/{id}/undo`: obid's own sentence for undoing the job's last round, `{"action",
+/// "from", "to", "branch", "push"}`, or `409` with why it can't (docs/contracts/task-changes.md,
+/// CHANGES-8 and 9).
+pub async fn undo_sentence(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    match shared.jobs.undo_sentence(&id).await {
+        None => Err(no_job(&shared, &id)),
+        Some(Err(why)) => Err(ApiError::new(StatusCode::CONFLICT, why)),
+        Some(Ok(undo)) => Ok(json(StatusCode::OK, undo.to_json())),
+    }
+}
+
+/// `POST /v1/jobs/{id}/undo`: undoes the job's last round, once a registered device approved
+/// obid's own sentence for it (`oby-undo`, crate::approval): the job, `403` for an approval that
+/// doesn't hold, `409` when it can't or its push failed (CHANGES-10 and 11).
+pub async fn undo(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let approval: crate::approval::Approval = serde_json::from_slice(&body).map_err(|_| {
+        ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "An approval is {\"device\", \"action\", \"signedAt\", \"signature\"}.",
+        )
+    })?;
+    let action = match shared.jobs.undo_sentence(&id).await {
+        None => return Err(no_job(&shared, &id)),
+        Some(Err(why)) => return Err(ApiError::new(StatusCode::CONFLICT, why)),
+        Some(Ok(undo)) => undo.action,
+    };
+    let key = shared.devices.public_key(&approval.device);
+    shared
+        .jobs
+        .approvals()
+        .check_undo(
+            &approval,
+            &id,
+            &action,
+            key.as_deref(),
+            obi_protocol::time::now(),
+        )
+        .map_err(|why| ApiError::new(StatusCode::FORBIDDEN, why))?;
+    match shared.jobs.undo(&id, &action).await {
+        Ok(job) => Ok(json(StatusCode::OK, job.to_json())),
+        Err(why) => Err(ApiError::new(StatusCode::CONFLICT, why)),
+    }
+}
+
 /// `GET /v1/jobs/{id}/transcript?after=<n>&limit=<k>`: the entries that came or changed after
 /// entry `n`, at most `k`, and the `n` to ask after next when there's more.
 pub async fn transcript(
@@ -895,6 +985,8 @@ fn new_job(job: &Map<String, Value>) -> Result<NewJob, String> {
         rounds: rounds.map(|r| u32::try_from(r).unwrap_or(u32::MAX)),
         check: text("check")?,
         model: text("model")?,
+        // The chips' effort comes only with words to Oby (brain::defaults, COMPOSER-5).
+        effort: None,
         complex: false,
         files,
         attachments: None,

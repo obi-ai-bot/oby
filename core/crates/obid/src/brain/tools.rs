@@ -1958,6 +1958,7 @@ fn asked(session: &Session) -> Asked<'_> {
         conversation: &session.conversation,
         turn: &session.control.turn,
         signed: session.control.signed(),
+        defaults: session.defaults.as_ref(),
     }
 }
 

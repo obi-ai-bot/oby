@@ -10,6 +10,7 @@ import { prName, prUrl } from './jobPage';
 import { Menu } from './Menu';
 import RepoTicks from './RepoTicks';
 import { confirmIsOff } from './sharing';
+import ContextMeter from './ContextMeter';
 import { seeItem } from './live';
 import QuestionChoices, { listsChoices } from './QuestionChoices';
 import PrChecks from './PrChecks';
@@ -178,9 +179,11 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
           </Section>
 
           {/* this job's tokens, and its share of the account's 5-hour and weekly windows */}
-          {page?.usage && (
+          {(page?.usage || page?.context) && (
             <Section title="Usage">
-              <Usage usage={page.usage} account={j.account} done={done} />
+              {page.usage && <Usage usage={page.usage} account={j.account} done={done} />}
+              {/* how full its agent's context is, as its tool said (USAGE-15) */}
+              {page.context && <ContextMeter used={page.context.used} size={page.context.size} />}
             </Section>
           )}
 

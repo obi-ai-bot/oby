@@ -50,6 +50,8 @@ export type Page = {
   groups?: ToolGroup[];
   // this job's tokens and value, and its share of the account's windows
   usage?: { tokens: string; cost: string; fiveHour: number; job5: string; week: number; jobWeek: string };
+  // how full its agent's context window is (USAGE-15): tokens in use, of the window's size when known
+  context?: { used: number; size: number | null };
   outgoing?: { text: string; at: string }[];  // what went out, every outgoing action
 };
 
@@ -129,6 +131,7 @@ export type Job = {
   publish?: { label: string; anyway?: true; why?: string };  // obid only: Publish by hand (jobPage.ts, publishOf)
   nothingDone?: boolean;  // obid's: it ended with nothing done (TASKS-12)
   routed?: string;     // obid's: why it runs on another agent than your words named (ACCOUNTS-31)
+  worktree?: boolean;  // obid's: it has a worktree on disk: Changes and Open in (CHANGES-4, 6)
   log?: LogLine[];
   page?: Page;         // the job page's extra data, once obid serves it
   conversation?: string;  // obid's: the conversation whose words started it
@@ -195,7 +198,9 @@ export type SetupStep = 'agents' | 'github' | 'extras' | 'first' | 'sphere' | 's
 // folders: the working folders picked (folders.ts: obid's once it takes them, else the app's)
 // a file's file: what was picked or pasted; path: where obid keeps it, once uploaded (live.ts)
 // project: the project Home's box chose for the conversation its words start (projects.ts)
-export type Attachments = { files?: { name: string; preview?: string; file?: File; path?: string }[]; obys?: string[]; jobs?: string[]; on?: string; repo?: string; folders?: string[]; project?: string };
+export type Attachments = { files?: { name: string; preview?: string; file?: File; path?: string }[]; obys?: string[]; jobs?: string[]; on?: string; repo?: string; folders?: string[]; project?: string;
+  // the box's chips (docs/contracts/composer.md, COMPOSER-3): the jobs these words start, never the account's
+  defaults?: { mode?: string; agent?: string; model?: string; effort?: string } };
 export const hasAttachments = (a?: Attachments) => !!(a?.files?.length || a?.obys?.length || a?.jobs?.length);
 
 // The Obysphere: the other Obys in your workspace (whose they are), and your conversations with them, each about a task. who: 'you',
