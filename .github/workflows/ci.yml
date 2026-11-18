@@ -753,6 +753,9 @@ jobs:
           if needs["rust-test"]["result"] in ("success", "failure"):
               for shard in shards:
                   path = f"junit/junit-{shard}/junit.xml"
+                  # One artifact alone is extracted into junit/ itself, not a folder of its name.
+                  if count == 1 and not os.path.exists(path):
+                      path = "junit/junit.xml"
                   if not os.path.exists(path):
                       unreported.append(f"{shard}/{count}")
                       continue
