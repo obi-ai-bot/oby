@@ -12,6 +12,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { FIXTURE } from "./lib/fixture.mjs";
 import { review, reviewBody, REVIEW_SECONDS, RULES } from "./lib/rig-review.mjs";
+import { offPin, spherePin } from "./lib/sphere-pin.mjs";
 import { loadSphereSpec } from "./lib/sphere-spec.mjs";
 import { family, newExchange, ours, record, stillUp, table } from "./lib/rig-state.mjs";
 
@@ -420,4 +421,32 @@ test("rig_26_the_apps_sphere_module_loads_with_its_exports", { skip: !existsSync
   const key = generateKeyPairSync("ed25519").privateKey;
   assert.equal(spec.publicOf(key), createPublicKey(key).export({ format: "jwk" }).x);
   assert.equal(spec.parseInvite("http://127.0.0.1:8791/join#sphere=rig&id=00000000-0000-4000-8000-000000000000&secret=" + "a".repeat(43))?.sphere, "rig");
+});
+
+// RIG-27: one pin, e2e/sphere.ref, for every Sphere test of Oby's: the rig, test:sphere and the
+// launch list, set to the commit the deployed Sphere runs
+test("rig_27_one_pin_file_names_one_commit_and_every_sphere_test_reads_it", () => {
+  const pin = spherePin();
+  assert.match(pin, /^[0-9a-f]{40}$/);
+  assert.ok(!existsSync(join(dirname(rig), "rig-sphere.ref")), "the rig's own pin is gone: one file");
+  for (const file of ["e2e/rig.mjs", "apps/electron/scripts/test-sphere.mjs"]) {
+    const text = readFileSync(join(dirname(rig), "..", file), "utf8");
+    assert.match(text, /sphere-pin\.mjs/, `${file} reads the pin`);
+    assert.doesNotMatch(text, /\b[0-9a-f]{40}\b/, `${file} names no commit of its own`);
+  }
+});
+
+test("rig_27_a_checkout_at_another_commit_is_refused_and_one_at_the_pin_isnt", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "oby-pin-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (...a) => spawnSync("git", ["-C", dir, ...a], { encoding: "utf8", env: { PATH: process.env.PATH, HOME: dir, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
+  git("init", "-q");
+  git("commit", "-q", "--allow-empty", "-m", "x");
+  const head = git("rev-parse", "HEAD").stdout.trim();
+  assert.equal(offPin(dir, head), null);
+  assert.match(offPin(dir, "f".repeat(40)), /not fffffff \(e2e\/sphere\.ref, what the deployed Sphere runs\)/);
+  assert.match(offPin(join(dir, "nothing"), head), /at no commit/);
+  const bad = join(dir, "bad.ref");
+  writeFileSync(bad, "dev\n");
+  assert.throws(() => spherePin(bad), /isn't one commit id/);
 });

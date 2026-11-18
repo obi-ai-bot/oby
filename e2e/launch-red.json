@@ -1,0 +1,6 @@
+{
+  "L1": "B2 wave 1: the app has no field to enter an invite link (Join with a link in the app and on first run)",
+  "L5": "B1 wave 1: an unsigned Accept and an unsigned 'Accept, and remember' answer 200, not 403; on 2026-11-18 the run also missed Home's Accept after L4 (test to recheck)",
+  "L6": "B2 wave 1: the app's starter rule lacks handoff (shared/policy.ts), so the Sphere answers policy_denied; #2429",
+  "L8": "B1 wave 1 and B2 wave 1: obid doesn't see an admin's revoke within 90 s, and the app shows no line for it"
+}
