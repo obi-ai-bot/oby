@@ -1691,10 +1691,7 @@ pub async fn move_job(
         let source = [crate::jobs::Source::Api, crate::jobs::Source::Owner][usize::from(typed)];
         match shared.jobs.move_to(&id, to, source).await {
             None => Err(no_job(&shared, &id)),
-            Some(Ok(job)) => {
-                crate::conversation::tell_moved(&shared, &job);
-                Ok((StatusCode::OK, job.to_json(), Some(job.id)))
-            }
+            Some(Ok(job)) => Ok((StatusCode::OK, job.to_json(), Some(job.id))),
             Some(Err(refused)) => Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, refused.0)),
         }
     })

@@ -13,10 +13,6 @@ mod lifecycle;
 pub use lifecycle::{Command, EndKind, Ended, Refused, transition};
 pub(crate) use lifecycle::{TAKING_OVER, hands_over};
 
-/// Who stopped a running job to move it (`POST /v1/jobs/{id}/move`, jobs/moves.rs): its run starts
-/// over on the new choice, so it was never stopped for the owner (#2485).
-pub(crate) const MOVING: &str = "Moved to another account";
-
 /// `queued`, `running`, `done`, `failed`, `stopped` or `interrupted`. On obid, `interrupted` is a
 /// job that needs the owner: it stopped part way, its work kept on its branch (`reason`, `nextStep`);
 /// `failed` is a dead end.
@@ -2135,11 +2131,15 @@ impl Job {
                     self.publish_error.as_deref(),
                 );
             } else if self.pushed_only() {
+                // Onto the owner's own pull request's branch (TASKCONV-31): that one (AUTOFIX-20).
+                let onto = (self.onto.as_ref().zip(self.pr))
+                    .map(|(_, pr)| format!("Secret scan clean · pushed onto pull request #{pr}"));
+                let detail = "Secret scan clean · pushed · no pull request for this remote";
                 set(
                     &mut stages,
                     "publish",
                     "done",
-                    Some("Secret scan clean · pushed · no pull request for this remote"),
+                    Some(onto.as_deref().unwrap_or(detail)),
                     None,
                 );
                 for id in ["review", "merged"] {

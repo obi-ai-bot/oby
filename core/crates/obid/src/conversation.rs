@@ -1839,9 +1839,6 @@ pub fn job_report(job: &Value) -> Option<(String, String)> {
             },
         },
         ("failed", _) => format!("{title} failed."),
-        // A move stops its run only to start it over elsewhere: it says where it went instead
-        // ([`tell_moved`], #2485).
-        ("stopped", _) if job["stoppedBy"] == crate::job::MOVING => return None,
         ("stopped", _) => format!("{title} was stopped."),
         // Stopped, as its card's mark says: no decision waits on it (TASKS-25, TASKS-29), so
         // its line never says it needs the owner; its reason says what can be done.
@@ -2003,26 +2000,6 @@ fn tell_unreported(shared: &Shared, since: i64) {
         if ended && !job.status.is_active() && !job.told_of_end() {
             tell(shared, &job.id, &job.to_json());
         }
-    }
-}
-
-/// Tells the conversation of `job`, just moved by the owner (`POST /v1/jobs/{id}/move`), where it
-/// went: "<task> moved to Codex · Personal: it goes on there." (#2485, proposed words, Sangam's to
-/// rewrite). A running job's stop for the move tells nothing ([`job_report`]).
-pub fn tell_moved(shared: &Shared, job: &crate::job::Job) {
-    let (Some(conversation), Some(to)) = (job.conversation.as_deref(), job.moves.last()) else {
-        return;
-    };
-    if job.dismissed.is_some() || job.review_of.is_some() {
-        return;
-    }
-    let title = crate::brain::briefing::line(&job.short_title(), 80);
-    let text = format!("{title} moved to {}: it goes on there.", to.to);
-    let foreign = summary_foreign(Some(job), &job.id);
-    let jobs = vec![job.id.clone()];
-    if let Err(Error::Io(e)) = (shared.conversations).append(conversation, "oby", text, jobs, foreign)
-    {
-        tracing::warn!("job {} moved; conversation {conversation} couldn't be told: {e}", job.id);
     }
 }
 

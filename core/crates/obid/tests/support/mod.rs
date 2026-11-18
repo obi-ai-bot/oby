@@ -267,6 +267,12 @@ pub fn start_with(
     // finds in the test's folder.
     if let Some(dir) = config["agents"]["claude"]["accounts"][0]["configDir"].as_str() {
         std::fs::create_dir_all(dir).unwrap();
+        // Signed in, as a person's account is: a task named to one that isn't is refused
+        // (ACCOUNTS-35). A test that wants it signed out removes the file, or writes its own.
+        let login = Path::new(dir).join(".credentials.json");
+        if !login.exists() {
+            std::fs::write(login, "{}").unwrap();
+        }
         let link = folder.join("env-home/.fake-planner");
         let _ = std::fs::remove_file(&link);
         std::os::unix::fs::symlink(dir, link).unwrap();

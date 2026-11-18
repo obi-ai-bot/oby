@@ -7,7 +7,8 @@
 
 use super::*;
 
-use crate::job::MOVING;
+/// Who stopped a running job to move it: its run starts over on the new choice.
+const MOVING: &str = "Moved to another account";
 
 /// Where jobs.rs's tests still find it.
 #[cfg(test)]

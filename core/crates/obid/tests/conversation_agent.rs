@@ -824,54 +824,6 @@ fn accounts_36_a_reason_two_accounts_share_is_said_once() {
     );
 }
 
-/// CONVERSATION-AGENT-46: a task moved to another account while it runs says where it went in its
-/// conversation, and never that it was stopped (#2485).
-#[test]
-fn conversation_agent_46_a_moved_task_says_where_it_went() {
-    let folder = Folder::new("talk-moved");
-    let mut config = configured(&folder);
-    // Codex's job stand-in, whose SLEEP runs until it's stopped.
-    config["agents"]["codex"]["bin"] = json!(agent("fake-codex"));
-    let obid = start(&folder.0, &config, None);
-    let id = conversation(&said(&obid, json!({"said": "HELLO", "new": true})));
-    let words = r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "SLEEP", "kind": "investigate", "agent": "codex"}"#;
-    let answer = said(&obid, json!({"said": words, "conversation": id}));
-    let job_id = job(&obid, &answer)["id"].as_str().unwrap().to_owned();
-    within(60, "the task runs", || {
-        let job = call(&obid, "GET", &format!("/v1/jobs/{job_id}"), None).body;
-        (job["status"] == "running").then_some(())
-    });
-    let moved = call_typed(
-        &obid,
-        "POST",
-        &format!("/v1/jobs/{job_id}/move"),
-        &json!({"account": CLAUDE}),
-    );
-    assert_eq!(moved.status, 200, "{}", moved.text);
-    let turns = || {
-        call(&obid, "GET", &format!("/v1/conversation?id={id}"), None)
-            .body
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|t| t["text"].as_str().unwrap_or_default().to_owned())
-            .collect::<Vec<_>>()
-    };
-    let said = within(60, "the task ends again and its conversation hears it", || {
-        let said = turns();
-        let ended = call(&obid, "GET", &format!("/v1/jobs/{job_id}"), None).body["status"]
-            .as_str()
-            .is_some_and(|s| !matches!(s, "queued" | "running"));
-        (ended && said.iter().any(|t| t.contains(" is done") || t.contains(" failed"))).then_some(said)
-    });
-    assert!(
-        said.iter()
-            .any(|t| t.ends_with("moved to Claude Code · Stub: it goes on there.")),
-        "{said:?}"
-    );
-    assert!(!said.iter().any(|t| t.contains("was stopped")), "{said:?}");
-}
-
 /// CONVERSATION-AGENT-40: a conversation's dispatch to an agent with no room tells the turn where
 /// the job went and why, in obid's words, and its card carries the same line.
 #[test]
