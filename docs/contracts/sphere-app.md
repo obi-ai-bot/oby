@@ -5,7 +5,7 @@ The business behavior contract for what the Electron app does in an Obysphere at
 ## Feature and status
 
 - **Outcome:** A stranger joins their team's Obysphere from its invite link inside Oby, on first run or in Settings, seeing who they will join as before anything is made. Every member may hand every other a task, including members who joined before handoffs. An owner hands a member's Oby a task from that member's thread and reads what comes back there. An Oby whose admin took it out says so instead of vanishing.
-- **Status:** **Implemented** in the Electron app (`apps/electron`). The owner id is shown, not yet changeable: obid has no route to change it before the first join (open question, below). A revoke's reason reads obid's add-only `revokedReason` once obid sends it.
+- **Status:** **Implemented** in the Electron app (`apps/electron`). Changing the owner id waits on obid's add-only `PUT /v1/obid/sphere/owner` (SPHEREAPP-9): until obid serves it, the id shows read-only. A revoke's reason reads obid's add-only `revokedReason` once obid sends it.
 - **Scope:** the app only. **Out of scope:** making an Obysphere, inviting, and an admin removing a member (the Obysphere's own site does those); handing over a task by talking to Oby (`oby_handoff`, #2428's conversation tool); comparing keys.
 
 ## Behavior
@@ -23,6 +23,7 @@ The business behavior contract for what the Electron app does in an Obysphere at
 - A text that isn't an invite link says so under the field, and Join stays off. A link shows its Obysphere's name, its host and the owner id obid would join as (`GET /v1/obid/sphere`'s `owner`) before any key is made.
 - Join hands main the link. Main reads it as `oby://` links are read, opens the same native Join dialog (its detail now also says `You’ll join as <owner>.`), and only the owner's Join there joins, signing with the app's owner key. The page shows `You’re in <name>.`, or why it failed in main's words; the dialog's Cancel shows nothing.
 - In an Obysphere, the Settings page shows its name and the owner id instead of the field.
+- **Changing the owner id.** Two strangers whose Macs share a login name, with no `gh` signed in, would join as the same owner, so the id is the owner's to change before their first join. While obid's membership is `none`, the page asks obid once, with `PUT /v1/obid/sphere/owner` and an empty body (which changes nothing: `422`); where obid answers `404` the id shows read-only. Where it's served, the owner line has Change: a field and Save. An id that isn't lowercase letters, digits and single hyphens (1 to 63, the spec's slug) says so and sends nothing; one obid keeps shows on the line, and main's Join dialog says it. obid's `409` (a membership exists) says `It can’t change once you’ve joined an Obysphere.`
 
 ### The members rule and a membership grow
 
@@ -62,7 +63,7 @@ The business behavior contract for what the Electron app does in an Obysphere at
 
 - IPC: `sphere-join` (a string: the link) and `sphere-handoff` (`{to, goal, repo, base}`), in [ipc.md](ipc.md).
 - obid: `GET /v1/obid/sphere`, `GET /v1/obid/sphere/members`, `POST /v1/obid/sphere/requests`, `PUT /v1/obid/sphere/membership`, `GET /v1/repos`.
-- **Open question:** changing the owner id before the first join needs an obid route; until one exists the app shows it only.
+- obid's `PUT /v1/obid/sphere/owner` `{owner}` (add-only, B1's): `2xx` with the owner kept, `409` once any membership exists, `422` for a body without a valid owner; `404` from an obid without it.
 
 ## Acceptance scenarios
 
@@ -75,9 +76,11 @@ The business behavior contract for what the Electron app does in an Obysphere at
 - **SPHEREAPP-7** Given a handed task's exchange, then the thread's line under it says where it stands in words: waiting, said yes, the result came back, or each decline's reason. `sphereapp_7_…` (`sphereApp.test.tsx`).
 - **SPHEREAPP-8** Given a joined Obysphere on obid, then the app never asks obid for its room, so the room never opens, and the message box offers no other Obys. `sphereapp_8_…` (`sphereApp.test.tsx`).
 
+- **SPHEREAPP-9** Given a link pasted before a first join, when obid doesn't serve `PUT /v1/obid/sphere/owner`, then the owner id shows with no Change; when it does, Change and Save send `{owner}` lower-cased and the line shows the id obid kept; an id that isn't one says so and sends nothing; `409` says it can't change once joined. `sphereapp_9_…` (`sphereApp.test.tsx`).
+
 ### Test it when it's done
 
-1. On a fresh home with no `gh` login, open first run's Obysphere step, paste a local Obysphere's invite link: the owner id shows; Join, then the dialog's Join; the side panel shows the Obysphere.
+1. On a fresh home with no `gh` login, open first run's Obysphere step, paste a local Obysphere's invite link: the owner id shows; Change it; Join, then the dialog's Join; the side panel shows the Obysphere.
 2. As its admin, Settings › the Obysphere › Let members ask: the rule lists handoffs.
 3. From a member's thread, Hand them a task in a fixture repository; on their Mac, Accept; the result reads in your thread.
 4. Have the admin remove one Oby: its owner sees the line in its settings, not a vanished tile.

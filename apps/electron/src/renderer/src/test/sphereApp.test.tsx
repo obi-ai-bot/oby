@@ -11,11 +11,15 @@ vi.mock('../Oby', () => ({ default: ({ onDrawn }: { onDrawn?: () => void }) => {
 const LINK = `https://sphere.example.com/join#sphere=demo&name=Demo%20team&by=dmytro&id=9187a87a-3126-424c-8861-8811bba1a5ec&secret=${'A'.repeat(43)}`;
 // what obid answers, by "METHOD path"; anything else 404
 let answers: Record<string, unknown> = {};
+// a status other than 200 for an answer, by "METHOD path"
+let statuses: Record<string, number> = {};
 const calls: string[] = [];
-const call = vi.fn(async (method: string, path: string) => {
+const bodies: unknown[] = [];
+const call = vi.fn(async (method: string, path: string, body?: unknown) => {
   calls.push(`${method} ${path}`);
+  bodies.push(body);
   const a = answers[`${method} ${path}`];
-  return a === undefined ? { status: 404, text: '{"error":"Not found."}' } : { status: 200, text: JSON.stringify(a) };
+  return a === undefined ? { status: 404, text: '{"error":"Not found."}' } : { status: statuses[`${method} ${path}`] ?? 200, text: JSON.stringify(a) };
 });
 const sphereJoin = vi.fn();
 const sphereHandoff = vi.fn();
@@ -27,7 +31,7 @@ beforeEach(() => {
   vi.stubGlobal('matchMedia', () => ({ matches: true }));
   vi.stubGlobal('location', { search: '' });
   answers = { 'GET /v1/obid/sphere': { state: 'none', url: null, sphere: null, owner: 'wellington' }, 'GET /v1/repos': { repos: [] } };
-  calls.length = 0;
+  calls.length = 0; bodies.length = 0; statuses = {};
   sphereJoin.mockReset(); sphereHandoff.mockReset();
   (window as unknown as { app: unknown }).app = { obid: { call }, sphereJoin, sphereHandoff, openExternal: vi.fn() };
   localStorage.clear();
@@ -86,6 +90,57 @@ describe('SPHEREAPP-3: first run joins from a link', () => {
     sphereJoin.mockResolvedValueOnce({ kind: 'cancelled' });
     await act(async () => button('Join')!.click());
     expect(host.querySelector('[role="alert"], [role="status"]')).toBeNull();
+  });
+});
+
+describe('SPHEREAPP-9: the owner id, changed before the first join', () => {
+  async function step() {
+    vi.stubGlobal('location', { search: '?onboarding=sphere' });
+    const { default: FirstRun } = await import('../FirstRun');
+    await act(async () => root.render(<FirstRun />));
+    await settle();
+    await type(field('Invite link'), LINK);
+  }
+
+  it('sphereapp_9_without_obid_s_route_the_owner_id_shows_read_only', async () => {
+    await step();
+    expect(host.querySelector('.join-link-under')!.textContent).toBe('Demo team, on sphere.example.com. You’ll join as wellington.');
+    expect(button('Change')).toBeUndefined();
+    // obid was asked once, with a body that changes nothing
+    expect(calls.filter((c) => c === 'PUT /v1/obid/sphere/owner')).toHaveLength(1);
+    expect(bodies[calls.indexOf('PUT /v1/obid/sphere/owner')]).toEqual({});
+  });
+
+  it('sphereapp_9_with_obid_s_route_the_owner_changes_it_before_joining', async () => {
+    answers['PUT /v1/obid/sphere/owner'] = { error: 'owner is required' };
+    statuses['PUT /v1/obid/sphere/owner'] = 422;
+    await step();
+    await act(async () => button('Change')!.click());
+    // not an id: words, and nothing sent
+    await type(field('Owner id'), 'Dana Smith!');
+    const sent = calls.length;
+    await act(async () => button('Save')!.click());
+    expect(host.querySelector('[role="alert"]')!.textContent).toBe('An owner id is lowercase letters, digits and hyphens.');
+    expect(calls.length).toBe(sent);
+    // an id: obid keeps it, and the line says it
+    answers['PUT /v1/obid/sphere/owner'] = { owner: 'dana-smith' };
+    statuses['PUT /v1/obid/sphere/owner'] = 200;
+    await type(field('Owner id'), 'Dana-Smith');
+    await act(async () => button('Save')!.click());
+    expect(bodies.at(-1)).toEqual({ owner: 'dana-smith' });
+    expect(host.querySelector('.join-link-under')!.textContent).toBe('Demo team, on sphere.example.com. You’ll join as dana-smith. Change');
+  });
+
+  it('sphereapp_9: once joined, obid’s 409 says it can’t change', async () => {
+    answers['PUT /v1/obid/sphere/owner'] = { error: 'owner is required' };
+    statuses['PUT /v1/obid/sphere/owner'] = 422;
+    await step();
+    await act(async () => button('Change')!.click());
+    answers['PUT /v1/obid/sphere/owner'] = { error: 'joined already' };
+    statuses['PUT /v1/obid/sphere/owner'] = 409;
+    await type(field('Owner id'), 'dana');
+    await act(async () => button('Save')!.click());
+    expect(host.querySelector('[role="alert"]')!.textContent).toBe('It can’t change once you’ve joined an Obysphere.');
   });
 });
 
