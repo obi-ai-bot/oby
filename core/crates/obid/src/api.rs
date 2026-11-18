@@ -268,7 +268,8 @@ pub fn router(shared: Arc<Shared>) -> Router {
         )
         .route(
             "/v1/profiles/{id}",
-            axum::routing::patch(crate::profiles::change_route),
+            axum::routing::patch(crate::profiles::change_route)
+                .delete(crate::profiles::delete_route),
         )
         .route(
             "/v1/projects",
@@ -670,6 +671,10 @@ pub struct Status {
     /// The tools' own logins obid found on this Mac that aren't accounts: `{agent, id, name}`, each
     /// listed on the owner's word (`POST /v1/accounts` `{"agent", "default": true}`).
     pub available_logins: Vec<serde_json::Value>,
+    /// The tools' own logins on this Mac another profile holds as an account (PROFILES-43):
+    /// `{agent, id, profile, profileName}`, by the holding profile's id and name. Older obids don't
+    /// send it.
+    pub other_profile_logins: Vec<serde_json::Value>,
     pub models: Models,
     pub max_running: u32,
     pub default_agent: String,
@@ -1047,8 +1052,8 @@ async fn status(
     accounts.retain(|account| shared.profiles.accounts.holds(&scope, &account.id));
     // Off the runtime as the list is: whether an account can run can ask the macOS Keychain.
     let talk_next = {
-        let shared = shared.clone();
-        tokio::task::spawn_blocking(move || crate::brain::talk::next(&shared))
+        let (shared, scope) = (shared.clone(), scope.clone());
+        tokio::task::spawn_blocking(move || crate::brain::talk::next(&shared, &scope))
             .await
             .unwrap_or(None)
     };
@@ -1074,6 +1079,16 @@ async fn status(
             .available()
             .into_iter()
             .map(|(tool, own)| serde_json::json!({"agent": tool.id(), "id": own.id, "name": own.name}))
+            .collect(),
+        other_profile_logins: (shared.config.agents.held().into_iter())
+            .filter_map(|(tool, id)| {
+                let tag = shared.profiles.accounts.of(&id);
+                if scope.holds(tag.as_deref()) {
+                    return None;
+                }
+                let (profile, name) = shared.profiles.named_by(tag.as_deref())?;
+                Some(serde_json::json!({"agent": tool.id(), "id": id, "profile": profile, "profileName": name}))
+            })
             .collect(),
         models: Models::defaults(),
         max_running: shared.jobs.max_running() as u32,
