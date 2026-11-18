@@ -406,12 +406,26 @@ const SCENARIOS = [
     await ctx.page.keyboard.insertText(` ${question}`);
     const before = new Set((await exchangesOf(you)).map((e) => e.correlationId));
     await sendFromHome();
-    const sent = await until("the ask the @ made", async () => (await exchangesOf(you)).find((e) => !before.has(e.correlationId) && textOf(e).includes(question)), 60_000)
-      .catch(async () => red(`no ask went to dana within 60 s of Send (your inbox: ${JSON.stringify((await you.get("/v1/inbox")).filter((i) => i.state === "open").map((i) => [i.kind, i.title]))})`));
+    // dama, a look-alike of dana, joined in L2: then obid asks your Confirm first (ASK-34), naming
+    // dana and not dama, the question quoted; a click on its Confirm, in its own card, sends it
+    let confirmed = false;
+    const sent = await until("the ask the @ made", async () => {
+      const went = (await exchangesOf(you)).find((e) => !before.has(e.correlationId) && textOf(e).includes(question));
+      if (went) return went;
+      if (!confirmed) {
+        const card = ctx.page.locator("xpath=//*[.//button[normalize-space()='Confirm']]").filter({ hasText: question }).last();
+        if (await card.count() && /not dama/.test(await card.innerText())) {
+          await sleep(600);
+          await card.getByRole("button", { name: "Confirm", exact: true }).click();
+          confirmed = true;
+          ok("dama looks like dana, so obid asked your Confirm first, naming dana, not dama, with the question quoted; your click confirmed it");
+        }
+      }
+      return null;
+    }, 90_000).catch(async () => red(`no ask went to dana within 90 s of Send (your inbox: ${JSON.stringify((await you.get("/v1/inbox")).filter((i) => i.state === "open").map((i) => [i.kind, i.title]))})`));
     check(sent.type === "question" || sent.messages?.[0]?.envelope?.type === "question", `the ask went as ${sent.type ?? sent.messages?.[0]?.envelope?.type}, not a question`);
     check(!textOf(sent).includes("@dana"), "the question carries the @dana mention");
-    check(!(await you.get("/v1/inbox")).some((i) => i.kind === "confirm" && i.state === "open" && i.title.includes(question.slice(0, 20))), "the ask waited on a Confirm: your words weren't taken as signed");
-    ok(`your @dana and click on Send asked Dana's Oby at once, signed (${sent.correlationId})`);
+    ok(`your @dana and click on Send asked Dana's Oby${confirmed ? ", once you confirmed" : " at once, signed"} (${sent.correlationId})`);
     await until("the answer on the ask's card", async () => /wasn’t bothered|wasn't bothered/.test(await ctx.page.locator(".ask-card").filter({ hasText: question.slice(0, 20) }).last().innerText().catch(() => "")), 120_000)
       .catch(async () => red(`the ask's card in the conversation doesn't show Dana's answer within 2 minutes: ${JSON.stringify(await ctx.page.locator(".ask-card").allInnerTexts().catch(() => []))}`));
     ok("its card in the conversation shows Dana's Oby's answer");
