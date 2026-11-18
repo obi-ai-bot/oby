@@ -431,7 +431,8 @@ pub struct Permission {
     /// The whole command, the files, or the address.
     pub detail: String,
     /// The rule "always" saves, like `Bash(swift test:*)`, or none when obid can't make a safe one
-    /// (a chained command, one that runs whatever follows it): then it can only be allowed once.
+    /// (a chain with a command that has none, one that runs whatever follows it): then it can only
+    /// be allowed once. A chain's holds one rule per line, each saved (PERMISSIONS-27).
     pub rule: Option<String>,
     /// "Yes, and don't ask again for swift test in deskree-inc/oby", or none without a rule.
     pub always: Option<String>,
@@ -3554,23 +3555,15 @@ fn chain_allowed(call: &Call, rules: &[Rule], bounds: &Bounds) -> bool {
         })
 }
 
-/// The rules the owner's Always saves for `call`, asked about on the card `permission`: its
-/// `rule`, and for a chain the rule of each of its other commands too (PERMISSIONS-27). None
-/// when the card has no rule.
-pub fn always_rules(permission: &Permission, call: &Call, bounds: &Bounds) -> Vec<String> {
-    let Some(rule) = &permission.rule else {
-        return Vec::new();
-    };
-    let chain = call
-        .command
-        .as_deref()
-        .filter(|_| family(&call.tool) == "Bash" && permission.tool == call.tool)
-        .and_then(|command| chain_rules(command, bounds));
-    match chain {
-        Some(rules) if rules.first().is_some_and(|(first, _)| first == rule) => {
-            rules.into_iter().map(|(rule, _)| rule).collect()
-        }
-        _ => vec![rule.clone()],
+/// The rules the owner's Always saves for the card `permission`: its `rule`, which for a chain
+/// holds one rule per line, each of its commands' (PERMISSIONS-27). None when it has no rule.
+/// Only a command's card is split: every rule in it is [`prefix`]'s, which keeps no new line,
+/// while a path a read's or an edit's rule names may hold one.
+pub fn always_rules(permission: &Permission) -> Vec<String> {
+    match &permission.rule {
+        Some(rule) if permission.tool == "Bash" => rule.lines().map(str::to_owned).collect(),
+        Some(rule) => vec![rule.clone()],
+        None => Vec::new(),
     }
 }
 
@@ -3853,8 +3846,13 @@ pub fn card(call: &Call, id: &str, repo: &str, bounds: &Bounds) -> Permission {
                             .map(|(_, words)| words.as_str())
                             .collect::<Vec<_>>()
                             .join(", ");
-                        let rule = rules.into_iter().next().map(|(rule, _)| rule);
-                        (format!("Run {detail}"), detail, rule, Some(what))
+                        // One rule per line, so the card says all that Always saves.
+                        let rule = rules
+                            .iter()
+                            .map(|(rule, _)| rule.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        (format!("Run {detail}"), detail, Some(rule), Some(what))
                     }
                     // Allowed only once at a time, so the owner reads all of it (#634).
                     None => (format!("Run {detail}"), detail, None, None),
@@ -4570,7 +4568,10 @@ mod tests {
         // A chain's card offers its commands' rules (PERMISSIONS-27), and its title is whole.
         assert_eq!(
             (chained.rule.as_deref(), chained.title.as_str()),
-            (Some("Bash(swift build:*)"), "Run swift build && swift test")
+            (
+                Some("Bash(swift build:*)\nBash(swift test:*)"),
+                "Run swift build && swift test"
+            )
         );
         // Without a rule the title is the whole command, however long (#634).
         let long =
@@ -7152,7 +7153,6 @@ mod tests {
     /// subshell, a `cd` or a command with no rule keeps it once at a time.
     #[test]
     fn permissions_27_a_chain_of_commands_with_rules_offers_always() {
-        let bounds = Bounds::of(Path::new(WORKTREE));
         // (Codex's own `rg` reads as `ls` does: PERMISSIONS-3.)
         let line = "pwd; ls -la; git status --short; python3 -m pytest -q";
         let card = codex_card(line);
@@ -7162,15 +7162,14 @@ mod tests {
             card.always.as_deref(),
             Some("Yes, and don't ask again for python3 -m pytest in o/r")
         );
-        assert_eq!(
-            always_rules(&card, &bash(line), &bounds),
-            ["Bash(python3 -m pytest:*)"]
-        );
+        assert_eq!(always_rules(&card), ["Bash(python3 -m pytest:*)"]);
         let line = "rm -rf __pycache__ .pytest_cache && swift build && swift test && swift build";
         let card = codex_card(line);
+        // Its `rule` holds every rule its `always` names, one per line: the owner's Always saves
+        // each, so the card never promises more than it saves.
         assert_eq!(
             card.rule.as_deref(),
-            Some("Bash(rm -rf __pycache__ .pytest_cache)")
+            Some("Bash(rm -rf __pycache__ .pytest_cache)\nBash(swift build:*)\nBash(swift test:*)")
         );
         assert_eq!(
             card.always.as_deref(),
@@ -7178,7 +7177,7 @@ mod tests {
                 "Yes, and don't ask again for rm -rf __pycache__ .pytest_cache, swift build, swift test in o/r"
             )
         );
-        let saved = always_rules(&card, &bash(line), &bounds);
+        let saved = always_rules(&card);
         assert_eq!(
             saved,
             [
@@ -7189,7 +7188,7 @@ mod tests {
         );
         let commit = "git add -A && git -c commit.gpgsign=false commit -m 'feat: x'";
         assert_eq!(
-            always_rules(&codex_card(commit), &bash(commit), &bounds),
+            always_rules(&codex_card(commit)),
             ["Bash(git add:*)", "Bash(git commit:*)"]
         );
         let saved: Vec<Rule> = saved.iter().map(|r| rule(r, "allow")).collect();
@@ -7248,11 +7247,15 @@ mod tests {
         }
         // A card's one rule is all a single command's Always saves; a card with none saves none.
         let single = codex_card("swift test");
-        assert_eq!(
-            always_rules(&single, &bash("swift test"), &bounds),
-            ["Bash(swift test:*)"]
-        );
+        assert_eq!(always_rules(&single), ["Bash(swift test:*)"]);
         let none = codex_card("swift build | tee log");
-        assert!(always_rules(&none, &bash("swift build | tee log"), &bounds).is_empty());
+        assert!(always_rules(&none).is_empty());
+        // Only a command's card is split by line: a read's place is one rule, whatever it holds.
+        let read = Permission {
+            tool: "Read".into(),
+            rule: Some("Read(/tmp/a\nBash(curl:*))".into()),
+            ..none
+        };
+        assert_eq!(always_rules(&read), ["Read(/tmp/a\nBash(curl:*))"]);
     }
 }

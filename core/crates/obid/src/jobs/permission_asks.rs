@@ -799,8 +799,7 @@ impl Jobs {
         let _ = ask.reply.send(answer);
         if decision == Decision::Always {
             // A chain's Always saves each of its commands' rules (PERMISSIONS-27).
-            let bounds = self.bounds(&job, &self.worktree_path(id));
-            for rule in permissions::always_rules(&ask.permission, &ask.call, &bounds) {
+            for rule in permissions::always_rules(&ask.permission) {
                 self.save_rule(&rule, &job.repo);
             }
         }
@@ -822,7 +821,7 @@ impl Jobs {
         source: Source,
     ) -> Option<Result<Job, PermissionRefused>> {
         let approved = self.approved_mode();
-        let (card, said, call) = {
+        let (card, said) = {
             let mut state = self.lock();
             let job = state
                 .jobs
@@ -836,7 +835,6 @@ impl Jobs {
                 )));
             }
             let (said, answer) = owners_answer(&card, decision, words, source);
-            let call = Call::new(&parked.tool, &parked.input);
             job.heard.push(permissions::after_park(parked, &answer));
             // Kept until its run ends: that run must pick its session up (`acp::Options`), and
             // an allow lets the same call through once.
@@ -856,7 +854,7 @@ impl Jobs {
             job.status = Status::Queued;
             job.phase = Some(Phase::Prepare);
             job.step = answered_step(&card, decision);
-            (card, said, call)
+            (card, said)
         };
         let job = self.update(id, |_| {})?;
         self.note(PermissionNote::Settled {
@@ -865,8 +863,7 @@ impl Jobs {
             answer: Some(said),
         });
         if decision == Decision::Always {
-            let bounds = self.bounds(&job, &self.worktree_path(id));
-            for rule in permissions::always_rules(&card, &call, &bounds) {
+            for rule in permissions::always_rules(&card) {
                 self.save_rule(&rule, &job.repo);
             }
         }
