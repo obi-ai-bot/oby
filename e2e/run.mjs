@@ -264,7 +264,7 @@ const steps = [
   },
   {
     n: 2,
-    title: "two obids up with stub agents, and paired",
+    title: "two obids up with stub agents, paired, and sealing",
     by: "Rust core + Sphere server",
     implemented: true,
     // Start obid A (wellington) and obid B (ernesto) with the stub agent; for each: make its key,
@@ -273,14 +273,14 @@ const steps = [
   },
   {
     n: 3,
-    title: "B sends review_request via relay",
+    title: "B sends a sealed review_request via relay",
     by: "Rust core + Sphere server",
     implemented: true,
     run: async (c) => (await import("./lib/scenario-steps.mjs")).runStep(3, c),
   },
   {
     n: 4,
-    title: "A has no remembered decision: inbox, owner accepts and remembers, review job dispatched",
+    title: "A has no remembered decision: inbox, an unsigned Accept is refused, the owner's signed accept and remember, review job dispatched",
     by: "Rust core",
     implemented: true,
     run: async (c) => (await import("./lib/scenario-steps.mjs")).runStep(4, c),

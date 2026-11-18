@@ -11,8 +11,8 @@
 // This file is the Rust core's (docs/ARCHITECTURE.md, section 6): the scenario's fixed values come
 // from the lead's scenario.mjs and fixture.mjs, the write check's definitions from snapshot.mjs.
 
-import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { createHash, createPublicKey, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
@@ -84,8 +84,8 @@ async function within(seconds, probe, why) {
 }
 
 // One HTTP call; answers {status, body} with the body parsed as JSON when it is JSON.
-async function call(url, { method = "GET", token, body, form, timeoutMs = 30_000 } = {}) {
-  const headers = {};
+async function call(url, { method = "GET", token, body, form, headers: extra = {}, timeoutMs = 30_000 } = {}) {
+  const headers = { ...extra };
   let payload;
   if (token) headers.Authorization = `Bearer ${token}`;
   if (form) {
@@ -139,6 +139,49 @@ const asAdmin = async (ctx, path, options = {}) => sphere(ctx, path, { ...option
 
 // An obid's API: `/v1/…` on its port, with its token.
 const obid = (ctx, which, path, options = {}) => call(`http://127.0.0.1:${ctx.obids[which].port}/v1${path}`, { ...options, token: ctx.obids[which].token });
+
+// The owner's device on an obid, as the Electron app's main process is (apps/electron/src/main/device.ts):
+// a P-256 key made here, in memory only, registered with POST /v1/devices once home/pairing names it.
+async function device(ctx, which) {
+  const o = ctx.obids[which];
+  if (o.device) return o.device;
+  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  const { x, y } = createPublicKey(privateKey).export({ format: "jwk" });
+  const publicKey = Buffer.concat([Buffer.from([4]), Buffer.from(x, "base64url"), Buffer.from(y, "base64url")]).toString("base64");
+  const pairing = join(o.home, "pairing");
+  writeFileSync(pairing, publicKey, { mode: 0o600 });
+  const registered = expect(await obid(ctx, which, "/devices", { method: "POST", body: { name: "E2E owner's Mac", publicKey } }), 200, `${which}: POST /v1/devices`);
+  rmSync(pairing, { force: true });
+  o.device = { id: registered.id, privateKey };
+  return o.device;
+}
+
+// A call the owner's app signs as their own words (X-Oby-Words, docs/runner-api.md, "Words the owner
+// typed"): ECDSA P-256 with SHA-256 over obid's sentence for exactly this request, as main signs it.
+async function signedObid(ctx, which, path, { method = "POST", body } = {}) {
+  const { id, privateKey } = await device(ctx, which);
+  const signedAt = new Date().toISOString();
+  const digest = createHash("sha256").update(body === undefined ? "" : JSON.stringify(body)).digest("hex");
+  const signature = sign("sha256", Buffer.from(`oby-words\n${method}\n/v1${path.split("?")[0]}\n${digest}\n${signedAt}`, "utf8"), privateKey).toString("base64");
+  return obid(ctx, which, path, { method, body, headers: { "X-Oby-Words": `${id} ${signedAt} ${signature}` } });
+}
+
+// An envelope as signed and sent: obid keeps a sealed one with its words opened in `body` and the
+// sealed body in `sealed` (docs/api/obysphere.md, "messages"), so `sealed` goes back as `body`.
+function wire(env) {
+  if (env?.sealed === undefined) return env;
+  const { sealed, ...rest } = env;
+  return { ...rest, body: sealed };
+}
+
+// The seal keys of an obid of this run, as the spec's verifier takes them ({key_id: base64url of the
+// 32 private bytes}): read from the run's own scratch home (keys/seal.key, hex), so the harness can
+// open what was sealed for it. Only this run's throwaway obids; never anyone's real keys.
+function sealKeys(ctx, which) {
+  const o = ctx.obids[which];
+  const raw = Buffer.from(readFileSync(join(o.home, "keys", "seal.key"), "utf8").trim(), "hex");
+  return { [o.sealKeyId]: raw.toString("base64url") };
+}
 
 // Every member's keys as the spec's verifiers take them: {key_id: {obi, public_key, valid_from_seq, valid_until_seq}}.
 function directoryKeys(members) {
@@ -368,6 +411,37 @@ async function step2(ctx) {
     const verdict = ctx.spec.verifyCard(m.card, { now: timestamp(nowSeconds()), bound_owner_key: o.owner.key.publicKey });
     assert(verdict.ok, `${o.id}'s card fails the spec's check: ${verdict.code}: ${verdict.message}`);
   }
+
+  // 2.5 Sealed by default (docs/contracts/obysphere.md, SPHERE-18): once the Sphere and the team take
+  // seal keys, obid says `sealing` `card_needed`, and the owner signs the card it makes, now with its
+  // seal key, as the app does (PUT /v1/obid/sphere/membership); then every word between them is sealed.
+  for (const [which, o] of Object.entries(ctx.obids)) {
+    let me;
+    for (let round = 0; round < 3; round++) {
+      me = await within(30, async () => {
+        expect(await obid(ctx, which, "/obid/sphere/members"), 200, `${which}: GET /v1/obid/sphere/members`);
+        const m = expect(await obid(ctx, which, "/obid/sphere"), 200, `${which}: GET /v1/obid/sphere`);
+        return ["card_needed", "on"].includes(m.sealing) ? m : undefined;
+      }, (last, e) => (e ? e.message : `${which}: sealing never became card_needed`));
+      if (me.sealing === "on") break;
+      const made = expect(await obid(ctx, which, "/obid/sphere/card", {
+        method: "POST",
+        body: { url: ctx.sphereUrl, sphere: ctx.sphereId, obiId: o.id, name: o.name, ownerKey: o.owner.key.publicKey, accepts: o.accepts },
+      }), 200, `${which}: POST /v1/obid/sphere/card (sealing)`);
+      const card = ctx.spec.signCard(made.card, o.owner.key.privateKey, o.owner.key.keyId);
+      expect(await obid(ctx, which, "/obid/sphere/membership", { method: "PUT", body: { card } }), 200, `${which}: PUT /v1/obid/sphere/membership`);
+    }
+    me = expect(await obid(ctx, which, "/obid/sphere"), 200, `${which}: GET /v1/obid/sphere`);
+    assert(me.sealing === "on" && typeof me.sealKeyId === "string", `${which}: sealing is ${me.sealing}, sealKeyId ${me.sealKeyId}`);
+    o.sealKeyId = me.sealKeyId;
+  }
+  // Each reads the other's new card: its words go sealed for that key.
+  for (const [which, peer] of [["a", "b"], ["b", "a"]]) {
+    await within(30, async () => {
+      const list = expect(await obid(ctx, which, "/obid/sphere/members"), 200, `${which}: GET /v1/obid/sphere/members`);
+      return list.find((m) => m.obi === ctx.obids[peer].id && m.sealed === true);
+    }, () => `${which} doesn't see ${ctx.obids[peer].id}'s seal key`);
+  }
 }
 
 // POST /v1/obid/sphere/requests on B with the brief: the new exchange.
@@ -387,21 +461,29 @@ async function step3(ctx) {
   assert(x.messages.length === 1, `B's exchange has ${x.messages.length} messages, not 1`);
   const [message] = x.messages;
   assert(message.seq === 1 && typeof message.envelope?.signature === "string", `B's message is ${show(message)}`);
+  // Sealed for A's key: B keeps its own words opened, and the body as signed under `sealed`.
+  assert(message.envelope.seal?.key_id === ctx.obids.a.sealKeyId && message.envelope.sealed !== undefined, `B's request isn't sealed for A's key: ${show(message.envelope.seal)}`);
+  assert(same(message.envelope.body, BRIEF), "B's own copy of its words isn't the brief");
   ctx.X = x.correlationId;
-  ctx.requestX = message.envelope;
+  ctx.requestX = wire(message.envelope);
 
   // 3.2
   const audit = expect(await asAdmin(ctx, `/spheres/${ctx.sphereId}/audit`), 200, "GET audit");
   assert(audit.entries.length === 1 && audit.entries[0].seq === 1, `the audit has ${audit.entries.length} entries`);
   const env = audit.entries[0].envelope;
-  assert(same(env, message.envelope), "the audit's envelope differs from B's message");
+  assert(same(env, wire(message.envelope)), "the audit's envelope differs from B's message as signed");
   assert(env.type === "review_request" && env.from === OBIS.b.id && env.to === OBIS.a.id, `the entry is a ${env.type} from ${env.from} to ${env.to}`);
   assert(env.id === ctx.X && env.correlation_id === ctx.X, "the entry's id and correlation_id aren't X");
   assert(env.key_id === ctx.obids.b.keyId, "the entry isn't signed with B's key");
-  assert(same(env.body, BRIEF), "the entry's body differs from the brief");
+  // The Sphere keeps the words sealed: no word of the brief in what it stores.
+  const stored = JSON.stringify(env);
+  assert(env.seal?.key_id === ctx.obids.a.sealKeyId && !stored.includes(CANARY) && !stored.includes(BRIEF.goal), "the Sphere's entry carries the brief's words in the clear");
   const keys = directoryKeys(await members(ctx));
-  const verdict = ctx.spec.verifyEnvelope(env, { now: timestamp(nowSeconds()), sphere: ctx.sphereId, receiver: OBIS.a.id, keys, seq: 1, seen_ids: [] });
+  const seal_keys = sealKeys(ctx, "a");
+  const verdict = ctx.spec.verifyEnvelope(env, { now: timestamp(nowSeconds()), sphere: ctx.sphereId, receiver: OBIS.a.id, keys, seq: 1, seen_ids: [], seal_keys, sender_seals: true });
   assert(verdict.ok, `verifyEnvelope refuses it: ${verdict.code}: ${verdict.message}`);
+  const opened = ctx.spec.openBody(env, Buffer.from(seal_keys[ctx.obids.a.sealKeyId], "base64url"));
+  assert(same(opened, BRIEF), "the entry's words, opened with A's seal key, aren't the brief");
 }
 
 async function step4(ctx) {
@@ -424,8 +506,16 @@ async function step4(ctx) {
   assert(x.direction === "incoming" && x.state === "inbox" && x.inboxItem === item.id, `A's exchange X is ${x.direction}, ${x.state}, inboxItem ${x.inboxItem}`);
   ctx.inboxItem = item.id;
 
-  // 4.3
-  const answered = expect(await obid(ctx, "a", `/inbox/${encodeURIComponent(item.id)}/answer`, { method: "POST", body: { answer: INBOX_ANSWER } }), 200, "A: POST /v1/inbox/{id}/answer");
+  // 4.3 Accepting another Oby's work takes the owner's own hand (SPHERE-17): obid's token alone is
+  // 403 and changes nothing; the owner's device signs the answer, as the app's main does on a click.
+  const answerPath = `/inbox/${encodeURIComponent(item.id)}/answer`;
+  for (const answer of ["Accept", INBOX_ANSWER]) {
+    expect(await obid(ctx, "a", answerPath, { method: "POST", body: { answer } }), 403, `A: an unsigned ${answer}`);
+  }
+  const still = await exchange(ctx, "a", ctx.X);
+  assert(still.state === "inbox" && !still.job, `after the unsigned Accept, A's exchange X is ${still.state}, job ${still.job}`);
+  assert(same(expect(await obid(ctx, "a", "/obid/decisions"), 200, "A: GET /v1/obid/decisions"), []), "an unsigned Accept, and remember kept a decision");
+  const answered = expect(await signedObid(ctx, "a", answerPath, { body: { answer: INBOX_ANSWER } }), 200, "A: POST /v1/inbox/{id}/answer, signed");
   assert(answered.state === "done" && answered.answer === INBOX_ANSWER, `the answered item is ${answered.state}, answer ${answered.answer}`);
 
   // 4.4
@@ -479,8 +569,10 @@ async function checkOutgoing(ctx, id, acceptBody, byRule, seconds, what) {
   assert(same(e.messages[1].envelope.body, acceptBody), `the accept's body is ${show(e.messages[1].envelope.body)}, not ${show(acceptBody)}`);
   checkResult(ctx, e.messages.at(-1).envelope.body, byRule, `${what}'s result`);
   const keys = directoryKeys(await members(ctx));
+  const seal_keys = sealKeys(ctx, "b");
   for (const m of e.messages.filter((x) => x.direction === "received")) {
-    const verdict = ctx.spec.verifyEnvelope(m.envelope, { now: timestamp(nowSeconds()), sphere: ctx.sphereId, receiver: OBIS.b.id, keys, seq: m.seq, seen_ids: [] });
+    assert(m.envelope.seal?.key_id === ctx.obids.b.sealKeyId, `B's received ${m.envelope.type} isn't sealed for B's key`);
+    const verdict = ctx.spec.verifyEnvelope(wire(m.envelope), { now: timestamp(nowSeconds()), sphere: ctx.sphereId, receiver: OBIS.b.id, keys, seq: m.seq, seen_ids: [], seal_keys, sender_seals: true });
     assert(verdict.ok, `B's received ${m.envelope.type} fails verifyEnvelope: ${verdict.code}: ${verdict.message}`);
   }
   return e;
@@ -531,7 +623,7 @@ async function step7(ctx) {
   // 7.3 Exactly the two exchanges, each envelope as its sender keeps it.
   const a = { X: await exchange(ctx, "a", ctx.X), Y: await exchange(ctx, "a", ctx.Y) };
   const b = { X: ctx.outgoingX, Y: await exchange(ctx, "b", ctx.Y) };
-  const sentBy = (e) => e.messages.filter((m) => m.direction === "sent").map((m) => m.envelope);
+  const sentBy = (e) => e.messages.filter((m) => m.direction === "sent").map((m) => wire(m.envelope));
   let at = 0;
   const entries = audit.entries;
   for (const name of ["X", "Y"]) {

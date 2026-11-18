@@ -304,6 +304,11 @@ impl Link {
             .request_for(body.to_string().as_bytes(), Some(meant))
             .await
             .map_err(|e| {
+                // A member who can't receive sealed asks yet is told in obid's own words, and keeps
+                // its reason, so the app can offer what to do (SPHERE-18).
+                if e.reason == Some(super::NOT_SEALED) {
+                    return e;
+                }
                 // The thread already says who, and no model of the owner's is there to be "I".
                 let words = crate::brain::ask::refusal(&member.name, &e);
                 let rules = words.strip_prefix(&format!("I can't ask {}'s Oby. ", member.name));
@@ -317,8 +322,8 @@ impl Link {
     }
 
     /// Which of one owner's Obys a question goes to: one that takes questions, first one whose words
-    /// go sealed, then one with no seal key that never had one, and last one that dropped its key,
-    /// which refuses.
+    /// go sealed, then one with no seal key that never had one (sent to only when the owner let it
+    /// go unsealed, SPHERE-19), and last one that dropped its key, which refuses.
     fn oby_to_ask<'a>(&self, members: &'a [AskMember]) -> Option<&'a AskMember> {
         let state = self.lock();
         members
@@ -532,6 +537,7 @@ mod tests {
                 obi_id: "obi-wellington".into(),
                 card: json!({}),
                 joined_at: 1000,
+                revoked: None,
             });
             for e in [&here, &before] {
                 state.exchanges.insert(e.correlation_id.clone(), e.clone());

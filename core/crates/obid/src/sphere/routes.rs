@@ -159,6 +159,30 @@ pub async fn peer_ask(
     ))
 }
 
+/// `PUT /v1/obid/sphere/peers/{owner}/unsealed`: whether obid may send that member's Obys words in
+/// the clear while their card has no seal key (SPHERE-19). Sealed is the default (SPHERE-18), so
+/// allowing it is the owner's word alone, signed by an app of theirs: obid's token, which the page
+/// reaches through main, isn't enough. Taking it back sends less, and needs no more.
+pub async fn allow_unsealed(
+    State(shared): State<Arc<Shared>>,
+    Path(owner): Path<String>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let allowing = serde_json::from_slice::<Value>(&body).is_ok_and(|b| b["allow"] == true);
+    if allowing && crate::routes::signed_by(&shared, "PUT", &uri, &headers, &body).is_none() {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Sending to them unsealed is only yours to allow: an app of yours signs it.",
+        ));
+    }
+    Ok(json(
+        StatusCode::OK,
+        shared.link.allow_unsealed(&owner, &body).await?,
+    ))
+}
+
 /// `GET /v1/obid/decisions`.
 pub async fn decisions(State(shared): State<Arc<Shared>>) -> Response {
     json(StatusCode::OK, shared.link.decisions_json())
@@ -248,6 +272,30 @@ pub async fn answer(
         return Err(ApiError::new(
             StatusCode::FORBIDDEN,
             super::link::NEEDS_YOUR_HAND,
+        ));
+    }
+    // Another Oby's review request or handoff is accepted, once or remembered, only by the owner's
+    // hand too (SPHERE-17, the Approvals non-negotiable): a signature of one of their devices, or a
+    // paired phone through the gateway, never obid's token alone. Decline and Later stay unsigned:
+    // saying no or putting it off starts nothing.
+    if !typed
+        && device.is_none()
+        && shared.link.item(&id).is_some_and(|i| {
+            i.done.is_none()
+                && i.obi
+                    .as_ref()
+                    .is_some_and(|o| o["type"] == "review_request" || o["type"] == "handoff")
+        })
+        && serde_json::from_slice::<Value>(&body).is_ok_and(|b| {
+            matches!(
+                b["answer"].as_str(),
+                Some(super::inbox::ACCEPT | super::inbox::ACCEPT_REMEMBER)
+            )
+        })
+    {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            super::link::NEEDS_YOUR_ACCEPT,
         ));
     }
     // A job's permission, or its plan, is allowed only by the owner's signed words (PERMISSIONS-15):

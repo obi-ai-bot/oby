@@ -1432,7 +1432,8 @@ async fn in_a_sphere(folder: &Folder, reviewed: bool) -> (FakeSphere, Obid, Test
     });
     let joined = tokio::task::block_in_place(|| join_a(&obid, &sphere, &Owner::new("wellington")));
     assert_eq!(joined["state"], "joined");
-    let ernesto = TestObi::join(&sphere, "obi-ernesto", "ernesto").await;
+    // Its card has a seal key: obid sends a teammate nothing in the clear by default (SPHERE-18).
+    let ernesto = TestObi::join_sealing(&sphere, "obi-ernesto", "ernesto").await;
     (sphere, obid, ernesto)
 }
 

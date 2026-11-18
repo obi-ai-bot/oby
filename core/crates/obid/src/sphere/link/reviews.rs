@@ -961,6 +961,14 @@ impl Link {
                         ),
                     ));
                 }
+                // Sealed by default (SPHERE-18): nothing goes in the clear to an Obi whose card has
+                // no seal key, unless this owner said, signed, that it may for that member
+                // (SPHERE-19, "Oby forbids nothing").
+                if member.seal.is_none() && !self.pins.allows_clear(&member.owner) {
+                    return Err(
+                        api(StatusCode::CONFLICT, not_sealed(&member.owner)).because(NOT_SEALED)
+                    );
+                }
                 if matches!(kind.as_str(), "share_offer" | "run_request") {
                     return Err(invalid(
                         "Sharing Macs and API accounts went with compute sharing.".into(),

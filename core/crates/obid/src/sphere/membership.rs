@@ -30,7 +30,25 @@ pub struct Membership {
     pub obi_id: String,
     pub card: Value,
     pub joined_at: i64,
+    /// When and why the Sphere took this Obi out, once it did (SPHERE-20): kept so the apps can
+    /// say so, instead of the Obysphere vanishing. None while joined.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked: Option<Revoked>,
 }
+
+/// Why a membership ended by the Sphere's word, not this owner's Leave (SPHERE-20).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Revoked {
+    /// When the Sphere says it was revoked (the directory's `revoked_at`), or when obid first saw it.
+    pub at: i64,
+    /// A stable reason, add-only: [`REMOVED`] today.
+    pub reason: String,
+}
+
+/// The Sphere's directory lists this Obi revoked: an admin removed it, or its owner did on the
+/// Sphere's own site (SPHERE-20).
+pub const REMOVED: &str = "removed";
 
 impl Membership {
     /// The request types the card accepts.
