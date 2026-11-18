@@ -977,12 +977,18 @@ fn a_jobs_transcript_has_each_call_and_no_vault_secret() {
     let mut streamed: Vec<Value> = Vec::new();
     let mut appended = String::new();
     let mut appends = 0;
+    // What streamed between whole lines and while a command ran (LIVETASK-32, 34): masked too.
+    let mut between = String::new();
     while let Ok((name, data)) = events.recv_timeout(std::time::Duration::from_secs(1)) {
         if name != "transcript" || data["job"] != json!(id) {
             continue;
         }
         if data["entry"].is_object() {
             streamed.push(data["entry"].clone());
+        } else if let Some(tail) = data["tail"].as_str() {
+            between.push_str(tail);
+        } else if data["output"].is_object() {
+            between.push_str(data["output"]["text"].as_str().unwrap_or_default());
         } else {
             assert_eq!(data["n"], 10, "{data}");
             appended.push_str(data["append"].as_str().unwrap());
@@ -1013,6 +1019,7 @@ fn a_jobs_transcript_has_each_call_and_no_vault_secret() {
         assert!(!text.contains("raw output"), "{what}: {text}");
     }
     holds_none(&appended, &value(), "the appends");
+    holds_none(&between, &value(), "what streamed between lines");
 
     // An entry opened (#784): the call's whole command, the last 200 of its 304 lines with its
     // exit code, the vault's value as its name in every form, and only the token's own line hidden.

@@ -590,10 +590,12 @@ pub struct Conversations {
     dir: PathBuf,
     threads: Mutex<Vec<Thread>>,
     events: Events,
-    /// The id the next new conversation gets once obid named it ([`Conversations::next_id`]):
-    /// its folder may hold a Claude Code started for it already (crate::brain::harness). Kept in
-    /// `next-id`, so the folder is found again after obid restarts.
-    next: Mutex<Option<String>>,
+    /// The id the next new conversation of each profile gets once obid named it
+    /// ([`Conversations::next_id`]), by the profile's tag ("" for the default's): its folder may
+    /// hold a Claude Code started for it already (crate::brain::harness). Kept in `next-id` (the
+    /// default's) and `next-id-<profile id>`, so the folder is found again after obid restarts
+    /// (PROFILES-46).
+    next: Mutex<BTreeMap<String, String>>,
     /// What ends a conversation's waiting session before its folders go (LANES-16).
     ending: std::sync::OnceLock<Ending>,
     /// Forgotten under the lock, ended once it's let go ([`Conversations::end_forgotten`]).
@@ -606,8 +608,27 @@ fn runs_swept(place: &Path, idle: bool) -> bool {
     crate::conn::sweep_records(&temp, &room, &login, idle)
 }
 
-/// Where the next new conversation's id is kept.
+/// Where the default profile's next new conversation's id is kept.
 const NEXT: &str = "next-id";
+
+/// Where profile `tag`'s next new conversation's id is kept: `next-id` for the default's ("").
+fn next_file(tag: &str) -> String {
+    match tag {
+        "" => NEXT.to_owned(),
+        tag => format!("{NEXT}-{tag}"),
+    }
+}
+
+/// The profile whose next id the file `name` keeps ("" for the default's), or none for any other
+/// file: another profile's only by a lower-case UUID (crate::profiles::is_profile_id).
+fn profile_of_next(name: &str) -> Option<String> {
+    if name == NEXT {
+        return Some(String::new());
+    }
+    let tag = name.strip_prefix(NEXT)?.strip_prefix('-')?;
+    let id: [u8; 36] = tag.as_bytes().try_into().ok()?;
+    crate::profiles::is_profile_id(id).then(|| tag.to_owned())
+}
 
 impl Conversations {
     /// The conversations in `home/conversations`, after moving the single thread of obid before
@@ -631,10 +652,18 @@ impl Conversations {
                 named
             })
             .collect();
-        let next = std::fs::read_to_string(dir.join(NEXT))
-            .ok()
-            .map(|id| id.trim().to_owned())
-            .filter(|id| is_id(id) && !threads.iter().any(|t| &t.id == id));
+        let next: BTreeMap<String, String> = (std::fs::read_dir(&dir).into_iter().flatten())
+            .flatten()
+            .filter_map(|entry| {
+                let file = entry.file_name().to_string_lossy().into_owned();
+                let tag = profile_of_next(&file)?;
+                let id = std::fs::read_to_string(entry.path())
+                    .ok()?
+                    .trim()
+                    .to_owned();
+                (is_id(&id) && !threads.iter().any(|t| t.id == id)).then_some((tag, id))
+            })
+            .collect();
         let conversations = Conversations {
             ending: std::sync::OnceLock::new(),
             forgotten: Mutex::new(Vec::new()),
@@ -649,7 +678,10 @@ impl Conversations {
         // Every recorded run is swept (none runs yet); a deleted one's folders go once none is left.
         // One whose file was kept aside, named `<id>-<seconds>.json`, isn't deleted (HOME-13).
         let next = conversations.next.lock().map(|next| next.clone());
-        let next = next.unwrap_or_else(|e| e.into_inner().clone());
+        let next: Vec<String> = next
+            .unwrap_or_else(|e| e.into_inner().clone())
+            .into_values()
+            .collect();
         let aside = std::fs::read_dir(home.join("unreadable/conversations")).into_iter();
         let aside: Vec<_> = aside.flatten().flatten().map(|e| e.file_name()).collect();
         let entries = std::fs::read_dir(&conversations.dir).into_iter().flatten();
@@ -660,7 +692,7 @@ impl Conversations {
             let gone = json.is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound);
             let ours = is_id(&id) && place.is_dir();
             let gone = gone && !aside.iter().any(|n| n.to_string_lossy().starts_with(&*id));
-            if ours && runs_swept(&place, true) && gone && next.as_deref() != Some(&*id) {
+            if ours && runs_swept(&place, true) && gone && !next.iter().any(|n| *n == *id) {
                 let _ = std::fs::remove_dir_all(place);
             }
         }
@@ -810,7 +842,9 @@ impl Conversations {
             .collect();
         let index = found.unwrap_or_else(|| {
             threads.push(Thread {
-                id: self.take_next().unwrap_or_else(new_id),
+                id: self
+                    .take_next(scope.tag().as_deref())
+                    .unwrap_or_else(new_id),
                 // Named after the owner's words, a few of them (CHATFIRST-36); files with no
                 // words, after the first.
                 title: match names.first().filter(|_| said.trim().is_empty()) {
@@ -1568,38 +1602,43 @@ impl Conversations {
         Ok(())
     }
 
-    /// The id the next new conversation will get, named now and kept until one takes it.
-    pub fn next_id(&self) -> String {
+    /// The id the next new conversation of the profile `tag` (none: the default's) will get, named
+    /// now and kept until one made in that profile takes it (PROFILES-46).
+    pub fn next_id(&self, tag: Option<&str>) -> String {
+        let tag = tag.unwrap_or_default();
         let mut next = self.next.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(id) = &*next {
+        if let Some(id) = next.get(tag) {
             return id.clone();
         }
         let id = new_id();
-        if let Err(e) = crate::store::write_private(&self.dir.join(NEXT), id.as_bytes()) {
+        if let Err(e) = crate::store::write_private(&self.dir.join(next_file(tag)), id.as_bytes()) {
             tracing::warn!("the next conversation's id isn't kept: {e}");
         }
-        *next = Some(id.clone());
+        next.insert(tag.to_owned(), id.clone());
         id
     }
 
-    /// The next new conversation's id, when obid named one and none took it yet.
-    pub fn peek_next(&self) -> Option<String> {
-        self.next.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    /// Every profile's next new conversation's id that obid named and none took yet.
+    pub fn nexts(&self) -> Vec<String> {
+        let next = self.next.lock().unwrap_or_else(|e| e.into_inner());
+        next.values().cloned().collect()
     }
 
-    /// Whether `id` is the next new conversation's, not taken yet.
+    /// Whether `id` is a profile's next new conversation's, not taken yet.
     pub fn is_next(&self, id: &str) -> bool {
-        self.next
+        let next = self.next.lock().unwrap_or_else(|e| e.into_inner());
+        next.values().any(|n| n == id)
+    }
+
+    /// The profile `tag`'s next new conversation's id, taken by its conversation beginning now.
+    fn take_next(&self, tag: Option<&str>) -> Option<String> {
+        let tag = tag.unwrap_or_default();
+        let id = self
+            .next
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .as_deref()
-            == Some(id)
-    }
-
-    /// The next new conversation's id, taken by the conversation beginning now.
-    fn take_next(&self) -> Option<String> {
-        let id = self.next.lock().unwrap_or_else(|e| e.into_inner()).take()?;
-        let _ = std::fs::remove_file(self.dir.join(NEXT));
+            .remove(tag)?;
+        let _ = std::fs::remove_file(self.dir.join(next_file(tag)));
         Some(id)
     }
 
@@ -2901,6 +2940,56 @@ mod tests {
             assert!(name.starts_with(&format!("{id}-")), "{name}");
             assert_eq!(std::fs::read(kept[0].path()).unwrap(), b"{");
         }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// PROFILES-46: each profile names its own next conversation's id, kept across a restart in a
+    /// file of its own; a conversation made in a profile takes that profile's and no other's.
+    #[test]
+    fn profiles_46_each_profile_names_its_own_next_conversation() {
+        const B: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        let home = std::env::temp_dir().join(format!("obid-profiles-46-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let open = || super::Conversations::open(&home, crate::events::Events::new());
+        let begin = |conversations: &super::Conversations, scope: &crate::profiles::Scope| {
+            (conversations.begin(
+                scope,
+                super::Target::New,
+                "Hi".into(),
+                vec![],
+                vec![],
+                None,
+                None,
+                Ok(vec![]),
+                false,
+                Ok(None),
+            ))
+            .unwrap()
+            .conversation
+        };
+        let conversations = open();
+        let ours = conversations.next_id(None);
+        let theirs = conversations.next_id(Some(B));
+        assert_ne!(ours, theirs);
+        assert_eq!(conversations.next_id(Some(B)), theirs);
+        let dir = home.join("conversations");
+        assert_eq!(std::fs::read_to_string(dir.join("next-id")).unwrap(), ours);
+        assert_eq!(
+            std::fs::read_to_string(dir.join(format!("next-id-{B}"))).unwrap(),
+            theirs
+        );
+        drop(conversations);
+
+        let conversations = open();
+        assert_eq!(conversations.next_id(None), ours);
+        assert_eq!(conversations.next_id(Some(B)), theirs);
+        let in_b = crate::profiles::Scope::of_profile_for_tests(B);
+        assert_eq!(begin(&conversations, &in_b), theirs);
+        assert!(!conversations.is_next(&theirs) && conversations.is_next(&ours));
+        assert!(!dir.join(format!("next-id-{B}")).exists());
+        let default = crate::profiles::Scope::before_profiles_for_tests();
+        assert_eq!(begin(&conversations, &default), ours);
+        assert!(conversations.nexts().is_empty());
         let _ = std::fs::remove_dir_all(&home);
     }
 

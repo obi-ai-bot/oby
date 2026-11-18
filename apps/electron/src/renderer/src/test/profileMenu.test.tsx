@@ -33,7 +33,7 @@ type Answer = { status: number; text: string };
 // main's bridge, as obid answers: its profiles (or an answer for them), a create (made, it's listed); the rest 404.
 // The profile the page tells main is open (obid.profile) is kept in told; main answers changed
 function obid(profiles: unknown[] | Answer, changed = false) {
-  const said = { profiles, create: undefined as Answer | undefined };
+  const said = { profiles, create: undefined as Answer | undefined, change: undefined as Answer | undefined, remove: undefined as Answer | undefined };
   const told: (string | null)[] = [];
   const profile = vi.fn(async (id: string | null) => { told.push(id); return changed; });
   const calls: { method: string; path: string; body?: unknown }[] = [];
@@ -45,6 +45,19 @@ function obid(profiles: unknown[] | Answer, changed = false) {
       const made = { id: 'a1b2c3d4-0000-4000-8000-0000000000ff', ...(body as object), default: false, waiting: false };
       if (Array.isArray(said.profiles)) said.profiles = [...said.profiles, made];
       return { status: 201, text: JSON.stringify(made) };
+    }
+    const one = path.match(/^\/v1\/profiles\/([^/]+)$/)?.[1];
+    if (one && method === 'PATCH') {
+      if (said.change) return said.change;
+      const list = said.profiles as typeof DEFAULT[];
+      const changed = { ...list.find((p) => p.id === one)!, ...(body as object) };
+      said.profiles = list.map((p) => (p.id === one ? changed : p));
+      return { status: 200, text: JSON.stringify(changed) };
+    }
+    if (one && method === 'DELETE') {
+      if (said.remove) return said.remove;
+      said.profiles = (said.profiles as typeof DEFAULT[]).filter((p) => p.id !== one);
+      return { status: 204, text: '' };
     }
     return { status: 404, text: '{"error":"Not found."}' };
   });
@@ -105,11 +118,11 @@ describe('PROFILES-19', () => {
     expect(checked()).toEqual(['Default']);
     expect(row('Default').querySelector('.menu-check')).not.toBeNull();
     expect(row('Default').querySelector<HTMLElement>('.owner-avatar')!.style.background).toMatch(/#3a5a8c|rgb\(58, 90, 140\)/);
-    // the rows, a rule, then New profile…
+    // the rows, a rule, then Edit profile… and New profile…
     const items = [...menu()!.children];
-    expect(items.map((e) => e.tagName)).toEqual(['BUTTON', 'HR', 'BUTTON']);
-    expect(items[2].getAttribute('role')).toBe('menuitem');
-    expect(items[2].textContent).toBe('New profile…');
+    expect(items.map((e) => e.tagName)).toEqual(['BUTTON', 'HR', 'BUTTON', 'BUTTON']);
+    expect(items.slice(2).map((e) => e.getAttribute('role'))).toEqual(['menuitem', 'menuitem']);
+    expect(items.slice(2).map((e) => e.textContent)).toEqual(['Edit profile…', 'New profile…']);
   });
 });
 
@@ -281,5 +294,85 @@ describe('PROFILES-25', () => {
     await openMenu();
     await click(row('Acme'));
     expect(talks()).toEqual(['Avenga contract renewal date', 'Draft reply to Avenga security']);
+  });
+});
+
+const dialog = () => host.querySelector('[role="dialog"]');
+async function edit(o: ReturnType<typeof obid>) {
+  await show('', o.app);
+  await until(() => expect(titleButton()).not.toBeNull());
+  await openMenu();
+  await click(button('Edit profile…')!);
+  expect(menu()).toBeNull();
+}
+
+describe('PROFILES-48', () => {
+  it('PROFILES-48: profiles_48_edit_renames_and_recolours', async () => {
+    localStorage.setItem('oby.profile', ACME.id);
+    const o = obid([DEFAULT, ACME]);
+    await edit(o);
+    expect(dialog()!.querySelector('h2')!.textContent).toBe('Edit profile');
+    expect(host.querySelector<HTMLInputElement>('#profile-name')!.value).toBe('Acme');
+    expect(host.querySelector('[role="radio"][aria-checked="true"]')!.getAttribute('aria-label')).toBe('Brown');
+    await type('Acme Corp');
+    await click(button('Save')!);
+    await until(() => expect(dialog()).toBeNull());
+    expect(o.calls.filter((c) => c.method === 'PATCH')).toEqual([{ method: 'PATCH', path: `/v1/profiles/${ACME.id}`, body: { name: 'Acme Corp' } }]);
+    expect(title()).toBe('Acme Corp');
+
+    await openMenu();
+    await click(button('Edit profile…')!);
+    await click(host.querySelector('[role="radio"][aria-label="Purple"]')!);
+    await click(button('Save')!);
+    await until(() => expect(dialog()).toBeNull());
+    expect(o.calls.filter((c) => c.method === 'PATCH').at(-1)).toEqual({ method: 'PATCH', path: `/v1/profiles/${ACME.id}`, body: { color: '#6a4f8c' } });
+
+    o.said.change = { status: 400, text: JSON.stringify({ error: 'A profile’s name is 1 to 40 characters.' }) };
+    await openMenu();
+    await click(button('Edit profile…')!);
+    await type('Elsewhere');
+    await click(button('Save')!);
+    await until(() => expect(dialog()!.querySelector('[role="alert"]')?.textContent).toBe('A profile’s name is 1 to 40 characters.'));
+    expect(title()).toBe('Acme Corp');
+  });
+});
+
+describe('PROFILES-49', () => {
+  it('PROFILES-49: profiles_49_delete_asks_first_and_says_where_its_work_goes', async () => {
+    const reload = vi.fn();
+    const o = obid([DEFAULT, ACME]);
+    await edit(o);
+    // the default profile has no Delete
+    expect(button('Delete profile…')).toBeUndefined();
+    await click(button('Cancel')!);
+
+    await openMenu();
+    await click(row('Acme'));
+    await openMenu();
+    await click(button('Edit profile…')!);
+    await click(button('Delete profile…')!);
+    expect(dialog()!.querySelector('h2')!.textContent).toBe('Delete Acme?');
+    expect(dialog()!.textContent).toContain('Its conversations, tasks, agents, projects and accounts move to Default. Nothing is deleted with it.');
+    await click(button('Cancel')!);
+    expect(o.calls.some((c) => c.method === 'DELETE')).toBe(false);
+
+    o.said.remove = { status: 409, text: JSON.stringify({ error: 'profiles.json couldn’t be read.' }) };
+    await openMenu();
+    await click(button('Edit profile…')!);
+    await click(button('Delete profile…')!);
+    await click(button('Delete')!);
+    await until(() => expect(dialog()!.querySelector('[role="alert"]')?.textContent).toBe('profiles.json couldn’t be read.'));
+    expect(title()).toBe('Acme');
+
+    o.said.remove = undefined;
+    vi.stubGlobal('location', { search: '', reload });
+    await click(button('Delete')!);
+    await until(() => expect(dialog()).toBeNull());
+    expect(o.calls.filter((c) => c.method === 'DELETE')).toHaveLength(2);
+    expect(o.calls.at(-2)?.path === `/v1/profiles/${ACME.id}` || o.calls.some((c) => c.method === 'DELETE' && c.path === `/v1/profiles/${ACME.id}`)).toBe(true);
+    expect(title()).toBe('Default');
+    await openMenu();
+    expect(rows().map(nameOf)).toEqual(['Default']);
+    expect(o.told.at(-1)).toBe(DEFAULT.id);
   });
 });

@@ -27,7 +27,8 @@ import { tasksMatching, useObidSearch } from './search';
 import { ariaKeys, shortcutLabel, withShortcut } from './shortcuts';
 import { useWaitingCount } from './live';
 import { loadProfiles, openProfile, profileChats, useProfiles } from './profiles';
-import ProfileMenu, { NewProfileModal } from './ProfileMenu';
+import type { Profile } from './obid';
+import ProfileMenu, { EditProfileModal, NewProfileModal } from './ProfileMenu';
 import { useProjects, useProjectsOn } from './projects';
 import ProjectSheet from './ProjectSheet';
 import AgentsList, { convoAbout } from './AgentsList';
@@ -129,6 +130,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   // the title's menu (ProfileMenu), and New profile…'s form
   const [profileMenu, setProfileMenu] = useState<DOMRect | null>(null);
   const [newProfile, setNewProfile] = useState(false);
+  const [editProfile, setEditProfile] = useState<Profile | null>(null);
   // Home's dot turns orange while any task needs you
   const needsYou = countOf('needs') + asksWaiting().length > 0;
   // and chat first, with Home's chips gone from sight: GitHub's work waiting on you too (a review
@@ -946,7 +948,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
         </Menu>
       )}
       {profileMenu && !!profiles.list?.length && (
-        <ProfileMenu list={profiles.list} kept={profiles.kept} at={profileMenu} onClose={() => setProfileMenu(null)} onNew={() => setNewProfile(true)} />
+        <ProfileMenu list={profiles.list} kept={profiles.kept} at={profileMenu} onClose={() => setProfileMenu(null)} onNew={() => setNewProfile(true)} onEdit={setEditProfile} />
       )}
       {newProject && <ProjectSheet onClose={() => setNewProject(false)} onMade={() => setNewProject(false)} />}
       {projectMenu && (
@@ -959,6 +961,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
       {sheetProject && projectSheet && (
         <ProjectSheet key={`${sheetProject.id}:${projectSheet.deleting}`} editing={sheetProject} deleting={projectSheet.deleting} onClose={() => setProjectSheet(null)} onMade={() => setProjectSheet(null)} />
       )}
+      {editProfile && <EditProfileModal key={editProfile.id} profile={editProfile} defaultName={(profiles.list ?? []).find((p) => p.default)?.name ?? 'Default'} onClose={() => setEditProfile(null)} />}
       {newProfile && <NewProfileModal taken={(profiles.list ?? []).map((p) => p.color.toLowerCase())} onClose={() => setNewProfile(false)} />}
       {inviting && <InviteModal sphere={{ name: sphere.name, url: urlOf(sphere) }} domain={sphere.domain} onSent={(emails) => invite(sphere.id, emails)} onClose={() => setInviting(false)} />}
       {creating && <CreateSphereModal email={ME.email} onCreated={(id) => { setCreating(false); setSphereId(id); pick('obysphere'); }} onClose={() => setCreating(false)} />}

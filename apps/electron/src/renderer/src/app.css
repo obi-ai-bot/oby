@@ -1768,6 +1768,8 @@ button.connector { width: 100%; text-align: left; }
 .set-head { margin: 0 0 8px; padding: 0 16px; color: var(--item); font-size: var(--text-md); font-weight: 500; }
 .set-card { border: 1px solid var(--surface-edge); border-radius: 16px; background: var(--surface); }
 .set-foot { margin: 8px 0 0; padding: 0 16px; color: var(--muted); font-size: var(--text-sm); line-height: 1.45; }
+.set-foot .set-footer-line { display: block; }
+.set-foot .set-footer-line + .set-footer-line { margin-top: 4px; }
 .set-row { min-height: 56px; padding: 12px 16px; display: flex; align-items: center; gap: 16px; }
 .set-row + .set-row { border-top: 1px solid var(--divider); }
 .set-label { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; color: var(--ink); font-size: var(--text-base); }
@@ -2288,6 +2290,10 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 /* the field for the address of the person's own Tetrix (TetrixAddress.tsx), under its row's name; its problem under it */
 .setup-field { height: 36px; padding: 0 12px; border-radius: 10px; font-size: var(--text-sm); }
 .wl-below .setup-field + .wl-sub { display: block; margin-top: 6px; }
+/* an agent not installed (FIRSTRUN-2): the vendor's command, to copy, and what to do with it */
+.setup-install-line { display: flex; align-items: center; gap: 8px; }
+.setup-install-command { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 8px; background: rgba(0, 0, 0, 0.25); font: 400 var(--text-sm)/1.3 ui-monospace, "SF Mono", Menlo, monospace; color: var(--ink); user-select: all; overflow-wrap: anywhere; }
+.setup-install .wl-sub { display: block; margin-top: 6px; }
 .wl-two .setup-field { margin-top: 8px; }
 .connector-address .setup-field { height: 44px; padding: 0 14px; font-size: var(--text-base); }
 .connector-address .wl-sub { display: block; margin-top: 6px; white-space: normal; }
@@ -2443,3 +2449,4 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .profile-sheet .modal-label { margin-top: 16px; }
 .profile-sheet .modal-lede + .modal-label { margin-top: 0; }
 .profile-sheet .profile-swatches { margin-top: 0; }
+.profile-sheet .profile-delete { margin-right: auto; }

@@ -24,7 +24,8 @@ export type Entry = { n?: number } & (
   | { kind: 'plan'; todos: { text: string; state: 'done' | 'running' | 'pending' | (string & {}) }[] }
   | { kind: 'asked'; text: string; answer: string }
   // its detail is fetched by n when it opens on obid; the mock's come with theirs
-  | { kind: 'tool'; tool: ToolKind; verb: string; target: string; summary?: string; state: 'done' | 'running' | 'failed' | 'declined' | (string & {}); seconds: number; meta?: string; detail?: Detail }
+  // live: a running command's last lines and how many it printed so far, as obid streams them (LIVETASK-34)
+  | { kind: 'tool'; tool: ToolKind; verb: string; target: string; summary?: string; state: 'done' | 'running' | 'failed' | 'declined' | (string & {}); seconds: number; meta?: string; detail?: Detail; live?: { output: string; lines: number } }
 );
 
 export const SESSIONS: Record<string, Entry[]> = {

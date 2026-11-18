@@ -356,6 +356,27 @@ impl Live {
             .collect()
     }
 
+    /// The tools' own logins found on this Mac that an account holds already: the tool and that
+    /// account's id (an empty list's own login, or the account with no folder). Which profile holds
+    /// it is the account's (crate::profile_scope, PROFILES-43).
+    pub fn held(&self) -> Vec<(Tool, String)> {
+        let inner = self.read();
+        (inner.found.iter())
+            .filter_map(|tool| {
+                let agent = agent_of(&inner.agents, *tool).as_ref()?;
+                let own = match agent.accounts.is_empty() {
+                    true => implicit(*tool).into_iter().next(),
+                    false => agent
+                        .accounts
+                        .iter()
+                        .find(|a| a.config_dir.is_none())
+                        .cloned(),
+                };
+                own.map(|account| (*tool, account.id))
+            })
+            .collect()
+    }
+
     /// Changes what's saved with `change`, keeps it, and only then uses it. `change` answers what
     /// the caller needs, or why it refused.
     fn change<T>(

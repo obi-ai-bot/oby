@@ -314,6 +314,9 @@ pub struct Sessions {
 const WARM_FOR: Duration = Duration::from_secs(30 * 60);
 /// The most conversations whose Claude Code waits at once: each holds a few hundred MB.
 const WARM_MOST: usize = 3;
+/// The most profiles whose next new conversation has a Claude Code started ahead at once
+/// (PROFILES-47), apart from [`WARM_MOST`].
+const AHEAD_MOST: usize = 3;
 
 /// A conversation's Claude Code, running after its turn and waiting on its stdin for the next one,
 /// which writes to it instead of starting another (docs/fast-replies.md): no start, no MCP
@@ -441,13 +444,14 @@ impl Sessions {
     /// Keeps `warm` for `conversation`'s next turn when `admit` says it may wait, judged under
     /// the same lock that [`Sessions::end_warm_on`] and [`Sessions::end_warm`] take, so an account
     /// change or a deletion that comes after the look ends it: whether it was kept. The one
-    /// waiting longest ends when [`WARM_MOST`] conversations' already wait; the next new
-    /// conversation's (`next`, [`prestart`]) isn't one of them.
+    /// waiting longest ends when [`WARM_MOST`] conversations' already wait; the profiles' next new
+    /// conversations' (`nexts`, [`prestart`]) aren't among them, and of those the one waiting
+    /// longest ends when [`AHEAD_MOST`] already wait.
     fn keep(
         &self,
         conversation: &str,
         warm: Warm,
-        next: Option<&str>,
+        nexts: &[String],
         admit: impl FnOnce(&Warm) -> bool,
     ) -> bool {
         let mut all = self.warm();
@@ -458,18 +462,21 @@ impl Sessions {
         if let Some(old) = all.insert(conversation.to_owned(), warm) {
             old.end();
         }
-        let counted = |c: &String| Some(c.as_str()) != next;
-        while all.keys().filter(|c| counted(c)).count() > WARM_MOST {
-            let Some(oldest) = all
-                .iter()
-                .filter(|(c, _)| counted(c))
-                .min_by_key(|(_, w)| w.since)
-                .map(|(c, _)| c.clone())
-            else {
-                break;
-            };
-            if let Some(old) = all.remove(&oldest) {
-                old.end();
+        let ahead = |c: &String| nexts.contains(c);
+        for (counted, most) in [(false, WARM_MOST), (true, AHEAD_MOST)] {
+            let counted = |c: &String| ahead(c) == counted;
+            while all.keys().filter(|c| counted(c)).count() > most {
+                let Some(oldest) = all
+                    .iter()
+                    .filter(|(c, _)| counted(c) && c.as_str() != conversation)
+                    .min_by_key(|(_, w)| w.since)
+                    .map(|(c, _)| c.clone())
+                else {
+                    break;
+                };
+                if let Some(old) = all.remove(&oldest) {
+                    old.end();
+                }
             }
         }
         true
@@ -537,12 +544,10 @@ impl Sessions {
 /// with the same folder any more, while the turn ran.
 fn keep_warm(shared: &Arc<Shared>, conversation: &str, warm: Warm) {
     let since = warm.since;
-    let next = shared.conversations.peek_next();
-    let kept = shared
-        .harness
-        .keep(conversation, warm, next.as_deref(), |warm| {
-            shared.conversations.exists(conversation) && may_wait(shared, warm)
-        });
+    let nexts = shared.conversations.nexts();
+    let kept = shared.harness.keep(conversation, warm, &nexts, |warm| {
+        shared.conversations.exists(conversation) && may_wait(shared, warm)
+    });
     if !kept {
         return;
     }
@@ -563,43 +568,66 @@ fn may_wait(shared: &Shared, warm: &Warm) -> bool {
 
 /// Starts the next new conversation's Claude Code now, so its first turn finds it waiting as a
 /// later turn does, connected to Oby's tools already (docs/fast-replies.md; the Agent SDK's
-/// `prewarm()`). obid names that conversation's id ahead ([`crate::conversation::Conversations::next_id`])
-/// and readies its place as a turn would: the room with its checkouts, the box, a login copy and
-/// its MCP configuration, under the conversation's lock. It waits like any other ([`WARM_FOR`], one
-/// of [`WARM_MOST`]), with no session until its first turn, and its token connects to Oby's tools
-/// but calls none before a turn is under way. Started after each of the owner's turns, so a
-/// Claude Code waits only while the owner is talking to Oby; one at a time.
+/// `prewarm()`). obid names each profile's next conversation's id ahead
+/// ([`crate::conversation::Conversations::next_id`]) and readies its place as a turn would: the
+/// room with its checkouts, the box, a login copy and its MCP configuration, under the
+/// conversation's lock. It waits like any other ([`WARM_FOR`]), with no session until its first
+/// turn, and its token connects to Oby's tools but calls none before a turn is under way. Started
+/// after each of the owner's turns, so a Claude Code waits only while the owner is talking to Oby:
+/// for the turn's profile first, then the others ([`ahead`], PROFILES-47), one at a time.
 /// `OBID_PRESTART=off` (obid's tests set it, but in the tests of this) starts none.
-fn prestart(shared: &Arc<Shared>) {
+fn prestart(shared: &Arc<Shared>, turn: &crate::profiles::Scope) {
     static STARTING: AtomicBool = AtomicBool::new(false);
     if std::env::var_os("OBID_PRESTART").is_some_and(|v| v == "off") {
         return;
     }
-    let id = shared.conversations.next_id();
-    if shared.harness.warm().contains_key(&id) || STARTING.swap(true, Ordering::SeqCst) {
+    if STARTING.swap(true, Ordering::SeqCst) {
         return;
     }
-    let shared = shared.clone();
+    let (shared, turn) = (shared.clone(), turn.clone());
     tokio::spawn(async move {
-        if let Err(why) = start_next(&shared, &id).await {
-            let why = placed(&crate::secrets::known().redact(&why), &homes(&shared));
-            tracing::info!("the next conversation's Claude Code isn't started: {why}");
+        let profiles = shared.profiles.scopes();
+        // Only where a new conversation's first turn would talk on Claude Code, on one of the
+        // profile's own accounts (B00-40): another agent has none to wait.
+        let claude = |scope: &crate::profiles::Scope| {
+            matches!(
+                super::talk::next_with(&shared, scope),
+                Some((Tool::Claude, _))
+            )
+        };
+        for scope in ahead(&profiles, &turn, claude) {
+            let id = shared.conversations.next_id(scope.tag().as_deref());
+            if shared.harness.warm().contains_key(&id) {
+                continue;
+            }
+            if let Err(why) = start_next(&shared, &id, &scope).await {
+                let why = placed(&crate::secrets::known().redact(&why), &homes(&shared));
+                tracing::info!("the next conversation's Claude Code isn't started: {why}");
+            }
         }
         STARTING.store(false, Ordering::SeqCst);
     });
 }
 
-async fn start_next(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
-    // Only when its first turn would talk on Claude Code: another agent has none to wait.
-    let chosen = crate::settings::load(&shared.config.home)
-        .talk_account
-        .filter(|id| id != super::talk::AUTO);
-    // Readied for a conversation of the default profile, on one of its accounts (B00-40).
-    let scope = shared.profiles.default_scope();
-    let account = match super::talk::accounts(shared, chosen.as_deref(), None, None)
-        .into_iter()
-        .find(|(_, account)| shared.profiles.accounts.holds(&scope, &account.id))
-    {
+/// The profiles whose next new conversation gets a Claude Code ahead, in order (PROFILES-47): the
+/// turn's first, then the others in the registry's order, only those `claude` says would talk on
+/// Claude Code, at most [`AHEAD_MOST`]. One already waiting counts toward them.
+fn ahead<P: PartialEq + Clone>(profiles: &[P], turn: &P, claude: impl Fn(&P) -> bool) -> Vec<P> {
+    let others = profiles.iter().filter(|p| *p != turn);
+    (std::iter::once(turn).chain(others))
+        .filter(|p| claude(p))
+        .take(AHEAD_MOST)
+        .cloned()
+        .collect()
+}
+
+async fn start_next(
+    shared: &Arc<Shared>,
+    id: &str,
+    scope: &crate::profiles::Scope,
+) -> Result<(), String> {
+    // Readied for a conversation of `scope`'s profile, on one of its accounts (B00-40).
+    let account = match super::talk::next_with(shared, scope) {
         Some((Tool::Claude, account)) => account,
         _ => return Ok(()),
     };
@@ -646,7 +674,8 @@ async fn start_next(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
     };
     // Not kept when its account changed while it started, or the conversation went.
     let since = warm.since;
-    let kept = shared.harness.keep(id, warm, Some(id), |warm| {
+    let nexts = shared.conversations.nexts();
+    let kept = shared.harness.keep(id, warm, &nexts, |warm| {
         (shared.conversations.is_next(id) || shared.conversations.exists(id))
             && may_wait(shared, warm)
     });
@@ -1592,7 +1621,10 @@ async fn session(
         unanswered
     });
     // The owner is talking to Oby: the next new conversation's Claude Code starts meanwhile.
-    prestart(shared);
+    prestart(
+        shared,
+        &crate::profile_scope::of_conversation(shared, &control.conversation),
+    );
     let state = if ran.is_ok() && control.live() {
         State::Done
     } else {
@@ -2527,6 +2559,8 @@ async fn one(
             Event::Step(_)
             | Event::Denied(_)
             | Event::Said(_)
+            | Event::Output { .. }
+            | Event::Spilled { .. }
             | Event::Thought { .. }
             | Event::Thinking { .. }
             | Event::Plan(_)
@@ -3536,7 +3570,7 @@ mod tests {
         ] {
             let warm = waiting("a", Some("/a"), "s1").await;
             let pid = warm.conn.pid();
-            sessions.keep("c", warm, None, |_| true);
+            sessions.keep("c", warm, &[], |_| true);
             assert!(
                 sessions
                     .take_warm("c", &account(who, folder), Some(session))
@@ -3544,7 +3578,7 @@ mod tests {
             );
             assert!(ends(pid).await, "{who} {folder:?} {session}");
         }
-        sessions.keep("c", waiting("a", Some("/a"), "s1").await, None, |_| true);
+        sessions.keep("c", waiting("a", Some("/a"), "s1").await, &[], |_| true);
         let mine = sessions.take_warm("c", &account("a", Some("/a")), Some("s1"));
         assert!(mine.is_some());
         mine.unwrap().end();
@@ -3559,7 +3593,7 @@ mod tests {
         for c in ["c1", "c2", "c3", "c4"] {
             let warm = waiting("a", None, "s").await;
             pids.push(warm.conn.pid());
-            sessions.keep(c, warm, None, |_| true);
+            sessions.keep(c, warm, &[], |_| true);
         }
         assert!(ends(pids[0]).await, "the oldest ends");
         assert_eq!(sessions.warm().len(), WARM_MOST);
@@ -3572,12 +3606,47 @@ mod tests {
         sessions.expire("c2", since);
         assert!(!sessions.warm().contains_key("c2"));
         assert!(ends(pids[1]).await);
-        sessions.keep("c5", waiting("b", None, "s").await, None, |_| true);
+        sessions.keep("c5", waiting("b", None, "s").await, &[], |_| true);
         sessions.end_warm_on("a");
         assert_eq!(sessions.warm().keys().collect::<Vec<_>>(), vec!["c5"]);
         assert!(ends(pids[2]).await && ends(pids[3]).await);
         sessions.end_all_warm();
         assert!(sessions.warm().is_empty());
+    }
+
+    /// PROFILES-47: a Claude Code is started ahead for the turn's profile first, then the others in
+    /// the registry's order, only where a new conversation would talk on Claude Code, three at most.
+    #[test]
+    fn profiles_47_a_claude_code_ahead_for_each_profile_up_to_three() {
+        let profiles = ["p1", "p2", "p3", "p4", "p5"];
+        let claude = |p: &&str| ["p1", "p2", "p3", "p5"].contains(p);
+        assert_eq!(ahead(&profiles, &"p3", claude), ["p3", "p1", "p2"]);
+        assert_eq!(ahead(&profiles, &"p4", claude), ["p1", "p2", "p3"]);
+        assert_eq!(ahead(&profiles, &"p5", claude), ["p5", "p1", "p2"]);
+        assert_eq!(
+            ahead(&profiles[..1], &"p1", |_: &&str| false),
+            Vec::<&str>::new()
+        );
+    }
+
+    /// PROFILES-47: of the profiles' next conversations' Claude Codes, the one waiting longest ends
+    /// once AHEAD_MOST wait; the conversations' own WARM_MOST are apart.
+    #[tokio::test]
+    async fn profiles_47_at_most_three_profiles_wait_ahead() {
+        let sessions = Sessions::default();
+        let nexts: Vec<String> = ["n1", "n2", "n3", "n4"].map(String::from).to_vec();
+        let mut pids = vec![];
+        for n in &nexts {
+            let mut warm = waiting("a", None, "s").await;
+            warm.session = None;
+            pids.push(warm.conn.pid());
+            assert!(sessions.keep(n, warm, &nexts, |_| true));
+        }
+        assert!(ends(pids[0]).await, "the oldest profile's ends");
+        let mut left: Vec<String> = sessions.warm().keys().cloned().collect();
+        left.sort();
+        assert_eq!(left, ["n2", "n3", "n4"]);
+        sessions.end_all_warm();
     }
 
     /// The next new conversation's Claude Code isn't one of the WARM_MOST, and none is kept when
@@ -3588,17 +3657,17 @@ mod tests {
         let mut next = waiting("a", None, "s").await;
         next.session = None;
         let next_pid = next.conn.pid();
-        assert!(sessions.keep("next", next, Some("next"), |_| true));
+        assert!(sessions.keep("next", next, &["next".to_owned()], |_| true));
         // One with no session that isn't the next conversation's counts like any other.
         let mut taken = waiting("a", None, "s").await;
         taken.session = None;
         let taken_pid = taken.conn.pid();
-        assert!(sessions.keep("c0", taken, Some("next"), |_| true));
+        assert!(sessions.keep("c0", taken, &["next".to_owned()], |_| true));
         let mut pids = vec![];
         for c in ["c1", "c2", "c3", "c4"] {
             let warm = waiting("a", None, "s").await;
             pids.push(warm.conn.pid());
-            assert!(sessions.keep(c, warm, Some("next"), |_| true));
+            assert!(sessions.keep(c, warm, &["next".to_owned()], |_| true));
         }
         assert!(ends(taken_pid).await, "it was the oldest of the counted");
         assert!(ends(pids[0]).await, "the oldest conversation's ends");
@@ -3606,7 +3675,7 @@ mod tests {
         assert_eq!(sessions.warm().len(), WARM_MOST + 1);
         let refused = waiting("a", None, "s").await;
         let refused_pid = refused.conn.pid();
-        assert!(!sessions.keep("c5", refused, Some("next"), |_| false));
+        assert!(!sessions.keep("c5", refused, &["next".to_owned()], |_| false));
         assert!(ends(refused_pid).await);
         sessions.end_warm_unless(|c| c != "next" && c != "c2");
         assert_eq!(
