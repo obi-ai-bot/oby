@@ -1,9 +1,9 @@
 import { createPublicKey, generateKeyPairSync, verify, type KeyObject } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join as path } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
-  ACCEPTS, NotThisKey, SCOPES, addStarterRule, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, readPolicy,
+  ACCEPTS, NotThisKey, SCOPES, addStarterRule, inviteLink, listInvitations, makeInvitation, withdrawInvitation, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, readPolicy,
   starterRule, writePolicy, type Answer, type Call, type PolicyAnswer, type Rule,
 } from '../../../shared/sphere';
 import { withStarterRule } from '../../../shared/policy';
@@ -203,6 +203,7 @@ const BASE = 'https://sphere.example.com/v0.1';
 // runs before a PUT is checked, as another admin's write would, or answers in its place.
 function fakeSphere(o: { admins?: string[]; version?: number; rules?: Rule[]; onPut?: (p: { version: number; rules: Rule[] }) => Response | void } = {}) {
   const policy = { version: o.version ?? 0, rules: o.rules ?? [] };
+  const invitations: { invitation_id: string; max_uses: number; uses: number; secret: string; expires_at: string; asked: unknown }[] = [];
   const admins = o.admins ?? ['wellington'];
   const granted = new Map<string, string>();
   const requests: { url: string; init: RequestInit }[] = [];
@@ -219,6 +220,23 @@ function fakeSphere(o: { admins?: string[]; version?: number; rules?: Rule[]; on
     }
     const scope = granted.get(String((init.headers as Record<string, string>).authorization).replace('Bearer ', '')) ?? '';
     if (url === `${BASE}/spheres/demo`) return answer({ sphere: 'demo', admin_owner: 'dmytro', admins });
+    // invitations (sphere-api.md section 4): an admin token only, as the Sphere's own check
+    if (url.startsWith(`${BASE}/spheres/demo/invitations`)) {
+      if (!scope.split(' ').includes('admin')) return answer({ error: { code: 'insufficient_scope', message: 'this call needs the scope admin' } }, 403);
+      if (init.method === 'POST') {
+        const b = JSON.parse(String(init.body)) as { expires_in: number; max_uses: number };
+        const made = { invitation_id: `9187a87a-3126-424c-8861-${String(invitations.length).padStart(12, '0')}`, sphere: 'demo', max_uses: b.max_uses, uses: 0, secret: 'S'.repeat(43), expires_at: '2026-12-02T12:00:00Z', asked: b };
+        invitations.unshift(made);
+        return answer(made, 201);
+      }
+      if (init.method === 'DELETE') {
+        const at = invitations.findIndex((i) => url.endsWith(`/${i.invitation_id}`));
+        if (at < 0) return answer({ error: { code: 'not_found' } }, 404);
+        invitations.splice(at, 1);
+        return new Response(null, { status: 204 });
+      }
+      return answer({ sphere: 'demo', invitations: invitations.map(({ secret: _, asked: __, ...i }) => i) });
+    }
     if (url !== `${BASE}/spheres/demo/policy`) return answer({}, 404);
     if (init.method !== 'PUT') return answer(now());
     if (!scope.split(' ').includes('admin')) return answer({ error: { code: 'insufficient_scope', message: 'this call needs the scope admin' } }, 403);
@@ -232,7 +250,7 @@ function fakeSphere(o: { admins?: string[]; version?: number; rules?: Rule[]; on
   const puts = () => requests.filter((r) => r.init.method === 'PUT');
   // the scope each exchange's assertion asked for, in order
   const asked = () => requests.filter((r) => r.url.endsWith('/oauth/token')).map((r) => part(new URLSearchParams(String(r.init.body)).get('subject_token')!.split('.')[1]));
-  return { http: http as unknown as typeof fetch, calls: http, requests, policy, granted, puts, asked };
+  return { http: http as unknown as typeof fetch, calls: http, requests, policy, granted, puts, asked, invitations };
 }
 const OTHER: Rule = { id: 'dmytro-reviews', from_owner: 'dmytro', to_owner: '*', actions: ['review_request'], repos: ['acme/app'] };
 const THIRD: Rule = { id: 'ernesto-asks', from_owner: 'ernesto', to_owner: 'dmytro', actions: ['question'], repos: ['*'], note: { kept: true } };
@@ -492,6 +510,46 @@ describe('the app’s Obysphere (sphere-app.md)', () => {
     const done = fakeSphere({ version: 6, rules: [OTHER, widened] });
     expect(await addStarterRule(fakeObid('wellington', 'joined').call, () => key, 6, done.http)).toMatchObject({ refused: null, policy: { version: 6 } });
     expect(done.puts()).toEqual([]);
+  });
+
+  it('sphereapp_10_the_admin_makes_lists_and_withdraws_invite_links_with_the_owners_own_token', async () => {
+    const sphere = fakeSphere();
+    const made = await makeInvitation(fakeObid('wellington', 'joined').call, () => key, sphere.http);
+    // one open invitation: 5 people, 14 days, asked for with an admin owner token
+    expect(sphere.invitations[0].asked).toEqual({ expires_in: 1_209_600, max_uses: 5 });
+    expect(sphere.asked().map((c) => c.scope)).toEqual(['admin']);
+    expect(made).toMatchObject({ refused: null, why: null, invitations: [{ id: sphere.invitations[0].invitation_id, uses: 0, maxUses: 5, expiresAt: '2026-12-02T12:00:00Z' }] });
+    // the link reads back as the join field and an oby:// link read it: same Sphere, host, id and secret
+    expect(made.link).toBe(`oby://join/sphere.example.com#sphere=demo&by=wellington&id=${sphere.invitations[0].invitation_id}&secret=${'S'.repeat(43)}`);
+    expect(parseInvite(made.link!)).toMatchObject({ url: 'https://sphere.example.com', host: 'sphere.example.com', sphere: 'demo', by: 'wellington', id: sphere.invitations[0].invitation_id, secret: 'S'.repeat(43) });
+    // the list never carries a secret
+    const listed = await listInvitations(fakeObid('wellington', 'joined').call, () => key, sphere.http);
+    expect(JSON.stringify(listed)).not.toContain('S'.repeat(43));
+    expect(listed.link).toBeNull();
+    // withdraw: that one gone; one already gone counts as withdrawn
+    const id = sphere.invitations[0].invitation_id;
+    expect(await withdrawInvitation(fakeObid('wellington', 'joined').call, () => key, id, sphere.http)).toMatchObject({ refused: null, invitations: [] });
+    expect(sphere.requests.some((r) => r.init.method === 'DELETE' && r.url.endsWith(`/invitations/${id}`))).toBe(true);
+    expect(await withdrawInvitation(fakeObid('wellington', 'joined').call, () => key, id, sphere.http)).toMatchObject({ refused: null });
+  });
+
+  it('sphereapp_10: the page takes only types from main’s engine, which needs Node', () => {
+    // a value from shared/sphere.ts in the renderer pulls node:crypto into the window, which then draws nothing
+    const dir = path(__dirname, '..');
+    const files = readdirSync(dir).filter((f) => /\.tsx?$/.test(f));
+    const bad = files.filter((f) => /^import (?!type )[^;]*from '\.\.\/\.\.\/shared\/sphere'/m.test(readFileSync(path(dir, f), 'utf8')));
+    expect(bad).toEqual([]);
+  });
+
+  it('sphereapp_10: a member who isn’t admin, or an Oby not in one, makes nothing', async () => {
+    const member = fakeSphere({ admins: ['dmytro'] });
+    expect(await makeInvitation(fakeObid('wellington', 'joined').call, () => key, member.http)).toEqual({ invitations: [], link: null, refused: 'not_admin', why: 'Only the Obysphere’s admins can invite.' });
+    expect(member.requests.some((r) => r.url.includes('/invitations'))).toBe(false);
+    const never = vi.fn();
+    expect(await makeInvitation(fakeObid('wellington', 'none').call, () => { throw new Error('no key'); }, never as unknown as typeof fetch)).toMatchObject({ refused: 'not_joined' });
+    expect(never).not.toHaveBeenCalled();
+    // a link that wouldn't read back is never handed out
+    expect(inviteLink('https://sphere.example.com', 'demo', 'wellington', 'not-a-uuid', 'S'.repeat(43))).toBeNull();
   });
 
   it('sphereapp_2_a_membership_from_before_handoffs_renews_its_card_and_delegation_once', async () => {

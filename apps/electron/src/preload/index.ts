@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { WITHIN_MS, owners } from '../shared/words';
-import type { PolicyAnswer } from '../shared/sphere';
+import type { InvitesAnswer, PolicyAnswer } from '../shared/sphere';
 import type { HandoffAsk } from '../shared/handoff';
 import type { Joined } from '../shared/invite';
 import type { LoadWhat } from '../shared/decode';
@@ -158,6 +158,11 @@ contextBridge.exposeInMainWorld('app', {
   // what it signs. null: refused
   spherePolicy: () => ipcRenderer.invoke('sphere-policy') as Promise<PolicyAnswer | null>,
   sphereSetPolicy: (version: number) => ipcRenderer.invoke('sphere-set-policy', version) as Promise<PolicyAnswer | null>,
+  // the admin's invite links (main/sphere.ts, SPHEREAPP-10): the list; a new one and a withdrawal,
+  // right after the owner's click. Main holds the owner token; the page gets the link and the list
+  sphereInvitations: () => ipcRenderer.invoke('sphere-invitations') as Promise<InvitesAnswer | null>,
+  sphereInvite: () => ipcRenderer.invoke('sphere-invite') as Promise<InvitesAnswer | null>,
+  sphereWithdraw: (id: string) => ipcRenderer.invoke('sphere-withdraw', id) as Promise<InvitesAnswer | null>,
   // obid, through main, which holds its token (main/obid.ts): one call; and what main's one follower
   // of obid's events holds (main/live.ts), then each message it sends, and what it reads for the page
   obid: {

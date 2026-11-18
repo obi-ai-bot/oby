@@ -21,6 +21,7 @@ const the = vi.hoisted(() => ({
   checks: 0,
   policies: 0,
   joins: 0,
+  invites: 0,
 }));
 vi.mock('electron', async () => {
   const { EventEmitter } = await import('node:events');
@@ -89,6 +90,9 @@ vi.mock('../../../shared/sphere', async (original) => ({
   parseInvite: (await original<typeof import('../../../shared/sphere')>()).parseInvite,
   NotThisKey: class extends Error {}, join: async () => { the.joins++; }, joinWarning() {}, leave() {}, keepMembership: async () => {},
   readPolicy: async () => { the.policies++; }, addStarterRule: async () => { the.policies++; },
+  listInvitations: async () => ({ invitations: [], link: null, refused: null, why: null }),
+  makeInvitation: async () => { the.invites++; return { invitations: [], link: 'oby://join/x#…', refused: null, why: null }; },
+  withdrawInvitation: async () => { the.invites++; return { invitations: [], link: null, refused: null, why: null }; },
 }));
 
 const FORBIDDEN = { status: 403, text: '' };
@@ -126,6 +130,9 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'sphere-leave': { args: [], refusal: 'Not this app’s page.' },
   'sphere-policy': { args: [], refusal: null },
   'sphere-set-policy': { args: [0], refusal: null },
+  'sphere-invitations': { args: [], refusal: null },
+  'sphere-invite': { args: [], refusal: null },
+  'sphere-withdraw': { args: ['9187a87a-3126-424c-8861-8811bba1a5ec'], refusal: null },
   'sphere-join': { args: [LINK], refusal: { kind: 'failed', name: '', why: 'Not this app’s page.' } },
   'sphere-handoff': { args: [{ to: 'dana', goal: 'Add a name option', repo: 'acme/app', base: 'main' }], refusal: 'Not this app’s page.' },
   'render-error': { args: ['TypeError', 'm', ''], refusal: undefined },
@@ -423,5 +430,27 @@ describe('SPHEREAPP-4 and 6', () => {
     sent.length = 0;
     expect(await handOff({ ...ask, repo: 'not a repo' }, fake({ status: 202, text: '{}' }))).toBe('That task can’t go as it is.');
     expect(sent).toEqual([]);
+  });
+});
+
+describe('SPHEREAPP-10', () => {
+  it('sphereapp_10_a_link_is_made_or_withdrawn_only_right_after_a_click_main_saw', async () => {
+    while (takeInput()) { /* other tests' */ }
+    const before = the.invites;
+    expect(await call('sphere-invite', own())).toMatchObject({ refused: 'failed', why: 'Making a link takes your own click.', link: null });
+    expect(await call('sphere-withdraw', own(), 'inv-1')).toMatchObject({ refused: 'failed', why: 'Withdrawing a link takes your own click.' });
+    expect(the.invites).toBe(before);
+    // a click: one link, and only one
+    input();
+    await call('sphere-invite', own());
+    expect(the.invites).toBe(before + 1);
+    await call('sphere-invite', own());
+    expect(the.invites).toBe(before + 1);
+    input();
+    await call('sphere-withdraw', own(), 'inv-1');
+    expect(the.invites).toBe(before + 2);
+    // the list takes none
+    expect(await call('sphere-invitations', own())).toMatchObject({ refused: null });
+    expect(the.invites).toBe(before + 2);
   });
 });

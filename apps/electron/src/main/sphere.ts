@@ -5,7 +5,8 @@ import { obid, type Trusted } from './obid';
 import { ipc } from './ipc';
 import { takeInput } from './words';
 import { safeInteger, string, type Decoder } from '../shared/decode';
-import { NotThisKey, addStarterRule, join, joinWarning, keepMembership, leave, parseInvite, readPolicy, type PolicyAnswer } from '../shared/sphere';
+import { NotThisKey, addStarterRule, join, joinWarning, keepMembership, leave, listInvitations, makeInvitation, parseInvite, readPolicy, withdrawInvitation, type InvitesAnswer, type PolicyAnswer } from '../shared/sphere';
+import { withStarterRule } from '../shared/policy';
 import { SCRATCH } from '../shared/build';
 import { HANDOFF_OPEN, handoffBody, type HandoffAsk } from '../shared/handoff';
 import type { Joined } from '../shared/invite';
@@ -160,4 +161,24 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
   // the rule by itself (POLICY-4)
   ipc(trusted).handle('sphere-set-policy', [safeInteger], async (_e, version) => (
     takeInput() ? policy(() => addStarterRule(obid, ownerKey, version)) : failed('Adding the rule takes your own click.')), null);
+
+  // Invite links, the admin's (SPHEREAPP-10): each with its own owner token, minted here and never
+  // answered. Making and withdrawing one only right after a click or key main saw itself, one each;
+  // reading the list takes none. Making one also adds what the members rule lacks (handoff), so a
+  // new member can hand off tasks, and says whether it now does.
+  const notInvited = (why: string): InvitesAnswer => ({ invitations: [], link: null, refused: 'failed', why });
+  const invited = (f: () => Promise<InvitesAnswer>) => f().catch((e) => notInvited(e instanceof Error ? e.message : String(e)));
+  ipc(trusted).handle('sphere-invitations', [], () => invited(() => listInvitations(obid, ownerKey)), null);
+  ipc(trusted).handle('sphere-invite', [], async () => {
+    if (!takeInput()) return notInvited('Making a link takes your own click.');
+    return invited(async () => {
+      const made = await makeInvitation(obid, ownerKey);
+      if (!made.link) return made;
+      const rules = await readPolicy(obid, ownerKey);
+      const now = rules.policy && withStarterRule(rules.policy.rules) ? await addStarterRule(obid, ownerKey, rules.policy.version) : rules;
+      return { ...made, handoffs: !!now.policy && !withStarterRule(now.policy.rules) };
+    });
+  }, null);
+  ipc(trusted).handle('sphere-withdraw', [string], async (_e, id) => (
+    takeInput() ? invited(() => withdrawInvitation(obid, ownerKey, id)) : notInvited('Withdrawing a link takes your own click.')), null);
 }

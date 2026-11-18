@@ -2536,3 +2536,6 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .chat-layer:has(.queued-row) .chat { padding-bottom: calc(24px + 38px); }
 .chat-layer:has(.queued-row + .queued-row) .chat { padding-bottom: calc(24px + 2 * 38px); }
 .chat-layer:has(.queued-row + .queued-row + .queued-row) .chat { padding-bottom: calc(24px + 3 * 38px); }
+
+/* an Obysphere's new invite link (InviteTeammates.tsx): the whole link, selectable, wrapping */
+.invite-made { display: block; font: 400 var(--text-sm)/1.4 ui-monospace, "SF Mono", Menlo, monospace; color: var(--ink); user-select: all; overflow-wrap: anywhere; }

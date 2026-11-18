@@ -48,6 +48,10 @@ declare global {
       // the Obysphere's rules, and the members rule added at the version read (preload, main/sphere.ts)
       spherePolicy?(): Promise<PolicyAnswer | null>;
       sphereSetPolicy?(version: number): Promise<PolicyAnswer | null>;
+      // the admin's invite links: the list, a new one, a withdrawal (preload, main/sphere.ts, SPHEREAPP-10)
+      sphereInvitations?(): Promise<import('../../shared/sphere').InvitesAnswer | null>;
+      sphereInvite?(): Promise<import('../../shared/sphere').InvitesAnswer | null>;
+      sphereWithdraw?(id: string): Promise<import('../../shared/sphere').InvitesAnswer | null>;
       // obid, through main (preload, main/obid.ts); its events, from main's one follower (main/live.ts)
       obid: {
         call(method: string, path: string, body?: unknown): Promise<{ status: number; text: string }>;

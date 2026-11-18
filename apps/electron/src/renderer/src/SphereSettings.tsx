@@ -14,6 +14,7 @@ import { canAddProgress, canChangeRepos, canOpenRoom, confirmIsOff, repoTicks, w
 import { roomOpens, useRoom } from './room';
 import { ME, SUFFIX, cancelInvite, deleteSphere, memberCount, removeMember, revokedLine, ruleWords, trimSlug, slugOf, slugProblem, updateSphere, urlOf, useSpheres, type Sphere } from './spheres';
 import { JoinLink, useJoinLink } from './JoinLink';
+import InviteTeammates from './InviteTeammates';
 
 export const sphereSettingsLabel = (id: string, spheres: Sphere[]) => `${spheres.find((s) => s.id === id)?.name ?? ''} settings`;
 
@@ -186,12 +187,14 @@ export function SphereJoinPage() {
   const live = useSpheres().find((s) => s.live);
   const link = useJoinLink();
   if (live && !live.revoked) {
-    return (
+    return <>
       <Group i={1} footer="Its settings are under its ⋮ in the side panel.">
         <Row label="Your Obysphere"><Value>{live.name}</Value></Row>
         {live.me && <Row label="You’re in it as"><Value>{live.me}</Value></Row>}
       </Group>
-    );
+      {/* its admin's links for teammates, as obid says who's admin (SPHEREAPP-10) */}
+      {window.app?.sphereInvitations && <InviteTeammates />}
+    </>;
   }
   return (
     <Group i={1} title="Join an Obysphere" footer="Your Oby can talk to your team’s Obys there. Ask its admin for the invite link.">

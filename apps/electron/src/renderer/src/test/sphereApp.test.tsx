@@ -269,3 +269,66 @@ describe('SPHEREAPP-8: hidden for launch', () => {
     expect(OBYS).toEqual([]);
   });
 });
+
+describe('SPHEREAPP-10: an admin invites teammates from Settings › Obysphere', () => {
+  const JOINED = { state: 'joined', url: 'https://sphere.example.com', sphere: 'demo', owner: 'wellington', obiId: 'obi-1' };
+  const MADE = `oby://join/sphere.example.com#sphere=demo&by=wellington&id=9187a87a-3126-424c-8861-8811bba1a5ec&secret=${'S'.repeat(43)}`;
+  const OPEN = { id: 'inv-1', uses: 2, maxUses: 5, expiresAt: '2026-12-02T12:00:00Z' };
+  const writeText = vi.fn(async () => {});
+  const rules = (actions: string[]) => [{ id: 'members-ask', from_owner: '*', to_owner: '*', actions, repos: ['*'] }];
+  const bridge = { spherePolicy: vi.fn(), sphereInvitations: vi.fn(), sphereInvite: vi.fn(), sphereWithdraw: vi.fn() };
+  async function page(admin: boolean, actions = ['question', 'review_request']) {
+    answers['GET /v1/obid/sphere'] = JOINED;
+    answers['GET /v1/obid/sphere/members'] = [{ owner: 'dana' }];
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    for (const f of Object.values(bridge)) f.mockReset();
+    bridge.spherePolicy.mockResolvedValue({ sphere: 'demo', policy: { version: 1, updated_at: '', rules: rules(actions) }, admin, refused: null, why: null });
+    bridge.sphereInvitations.mockResolvedValue({ invitations: [OPEN], link: null, refused: null, why: null });
+    Object.assign((window as unknown as { app: Record<string, unknown> }).app, { onSphere: () => () => {}, ...bridge });
+    const { SphereJoinPage } = await import('../SphereSettings');
+    await act(async () => root.render(<SphereJoinPage />));
+    await settle();
+  }
+
+  it('sphereapp_10_a_member_who_isnt_admin_sees_no_invites', async () => {
+    await page(false);
+    expect(host.textContent).not.toContain('Invite teammates');
+    expect(bridge.sphereInvitations).not.toHaveBeenCalled();
+  });
+
+  it('sphereapp_10_the_admin_makes_a_link_copies_it_and_withdraws_an_open_one', async () => {
+    await page(true);
+    expect(host.textContent).toContain('Invite teammates');
+    // the open links: what's left of each, and until when
+    expect(host.textContent).toContain('3 of 5 uses left');
+    expect(host.textContent).toContain('Until Dec 2');
+    // the members rule lacks handoff: nothing promised yet
+    expect(host.textContent).not.toContain('hand off tasks');
+    // Make a link: main makes it (and adds handoff to the members rule), the link shows with Copy
+    bridge.sphereInvite.mockResolvedValueOnce({ invitations: [{ ...OPEN, id: 'inv-2', uses: 0 }, OPEN], link: MADE, refused: null, why: null, handoffs: true });
+    await act(async () => button('Make a link')!.click());
+    await settle();
+    expect(bridge.sphereInvite).toHaveBeenCalledTimes(1);
+    expect(host.querySelector('.invite-made')!.textContent).toBe(MADE);
+    expect(host.textContent).toContain('Members can ask, request reviews and hand off tasks.');
+    await act(async () => (host.querySelector('[aria-label="Copy the link"]') as HTMLButtonElement).click());
+    expect(writeText).toHaveBeenCalledWith(MADE);
+    // Withdraw: main withdraws that one, and the list it answers shows
+    bridge.sphereWithdraw.mockResolvedValueOnce({ invitations: [{ ...OPEN, id: 'inv-2', uses: 0 }], link: null, refused: null, why: null });
+    await act(async () => (host.querySelector('[aria-label="Withdraw the link with 3 of 5 uses left"]') as HTMLButtonElement).click());
+    await settle();
+    expect(bridge.sphereWithdraw).toHaveBeenCalledWith('inv-1');
+    expect(host.textContent).not.toContain('3 of 5 uses left');
+    expect(host.textContent).toContain('5 of 5 uses left');
+  });
+
+  it('sphereapp_10: a members rule with handoff already says so; a refusal says why and shows no link', async () => {
+    await page(true, ['question', 'review_request', 'handoff']);
+    expect(host.textContent).toContain('Members can ask, request reviews and hand off tasks.');
+    bridge.sphereInvite.mockResolvedValueOnce({ invitations: [], link: null, refused: 'failed', why: 'Making a link takes your own click.' });
+    await act(async () => button('Make a link')!.click());
+    await settle();
+    expect(host.querySelector('[role="alert"]')!.textContent).toBe('Making a link takes your own click.');
+    expect(host.querySelector('.invite-made')).toBeNull();
+  });
+});

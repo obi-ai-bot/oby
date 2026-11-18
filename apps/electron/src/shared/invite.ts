@@ -73,3 +73,7 @@ export const joinWarning = (i: Invite) =>
 // What joining from a link came to (main/sphere.ts): joined, the owner's Cancel in its dialog, a
 // text that isn't a link, or why it failed in words for the page to show
 export type Joined = { kind: 'joined'; name: string } | { kind: 'cancelled' } | { kind: 'not_a_link' } | { kind: 'failed'; name: string; why: string };
+
+// What a link the admin makes allows (SPHEREAPP-10): 5 people, for 14 days
+export const INVITE_USES = 5;
+export const INVITE_DAYS = 14;

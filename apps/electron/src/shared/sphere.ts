@@ -1,5 +1,6 @@
 import { createHash, createPublicKey, randomUUID, sign, type KeyObject } from 'node:crypto';
 import { starterRule, withStarterRule } from './policy';
+import { INVITE_DAYS, INVITE_USES, openedInviteLink } from './invite';
 import type { Invite } from './invite';
 
 // The owner's side of joining an Obysphere (docs/contracts/obysphere.md; obi-sphere's spec
@@ -281,4 +282,82 @@ export async function addStarterRule(call: Call, ownerKey: () => KeyObject, seen
   if (!now.admin) return { ...now, refused: 'not_admin', why: ONLY_ADMINS };
   const rules = withStarterRule(now.policy.rules);
   return rules ? writePolicy(call, ownerKey, rules, seenVersion, http) : now;
+}
+
+// Invite links, made by the Obysphere's admin from Oby (docs/contracts/sphere-app.md, SPHEREAPP-10):
+// an open invitation (sphere-api.md section 4) for INVITE_USES people over INVITE_DAYS, its list and
+// its withdrawal, each with a new owner token the Sphere grants `admin` only to an admin, used on
+// that call and dropped. The secret comes once, in the answer that made it, and goes no further than
+// the link handed back; the Sphere lists invitations without it. Nothing here throws.
+export type Invitation = { id: string; uses: number; maxUses: number; expiresAt: string };
+// handoffs: on a make, whether the members rule now lets members hand off tasks (main adds it, SPHEREAPP-10)
+export type InvitesAnswer = { invitations: Invitation[]; link: string | null; refused: PolicyAnswer['refused']; why: string | null; handoffs?: boolean };
+const invites = (invitations: Invitation[], link: string | null = null): InvitesAnswer => ({ invitations, link, refused: null, why: null });
+const notInvited = (refused: PolicyAnswer['refused'], why: string): InvitesAnswer => ({ invitations: [], link: null, refused, why });
+
+// The link a teammate's Oby opens: oby://join/<host>#sphere=…&by=…&id=…&secret=…, read back exactly
+// as an oby:// link is (shared/invite.ts), or null when it wouldn't read
+export function inviteLink(url: string, sphere: string, by: string, id: string, secret: string): string | null {
+  const q = (v: string) => encodeURIComponent(v);
+  const link = `oby://join/${new URL(url).host}#sphere=${q(sphere)}&by=${q(by)}&id=${q(id)}&secret=${q(secret)}`;
+  return openedInviteLink(link) ? link : null;
+}
+
+const asInvitation = (v: unknown): Invitation | null => {
+  const o = v as Record<string, unknown> | null;
+  if (!o || typeof o.invitation_id !== 'string' || typeof o.expires_at !== 'string') return null;
+  const n = (x: unknown) => (Number.isSafeInteger(x) ? (x as number) : 0);
+  return { id: o.invitation_id, uses: n(o.uses), maxUses: n(o.max_uses), expiresAt: o.expires_at };
+};
+
+// m and an admin token, or the refusal in words
+async function asAdmin(call: Call, ownerKey: () => KeyObject, http: typeof fetch) {
+  const m = await must(call, 'GET', '/v1/obid/sphere');
+  if (m.state !== 'joined') return { refused: notInvited('not_joined', NOT_JOINED) };
+  const { token, scopes } = await ownerToken(http, m, ownerKey(), 'admin');
+  if (!scopes.includes('admin')) return { refused: notInvited('not_admin', ONLY_ADMINS_INVITE) };
+  return { m, token };
+}
+const ONLY_ADMINS_INVITE = 'Only the Obysphere’s admins can invite.';
+const asked = (why: unknown) => notInvited('failed', why instanceof Error ? why.message : String(why));
+async function listed(http: typeof fetch, m: Record<string, unknown>, token: string) {
+  const r = await read(http, `${sphereAt(m)}/invitations`, token) as { invitations?: unknown } | null;
+  return (Array.isArray(r?.invitations) ? r.invitations : []).flatMap((v) => asInvitation(v) ?? []);
+}
+
+export async function listInvitations(call: Call, ownerKey: () => KeyObject, http: typeof fetch = fetch): Promise<InvitesAnswer> {
+  try {
+    const a = await asAdmin(call, ownerKey, http);
+    return 'refused' in a ? a.refused! : invites(await listed(http, a.m, a.token));
+  } catch (e) { return asked(e); }
+}
+
+// A new open link, then the list as it is now
+export async function makeInvitation(call: Call, ownerKey: () => KeyObject, http: typeof fetch = fetch): Promise<InvitesAnswer> {
+  try {
+    const a = await asAdmin(call, ownerKey, http);
+    if ('refused' in a) return a.refused!;
+    const r = await http(`${sphereAt(a.m)}/invitations`, {
+      method: 'POST', redirect: 'error', headers: { authorization: `Bearer ${a.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ expires_in: INVITE_DAYS * 86_400, max_uses: INVITE_USES }),
+    });
+    if (r.status === 403) return notInvited('not_admin', ONLY_ADMINS_INVITE);
+    if (!r.ok) throw new Error(`the Obysphere answered ${r.status}`);
+    const made = (await r.json()) as { invitation_id?: unknown; secret?: unknown };
+    const link = typeof made.invitation_id === 'string' && typeof made.secret === 'string'
+      ? inviteLink(String(a.m.url), String(a.m.sphere), String(a.m.owner), made.invitation_id, made.secret) : null;
+    if (!link) throw new Error('the Obysphere’s invitation isn’t one Oby can read');
+    return invites(await listed(http, a.m, a.token).catch(() => []), link);
+  } catch (e) { return asked(e); }
+}
+
+// A link withdrawn (one the Sphere no longer has counts as withdrawn), then the list as it is now
+export async function withdrawInvitation(call: Call, ownerKey: () => KeyObject, id: string, http: typeof fetch = fetch): Promise<InvitesAnswer> {
+  try {
+    const a = await asAdmin(call, ownerKey, http);
+    if ('refused' in a) return a.refused!;
+    const r = await http(`${sphereAt(a.m)}/invitations/${encodeURIComponent(id)}`, { method: 'DELETE', redirect: 'error', headers: { authorization: `Bearer ${a.token}` } });
+    if (!r.ok && r.status !== 404) throw new Error(`the Obysphere answered ${r.status}`);
+    return invites(await listed(http, a.m, a.token));
+  } catch (e) { return asked(e); }
 }
