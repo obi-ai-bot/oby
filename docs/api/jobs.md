@@ -333,6 +333,42 @@ The transcript's entry `n` as it is now, with its `detail` (#784): what the call
 - Masked as the transcript is (above). `said`, `thought`, `you`, `plan` and `start` entries have no `detail`: their `text` is all there is.
 - Kept in `home/jobs/<id>/transcript-detail.jsonl` (0600), at most 32 MB a job; past that, a call's entry keeps its summary and its detail is `{"kept": false}`. Deleting a job removes its transcript and detail too.
 
+### `GET /v1/jobs/{id}/changes` (obid only)
+
+What the job's branch committed against its base (A00-93; docs/contracts/tasks.md, TASKS-23, 24, 29 and 30): each changed file, and the diff. Read in the job's worktree, in its sandbox, from the merge-base of `origin/<base>` (as the clone has it) to the worktree's HEAD, read once; uncommitted work isn't in it. It changes nothing.
+
+```json
+{"base": "main", "head": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+ "files": [{"path": "src/greet.js", "status": "modified", "additions": 1, "deletions": 0},
+           {"path": "a.txt", "status": "added", "additions": 1, "deletions": 0}],
+ "diff": "diff --git a/src/greet.js b/src/greet.js\n…", "truncated": false}
+```
+
+- `base`: the base branch's name, the job's `base` or else its repository's default branch.
+- `head`: the 40-hex commit the change was read at.
+- `files`: in git's order, each `path`, `status` (`added`, `deleted`, or `modified` for anything else, a type change too) and git's `additions` and `deletions` (a binary file counts `0` and `0`). No renames: a moved file is one `deleted` and one `added`.
+- `diff`: the unified diff, with no external diff program, textconv or colour. Every secret obid knows (the vault's, obid's API token and its other tokens) is taken out of the whole diff first, as `[redacted: <name>]`, and each `path` too; then the diff is cut to 1 MiB (1,048,576 bytes), on a character.
+- `truncated`: `true` exactly when `diff` is less than the whole diff. A diff of more than 4 MiB, or one git couldn't give, answers `diff` `""` with `truncated` `true`, its `files` still there.
+- `?path=<path>`: only the file whose `path`, as git printed it, equals it, and the diff of that file alone; the path reaches git only once it's found there, taken literally. A path the change doesn't hold answers `files` `[]`, `diff` `""` and `truncated` `false`, with `base` and `head`.
+- `rounds` (docs/contracts/task-changes.md, CHANGES-1): the task's rounds, oldest first: each turn of an owner's job's agent that moved its worktree's HEAD, the job's own and those of the jobs it follows up on its branch, `[{"round": 1, "job": "<id>", "from": "<sha>", "to": "<sha>", "at": "2026-11-17T10:00:00Z"}]`, numbered from 1. A round whose `to` isn't on `head` any more (rewritten by a rebase, undone) isn't listed. `round`: the round asked for, or null.
+- `?round=<n>` (CHANGES-2): that round's files and diff alone (`<from>..<to>`), the rest as above; a round the task doesn't have answers `files` `[]` and `diff` `""`, with `base`, `head` and `rounds`.
+- `?whitespace=ignore` (CHANGES-3): changes in whitespace alone left out (`git diff --ignore-all-space`): a file changed only so isn't in `files` or the diff. Any other value is `422`.
+- A job with nothing to read (no branch or worktree yet, no usable base, a HEAD that isn't a commit, a sandbox that can't run, file reads that fail) answers `{"base": null, "head": null, "files": [], "diff": "", "truncated": false, "round": null, "rounds": []}`. `404` `There's no such job.` for a job obid doesn't have.
+- Not on the gateway's allowlist: a phone gets `404`.
+
+### `GET /v1/jobs/{id}/undo`, `POST /v1/jobs/{id}/undo` (obid only)
+
+Undo this round (docs/contracts/task-changes.md, CHANGES-8 to 13): takes the job's last round back. `GET` answers obid's own sentence for it, which the owner approves, and changes nothing:
+
+```json
+{"action": "oby/build-1 goes back to 4b825dc, as it was before this round: its 1 commit leaves the branch. Oby force-pushes oby/build-1 to 4b825dc, so its pull request loses it too.",
+ "from": "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "to": "…", "branch": "oby/build-1", "push": true}
+```
+
+- `409` with why not: no round left (`Nothing this task did is left to undo.`), the job queued or running, its pull request merged, its worktree gone or moved past the round, its branch carried on by a later follow-up, what Oby pushed last to the branch neither the round's end nor before its start, or a pushed round on a branch that isn't an `oby/` one (`… Oby force-pushes only its own oby/ branches: undo it there with a revert.`). `404` for a job obid doesn't have.
+- `POST` takes a registered device's approval of exactly that sentence, `{"device", "action", "signedAt", "signature"}`, signed as `oby-undo\n<job id>\n<action>\n<signedAt>` (as Publish by hand's, crate::approval: fresh within two minutes, once). `403` for one that doesn't hold, `422` for a body that isn't one, `409` as `GET`, or when the push failed. With `push`, obid first force-pushes the branch back to `from` with `--force-with-lease` on `to`, listed in `outgoing`; then it resets the worktree to `from` (work left uncommitted goes) and moves the clone's branch there when it held the round. The job comes back with fewer `commits` (and `pushed`), and the task lists one round fewer; its `summary` opens with `The owner undid one of its rounds: its branch is back at <sha>, …` (one such line however many, the agent's report under it), which the next follow-up's agent hears (CHANGES-12).
+- Not on the gateway's allowlist: a phone gets `404`.
+
 ### `POST /v1/jobs/{id}/stop`
 
 Stops a queued or running job. Returns the job (`status: "stopped"`).

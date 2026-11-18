@@ -15,6 +15,8 @@ import type {
   Helper,
   InboxItem,
   Job,
+  JobChanges,
+  UndoAction,
   LimitDecision,
   PlanAnswer,
   Profile,
@@ -127,6 +129,12 @@ export const api = {
   // exactly that on their click
   publishAction: (j: string, c: PublishChoices = {}) => call<PublishAction>('GET', `/v1/jobs/${id(j)}/publish${q(c)}`),
   publish: (j: string, action: string, c: PublishChoices = {}) => call<{ url?: string }>('POST', `/v1/jobs/${id(j)}/publish`, undefined, (b) => b.publish(j, action, c)),
+  // A task's changes, whole or one round's, whitespace left out or not (CHANGES-1 to 3); Undo this
+  // round's sentence, then main signs exactly that on the owner's click in its own dialog (CHANGES-14)
+  changes: (j: string, o: { round?: number; ignoreWhitespace?: boolean } = {}) =>
+    call<JobChanges>('GET', `/v1/jobs/${id(j)}/changes${q({ round: o.round, whitespace: o.ignoreWhitespace ? 'ignore' : undefined })}`),
+  undoAction: (j: string) => call<UndoAction>('GET', `/v1/jobs/${id(j)}/undo`),
+  undo: (j: string, action: string) => call<Job>('POST', `/v1/jobs/${id(j)}/undo`, undefined, (b) => b.undo(j, action)),
   // Confirm on a confirm item: main signs it with this Mac's device key (main/device.ts)
   confirm: (i: string) => call<InboxItem>('POST', `/v1/inbox/${id(i)}/answer`, undefined, (b) => b.confirm(i)),
   // What this Oby tells other Obys by itself (docs/contracts/peer-thread.md, PEER-16 to 18): the

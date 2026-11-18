@@ -65,6 +65,7 @@ mod authors;
 mod budget;
 mod by_github;
 pub(crate) mod cant_run;
+pub(crate) mod changes;
 mod check_run;
 #[cfg(test)]
 use check_run::check_failed;

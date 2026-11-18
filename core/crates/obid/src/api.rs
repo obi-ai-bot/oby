@@ -180,6 +180,11 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/v1/jobs/{id}/archive", post(crate::routes::archive))
         .route("/v1/jobs/{id}/delete", post(crate::routes::delete_asked))
         .route("/v1/jobs/{id}/wait", get(crate::routes::wait))
+        .route("/v1/jobs/{id}/changes", get(crate::routes::changes))
+        .route(
+            "/v1/jobs/{id}/undo",
+            get(crate::routes::undo_sentence).post(crate::routes::undo),
+        )
         .route("/v1/jobs/{id}/report", get(crate::routes::report))
         .route("/v1/jobs/{id}/transcript", get(crate::routes::transcript))
         .route(

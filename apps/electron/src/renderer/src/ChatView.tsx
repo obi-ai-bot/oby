@@ -12,6 +12,7 @@ import DecisionBar, { type Pending } from './DecisionBar';
 import { useScrollThumb } from './useScrollThumb';
 import TaskMenu from './TaskMenu';
 import TaskLog from './TaskLog';
+import { ChangesPill } from './ChangesPanel';
 import { replyTarget, type Box } from './replyTarget';
 import Composer, { typingIn } from './Composer';
 import Formatted from './Formatted';
@@ -453,12 +454,14 @@ export function ThreadTask({ task, onMenu }: { task: Task; onMenu?: (at: DOMRect
   );
 }
 
-// A task in the conversation: its card, and what it did under it, outside the card (TaskLog); data-task is
+// A task in the conversation: its card, its Changes (CHANGES-4), and what it did under it, outside the card (TaskLog); data-task is
 // where opening the conversation at the task scrolls to (LIVETASK-28)
 export function TaskEntry({ task, lit = false, onMenu }: { task: Task; lit?: boolean; onMenu?: (at: DOMRect) => void }) {
   return (
     <div className={`msg-task-work${task.status === 'running' || task.status === 'needs' ? ' is-live' : ''}${lit ? ' is-lit' : ''}`} data-task={task.id}>
       <ThreadTask task={task} onMenu={onMenu} />
+      {/* what it changed, in the side panel beside the conversation (CHANGES-4) */}
+      <ChangesPill task={task} />
       <TaskLog task={task} />
     </div>
   );

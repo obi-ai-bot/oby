@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import ChangesPanel from './ChangesPanel';
 import './tokens.css';
 import './app.css';
 import Home from './Home';
@@ -56,7 +57,7 @@ function App() {
   if (!onboarding && !ready) return <Splash />;
   if (!onboarding && welcome) return <Welcome onDone={done} />;
   // (keyed, so neither starts over as the other comes or goes)
-  return <>{home && <Home key="home" />}{onboarding && <FirstRun key="setup" />}<ChatGptWelcome /></>;
+  return <>{home && <Home key="home" />}{onboarding && <FirstRun key="setup" />}<ChatGptWelcome />{home && <ChangesPanel />}</>;
 }
 
 if (onObid) connect();

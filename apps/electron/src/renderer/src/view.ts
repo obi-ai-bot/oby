@@ -128,6 +128,7 @@ export type Job = {
   published?: string;  // the pull request it opened
   publish?: { label: string; anyway?: true; why?: string };  // obid only: Publish by hand (jobPage.ts, publishOf)
   nothingDone?: boolean;  // obid's: it ended with nothing done (TASKS-12)
+  worktree?: boolean;  // obid's: it has a worktree on disk: Changes and Open in (CHANGES-4, 6)
   log?: LogLine[];
   page?: Page;         // the job page's extra data, once obid serves it
   conversation?: string;  // obid's: the conversation whose words started it

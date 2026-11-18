@@ -39,6 +39,9 @@ declare global {
       // an Obysphere joined by its invite link, and Leave (preload, main/sphere.ts)
       onSphere?(fn: (joined: { sphere: string; name: string }) => void): () => void;
       sphereLeave?(): Promise<string | null>;
+      // a task's worktree in the owner's Terminal or editor, by its id, and that editor's name (preload, main/worktree.ts)
+      openWorktree?(job: string, where: 'terminal' | 'editor'): Promise<boolean>;
+      editorName?(): Promise<string | null>;
       // the Obysphere's rules, and the members rule added at the version read (preload, main/sphere.ts)
       spherePolicy?(): Promise<PolicyAnswer | null>;
       sphereSetPolicy?(version: number): Promise<PolicyAnswer | null>;
@@ -47,6 +50,8 @@ declare global {
         call(method: string, path: string, body?: unknown): Promise<{ status: number; text: string }>;
         confirm(item: string): Promise<{ status: number; text: string }>;
         publish(job: string, action: string, choices: { anyway?: boolean; force?: boolean; to?: string }): Promise<{ status: number; text: string }>;
+        // Undo this round: main asks in its own dialog and signs obid's sentence (CHANGES-14)
+        undo(job: string, action: string): Promise<{ status: number; text: string }>;
         limitAnswer(item: string, revision: number, choice: string, account?: string): Promise<{ status: number; text: string }>;
         pairInvite(): Promise<{ status: number; text: string }>;
         live(onSnapshot: (s: LiveSnapshot) => void, onMessage: (m: LiveMessage) => void): () => void;

@@ -566,7 +566,7 @@ export function taskOf(s: Live, j: Job): Task {
     check: j.check ?? undefined, repoCheck: s.repos.find((r) => r.repo === j.repo)?.check, status: j.status, step: j.step, waiting: j.waiting ?? undefined,
     round: j.rounds > 1 ? [j.round, j.rounds] : undefined,
     stages: stagesOf(j),
-    ask, summary: j.summary || undefined, reason: j.reason || undefined, canTryAgain: !unknown && stoppedHere(s, j), commits: j.commits ?? undefined, published: j.published ?? undefined, nothingDone: j.nothingDone || undefined,
+    ask, summary: j.summary || undefined, reason: j.reason || undefined, canTryAgain: !unknown && stoppedHere(s, j), commits: j.commits ?? undefined, published: j.published ?? undefined, nothingDone: j.nothingDone || undefined, worktree: !!j.worktree || undefined,
     created: minutesAgo(j.created), finished: j.finished ? minutesAgo(j.finished) : undefined, conversation: j.conversation ? shownId(j.conversation) : undefined,
     noConversation: !s.conversations.some((c) => c.id === j.conversation),
     archived: !!j.archived, publish: publishOf(j, carriedOn(j, Object.values(s.jobs))),
@@ -1027,6 +1027,13 @@ export async function renameJob(id: string, title: string) {
     const now = state.jobs[id];
     if (had && now?.title === title) set({ jobs: { ...state.jobs, [id]: { ...now, title: had.title } } });
     say(e);
+  }
+}
+// Undo this round (CHANGES-14): main asks in its own dialog and signs obid's sentence; the job comes
+// back with one round fewer. "Not now" in that dialog is no refusal to show.
+export async function undoJob(id: string, action: string) {
+  try { const j = await api.undo(id, action); take({ kind: 'job', job: j }); } catch (e) {
+    if (!(e instanceof ApiError && e.message.startsWith('Not undone: you said not now'))) say(e);
   }
 }
 export async function archiveJob(id: string) {

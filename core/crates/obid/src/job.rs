@@ -348,6 +348,16 @@ pub struct Unjudged {
     pub why: String,
 }
 
+/// One of a job's rounds that moved its branch (docs/contracts/task-changes.md, CHANGES-1): the
+/// commit its worktree's HEAD was at as an agent's turn started, the one it was at as the turn
+/// ended, and when the turn started, in seconds since the epoch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Checkpoint {
+    pub from: String,
+    pub to: String,
+    pub at: i64,
+}
+
 /// A job as obid keeps it (`home/jobs/<id>.json`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -499,6 +509,15 @@ pub struct Job {
     /// ends.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub crash_resumes: Vec<i64>,
+    /// Its rounds that moved its branch, oldest first (CHANGES-1): what `GET /v1/jobs/{id}/changes`
+    /// lists as its rounds, and what Undo this round takes back (CHANGES-8). Kept in its file, never
+    /// in the API's job.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checkpoints: Vec<Checkpoint>,
+    /// The rounds the owner undid, oldest first (CHANGES-8): its follow-up's agent hears of them
+    /// (CHANGES-12). Kept in its file, never in the API's job.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub undone: Vec<Checkpoint>,
     /// What obid did by itself to carry it on (docs/contracts/recovery.md).
     #[serde(default, skip_serializing_if = "Recovery::is_unused")]
     pub recovery: Recovery,
@@ -1478,6 +1497,42 @@ impl Job {
             && self.published.is_some()
             && self.unpublished() > 0
             && !self.pull_request_open()
+    }
+
+    /// Takes its last round back (CHANGES-10, 12): kept in `undone`, and its summary opens with
+    /// what was undone, which its follow-up's agent hears with the rest of its report.
+    pub fn undo_round(&mut self) {
+        let Some(round) = self.checkpoints.pop() else {
+            return;
+        };
+        self.undone.push(round);
+        let report = match self.summary.split_once("\n\n") {
+            Some((note, rest)) if note.starts_with("The owner undid ") => rest.to_owned(),
+            _ if self.summary.starts_with("The owner undid ") => String::new(),
+            _ => self.summary.clone(),
+        };
+        let note = self.undone_note().unwrap_or_default();
+        self.summary = if report.is_empty() {
+            note
+        } else {
+            format!("{note}\n\n{report}")
+        };
+    }
+
+    /// What its follow-up's agent hears of the rounds the owner undid (CHANGES-12), or none.
+    pub fn undone_note(&self) -> Option<String> {
+        let last = self.undone.last()?;
+        let n = self.undone.len();
+        Some(format!(
+            "The owner undid {} of its rounds: its branch is back at {}, and what {} committed is gone from it.",
+            if n == 1 {
+                "one".to_owned()
+            } else {
+                n.to_string()
+            },
+            &last.from[..last.from.len().min(12)],
+            if n == 1 { "that round" } else { "those rounds" }
+        ))
     }
 
     /// The last commit obid pushed to the job's branch: its pull request's head, as obid left it.
