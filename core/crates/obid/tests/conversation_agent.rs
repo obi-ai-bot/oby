@@ -789,8 +789,8 @@ fn post_task(obid: &Obid, extra: Value) -> Answer {
 }
 
 /// ACCOUNTS-35, the owner's word of 2026-11-18: a task named to an account that isn't signed in is
-/// refused before anything starts, saying why and what to do; a follow-up, which keeps its first
-/// task's account, is refused the same way once that account is signed out.
+/// refused before anything starts, saying why and what to do; the owner's words to that task,
+/// whose follow-up keeps its account, are refused the same way once it is signed out.
 #[test]
 fn accounts_35_a_task_named_to_a_signed_out_account_is_refused() {
     let folder = Folder::new("route-signed-out");
