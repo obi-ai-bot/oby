@@ -1687,16 +1687,22 @@ impl Job {
             .is_none_or(|freed| self.finished.is_some_and(|end| end > freed.at))
     }
 
-    /// Waiting for Publish (its own publish failed), with commits its pull request won't take,
-    /// failed or interrupted, Oby's review left for the owner, or its merge stopped where only
-    /// the owner takes it on (crate::merge), and not dismissed.
+    /// Its [`Job::decision`] open, or failed or interrupted, and not dismissed.
     pub fn needs_you(&self) -> bool {
+        self.decision()
+            || self.dismissed.is_none()
+                && matches!(self.status, Status::Failed | Status::Interrupted)
+    }
+
+    /// A decision only the owner takes, open, and not dismissed: waiting for Publish (its own
+    /// publish failed), commits its pull request won't take, Oby's review left for the owner, or
+    /// its merge stopped where only the owner takes it on (crate::merge). What keeps a job that
+    /// ended out of Archived; failed or interrupted alone doesn't (TASKS-25, TASKS-31).
+    pub fn decision(&self) -> bool {
         // Publish kept after 24 hours of checks that judged nothing asks nothing (PUBLISHING-31).
         self.dismissed.is_none()
             && (self.can_publish() && self.unjudged.is_none()
                 || self.stranded()
-                || self.status == Status::Failed
-                || self.status == Status::Interrupted
                 || self.review_needs_you()
                 || self.merge_needs_you)
     }
