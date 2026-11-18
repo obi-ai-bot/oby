@@ -18,7 +18,7 @@ The business behavior contract for `tools/obid-spec`, from [the template](../bus
 
 ### Triggers and prerequisites
 
-- `obid-spec run [--only <area>] [--workflow <text>] [--jobs <n>] [--obid <path>] [--keep]`, from anywhere in the checkout. `cargo`, `git`, `node`, `pnpm` and `gitleaks` on `PATH`; the first run clones obi-sphere at the commit `e2e/rig-sphere.ref` pins into `~/Library/Caches/obid-spec/` and installs its packages (`OBID_SPEC_SPHERE_CLONE` names another clone).
+- `obid-spec run [--only <area>] [--workflow <text>] [--jobs <n>] [--obid <path>] [--keep]`, from anywhere in the checkout. `cargo`, `git`, `node`, `pnpm` and `gitleaks` on `PATH`; the first run clones obi-sphere at the commit `e2e/sphere.ref` pins into `~/Library/Caches/obid-spec/` and installs its packages (`OBID_SPEC_SPHERE_CLONE` names another clone).
 - `obid-spec coverage [--only <area>]`, `obid-spec list`, `obid-spec nodes`.
 
 ### States and transitions
@@ -38,7 +38,7 @@ The business behavior contract for `tools/obid-spec`, from [the template](../bus
 
 ### Invariants and boundaries
 
-- **Nothing of the owner's.** A scratch obid has its own home, port and token under the run's folder, `HOME` a scratch folder, `PATH` only obid's stand-in agents and fake `gh` (`core/crates/obid/tests/agents`), `node`, `gitleaks` and the system's folders, a stand-in `security` for the Keychain and an empty `GH_CONFIG_DIR`. Never the owner's obid on 127.0.0.1:7777, `/Applications/Oby.app`, their logins, their CLIs or their GitHub; the HTTP client reaches only 127.0.0.1.
+- **Nothing of the owner's.** A scratch obid has its own home, port and token under the run's folder, `HOME` a scratch folder, `PATH` only obid's stand-in agents and fake `gh` (`core/crates/obid/tests/agents`), `node`, `gitleaks` and the system's folders, a stand-in `security` for the Keychain, an empty `GH_CONFIG_DIR`, a stand-in login shell (`OBID_LOGIN_SHELL`) that answers that same `PATH`, and every tool pinned to a stand-in by absolute path, since obid also looks in the usual install folders (`/opt/homebrew/bin`). Never the owner's obid on 127.0.0.1:7777, `/Applications/Oby.app`, their logins, their CLIs or their GitHub; the HTTP client reaches only 127.0.0.1.
 - **The Mac is shared.** obid is built once per run with `CARGO_INCREMENTAL=0`; at most 6 workflows at once; every process stopped by its PID and its process group, and a node stops only a process the suite started.
 - **Black-box.** The suite reads none of obid's crates: what the owner's app signs (an owner key's card and delegation, a device's words and Confirm) is written again here from the Electron app's `shared/sphere.ts`, `main/words.ts` and `main/device.ts`, so a signature only obid could read fails.
 - **Workflows are BLOK v2.** BLOK Studio can show and edit them; a step BLOK can express that this host can't run (`branch`, `switch`, `forEach`, `loop`, `wait`, `tryCatch`, `parallel`, `subworkflow`) is refused before the run, not run differently.
@@ -46,7 +46,7 @@ The business behavior contract for `tools/obid-spec`, from [the template](../bus
 ## Interfaces and dependencies
 
 - obid's HTTP API (`docs/api/`), its route list `docs/api/routes.txt`, and the contracts under `docs/contracts/`.
-- The local Sphere: obi-sphere's `server/scripts/local.mjs` at `e2e/rig-sphere.ref` (Dmytro's server, read only).
+- The local Sphere: obi-sphere's `server/scripts/local.mjs` at `e2e/sphere.ref` (Dmytro's server, read only).
 - `blok-rs` at the revision oby-check-blok pins, for the node registry and its gRPC service.
 
 ## Acceptance scenarios
@@ -58,5 +58,5 @@ The business behavior contract for `tools/obid-spec`, from [the template](../bus
 - **OBIDSPEC-5** `obid-spec run` runs the workflows in parallel, each on its own nodes child and scratch folder, steps in order with each one's output kept for the next; it prints one line per workflow (its steps passed, its assertions passed, its expected reds) and the expected reds with their issues, and exits 0 only when no step failed (`obidspec_5_…`).
 - **OBIDSPEC-6** Every assertion is proven able to fail, on every run: the answer it passed on is changed at each place it looks (the status, each leaf of the expected body, each path, the text), and each change must fail it. One that passes anyway is a vacuous assertion and fails the step; a step that names a scenario but asserts nothing fails too (`obidspec_6_…`).
 - **OBIDSPEC-7** A step marked `ui.expectedRed` with a bug's issue is expected to fail: its failure doesn't fail the run and is listed with the issue; its pass fails the run (`obidspec_7_…`).
-- **OBIDSPEC-8** A scratch obid gets only what's said under "Nothing of the owner's": its own config, home, token and port, a `PATH` of its stand-ins and the system's folders, and no variable of the person's environment; `obid-stop` and the end of a workflow stop it by PID, and a PID the suite didn't start is never signalled (`obidspec_8_…`).
+- **OBIDSPEC-8** A scratch obid gets only what's said under "Nothing of the owner's": its own config, home, token and port, a `PATH` of its stand-ins and the system's folders, a login shell that answers that `PATH`, every tool pinned to a stand-in, and no variable of the person's environment; `obid-stop` and the end of a workflow stop it by PID, and a PID the suite didn't start is never signalled (`obidspec_8_…`).
 - **OBIDSPEC-9** The lying Sphere passes every call through as it is, but serves the named owner's cards in the directory re-signed with a new owner key, the key the real Sphere never changes, so a changed owner key (SPHERE-8 to 10) is proven against the real server (`obidspec_9_…`).

@@ -295,6 +295,26 @@ async fn obidspec_8_a_scratch_obid_sees_only_its_stand_ins_and_stops_by_pid() {
         "{env}"
     );
     assert!(env.contains("OBID_SECURITY_BIN="), "{env}");
+    // The login shell obid reads the person's PATH from is a stand-in answering this obid's own.
+    let shell = env
+        .lines()
+        .find_map(|l| l.strip_prefix("OBID_LOGIN_SHELL="))
+        .unwrap();
+    let said = std::process::Command::new(shell)
+        .args(["-l", "-c", "/usr/bin/env -0"])
+        .env_clear()
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&said.stdout).to_string();
+    let login_path = said
+        .split('\0')
+        .find_map(|l| l.strip_prefix("PATH="))
+        .unwrap();
+    assert_eq!(login_path, path, "{said}");
+    assert!(
+        !login_path.contains("homebrew") && !login_path.contains(".local"),
+        "{login_path}"
+    );
     let mode = std::fs::metadata(folder.join("home/api-token"))
         .unwrap()
         .permissions()
@@ -380,4 +400,57 @@ async fn obidspec_9_the_lying_sphere_resigns_only_the_named_owners_card() {
         .await
         .unwrap();
     assert_eq!(other.body, json!({"other": true}));
+}
+
+/// No shipped workflow ever has obid look for a tool by a bare name (a `bin` in `PUT
+/// /v1/settings/agents/{agent}` or an `obid-start` configuration): obid would search the person's
+/// install folders for it and run what it finds (OBIDSPEC-8).
+#[test]
+fn obidspec_8_no_workflow_asks_obid_to_search_for_a_tool() {
+    fn bins(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::Object(m) => {
+                for (k, x) in m {
+                    if k == "bin" {
+                        if let Some(s) = x.as_str() {
+                            out.push(s.to_string());
+                        }
+                    }
+                    bins(x, out);
+                }
+            }
+            Value::Array(a) => a.iter().for_each(|x| bins(x, out)),
+            _ => {}
+        }
+    }
+    let all = workflow::load_all(&suite().join("workflows"), &node_names()).unwrap();
+    for w in &all {
+        for s in &w.steps {
+            let mut found = vec![];
+            bins(&s.inputs, &mut found);
+            for b in found {
+                assert!(
+                    b.starts_with('/') || b.starts_with("${"),
+                    "{} › {}: bin {b:?} would have obid search the person's folders",
+                    w.name,
+                    s.id
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn obidspec_8_a_bare_tool_name_is_refused_before_obid_starts() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = obid::Run {
+        obid: "/bin/echo".into(),
+        root: root(),
+        scratch: dir.path().join("wf"),
+        sphere_url: None,
+        sphere_operator: None,
+    };
+    let input = json!({"name": "o", "config": {"agents": {"codex": {"bin": "codex"}}}});
+    let refused = obid::start(&run, serde_json::from_value(input).unwrap()).await;
+    assert!(format!("{:#}", refused.unwrap_err()).contains("absolute path only"));
 }
