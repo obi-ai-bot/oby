@@ -16,7 +16,10 @@ if (process.argv[2] === "models") {
 // words, as ACP says an agent does. Each prompt is one line of $CURSOR_CONFIG_DIR/turns.jsonl: argv,
 // cwd, HOME, the proxy it was given, the session it resumed, the MCP servers it was given and
 // the prompt. A file `no-load-session` in its room: it doesn't offer `session/load`; `no-session`:
-// it can't start a session. What a prompt does comes from its last line:
+// it can't start a session; `stop-at-start`: it says so on stderr and exits 3 before a word. As it
+// starts it makes its sockets' folder where cursor-agent 2026.11.13 does: `$CURSOR_DATA_DIR/projects`,
+// else `$CURSOR_DATA_DIR`, else `$TMPDIR/.cursor`, the first of 83 characters or fewer, else
+// `/tmp/.cursor`; one it can't make, it stops there, as Cursor does (CONVERSATION-AGENT-41). What a prompt does comes from its last line:
 //   HELLO              reads a file (no request, as Cursor's reads go), streams "Hello there."
 //   REMEMBER           says "resume=<the session it resumed, or none>"
 //   TOOLS              says "tools: <the oby tools, by name>"
@@ -37,6 +40,28 @@ import { connect } from "node:net";
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 
+if (existsSync("stop-at-start")) {
+  process.stderr.write("fake-cursor-harness: it stopped as it started\n");
+  process.exit(3);
+}
+{
+  const data = process.env.CURSOR_DATA_DIR?.trim() || join(process.env.HOME || "/nonexistent", ".cursor");
+  let base = join(data, "projects");
+  if (base.length > 83) {
+    base = data;
+    if (base.length > 83) {
+      const temp = join(process.env.TMPDIR || "/tmp", ".cursor");
+      base = temp.length <= 83 ? temp : join("/tmp", ".cursor");
+    }
+  }
+  const sockets = join(base, process.cwd().replace(/[^A-Za-z0-9]+/g, "-").slice(-40));
+  try {
+    mkdirSync(sockets, { recursive: true });
+  } catch (e) {
+    process.stderr.write(`Error: ${e.message}\n`);
+    process.exit(1);
+  }
+}
 const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
 const home = process.env.HOME || "/nonexistent";
 const config = process.env.CURSOR_CONFIG_DIR || join(home, ".cursor");

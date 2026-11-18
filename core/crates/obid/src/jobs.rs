@@ -91,6 +91,7 @@ mod merge_by_owner;
 mod metering;
 mod moves;
 mod obi_review;
+pub(crate) mod onto_pr;
 mod own_refs;
 pub(crate) use own_refs::OWN_COMMON;
 mod owner_run;
@@ -4480,6 +4481,7 @@ impl Jobs {
                 return;
             }
             self.read_pull_requests().await;
+            self.follow_onto().await;
             self.let_go_ended();
             if self.settle_reviews() {
                 self.schedule();

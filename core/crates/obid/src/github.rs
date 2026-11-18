@@ -506,6 +506,20 @@ pub async fn view_merging(
     Ok((pr, merging))
 }
 
+/// [`view`], with its checks and whether it conflicts ([`decode_merging`]) but none of its reviews
+/// or rules: what a Fix CI task that pushed onto the owner's pull request follows, which never
+/// merges it (crate::jobs::onto_pr, AUTOFIX-14). One read of GitHub.
+pub async fn view_checks(
+    gh: &Path,
+    repo: &str,
+    number: u64,
+    now: i64,
+) -> Result<(PullRequest, Option<Merging>), String> {
+    let output = pr_view(gh, repo, number).await?;
+    let pr = decode(&output, now).ok_or_else(|| FAILED.to_owned())?;
+    Ok((pr, decode_merging(&output)))
+}
+
 async fn pr_view(gh: &Path, repo: &str, number: u64) -> Result<String, String> {
     let number = number.to_string();
     run(

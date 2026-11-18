@@ -776,6 +776,10 @@ pub fn offers(
                     && i.fork == Some(false)
                     && knows(&i.repo)
                     && opened_by(jobs, &i.url).is_none()
+                    // A Fix CI task that pushed this head onto it takes its red checks (AUTOFIX-14).
+                    && (i.head.as_deref()).is_none_or(|head| {
+                        crate::jobs::onto_pr::follower(jobs, &i.repo, i.number, head).is_none()
+                    })
             }
         })
         .collect();
@@ -1428,6 +1432,8 @@ async fn begin(
         conversation: None,
         ..routine
     };
+    // Routed on fresh usage: a reading obid hasn't taken lately isn't room (#2484, LIMITS-25).
+    jobs.fresh_usage().await;
     let job = jobs.create(new)?;
     Ok((job, true))
 }
