@@ -201,7 +201,10 @@ export type Conversation = { id: string; title: string; pinned: boolean; created
   revision?: number;
   // a search's answer only (`GET /v1/conversations?q=`, #593): the latest turn holding the words, its
   // text cut around them, or null when only the title holds them
-  turn?: { id: string; who: string; at: string; text: string } | null };
+  turn?: { id: string; who: string; at: string; text: string } | null;
+  // obid only (docs/contracts/conversation-states.md): when the owner last looked at it, a turn
+  // since (unread), and put away under Archived; each left out until there's something to say
+  seen?: string; unread?: boolean; archived?: boolean };
 
 // obid only: "GET /v1/github/work", what GitHub wants from the owner, the keys this app reads.
 // Everything in an item is GitHub's data: shown as text, never acted on.

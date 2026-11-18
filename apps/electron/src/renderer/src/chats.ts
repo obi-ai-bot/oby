@@ -27,7 +27,9 @@ type Ask = { question: string; options: string[] };
 // project: the project it's in, or null (projects.ts): its group in the side panel
 // queued: the owner's words waiting for the turn under way (obid's, COMPOSER-8), shown over the box
 export type Queued = { id: string; text: string; files: string[] };
-export type Chat = { id: string; title: string; said: Message[]; queued?: Queued[]; typing?: boolean; step?: string; waiting?: Ask; needs?: boolean; pinned?: boolean; fromObys?: boolean; at?: number; about?: string; local?: boolean; talkAccount?: string | null; talkedOn?: string | null; movedOff?: string | null; profile?: string; helper?: string; project?: string | null };
+// seen, unread, archived: when the owner last looked, a turn since, put away under Archived
+// (obid's, docs/contracts/conversation-states.md)
+export type Chat = { id: string; title: string; said: Message[]; queued?: Queued[]; typing?: boolean; step?: string; waiting?: Ask; needs?: boolean; pinned?: boolean; fromObys?: boolean; at?: number; about?: string; local?: boolean; talkAccount?: string | null; talkedOn?: string | null; movedOff?: string | null; profile?: string; helper?: string; project?: string | null; seen?: string; unread?: boolean; archived?: boolean };
 
 
 // The mock's past conversations: your log with Oby (mock.ts), a new one each
@@ -142,8 +144,8 @@ export const lastAgo = (c: Chat) => Math.min(c.at ?? Infinity, ...c.said.map((m)
 // obid says it did (at), where it says: a card still open in it reads as just now, however old
 const movedAgo = (c: Chat) => c.at ?? lastAgo(c);
 // Never the one of what other Obys ask you (ASK-18): a question doesn't decide where the app opens.
-// Nor a helper's, which obid never makes the latest either (docs/api/helpers.md)
-export const latestChat = (all: Chat[]) => all.filter((c) => !c.fromObys && !c.helper).reduce<Chat | undefined>((best, c) => (!best || movedAgo(c) < movedAgo(best) ? c : best), undefined);
+// Nor a helper's, which obid never makes the latest either (docs/api/helpers.md), nor one put away under Archived
+export const latestChat = (all: Chat[]) => all.filter((c) => !c.fromObys && !c.helper && !c.archived).reduce<Chat | undefined>((best, c) => (!best || movedAgo(c) < movedAgo(best) ? c : best), undefined);
 // Where back comes to rest, chat first (CHATFIRST-9, CHATFIRST-12): the conversation you were last
 // in, or the empty chat (null) if that's where you were; one since deleted, your latest
 export const restingChat = (rest: string | null, all: Chat[]) =>
@@ -195,6 +197,18 @@ export const lookAtUsage = () => { if (onObid) live.lookAtUsage(); };
 // into a project or out of it (null), from the title bar's chip: obid's from its answer; the mock's, here
 export const moveChat = (id: string, project: string | null) => (ofObid(id) ? void live.moveToProject(id, project) : update(id, () => ({ project })));
 export const pinChat = (id: string, pinned: boolean) => (ofObid(id) ? void live.pinConversation(id, pinned) : update(id, () => ({ pinned })));
+// Looked at (CHATSTATE-6): obid's once it has never been, or a turn came since; the mock's, here
+export const seeChat = (id: string) => {
+  const c = chats.find((x) => x.id === id);
+  if (!c || (c.seen && !c.unread)) return;
+  if (ofObid(id)) void live.seeConversation(id); else update(id, () => ({ unread: false, seen: new Date().toISOString() }));
+};
+// Mark unread or read (CHATSTATE-7), Archive or Restore (CHATSTATE-9)
+// whether its marks can be kept: always on the mock, on obid once it says so (conversation-marks-v1)
+export const keepsMarks = (id: string) => !ofObid(id) || live.takesMarks();
+export const markChatUnread = (id: string, unread: boolean) => (ofObid(id) ? void live.markConversation(id, { seen: !unread }) : update(id, () => ({ unread })));
+export const archiveChat = (id: string, archived: boolean) => (ofObid(id) ? void live.markConversation(id, { archived }) : update(id, () => ({ archived })));
+export const archivedChats = (all: Chat[]) => all.filter((c) => c.archived && !c.helper && !c.fromObys);
 export const deleteChat = (id: string) => {
   forget(draftBox.conversation(id));  // its unsent words go with it
   if (ofObid(id)) return void live.deleteConversation(id);

@@ -101,6 +101,8 @@ export const api = {
   job: (j: string) => call<Job>('GET', `/v1/jobs/${id(j)}`),
   stop: (j: string, key?: string) => call<Job>('POST', `/v1/jobs/${id(j)}/stop`, key ? { clientRequestId: key } : undefined),
   dismiss: (j: string) => call<Job>('POST', `/v1/jobs/${id(j)}/dismiss`),
+  // another account (LIMITS-16): queued, it starts there; ended, its Try again runs there
+  move: (j: string, account: string) => call<Job>('POST', `/v1/jobs/${id(j)}/move`, { account }),
   // obid only, the task's menu: rename (whatever it's doing), archive or unarchive (ended, needing
   // nothing), delete (ended, for good: obid's 409 says why not); a job with commits that aren't
   // published isn't deleted yet: obid's Confirm (ask) asks the owner first
@@ -236,7 +238,7 @@ export const api = {
   peerAsk: (owner: string, text: string) => call<unknown>('POST', `/v1/obid/sphere/peers/${id(owner)}/ask`, { text }),
   // q: obid's own search over every conversation it keeps, their words and titles (#593)
   conversations: (opts: { after?: string; limit?: number; q?: string } = {}) => call<Conversation[]>('GET', `/v1/conversations${q(opts)}`),
-  editConversation: (c: string, change: { title?: string; pinned?: boolean; folders?: string[]; talkAccount?: string | null; project?: string | null }) => call<Conversation>('PATCH', `/v1/conversations/${id(c)}`, change),
+  editConversation: (c: string, change: { title?: string; pinned?: boolean; folders?: string[]; talkAccount?: string | null; project?: string | null; seen?: boolean; archived?: boolean }) => call<Conversation>('PATCH', `/v1/conversations/${id(c)}`, change),
   deleteConversation: (c: string) => call<null>('DELETE', `/v1/conversations/${id(c)}`),
   // Stop: the turn under way in this conversation ends at once, its answer what Oby said until then
   stopConversation: (c: string) => call<{ stopped: true }>('POST', '/v1/conversation/stop', { conversation: c }),

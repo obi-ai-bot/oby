@@ -60,11 +60,14 @@ type Live = ObidState & {
   picked: Record<string, { repo: string; at: string }>;
   // the files your words took, by their turn: the name obid kept, the one picked, a photo's preview
   previews: Record<string, { name: string; shown: string; preview?: string }[]>;
+  // clicks obid refused (a Stop, an answer), by the thread they belong to: a conversation's app id
+  // or a job's id. Shown there until dismissed (docs/contracts/conversation-states.md, CHATSTATE-4)
+  refused: { id: number; where: string; text: string }[];
 };
 
 let state: Live = {
   connection: 'connecting', problem: null, status: null, repos: [], github: null, jobs: {}, firstJobs: new Set(), seen: new Set(), inbox: [], limits: [],
-  conversations: [], turns: {}, loaded: new Set(), working: {}, on: {}, pending: {}, unanswered: new Set(), words: {}, pace: {}, waiting: {}, alias: {}, answered: {}, answering: new Set(), picked: {}, previews: {}, gone: new Set(), goneConversations: new Set(), settledInbox: {},
+  conversations: [], turns: {}, loaded: new Set(), working: {}, on: {}, pending: {}, unanswered: new Set(), words: {}, pace: {}, waiting: {}, alias: {}, answered: {}, answering: new Set(), picked: {}, previews: {}, refused: [], gone: new Set(), goneConversations: new Set(), settledInbox: {},
 };
 const listeners = new Set<() => void>();
 const set = (patch: Partial<Live>) => {
@@ -229,7 +232,7 @@ export function chatOf(s: Live, c: Conversation): Chat {
   confirm({ who: 'oby', text: '', ago: 0 });
   return {
     id: s.alias[c.id] ?? c.id, title: c.title, pinned: c.pinned, at: minutesAgo(c.lastActivity), said, fromObys: c.fromObys, helper: c.helper, talkAccount: c.talkAccount, talkedOn: c.talkedOn, movedOff: c.movedOff,
-    project: c.project, about: tasksLine(s, c.tasks),
+    project: c.project, about: tasksLine(s, c.tasks), seen: c.seen, unread: !!c.unread, archived: !!c.archived,
     ...(queued.length ? { queued: queued.map((t) => ({ id: t.id, text: t.text, files: t.attachments ?? [] })) } : {}),
     typing: c.id in s.working, step: p || words ? undefined : s.working[c.id],
     waiting: q ? { question: q.text, options: q.options } : undefined,
@@ -572,7 +575,7 @@ export function taskOf(s: Live, j: Job): Task {
   const ask = answer && !putOff ? was!.ask : now;
   const job: JobView = {
     id: j.id, type: j.kind === 'review' ? 'review' : j.issue != null ? 'issues' : 'tasks', title: j.title, request: j.request,
-    agent: j.agent, account: s.status?.accounts.find((a) => a.id === j.account)?.name ?? j.account,
+    agent: j.agent, account: s.status?.accounts.find((a) => a.id === j.account)?.name ?? j.account, accountId: j.account,
     model: j.model ?? s.status?.models[j.agent]?.model ?? 'default', repo: j.repo, branch: pushedTo(j) || j.branch || '—', base: j.base ?? '—',
     check: j.check ?? undefined, repoCheck: s.repos.find((r) => r.repo === j.repo)?.check, status: j.status, step: j.step, waiting: j.waiting ?? undefined,
     round: j.rounds > 1 ? [j.round, j.rounds] : undefined,
@@ -797,6 +800,15 @@ export function say(e: unknown) {
   clearing = setTimeout(() => { if (state.connection === 'live') set({ problem: null }); }, 6000);
 }
 
+// A click obid refused, kept in the thread it belongs to until the owner dismisses it (CHATSTATE-4);
+// one that belongs to none is said as any other
+let refusals = 0;
+export function refuse(where: string | undefined, e: unknown) {
+  if (!where) return say(e);
+  set({ refused: [...state.refused, { id: ++refusals, where, text: e instanceof Error ? e.message : String(e) }] });
+}
+export const dismissRefusal = (id: number) => set({ refused: state.refused.filter((r) => r.id !== id) });
+
 // --- what the app does
 
 // The repository a conversation's work was last in, by its id in the app: the one picked for
@@ -975,7 +987,22 @@ export async function conversationFiles(shown: string, typed: string) {
   try { return (await api.conversationFiles(realId(shown), typed)).files; } catch { return []; }
 }
 export async function stopConversation(shown: string) {
-  try { await api.stopConversation(realId(shown)); } catch (e) { say(e); }
+  try { await api.stopConversation(realId(shown)); } catch (e) { refuse(shown, e); }
+}
+// The owner looked at it (CHATSTATE-6): obid's `seen`, so it's no longer unread. Once at a time; an
+// obid without marks refuses the key, and nothing shows unread there anyway
+const seeing = new Set<string>();
+export async function seeConversation(shown: string) {
+  const c = realId(shown);
+  if (c.startsWith('new:') || seeing.has(c) || !takesMarks()) return;
+  seeing.add(c);
+  try { take({ kind: 'conversation', conversation: await api.editConversation(c, { seen: true }) }); } catch { /* it stays as it was */ } finally { seeing.delete(c); }
+}
+// whether obid keeps a conversation's marks (conversation-marks-v1): with none, nothing is sent
+export const takesMarks = (s: Pick<Live, 'status'> = state) => has(s.status, 'conversation-marks-v1');
+// Mark unread or read (CHATSTATE-7), Archive or Restore (CHATSTATE-9): obid's answer moves the row
+export async function markConversation(shown: string, change: { seen?: boolean; archived?: boolean }) {
+  try { take({ kind: 'conversation', conversation: await api.editConversation(realId(shown), change) }); } catch (e) { say(e); }
 }
 export async function deleteConversation(shown: string) {
   const c = realId(shown);
@@ -1007,7 +1034,11 @@ export async function changeMode(id: string, mode: string) {
   try { const j = await api.mode(id, mode); take({ kind: 'job', job: j }); } catch (e) { say(e); }
 }
 export async function stopJob(id: string) {
-  try { const j = await keyed((key) => api.stop(id, key)); take({ kind: 'job', job: j }); } catch (e) { say(e); }
+  try { const j = await keyed((key) => api.stop(id, key)); take({ kind: 'job', job: j }); } catch (e) { refuse(id, e); }
+}
+// Use another account (CHATSTATE-3): queued, it starts there; ended, its Try again runs there
+export async function moveJob(id: string, account: string) {
+  try { take({ kind: 'job', job: await api.move(id, account) }); } catch (e) { refuse(id, e); }
 }
 
 // The task's menu: Rename (PATCH /v1/jobs/{id}), shown at once as the mock does it; Archive
@@ -1153,9 +1184,9 @@ export async function answerJob(id: string, option: string, words?: string) {
       take({ kind: 'inbox', item: await keyed((key) => api.answer(item.id, body, key)) });
     }
   } catch (e) {
-    // not taken: it's still yours to answer
+    // not taken: it's still yours to answer, and why stays in its thread (CHATSTATE-4)
     set({ answered: without(state.answered, id) });
-    say(e);
+    refuse(j ? id : item?.job ?? (item?.conversation ? shownId(item.conversation) : undefined), e);
   } finally {
     if (!j && item) answering(item.id, false);
   }

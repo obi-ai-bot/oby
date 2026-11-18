@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Search } from 'lucide-react';
+import { MessageCircle, Search } from 'lucide-react';
 import { BrandMark } from './brands';
 import { useScrollThumb } from './useScrollThumb';
 import { agentOf, ago } from './view';
 import { TYPES, archivedTasks, useTasks } from './tasks';
+import { archiveChat, archivedChats, lastAgo, useChats } from './chats';
+import { chatFirst } from './lean';
 
 // how long the way out takes (the sink animation in app.css)
 const LEAVE_MS = 220;
@@ -12,13 +14,15 @@ const typeLabel = (id: string) => TYPES.find((t) => t.id === id)?.label ?? 'Chat
 // The archive, as a page of its own (from the side panel's Archived, or a
 // group's Completed tab): every done task that has left Home, most recently
 // done first, with a search over them at the top. One still in the app opens
-// its page; older ones are just listed. Back (the title bar, or Esc) returns.
-export default function ArchiveView({ leaving, covered = false, onClose, onGone, onOpenTask }: {
+// its page; older ones are just listed. Back (the title bar, or Esc) returns. Chat first, the
+// conversations put away come first, each opening on a click, with Restore (CHATSTATE-9).
+export default function ArchiveView({ leaving, covered = false, onClose, onGone, onOpenTask, onOpenTalk }: {
   leaving: boolean;
   covered?: boolean;  // a task's page is open over it
   onClose: () => void;
   onGone: () => void;
   onOpenTask: (id: string) => void;
+  onOpenTalk?: (id: string) => void;
 }) {
   const tasks = useTasks();
   const { list, onScroll, thumbProps } = useScrollThumb<HTMLElement>();
@@ -26,6 +30,8 @@ export default function ArchiveView({ leaving, covered = false, onClose, onGone,
   const q = query.trim().toLowerCase();
   const all = archivedTasks();
   const shown = all.filter((a) => !q || [a.who ?? '', a.title, typeLabel(a.type), agentOf(a.agent).name].join(' ').toLowerCase().includes(q));
+  const talks = chatFirst ? archivedChats(useChats()) : [];
+  const shownTalks = talks.filter((c) => !q || c.title.toLowerCase().includes(q));
 
   // a timer, not animationend: animations don't run while the window is hidden
   useEffect(() => {
@@ -49,9 +55,22 @@ export default function ArchiveView({ leaving, covered = false, onClose, onGone,
           <h1 className="group-title rise" style={{ '--i': 0 } as React.CSSProperties}>Archived</h1>
           <label className="archive-search rise" style={{ '--i': 1 } as React.CSSProperties}>
             <Search size={16} strokeWidth={1.6} />
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search archived tasks" aria-label="Search archived tasks" />
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={chatFirst ? 'Search archived' : 'Search archived tasks'} aria-label={chatFirst ? 'Search archived' : 'Search archived tasks'} />
           </label>
           <ul className="archive-list rise" style={{ '--i': 2 } as React.CSSProperties}>
+            {shownTalks.map((c) => (
+              <li key={c.id} className="archive-talk">
+                <button className="archive-row is-link" onClick={() => onOpenTalk?.(c.id)}>
+                  <MessageCircle size={16} strokeWidth={1.6} />
+                  <span className="archive-text">
+                    <span className="archive-title">{c.title}</span>
+                    <span className="archive-about">Conversation</span>
+                  </span>
+                  <span className="archive-ago">{ago(lastAgo(c))}</span>
+                </button>
+                <button type="button" className="set-button archive-restore" aria-label={`Restore ${c.title}`} onClick={() => archiveChat(c.id, false)}>Restore</button>
+              </li>
+            ))}
             {shown.map((a) => {
               const inApp = tasks.some((t) => t.id === a.id);
               const body = <>
@@ -72,10 +91,10 @@ export default function ArchiveView({ leaving, covered = false, onClose, onGone,
             })}
           </ul>
           {/* nothing (yet, or matching): in the middle of the window's height, as a group's tab */}
-          {!shown.length && (
+          {!shown.length && !shownTalks.length && (
             <div className="group-none">
               <div className="rise" style={{ '--i': 2 } as React.CSSProperties}>
-                <p>{all.length ? `Nothing archived matches “${query.trim()}”` : 'Nothing archived yet'}</p>
+                <p>{all.length || talks.length ? `Nothing archived matches “${query.trim()}”` : 'Nothing archived yet'}</p>
               </div>
             </div>
           )}

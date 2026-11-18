@@ -657,6 +657,7 @@ async fn method_not_allowed() -> ApiError {
 /// feature adds its name here and its row in docs/runner-api.md's Capabilities table together.
 pub const CAPABILITIES: &[&str] = &[
     "composer-v1",
+    "conversation-marks-v1",
     "events-replay-v1",
     "folders-v1",
     "profile-projects-v1",
