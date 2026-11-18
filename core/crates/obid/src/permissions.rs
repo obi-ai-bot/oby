@@ -3232,9 +3232,10 @@ pub fn decide(call: &Call, mode: Mode, rules: &[Rule], bounds: &Bounds) -> Verdi
     // Plan changes nothing: a saved allow rule doesn't let a command through while planning. And
     // no rule lets secrets through in Sandbox mode: the owner answers those one at a time.
     if mode != Mode::Plan
-        && rules
+        && (rules
             .iter()
             .any(|r| r.decision == "allow" && matches(&r.rule, call, worktree, true))
+            || chain_allowed(call, rules, bounds))
     {
         return Verdict::Allow;
     }
@@ -3282,6 +3283,10 @@ const SAFE_VARIABLES: &[&str] = &[
     "NO_COLOR",
     "FORCE_COLOR",
     "CI",
+    // How Python writes its output and its caches (PERMISSIONS-26), never what it runs: not
+    // `PYTHONPATH` or `PYTHONSTARTUP`, which load code.
+    "PYTHONDONTWRITEBYTECODE",
+    "PYTHONUNBUFFERED",
 ];
 
 /// Wrappers a saved rule reads past: they change how long or how nicely a program runs, never what
@@ -3380,6 +3385,195 @@ fn past_harmless(command: &str) -> &str {
     }
 }
 
+/// What a saved allow rule reads of `command` and what Always offers ([`past_harmless`]), with
+/// git's own settings that run nothing ([`quiet_git_setting`], as `git -c commit.gpgsign=false`)
+/// left out before its subcommand: they don't change what git does, so `Bash(git commit:*)` is the
+/// rule for an agent's `git -c commit.gpgsign=false commit -m '…'` and covers its next commit
+/// (PERMISSIONS-25). Any other setting, `-C` included, stays in what a rule reads.
+fn rule_text(command: &str) -> std::borrow::Cow<'_, str> {
+    let rest = past_harmless(command);
+    let (program, mut after) = next_word(rest);
+    if program != "git" {
+        return rest.into();
+    }
+    let mut left_out = false;
+    loop {
+        let (flag, value) = next_word(after);
+        let (setting, next) = next_word(value);
+        if flag != "-c" || !plain_word(setting) || !quiet_git_setting(setting) {
+            break;
+        }
+        after = next;
+        left_out = true;
+    }
+    if left_out && !after.is_empty() {
+        format!("git {after}").into()
+    } else {
+        rest.into()
+    }
+}
+
+/// Python's modules a rule may name (`python3 -m pytest`, PERMISSIONS-26): its test runners and
+/// the checkers of a repository's own code. Not one that runs whatever it's given (`runpy`,
+/// `code`, `pdb`, `timeit`, `trace`) nor `pip`, which installs: `python3 -m` anything else stays
+/// what [`RUNS_ANYTHING`] says.
+const PYTHON_MODULES: &[&str] = &[
+    "pytest",
+    "unittest",
+    "mypy",
+    "ruff",
+    "black",
+    "flake8",
+    "pylint",
+    "isort",
+    "pyright",
+    "py_compile",
+    "compileall",
+];
+
+/// `python3 -m pytest` for `python3 -m pytest -q`: Python running one of [`PYTHON_MODULES`], the
+/// three words a rule keeps, as a tool's subcommand's two (PERMISSIONS-26).
+fn module_run(words: &[&str]) -> Option<String> {
+    let program = *words.first()?;
+    // `python`, `python3`, `python3.12`.
+    let unversioned = program.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    (unversioned == "python"
+        && plain_word(program)
+        && !program.contains('/')
+        && words.get(1) == Some(&"-m")
+        && words.get(2).is_some_and(|m| PYTHON_MODULES.contains(m)))
+    .then(|| words[..3].join(" "))
+}
+
+/// Builtins that change the shell the rest of a line runs in: a chain with one is read as a
+/// whole, never command by command ([`chain_parts`]).
+const SHELL_STATE: &[&str] = &[
+    "cd", "pushd", "popd", "export", "unset", "set", "source", ".", "alias", "unalias", "trap",
+    "umask", "shopt", "ulimit", "readonly", "declare", "typeset", "local", "hash", "enable",
+    "shift", "function", "setopt", "unsetopt", "emulate", "builtin", "autoload", "zmodload",
+];
+
+/// A word as a shell reads it back: itself when plain ([`plain_word`]), else in single quotes.
+fn quoted(word: &str) -> String {
+    if plain_word(word) {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
+}
+
+/// The commands of a chain (`a; b && c || d`), each written so it reads back as its own words,
+/// when it's only that (PERMISSIONS-27): two or more plain commands, none piped, in the background,
+/// redirected, in a subshell or a group, read out of a word, unsure, or changing the shell for the
+/// next ([`SHELL_STATE`]). None for anything else: such a line is allowed once at a time.
+fn chain_parts(command: &str) -> Option<Vec<String>> {
+    let commands = simple_commands(command)?;
+    if commands.len() < 2 {
+        return None;
+    }
+    commands
+        .iter()
+        .map(|c| {
+            let plain = !c.piped
+                && !c.redirected
+                && c.subshells.is_empty()
+                && !c.nested
+                && !c.unsure
+                && c.words == c.args
+                && shell_grammar(&c.words) == 0;
+            let program = program_index(&c.words).filter(|_| plain)?;
+            if SHELL_STATE.contains(&base(&c.words[program])) {
+                return None;
+            }
+            Some(
+                c.words
+                    .iter()
+                    .map(|w| quoted(w))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            )
+        })
+        .collect()
+}
+
+/// A Bash call of one command of a chain.
+fn bash_call(command: &str) -> Call {
+    Call {
+        tool: "Bash".to_owned(),
+        command: Some(command.to_owned()),
+        ..Call::default()
+    }
+}
+
+/// Whether a command of a chain is a read: it only reads, inside the job's box, as a whole line
+/// that only reads never asks ([`decide`]).
+fn part_reads(part: &str, bounds: &Bounds) -> bool {
+    only_reads(part, bounds) && reach(&bash_call(part), bounds).is_none()
+}
+
+/// The rules Always offers for a chain, each with the words it keeps, in order and once each
+/// (PERMISSIONS-27): one for each command that doesn't only read. None when one of them has none
+/// ([`prefix`]), or when every command only reads (nothing to save).
+fn chain_rules(command: &str, bounds: &Bounds) -> Option<Vec<(String, String)>> {
+    let mut rules: Vec<(String, String)> = Vec::new();
+    for part in chain_parts(command)? {
+        if part_reads(&part, bounds) {
+            continue;
+        }
+        let words = prefix(&part)?;
+        let rule = command_rule(&words);
+        // An exact rule keeps the command as written, and a word obid had to quote back may have
+        // been a glob (`rm -rf *`): only a subcommand's rule, which reads past it, is offered.
+        if !rule.ends_with(":*)") && part.contains('\'') {
+            return None;
+        }
+        if !rules.iter().any(|(saved, _)| *saved == rule) {
+            rules.push((rule, words));
+        }
+    }
+    (!rules.is_empty()).then_some(rules)
+}
+
+/// Whether the owner's allow `rules` cover a chain (PERMISSIONS-27): each of its commands
+/// ([`chain_parts`]) only reads, or a rule covers it as if it ran alone.
+fn chain_allowed(call: &Call, rules: &[Rule], bounds: &Bounds) -> bool {
+    if family(&call.tool) != "Bash" || call.unseen {
+        return false;
+    }
+    let Some(parts) = call.command.as_deref().and_then(chain_parts) else {
+        return false;
+    };
+    let allows: Vec<&Rule> = rules.iter().filter(|r| r.decision == "allow").collect();
+    !allows.is_empty()
+        && parts.iter().all(|part| {
+            let one = bash_call(part);
+            part_reads(part, bounds)
+                || allows
+                    .iter()
+                    .any(|r| matches(&r.rule, &one, &bounds.worktree, true))
+        })
+}
+
+/// The rules the owner's Always saves for `call`, asked about on the card `permission`: its
+/// `rule`, and for a chain the rule of each of its other commands too (PERMISSIONS-27). None
+/// when the card has no rule.
+pub fn always_rules(permission: &Permission, call: &Call, bounds: &Bounds) -> Vec<String> {
+    let Some(rule) = &permission.rule else {
+        return Vec::new();
+    };
+    let chain = call
+        .command
+        .as_deref()
+        .filter(|_| family(&call.tool) == "Bash" && permission.tool == call.tool)
+        .and_then(|command| chain_rules(command, bounds));
+    match chain {
+        Some(rules) if rules.first().is_some_and(|(first, _)| first == rule) => {
+            rules.into_iter().map(|(rule, _)| rule).collect()
+        }
+        _ => vec![rule.clone()],
+    }
+}
+
 /// `Bash(swift test:*)` is (`Bash`, `swift test:*`); `Edit` is (`Edit`, none).
 fn parse(rule: &str) -> (&str, Option<&str>) {
     match (rule.find('('), rule.ends_with(')')) {
@@ -3412,6 +3606,10 @@ fn runs_any_program(command: &str) -> bool {
     let Some(first) = words.first() else {
         return false;
     };
+    // Python running a test runner or a checker runs that module, as `cargo test` runs tests.
+    if module_run(&words).is_some() {
+        return false;
+    }
     let program = first.rsplit('/').next().unwrap_or(first);
     let unversioned = program.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
     if RUNS_ANYTHING.contains(&program) || RUNS_ANYTHING.contains(&unversioned) {
@@ -3489,9 +3687,9 @@ fn matches(rule: &str, call: &Call, worktree: &Path, allowing: bool) -> bool {
         // wrapper's name into what it runs (`Bash(timeout:*)`).
         return !is_chained(command)
             && if allowing {
-                fits(past_harmless(command)) || (!runs_any_program(command) && fits(command))
+                fits(&rule_text(command)) || (!runs_any_program(command) && fits(command))
             } else {
-                fits(command)
+                fits(command) || fits(&rule_text(command))
             };
     }
     if family(&call.tool) == "Edit" {
@@ -3551,7 +3749,8 @@ fn has_a_subcommand(words: &[&str]) -> bool {
 /// quote, one that runs whatever follows it, or an exact one a rule can't keep: over more than one
 /// line, one that ends in `*` (read as a prefix), one holding a token or a login.
 pub fn prefix(command: &str) -> Option<String> {
-    let command = past_harmless(command);
+    let text = rule_text(command);
+    let command = text.as_ref();
     if command.is_empty() || is_chained(command) || runs_any_program(command) {
         return None;
     }
@@ -3563,6 +3762,9 @@ pub fn prefix(command: &str) -> Option<String> {
     if has_a_subcommand(&words) {
         return Some(format!("{first} {}", words[1]));
     }
+    if let Some(module) = module_run(&words) {
+        return Some(module);
+    }
     (!command.contains('\n') && !command.ends_with('*') && scrubbed(command) == command)
         .then(|| command.to_owned())
 }
@@ -3571,7 +3773,7 @@ pub fn prefix(command: &str) -> Option<String> {
 /// that very command.
 fn command_rule(words: &str) -> String {
     let split: Vec<&str> = words.split(' ').collect();
-    if has_a_subcommand(&split) {
+    if has_a_subcommand(&split) || module_run(&split).is_some() {
         format!("Bash({words}:*)")
     } else {
         format!("Bash({words})")
@@ -3642,8 +3844,21 @@ pub fn card(call: &Call, id: &str, repo: &str, bounds: &Bounds) -> Permission {
                     Some(command_rule(&prefix)),
                     Some(prefix),
                 ),
-                // Allowed only once at a time, so the owner reads all of it (#634).
-                None => (format!("Run {detail}"), detail, None, None),
+                // A chain whose every command only reads or has a rule: Always saves each of
+                // theirs (PERMISSIONS-27), and the title is still the whole line.
+                None => match chain_rules(&command, bounds).filter(|_| hidden == 0) {
+                    Some(rules) => {
+                        let what = rules
+                            .iter()
+                            .map(|(_, words)| words.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let rule = rules.into_iter().next().map(|(rule, _)| rule);
+                        (format!("Run {detail}"), detail, rule, Some(what))
+                    }
+                    // Allowed only once at a time, so the owner reads all of it (#634).
+                    None => (format!("Run {detail}"), detail, None, None),
+                },
             }
         }
         "Edit" => {
@@ -4352,9 +4567,10 @@ mod tests {
             "deskree-inc/oby",
             worktree,
         );
+        // A chain's card offers its commands' rules (PERMISSIONS-27), and its title is whole.
         assert_eq!(
-            (chained.rule, chained.title.as_str()),
-            (None, "Run swift build && swift test")
+            (chained.rule.as_deref(), chained.title.as_str()),
+            (Some("Bash(swift build:*)"), "Run swift build && swift test")
         );
         // Without a rule the title is the whole command, however long (#634).
         let long =
@@ -6771,5 +6987,272 @@ mod tests {
         ] {
             assert!(!writes(command), "{command}");
         }
+    }
+
+    /// The card a Codex job's command ask gets: its shell unwrapped as `codex` does.
+    fn codex_card(command: &str) -> Permission {
+        let shelled = format!("/bin/zsh -lc '{}'", command.replace('\'', "'\"'\"'"));
+        let unwrapped = crate::codex::unwrap_shell(&shelled);
+        assert_eq!(unwrapped, command, "the shell unwraps");
+        card(
+            &bash(&unwrapped),
+            "p1",
+            "o/r",
+            &Bounds::of(Path::new(WORKTREE)),
+        )
+    }
+
+    /// #2488: Always on an agent's commit, written with git's quiet settings, saves the commit's
+    /// rule, never its message, and that rule lets the next commit through with any message.
+    /// Another setting, a folder or a chain still asks.
+    #[test]
+    fn permissions_25_always_on_a_commit_saves_git_commit_not_its_message() {
+        for command in [
+            "git -c commit.gpgsign=false commit -m 'feat: add thrice calculator function'",
+            "git -c commit.gpgsign=false commit --allow-empty -m 'chore: record owner naming decision for review' -m 'The owner answered \"thrice\" to the required naming question.'",
+            "git -c core.editor=true -c commit.gpgsign=false commit -m x",
+            "git commit -m 'fix(obid): x'",
+        ] {
+            let card = codex_card(command);
+            assert_eq!(
+                card.rule.as_deref(),
+                Some("Bash(git commit:*)"),
+                "{command}"
+            );
+            assert_eq!(
+                card.always.as_deref(),
+                Some("Yes, and don't ask again for git commit in o/r"),
+                "{command}"
+            );
+            assert_eq!(card.title, "Run git commit", "{command}");
+        }
+        let saved = [rule("Bash(git commit:*)", "allow")];
+        for command in [
+            "git -c commit.gpgsign=false commit -m 'a later message'",
+            "git -c commit.gpgsign=false commit --amend --no-edit",
+            "git commit -am 'x'",
+            "RUST_LOG=x git -c commit.gpgsign=false commit -m y",
+        ] {
+            assert_eq!(
+                decide_in(&bash(command), Mode::Ask, &saved),
+                Verdict::Allow,
+                "{command}"
+            );
+        }
+        for command in [
+            "git -c core.sshCommand=x commit -m y",
+            "git -c commit.gpgsign=false -c alias.commit=!sh commit -m y",
+            "git -C ../other commit -m y",
+            "git -c commit.gpgsign=false",
+            "git -c commit.gpgsign=false tag v1",
+            "git -c commit.gpgsign=false commit -m x && rm -rf y",
+            "git -c commit.gpgsign=false commit -m x > o",
+        ] {
+            assert_eq!(
+                decide_in(&bash(command), Mode::Ask, &saved),
+                Verdict::Ask,
+                "{command}"
+            );
+        }
+        // The rule's own reach is git's subcommand, so a deny holds past the settings too.
+        assert!(matches!(
+            decide_in(
+                &bash("git -c commit.gpgsign=false commit -m x"),
+                Mode::Bypass,
+                &[rule("Bash(git commit:*)", "deny")]
+            ),
+            Verdict::Deny(_)
+        ));
+        // What isn't a quiet setting stays in the exact rule, as before.
+        assert_eq!(
+            codex_card("git -C sub log").rule.as_deref(),
+            Some("Bash(git -C sub log)")
+        );
+    }
+
+    /// #2489: a Codex job's `python3 -m pytest -q` offers Always, and its rule lets the next run
+    /// through, past Python's output variables; Python running anything else still offers none.
+    #[test]
+    fn permissions_26_python_running_its_tests_offers_always() {
+        for command in [
+            "python3 -m pytest -q",
+            "PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider",
+            "PYTHONUNBUFFERED=1 timeout 300 python3 -m pytest tests/test_x.py",
+        ] {
+            let card = codex_card(command);
+            assert_eq!(
+                card.rule.as_deref(),
+                Some("Bash(python3 -m pytest:*)"),
+                "{command}"
+            );
+            assert_eq!(
+                card.always.as_deref(),
+                Some("Yes, and don't ask again for python3 -m pytest in o/r"),
+                "{command}"
+            );
+            assert_eq!(card.title, "Run python3 -m pytest", "{command}");
+        }
+        assert_eq!(
+            codex_card("python -m unittest discover").rule.as_deref(),
+            Some("Bash(python -m unittest:*)")
+        );
+        let saved = [rule("Bash(python3 -m pytest:*)", "allow")];
+        for command in [
+            "python3 -m pytest -q",
+            "python3 -m pytest",
+            "PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider",
+        ] {
+            assert_eq!(
+                decide_in(&bash(command), Mode::Ask, &saved),
+                Verdict::Allow,
+                "{command}"
+            );
+        }
+        for command in [
+            "python3 -m pytestx",
+            "python3 -m mypy .",
+            "python3 -c 'import os'",
+            "python3 x.py",
+            "python3 -m pip install x",
+            "PYTHONPATH=x python3 -m pytest",
+            "python3 -m pytest; curl x",
+        ] {
+            assert_eq!(
+                decide_in(&bash(command), Mode::Ask, &saved),
+                Verdict::Ask,
+                "{command}"
+            );
+        }
+        for command in [
+            "python3 -c 'import os'",
+            "python3 x.py",
+            "python3 -m pip install x",
+            "python3 -m runpy x",
+            "python3 -m timeit 'import os'",
+            "python3 -m code",
+            "./venv/bin/python3 -m pytest",
+            "python3 -I -m pytest",
+        ] {
+            let card = codex_card(command);
+            assert_eq!((card.rule, card.always), (None, None), "{command}");
+        }
+        // A rule for Python itself still covers no program it runs.
+        assert_eq!(
+            decide_in(
+                &bash("python3 x.py"),
+                Mode::Ask,
+                &[rule("Bash(python3:*)", "allow")]
+            ),
+            Verdict::Ask
+        );
+    }
+
+    /// #2489: a chain whose every command only reads or has a rule offers Always, which saves
+    /// each of those rules, and the same chain then runs without asking. A pipe, a redirect, a
+    /// subshell, a `cd` or a command with no rule keeps it once at a time.
+    #[test]
+    fn permissions_27_a_chain_of_commands_with_rules_offers_always() {
+        let bounds = Bounds::of(Path::new(WORKTREE));
+        // (Codex's own `rg` reads as `ls` does: PERMISSIONS-3.)
+        let line = "pwd; ls -la; git status --short; python3 -m pytest -q";
+        let card = codex_card(line);
+        assert_eq!(card.title, format!("Run {line}"));
+        assert_eq!(card.rule.as_deref(), Some("Bash(python3 -m pytest:*)"));
+        assert_eq!(
+            card.always.as_deref(),
+            Some("Yes, and don't ask again for python3 -m pytest in o/r")
+        );
+        assert_eq!(
+            always_rules(&card, &bash(line), &bounds),
+            ["Bash(python3 -m pytest:*)"]
+        );
+        let line = "rm -rf __pycache__ .pytest_cache && swift build && swift test && swift build";
+        let card = codex_card(line);
+        assert_eq!(
+            card.rule.as_deref(),
+            Some("Bash(rm -rf __pycache__ .pytest_cache)")
+        );
+        assert_eq!(
+            card.always.as_deref(),
+            Some(
+                "Yes, and don't ask again for rm -rf __pycache__ .pytest_cache, swift build, swift test in o/r"
+            )
+        );
+        let saved = always_rules(&card, &bash(line), &bounds);
+        assert_eq!(
+            saved,
+            [
+                "Bash(rm -rf __pycache__ .pytest_cache)",
+                "Bash(swift build:*)",
+                "Bash(swift test:*)"
+            ]
+        );
+        let commit = "git add -A && git -c commit.gpgsign=false commit -m 'feat: x'";
+        assert_eq!(
+            always_rules(&codex_card(commit), &bash(commit), &bounds),
+            ["Bash(git add:*)", "Bash(git commit:*)"]
+        );
+        let saved: Vec<Rule> = saved.iter().map(|r| rule(r, "allow")).collect();
+        for command in [
+            line,
+            "swift build && swift test --filter X",
+            "swift build; git status; swift test || swift build -c release",
+            "RUST_LOG=x swift build && swift test",
+        ] {
+            assert_eq!(
+                decide_in(&bash(command), Mode::Ask, &saved),
+                Verdict::Allow,
+                "{command}"
+            );
+        }
+        for command in [
+            "swift build && rm -rf x",
+            "swift build | tee log",
+            "swift build > log && swift test",
+            "swift build & swift test",
+            "(swift build) && swift test",
+            "swift build && $(curl x)",
+            "cd .. && swift test",
+            "export SWIFT=x; swift test",
+            "swift build && bash -c 'swift test'",
+            "swift build && if true; then swift test; fi",
+            "swift build && cat <<E\nx\nE",
+        ] {
+            assert_eq!(
+                decide_in(&bash(command), Mode::Ask, &saved),
+                Verdict::Ask,
+                "{command}"
+            );
+        }
+        // Plan changes nothing, and a deny for any of its commands refuses it.
+        assert_eq!(
+            decide_in(&bash("swift build && swift test"), Mode::Plan, &saved),
+            Verdict::Ask
+        );
+        let mut denied = saved.clone();
+        denied.push(rule("Bash(swift test:*)", "deny"));
+        assert!(matches!(
+            decide_in(&bash("swift build && swift test"), Mode::Ask, &denied),
+            Verdict::Deny(_)
+        ));
+        for command in [
+            "swift build && python3 -c x",
+            "cd sub && swift test",
+            "swift build | tee log",
+            "export X=1; swift test",
+            "swift build && rm -rf *",
+            "swift build && cat ~/.ssh/id_rsa",
+        ] {
+            let card = codex_card(command);
+            assert_eq!((card.rule, card.always), (None, None), "{command}");
+        }
+        // A card's one rule is all a single command's Always saves; a card with none saves none.
+        let single = codex_card("swift test");
+        assert_eq!(
+            always_rules(&single, &bash("swift test"), &bounds),
+            ["Bash(swift test:*)"]
+        );
+        let none = codex_card("swift build | tee log");
+        assert!(always_rules(&none, &bash("swift build | tee log"), &bounds).is_empty());
     }
 }

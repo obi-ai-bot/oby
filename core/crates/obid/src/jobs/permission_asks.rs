@@ -797,10 +797,12 @@ impl Jobs {
             let _ = owner.send(());
         }
         let _ = ask.reply.send(answer);
-        if decision == Decision::Always
-            && let Some(rule) = &ask.permission.rule
-        {
-            self.save_rule(rule, &job.repo);
+        if decision == Decision::Always {
+            // A chain's Always saves each of its commands' rules (PERMISSIONS-27).
+            let bounds = self.bounds(&job, &self.worktree_path(id));
+            for rule in permissions::always_rules(&ask.permission, &ask.call, &bounds) {
+                self.save_rule(&rule, &job.repo);
+            }
         }
         self.show(id, Some(answered_step(&ask.permission, decision)));
         Ok(self.get(id).unwrap_or(job))
@@ -820,7 +822,7 @@ impl Jobs {
         source: Source,
     ) -> Option<Result<Job, PermissionRefused>> {
         let approved = self.approved_mode();
-        let (card, said) = {
+        let (card, said, call) = {
             let mut state = self.lock();
             let job = state
                 .jobs
@@ -834,6 +836,7 @@ impl Jobs {
                 )));
             }
             let (said, answer) = owners_answer(&card, decision, words, source);
+            let call = Call::new(&parked.tool, &parked.input);
             job.heard.push(permissions::after_park(parked, &answer));
             // Kept until its run ends: that run must pick its session up (`acp::Options`), and
             // an allow lets the same call through once.
@@ -853,7 +856,7 @@ impl Jobs {
             job.status = Status::Queued;
             job.phase = Some(Phase::Prepare);
             job.step = answered_step(&card, decision);
-            (card, said)
+            (card, said, call)
         };
         let job = self.update(id, |_| {})?;
         self.note(PermissionNote::Settled {
@@ -861,10 +864,11 @@ impl Jobs {
             permission: permission.to_owned(),
             answer: Some(said),
         });
-        if decision == Decision::Always
-            && let Some(rule) = &card.rule
-        {
-            self.save_rule(rule, &job.repo);
+        if decision == Decision::Always {
+            let bounds = self.bounds(&job, &self.worktree_path(id));
+            for rule in permissions::always_rules(&card, &call, &bounds) {
+                self.save_rule(&rule, &job.repo);
+            }
         }
         self.schedule();
         Some(Ok(self.get(id).unwrap_or(job)))
@@ -1282,5 +1286,116 @@ impl Jobs {
                 }
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::watch;
+
+    /// Jobs with one running Ask-mode job `p` on `o/r`, parked after a second, its home in `root`.
+    fn jobs_in(root: &Path) -> Arc<Jobs> {
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "parkAfter": 1, "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let mut job = Job::new(
+            "p".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "codex".into(),
+            "a".into(),
+        );
+        job.status = Status::Running;
+        job.mode = Some("ask".into());
+        jobs.lock().jobs.insert("p".into(), job);
+        jobs
+    }
+
+    fn saved(jobs: &Jobs) -> Vec<String> {
+        jobs.rules().into_iter().map(|r| r.rule).collect()
+    }
+
+    /// PERMISSIONS-25 and 27, as the owner answers: Always on a commit saves `git commit`'s rule
+    /// and the next commit, with another message, runs without asking; Always on a chain saves
+    /// each of its commands' rules, and the same chain runs next without asking.
+    #[tokio::test]
+    async fn permissions_27_always_on_a_chain_saves_each_rule_and_it_runs_next() {
+        let root = std::env::temp_dir().join(format!("obid-always-{}", uuid::Uuid::new_v4()));
+        let jobs = jobs_in(&root);
+        let worktree = root.join("worktree");
+        let always = |command: &str| {
+            let input = json!({"command": command});
+            let Ruling::Ask(_reply) = jobs.rule_on("p", "Bash", &input, &worktree) else {
+                panic!("{command} didn't ask the owner");
+            };
+            let card = jobs.get("p").unwrap().permission.unwrap();
+            jobs.answer_permission("p", &card.id, Decision::Always, None)
+                .unwrap();
+        };
+        let runs = |command: &str| {
+            matches!(
+                jobs.rule_on("p", "Bash", &json!({"command": command}), &worktree),
+                Ruling::Now(Answer::Allow)
+            )
+        };
+
+        always("git -c commit.gpgsign=false commit -m 'feat: add thrice calculator function'");
+        assert_eq!(saved(&jobs), ["Bash(git commit:*)"]);
+        assert!(runs(
+            "git -c commit.gpgsign=false commit -m 'chore: another one'"
+        ));
+
+        let chain = "rm -rf __pycache__ .pytest_cache && python3 -m pytest -q";
+        assert!(!runs(chain));
+        jobs.drop_asks("p", true, false);
+        always(chain);
+        assert_eq!(
+            saved(&jobs),
+            [
+                "Bash(git commit:*)",
+                "Bash(rm -rf __pycache__ .pytest_cache)",
+                "Bash(python3 -m pytest:*)"
+            ]
+        );
+        assert!(runs(chain));
+        assert!(runs("python3 -m pytest -q"));
+        assert!(!runs("python3 -m pytest -q && curl https://example.com"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The same for a call the job was parked on ([`Jobs::answer_parked`]): its Always saves
+    /// each of the chain's rules.
+    #[tokio::test]
+    async fn permissions_27_a_parked_chains_always_saves_each_rule() {
+        let root = std::env::temp_dir().join(format!("obid-always-{}", uuid::Uuid::new_v4()));
+        let jobs = jobs_in(&root);
+        let (sender, _worker) = watch::channel(Signal::Run);
+        jobs.lock().workers.insert("p".into(), sender);
+        let worktree = root.join("worktree");
+        let input = json!({"command": "swift build && swift test"});
+        let Ruling::Ask(_reply) = jobs.rule_on("p", "Bash", &input, &worktree) else {
+            panic!("it didn't ask the owner");
+        };
+        let card = jobs.get("p").unwrap().permission.unwrap();
+        for ask in jobs.lock().asks.get_mut("p").unwrap() {
+            ask.since = Some(std::time::Instant::now() - std::time::Duration::from_secs(2));
+        }
+        jobs.park("p");
+        assert!(jobs.get("p").unwrap().parked.is_some(), "parked");
+        jobs.answer_permission("p", &card.id, Decision::Always, None)
+            .unwrap();
+        assert_eq!(saved(&jobs), ["Bash(swift build:*)", "Bash(swift test:*)"]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
