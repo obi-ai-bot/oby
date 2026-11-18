@@ -236,8 +236,16 @@ impl Jobs {
         let mut spec = self.spec(&worktree, &admin, &common, &temp, true, Tool::Claude);
         spec.network = false;
         spec.read_only.clear();
-        let env = process::sandbox_env(&process::tools_path(), &temp, &spec.git_env());
-        sandboxed_output(
+        let mut env = process::sandbox_env(&process::tools_path(), &temp, &spec.git_env());
+        // Each call's own `TMPDIR` inside the job's, so the exit its macOS watcher records there
+        // is its own: two of the job's git calls at once (two reads of its changes) never clear or
+        // overwrite each other's, and a call that passed is never read as killed (#2529).
+        let own = temp.join(format!(".git-{}", uuid::Uuid::new_v4()));
+        prepare_folder(&own).map_err(|e| e.to_string())?;
+        if let Some((_, dir)) = env.iter_mut().find(|(name, _)| name == "TMPDIR") {
+            *dir = own.clone().into_os_string();
+        }
+        let out = sandboxed_output(
             &sandbox.wrap(&spec, argv),
             &env,
             &worktree,
@@ -245,7 +253,9 @@ impl Jobs {
             limit,
             max,
         )
-        .await
+        .await;
+        let _ = std::fs::remove_dir_all(&own);
+        out
     }
 
     /// Puts the job's own commits on its base as the remote has it now: the base fetched into

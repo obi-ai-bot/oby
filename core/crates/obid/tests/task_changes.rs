@@ -490,3 +490,36 @@ fn changes_13_a_round_pushed_to_a_branch_oby_didnt_make_isnt_force_pushed() {
     );
     assert_eq!(remote_branch(&remote, "feature/hello"), pushed);
 }
+
+/// TASKS-23 (#2529): reads of a task's changes at the same time each answer its whole diff, never
+/// none taken for one cut: one git call's end in the job's sandbox isn't read as another's.
+#[test]
+fn tasks_23_reads_of_a_tasks_changes_at_once_each_answer_its_diff() {
+    let folder = Folder::new("tasks-23-at-once");
+    let bin = fake_gh(&folder.0);
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &agent());
+    let obid = start(&folder.0, &config, Some(&bin));
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt",
+               "check": "test -f hello.txt", "title": "Hello file"}),
+    );
+    let done = ended(&obid, &id);
+    assert_eq!(done["status"], "done", "{done}\n{}", obid.log());
+    let answers: Vec<Value> = std::thread::scope(|scope| {
+        let reads: Vec<_> = (0..8)
+            .map(|_| scope.spawn(|| (0..4).map(|_| changes(&obid, &id, "")).collect::<Vec<_>>()))
+            .collect();
+        reads.into_iter().flat_map(|r| r.join().unwrap()).collect()
+    });
+    for answer in &answers {
+        assert_eq!(paths(answer), ["hello.txt"], "{answer}");
+        assert_eq!(answer["truncated"], false, "{answer}\n{}", obid.log());
+        assert_eq!(answer.get("error"), None, "{answer}");
+        assert!(
+            answer["diff"].as_str().unwrap().contains("+++ b/hello.txt"),
+            "{answer}"
+        );
+    }
+}
