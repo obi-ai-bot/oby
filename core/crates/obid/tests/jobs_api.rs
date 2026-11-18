@@ -6914,6 +6914,8 @@ fn lanes_23_an_own_job_loads_every_settings_source_as_the_terminal_does() {
     let repos = r#"{"mcpServers":{"repos-server":{"type":"http","url":"http://127.0.0.1:9/"}}}"#;
     for (file, text) in [
         (account.join("skills/owners-skill/SKILL.md"), "# Mine\n"),
+        // Signed in: its follow-up is named to it (ACCOUNTS-35).
+        (account.join(".credentials.json"), "{}"),
         (account.join("settings.json"), off),
         (account.join(".claude.json"), server),
         (work.join(".claude/settings.json"), hook),
@@ -7002,6 +7004,7 @@ fn routing_skips_an_account_that_isnt_signed_in() {
         std::fs::create_dir_all(accounts.join(account)).unwrap();
         std::fs::write(accounts.join(account).join(file), "{}").unwrap();
     }
+    std::fs::create_dir_all(accounts.join("keychain")).unwrap();
     let obid = start(&folder.0, &config);
     let job = |agent: Value| {
         let answer = post_job(

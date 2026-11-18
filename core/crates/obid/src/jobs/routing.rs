@@ -385,10 +385,10 @@ impl Jobs {
             line: None,
         };
         // An agent the owner asked for that can't take it: the account with the most room of any
-        // tool takes it, saying why (ACCOUNTS-31).
+        // tool takes it, saying why (ACCOUNTS-31). One obid has no adapter for is refused as it is.
         let elsewhere = |asked: &str| -> Option<Routed> {
             let tool = Tool::from_id(asked)?;
-            if named.is_some() || !self.account_failover() {
+            if named.is_some() || !self.account_failover() || self.agent_config(tool).is_none() {
                 return None;
             }
             let (to, account) = self.pick_for(None, None, work).ok()?;
