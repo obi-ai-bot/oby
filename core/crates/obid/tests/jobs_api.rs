@@ -161,9 +161,6 @@ fn start_checking(
 /// [`start_with`], with nothing saved in `permissions.json` that obid didn't find there: a new
 /// install's (#1570).
 fn start_fresh(folder: &Path, config: &Value, path_first: Option<&Path>, base_check: bool) -> Obid {
-    if let Some(dir) = config["agents"]["claude"]["accounts"][0]["configDir"].as_str() {
-        support::signed_in_unless_set_up(config, Path::new(dir));
-    }
     let mut search = std::env::var_os("PATH").unwrap_or_default();
     if let Some(first) = path_first {
         let mut dirs = vec![first.to_path_buf()];
@@ -3069,7 +3066,9 @@ fn recovery_9_a_changing_failure_goes_on_to_the_ceiling() {
 fn usage_limit_jobs_wait_for_room_and_ask_no_one() {
     let folder = Folder::new("limit-owner-decision");
     let remote = fixture(&folder.0.join("fixture"));
-    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let config = config(&folder.0, &remote);
+    support::signed_in(&config);
+    let obid = start(&folder.0, &config);
     let post = || {
         post_job(&obid, json!({"repo":"obi-e2e/fixture-app", "kind":"research", "task":"LIMITED WEEK: 86400", "account":"Stub"})).body["id"].as_str().unwrap().to_owned()
     };
@@ -6371,11 +6370,7 @@ fn events_follow_every_change() {
         } else if let Some(data) = text.strip_prefix("data: ") {
             // A job's transcript comes as events of its own (`transcript`), and so does the
             // conversation a task started on its own gets (TASKCONV-1).
-            // A signed-in account's usage, as its job reports it, comes as `accounts`.
-            if matches!(
-                event.as_str(),
-                "transcript" | "conversation" | "turn" | "accounts"
-            ) {
+            if matches!(event.as_str(), "transcript" | "conversation" | "turn") {
                 continue;
             }
             assert_eq!(event, "job");
@@ -7039,7 +7034,6 @@ fn routing_skips_an_account_that_isnt_signed_in() {
         std::fs::create_dir_all(accounts.join(account)).unwrap();
         std::fs::write(accounts.join(account).join(file), "{}").unwrap();
     }
-    std::fs::create_dir_all(accounts.join("keychain")).unwrap();
     let obid = start(&folder.0, &config);
     let job = |agent: Value| {
         let answer = post_job(

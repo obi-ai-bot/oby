@@ -3719,8 +3719,6 @@ fn needs_two(second: Option<&str>) -> obid::job::Job {
 #[test]
 fn merging_34_a_second_review_waits_with_no_card_then_merges() {
     let folder = Folder::new("merge-second-review-waits");
-    // Claude Code's account set up signed out: only Codex is.
-    std::fs::create_dir_all(folder.0.join("home/accounts/stub")).unwrap();
     let obid = started_with(&folder, false, Some(OBY), needs_two(None), &[]);
     let why = "Waiting for a second review: no tool other than Codex is signed in.";
     let waiting = within(30, "the second review to wait", || {

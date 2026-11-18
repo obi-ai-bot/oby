@@ -651,6 +651,7 @@ fn an_account_with_a_job_isnt_removed() {
     let folder = Folder::new("accounts-busy");
     let remote = fixture(&folder.0.join("fixture"));
     let config = config(&folder.0, &remote, &agent("fake-claude"));
+    signed_in(&config);
     let obid = start(&folder.0, &config, None);
     let job = call(
         &obid,

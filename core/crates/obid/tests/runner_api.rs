@@ -332,7 +332,11 @@ fn the_runner_says_a_review_made_no_commits() {
 #[test]
 fn dispatch_bodies_are_whole_jobs() {
     let folder = Folder::new("whole");
-    let (obid, _) = obid(&folder);
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &fake_claude());
+    // It names the account: signed out, it'd be refused (ACCOUNTS-35).
+    signed_in(&config);
+    let obid = start(&folder.0, &config, None);
     let sent = dispatch(
         &obid,
         json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "Fix #42", "issue": 42,

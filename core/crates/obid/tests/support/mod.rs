@@ -175,14 +175,14 @@ pub fn config(folder: &Path, remote: &Path, agent: &Path) -> Value {
     })
 }
 
-/// The account folder `dir` of `config`'s first Claude Code account, signed in as a person's is,
-/// with a login file: a task named to one that isn't is refused (ACCOUNTS-35). Left alone when the
-/// test set that folder up itself (signed out, or with a login of its own) or reads Claude Code's
-/// login from the Keychain (`claudeKeychain`).
-pub fn signed_in_unless_set_up(config: &Value, dir: &Path) {
-    if dir.exists() || config["claudeKeychain"] == true {
-        return;
-    }
+/// `config`'s first Claude Code account signed in, as a person's is, with a login file: a task the
+/// owner names a signed-out account for is refused (ACCOUNTS-35).
+pub fn signed_in(config: &Value) {
+    let dir = Path::new(
+        config["agents"]["claude"]["accounts"][0]["configDir"]
+            .as_str()
+            .unwrap(),
+    );
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(dir.join(".credentials.json"), "{}").unwrap();
 }
@@ -278,7 +278,6 @@ pub fn start_with(
     // nothing that outlives its call (#655), so it asks the state server below, whose address it
     // finds in the test's folder.
     if let Some(dir) = config["agents"]["claude"]["accounts"][0]["configDir"].as_str() {
-        signed_in_unless_set_up(config, Path::new(dir));
         std::fs::create_dir_all(dir).unwrap();
         let link = folder.join("env-home/.fake-planner");
         let _ = std::fs::remove_file(&link);

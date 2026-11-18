@@ -721,6 +721,10 @@ pub struct NewJob {
     /// theirs signed ([`Job::own_conversation`]). Only obid's own code sets it, never the body.
     #[serde(default)]
     pub own_conversation: bool,
+    /// The owner asked for its account now: in `POST /v1/jobs`, or by their words to a task that
+    /// ended ([`Jobs::left_words`]); signed out, it's refused when they named it (ACCOUNTS-35).
+    #[serde(skip)]
+    pub named_now: bool,
     /// Why its words aren't on obid's allowlist from the start (crate::secretspec): Oby's
     /// conversation that wrote them read something that isn't. It keeps to a clone apart, and its
     /// check gets none of the owner's secrets.
@@ -2226,7 +2230,7 @@ impl Jobs {
         }
         let background = new.unattended || new.routine.is_some();
         let work = self.work_for(new, background);
-        let routed = self.route_new(new.agent.as_deref(), new.account.as_deref(), &work)?;
+        let routed = self.route_new(new, &work)?;
         let most = crate::settings::limits().rounds();
         if let Some(rounds) = new.rounds
             && !(1..=most).contains(&rounds)
@@ -2940,6 +2944,7 @@ impl Jobs {
                         owners: unheard,
                         // Words the owner typed; a Confirm's are what Oby proposed.
                         vetted: source == Source::Owner,
+                        named_now: true,
                         // Their word, signed, on it: they're following it now.
                         unattended: source == Source::Api && job.background(),
                         // Files may hold anyone's words, as a conversation's do (crate::secretspec).
@@ -8835,8 +8840,7 @@ mod tests {
     }
 
     /// CHATGPT-20: a signed-out login has no yes to wait for: what's missing is its sign-in, and the
-    /// switch doesn't even show. Named, it's refused saying so (ACCOUNTS-35); in Auto, the job goes
-    /// on and says so, as any job on a signed-out account.
+    /// switch doesn't even show. The job goes on and says so, as any job on a signed-out account.
     #[tokio::test]
     async fn chatgpt_20_a_signed_out_login_gets_no_wait_for_the_yes() {
         let jobs = jobs_on_a_plan(false, &[]);
@@ -8849,11 +8853,8 @@ mod tests {
             unattended: true,
             ..NewJob::default()
         };
-        let refused = jobs.vetted(&new).unwrap_err().0;
-        assert!(
-            refused.contains("isn't signed in, so this task didn't start"),
-            "{refused}"
-        );
+        let (_, routed, _) = jobs.vetted(&new).unwrap();
+        assert_eq!((routed.account.id.as_str(), routed.waiting), ("plan", None));
         let auto = NewJob {
             account: None,
             ..new

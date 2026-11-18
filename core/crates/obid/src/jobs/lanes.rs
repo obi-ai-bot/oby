@@ -1065,8 +1065,6 @@ mod tests {
         for dir in [&account, &other] {
             std::fs::create_dir_all(dir).unwrap();
         }
-        // A `codex login`, which its follow-up is named to (ACCOUNTS-35).
-        std::fs::write(account.join("auth.json"), "{}").unwrap();
         let config = crate::config::Config::parse(
             &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
                 "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],

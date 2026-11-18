@@ -358,26 +358,21 @@ impl Jobs {
     /// Where a new task goes (ACCOUNTS-30 to 35), and the line that says so when it isn't where
     /// the owner's words put it. Every way a task starts comes here (`Jobs::create`): the owner's
     /// words, a conversation's dispatch, Fix CI and the GitHub feed, a routine.
-    /// - An account the owner named is where it goes. One whose tool's CLI isn't on this Mac, or
-    ///   that isn't signed in, is refused before anything starts, saying why and what to do, a
-    ///   follow-up's too (it keeps its first task's account); one whose agent couldn't start a
-    ///   moment ago goes there and its run says why (ACCOUNTS-19, 20); one at its limit waits there
-    ///   (#871).
+    /// - An account named is where it goes. One whose tool's CLI isn't on this Mac is refused
+    ///   before anything starts, saying why and what to do (ACCOUNTS-32); so is one the owner named
+    ///   now, in `POST /v1/jobs` or by words that start a follow-up, that isn't signed in
+    ///   (ACCOUNTS-35). Any other, signed out or whose agent couldn't start a moment ago, goes
+    ///   there and its run says why (ACCOUNTS-19, 20); one at its limit waits there (#871).
     /// - An agent the owner named whose accounts all can't take it, or have no room, hands it to
     ///   the account with the most room of any tool, saying why, while `accountFailover` is on.
     /// - With nowhere else to go, it starts where it was put and its run says why it couldn't.
-    pub(super) fn route_new(
-        &self,
-        agent: Option<&str>,
-        named: Option<&str>,
-        work: &Work,
-    ) -> Result<Routed, Refused> {
+    pub(super) fn route_new(&self, new: &NewJob, work: &Work) -> Result<Routed, Refused> {
         let chosen = |v: Option<&str>| {
             v.map(str::trim)
                 .filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("auto"))
                 .map(str::to_owned)
         };
-        let (asked, named) = (chosen(agent), chosen(named));
+        let (asked, named) = (chosen(new.agent.as_deref()), chosen(new.account.as_deref()));
         let routed = |tool, account, waiting| Routed {
             tool,
             account,
@@ -414,12 +409,15 @@ impl Jobs {
         match self.pick_for(asked.as_deref(), named.as_deref(), work) {
             Ok((tool, account)) => {
                 if let Some(cant) = self.cant_take(tool, &account) {
-                    // An account the owner named whose tool's CLI isn't on this Mac, or that isn't
-                    // signed in, is refused, saying why (ACCOUNTS-32, 35: the owner's word of
-                    // 2026-11-18), a follow-up's too: it keeps its first task's account. One whose
-                    // agent couldn't start a moment ago still goes there (ACCOUNTS-20); an agent
-                    // asked for hands off.
-                    if named.is_some() && cant.refuses_named() {
+                    // A named account whose tool's CLI isn't on this Mac, or one the owner named
+                    // that isn't signed in, is refused, saying why (ACCOUNTS-32, 35: the owner's
+                    // word of 2026-11-18), their words' follow-up of a task they named it for
+                    // too. Otherwise it goes there and its run says why (ACCOUNTS-19, 20); an
+                    // agent asked for hands off.
+                    let of = new.follow_up_of.as_deref();
+                    let owner_named =
+                        new.named_now && of.is_none_or(|of| self.get(of).is_some_and(|j| j.named));
+                    if named.is_some() && cant.refuses(new.named_now, of.is_some(), owner_named) {
                         return Err(Refused(cant.refusal()));
                     }
                     if let Some(moved) = asked.as_deref().and_then(elsewhere) {
