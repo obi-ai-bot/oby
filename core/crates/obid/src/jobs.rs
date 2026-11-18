@@ -2225,12 +2225,7 @@ impl Jobs {
         }
         let background = new.unattended || new.routine.is_some();
         let work = self.work_for(new, background);
-        let routed = self.route_new(
-            new.agent.as_deref(),
-            new.account.as_deref(),
-            new.follow_up_of.is_none(),
-            &work,
-        )?;
+        let routed = self.route_new(new.agent.as_deref(), new.account.as_deref(), &work)?;
         let most = crate::settings::limits().rounds();
         if let Some(rounds) = new.rounds
             && !(1..=most).contains(&rounds)

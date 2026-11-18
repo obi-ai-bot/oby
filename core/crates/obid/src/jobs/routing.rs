@@ -311,7 +311,7 @@ impl Jobs {
         if !signed_in(tool, account, home.as_deref()) {
             let label = self.label(tool, account);
             return Some(match login_problem(tool, account, home.as_deref()) {
-                Some(problem) => CantTake::Failed(format!(
+                Some(problem) => CantTake::Login(format!(
                     "{label} can't run now: {}",
                     cant_run::plain(&problem)
                 )),
@@ -334,13 +334,13 @@ impl Jobs {
         }
     }
 
-    /// Where a new task goes (ACCOUNTS-30 to 33), and the line that says so when it isn't where
+    /// Where a new task goes (ACCOUNTS-30 to 35), and the line that says so when it isn't where
     /// the owner's words put it. Every way a task starts comes here (`Jobs::create`): the owner's
     /// words, a conversation's dispatch, Fix CI and the GitHub feed, a routine.
-    /// - An account the owner named is where it goes. One named in this request (`asked_now`: not a
-    ///   follow-up's, which keeps its first task's) whose tool's CLI isn't on this Mac is refused
-    ///   before anything starts, saying why and what to do; one signed out or whose agent couldn't
-    ///   start goes there and its run says why (ACCOUNTS-19, 20); one at its limit waits there
+    /// - An account the owner named is where it goes. One whose tool's CLI isn't on this Mac, or
+    ///   that isn't signed in, is refused before anything starts, saying why and what to do, a
+    ///   follow-up's too (it keeps its first task's account); one whose agent couldn't start a
+    ///   moment ago goes there and its run says why (ACCOUNTS-19, 20); one at its limit waits there
     ///   (#871).
     /// - An agent the owner named whose accounts all can't take it, or have no room, hands it to
     ///   the account with the most room of any tool, saying why, while `accountFailover` is on.
@@ -349,7 +349,6 @@ impl Jobs {
         &self,
         agent: Option<&str>,
         named: Option<&str>,
-        asked_now: bool,
         work: &Work,
     ) -> Result<Routed, Refused> {
         let chosen = |v: Option<&str>| {
@@ -394,12 +393,12 @@ impl Jobs {
         match self.pick_for(asked.as_deref(), named.as_deref(), work) {
             Ok((tool, account)) => {
                 if let Some(cant) = self.cant_take(tool, &account) {
-                    // An account the owner named in this request whose tool's CLI isn't on this
-                    // Mac could never run it: refused, saying why (ACCOUNTS-32). One signed out or
-                    // whose agent couldn't start still goes there (ACCOUNTS-20), its run saying why
-                    // in plain words (ACCOUNTS-19): a login obid can't see may still work. A
-                    // follow-up keeps its first task's account, and an agent can hand off.
-                    if named.is_some() && asked_now && matches!(cant, CantTake::Missing(_)) {
+                    // An account the owner named whose tool's CLI isn't on this Mac, or that isn't
+                    // signed in, is refused, saying why (ACCOUNTS-32, 35: the owner's word of
+                    // 2026-11-18), a follow-up's too: it keeps its first task's account. One whose
+                    // agent couldn't start a moment ago still goes there (ACCOUNTS-20); an agent
+                    // asked for hands off.
+                    if named.is_some() && cant.refuses_named() {
                         return Err(Refused(cant.refusal()));
                     }
                     if let Some(moved) = asked.as_deref().and_then(elsewhere) {
@@ -443,10 +442,11 @@ impl Jobs {
     }
 
     /// Why none of `tool`'s accounts takes `work` now, each in a few words: "Claude Code is at 97%
-    /// of its week until Thu 9:00 AM" (ACCOUNTS-31).
+    /// of its week until Thu 9:00 AM" (ACCOUNTS-31). A reason two accounts share is said once
+    /// (ACCOUNTS-36): "Cursor isn't installed on this Mac" names the tool, not the account.
     fn why_not(&self, tool: Tool, work: &Work) -> String {
         let (now, zone) = (obi_protocol::time::now(), jiff::tz::TimeZone::system());
-        let reasons: Vec<String> = self
+        let mut reasons: Vec<String> = self
             .accounts(tool)
             .into_iter()
             .filter(|a| !self.being_changed(&a.id) && self.in_profile(a, work))
@@ -458,6 +458,8 @@ impl Jobs {
                 }),
             })
             .collect();
+        let mut said = std::collections::HashSet::new();
+        reasons.retain(|reason| said.insert(reason.clone()));
         match reasons.is_empty() {
             true => format!("{} has no account that can take it", tool.name()),
             false => reasons.join("; "),
