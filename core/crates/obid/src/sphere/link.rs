@@ -609,6 +609,45 @@ fn from_client(error: &ClientError) -> ApiError {
 
 /// What the app needs of the delegation obid holds to sign the next one before it ends (#1215): its
 /// scope and when it ends. Never the JWT itself.
+/// Why the Sphere's refusal of a token exchange ends this Obi's membership, or none (SPHERE-22).
+/// The real Sphere stops exchanging a removed member's delegation (`invalid_grant`, "the actor is
+/// not an active member owned by the subject"), and its directory then can't be read either, so
+/// this is the only way obid learns it. Not every `invalid_grant` is that: one about time (an
+/// assertion expired, from the future, too long-lived) or a reused assertion passes with the next
+/// try, and a delegation obid's own clock says has ended waits for the app's new one. Those end
+/// nothing. The spec gives no code of its own for "not a member" (an ask of the Sphere's), so its
+/// words name the reason: `removed` when they say so, else `token_refused`.
+fn membership_refused(error: &ClientError, delegation: &str, now: i64) -> Option<&'static str> {
+    let ClientError::Refused { code, message, .. } = error else {
+        return None;
+    };
+    if code != "invalid_grant" {
+        return None;
+    }
+    let passing = [
+        "expired",
+        "in the future",
+        "used before",
+        "may live at most",
+    ];
+    if passing.iter().any(|w| message.contains(w)) {
+        return None;
+    }
+    let ends = obi_protocol::jwt::parse(delegation).and_then(|p| p.claims["exp"].as_i64());
+    if ends.is_none_or(|exp| exp <= now + DELEGATION_GRACE) {
+        return None;
+    }
+    Some(if message.contains("not an active member") {
+        super::membership::REMOVED
+    } else {
+        super::membership::TOKEN_REFUSED
+    })
+}
+
+/// A delegation this close to its end, by obid's clock, is taken for ended: a refusal then is
+/// about it, not the membership (SPHERE-22).
+const DELEGATION_GRACE: i64 = 300;
+
 fn delegation_json(delegation: &str) -> Value {
     let claims = obi_protocol::jwt::parse(delegation).map(|p| p.claims);
     let claims = claims.as_ref();
@@ -1809,6 +1848,34 @@ impl Link {
         })
     }
 
+    /// The Sphere no longer exchanges this Obi's delegation (SPHERE-22): the membership ends as a
+    /// directory that lists it revoked ends it, with `reason`, at obid's clock. Nothing more goes to
+    /// the Sphere, what's open is settled here, its peers not told, and the follower stops.
+    fn end_membership(&self, reason: &str) {
+        let ended = {
+            let mut state = self.lock();
+            let Some(m) = state.membership.as_mut().filter(|m| m.state == "joined") else {
+                return;
+            };
+            m.state = "revoked".into();
+            m.revoked.get_or_insert(super::membership::Revoked {
+                at: time::now(),
+                reason: reason.into(),
+            });
+            let ended = m.clone();
+            state.token = None;
+            ended
+        };
+        tracing::warn!("sphere: the Sphere no longer takes this Obi ({reason}): revoked");
+        if let Err(e) = self.files.save_membership(&ended) {
+            tracing::error!("can't keep the revoked membership: {e}");
+        }
+        self.settle_on_revoke();
+        if let Some(relay) = self.relay.get() {
+            relay.wake();
+        }
+    }
+
     /// Whether obid keeps a membership, joined or revoked.
     pub fn has_membership(&self) -> bool {
         self.lock().membership.is_some()
@@ -2404,22 +2471,41 @@ impl Link {
             .map_err(|e| ClientError::Protocol(e.to_string()))
         };
         let plain = obi_protocol::identity::audience(&membership.sphere);
-        let token = match by_url {
-            Some(aud) => match client.token(&delegation, &actor(&aud)?).await {
-                // A Sphere whose own address isn't the one obid joined by refuses its URL: the
-                // same exchange naming the Sphere alone tells, and if it passes, obid names it
-                // alone from then on.
-                Err(ClientError::Refused { code, .. }) if code == "invalid_request" => {
-                    let token = client.token(&delegation, &actor(&plain)?).await?;
-                    let mut state = self.lock();
-                    if same_server(&state, &client) {
-                        state.url_aud_refused = true;
+        // A refusal that says this Obi is no longer a member is asked once more, with a new
+        // assertion, before it ends the membership (SPHERE-22).
+        let mut asked_again = false;
+        let token = loop {
+            let answer = match &by_url {
+                Some(aud) => match client.token(&delegation, &actor(aud)?).await {
+                    // A Sphere whose own address isn't the one obid joined by refuses its URL: the
+                    // same exchange naming the Sphere alone tells, and if it passes, obid names it
+                    // alone from then on.
+                    Err(ClientError::Refused { code, .. }) if code == "invalid_request" => {
+                        let answer = client.token(&delegation, &actor(&plain)?).await;
+                        if answer.is_ok() {
+                            let mut state = self.lock();
+                            if same_server(&state, &client) {
+                                state.url_aud_refused = true;
+                            }
+                        }
+                        answer
                     }
-                    token
-                }
-                answer => answer?,
-            },
-            None => client.token(&delegation, &actor(&plain)?).await?,
+                    answer => answer,
+                },
+                None => client.token(&delegation, &actor(&plain)?).await,
+            };
+            match answer {
+                Ok(token) => break token,
+                Err(e) => match membership_refused(&e, &delegation, now) {
+                    Some(_) if !asked_again => asked_again = true,
+                    Some(reason) => {
+                        drop(_one);
+                        self.end_membership(reason);
+                        return Err(e);
+                    }
+                    None => return Err(e),
+                },
+            }
         };
         crate::secrets::known().learn(SPHERE_TOKEN_SECRET, &token.access_token);
         self.lock().token = Some((token.access_token.clone(), now + token.expires_in));
@@ -3506,6 +3592,55 @@ mod tests {
     use obi_protocol::client::Delivery;
 
     use super::*;
+
+    /// SPHERE-22: only an `invalid_grant` that isn't about time or a reused assertion, while the
+    /// delegation still holds by obid's clock, ends a membership; the Sphere's words name the reason.
+    #[test]
+    fn sphere_22_which_refusals_end_a_membership() {
+        let now = 1_000_000;
+        let key = Keypair::from_seed_string("sphere 22 owner");
+        let delegation = |exp: i64| {
+            obi_protocol::jwt::sign(&json!({"iss": "w", "sub": "w", "exp": exp}), &key).unwrap()
+        };
+        let live = delegation(now + 86_400);
+        let refused = |code: &str, message: &str| ClientError::Refused {
+            status: 400,
+            code: code.into(),
+            message: message.into(),
+        };
+        let gone = refused(
+            "invalid_grant",
+            "the actor is not an active member owned by the subject",
+        );
+        assert_eq!(membership_refused(&gone, &live, now), Some("removed"));
+        let other = refused(
+            "invalid_grant",
+            "the actor assertion doesn't verify with the Obi's current key",
+        );
+        assert_eq!(
+            membership_refused(&other, &live, now),
+            Some("token_refused")
+        );
+        for passing in [
+            "the delegation has expired",
+            "the actor assertion is issued in the future",
+            "this assertion was used before",
+            "the actor assertion may live at most 300 seconds",
+        ] {
+            let e = refused("invalid_grant", passing);
+            assert_eq!(membership_refused(&e, &live, now), None, "{passing}");
+        }
+        // A delegation that has ended, or nearly, by obid's clock: the app's new one is awaited.
+        assert_eq!(membership_refused(&gone, &delegation(now + 10), now), None);
+        assert_eq!(membership_refused(&gone, "not a jwt", now), None);
+        // Other codes and errors end nothing.
+        assert_eq!(
+            membership_refused(&refused("unauthorized", "x"), &live, now),
+            None
+        );
+        let down = ClientError::Unreachable("down".into());
+        assert_eq!(membership_refused(&down, &live, now), None);
+    }
 
     /// The publish gate scans every string of the reply: the agent's paths as much as its prose.
     #[test]

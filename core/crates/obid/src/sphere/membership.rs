@@ -42,13 +42,17 @@ pub struct Membership {
 pub struct Revoked {
     /// When the Sphere says it was revoked (the directory's `revoked_at`), or when obid first saw it.
     pub at: i64,
-    /// A stable reason, add-only: [`REMOVED`] today.
+    /// A stable reason, add-only: [`REMOVED`] or [`TOKEN_REFUSED`].
     pub reason: String,
 }
 
 /// The Sphere's directory lists this Obi revoked: an admin removed it, or its owner did on the
 /// Sphere's own site (SPHERE-20).
 pub const REMOVED: &str = "removed";
+
+/// The Sphere refuses to exchange this Obi's delegation for a token, though obid's clock says the
+/// delegation still holds, and doesn't say it was removed (SPHERE-22).
+pub const TOKEN_REFUSED: &str = "token_refused";
 
 impl Membership {
     /// The request types the card accepts.

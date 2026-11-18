@@ -4044,3 +4044,68 @@ async fn sphere_21_the_owner_id_is_chosen_before_the_first_join() {
         assert_eq!(get(&obid, "/v1/obid/sphere")["owner"], "dana-k");
     });
 }
+
+/// SPHERE-22 (#2524): the real Sphere stops exchanging a removed member's delegation
+/// (`invalid_grant`) and drops its tokens, so obid can't read the directory that would say
+/// `revoked`. That refusal, asked once more, ends the membership all the same: `revoked`, reason
+/// `removed`, what was open settled with nothing sent, and no more token exchanges.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sphere_22_a_member_the_sphere_no_longer_takes_is_revoked() {
+    let folder = Folder::new("sphere-22");
+    let (sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    let request = ernesto.request("obi-wellington", "review_request", brief(), 3600);
+    let cid = request["id"].as_str().unwrap().to_owned();
+    ernesto.send(&request).await;
+    let item = tokio::task::block_in_place(|| wait_item(&obid));
+    // The admin removes obi-wellington: the Sphere drops its tokens and takes its delegation no more.
+    {
+        let mut state = sphere.lock();
+        for member in &mut state.members {
+            if member["obi"] == "obi-wellington" {
+                member["status"] = json!("revoked");
+                member["revoked_at"] = json!(obi_protocol::time::format(obi_protocol::time::now()));
+            }
+        }
+        state.tokens.retain(|_, obi| obi != "obi-wellington");
+    }
+    let sent_before = sends_of(&sphere, "obi-wellington").len();
+    tokio::task::block_in_place(|| {
+        let revoked = within(60, "the membership revoked", || {
+            let me = get(&obid, "/v1/obid/sphere");
+            (me["state"] == "revoked").then_some(me)
+        });
+        assert_eq!(revoked["revokedReason"], "removed", "{revoked}");
+        assert!(revoked["revokedAt"].is_string(), "{revoked}");
+        // What was open is settled here, its peer not told.
+        let settled = exchange(&obid, &cid);
+        assert_eq!(settled["state"], "declined", "{settled}");
+        assert!(
+            settled["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("revoked")),
+            "{settled}"
+        );
+        let done = get(&obid, "/v1/inbox?state=done");
+        assert!(
+            done.as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["id"] == item["id"] && i["answer"].is_null()),
+            "{done}"
+        );
+        // No more token exchanges: a read that would need one doesn't ask.
+        let asked = sphere.lock().actor_auds.len();
+        let members = call(&obid, "GET", "/v1/obid/sphere/members", None);
+        assert_eq!(members.status, 409, "{}", members.text);
+        assert_eq!(
+            sphere.lock().actor_auds.len(),
+            asked,
+            "no exchange after the revoke"
+        );
+    });
+    assert_eq!(
+        sends_of(&sphere, "obi-wellington").len(),
+        sent_before,
+        "nothing more went to the Sphere"
+    );
+}
