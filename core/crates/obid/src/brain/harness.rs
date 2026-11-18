@@ -2559,6 +2559,8 @@ async fn one(
             Event::Step(_)
             | Event::Denied(_)
             | Event::Said(_)
+            | Event::Output { .. }
+            | Event::Spilled { .. }
             | Event::Thought { .. }
             | Event::Thinking { .. }
             | Event::Plan(_)

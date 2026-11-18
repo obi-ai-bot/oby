@@ -124,6 +124,14 @@ pub enum Event {
         output: Option<String>,
         patches: Vec<(String, String)>,
     },
+    /// What the command `id` printed since the last of these, while it runs: Codex's
+    /// `item/commandExecution/outputDelta`, raw. Only a job's transcript keeps it, masked, and only
+    /// its last lines (LIVETASK-34).
+    Output { id: String, text: String },
+    /// Claude Code runs the command `id` as its task `task` (`system` `task_started`, a
+    /// `local_bash` one in the foreground): what it prints so far is in that task's output file,
+    /// which obid reads while it runs (crate::spill, LIVETASK-34).
+    Spilled { id: String, task: String },
     /// The agent's words between tool calls, whole (a job's transcript).
     Said(String),
     /// Its thinking, or a summary of its reasoning, when the tool reports it, and how long it
@@ -640,6 +648,23 @@ pub async fn turn_on(
                     message["max_retries"].as_u64().unwrap_or(0) as usize,
                 )));
             }
+            // A command in the foreground: Claude Code keeps what it prints in its task's output
+            // file as it runs, and says nothing more until it ends (claude 2.1.325). Only the
+            // agent's own: a subagent's run is under its own call.
+            Some("system")
+                if message.get("subtype").and_then(Value::as_str) == Some("task_started")
+                    && message["task_type"] == "local_bash"
+                    && message["is_backgrounded"] != true =>
+            {
+                if let (Some(id), Some(task)) =
+                    (message["tool_use_id"].as_str(), message["task_id"].as_str())
+                {
+                    on_event(Event::Spilled {
+                        id: id.to_owned(),
+                        task: task.to_owned(),
+                    });
+                }
+            }
             Some("system") if message.get("subtype").and_then(Value::as_str) == Some("init") => {
                 idle = false;
                 if let Some(session) = message.get("session_id").and_then(Value::as_str) {
@@ -1145,6 +1170,65 @@ mod tests {
         assert_eq!(
             *tools.lock().unwrap(),
             ["server_tool_use", "web_search_tool_result"]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LIVETASK-34: a command Claude Code runs in the foreground names the task whose output file
+    /// obid reads while it runs; one in the background, or a task of another kind, doesn't.
+    #[tokio::test]
+    async fn livetask_34_a_foreground_command_names_its_output_task() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("obid-spilled-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let bin = root.join("claude");
+        let lines = [
+            r#"{"type":"system","subtype":"task_started","task_id":"b21taen9b","tool_use_id":"toolu_1","task_type":"local_bash","is_backgrounded":false}"#,
+            r#"{"type":"system","subtype":"task_started","task_id":"bg1","tool_use_id":"toolu_2","task_type":"local_bash","is_backgrounded":true}"#,
+            r#"{"type":"system","subtype":"task_started","task_id":"ag1","tool_use_id":"toolu_3","task_type":"local_agent","is_backgrounded":false}"#,
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"Done.","session_id":"s1"}"#,
+        ];
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\nread line\n{}\n",
+                lines
+                    .iter()
+                    .map(|l| format!("echo '{l}'"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let launch = Launch {
+            argv: vec![bin.into_os_string()],
+            env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+            cwd: root.clone(),
+            stderr: root.join("agent.log"),
+            own_sandbox: false,
+            group: None,
+        };
+        let (_stop, stop) = watch::channel(process::Signal::Run);
+        let spilled = std::sync::Mutex::new(Vec::new());
+        run_turn(
+            launch,
+            "Do it.",
+            Duration::from_secs(60),
+            stop,
+            |_, _| Ruling::Now(Answer::Allow),
+            |event| {
+                if let Event::Spilled { id, task } = event {
+                    spilled.lock().unwrap().push((id, task));
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *spilled.lock().unwrap(),
+            [("toolu_1".to_owned(), "b21taen9b".to_owned())]
         );
         let _ = std::fs::remove_dir_all(&root);
     }
