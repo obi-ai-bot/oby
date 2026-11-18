@@ -1,13 +1,14 @@
 import { useSyncExternalStore } from 'react';
 import { KEPT } from './drafts';
 
-// The message box's chips (docs/contracts/composer.md, COMPOSER-1 and 2): the mode, tool, model and
-// effort the owner set for the tasks their words start, by box (drafts.ts's boxes), as T3 Code keeps
-// its per-draft model and mode. Kept with the box's draft: across a relaunch, and a week after they
-// were last set. They go with the words (COMPOSER-3) and are never written to Settings or an
-// account: this window's localStorage holds them, on this Mac only.
+// The message box's chips (docs/contracts/composer.md, COMPOSER-1): the mode the owner set for the
+// tasks their words start, by box (drafts.ts's boxes), as T3 Code keeps its per-draft mode. Kept
+// with the box's draft: across a relaunch, and a week after it was last set. It goes with the words
+// (COMPOSER-3) and is never written to Settings: this window's localStorage holds it, on this Mac
+// only. A tool, model or effort an earlier build kept here is read as nothing (COMPOSER-17): the
+// model and effort are the account's, on the talk pill, and nothing on screen would show them.
 
-export type Chips = { mode?: string; agent?: string; model?: string; effort?: string };
+export type Chips = { mode?: string };
 export const KEY = 'oby.chips';
 
 type Kept = Record<string, Chips & { at: number }>;
@@ -21,7 +22,7 @@ function live(store: Storage, now: number): Kept {
     if (!all || typeof all !== 'object' || Array.isArray(all)) return {};
     return Object.fromEntries(Object.entries(all as Record<string, Record<string, unknown>>).flatMap(([box, c]) => {
       if (!c || typeof c !== 'object' || typeof c.at !== 'number' || now - c.at >= KEPT) return [];
-      const kept = Object.fromEntries((['mode', 'agent', 'model', 'effort'] as const).filter((k) => text(c[k])).map((k) => [k, c[k] as string]));
+      const kept = Object.fromEntries((['mode'] as const).filter((k) => text(c[k])).map((k) => [k, c[k] as string]));
       return [[box, { ...kept, at: c.at }]];
     }));
   } catch {
@@ -49,13 +50,9 @@ export function setChips(box: string, chips: Chips, store: Storage = localStorag
   listeners.forEach((l) => l());
 }
 
-// What goes with the words (COMPOSER-3): only what's set; a model or effort only with its tool
+// What goes with the words (COMPOSER-3): the mode, when one is set
 export function defaultsOf(chips: Chips): Chips | undefined {
-  const out: Chips = {
-    ...(chips.mode ? { mode: chips.mode } : {}),
-    ...(chips.agent ? { agent: chips.agent, ...(chips.model ? { model: chips.model } : {}), ...(chips.effort ? { effort: chips.effort } : {}) } : {}),
-  };
-  return Object.keys(out).length ? out : undefined;
+  return chips.mode ? { mode: chips.mode } : undefined;
 }
 
 let version = 0;

@@ -9,13 +9,14 @@ const state = vi.hoisted(() => ({
   chosen: 'p', saved: { p: 'claude-opus-5-5', w: 'claude-sonnet-5-5' } as Record<string, string>,
   tune: vi.fn(), choose: vi.fn(), setDefault: vi.fn(), look: vi.fn(), fail: false,
   cursorModels: [] as { id: string; name: string }[], groups: undefined as unknown,
+  efforts: undefined as string[] | undefined, effort: {} as Record<string, string>,
 }));
 const LONG_CURSOR = Array.from({ length: 40 }, (_, i) => ({ id: `m-${i}`, name: `Model ${i}` }));
 vi.mock('../SettingsView', async () => {
   const { useState } = await import('react');
-  const { cursorPick, cursorCompose } = await vi.importActual<typeof import('../SettingsView')>('../SettingsView');
+  const { cursorPick, cursorCompose, EFFORT_NAMES } = await vi.importActual<typeof import('../SettingsView')>('../SettingsView');
   return {
-    cursorPick, cursorCompose,
+    cursorPick, cursorCompose, EFFORT_NAMES,
     fullness: () => '',
     useAccounts: () => [[
       { id: 'p', agent: 'claude', name: 'Personal', used: 34, weekly: true, session: null, modelsRead: true },
@@ -26,12 +27,13 @@ vi.mock('../SettingsView', async () => {
     useModels: () => {
       const [, render] = useState(0);
       return [
-        (a: { id: string; agent: string }) => ({ model: state.saved[a.id] ?? (a.agent === 'cursor' ? 'auto' : 'claude-opus-5-5') }),
-        { claude: { models: [{ id: 'claude-opus-5-5', name: 'Opus 5.5' }, { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5' }] }, cursor: { models: [{ id: 'auto', name: 'Auto' }], groups: state.groups } },
-        async (id: string, change: { model: string }) => {
+        (a: { id: string; agent: string }) => ({ model: state.saved[a.id] ?? (a.agent === 'cursor' ? 'auto' : 'claude-opus-5-5'), effort: state.effort[a.id] }),
+        { claude: { models: [{ id: 'claude-opus-5-5', name: 'Opus 5.5' }, { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5' }], efforts: state.efforts }, cursor: { models: [{ id: 'auto', name: 'Auto' }], groups: state.groups } },
+        async (id: string, change: { model?: string; effort?: string }) => {
           state.tune(id, change);
           if (state.fail) throw new Error('Could not save model');
-          state.saved[id] = change.model;
+          if (change.model) state.saved[id] = change.model;
+          if (change.effort) state.effort[id] = change.effort;
           render((n) => n + 1);
         },
         { claude: { model: 'claude-opus-5-5' }, cursor: { model: 'auto' } },
@@ -67,7 +69,7 @@ beforeEach(() => {
   Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 });
   state.look.mockClear();
   state.chosen = 'p'; state.saved = { p: 'claude-opus-5-5', w: 'claude-sonnet-5-5' }; state.fail = false;
-  state.cursorModels = LONG_CURSOR; state.groups = undefined;
+  state.cursorModels = LONG_CURSOR; state.groups = undefined; state.efforts = undefined; state.effort = {};
   state.tune.mockClear(); state.choose.mockClear(); state.setDefault.mockReset().mockImplementation(async (id: string) => { state.chosen = id; });
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
 });
@@ -364,4 +366,34 @@ it('CONVERSATION-AGENT-31: opening the menu asks obid for usage only once it has
     await act(async () => { vi.advanceTimersByTime(300); });
     expect(state.look).not.toHaveBeenCalled();
   } finally { vi.useRealTimers(); }
+});
+
+it('COMPOSER-17: an account\'s efforts are under its models, its own checked, and a pick keeps it on the account', async () => {
+  const rects = stubRects();
+  state.efforts = ['low', 'medium', 'high', 'max'];
+  state.effort = { w: 'medium' };
+  await show();
+  await click(button('Work'));
+  const models = document.querySelector('[aria-label="Claude · Work models"]')!;
+  const efforts = models.querySelector('[role="group"][aria-label="Effort"]')!;
+  expect(Array.from(efforts.querySelectorAll('button')).map((b) => [b.textContent, b.getAttribute('aria-checked')])).toEqual([
+    ['Low', 'false'], ['Medium', 'true'], ['High', 'false'], ['Max', 'false'],
+  ]);
+  // the list is tall enough for them: its models' rows, then the line, "Effort" and one row of pills
+  expect((models as HTMLElement).style.height).toBe(`${2 * 9 + 2 * 34 + 2 + 13 + 22 + 28}px`);
+  await click(button('High', efforts));
+  expect(state.tune).toHaveBeenCalledWith('w', { effort: 'high' });
+  expect(state.tune).not.toHaveBeenCalledWith('w', expect.objectContaining({ model: expect.anything() }));
+  expect(state.setDefault).toHaveBeenCalledWith('w');
+  expect(document.querySelector('[role="menu"]')).toBeNull();
+  rects.mockRestore();
+});
+
+it('COMPOSER-17: Cursor\'s effort is in its model\'s name, so its list has no efforts', async () => {
+  const rects = stubRects();
+  state.efforts = ['low', 'high'];
+  await show();
+  await click(button('Cursor'));
+  expect(document.querySelector('.row-submenu [aria-label="Effort"]')).toBeNull();
+  rects.mockRestore();
 });
