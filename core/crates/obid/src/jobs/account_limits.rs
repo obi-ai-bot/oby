@@ -22,28 +22,56 @@ const RESERVE_WAIT: &str = "Waiting for the account's weekly reserve: it's past 
 /// What cut its run, as the session that resumes hears it (`continue_message`).
 const RESET_CAME: &str = "your account hit its usage limit, and that limit has reset";
 
+/// `at` as a person reads it in `zone`: "Thu 9:00 AM".
+fn local_time(at: i64, zone: &jiff::tz::TimeZone) -> Option<String> {
+    let at = jiff::Timestamp::from_second(at).ok()?;
+    Some(
+        at.to_zoned(zone.clone())
+            .strftime("%a %-I:%M %p")
+            .to_string(),
+    )
+}
+
+/// `text` with each of obid's own times ("2026-11-21T02:28:00Z", crate::usage's) as `zone` reads
+/// it, so a line the owner sees says "Thu 9:00 AM" (ACCOUNTS-31).
+pub(super) fn in_local_time(text: &str, zone: &jiff::tz::TimeZone) -> String {
+    text.split(' ')
+        .map(|word| {
+            let local = word.parse::<jiff::Timestamp>().ok();
+            local
+                .and_then(|at| local_time(at.as_second(), zone))
+                .unwrap_or_else(|| word.to_owned())
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// What a card from before LIMITS-15 asked, while it's still shown.
 const LIMIT_QUESTION: &str =
     "This account reached its usage limit. Choose what Oby should do with the affected jobs.";
 
-/// A job's line while it waits for room (LIMITS-15), saying when its own account's limit ends.
-/// Proposed words: Sangam's to change.
-fn resuming_at(at: i64, zone: &jiff::tz::TimeZone) -> String {
-    let time = jiff::Timestamp::from_second(at)
-        .map(|t| {
-            t.to_zoned(zone.clone())
-                .strftime("%a %-I:%M %p")
-                .to_string()
-        })
-        .unwrap_or_else(|_| "the reset".into());
-    format!("Every account is at its limit: resuming when one has room, at the latest {time}")
+/// A job's line while it waits for room (LIMITS-15), saying when its own account's limit ends:
+/// "every account" only when no account of any tool could take it (LIMITS-5), else the one it
+/// waits for, `alone` (ACCOUNTS-33). Proposed words: Sangam's to change.
+fn resuming_at(at: i64, zone: &jiff::tz::TimeZone, alone: Option<&str>) -> String {
+    let time = local_time(at, zone).unwrap_or_else(|| "the reset".into());
+    match alone {
+        None => {
+            format!(
+                "Every account is at its limit: resuming when one has room, at the latest {time}"
+            )
+        }
+        Some(who) => {
+            format!("{who} is at its limit: resuming when it has room, at the latest {time}")
+        }
+    }
 }
 
 /// `job` waits, `queued`, until `at` or an account with room (LIMITS-5, LIMITS-15): `cap`, as the
 /// apps know it (their job decodes no other kind), with no slot, no card, and Stop as for any
 /// queued job.
-pub(super) fn wait_for_reset(job: &mut Job, at: i64) {
-    let line = resuming_at(at, &jiff::tz::TimeZone::system());
+pub(super) fn wait_for_reset(job: &mut Job, at: i64, alone: Option<&str>) {
+    let line = resuming_at(at, &jiff::tz::TimeZone::system(), alone);
     job.status = Status::Queued;
     job.resumes_at = Some(at);
     job.waiting = Some(Waiting {
@@ -57,13 +85,13 @@ pub(super) fn wait_for_reset(job: &mut Job, at: i64) {
 
 /// A run a limit stopped starts its wait, counted (LIMITS-9), unless Stop came as the run ended:
 /// nothing undoes it (LIMITS-6). Whether the owner asked for its round stays.
-pub(super) fn start_wait(job: &mut Job, at: i64) {
+pub(super) fn start_wait(job: &mut Job, at: i64, alone: Option<&str>) {
     if !job.status.is_active() {
         return;
     }
     job.recovery.limit_resumes += 1;
     job.publish_step = None;
-    wait_for_reset(job, at);
+    wait_for_reset(job, at, alone);
     job.changed(format!("A usage limit stopped it. {}", job.step));
 }
 
@@ -178,6 +206,7 @@ impl Jobs {
                         &Work::of(&job),
                     );
                     let mut waits = false;
+                    let alone = self.held_alone(&job);
                     self.update(id, |job| {
                         waits = waits_on(job, decision) && job.account_limit_episode.is_some();
                         if waits {
@@ -186,7 +215,7 @@ impl Jobs {
                                 change.apply(job);
                             }
                             (job.round, job.rounds) = (round, rounds);
-                            wait_for_reset(job, at);
+                            wait_for_reset(job, at, alone.as_deref());
                         }
                     });
                     waits.then_some(()).ok_or(String::new())
@@ -273,9 +302,11 @@ impl Jobs {
     pub(super) fn wait_as_vetted(&self, job: &mut Job, waiting: Option<Waiting>) {
         match waiting {
             Some(wait) if wait.kind == "cap" => {
+                let alone = self.held_alone(job);
                 wait_for_reset(
                     job,
                     self.limit_wait_until(&job.account, None, &Work::of(job)),
+                    alone.as_deref(),
                 );
             }
             Some(wait) => {
@@ -320,9 +351,10 @@ impl Jobs {
                     true => now + crate::usage::UNKNOWN_RESET,
                     false => self.limit_wait_until(&job.account, None, &work),
                 };
+                let alone = self.held_alone(&job);
                 self.update(&id, |job| {
                     if waits(job) {
-                        wait_for_reset(job, at);
+                        wait_for_reset(job, at, alone.as_deref());
                     }
                 });
                 continue;
@@ -1136,15 +1168,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// ACCOUNTS-31: a routed line's reason says its time as the wait line does.
+    #[test]
+    fn accounts_31_a_reason_says_its_time_as_a_person_reads_it() {
+        let utc = jiff::tz::TimeZone::UTC;
+        assert_eq!(
+            in_local_time("is at 97% of its week until 2026-11-21T02:28:00Z", &utc),
+            "is at 97% of its week until Sat 2:28 AM"
+        );
+        assert_eq!(in_local_time("isn't signed in", &utc), "isn't signed in");
+    }
+
     /// LIMITS-5: the job's line says the local time it resumes.
     #[test]
     fn limits_5_the_line_says_the_time_in_the_macs_zone() {
         let at = 1_793_691_381; // 2026-11-03T07:36:21Z
         let utc = jiff::tz::TimeZone::UTC;
         let line = "Every account is at its limit: resuming when one has room, at the latest";
-        assert_eq!(resuming_at(at, &utc), format!("{line} Tue 7:36 AM"));
+        assert_eq!(resuming_at(at, &utc, None), format!("{line} Tue 7:36 AM"));
         let sao_paulo = jiff::tz::TimeZone::get("America/Sao_Paulo").unwrap();
-        assert_eq!(resuming_at(at, &sao_paulo), format!("{line} Tue 4:36 AM"));
+        assert_eq!(
+            resuming_at(at, &sao_paulo, None),
+            format!("{line} Tue 4:36 AM")
+        );
     }
 
     /// LIMITS-6: a Stop that lands as the run ends, once obid read that it wasn't stopped, stays.
@@ -1159,14 +1205,14 @@ mod tests {
             "stub".into(),
         );
         job.status = Status::Stopped;
-        start_wait(&mut job, 1_793_691_381);
+        start_wait(&mut job, 1_793_691_381, None);
         assert_eq!(job.status, Status::Stopped);
         assert_eq!(job.resumes_at, None);
         assert_eq!(job.recovery.limit_resumes, 0);
 
         job.status = Status::Running;
         job.asked = true;
-        start_wait(&mut job, 1_793_691_381);
+        start_wait(&mut job, 1_793_691_381, None);
         assert_eq!(job.status, Status::Queued);
         assert_eq!(job.resumes_at, Some(1_793_691_381));
         assert_eq!(job.recovery.limit_resumes, 1);

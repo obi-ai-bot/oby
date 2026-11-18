@@ -65,6 +65,10 @@ mod authors;
 mod budget;
 mod by_github;
 pub(crate) mod cant_run;
+mod cant_take;
+pub(crate) use cant_take::CantTake;
+mod routed;
+use routed::Routed;
 mod check_run;
 #[cfg(test)]
 use check_run::check_failed;
@@ -2221,19 +2225,7 @@ impl Jobs {
     }
 
     #[allow(clippy::type_complexity)]
-    fn vetted(
-        &self,
-        new: &NewJob,
-    ) -> Result<
-        (
-            Repo,
-            Tool,
-            crate::config::Account,
-            Option<Vec<String>>,
-            Option<Waiting>,
-        ),
-        Refused,
-    > {
+    fn vetted(&self, new: &NewJob) -> Result<(Repo, Routed, Option<Vec<String>>), Refused> {
         let repo = self
             .repo(&new.repo)
             .or_else(|| new.adding.clone().filter(|a| a.repo == new.repo))
@@ -2253,32 +2245,14 @@ impl Jobs {
         {
             return Err(Refused("title is one line of 1 to 60 characters.".into()));
         }
-        let named = new
-            .account
-            .as_deref()
-            .is_some_and(|a| !a.trim().is_empty() && !a.trim().eq_ignore_ascii_case("auto"));
         let background = new.unattended || new.routine.is_some();
         let work = self.work_for(new, background);
-        // Held back by weekly reserves alone, it waits for one to be lifted, or for room (#872); by
-        // limits, as a limit's job waits (LIMITS-18); by a ChatGPT login the owner hasn't said yes
-        // to alone, for their yes (CHATGPT-20).
-        let (tool, account, waiting) =
-            match self.pick_for(new.agent.as_deref(), new.account.as_deref(), &work) {
-                Ok((tool, account)) if background && self.waits_for_yes(tool, &account) => {
-                    let wait = consent_wait(&account, new.agent.as_deref());
-                    (tool, account, Some(wait))
-                }
-                Ok((tool, account)) => (tool, account, None),
-                Err(refused) if !named => match self
-                    .in_reserve(new.agent.as_deref(), background)
-                    .or_else(|| self.no_room(new.agent.as_deref(), &work))
-                    .or_else(|| background.then(|| self.first_not_yet(new.agent.as_deref()))?)
-                {
-                    Some(held) => held,
-                    None => return Err(refused),
-                },
-                Err(refused) => return Err(refused),
-            };
+        let routed = self.route_new(
+            new.agent.as_deref(),
+            new.account.as_deref(),
+            new.follow_up_of.is_none(),
+            &work,
+        )?;
         let most = crate::settings::limits().rounds();
         if let Some(rounds) = new.rounds
             && !(1..=most).contains(&rounds)
@@ -2308,14 +2282,20 @@ impl Jobs {
         {
             return Err(Refused(format!(
                 "{model} isn't a model of {}.",
-                tool.name()
+                routed.tool.name()
             )));
         }
-        Ok((repo, tool, account, files, waiting))
+        Ok((repo, routed, files))
     }
 
     pub fn create(self: &Arc<Self>, new: NewJob) -> Result<Job, NotMade> {
-        let (repo, tool, account, files, waiting) = self.vetted(&new)?;
+        let (repo, routed, files) = self.vetted(&new)?;
+        let Routed {
+            tool,
+            account,
+            waiting,
+            line,
+        } = routed;
         let id = self.new_id();
         let mut job = Job::new(
             id.clone(),
@@ -2448,6 +2428,7 @@ impl Jobs {
         job.phase = Some(Phase::Prepare);
         job.step = format!("Getting {} ready", job.repo_name());
         self.wait_as_vetted(&mut job, waiting);
+        job.routed = line; // why it runs where the owner's words didn't put it (ACCOUNTS-31)
         // A job starts only when nothing else moves its branch (PUBLISHING-4): checked and taken
         // under one lock (insert takes the same job again). Refused rather than put on a branch of
         // its own, so two jobs on one issue never make two pull requests for it.
@@ -8875,7 +8856,8 @@ mod tests {
     }
 
     /// CHATGPT-20: a signed-out login has no yes to wait for: what's missing is its sign-in, and the
-    /// switch doesn't even show. The job goes on and says so, as any job on a signed-out account.
+    /// switch doesn't even show. Named, it's refused saying so (ACCOUNTS-32); in Auto, the job goes
+    /// on and says so, as any job on a signed-out account.
     #[tokio::test]
     async fn chatgpt_20_a_signed_out_login_gets_no_wait_for_the_yes() {
         let jobs = jobs_on_a_plan(false, &[]);
@@ -8888,14 +8870,17 @@ mod tests {
             unattended: true,
             ..NewJob::default()
         };
-        let (_, _, account, _, waiting) = jobs.vetted(&new).unwrap();
-        assert_eq!((account.id.as_str(), waiting), ("plan", None));
+        let refused = jobs.vetted(&new).unwrap_err().0;
+        assert!(
+            refused.contains("isn't signed in, so this task didn't start"),
+            "{refused}"
+        );
         let auto = NewJob {
             account: None,
             ..new
         };
-        let (_, _, _, _, waiting) = jobs.vetted(&auto).unwrap();
-        assert_eq!(waiting, None);
+        let (_, routed, _) = jobs.vetted(&auto).unwrap();
+        assert_eq!(routed.waiting, None);
     }
 
     /// CHATGPT-20: `oby_change_job` doesn't put work nobody's watching on a login with no yes.

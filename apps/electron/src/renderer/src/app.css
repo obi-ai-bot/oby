@@ -459,6 +459,9 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .tc-who { margin-right: 6px; color: var(--text); font-weight: 500; }
 .tc-ago { flex: none; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
 .tc-meta { margin: 4px 0 0 26px; color: var(--muted); font-size: var(--text-md); }
+/* why it runs on another agent than the words named (ACCOUNTS-31): a line under the meta, same voice */
+.tc-routed { margin: 2px 0 0 26px; color: var(--muted); font-size: var(--text-md); }
+.task-card.is-alone .tc-routed { margin: -10px 0 16px 30px; }
 
 /* running: the agent's live line */
 .tc-now { margin: 14px 0 0; max-height: 20px; display: flex; align-items: center; gap: 10px; color: var(--text); font-size: var(--text-md); min-width: 0; overflow: hidden; transition: opacity var(--fade), max-height 360ms var(--warm), margin-top 360ms var(--warm); }

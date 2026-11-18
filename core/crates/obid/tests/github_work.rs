@@ -1212,6 +1212,90 @@ fn taskconv_29_fix_ci_on_its_card_starts_a_task_in_its_own_conversation() {
     );
 }
 
+/// ACCOUNTS-34: Fix CI's task goes where routing puts any task: past an account at 95% of its
+/// week, even the one new tasks go to, onto the account with room.
+#[test]
+fn accounts_34_fix_ci_is_routed_like_any_task() {
+    let folder = Folder::new("fix-ci-routed");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agents().join("fake-claude"));
+    let accounts = folder.0.join("home/accounts");
+    let ends = (obi_protocol::time::now() + 10 * 86_400) * 1000;
+    std::fs::create_dir_all(accounts.join("stub")).unwrap();
+    std::fs::write(
+        accounts.join("stub/.credentials.json"),
+        json!({"claudeAiOauth": {"accessToken": "tok-stub-plain-test-login", "expiresAt": ends}})
+            .to_string(),
+    )
+    .unwrap();
+    std::fs::create_dir_all(accounts.join("cx")).unwrap();
+    std::fs::write(accounts.join("cx/auth.json"), "{}").unwrap();
+    config["agents"]["codex"] = json!({"bin": agents().join("fake-codex"),
+        "accounts": [{"id": "cx", "name": "Room", "configDir": accounts.join("cx")}]});
+    let now = obi_protocol::time::now();
+    let window = |week: f64| {
+        json!({"fiveHour": 0.1, "sevenDay": week, "fiveHourResets": now + 3600,
+               "sevenDayResets": now + 86_400, "fiveHourObservedAt": now, "sevenDayObservedAt": now})
+    };
+    std::fs::write(
+        folder.0.join("home/usage.json"),
+        json!({"stub": window(0.97), "cx": window(0.08)}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        folder.0.join("home/settings.json"),
+        json!({"defaultAccount": "stub"}).to_string(),
+    )
+    .unwrap();
+    let obid = start(&folder.0, &config, Some(&agents()));
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(
+        gh.join("view.json"),
+        json!({"title": "Login fix", "body": "", "author": {"login": "wellington"},
+               "labels": [], "comments": [], "headRefName": "fix-login", "isCrossRepository": false,
+               "statusCheckRollup": [{"__typename": "StatusContext", "context": "ci/test",
+                                      "state": "FAILURE", "description": "1 test failed"}]})
+        .to_string(),
+    )
+    .unwrap();
+    let a = "a".repeat(40);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "SUCCESS")],
+    );
+    refresh(&obid);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "FAILURE")],
+    );
+    refresh(&obid);
+    let offer = github_items(&obid, "open")
+        .into_iter()
+        .find(|i| i["github"]["number"] == 5)
+        .expect("a CI failed card");
+    let answered = call(
+        &obid,
+        "POST",
+        &format!("/v1/inbox/{}/answer", offer["id"].as_str().unwrap()),
+        Some(&json!({"answer": "Fix CI"})),
+    );
+    assert_eq!(answered.status, 200, "{}", answered.text);
+    let id = answered.body["job"].as_str().unwrap().to_owned();
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(
+        (&job["agent"], &job["account"]),
+        (&json!("codex"), &json!("cx")),
+        "{job}"
+    );
+}
+
 /// TASKCONV-30 (docs/contracts/task-conversations.md): a Fix CI task's goal is what its agent can
 /// meet before anything is pushed: fix the failed checks' cause and commit it. GitHub's checks run
 /// again only once Oby publishes the commit, so they're never part of the goal, which would keep a

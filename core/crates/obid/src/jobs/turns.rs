@@ -153,9 +153,10 @@ impl Jobs {
                     _ => None,
                 };
                 if let End::AccountLimit { reason, .. } = &end {
+                    let alone = self.held_alone(&job);
                     self.update(id, |job| match (&failover, resume_at) {
                         (Some(failover), _) if job.status.is_active() => failover.apply(job, self),
-                        (_, Some(at)) => account_limits::start_wait(job, at),
+                        (_, Some(at)) => account_limits::start_wait(job, at, alone.as_deref()),
                         // It moved or waits (LIMITS-15), or Stop came as it ended (LIMITS-6).
                         _ => tracing::info!("job {id}: {reason}"),
                     });

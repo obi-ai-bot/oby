@@ -766,6 +766,11 @@ pub struct Job {
     /// Every time its tool or account was changed (`oby_change_job`), oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub moves: Vec<Move>,
+    /// Why it runs on another agent than the one the owner's words named, in a line made when it
+    /// was routed (ACCOUNTS-31): "Claude Code is at 97% of its week until Thu 9:00 AM, so this runs
+    /// on Codex · Personal." In the API as `routed`; none when it runs where they asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routed: Option<String>,
     /// The owner named its account (`POST /v1/jobs`, `oby_change_job`): it stays there past a
     /// usage limit, never moved by Oby (#871). Kept in its file, never in the API.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1754,6 +1759,9 @@ impl Job {
         });
         value["resumeCommand"] = json!(self.resume_command());
         // Only for a profile that isn't the default (B00-40).
+        if let Some(line) = &self.routed {
+            value["routed"] = json!(line);
+        }
         if let Some(profile) = &self.profile {
             value["profile"] = json!(profile);
         }

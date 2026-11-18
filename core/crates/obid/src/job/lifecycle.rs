@@ -424,7 +424,7 @@ mod tests {
                 start_from, onto, supervised, revision, diffs, checks, scan, stage_times, estimate,
                 usage, peak_rss, agent_peak_rss, check_peak_rss, build_freed, worktree_freed,
                 usage_seen,
-                window_share, ran_secs, budget_from, changes, moves, named, routine, unattended,
+                window_share, ran_secs, budget_from, changes, moves, routed, named, routine, unattended,
                 untrusted, own_lane, ran_unproxied, unsigned, client_request_id,
                 memory_from_others, foreign, foreign_by_api, withheld, check_withheld,
                 check_withheld_was, reached, made, apart, clone_root, vetted, own_conversation,

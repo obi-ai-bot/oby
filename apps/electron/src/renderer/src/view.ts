@@ -128,6 +128,7 @@ export type Job = {
   published?: string;  // the pull request it opened
   publish?: { label: string; anyway?: true; why?: string };  // obid only: Publish by hand (jobPage.ts, publishOf)
   nothingDone?: boolean;  // obid's: it ended with nothing done (TASKS-12)
+  routed?: string;     // obid's: why it runs on another agent than your words named (ACCOUNTS-31)
   log?: LogLine[];
   page?: Page;         // the job page's extra data, once obid serves it
   conversation?: string;  // obid's: the conversation whose words started it
