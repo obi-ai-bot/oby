@@ -4,7 +4,7 @@
 //! every obid it starts has its own home and port.
 //!
 //!   obid-spec run [--only <area>] [--workflow <text>] [--jobs <n>] [--obid <path>] [--keep]
-//!   obid-spec coverage [--only <area>]
+//!   obid-spec coverage [--only <area>] [--gate]
 //!   obid-spec list
 //!   obid-spec nodes
 
@@ -55,6 +55,7 @@ struct Args {
     jobs: usize,
     obid: Option<PathBuf>,
     keep: bool,
+    gate: bool,
 }
 
 fn args() -> Result<Args> {
@@ -67,6 +68,7 @@ fn args() -> Result<Args> {
         jobs: MAX_JOBS,
         obid: std::env::var_os("OBID_SPEC_OBID").map(PathBuf::from),
         keep: false,
+        gate: false,
     };
     while let Some(flag) = list.next() {
         let mut value = || list.next().with_context(|| format!("{flag} needs a value"));
@@ -76,6 +78,7 @@ fn args() -> Result<Args> {
             "--jobs" => a.jobs = value()?.parse::<usize>()?.clamp(1, MAX_JOBS),
             "--obid" => a.obid = Some(value()?.into()),
             "--keep" => a.keep = true,
+            "--gate" => a.gate = true,
             other => bail!("what's {other}?"),
         }
     }
@@ -120,12 +123,18 @@ async fn run_main() -> Result<i32> {
         "coverage" => {
             let workflows = workflow::load_all(&workflows_dir(), &names)?;
             let report = coverage::report(&root(), &scope()?, &workflows, a.only.as_deref())?;
-            coverage::print(&report);
-            Ok(if report.ok() { 0 } else { 1 })
+            if a.gate {
+                // The check's gate (OBIDSPEC-11): only what must hold now is listed and judged.
+                coverage::print_gate(&report);
+                Ok(if report.gate_ok() { 0 } else { 1 })
+            } else {
+                coverage::print(&report);
+                Ok(if report.ok() { 0 } else { 1 })
+            }
         }
         "run" => run(a).await,
         _ => {
-            println!("obid-spec run [--only <area>] [--workflow <text>] [--jobs <n>] [--obid <path>] [--keep]\nobid-spec coverage [--only <area>]\nobid-spec list\nobid-spec nodes");
+            println!("obid-spec run [--only <area>] [--workflow <text>] [--jobs <n>] [--obid <path>] [--keep]\nobid-spec coverage [--only <area>] [--gate]\nobid-spec list\nobid-spec nodes");
             Ok(if a.command == "help" { 0 } else { 2 })
         }
     }

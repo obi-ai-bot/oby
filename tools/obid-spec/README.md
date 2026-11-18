@@ -20,6 +20,11 @@ tools/obid-spec/target/debug/obid-spec coverage
   named; `--keep` keeps them all.
 - `obid-spec coverage [--only <area>]` prints, per area, routes with a workflow, triggers with a
   workflow and obid's scenarios with an assertion, and exits 1 when anything is missing.
+  `--gate` is the check's: it fails only on a route or trigger without a workflow, an unclassified
+  scenario or an unknown one, and reports the scenarios still waiting for an assertion as the
+  backlog (OBIDSPEC-11).
+- The check runs both (docs/contracts/ci.md, CI-66 and 67): the Mac's `scripts/oby-check.sh` for a
+  change to a route or to this suite, GitHub's `obid-spec` job in the merge queue and nightly.
 - `obid-spec list`, `obid-spec nodes`.
 
 ## How it runs

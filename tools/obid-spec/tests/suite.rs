@@ -103,6 +103,60 @@ fn obidspec_3_coverage_fails_on_a_route_a_trigger_or_a_scenario_left_out() {
     assert!(r.ok());
 }
 
+/// The check's gate judges what must hold now and only reports the scenarios still waiting for an
+/// assertion (OBIDSPEC-11).
+#[test]
+fn obidspec_11_the_gate_fails_on_what_must_hold_and_reports_the_backlog() {
+    let dir = tempfile::tempdir().unwrap();
+    scratch_repo(
+        dir.path(),
+        "- **X-1** one\n- **X-2** two\n- **X-3** three\n",
+    );
+    let full = vec![
+        wf("GET /v1/a", Some("GET /v1/a"), &["X-1"]),
+        wf("POST /v1/a", Some("POST /v1/a"), &[]),
+        wf("GET /v1/b/{id}", Some("GET /v1/b/{id}"), &[]),
+        wf("feed", None, &[]),
+    ];
+    // Two scenarios of obid's with no assertion: not ok, but the gate holds, and they're the backlog.
+    let r = coverage::report(dir.path(), &scope(&["X-1", "X-2", "X-3"], &[]), &full, None).unwrap();
+    assert!(!r.ok());
+    assert!(r.gate_ok(), "{r:?}");
+    assert_eq!(coverage::backlog(&r), 2);
+    // A route without a workflow fails the gate.
+    let r = coverage::report(
+        dir.path(),
+        &scope(&["X-1"], &["X-2", "X-3"]),
+        &full[1..],
+        None,
+    )
+    .unwrap();
+    assert!(!r.gate_ok());
+    // So does a trigger without one.
+    let r = coverage::report(
+        dir.path(),
+        &scope(&["X-1"], &["X-2", "X-3"]),
+        &full[..3],
+        None,
+    )
+    .unwrap();
+    assert!(!r.gate_ok());
+    // And a scenario left unclassified.
+    let r = coverage::report(dir.path(), &scope(&["X-1"], &["X-2"]), &full, None).unwrap();
+    assert!(!r.gate_ok());
+    // And a step naming a scenario no contract lists.
+    let mut unknown = full.clone();
+    unknown.push(wf("other", None, &["X-9"]));
+    let r = coverage::report(
+        dir.path(),
+        &scope(&["X-1"], &["X-2", "X-3"]),
+        &unknown,
+        None,
+    )
+    .unwrap();
+    assert!(!r.gate_ok());
+}
+
 #[test]
 fn obidspec_4_nothing_in_scope_goes_unread_silently() {
     let dir = tempfile::tempdir().unwrap();
