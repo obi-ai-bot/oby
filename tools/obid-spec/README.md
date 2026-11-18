@@ -34,7 +34,7 @@ stand-in agents and fake `gh` (`core/crates/obid/tests/agents`), `node`, `gitlea
 folders, its Keychain is the stand-in `security`, and every process is stopped by PID at the
 workflow's end, whatever it ended in.
 
-The local Sphere is obi-sphere's own server at the commit [e2e/rig-sphere.ref](../../e2e/rig-sphere.ref)
+The local Sphere is obi-sphere's own server at the commit [e2e/sphere.ref](../../e2e/sphere.ref)
 pins, as e2e/rig.mjs runs it: one per run, each workflow making its own Obysphere on it. The first
 run clones it into `~/Library/Caches/obid-spec/` and installs its packages with `pnpm`;
 `OBID_SPEC_SPHERE_CLONE` names a clone of your own. A lying Sphere (`sphere-liar`) can stand in

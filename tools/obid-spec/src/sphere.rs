@@ -1,5 +1,5 @@
 //! The local Sphere stand-in, as e2e/rig.mjs runs it: obi-sphere's own server at the commit
-//! `e2e/rig-sphere.ref` pins, on this Mac, from a clone of the suite's own. One per run, shared by
+//! `e2e/sphere.ref` pins, on this Mac, from a clone of the suite's own. One per run, shared by
 //! every workflow, each of which makes its own Obysphere on it (its own id, admin, policy and
 //! links), so no two workflows ever see each other's members.
 //!
@@ -105,7 +105,9 @@ pub struct Served {
 /// Starts obi-sphere's `scripts/local.mjs` on a free port, its state under `state`, and waits for
 /// its health (120 s: wrangler's first start is slow).
 pub async fn serve(root: &Path, state: &Path) -> Result<Served> {
-    let pin = std::fs::read_to_string(root.join("e2e/rig-sphere.ref"))?
+    // e2e/sphere.ref, the one pin since RIG-35 (e2e/rig-sphere.ref before it).
+    let pin = std::fs::read_to_string(root.join("e2e/sphere.ref"))
+        .or_else(|_| std::fs::read_to_string(root.join("e2e/rig-sphere.ref")))?
         .trim()
         .to_string();
     let clone = clone_at(&pin)?;

@@ -18,7 +18,7 @@ The business behavior contract for `tools/obid-spec`, from [the template](../bus
 
 ### Triggers and prerequisites
 
-- `obid-spec run [--only <area>] [--workflow <text>] [--jobs <n>] [--obid <path>] [--keep]`, from anywhere in the checkout. `cargo`, `git`, `node`, `pnpm` and `gitleaks` on `PATH`; the first run clones obi-sphere at the commit `e2e/rig-sphere.ref` pins into `~/Library/Caches/obid-spec/` and installs its packages (`OBID_SPEC_SPHERE_CLONE` names another clone).
+- `obid-spec run [--only <area>] [--workflow <text>] [--jobs <n>] [--obid <path>] [--keep]`, from anywhere in the checkout. `cargo`, `git`, `node`, `pnpm` and `gitleaks` on `PATH`; the first run clones obi-sphere at the commit `e2e/sphere.ref` pins into `~/Library/Caches/obid-spec/` and installs its packages (`OBID_SPEC_SPHERE_CLONE` names another clone).
 - `obid-spec coverage [--only <area>]`, `obid-spec list`, `obid-spec nodes`.
 
 ### States and transitions
@@ -46,7 +46,7 @@ The business behavior contract for `tools/obid-spec`, from [the template](../bus
 ## Interfaces and dependencies
 
 - obid's HTTP API (`docs/api/`), its route list `docs/api/routes.txt`, and the contracts under `docs/contracts/`.
-- The local Sphere: obi-sphere's `server/scripts/local.mjs` at `e2e/rig-sphere.ref` (Dmytro's server, read only).
+- The local Sphere: obi-sphere's `server/scripts/local.mjs` at `e2e/sphere.ref` (Dmytro's server, read only).
 - `blok-rs` at the revision oby-check-blok pins, for the node registry and its gRPC service.
 
 ## Acceptance scenarios

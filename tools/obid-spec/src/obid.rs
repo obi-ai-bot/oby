@@ -239,6 +239,14 @@ pub async fn start(run: &Run, input: StartInput) -> Result<Value> {
     if let Some(over) = &input.config {
         merge(&mut config, over);
     }
+    // A tool given by a bare name is looked for where the person's real CLIs live: refused.
+    for (tool, agent) in config["agents"].as_object().into_iter().flatten() {
+        let bin = agent["bin"].as_str().unwrap_or_default();
+        anyhow::ensure!(
+            Path::new(bin).is_absolute(),
+            "agents.{tool}.bin is {bin:?}: a scratch obid takes a stand-in by absolute path only"
+        );
+    }
     let config_path = folder.join("config.json");
     private_file(&config_path, &serde_json::to_string_pretty(&config)?)?;
     for (base, files) in [(&home, &input.files), (&person, &input.person)] {
