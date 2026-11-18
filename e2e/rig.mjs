@@ -35,6 +35,7 @@ import { buildFixture } from "./lib/fixture.mjs";
 import { requireNodeVersion } from "./lib/node-version.mjs";
 import { stopGroups } from "./lib/processes.mjs";
 import { aLink, rigRefusal } from "./lib/rig-guard.mjs";
+import { loadSphereSpec } from "./lib/sphere-spec.mjs";
 import { confirmOf, review as reviewOf, reviewBody, RULES, wordsOf } from "./lib/rig-review.mjs";
 import { family, newExchange, orphans, ours, record, stillUp, table } from "./lib/rig-state.mjs";
 
@@ -354,7 +355,7 @@ async function start(flags) {
     save(state);
   } else if (!(await free(state.spherePort))) fail(`Port ${state.spherePort}, the Sphere's, is taken by something else, and both Obys' memberships name it. node e2e/rig.mjs reset picks another.`);
 
-  const spec = await import(join(ROOT, "apps/electron/src/shared/sphere.ts"));
+  const spec = await sphereSpec();
   if (!existsSync(join(RIG, "fixture/remote.git"))) buildFixture(join(RIG, "fixture"));
   state.sphereCommit = cloneSphere();
   save(state);
@@ -503,11 +504,23 @@ async function job(words) {
   say(`Dana's job: ${made.id}`);
 }
 
+// apps/electron, its packages installed (npm ci) when they aren't
+function appModules() {
+  const dir = join(ROOT, "apps/electron");
+  if (!existsSync(join(dir, "node_modules"))) execFileSync("npm", ["ci"], { cwd: dir, stdio: "inherit", env: plain() });
+  return dir;
+}
+
+// The app's shared/sphere.ts, through its jiti (e2e/lib/sphere-spec.mjs, RIG-26)
+async function sphereSpec() {
+  try { return await loadSphereSpec(appModules()); } catch (e) { fail(e.message); }
+}
+
 async function policy(word) {
   if (!["on", "off"].includes(word)) fail("node e2e/rig.mjs policy on|off");
   const state = load();
   if (!alive(state, "sphere")) fail("The Sphere isn't up: node e2e/rig.mjs start");
-  const spec = await import(join(ROOT, "apps/electron/src/shared/sphere.ts"));
+  const spec = await sphereSpec();
   const now = await setPolicy(state, spec, word === "on" ? RULES : []);
   say(`The Sphere's policy, version ${now.version}: ${now.rules?.length ?? 0} rule(s)`);
 }
@@ -531,8 +544,7 @@ async function app() {
   const state = load();
   if (!alive(state, "you")) fail("You aren't up: node e2e/rig.mjs start");
   if (alive(state, "app")) return say(`The dev app is up already, pid ${state.running.app.pid}.`);
-  const dir = join(ROOT, "apps/electron");
-  if (!existsSync(join(dir, "node_modules"))) execFileSync("npm", ["ci"], { cwd: dir, stdio: "inherit", env: plain() });
+  const dir = appModules();
   execFileSync("npm", ["run", "build"], { cwd: dir, stdio: "inherit", env: plain() });
   const data = join(dirOf("you"), "electron-data");
   mkdirSync(data, { recursive: true, mode: 0o700 });
