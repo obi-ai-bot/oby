@@ -104,6 +104,7 @@ POST /v1/obid/sphere/join
 POST /v1/obid/sphere/key
 GET /v1/obid/sphere/members
 PUT /v1/obid/sphere/membership
+PUT /v1/obid/sphere/owner
 GET /v1/obid/sphere/peers/{owner}
 POST /v1/obid/sphere/peers/{owner}/ask
 GET /v1/obid/sphere/pins
