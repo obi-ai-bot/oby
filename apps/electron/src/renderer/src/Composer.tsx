@@ -7,7 +7,8 @@ import { agentOf, type Attachments } from './view';
 import MessageEditor, { type EditorHandle, type MentionKey } from './MessageEditor';
 import { mentioned } from './textTokens';
 import StatusDot from './StatusDot';
-import { useClicksEverywhere } from './Menu';
+import { MENU_GAP, useClicksEverywhere } from './Menu';
+import { MENU_WIDTH } from './talk';
 import { useTasks, type Task } from './tasks';
 import { BrandMark } from './brands';
 import { barOf, fullness, useAccounts, weekWords } from './SettingsView';
@@ -415,7 +416,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
         // left with nothing typed (focus gone outside the box), it goes back to one row
         onBlur={(e) => { if (!field.current?.contains(e.relatedTarget as Node) && !box.current?.text().trim()) setStacked(false); }}
       >
-        {view === 'usage' && <UsagePanel onClose={closePanel} onBlur={onPanelBlur} />}
+        {view === 'usage' && <UsagePanel anchor={gauge} onClose={closePanel} onBlur={onPanelBlur} />}
         {view && view !== 'usage' && (
           <AddPanel
             opening={opening}
@@ -461,7 +462,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
             none yet, so the list says what's missing (COMPOSER-16) */}
         {slashShown && !matches.length && (
           <div className="add-panel slash-panel" role="dialog" aria-label="Commands">
-            <p className="add-empty">{noCommands(agentOf(chipsOf(draft).agent ?? accountAgent ?? 'claude').name)}</p>
+            <p className="add-empty">{noCommands(agentOf(accountAgent ?? 'claude').name)}</p>
           </div>
         )}
         {/* no talking (v1): send before the usage gauge, which keeps the end */}
@@ -770,8 +771,21 @@ function UsageGauge({ ref, open, onClick }: { ref: React.Ref<HTMLButtonElement>;
 // (an account with no session figure: the bar is what it has, as in Settings › Agents); a gear at the top right goes to
 // Settings › Agents, and takes the focus on opening. Esc, a click outside or Tab out of it
 // closes it.
-export function UsagePanel({ onClose, onBlur }: { onClose: () => void; onBlur: (e: React.FocusEvent) => void }) {
+export function UsagePanel({ anchor, onClose, onBlur }: { anchor?: React.RefObject<HTMLButtonElement | null>; onClose: () => void; onBlur: (e: React.FocusEvent) => void }) {
   const [accounts] = useAccounts();
+  // as wide as the account menu, its right edge on the gauge's and MENU_GAP over it, as that menu
+  // sits on its pill (COMPOSER-18); placed in the box (.composer-field), which holds it
+  const panel = useRef<HTMLDivElement>(null);
+  const [place, setPlace] = useState<React.CSSProperties>({ width: MENU_WIDTH });
+  useLayoutEffect(() => {
+    const field = panel.current?.closest('.composer-field'), button = anchor?.current?.getBoundingClientRect(), box = field?.getBoundingClientRect();
+    // inside the Mac window, its 420px least too, as the account menu keeps (TalkPill)
+    const width = Math.min(MENU_WIDTH, innerWidth - 24);
+    if (!field || !button || !box) return setPlace({ width });
+    // right and bottom are from inside the box's border
+    const edge = getComputedStyle(field), [right, bottom] = [parseFloat(edge.borderRightWidth) || 0, parseFloat(edge.borderBottomWidth) || 0];
+    setPlace({ width, right: box.right - right - button.right, bottom: box.bottom - bottom - button.top + MENU_GAP });
+  }, [anchor]);
   const close = useRef(onClose);
   close.current = onClose;
   useEffect(lookAtUsage, []);
@@ -781,7 +795,7 @@ export function UsagePanel({ onClose, onBlur }: { onClose: () => void; onBlur: (
     return () => removeEventListener('keydown', onKey, true);
   }, []);
   return (
-    <div className="add-panel usage-panel" role="dialog" aria-label="Usage" onBlur={onBlur}>
+    <div ref={panel} className="add-panel usage-panel" role="dialog" aria-label="Usage" style={place} onBlur={onBlur}>
       <div className="usage-head">
         <span>Usage</span>
         <button type="button" autoFocus className="icon-button" aria-label="Manage accounts" title="Manage accounts" onClick={() => { onClose(); dispatchEvent(new CustomEvent('oby:open-setting', { detail: everything ? 'accounts' : 'agents' })); }}>
