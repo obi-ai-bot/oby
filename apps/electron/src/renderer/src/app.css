@@ -2333,6 +2333,17 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .wl-two .setup-field { margin-top: 8px; }
 .connector-address .setup-field { height: 44px; padding: 0 14px; font-size: var(--text-base); }
 .connector-address .wl-sub { display: block; margin-top: 6px; white-space: normal; }
+/* an Obysphere's invite link pasted in the app (JoinLink.tsx): the field and its Join on one line,
+   what's true under it; on first run as wide as the step's rows, a beat under its words */
+.join-link { width: 100%; text-align: left; }
+.join-link-line { display: flex; gap: 8px; align-items: center; }
+.join-link-line .setup-field { flex: 1; min-width: 0; }
+.join-link-line .set-button { flex: none; height: 36px; min-width: 72px; justify-content: center; }
+.join-link-under { display: block; margin-top: 6px; white-space: normal; overflow-wrap: anywhere; }
+.join-link-under strong { color: var(--ink); font-weight: 500; }
+.onb-join { width: min(436px, 100%); margin-top: 16px; }
+.join-link.is-onb .wl-sub { font-size: var(--text-md); }
+.set-row .join-link { flex: 1; min-width: 0; }
 .spinner { display: block; animation: spin 800ms linear infinite; }
 @keyframes spin { to { transform: rotate(1turn); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }

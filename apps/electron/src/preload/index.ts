@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { WITHIN_MS, owners } from '../shared/words';
 import type { PolicyAnswer } from '../shared/sphere';
+import type { HandoffAsk } from '../shared/handoff';
+import type { Joined } from '../shared/invite';
 import type { LoadWhat } from '../shared/decode';
 import { following, type LiveMessage, type LiveSnapshot } from '../shared/live-wire';
 
@@ -146,6 +148,11 @@ contextBridge.exposeInMainWorld('app', {
   openWorktree: (job: string, where: 'terminal' | 'editor') => ipcRenderer.invoke('open-worktree', job, where) as Promise<boolean>,
   editorName: () => ipcRenderer.invoke('worktree-editor') as Promise<string | null>,
   sphereLeave: () => ipcRenderer.invoke('sphere-leave') as Promise<string | null>,
+  // an invite link pasted in the app (first run, Settings › Obysphere), joined through main's one
+  // join path, its own dialog included, only right after the owner's click (SPHEREAPP-3, 4)
+  sphereJoin: (link: string) => ipcRenderer.invoke('sphere-join', link) as Promise<Joined>,
+  // a task handed to a member's Oby, right after the owner's click (SPHEREAPP-6): null once sent, else why not
+  sphereHandoff: (ask: HandoffAsk) => ipcRenderer.invoke('sphere-handoff', ask) as Promise<string | null>,
   // the Obysphere's rules (main/sphere.ts, docs/contracts/sphere-policy.md): read, and the members
   // rule added, right after the owner's click. The page sends only the version it read; main decides
   // what it signs. null: refused

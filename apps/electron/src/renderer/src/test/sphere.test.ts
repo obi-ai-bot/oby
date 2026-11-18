@@ -6,6 +6,7 @@ import {
   ACCEPTS, NotThisKey, SCOPES, addStarterRule, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, readPolicy,
   starterRule, writePolicy, type Answer, type Call, type PolicyAnswer, type Rule,
 } from '../../../shared/sphere';
+import { withStarterRule } from '../../../shared/policy';
 import { canAddProgress, canChangeRepos, canOpenRoom, confirmIsOff, repoTicks, tickRepo, whatItTells, type SharingRule } from '../sharing';
 
 // docs/contracts/obysphere.md: each test is named after its scenario. SPHERE-5 (two real obids on
@@ -238,7 +239,7 @@ const THIRD: Rule = { id: 'ernesto-asks', from_owner: 'ernesto', to_owner: 'dmyt
 
 describe('the Obysphere\'s rules', () => {
   it('policy_1_the_starter_rule_lets_members_ask', async () => {
-    expect(starterRule()).toEqual({ id: 'members-ask', from_owner: '*', to_owner: '*', actions: ['question', 'review_request'], repos: ['*'] });
+    expect(starterRule()).toEqual({ id: 'members-ask', from_owner: '*', to_owner: '*', actions: ['question', 'review_request', 'handoff'], repos: ['*'] });
     expect(starterRule()).not.toBe(starterRule());
     // a new Sphere's policy, [] at version 0: one PUT, and version 1
     const fresh = fakeSphere();
@@ -388,7 +389,19 @@ describe('obysphere in the side panel', () => {
     // its id when the link's name isn't kept; nothing when obid isn't in one
     expect(spheres.liveSphere(joined, [], {})!.name).toBe('demo');
     expect(spheres.liveSphere({ state: 'none', url: null, sphere: null }, [], {})).toBeNull();
-    expect(spheres.liveSphere({ ...joined, state: 'revoked' }, [], {})).toBeNull();
+  });
+
+  it('sphereapp_5_a_revoked_obysphere_stays_and_says_its_admin_took_this_oby_out', () => {
+    const revoked = { state: 'revoked', url: 'https://sphere.example.com', sphere: 'demo', owner: 'wellington' };
+    // not gone: its tile stays, with no members, and its line says why
+    const s = spheres.liveSphere(revoked, [{ owner: 'dmytro' }], { demo: 'Demo team' })!;
+    expect(s).toMatchObject({ id: 'live:demo', name: 'Demo team', live: true, revoked: true, members: [] });
+    expect(s.why).toBeUndefined();
+    expect(spheres.revokedLine(s)).toBe('Demo team’s admin took your Oby out.');
+    // obid's reason, once it gives one (add-only): one line of text, quoted, nothing that steers the text
+    const said = spheres.liveSphere({ ...revoked, revokedReason: 'left the team\n\u202Eevil' }, [], {})!;
+    expect(spheres.revokedLine(said)).toBe('demo’s admin took your Oby out. They said: “left the team evil”');
+    expect(spheres.liveSphere({ ...revoked, revokedReason: '' }, [], {})!.why).toBeUndefined();
   });
 
   it('sphere_7_a_live_obysphere_s_members_open_no_made_up_conversation', () => {
@@ -459,5 +472,55 @@ describe('what your Oby tells (docs/contracts/peer-thread.md)', () => {
     expect(whatItTells(rule, ['dana']).about).not.toContain('room');
     expect(whatItTells({ ...own, for: ['dana'] }, ['dana', 'ernesto']).about).not.toContain('room');
     expect(whatItTells({ ...own, for: ['dana', 'ernesto'] }, ['dana', 'ernesto']).about).toContain('in the room');
+  });
+});
+
+// docs/contracts/sphere-app.md: the app's side of the Obysphere for launch, each test named after its scenario
+describe('the app’s Obysphere (sphere-app.md)', () => {
+  it('sphereapp_1_the_members_rule_lets_members_hand_off_adding_only_what_is_missing', async () => {
+    expect(withStarterRule([])).toEqual([starterRule()]);
+    // a members rule from before handoffs: it gains handoff alone, kept where it is with all else in it
+    const before: Rule = { id: 'members-ask', from_owner: '*', to_owner: '*', actions: ['review_request', 'question'], repos: ['acme/app'] };
+    const old = fakeSphere({ version: 5, rules: [structuredClone(OTHER), structuredClone(before), structuredClone(THIRD)] });
+    const r = await addStarterRule(fakeObid('wellington', 'joined').call, () => key, 5, old.http);
+    const widened = { ...before, actions: ['review_request', 'question', 'handoff'] };
+    expect(JSON.parse(String(old.puts()[0].init.body))).toEqual({ expected_version: 5, rules: [OTHER, widened, THIRD] });
+    expect(r).toMatchObject({ refused: null, policy: { version: 6, rules: [OTHER, widened, THIRD] } });
+    // once it has them all: nothing written
+    const done = fakeSphere({ version: 6, rules: [OTHER, widened] });
+    expect(await addStarterRule(fakeObid('wellington', 'joined').call, () => key, 6, done.http)).toMatchObject({ refused: null, policy: { version: 6 } });
+    expect(done.puts()).toEqual([]);
+  });
+
+  it('sphereapp_2_a_membership_from_before_handoffs_renews_its_card_and_delegation_once', async () => {
+    const at = Date.parse('2026-10-30T12:00:00Z');
+    let m: Record<string, unknown> = {
+      state: 'joined', owner: 'wellington', url: 'https://sphere.example.com', sphere: 'demo', obiId: 'obi-x', sealing: 'on',
+      accepts: ['review_request', 'question', 'run_request'],
+      card: { name: 'Wellington’s Oby', capabilities: { extensions: [{ params: { owner_key: publicOf(key) } }] } },
+      delegation: { scope: 'send:review_request send:question send:run_request reply receive directory:read audit:read', expiresAt: '2026-11-25T12:00:00Z' },
+    };
+    const calls: { method: string; path: string; body?: Record<string, unknown> }[] = [];
+    const call: Call = async (method, p, body) => {
+      const b = body as Record<string, unknown>;
+      calls.push({ method, path: p, body: b });
+      if (p === '/v1/obid/sphere/card') return { status: 200, text: JSON.stringify({ card: { name: b.name, accepts: b.accepts } }) };
+      if (method === 'PUT') {
+        // obid keeps what was signed: the card's accepts and the delegation's scope
+        const claims = b.delegation ? part((b.delegation as string).split('.')[1]) : null;
+        m = { ...m, accepts: (b.card as { accepts?: string[] } | undefined)?.accepts ?? m.accepts, delegation: claims ? { scope: claims.scope, expiresAt: '2026-11-29T12:00:00Z' } : m.delegation };
+      }
+      return { status: 200, text: JSON.stringify(method === 'GET' ? m : {}) };
+    };
+    expect(await keepMembership(call, () => key, at)).toEqual(['card', 'delegation']);
+    // what it had, kept first (run_request too), and what this app's card takes added
+    expect(calls[1].body).toMatchObject({ accepts: ['review_request', 'question', 'run_request', 'handoff'], ownerKey: publicOf(key) });
+    const claims = part((calls[2].body!.delegation as string).split('.')[1]);
+    expect(String(claims.scope).split(' ')).toEqual(expect.arrayContaining(['send:handoff', 'send:run_request', ...SCOPES.split(' ')]));
+    expect(claims).toMatchObject({ sub: 'wellington', may_act: { sub: 'obi-x' } });
+    // the next keep: nothing signed
+    calls.length = 0;
+    expect(await keepMembership(call, () => key, at)).toEqual([]);
+    expect(calls.map((c) => c.method)).toEqual(['GET']);
   });
 });

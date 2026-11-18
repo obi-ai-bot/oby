@@ -19,6 +19,9 @@ export type Sphere = {
   // live: the one obid is in (docs/contracts/obysphere.md), at its own address; me: who your Oby
   // acts for there (obid's owner id); obi: your Oby's id there
   live?: true; url?: string; me?: string; obi?: string;
+  // the live one's admin took this Oby out (obid's membership `revoked`): it stays, saying so, until
+  // the owner leaves it or joins again (SPHEREAPP-5); why: the Sphere's reason, when obid gives one
+  revoked?: true; why?: string;
 };
 // you (until there's sign-in)
 export const ME = { name: 'Doti', email: 'doti@deskree.com' };
@@ -88,12 +91,24 @@ export const invite = (id: string, emails: string[]) =>
 // as any other, by the name its invite link gave (kept here: obid knows only its id), its members
 // the other Obys' owners. Not its admin: its admin made it on the Obysphere's own server.
 const LIVE = 'live:';
+// The room is hidden for launch (the launch plan's cut list; SPHEREAPP-8): no Obysphere anyone can
+// reach has one yet. Never looked for, it never opens: its tile click, Settings' "Also post in the
+// room" and its posts all wait on obid saying it's there (room.ts). Back once obi-sphere deploys it.
+export const ROOM_SHOWS = false;
 const NAMES = 'oby.sphereNames';
-type Membership = { state: string; url: string | null; sphere: string | null; owner?: string; obiId?: string };
+// revokedReason: added by obid with its revoked state (add-only; absent until then)
+type Membership = { state: string; url: string | null; sphere: string | null; owner?: string; obiId?: string; revokedReason?: string | null };
+// one line of the Sphere's words, at most 300 characters, as text: no control or direction characters
+// eslint-disable-next-line no-control-regex
+const oneLine = (v: unknown) => (typeof v === 'string' ? [...v.replace(/[\u0000-\u001F\u007F\u202A-\u202E\u2066-\u2069]+/g, ' ').trim()].slice(0, 300).join('') : '');
 export function liveSphere(m: Membership, members: { owner: string }[], names: Record<string, string>): Sphere | null {
-  if (m.state !== 'joined' || !m.sphere || !m.url) return null;
-  return { id: LIVE + m.sphere, name: names[m.sphere] ?? m.sphere, slug: m.sphere, admin: false, members: [...new Set(members.map((x) => x.owner))], invited: [], live: true, url: m.url, me: m.owner, obi: m.obiId };
+  if ((m.state !== 'joined' && m.state !== 'revoked') || !m.sphere || !m.url) return null;
+  const base = { id: LIVE + m.sphere, name: names[m.sphere] ?? m.sphere, slug: m.sphere, admin: false, invited: [], live: true as const, url: m.url, me: m.owner, obi: m.obiId };
+  if (m.state === 'revoked') return { ...base, members: [], revoked: true, ...(oneLine(m.revokedReason) ? { why: oneLine(m.revokedReason) } : {}) };
+  return { ...base, members: [...new Set(members.map((x) => x.owner))] };
 }
+// What a revoked Obysphere says, where its members were (SPHEREAPP-5)
+export const revokedLine = (s: Sphere) => `${s.name}’s admin took your Oby out.${s.why ? ` They said: “${s.why}”` : ''}`;
 // a step that goes when its Obysphere does: a member's thread with the live one
 export const outOfSphere = (l: { kind: string; id?: string }, all: Sphere[]) =>
   ((l.kind === 'sphere' || l.kind === 'knowledge' || l.kind === 'room') && !all.some((s) => s.id === l.id)) || (l.kind === 'member' && !all.some((s) => s.live));
@@ -107,7 +122,7 @@ async function loadLive() {
   const live = liveSphere(membership, r?.status === 200 ? JSON.parse(r.text) : [], names());
   set([...spheres.filter((s) => !s.live), ...(live ? [live] : [])]);
   // whether it has a room, and what came since: with this minute's look at the directory, below
-  if (live) void lookAtRoom(live.slug); else { forgetRoom(); forgetThreads(); }
+  if (live && !live.revoked) { if (ROOM_SHOWS) void lookAtRoom(live.slug); } else { forgetRoom(); forgetThreads(); }
 }
 if (onObid && window.app?.onSphere) {
   window.app.onSphere(({ sphere, name }) => {
