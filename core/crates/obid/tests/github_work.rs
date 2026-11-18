@@ -1992,6 +1992,11 @@ fn autofix_18_a_conflicting_pull_request_it_pushed_onto_gets_main_merged_in() {
         publish["detail"], "Secret scan clean · pushed onto pull request #5",
         "AUTOFIX-20: {publish}"
     );
+    // Its fake agent keeps every prompt it gets from now on: the round's words are taken as it
+    // starts, so they're read from what it got.
+    let worktree = PathBuf::from(job["worktree"].as_str().unwrap());
+    std::fs::create_dir_all(worktree.join(".obi")).unwrap();
+    std::fs::write(worktree.join(".obi/keep-prompts"), "").unwrap();
     let head = git_in(&remote, &["rev-parse", "fix-login"]);
     pull_request_5(&gh, &head, ("CONFLICTING", "DIRTY"), json!([]));
     said_onto(
@@ -2003,10 +2008,10 @@ fn autofix_18_a_conflicting_pull_request_it_pushed_onto_gets_main_merged_in() {
         let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
         (job["round"] == 2).then_some(())
     });
-    let heard = kept_job(&folder, &id)["heard"].to_string();
-    assert!(heard.contains("run `git merge origin/main`"), "{heard}");
-    assert!(heard.contains("Never rebase"), "{heard}");
     ended_within(&obid, &id, 120);
+    let prompts = std::fs::read_to_string(worktree.join(".obi/prompts.log")).unwrap_or_default();
+    assert!(prompts.contains("run `git merge origin/main`"), "{prompts}");
+    assert!(prompts.contains("Never rebase"), "{prompts}");
     // Still conflicting at the head it left: said once, and the card.
     let now = git_in(&remote, &["rev-parse", "fix-login"]);
     pull_request_5(&gh, &now, ("CONFLICTING", "DIRTY"), json!([]));
