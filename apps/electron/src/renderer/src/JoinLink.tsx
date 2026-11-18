@@ -13,7 +13,7 @@ import { ME } from './spheres';
 // obid has the route that changes it before a first join (PUT /v1/obid/sphere/owner, add-only):
 // asked once with an empty body, which changes nothing (422 where it's served, 404 where it isn't).
 // change: the owner's new id, kept by obid, or why not in words.
-const OWNER_ROUTE = '/v1/obid/sphere/owner';
+const OWNER_ROUTE = '/v1/obid/sphere/owner-id';
 export const OWNER_ID = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 export function useOwnerId() {
   const [owner, setOwner] = useState<string | null>(onObid ? null : ME.name.toLowerCase());
