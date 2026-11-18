@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { WITHIN_MS, owners } from '../shared/words';
-import type { AdminsAnswer, InvitesAnswer, PolicyAnswer } from '../shared/sphere';
+import type { AdminsAnswer, InvitesAnswer, PolicyAnswer, SigninStatus } from '../shared/sphere';
 import type { HandoffAsk } from '../shared/handoff';
 import type { Joined } from '../shared/invite';
 import type { LoadWhat } from '../shared/decode';
@@ -169,6 +169,9 @@ contextBridge.exposeInMainWorld('app', {
   // offers, and the sign-in itself, right after the owner's click (null once back in, else why not)
   sphereRebindOffer: (address: string) => ipcRenderer.invoke('sphere-rebind-offer', address) as Promise<{ sphere: string; host: string; providers: { id: string; name: string }[] | null } | null>,
   sphereRebind: (address: string, provider: string) => ipcRenderer.invoke('sphere-rebind', address, provider) as Promise<string | null>,
+  // Add sign-in (main/sphere.ts, SPHEREAPP-13): whether one is linked, and linking one right after the owner's click
+  sphereSigninStatus: () => ipcRenderer.invoke('sphere-signin-status') as Promise<SigninStatus | null>,
+  sphereAddSignin: (provider: string) => ipcRenderer.invoke('sphere-add-signin', provider) as Promise<string | null>,
   // obid, through main, which holds its token (main/obid.ts): one call; and what main's one follower
   // of obid's events holds (main/live.ts), then each message it sends, and what it reads for the page
   obid: {

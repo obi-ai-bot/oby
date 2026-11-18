@@ -6,7 +6,7 @@ import { obid, type Trusted } from './obid';
 import { ipc } from './ipc';
 import { takeInput } from './words';
 import { boolean, safeInteger, string, type Decoder } from '../shared/decode';
-import { NotThisKey, addStarterRule, join, joinWarning, keepMembership, leave, getBackIn, listInvitations, makeInvitation, parseInvite, readPolicy, rebindOffer, setAdmin, withdrawInvitation, type AdminsAnswer, type InvitesAnswer, type PolicyAnswer } from '../shared/sphere';
+import { NotThisKey, addStarterRule, join, joinWarning, keepMembership, leave, addSignin, getBackIn, listInvitations, makeInvitation, parseInvite, readPolicy, rebindOffer, setAdmin, signinStatus, withdrawInvitation, type AdminsAnswer, type InvitesAnswer, type PolicyAnswer } from '../shared/sphere';
 import { withStarterRule } from '../shared/policy';
 import { SCRATCH } from '../shared/build';
 import { HANDOFF_OPEN, handoffBody, type HandoffAsk } from '../shared/handoff';
@@ -235,6 +235,18 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
     void keep();
     if (!w.isDestroyed()) w.webContents.send('sphere', { sphere: where.sphere, name: where.sphere });
     return null;
+  }, 'Not this app’s page.');
+
+  // Add sign-in (SPHEREAPP-13): whether this owner linked one (no click: two reads), and linking the
+  // account they sign in with, right after a click main saw, so they can get back in by themselves
+  ipc(trusted).handle('sphere-signin-status', [], () => signinStatus(obid, ownerKey), null);
+  ipc(trusted).handle('sphere-add-signin', [string], async (_e, provider) => {
+    if (!takeInput()) return 'Adding sign-in takes your own click.';
+    const r = await addSignin(obid, ownerKey, fetch, provider, {
+      listen: signinListener,
+      open: async (url) => { if (/^https:\/\//.test(url)) await shell.openExternal(url); },
+    });
+    return 'why' in r ? r.why : null;
   }, 'Not this app’s page.');
 
   // Make admin, Remove admin (SPHEREAPP-11): with the owner's admin token, only right after a click

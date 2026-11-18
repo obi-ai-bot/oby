@@ -5,7 +5,9 @@ import { Row } from './SettingsView';
 // Remove admin (docs/contracts/sphere-app.md, SPHEREAPP-11): main changes it with the owner's own
 // token only right after the owner's click. The sole-admin notice says so, never blocks anything.
 
-export const soleAdminLine = (sphere: string) => `You’re the only admin of ${sphere}. Make someone else an admin so it never hangs on one Mac.`;
+// unsigned: this owner hasn't added a sign-in (SPHEREAPP-13), so the notice points there too
+export const soleAdminLine = (sphere: string, unsigned = false) =>
+  `You’re the only admin of ${sphere}. Make someone else an admin so it never hangs on one Mac.${unsigned ? ' Add sign-in too, so you can get back in yourself.' : ''}`;
 // this owner the only admin
 export const isSoleAdmin = (admins: string[] | undefined | null, me: string | undefined) => !!me && admins?.length === 1 && admins[0] === me;
 
@@ -30,4 +32,4 @@ export function useSphereAdmins(on: boolean) {
 }
 
 // The notice, as a row
-export const SoleAdmin = ({ sphere }: { sphere: string }) => <Row label={<span className="set-notice" role="note">{soleAdminLine(sphere)}</span>} />;
+export const SoleAdmin = ({ sphere, unsigned = false }: { sphere: string; unsigned?: boolean }) => <Row label={<span className="set-notice" role="note">{soleAdminLine(sphere, unsigned)}</span>} />;

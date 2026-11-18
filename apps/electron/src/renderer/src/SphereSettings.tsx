@@ -16,6 +16,7 @@ import { ME, SUFFIX, cancelInvite, deleteSphere, memberCount, removeMember, revo
 import { JoinLink, useJoinLink } from './JoinLink';
 import InviteTeammates from './InviteTeammates';
 import { SoleAdmin, isSoleAdmin, useSphereAdmins } from './SphereAdmins';
+import AddSignIn, { needsSignin, useSigninStatus } from './AddSignIn';
 
 export const sphereSettingsLabel = (id: string, spheres: Sphere[]) => `${spheres.find((s) => s.id === id)?.name ?? ''} settings`;
 
@@ -85,6 +86,7 @@ function Settings({ sphere }: { sphere: Sphere }) {
   const [confirming, setConfirming] = useState(false);
   // a live Obysphere's admins, as the Sphere says, with Make admin and Remove admin for its admins (SPHEREAPP-11)
   const live = useSphereAdmins(!!sphere.live && !sphere.revoked);
+  const signin = useSigninStatus(!!sphere.live && !sphere.revoked && isSoleAdmin(live.admins, live.me));
   const roleOf = (owner: string) => (live.admins?.includes(owner) ? 'Admin' : 'Member');
 
   return <>
@@ -132,7 +134,7 @@ function Settings({ sphere }: { sphere: Sphere }) {
     {/* who's in it: you first, then the others, then who's been invited; an
         admin can take someone out (Remove) or an invite back (Cancel invite) */}
     <Group i={2} title={`Members · ${memberCount(sphere)}`}>
-      {isSoleAdmin(live.admins, live.me) && <SoleAdmin sphere={sphere.name} />}
+      {isSoleAdmin(live.admins, live.me) && <SoleAdmin sphere={sphere.name} unsigned={needsSignin(signin.status)} />}
       <div className="set-row set-member">
         {/* a live Obysphere's: only what obid knows, your owner id (no name or address yet) */}
         <OwnerAvatar name={sphere.live ? sphere.me ?? 'You' : ME.name} size={28} badge={false} />
@@ -195,14 +197,17 @@ function Revoked({ sphere }: { sphere: Sphere }) {
 export function SphereJoinPage() {
   const live = useSpheres().find((s) => s.live);
   const link = useJoinLink();
+  // Add sign-in, so this owner can get back in by themselves (SPHEREAPP-13)
+  const signin = useSigninStatus(!!live && !live.revoked);
   if (live && !live.revoked) {
     return <>
       <Group i={1} footer="Its settings are under its ⋮ in the side panel.">
         <Row label="Your Obysphere"><Value>{live.name}</Value></Row>
         {live.me && <Row label="You’re in it as"><Value>{live.me}</Value></Row>}
       </Group>
+      <AddSignIn status={signin.status} onLinked={signin.linked} />
       {/* its admin's links for teammates, as obid says who's admin (SPHEREAPP-10) */}
-      {window.app?.sphereInvitations && <InviteTeammates />}
+      {window.app?.sphereInvitations && <InviteTeammates unsigned={needsSignin(signin.status)} />}
     </>;
   }
   return (

@@ -419,11 +419,28 @@ export type BackInDeps = {
 export type BackIn = { kind: 'back'; owner: string; admin: boolean } | { kind: 'failed'; why: string };
 const REBIND_WORDS: Record<number, string> = {
   404: 'This Obysphere has no owner by that id. Check its address and the owner id you’re getting back in as.',
-  403: 'That sign-in can’t get you back in. Use the account you joined with, or one from a domain this Obysphere allows.',
+  403: 'That sign-in can’t get you back in. Use the account this name added, or ask an admin to reset it.',
   409: 'That account is linked to someone else in this Obysphere, or this Mac already holds your key there.',
   429: 'Too many sign-ins at once right now. Try again in a minute.',
 };
 const isSecure = (u: string) => { try { const x = new URL(u); return x.protocol === 'https:' || (x.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(x.hostname)); } catch { return false; } };
+
+// A sign-in at the Sphere's provider for ownerKey, in the person's browser, back to main's listener:
+// its state and code, only for the state it started, or why not in words (sphere-api.md 3.1)
+async function signedIn(http: typeof fetch, url: string, provider: string, ownerKey: string,
+  listener: Awaited<ReturnType<BackInDeps['listen']>>, open: BackInDeps['open']): Promise<{ state: string; code: string } | { why: string }> {
+  const started = await http(`${url}/v0.1/signin/${encodeURIComponent(provider)}`, {
+    method: 'POST', redirect: 'error', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ owner_key: ownerKey, return_to: listener.returnTo }),
+  });
+  if (started.status === 429) return { why: REBIND_WORDS[429] };
+  const signin = started.ok ? ((await started.json()) as { url?: unknown; state?: unknown }) : {};
+  if (typeof signin.url !== 'string' || typeof signin.state !== 'string' || !isSecure(signin.url)) return { why: 'This Obysphere couldn’t start a sign-in. Try again later.' };
+  await open(signin.url);
+  const back = await listener.back;
+  if (back.error === 'timeout') return { why: 'The sign-in took too long. Try again.' };
+  if (back.state !== signin.state || back.error || !back.code) return { why: 'The sign-in didn’t finish. Try again.' };
+  return { state: back.state, code: back.code };
+}
 
 export async function getBackIn(call: Call, http: typeof fetch, where: { url: string; sphere: string }, provider: string, d: BackInDeps): Promise<BackIn> {
   const failed = (why: string): BackIn => ({ kind: 'failed', why });
@@ -435,16 +452,8 @@ export async function getBackIn(call: Call, http: typeof fetch, where: { url: st
     if (now.state === 'joined') return failed(ALREADY);
     const ownerKey = publicOf(d.newKey);
     listener = await d.listen();
-    const started = await http(`${where.url}/v0.1/signin/${encodeURIComponent(provider)}`, {
-      method: 'POST', redirect: 'error', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ owner_key: ownerKey, return_to: listener.returnTo }),
-    });
-    if (started.status === 429) return failed(REBIND_WORDS[429]);
-    const signin = started.ok ? ((await started.json()) as { url?: unknown; state?: unknown }) : {};
-    if (typeof signin.url !== 'string' || typeof signin.state !== 'string' || !isSecure(signin.url)) return failed('This Obysphere couldn’t start a sign-in. Try again later.');
-    await d.open(signin.url);
-    const back = await listener.back;
-    if (back.error === 'timeout') return failed('The sign-in took too long. Try again.');
-    if (back.state !== signin.state || back.error || !back.code) return failed('The sign-in didn’t finish. Try again.');
+    const back = await signedIn(http, where.url, provider, ownerKey, listener, d.open);
+    if ('why' in back) return failed(back.why);
     // this Oby's own key and card, signed by the new owner key; obid's membership, if revoked, goes first
     if (now.state === 'revoked') await must(call, 'DELETE', '/v1/obid/sphere');
     await must(call, 'POST', '/v1/obid/sphere/key');
@@ -453,10 +462,11 @@ export async function getBackIn(call: Call, http: typeof fetch, where: { url: st
     const card = signCard(made.card as Record<string, unknown>, d.newKey);
     const r = await http(`${where.url}/v0.1/spheres/${encodeURIComponent(where.sphere)}/owners/${encodeURIComponent(owner)}/rebind`, {
       method: 'POST', redirect: 'error', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ owner_key: ownerKey, signin: { state: back.state, code: back.code }, card }),
+      body: JSON.stringify({ owner_key: ownerKey, signin: back, card }),
     });
     if (!r.ok) {
       const code = await sphereCode(r);
+      if (code === NOT_LINKED_CODE) return failed(NOT_LINKED);
       if (code === 'card_invalid' || code === 'feature_not_taken') return failed('The Obysphere didn’t take this Oby’s card. Update Oby, then try again.');
       return failed(REBIND_WORDS[r.status] ?? `The Obysphere answered ${r.status}. Try again later.`);
     }
@@ -470,6 +480,55 @@ export async function getBackIn(call: Call, http: typeof fetch, where: { url: st
     return { kind: 'back', owner, admin: bound.admin === true };
   } catch (e) {
     return failed(e instanceof Refused ? plain(e.message, owner, where.sphere) : e instanceof Error ? e.message : String(e));
+  } finally {
+    listener?.close();
+  }
+}
+
+// Link first (the owner's decision): only an owner who added a sign-in, with that same account,
+// gets back in by themselves. An owner who never did hears so (the Sphere's code for it; assumed
+// until its route is fixed).
+const NOT_LINKED_CODE = 'account_not_linked';
+const NOT_LINKED = 'This name never added a sign-in. Ask an admin to reset it.';
+
+// Add sign-in (SPHEREAPP-13), for an owner who still has their key: a sign-in at the Sphere's provider
+// for the owner key this app holds, then the Sphere links that account to the owner, with the owner's
+// own token: PUT …/owners/{owner}/account {signin} (assumed until the Sphere's shape is fixed). The
+// account is the Sphere's to keep; the app never sees or shows an email.
+export type SigninStatus = { providers: SigninProvider[] | null; linked: boolean | null };
+export async function signinStatus(call: Call, ownerKey: () => KeyObject, http: typeof fetch = fetch): Promise<SigninStatus> {
+  try {
+    const m = await must(call, 'GET', '/v1/obid/sphere');
+    if (m.state !== 'joined') return { providers: null, linked: null };
+    const providers = await rebindOffer(http, String(m.url));
+    if (!providers) return { providers: null, linked: null };
+    const { token } = await ownerToken(http, m, ownerKey(), 'directory:read');
+    const r = await http(`${sphereAt(m)}/owners/${encodeURIComponent(String(m.owner))}`, { redirect: 'error', headers: { authorization: `Bearer ${token}` } });
+    const linked = r.ok ? ((await r.json()) as { account_linked?: unknown }).account_linked : undefined;
+    return { providers, linked: typeof linked === 'boolean' ? linked : null };
+  } catch { return { providers: null, linked: null }; }
+}
+
+export async function addSignin(call: Call, ownerKey: () => KeyObject, http: typeof fetch, provider: string,
+  d: Pick<BackInDeps, 'listen' | 'open'>): Promise<{ linked: true } | { why: string }> {
+  let listener: Awaited<ReturnType<BackInDeps['listen']>> | null = null;
+  try {
+    const m = await must(call, 'GET', '/v1/obid/sphere');
+    if (m.state !== 'joined') return { why: NOT_JOINED };
+    listener = await d.listen();
+    const back = await signedIn(http, String(m.url), provider, publicOf(ownerKey()), listener, d.open);
+    if ('why' in back) return back;
+    const { token } = await ownerToken(http, m, ownerKey(), 'directory:read');
+    const r = await http(`${sphereAt(m)}/owners/${encodeURIComponent(String(m.owner))}/account`, {
+      method: 'PUT', redirect: 'error', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ signin: back }),
+    });
+    if (r.ok) return { linked: true };
+    if (r.status === 409) return { why: 'That account already belongs to someone else in this Obysphere. Sign in with your own.' };
+    if (r.status === 403) return { why: 'That sign-in didn’t take. Use the account you want to get back in with, then try again.' };
+    if (r.status === 429) return { why: REBIND_WORDS[429] };
+    return { why: `The Obysphere answered ${r.status}. Try again later.` };
+  } catch (e) {
+    return { why: e instanceof Error ? e.message : String(e) };
   } finally {
     listener?.close();
   }

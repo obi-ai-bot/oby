@@ -20,7 +20,7 @@ export function standing(i: Invitation) {
 }
 const HANDOFFS = 'Members can ask, request reviews and hand off tasks.';
 
-export default function InviteTeammates() {
+export default function InviteTeammates({ unsigned = false }: { unsigned?: boolean }) {
   const [admin, setAdmin] = useState(false);
   const [sole, setSole] = useState(false);
   const name = useSpheres().find((s) => s.live)?.name;
@@ -65,7 +65,7 @@ export default function InviteTeammates() {
   return (
     <Group i={2} title="Invite teammates" footer={`Anyone with a link can join until it runs out.${handoffs ? ` ${HANDOFFS}` : ''}`}>
       {/* only this owner administers it (SPHEREAPP-11): said, never a block */}
-      {sole && <SoleAdmin sphere={name ?? 'this Obysphere'} />}
+      {sole && <SoleAdmin sphere={name ?? 'this Obysphere'} unsigned={unsigned} />}
       <Row label="New link" about={`For ${INVITE_USES} people, ${INVITE_DAYS} days`}>
         <button className="set-button set-member-action" disabled={busy} onClick={() => void make()}>{busy ? 'Making…' : 'Make a link'}</button>
       </Row>

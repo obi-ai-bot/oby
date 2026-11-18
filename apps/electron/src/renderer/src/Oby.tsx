@@ -57,6 +57,9 @@ declare global {
       // getting back in with a sign-in: what an address offers, and the sign-in (preload, main/sphere.ts, SPHEREAPP-12)
       sphereRebindOffer?(address: string): Promise<{ sphere: string; host: string; providers: { id: string; name: string }[] | null } | null>;
       sphereRebind?(address: string, provider: string): Promise<string | null>;
+      // Add sign-in: whether one is linked, and linking one (preload, main/sphere.ts, SPHEREAPP-13)
+      sphereSigninStatus?(): Promise<import('../../shared/sphere').SigninStatus | null>;
+      sphereAddSignin?(provider: string): Promise<string | null>;
       // obid, through main (preload, main/obid.ts); its events, from main's one follower (main/live.ts)
       obid: {
         call(method: string, path: string, body?: unknown): Promise<{ status: number; text: string }>;

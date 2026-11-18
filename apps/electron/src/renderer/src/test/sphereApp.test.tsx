@@ -448,3 +448,45 @@ describe('SPHEREAPP-12: Sign in to get back in, beside the invite link', () => {
     expect(host.querySelector('[role="alert"]')!.textContent).toContain('That sign-in can’t get you back in.');
   });
 });
+
+describe('SPHEREAPP-13: Add sign-in in Settings › Obysphere', () => {
+  const JOINED = { state: 'joined', url: 'https://sphere.example.com', sphere: 'demo', owner: 'wellington', obiId: 'obi-1' };
+  const sphereAddSignin = vi.fn();
+  async function page(status: unknown, admins = ['dana', 'wellington']) {
+    answers['GET /v1/obid/sphere'] = JOINED;
+    answers['GET /v1/obid/sphere/members'] = [{ owner: 'dana' }];
+    sphereAddSignin.mockReset();
+    Object.assign((window as unknown as { app: Record<string, unknown> }).app, {
+      onSphere: () => () => {}, sphereSigninStatus: vi.fn(async () => status), sphereAddSignin,
+      spherePolicy: vi.fn(async () => ({ sphere: 'demo', policy: { version: 1, updated_at: '', rules: [] }, admin: admins.includes('wellington'), refused: null, why: null, admins, me: 'wellington' })),
+      sphereInvitations: vi.fn(async () => ({ invitations: [], link: null, refused: null, why: null })),
+    });
+    const { SphereJoinPage } = await import('../SphereSettings');
+    await act(async () => root.render(<SphereJoinPage />));
+    await settle();
+  }
+
+  it('sphereapp_13_an_owner_without_sign_in_is_told_plainly_and_adds_it', async () => {
+    await page({ providers: [{ id: 'google', name: 'Google' }], linked: false });
+    expect(host.textContent).toContain('Add sign-in');
+    expect(host.textContent).toContain('Without it, you can’t get back in by yourself if you lose this Mac.');
+    sphereAddSignin.mockResolvedValueOnce(null);
+    await act(async () => button('Sign in with Google')!.click());
+    await settle();
+    expect(sphereAddSignin).toHaveBeenCalledWith('google');
+    expect(host.textContent).toContain('Signed in as you');
+    expect(host.textContent).not.toMatch(/@/);
+  });
+
+  it('sphereapp_13: linked reads Signed in as you; not offered, nothing; a sole admin is pointed at it', async () => {
+    await page({ providers: [{ id: 'google', name: 'Google' }], linked: true });
+    expect(host.textContent).toContain('Signed in as you');
+    expect(button('Sign in with Google')).toBeUndefined();
+    await act(async () => root.unmount()); root = createRoot(host); vi.resetModules();
+    await page({ providers: null, linked: null });
+    expect(host.textContent).not.toContain('Sign-in');
+    await act(async () => root.unmount()); root = createRoot(host); vi.resetModules();
+    await page({ providers: [{ id: 'google', name: 'Google' }], linked: false }, ['wellington']);
+    expect(host.textContent).toContain('You’re the only admin of demo. Make someone else an admin so it never hangs on one Mac. Add sign-in too, so you can get back in yourself.');
+  });
+});

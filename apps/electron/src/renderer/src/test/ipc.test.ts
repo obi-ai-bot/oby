@@ -96,6 +96,8 @@ vi.mock('../../../shared/sphere', async (original) => ({
   setAdmin: async () => { the.invites++; return { admins: ['dana', 'wellington'], refused: null, why: null }; },
   rebindOffer: async () => [{ id: 'google', name: 'Google' }],
   getBackIn: async () => { the.invites++; return { kind: 'back', owner: 'wellington', admin: false }; },
+  signinStatus: async () => ({ providers: [{ id: 'google', name: 'Google' }], linked: false }),
+  addSignin: async () => { the.invites++; return { linked: true }; },
 }));
 
 const FORBIDDEN = { status: 403, text: '' };
@@ -139,6 +141,8 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'sphere-admin': { args: ['dana', true], refusal: null },
   'sphere-rebind-offer': { args: ['sphere.example.com/demo'], refusal: null },
   'sphere-rebind': { args: ['sphere.example.com/demo', 'google'], refusal: 'Not this app’s page.' },
+  'sphere-signin-status': { args: [], refusal: null },
+  'sphere-add-signin': { args: ['google'], refusal: 'Not this app’s page.' },
   'sphere-join': { args: [LINK], refusal: { kind: 'failed', name: '', why: 'Not this app’s page.' } },
   'sphere-handoff': { args: [{ to: 'dana', goal: 'Add a name option', repo: 'acme/app', base: 'main' }], refusal: 'Not this app’s page.' },
   'render-error': { args: ['TypeError', 'm', ''], refusal: undefined },
@@ -490,5 +494,18 @@ describe('SPHEREAPP-12', () => {
     expect(await call('sphere-rebind', own(), 'sphere.example.com/demo', 'google')).toBeNull();
     expect(the.dialogs).toBe(before.dialogs + 1);
     expect(the.invites).toBe(before.invites);
+  });
+});
+
+describe('SPHEREAPP-13', () => {
+  it('sphereapp_13_a_sign_in_is_added_only_right_after_a_click_main_saw', async () => {
+    while (takeInput()) { /* other tests' */ }
+    const before = the.invites;
+    expect(await call('sphere-signin-status', own())).toEqual({ providers: [{ id: 'google', name: 'Google' }], linked: false });
+    expect(await call('sphere-add-signin', own(), 'google')).toBe('Adding sign-in takes your own click.');
+    expect(the.invites).toBe(before);
+    input();
+    expect(await call('sphere-add-signin', own(), 'google')).toBeNull();
+    expect(the.invites).toBe(before + 1);
   });
 });
