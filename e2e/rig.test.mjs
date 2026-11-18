@@ -12,6 +12,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { FIXTURE } from "./lib/fixture.mjs";
 import { review, reviewBody, REVIEW_SECONDS, RULES } from "./lib/rig-review.mjs";
+import { loadSphereSpec } from "./lib/sphere-spec.mjs";
 import { family, newExchange, ours, record, stillUp, table } from "./lib/rig-state.mjs";
 
 const rig = join(dirname(fileURLToPath(import.meta.url)), "rig.mjs");
@@ -408,4 +409,15 @@ test("rig_25_the_stand_in_reviews_with_make_e2es_reviewer", (t) => {
   const out = spawnSync(join(dirname(rig), "rig-agent"), ["--version"], { cwd: worktree, encoding: "utf8", input: "", timeout: 10_000 });
   assert.equal(out.status, 0, out.stderr);
   assert.match(out.stdout, /stub-agent/);
+});
+
+// RIG-26: the app's shared/sphere.ts loads with its exports, as `start` and `policy` take it (#2493:
+// Node's own loader couldn't resolve its './policy', so the rig didn't start)
+const APP = join(dirname(fileURLToPath(import.meta.url)), "../apps/electron");
+test("rig_26_the_apps_sphere_module_loads_with_its_exports", { skip: !existsSync(join(APP, "node_modules/jiti")) && "apps/electron has no packages: npm ci there" }, async () => {
+  const spec = await loadSphereSpec(APP);
+  for (const name of ["publicOf", "assertion", "join", "keepMembership", "parseInvite"]) assert.equal(typeof spec[name], "function", name);
+  const key = generateKeyPairSync("ed25519").privateKey;
+  assert.equal(spec.publicOf(key), createPublicKey(key).export({ format: "jwk" }).x);
+  assert.equal(spec.parseInvite("http://127.0.0.1:8791/join#sphere=rig&id=00000000-0000-4000-8000-000000000000&secret=" + "a".repeat(43))?.sphere, "rig");
 });
