@@ -42,6 +42,14 @@
 #   apps/ios/, apps/watch/, apps/shared/, apps/Oby.xcodeproj, character/
 #                         the touched iOSTests suites on a Simulator, else a build-for-testing
 #   apps/electron/        npm run typecheck, npm test and npm run build there (its node_modules from npm install)
+#   e2e/, obid's src/sphere/, the app's Obysphere code (shared/sphere.ts, policy.ts, invite.ts,
+#                         handoff.ts, main/sphere.ts)
+#                         the electron group above, then the Obysphere's (docs/contracts/test-rig.md,
+#                         RIG-27 to 34): the rig's own tests (node --test), obid built, the app's
+#                         join against a fake Sphere (test:sphere-join) and, outside a job's box, two
+#                         Obys on the pinned Sphere (test:sphere, e2e/sphere.ref) and the launch
+#                         list L1 to L8 in the real app (node e2e/launch.mjs --gate: its reds are
+#                         exactly those e2e/launch-red.json lists)
 #   tools/brain/, obid's src/, apps/electron/src, apps/shared/, docs/api/, docs/runner-api.md, AGENTS.md
 #                         tools/brain's npm test, in the electron group: the Brain's map read from the
 #                         code, so it can't drift (docs/contracts/ci.md, CI-56); in a job's box only for
@@ -487,7 +495,7 @@ suites() {
 }
 
 # What each part needs, one per line.
-rust='' blok='' electron='' brain='' brain_own='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' check_script='' nightly_script='' factory='' agents_md='' agents_rules=''
+rust='' blok='' electron='' sphere='' brain='' brain_own='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' check_script='' nightly_script='' factory='' agents_md='' agents_rules=''
 add() { printf '%s\n%s' "$1" "$2"; }
 while IFS= read -r file; do
     case "$file" in
@@ -546,6 +554,12 @@ while IFS= read -r file; do
         apps/ios/* | apps/watch/* | apps/shared/* | apps/Oby.xcodeproj/* | character/*) ios=1 ;;
     esac
     case "$file" in
+        e2e/* | core/crates/obid/src/sphere/* | apps/electron/src/main/sphere.ts | \
+            apps/electron/src/shared/sphere.ts | apps/electron/src/shared/policy.ts | \
+            apps/electron/src/shared/invite.ts | apps/electron/src/shared/handoff.ts)
+            electron=1 sphere=1 ;;
+    esac
+    case "$file" in
         apps/electron/*) electron=1 ;;
         scripts/oby-check*) check_script=1 ;;
         scripts/oby-nightly*) nightly_script=1 ;;
@@ -579,7 +593,7 @@ fi
 # Electron app and the Apple apps' build (no suites named: build-for-testing). The secret scan still
 # covers what changed against the base, which on the base itself is nothing.
 if [[ -n "${OBY_CHECK_ALL:-}" ]]; then
-    rust=1 blok=1 lib_all=1 check_script=1 nightly_script=1 electron=1 brain=1 ios=1 factory=1 agents_rules=1
+    rust=1 blok=1 lib_all=1 check_script=1 nightly_script=1 electron=1 sphere=1 brain=1 ios=1 factory=1 agents_rules=1
     tests=$(ls core/crates/obid/tests/*.rs 2>/dev/null || true)
     crates=$(ls core/crates 2>/dev/null || true)
 fi
@@ -839,6 +853,24 @@ if selected && [[ -n "$electron" ]]; then
     step npm --prefix apps/electron run --silent typecheck
     step npm --prefix apps/electron run --silent test
     step npm --prefix apps/electron run --silent build
+fi
+# The Obysphere's (RIG-27 to 34), on this checkout's obid, built here. Two obids, a Sphere and the
+# app on loopback ports don't fit a job's box: the Mac's check runs those.
+if selected && [[ -n "$sphere" ]]; then
+    case "${CARGO_TARGET_DIR:-core/target}" in
+        /*) sphere_obid="${CARGO_TARGET_DIR}/debug/obid" ;;
+        *) sphere_obid="$PWD/${CARGO_TARGET_DIR:-core/target}/debug/obid" ;;
+    esac
+    step node --test e2e/rig.test.mjs e2e/lib/rig-guard.test.mjs e2e/lib/processes.test.mjs e2e/lib/node-version.test.mjs e2e/lib/snapshot.test.mjs
+    step cargo --quiet build --manifest-path core/Cargo.toml -p obid
+    step env OBY_TEST_OBID="$sphere_obid" npm --prefix apps/electron run --silent test:sphere-join
+    if [[ -n "$nested" ]]; then
+        plan_group
+        echo "oby-check: two Obys on the pinned Sphere and the launch list don't run in a job's box: the Mac's check runs them"
+    else
+        step env OBY_TEST_OBID="$sphere_obid" npm --prefix apps/electron run --silent test:sphere
+        step env OBID_BIN="$sphere_obid" node e2e/launch.mjs --gate
+    fi
 fi
 # The Brain's map (CI-56). In a job's box its node_modules and its extractor's crates may not be
 # there, so only a change to the Brain itself runs it; the Mac's check and the merge queue's run
