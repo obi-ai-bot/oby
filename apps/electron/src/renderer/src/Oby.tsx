@@ -48,6 +48,18 @@ declare global {
       // the Obysphere's rules, and the members rule added at the version read (preload, main/sphere.ts)
       spherePolicy?(): Promise<PolicyAnswer | null>;
       sphereSetPolicy?(version: number): Promise<PolicyAnswer | null>;
+      // the admin's invite links: the list, a new one, a withdrawal (preload, main/sphere.ts, SPHEREAPP-10)
+      sphereInvitations?(): Promise<import('../../shared/sphere').InvitesAnswer | null>;
+      sphereInvite?(): Promise<import('../../shared/sphere').InvitesAnswer | null>;
+      sphereWithdraw?(id: string): Promise<import('../../shared/sphere').InvitesAnswer | null>;
+      // Make admin or Remove admin (preload, main/sphere.ts, SPHEREAPP-11)
+      sphereAdmin?(owner: string, on: boolean): Promise<import('../../shared/sphere').AdminsAnswer | null>;
+      // getting back in with a sign-in: what an address offers, and the sign-in (preload, main/sphere.ts, SPHEREAPP-12)
+      sphereRebindOffer?(address: string): Promise<{ sphere: string; host: string; providers: { id: string; name: string }[] | null } | null>;
+      sphereRebind?(address: string, provider: string): Promise<string | null>;
+      // Add sign-in: whether one is linked, and linking one (preload, main/sphere.ts, SPHEREAPP-13)
+      sphereSigninStatus?(): Promise<import('../../shared/sphere').SigninStatus | null>;
+      sphereAddSignin?(provider: string): Promise<string | null>;
       // obid, through main (preload, main/obid.ts); its events, from main's one follower (main/live.ts)
       obid: {
         call(method: string, path: string, body?: unknown): Promise<{ status: number; text: string }>;

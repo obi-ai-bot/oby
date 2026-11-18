@@ -1,5 +1,6 @@
 import { createHash, createPublicKey, randomUUID, sign, type KeyObject } from 'node:crypto';
 import { starterRule, withStarterRule } from './policy';
+import { INVITE_DAYS, INVITE_USES, openedInviteLink } from './invite';
 import type { Invite } from './invite';
 
 // The owner's side of joining an Obysphere (docs/contracts/obysphere.md; obi-sphere's spec
@@ -192,9 +193,11 @@ export async function leave(call: Call, ownerKey: () => KeyObject, http: typeof 
 // throws: a failure is an answer, in words.
 export type Rule = { id: string } & Record<string, unknown>;
 export type Policy = { version: number; updated_at: string; rules: Rule[] };
+// admins: who administers the Sphere now, sorted (its `admins`), on a read; me: this Oby's owner id
 export type PolicyAnswer = {
   sphere: string | null; policy: Policy | null; admin: boolean;
   refused: null | 'not_joined' | 'not_admin' | 'changed' | 'failed'; why: string | null;
+  admins?: string[]; me?: string;
 };
 
 // the members rule, with its id, is shared/policy.ts's
@@ -235,8 +238,8 @@ export async function readPolicy(call: Call, ownerKey: () => KeyObject, http: ty
     const { token } = await ownerToken(http, m, ownerKey(), 'directory:read');
     const about = (await read(http, sphereAt(m), token)) as { admins?: unknown } | null;
     const policy = asPolicy(await read(http, `${sphereAt(m)}/policy`, token));
-    const admin = Array.isArray(about?.admins) && about.admins.includes(String(m.owner));
-    return { sphere, policy, admin, refused: null, why: null };
+    const admins = Array.isArray(about?.admins) ? about.admins.filter((a): a is string => typeof a === 'string') : [];
+    return { sphere, policy, admin: admins.includes(String(m.owner)), refused: null, why: null, admins, me: String(m.owner) };
   } catch (e) {
     return failed(sphere, e);
   }
@@ -281,4 +284,252 @@ export async function addStarterRule(call: Call, ownerKey: () => KeyObject, seen
   if (!now.admin) return { ...now, refused: 'not_admin', why: ONLY_ADMINS };
   const rules = withStarterRule(now.policy.rules);
   return rules ? writePolicy(call, ownerKey, rules, seenVersion, http) : now;
+}
+
+// Invite links, made by the Obysphere's admin from Oby (docs/contracts/sphere-app.md, SPHEREAPP-10):
+// an open invitation (sphere-api.md section 4) for INVITE_USES people over INVITE_DAYS, its list and
+// its withdrawal, each with a new owner token the Sphere grants `admin` only to an admin, used on
+// that call and dropped. The secret comes once, in the answer that made it, and goes no further than
+// the link handed back; the Sphere lists invitations without it. Nothing here throws.
+export type Invitation = { id: string; uses: number; maxUses: number; expiresAt: string };
+// handoffs: on a make, whether the members rule now lets members hand off tasks (main adds it, SPHEREAPP-10)
+export type InvitesAnswer = { invitations: Invitation[]; link: string | null; refused: PolicyAnswer['refused']; why: string | null; handoffs?: boolean };
+const invites = (invitations: Invitation[], link: string | null = null): InvitesAnswer => ({ invitations, link, refused: null, why: null });
+const notInvited = (refused: PolicyAnswer['refused'], why: string): InvitesAnswer => ({ invitations: [], link: null, refused, why });
+
+// The link a teammate's Oby opens: oby://join/<host>#sphere=…&by=…&id=…&secret=…, read back exactly
+// as an oby:// link is (shared/invite.ts), or null when it wouldn't read
+export function inviteLink(url: string, sphere: string, by: string, id: string, secret: string): string | null {
+  const q = (v: string) => encodeURIComponent(v);
+  const link = `oby://join/${new URL(url).host}#sphere=${q(sphere)}&by=${q(by)}&id=${q(id)}&secret=${q(secret)}`;
+  return openedInviteLink(link) ? link : null;
+}
+
+const asInvitation = (v: unknown): Invitation | null => {
+  const o = v as Record<string, unknown> | null;
+  if (!o || typeof o.invitation_id !== 'string' || typeof o.expires_at !== 'string') return null;
+  const n = (x: unknown) => (Number.isSafeInteger(x) ? (x as number) : 0);
+  return { id: o.invitation_id, uses: n(o.uses), maxUses: n(o.max_uses), expiresAt: o.expires_at };
+};
+
+// m and an admin token, or the refusal in words
+async function asAdmin(call: Call, ownerKey: () => KeyObject, http: typeof fetch) {
+  const m = await must(call, 'GET', '/v1/obid/sphere');
+  if (m.state !== 'joined') return { refused: notInvited('not_joined', NOT_JOINED) };
+  const { token, scopes } = await ownerToken(http, m, ownerKey(), 'admin');
+  if (!scopes.includes('admin')) return { refused: notInvited('not_admin', ONLY_ADMINS_INVITE) };
+  return { m, token };
+}
+const ONLY_ADMINS_INVITE = 'Only the Obysphere’s admins can invite.';
+const asked = (why: unknown) => notInvited('failed', why instanceof Error ? why.message : String(why));
+async function listed(http: typeof fetch, m: Record<string, unknown>, token: string) {
+  const r = await read(http, `${sphereAt(m)}/invitations`, token) as { invitations?: unknown } | null;
+  return (Array.isArray(r?.invitations) ? r.invitations : []).flatMap((v) => asInvitation(v) ?? []);
+}
+
+export async function listInvitations(call: Call, ownerKey: () => KeyObject, http: typeof fetch = fetch): Promise<InvitesAnswer> {
+  try {
+    const a = await asAdmin(call, ownerKey, http);
+    return 'refused' in a ? a.refused! : invites(await listed(http, a.m, a.token));
+  } catch (e) { return asked(e); }
+}
+
+// A new open link, then the list as it is now
+export async function makeInvitation(call: Call, ownerKey: () => KeyObject, http: typeof fetch = fetch): Promise<InvitesAnswer> {
+  try {
+    const a = await asAdmin(call, ownerKey, http);
+    if ('refused' in a) return a.refused!;
+    const r = await http(`${sphereAt(a.m)}/invitations`, {
+      method: 'POST', redirect: 'error', headers: { authorization: `Bearer ${a.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ expires_in: INVITE_DAYS * 86_400, max_uses: INVITE_USES }),
+    });
+    if (r.status === 403) return notInvited('not_admin', ONLY_ADMINS_INVITE);
+    if (!r.ok) throw new Error(`the Obysphere answered ${r.status}`);
+    const made = (await r.json()) as { invitation_id?: unknown; secret?: unknown };
+    const link = typeof made.invitation_id === 'string' && typeof made.secret === 'string'
+      ? inviteLink(String(a.m.url), String(a.m.sphere), String(a.m.owner), made.invitation_id, made.secret) : null;
+    if (!link) throw new Error('the Obysphere’s invitation isn’t one Oby can read');
+    return invites(await listed(http, a.m, a.token).catch(() => []), link);
+  } catch (e) { return asked(e); }
+}
+
+// A link withdrawn (one the Sphere no longer has counts as withdrawn), then the list as it is now
+export async function withdrawInvitation(call: Call, ownerKey: () => KeyObject, id: string, http: typeof fetch = fetch): Promise<InvitesAnswer> {
+  try {
+    const a = await asAdmin(call, ownerKey, http);
+    if ('refused' in a) return a.refused!;
+    const r = await http(`${sphereAt(a.m)}/invitations/${encodeURIComponent(id)}`, { method: 'DELETE', redirect: 'error', headers: { authorization: `Bearer ${a.token}` } });
+    if (!r.ok && r.status !== 404) throw new Error(`the Obysphere answered ${r.status}`);
+    return invites(await listed(http, a.m, a.token));
+  } catch (e) { return asked(e); }
+}
+
+// Make admin and Remove admin (SPHEREAPP-11): PUT or DELETE …/admins/{owner} with the owner's own
+// `admin` token, as the rules' write. The Sphere answers with itself, whose `admins` come back; it
+// keeps at least one admin, and makes admin only an owner who has joined. Nothing here throws.
+export type AdminsAnswer = { admins: string[] | null; refused: PolicyAnswer['refused']; why: string | null };
+export async function setAdmin(call: Call, ownerKey: () => KeyObject, owner: string, on: boolean, http: typeof fetch = fetch): Promise<AdminsAnswer> {
+  try {
+    const a = await asAdmin(call, ownerKey, http);
+    if ('refused' in a) return { admins: null, refused: a.refused!.refused, why: a.refused!.why === ONLY_ADMINS_INVITE ? ONLY_ADMINS_CHANGE : a.refused!.why };
+    const r = await http(`${sphereAt(a.m)}/admins/${encodeURIComponent(owner)}`, { method: on ? 'PUT' : 'DELETE', redirect: 'error', headers: { authorization: `Bearer ${a.token}` } });
+    if (r.status === 409) return { admins: null, refused: 'failed', why: on ? `${plainLine(owner)} hasn’t joined with their own key yet.` : 'An Obysphere keeps at least one admin.' };
+    if (r.status === 403) return { admins: null, refused: 'not_admin', why: ONLY_ADMINS_CHANGE };
+    if (!r.ok) throw new Error(`the Obysphere answered ${r.status}`);
+    const about = (await r.json()) as { admins?: unknown } | null;
+    return { admins: Array.isArray(about?.admins) ? about.admins.filter((x): x is string => typeof x === 'string') : null, refused: null, why: null };
+  } catch (e) { return { admins: null, refused: 'failed', why: e instanceof Error ? e.message : String(e) }; }
+}
+const ONLY_ADMINS_CHANGE = 'Only the Obysphere’s admins can change who’s admin.';
+
+// Getting back into an Obysphere with a sign-in (SPHEREAPP-12; obi-sphere's sphere-api.md section
+// 3.2, `owner_rebind`): for an owner whose key is lost with their Mac. A new owner key, a sign-in for
+// it at the Sphere's provider in the person's browser, back to main's own listener on this Mac; a new
+// Oby card signed by the new key; then the Sphere binds the new key to the owner, revoking the old
+// key's Obys, and this Oby joins in the same step. Only what the Sphere says comes back, in words.
+export type SigninProvider = { id: string; name: string };
+const sphereCode = async (r: Response) => ((await r.json().catch(() => null)) as { error?: { code?: unknown } } | null)?.error?.code;
+
+// The providers to get back in with, when the Sphere offers it (`owner_rebind` in its features),
+// else null. A Sphere from before the providers' list signs in with Google alone.
+export async function rebindOffer(http: typeof fetch, url: string): Promise<SigninProvider[] | null> {
+  try {
+    const f = await http(`${url}/v0.1/features`, { redirect: 'error' });
+    const features = f.ok ? ((await f.json()) as { features?: unknown }).features : null;
+    if (!Array.isArray(features) || !features.includes('owner_rebind')) return null;
+    const p = await http(`${url}/v0.1/signin`, { redirect: 'error' });
+    if (p.status === 404) return [{ id: 'google', name: 'Google' }];
+    const listed = p.ok ? ((await p.json()) as { providers?: unknown }).providers : null;
+    const providers = (Array.isArray(listed) ? listed : []).flatMap((x) => {
+      const o = x as { id?: unknown; name?: unknown };
+      return typeof o.id === 'string' && /^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/.test(o.id) ? [{ id: o.id, name: plainLine(o.name) || o.id }] : [];
+    });
+    return providers.length ? providers : null;
+  } catch { return null; }
+}
+
+// What main lends getBackIn: the new key, a listener on this Mac for the browser's way back, the
+// browser, and keeping the new key once the Sphere has bound it
+export type BackInDeps = {
+  newKey: KeyObject;
+  listen: () => Promise<{ returnTo: string; back: Promise<{ state?: string; code?: string; error?: string }>; close: () => void }>;
+  open: (url: string) => Promise<void>;
+  keep: (key: KeyObject) => void;
+};
+export type BackIn = { kind: 'back'; owner: string; admin: boolean } | { kind: 'failed'; why: string };
+const REBIND_WORDS: Record<number, string> = {
+  404: 'This Obysphere has no owner by that id. Check its address and the owner id you’re getting back in as.',
+  403: 'That sign-in can’t get you back in. Use the account this name added, or ask an admin to reset it.',
+  409: 'That account is linked to someone else in this Obysphere, or this Mac already holds your key there.',
+  429: 'Too many sign-ins at once right now. Try again in a minute.',
+};
+const isSecure = (u: string) => { try { const x = new URL(u); return x.protocol === 'https:' || (x.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(x.hostname)); } catch { return false; } };
+
+// A sign-in at the Sphere's provider for ownerKey, in the person's browser, back to main's listener:
+// its state and code, only for the state it started, or why not in words (sphere-api.md 3.1)
+async function signedIn(http: typeof fetch, url: string, provider: string, ownerKey: string,
+  listener: Awaited<ReturnType<BackInDeps['listen']>>, open: BackInDeps['open']): Promise<{ state: string; code: string } | { why: string }> {
+  const started = await http(`${url}/v0.1/signin/${encodeURIComponent(provider)}`, {
+    method: 'POST', redirect: 'error', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ owner_key: ownerKey, return_to: listener.returnTo }),
+  });
+  if (started.status === 429) return { why: REBIND_WORDS[429] };
+  const signin = started.ok ? ((await started.json()) as { url?: unknown; state?: unknown }) : {};
+  if (typeof signin.url !== 'string' || typeof signin.state !== 'string' || !isSecure(signin.url)) return { why: 'This Obysphere couldn’t start a sign-in. Try again later.' };
+  await open(signin.url);
+  const back = await listener.back;
+  if (back.error === 'timeout') return { why: 'The sign-in took too long. Try again.' };
+  if (back.state !== signin.state || back.error || !back.code) return { why: 'The sign-in didn’t finish. Try again.' };
+  return { state: back.state, code: back.code };
+}
+
+export async function getBackIn(call: Call, http: typeof fetch, where: { url: string; sphere: string }, provider: string, d: BackInDeps): Promise<BackIn> {
+  const failed = (why: string): BackIn => ({ kind: 'failed', why });
+  let owner = '';
+  let listener: Awaited<ReturnType<BackInDeps['listen']>> | null = null;
+  try {
+    const now = await must(call, 'GET', '/v1/obid/sphere');
+    owner = String(now.owner ?? '');
+    if (now.state === 'joined') return failed(ALREADY);
+    const ownerKey = publicOf(d.newKey);
+    listener = await d.listen();
+    const back = await signedIn(http, where.url, provider, ownerKey, listener, d.open);
+    if ('why' in back) return failed(back.why);
+    // this Oby's own key and card, signed by the new owner key; obid's membership, if revoked, goes first
+    if (now.state === 'revoked') await must(call, 'DELETE', '/v1/obid/sphere');
+    await must(call, 'POST', '/v1/obid/sphere/key');
+    const obi = `obi-${randomUUID()}`;
+    const made = await must(call, 'POST', '/v1/obid/sphere/card', { url: where.url, sphere: where.sphere, obiId: obi, name: `${owner}’s Oby`, ownerKey, accepts: ACCEPTS });
+    const card = signCard(made.card as Record<string, unknown>, d.newKey);
+    const r = await http(`${where.url}/v0.1/spheres/${encodeURIComponent(where.sphere)}/owners/${encodeURIComponent(owner)}/rebind`, {
+      method: 'POST', redirect: 'error', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ owner_key: ownerKey, signin: back, card }),
+    });
+    if (!r.ok) {
+      const code = await sphereCode(r);
+      if (code === NOT_LINKED_CODE) return failed(NOT_LINKED);
+      if (code === 'card_invalid' || code === 'feature_not_taken') return failed('The Obysphere didn’t take this Oby’s card. Update Oby, then try again.');
+      return failed(REBIND_WORDS[r.status] ?? `The Obysphere answered ${r.status}. Try again later.`);
+    }
+    const bound = (await r.json()) as { owner_key?: unknown; admin?: unknown };
+    if (bound.owner_key !== ownerKey) return failed('The Obysphere answered with another key. Nothing was kept.');
+    // bound: from here the new key is the owner's, so it's kept before anything else can fail
+    d.keep(d.newKey);
+    await must(call, 'POST', '/v1/obid/sphere/join', {
+      url: where.url, sphere: where.sphere, rebound: true, card, delegation: assertion(d.newKey, owner, where.sphere, SCOPES, obi),
+    }).catch((e) => { throw new Error(`You’re back in as ${owner}, but this Oby couldn’t take its place yet: ${e instanceof Error ? e.message : String(e)}`); });
+    return { kind: 'back', owner, admin: bound.admin === true };
+  } catch (e) {
+    return failed(e instanceof Refused ? plain(e.message, owner, where.sphere) : e instanceof Error ? e.message : String(e));
+  } finally {
+    listener?.close();
+  }
+}
+
+// Link first (the owner's decision): only an owner who added a sign-in, with that same account,
+// gets back in by themselves. An owner who never did hears so (the Sphere's code for it; assumed
+// until its route is fixed).
+const NOT_LINKED_CODE = 'account_not_linked';
+const NOT_LINKED = 'This name never added a sign-in. Ask an admin to reset it.';
+
+// Add sign-in (SPHEREAPP-13), for an owner who still has their key: a sign-in at the Sphere's provider
+// for the owner key this app holds, then the Sphere links that account to the owner, with the owner's
+// own token: PUT …/owners/{owner}/account {signin} (assumed until the Sphere's shape is fixed). The
+// account is the Sphere's to keep; the app never sees or shows an email.
+export type SigninStatus = { providers: SigninProvider[] | null; linked: boolean | null };
+export async function signinStatus(call: Call, ownerKey: () => KeyObject, http: typeof fetch = fetch): Promise<SigninStatus> {
+  try {
+    const m = await must(call, 'GET', '/v1/obid/sphere');
+    if (m.state !== 'joined') return { providers: null, linked: null };
+    const providers = await rebindOffer(http, String(m.url));
+    if (!providers) return { providers: null, linked: null };
+    const { token } = await ownerToken(http, m, ownerKey(), 'directory:read');
+    const r = await http(`${sphereAt(m)}/owners/${encodeURIComponent(String(m.owner))}`, { redirect: 'error', headers: { authorization: `Bearer ${token}` } });
+    const linked = r.ok ? ((await r.json()) as { account_linked?: unknown }).account_linked : undefined;
+    return { providers, linked: typeof linked === 'boolean' ? linked : null };
+  } catch { return { providers: null, linked: null }; }
+}
+
+export async function addSignin(call: Call, ownerKey: () => KeyObject, http: typeof fetch, provider: string,
+  d: Pick<BackInDeps, 'listen' | 'open'>): Promise<{ linked: true } | { why: string }> {
+  let listener: Awaited<ReturnType<BackInDeps['listen']>> | null = null;
+  try {
+    const m = await must(call, 'GET', '/v1/obid/sphere');
+    if (m.state !== 'joined') return { why: NOT_JOINED };
+    listener = await d.listen();
+    const back = await signedIn(http, String(m.url), provider, publicOf(ownerKey()), listener, d.open);
+    if ('why' in back) return back;
+    const { token } = await ownerToken(http, m, ownerKey(), 'directory:read');
+    const r = await http(`${sphereAt(m)}/owners/${encodeURIComponent(String(m.owner))}/account`, {
+      method: 'PUT', redirect: 'error', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ signin: back }),
+    });
+    if (r.ok) return { linked: true };
+    if (r.status === 409) return { why: 'That account already belongs to someone else in this Obysphere. Sign in with your own.' };
+    if (r.status === 403) return { why: 'That sign-in didn’t take. Use the account you want to get back in with, then try again.' };
+    if (r.status === 429) return { why: REBIND_WORDS[429] };
+    return { why: `The Obysphere answered ${r.status}. Try again later.` };
+  } catch (e) {
+    return { why: e instanceof Error ? e.message : String(e) };
+  } finally {
+    listener?.close();
+  }
 }
