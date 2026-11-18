@@ -60,7 +60,7 @@ const read = (html: string) => html.replaceAll('<!-- -->', '');
 const rect = { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0 } as DOMRect;
 const markup = (task: Task) => ({
   dot: read(renderToStaticMarkup(<ui.StatusDot task={task} />)),
-  thread: read(renderToStaticMarkup(<ui.ThreadTask task={task} current onOpen={() => {}} />)),
+  thread: read(renderToStaticMarkup(<ui.ThreadTask task={task} />)),
   menu: read(renderToStaticMarkup(<ui.TaskMenu task={task} at={rect} onClose={() => {}} onOpenChat={() => {}} onRename={() => {}} />)),
   card: read(renderToStaticMarkup(<ui.TaskCard task={task} />)),
 });
