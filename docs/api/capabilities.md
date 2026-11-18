@@ -3,7 +3,7 @@
 ```json
 {"runner": {"version": "0.2.0", "host": "tetrix-lab"},
  "accounts": [ …Account ],
- "models": {"claude": {"model": "claude-opus-5-5", "effort": "xhigh", "complexEffort": "xhigh"}, "codex": {"model": "gpt-6-sol", "effort": "high", "complexEffort": "high"}, "cursor": {"model": "auto"}},
+ "models": {"claude": {"model": "claude-opus-5-5", "effort": "xhigh", "complexEffort": "xhigh"}, "codex": {"model": "gpt-6.1-sol", "effort": "high", "complexEffort": "high"}, "cursor": {"model": "auto"}},
  "maxRunning": 6, "running": 4, "defaultAgent": "auto", "defaultAccount": null,
  "clearedAt": "2026-10-10T08:12:00Z",
  "github": "app", "checks": "ok", "permissions": {"mode": "sandbox"},
