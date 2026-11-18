@@ -1593,10 +1593,6 @@ mod tests {
         assert_eq!(said(&"x".repeat(400)).chars().count(), 300);
     }
 
-    /// MERGING-39: the failed checks' names come with the rollup; their logs are the last 300 lines
-    /// of each of the first 3 failed runs, one whose log can't be read left out; with none, the
-    /// names alone.
-
     /// A queue run: `pr`'s entry built on `on`, testing `head`, ended `conclusion` at `at`.
     fn queued(id: u64, pr: u64, on: &str, head: &str, conclusion: &str, at: i64) -> QueueRun {
         QueueRun {
@@ -1671,6 +1667,10 @@ mod tests {
         assert!(!read(json!([run("a", "SUCCESS")])).infra);
         assert!(!read(json!([{"context": "ci", "state": "ERROR"}])).infra);
     }
+
+    /// MERGING-39: the failed checks' names come with the rollup; their logs are the last 300 lines
+    /// of each of the first 3 failed runs, one whose log can't be read left out; with none, the
+    /// names alone.
     #[tokio::test]
     async fn failed_logs_keep_each_runs_last_lines_else_the_names() {
         use std::os::unix::fs::PermissionsExt;

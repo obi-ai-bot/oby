@@ -4685,7 +4685,7 @@ fn autofix_6_a_runners_failure_reruns_without_the_agent() {
             let runs = json!([{"databaseId": 52, "conclusion": "cancelled"}]);
             std::fs::write(folder.0.join("gh/runs-all.json"), runs.to_string()).unwrap();
         },
-        |kept| own_kept(kept),
+        own_kept,
     );
     said(
         &folder,

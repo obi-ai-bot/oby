@@ -408,8 +408,10 @@ mod tests {
     #[test]
     fn autofix_10_one_more_round_gives_three_more() {
         let test = vec!["test".to_owned()];
-        let mut state = AutoFix::default();
-        state.fixes = FIX_ROUNDS;
+        let mut state = AutoFix {
+            fixes: FIX_ROUNDS,
+            ..AutoFix::default()
+        };
         assert!(state.give_up("a", GaveUp::Rounds));
         assert!(!state.give_up("a", GaveUp::Rounds), "said once");
         assert_eq!(

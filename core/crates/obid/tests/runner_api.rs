@@ -1061,7 +1061,7 @@ fn the_cap_is_in_status_and_settings() {
     assert_eq!(
         set.body,
         json!({"maxRunning": 3, "accountFailover": true, "defaultAccount": null, "talkAccount": null,
-               "githubEveryRepo": false,
+               "githubEveryRepo": false, "autoFixChecks": true,
                "limits": {"rounds": 10, "maxRunning": 20, "folders": 20, "routines": 20, "accounts": 32}})
     );
     for refused in [json!({"accountFailover": "no"}), json!({})] {
@@ -1077,13 +1077,13 @@ fn the_cap_is_in_status_and_settings() {
     assert_eq!(
         off.body,
         json!({"maxRunning": 3, "accountFailover": false, "defaultAccount": null, "talkAccount": null,
-               "githubEveryRepo": false,
+               "githubEveryRepo": false, "autoFixChecks": true,
                "limits": {"rounds": 10, "maxRunning": 20, "folders": 20, "routines": 20, "accounts": 32}})
     );
     assert_eq!(
         call(&obid, "GET", "/v1/settings/jobs", None).body,
         json!({"maxRunning": 3, "accountFailover": false, "defaultAccount": null, "talkAccount": null,
-               "githubEveryRepo": false,
+               "githubEveryRepo": false, "autoFixChecks": true,
                "limits": {"rounds": 10, "maxRunning": 20, "folders": 20, "routines": 20, "accounts": 32}})
     );
     assert_eq!(call(&obid, "GET", "/v1/status", None).body["maxRunning"], 3);
@@ -1093,7 +1093,7 @@ fn the_cap_is_in_status_and_settings() {
     assert_eq!(
         call(&obid, "GET", "/v1/settings/jobs", None).body,
         json!({"maxRunning": 3, "accountFailover": false, "defaultAccount": null, "talkAccount": null,
-               "githubEveryRepo": false,
+               "githubEveryRepo": false, "autoFixChecks": true,
                "limits": {"rounds": 10, "maxRunning": 20, "folders": 20, "routines": 20, "accounts": 32}})
     );
     assert_eq!(call(&obid, "GET", "/v1/status", None).body["maxRunning"], 3);
