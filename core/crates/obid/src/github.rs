@@ -711,6 +711,9 @@ pub struct Merging {
     /// The names of its head's checks that failed, as their workflows name them: someone's words,
     /// only ever quoted to an agent ([`failed_logs`]).
     pub failed: Vec<String>,
+    /// Whether every check that failed stopped for its runner, not its code (`CANCELLED`,
+    /// `TIMED_OUT`, `STARTUP_FAILURE`, `STALE`: crate::autofix::INFRA); false with none failed.
+    pub infra: bool,
     /// `MERGEABLE`, `CONFLICTING` or `UNKNOWN`; none when GitHub didn't say.
     pub mergeable: Option<String>,
     /// GitHub's `mergeStateStatus`: `CLEAN`, `HAS_HOOKS`, `BEHIND`, `BLOCKED`, `DIRTY`, `DRAFT`,
@@ -748,6 +751,18 @@ pub fn decode_merging(text: &str) -> Option<Merging> {
             .filter_map(|c| c["name"].as_str().or(c["context"].as_str()))
             .map(str::to_owned)
             .collect(),
+        infra: {
+            let failed: Vec<&Value> = (checks.unwrap_or_default().iter())
+                .filter(|c| rollup(std::slice::from_ref(*c)) == "FAILURE")
+                .collect();
+            let infra =
+                |said: Option<&str>| said.is_some_and(|s| crate::autofix::INFRA.contains(&s));
+            !failed.is_empty()
+                && failed.iter().all(|c| {
+                    let conclusion = c["conclusion"].as_str().filter(|s| !s.is_empty());
+                    infra(conclusion.or(c["state"].as_str()))
+                })
+        },
         mergeable: word("mergeable", &["MERGEABLE", "CONFLICTING", "UNKNOWN"]),
         merge_state: word(
             "mergeStateStatus",
@@ -773,13 +788,12 @@ pub fn decode_merging(text: &str) -> Option<Merging> {
 }
 
 /// What GitHub logged of the runs that failed at `head` in `repo` (`gh run list --commit … --status
-/// failure`, then `gh run view --log-failed`): the last [`LOG_LINES`] lines of each of the first
-/// [`LOGGED_RUNS`]; when none can be read, only the names of the checks that `failed`. Someone's
+/// failure`, then `gh run view --log-failed`): the last 300 lines of each of the first
+/// [`LOGGED_RUNS`] ([`run_logs`]); when none can be read, only the names of the checks that `failed`. Someone's
 /// words and a run's output: an agent gets it only with the secrets taken out, quoted
 /// (crate::jobs::after_pr, MERGING-39).
 pub async fn failed_logs(gh: &Path, repo: &str, head: &str, failed: &[String]) -> String {
     const LOGGED_RUNS: usize = 3;
-    const LOG_LINES: usize = 300;
     let args = [
         "run",
         "list",
@@ -794,12 +808,30 @@ pub async fn failed_logs(gh: &Path, repo: &str, head: &str, failed: &[String]) -
     ];
     let listed = run(gh, &args).await.unwrap_or_default();
     let runs: Vec<Value> = serde_json::from_str(&listed).unwrap_or_default();
-    let mut logs = vec![];
-    for id in runs
-        .iter()
-        .filter_map(|r| r["databaseId"].as_u64())
+    let ids: Vec<u64> = (runs.iter().filter_map(|r| r["databaseId"].as_u64()))
         .take(LOGGED_RUNS)
-    {
+        .collect();
+    let logs = run_logs(gh, repo, &ids).await;
+    if logs.is_empty() {
+        return format!(
+            "No log of the failed runs could be read. The checks that failed: {}.",
+            if failed.is_empty() {
+                "GitHub didn't name them".into()
+            } else {
+                failed.join(", ")
+            }
+        );
+    }
+    logs.join("\n\n")
+}
+
+/// What GitHub logged of each of the runs `ids` in `repo` that failed (`gh run view --log-failed`),
+/// the last 300 lines of each, a run whose log can't be read left out. Someone's words and a
+/// run's output: only ever quoted to an agent, secrets taken out.
+pub async fn run_logs(gh: &Path, repo: &str, ids: &[u64]) -> Vec<String> {
+    const LOG_LINES: usize = 300;
+    let mut logs = vec![];
+    for id in ids {
         let id = id.to_string();
         let args = ["run", "view", &id, "--repo", repo, "--log-failed"];
         let Ok(log) = run_bounded(gh, &args, 16 << 20, Duration::from_secs(60)).await else {
@@ -814,17 +846,126 @@ pub async fn failed_logs(gh: &Path, repo: &str, head: &str, failed: &[String]) -
             ));
         }
     }
-    if logs.is_empty() {
-        return format!(
-            "No log of the failed runs could be read. The checks that failed: {}.",
-            if failed.is_empty() {
-                "GitHub didn't name them".into()
-            } else {
-                failed.join(", ")
-            }
-        );
+    logs
+}
+
+/// The finished runs at `head` in `repo` that didn't pass (`failure`, `cancelled`, `timed_out`,
+/// `startup_failure`), run again on GitHub with only their failed jobs (`gh run rerun --failed`,
+/// AUTOFIX-6, 7): the ids that went, or why none did.
+pub async fn rerun_failed(gh: &Path, repo: &str, head: &str) -> Result<Vec<u64>, String> {
+    const AGAIN: [&str; 4] = ["failure", "cancelled", "timed_out", "startup_failure"];
+    let args = [
+        "run",
+        "list",
+        "--repo",
+        repo,
+        "--commit",
+        head,
+        "--json",
+        "databaseId,conclusion",
+    ];
+    let listed = run(gh, &args).await?;
+    let runs: Vec<Value> = serde_json::from_str(&listed).map_err(|e| e.to_string())?;
+    let mut sent = vec![];
+    let mut refused = None;
+    for id in (runs.iter())
+        .filter(|r| r["conclusion"].as_str().is_some_and(|c| AGAIN.contains(&c)))
+        .filter_map(|r| r["databaseId"].as_u64())
+    {
+        let ran = id.to_string();
+        match run(gh, &["run", "rerun", &ran, "--repo", repo, "--failed"]).await {
+            Ok(_) => sent.push(id),
+            Err(why) => refused = Some(why),
+        }
     }
-    logs.join("\n\n")
+    match (sent.is_empty(), refused) {
+        (false, _) => Ok(sent),
+        (true, Some(why)) => Err(why),
+        (true, None) => Err("GitHub listed no failed run on that commit.".into()),
+    }
+}
+
+/// One run of a merge queue's checks (`merge_group`): its id, its branch
+/// (`gh-readonly-queue/<base>/pr-<n>-<the commit it was built on>`), the commit it tested, how it
+/// ended (empty while it runs) and when it began.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueueRun {
+    pub id: u64,
+    pub branch: String,
+    pub head: String,
+    pub conclusion: String,
+    pub created: i64,
+}
+
+/// The merge queue's latest runs in `repo` (`gh run list --event merge_group`), newest first.
+pub async fn queue_runs(gh: &Path, repo: &str) -> Result<Vec<QueueRun>, String> {
+    let args = [
+        "run",
+        "list",
+        "--repo",
+        repo,
+        "--event",
+        "merge_group",
+        "--limit",
+        "50",
+        "--json",
+        "databaseId,headBranch,headSha,conclusion,createdAt",
+    ];
+    let listed = run(gh, &args).await?;
+    let runs: Vec<Value> = serde_json::from_str(&listed).map_err(|e| e.to_string())?;
+    Ok(runs
+        .iter()
+        .filter_map(|r| {
+            Some(QueueRun {
+                id: r["databaseId"].as_u64()?,
+                branch: r["headBranch"].as_str()?.to_owned(),
+                head: r["headSha"].as_str()?.to_owned(),
+                conclusion: r["conclusion"].as_str().unwrap_or_default().to_owned(),
+                created: obi_protocol::time::parse(r["createdAt"].as_str()?)?,
+            })
+        })
+        .collect())
+}
+
+/// Whose failure took a pull request out of the merge queue (AUTOFIX-11, 12).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Dropped {
+    /// Its own entry failed on code: the entry it was built on passed, or it was first. The run.
+    Own(u64),
+    /// The entry it was built on failed first: that entry's pull request, when its branch names it.
+    Another(Option<u64>),
+    /// Its own entry stopped for its runner (cancelled, timed out), with no failure under it.
+    Runner,
+}
+
+/// Whether pull request `pr` into `base` was taken out of the merge queue by a failed run since
+/// `since`, and whose failure it was: its newest entry's run (`gh-readonly-queue/<base>/pr-<pr>-`)
+/// ended and didn't pass, and none of its entries since passed or runs. Each entry is built on the
+/// commit the one under it tested (its branch's last part), so the run that tested that commit is
+/// the one under it. None while it's queued, passed or never ran.
+pub fn dropped(runs: &[QueueRun], base: &str, pr: u64, since: i64) -> Option<Dropped> {
+    let prefix = format!("gh-readonly-queue/{base}/pr-{pr}-");
+    let ours = (runs.iter())
+        .filter(|r| r.created >= since && r.branch.starts_with(&prefix))
+        .max_by_key(|r| r.created)?;
+    let passed = |c: &str| matches!(c, "success" | "neutral" | "skipped");
+    if ours.conclusion.is_empty() || passed(&ours.conclusion) {
+        return None;
+    }
+    let built_on = ours.branch.strip_prefix(&prefix)?;
+    let under = (runs.iter())
+        .filter(|r| r.head == built_on)
+        .max_by_key(|r| r.created);
+    if let Some(under) = under.filter(|u| !u.conclusion.is_empty() && !passed(&u.conclusion)) {
+        let number = (under.branch.rsplit_once("/pr-"))
+            .and_then(|(_, rest)| rest.split_once('-'))
+            .and_then(|(n, _)| n.parse().ok());
+        return Some(Dropped::Another(number));
+    }
+    Some(match ours.conclusion.as_str() {
+        "failure" => Dropped::Own(ours.id),
+        _ => Dropped::Runner,
+    })
 }
 
 /// A head's check runs and statuses (`statusCheckRollup`), summed up: any failed is `FAILURE`,
@@ -1455,6 +1596,81 @@ mod tests {
     /// MERGING-39: the failed checks' names come with the rollup; their logs are the last 300 lines
     /// of each of the first 3 failed runs, one whose log can't be read left out; with none, the
     /// names alone.
+
+    /// A queue run: `pr`'s entry built on `on`, testing `head`, ended `conclusion` at `at`.
+    fn queued(id: u64, pr: u64, on: &str, head: &str, conclusion: &str, at: i64) -> QueueRun {
+        QueueRun {
+            id,
+            branch: format!("gh-readonly-queue/dev/pr-{pr}-{on}"),
+            head: head.into(),
+            conclusion: conclusion.into(),
+            created: at,
+        }
+    }
+
+    /// AUTOFIX-11, 12: GitHub's queue stacks its entries, each built on what the one under it
+    /// tested (this repository's own runs of 2026-11-17: #2478 on dev, #2479 on it, #2476 on
+    /// that, all failed). The lowest failure is its own; those above it are another's.
+    #[test]
+    fn autofix_11_whose_failure_took_it_out_of_the_queue() {
+        let runs = [
+            queued(3, 2476, "c2", "c3", "failure", 30),
+            queued(2, 2479, "c1", "c2", "failure", 20),
+            queued(1, 2478, "dev0", "c1", "failure", 10),
+        ];
+        assert_eq!(dropped(&runs, "dev", 2478, 0), Some(Dropped::Own(1)));
+        assert_eq!(
+            dropped(&runs, "dev", 2479, 0),
+            Some(Dropped::Another(Some(2478)))
+        );
+        assert_eq!(
+            dropped(&runs, "dev", 2476, 0),
+            Some(Dropped::Another(Some(2479)))
+        );
+        assert_eq!(
+            dropped(&runs, "dev", 2478, 11),
+            None,
+            "nothing since it was queued again"
+        );
+        assert_eq!(dropped(&runs, "main", 2478, 0), None, "another base");
+        let passed = [queued(1, 2478, "dev0", "c1", "success", 10)];
+        assert_eq!(dropped(&passed, "dev", 2478, 0), None);
+        let running = [queued(1, 2478, "dev0", "c1", "", 10)];
+        assert_eq!(dropped(&running, "dev", 2478, 0), None);
+        let cancelled = [
+            queued(2, 2479, "c1", "c2", "cancelled", 20),
+            queued(1, 2478, "dev0", "c1", "success", 10),
+        ];
+        assert_eq!(dropped(&cancelled, "dev", 2479, 0), Some(Dropped::Runner));
+        let again = [
+            queued(4, 2478, "dev1", "c4", "", 40),
+            queued(1, 2478, "dev0", "c1", "failure", 10),
+        ];
+        assert_eq!(
+            dropped(&again, "dev", 2478, 0),
+            None,
+            "its newest entry still runs"
+        );
+    }
+
+    /// AUTOFIX-6: only a red head whose every failed check stopped for its runner is the runner's.
+    #[test]
+    fn autofix_6_a_runners_failure_is_every_failed_check_stopped() {
+        let read =
+            |list: Value| decode_merging(&json!({"statusCheckRollup": list}).to_string()).unwrap();
+        let run = |name: &str, conclusion: &str| json!({"name": name, "status": "COMPLETED", "conclusion": conclusion});
+        assert!(
+            read(json!([
+                run("a", "CANCELLED"),
+                run("b", "TIMED_OUT"),
+                run("c", "SUCCESS")
+            ]))
+            .infra
+        );
+        assert!(!read(json!([run("a", "CANCELLED"), run("b", "FAILURE")])).infra);
+        assert!(!read(json!([run("a", "SUCCESS")])).infra);
+        assert!(!read(json!([{"context": "ci", "state": "ERROR"}])).infra);
+    }
     #[tokio::test]
     async fn failed_logs_keep_each_runs_last_lines_else_the_names() {
         use std::os::unix::fs::PermissionsExt;

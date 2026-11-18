@@ -1419,6 +1419,16 @@ impl Link {
                 return Ok(shown);
             }
         }
+        // One more round on the card AUTOFIX left: as many fix rounds again (AUTOFIX-10).
+        if answer.as_deref() == Some(crate::merge::ONE_MORE_ROUND) {
+            let head = crate::merge::item_head(&item.id).unwrap_or_default();
+            if !self.jobs.one_more_round(&item.job, head) {
+                return Err(api(
+                    StatusCode::CONFLICT,
+                    "Oby isn't fixing that commit's checks any more: its pull request moved on.",
+                ));
+            }
+        }
         item.done = Some(time::now());
         // The owner's own done is the card's way of leaving it (Leave it open, Dismiss): an
         // answered card isn't offered again, as one the follower settled is.

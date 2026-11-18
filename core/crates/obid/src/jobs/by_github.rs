@@ -27,6 +27,7 @@ impl Jobs {
         merging: crate::github::Merging,
     ) {
         self.lock().handed.remove(id);
+        self.autofix_green(id, &merging);
         self.carry(id, gh, pr, merging).await;
         let kept = self.lock().handed.remove(id);
         if !kept {
@@ -172,9 +173,29 @@ impl Jobs {
             return outcome;
         }
         let id = job.id.as_str();
-        if job.auto_merge.as_ref().is_some_and(|a| a.head == head) {
-            self.lock().handed.insert(id.to_owned());
-            return Err(crate::merge::handed());
+        // GitHub's merge queue may have taken it out on a failed run since (AUTOFIX-11, 12).
+        let armed = (job.outgoing.iter().rev()).find(|o| o.action == "autoMerge");
+        let number = job
+            .published
+            .as_deref()
+            .and_then(|u| job.pull_request_number(u));
+        let dropped = match (job.auto_merge.as_ref(), armed, number) {
+            (Some(a), Some(armed), Some(n)) if queue && a.head == head => {
+                self.queue_dropped(job, gh, (&pr.base, n), head, armed.date)
+                    .await
+            }
+            _ => None,
+        };
+        match dropped {
+            Some(autofix::Queue::Again) => {}
+            Some(autofix::Queue::GaveUp(why)) => return Err(crate::merge::needs_you(why)),
+            Some(autofix::Queue::Working) | None
+                if job.auto_merge.as_ref().is_some_and(|a| a.head == head) =>
+            {
+                self.lock().handed.insert(id.to_owned());
+                return Err(crate::merge::handed());
+            }
+            _ => {}
         }
         if let Some((at, why)) = &job.auto_merge_refused
             && at == head

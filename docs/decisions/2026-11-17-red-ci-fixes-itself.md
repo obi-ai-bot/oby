@@ -1,10 +1,10 @@
 # AUTOFIX: a task's red checks are fixed by that task, with no card
 
 - **Date:** 2026-11-17
-- **Status:** Proposed: the design, before it is built. In force once the pull request that builds AUTOFIX-1 to 16 merges.
+- **Status:** In force
 - **Replaced:** For the owner's own work only: [AFTERPR-1](2026-11-11-afterpr-1.md)'s "a red GitHub check gets one round per job … A second red head gets the card" (MERGING-39), and MERGING-21's card for red checks.
 - **Changed by:** Nothing
-- **Contracts and scenarios:** a new `docs/contracts/autofix.md` (AUTOFIX-1 to 16, proposed below); [merging.md](../contracts/merging.md) (MERGING-21, 39, 41); [task-conversations.md](../contracts/task-conversations.md) (TASKCONV-29, 31); [github-work.md](../contracts/github-work.md)
+- **Contracts and scenarios:** [autofix.md](../contracts/autofix.md) (AUTOFIX-1 to 16); [merging.md](../contracts/merging.md) (MERGING-21, 39, 41); [task-conversations.md](../contracts/task-conversations.md) (TASKCONV-29, 31); [github-work.md](../contracts/github-work.md)
 
 ## The owner's words
 
@@ -14,10 +14,17 @@ The owner's words of 2026-11-17, as the session that asked for this design relay
 
 ## Where it is stated
 
-- `docs/contracts/autofix.md`, once built; until then, this file's "The design"
-- [merging.md](../contracts/merging.md), MERGING-39, which then holds only for work that isn't the owner's own
+- [autofix.md](../contracts/autofix.md)
+- [merging.md](../contracts/merging.md), MERGING-39, which holds only for work that isn't the owner's own, and MERGING-21's `One more round`
 
 ## Notes
+
+**As built** (the design below is how it was planned on 2026-11-17, before a line of code):
+- "The same failure" is the failed checks' names *and* a digest of their log's last 50 lines with every digit taken out. Names alone would have given up after one round in a repository whose one required check is `Check`.
+- AUTOFIX-14 (a Fix CI task watching the owner's pull request it pushed onto) is still proposed. Until it's built, that task's next red head gets the feed's `CI failed` card, as before.
+- The owner's two open questions weren't answered before "build it", so the design's defaults stand: a rerun first where the job's own check passed, and the `CI failed` card for pull requests Oby didn't push.
+- The merge queue is read from its runs alone (`gh run list --event merge_group`): GitHub's `pr view` has no field that says a pull request is in the queue. A pull request taken out by hand, with no failed run, stays as it was.
+
 
 ### What happens today, from a red check to a card
 
