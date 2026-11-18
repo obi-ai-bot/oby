@@ -14,6 +14,7 @@ pub mod api;
 pub mod app;
 pub mod approval;
 pub mod artifacts;
+pub mod autofix;
 pub mod brain;
 pub mod chatgpt;
 pub mod chatgpt_relay;
