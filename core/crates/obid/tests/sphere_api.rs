@@ -4189,6 +4189,9 @@ async fn sphere_23_a_key_rebound_by_sign_in_says_so_and_still_asks() {
             ernestos_pin(&obid)["fingerprint"],
             ernesto.owner.key.key_id()
         );
+    });
+}
+
 /// What the Sphere's directory holds for obid's own card after its owner signed in again and the
 /// Sphere bound it with no invitation (SPHERE-24): the owner's key bound, and the member `status`
 /// with its current key `public_key` (obid's own, unless a test says otherwise).
