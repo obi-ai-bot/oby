@@ -44,6 +44,7 @@ Three things must all be set, or the run refuses before it starts anything (exit
 The run uses that Sphere instead of starting one with `node scripts/local.mjs`. Everything else is as written: two real obids with stub agents, the same eight steps and checks. Only these differ:
 
 - The Sphere is `OBI_SPHERE_URL` and its operator token is `SPHERE_OPERATOR_TOKEN`; every "`http://127.0.0.1:<sphere port>`" above is that origin. obid accepts any `http(s)` Sphere base URL (`is_base_url`), so this is real obid over HTTPS.
+- Step 2.5 needs a Sphere whose `GET /v0.1/health` says `seal: true`: on one that doesn't, `sealing` never says `card_needed` and the run fails there, since obid sends nothing in the clear by default (SPHERE-18).
 - Step 1.2 creates Sphere `e2e-<8 hex digits>`, new for every run, in place of `e2e`; the owner assertions' `aud`, every `/v0.1/spheres/<id>/…` path and the envelope checks use that id.
 - Skipped, because there is no local Sphere process: step 1.1's start (the health check is still made), step 8.6's SIGTERM to the Sphere, and the Sphere's ports and write root (`R/sphere/`). obid A, obid B, the fixture and the checkouts' write checks stay.
 - **Cleanup:** v0.1 can't delete a Sphere. When the run ends, however it ends, the harness revokes both test Obis (`DELETE /v0.1/spheres/<id>/members/<obi>`, admin token) and prints the result. The Sphere, its members (revoked), invitations and audit rows stay in the deployed Sphere's database. If the revoke fails, the output says so and names the Sphere. An operator-only Sphere delete in obi-sphere would remove this leftover; it is a follow-up there.
@@ -136,7 +137,7 @@ The second request's result is the same plus `"by_rule": "<decision id>"`. Findi
 ### The decision and the inbox answer
 
 - The inbox item's options, in this order: `Accept`, `Accept, and remember for this repo`, `Decline`, `Decline, and remember for this repo`.
-- The test answers `Accept, and remember for this repo`, through `POST /v1/inbox/{id}/answer` on obid A, as the owner would.
+- The test answers `Accept, and remember for this repo`, through `POST /v1/inbox/{id}/answer` on obid A, as the owner would: signed by their device, since obid's token alone is refused (step 4.3).
 - That leaves one remembered decision, "reviews from ernesto on this repo": `{"type": "review_request", "fromOwner": "ernesto", "repo": "obi-e2e/fixture-app", "decision": "accept"}` with an id like `d-3f9a0c1b2e4d` (`d-` and 12 lower-case hex).
 
 ## The stub agent
@@ -171,7 +172,7 @@ Turned green by: **the Sphere server**.
 5. `GET /v0.1/spheres/e2e/policy` → `{"version": 0, "rules": [], …}`; `PUT /v0.1/spheres/e2e/policy` `{"expected_version": 0, "rules": [<team-reviews>]}` → `200` with `version` 1 and that rule.
 6. `GET /v0.1/spheres/e2e/audit` → `entries` `[]`, `head` `{"seq": 0, "hash": "000…000"}`.
 
-### Step 2: two obids up with stub agents, and paired
+### Step 2: two obids up with stub agents, paired, and sealing
 
 Turned green by: **the Rust core** (`obid`'s configuration and join), with **the Sphere server** (redeem).
 
@@ -193,21 +194,22 @@ Turned green by: **the Rust core** (`obid`'s configuration and join), with **the
    3. The harness signs the card as the owner (identity.md 2.1) and makes the delegation, an owner assertion signed by W: `{"iss": "wellington", "sub": "wellington", "aud": "obi-sphere:e2e", "iat": now, "exp": now + 3600, "jti": <uuid>, "scope": "send:review_request reply receive directory:read audit:read", "may_act": {"sub": "obi-wellington"}}`.
    4. `POST /v1/obid/sphere/join` `{"url": "http://127.0.0.1:<sphere port>", "sphere": "e2e", "invitation": {"id": "<invitation A id>", "secret": "<secret>"}, "card": <signed card>, "delegation": "<JWT>"}` → `200` membership with `state` `joined`, `obiId` `obi-wellington`, its `keyId`.
 4. `GET /v0.1/spheres/e2e/members` (admin token): two members, `obi-wellington` (owner `wellington`) and `obi-ernesto` (owner `ernesto`), both `active`, each with one key whose `key_id` is its obid's `keyId`, `valid_from_seq` 1, `valid_until_seq` null; each card passes the spec's card check with its owner's key bound (`verifyCard`).
+5. Sealed by default (docs/contracts/obysphere.md, SPHERE-18: obid sends no request in the clear to a member whose card has no seal key). For each obid, within 30 seconds `GET /v1/obid/sphere` says `sealing` `card_needed` (the Sphere's health says `seal: true` and every member reads seal keys; `GET /v1/obid/sphere/members` reads the directory again); the harness signs the card `POST /v1/obid/sphere/card` now makes, with obid's seal key, as the owner, and sends it with `PUT /v1/obid/sphere/membership` `{"card"}` → `200`, as the app does, until `sealing` is `on` (at most three rounds), and keeps its `sealKeyId`. Then, within 30 seconds, each obid's `GET /v1/obid/sphere/members` lists the other with `sealed` `true`. A card update adds no audit entry and keeps each Obi's one key.
 
-### Step 3: B sends review_request via relay
+### Step 3: B sends a sealed review_request via relay
 
 Turned green by: **the Rust core** (Obi-to-Obi client) and **the Sphere server** (send).
 
-1. `POST /v1/obid/sphere/requests` on B: `{"to": "obi-wellington", "type": "review_request", "body": <the brief>, "expiresIn": 3600}` → `202` exchange with `correlationId` **X**, `direction` `outgoing`, `peer` `obi-wellington`, `state` `sent`, and one message: the signed envelope with `seq` 1.
-2. `GET /v0.1/spheres/e2e/audit` (admin token): one entry, `seq` 1, whose envelope deep-equals B's message: `type` `review_request`, `from` `obi-ernesto`, `to` `obi-wellington`, `id` and `correlation_id` X, `key_id` B's key, `body` deep-equal to the brief. The spec's `verifyEnvelope` accepts it with the context `{now: <the harness's clock>, sphere: "e2e", receiver: "obi-wellington", keys: <every member's keys from GET /v0.1/spheres/e2e/members>, seq: 1, seen_ids: []}`, keys given as `{key_id: {obi, public_key, valid_from_seq, valid_until_seq}}`.
+1. `POST /v1/obid/sphere/requests` on B: `{"to": "obi-wellington", "type": "review_request", "body": <the brief>, "expiresIn": 3600}` → `202` exchange with `correlationId` **X**, `direction` `outgoing`, `peer` `obi-wellington`, `state` `sent`, and one message: the signed envelope with `seq` 1, sealed for A's seal key (`seal.key_id` A's `sealKeyId`). B keeps its own words opened in `body`, deep-equal to the brief, and the body as signed in `sealed`; "as signed" below means that envelope with `sealed` put back as `body`.
+2. `GET /v0.1/spheres/e2e/audit` (admin token): one entry, `seq` 1, whose envelope deep-equals B's message as signed: `type` `review_request`, `from` `obi-ernesto`, `to` `obi-wellington`, `id` and `correlation_id` X, `key_id` B's key, `seal.key_id` A's seal key. Nothing the Sphere stores carries the brief's words: neither `OBI-E2E-DATA-CANARY` nor its `goal`. The spec's `verifyEnvelope` accepts it with the context `{now: <the harness's clock>, sphere: "e2e", receiver: "obi-wellington", keys: <every member's keys from GET /v0.1/spheres/e2e/members>, seq: 1, seen_ids: [], seal_keys: <A's seal key>, sender_seals: true}`, keys given as `{key_id: {obi, public_key, valid_from_seq, valid_until_seq}}`, and its words opened with A's seal key (the spec's `openBody`) are deep-equal to the brief. A's seal key is read from this run's own scratch obid (`R/obid-a/home/keys/seal.key`), never anyone's real one.
 
-### Step 4: A has no remembered decision: inbox, owner accepts and remembers, review job dispatched
+### Step 4: A has no remembered decision: inbox, an unsigned Accept is refused, the owner's signed accept and remember, review job dispatched
 
 Turned green by: **the Rust core**.
 
 1. `GET /v1/obid/decisions` on A → `[]`.
 2. Within 30 seconds, `GET /v1/inbox` on A lists exactly one item of `kind` `obiRequest` whose `obi.correlationId` is X. Its `options` are the four above, in order; its `title` and `text` don't contain `OBI-E2E-DATA-CANARY`; `obi.quoted.goal` is the brief's `goal`. A's `GET /v1/obid/sphere/exchanges/X`: `direction` `incoming`, `state` `inbox`, `inboxItem` that item's `id`.
-3. `POST /v1/inbox/{id}/answer` on A: `{"answer": "Accept, and remember for this repo"}` → `200`, the item with `state` `done` and that `answer`.
+3. Accepting another Oby's work takes the owner's own hand (SPHERE-17). `POST /v1/inbox/{id}/answer` on A with obid's token alone, `{"answer": "Accept"}` and then `{"answer": "Accept, and remember for this repo"}`: each `403`; A's exchange X is still `inbox` with no job, and `GET /v1/obid/decisions` is still `[]`. Then the same `{"answer": "Accept, and remember for this repo"}` signed by the owner's device (`X-Oby-Words`, as the app's main signs a click: a P-256 key the harness makes in memory, registered with `POST /v1/devices` while `home/pairing` names it) → `200`, the item with `state` `done` and that `answer`.
 4. `GET /v1/obid/decisions` on A: exactly one decision, matching "The decision and the inbox answer" above; call its id **D1**.
 5. Within 10 seconds A's exchange X has `state` `accepted` or `done`, `decidedBy` `inbox`, `rule` null and a `job` **J1**. `GET /v1/jobs/J1`: `kind` `review`, `repo` `obi-e2e/fixture-app`, `obi.correlationId` X, `obi.fromOwner` `ernesto`, and a `worktree` inside `R/obid-a/home/worktrees/`.
 
@@ -218,7 +220,7 @@ Turned green by: **the Rust core** (the job, the check, finding ids, the publish
 1. `GET /v1/jobs/J1/wait` on A, within 120 seconds: `status` `done`, `publishError` null, `published` null, `outgoing` `[]` (nothing pushed, no pull request, no check run).
 2. J1's worktree: `git rev-parse HEAD` is `6d20146f…`; `git status --porcelain --untracked-files=all` lists nothing outside `.obi/`.
 3. A's exchange X: `state` `done`, `publishScan` `{"ran": true, "clean": true}`.
-4. Within 30 seconds B's exchange X has `state` `done`, and its messages are, in order: the request (sent), an `accept` with an empty body (received), any number of `status` (received), and a `result` (received) whose body is exactly the expected result above. No `status` comes before the `accept`: the protocol would allow one, but obid never sends one (docs/runner-api.md, "What obid sends in an exchange it was asked in"). Every received envelope passes the spec's `verifyEnvelope` with the context `{now: <the harness's clock>, sphere: "e2e", receiver: "obi-ernesto", keys: <every member's keys, as in step 3.2>, seq: <its seq in B's exchange>, seen_ids: []}`.
+4. Within 30 seconds B's exchange X has `state` `done`, and its messages are, in order: the request (sent), an `accept` with an empty body (received), any number of `status` (received), and a `result` (received) whose body is exactly the expected result above. No `status` comes before the `accept`: the protocol would allow one, but obid never sends one (docs/runner-api.md, "What obid sends in an exchange it was asked in"). Every received envelope is sealed for B's seal key and, as signed, passes the spec's `verifyEnvelope` with the context `{now: <the harness's clock>, sphere: "e2e", receiver: "obi-ernesto", keys: <every member's keys, as in step 3.2>, seq: <its seq in B's exchange>, seen_ids: [], seal_keys: <B's seal key>, sender_seals: true}`.
 
 ### Step 6: second review_request accepted from the remembered decision, no inbox
 
@@ -235,7 +237,7 @@ Turned green by: **the Sphere server** (with each Obi's signatures).
 
 1. `GET /v0.1/spheres/e2e/audit?from_seq=1&limit=1000` and `GET /v0.1/spheres/e2e/members` (admin token).
 2. The spec's `verifyChain({sphere: "e2e", entries}, {keys})`, with every member's key history, accepts the chain (sphere-api.md 7.1).
-3. The entries are exactly the two exchanges: for X and then Y, a `review_request` from `obi-ernesto` signed with B's key, an `accept` and a `result` from `obi-wellington` signed with A's key, and any `status` from `obi-wellington` in between; nothing else. Each entry's envelope deep-equals the one in its sender's exchange, signature included. `head.seq` is the number of entries and `head.hash` the last entry's `hash`.
+3. The entries are exactly the two exchanges: for X and then Y, a `review_request` from `obi-ernesto` signed with B's key, an `accept` and a `result` from `obi-wellington` signed with A's key, and any `status` from `obi-wellington` in between; nothing else. Each entry's envelope deep-equals the one in its sender's exchange as signed (sealed, `sealed` put back as `body`), signature included. `head.seq` is the number of entries and `head.hash` the last entry's `hash`.
 
 ### Step 8: final assertions
 
