@@ -31,7 +31,8 @@ export function ToolBinary({ tool, info, onSaved }: { tool: string; info?: Tool;
     setProblem(null);
     try {
       const now = await api.setAgentBin(tool, bin);
-      onSaved({ ...info, ...now, versionStatus: info?.versionStatus });
+      // (its version's status comes with obid's next status; till then, the one it had)
+      onSaved({ ...info, ...now, versionStatus: info?.versionStatus ?? 'untested' });
       setText(null);
     } catch (e) {
       setProblem(e instanceof Error ? e.message : String(e));

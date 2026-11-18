@@ -130,6 +130,48 @@ impl Held<'_> {
     }
 }
 
+impl Held<'_> {
+    /// The projects kept under `from` (a profile being deleted, PROFILES-44) added to the default
+    /// profile's, after its own, and kept: the default's as they were, for [`Self::put_back_home`].
+    /// Either file not reading, or the default's not written, changes nothing.
+    pub fn merge_into_home(&mut self, from: &Path) -> Result<Vec<Project>, ApiError> {
+        let theirs = self.at(from).clone().map_err(|why| unreadable(&why))?;
+        let home = self.home.to_path_buf();
+        let ours = self.at(&home).as_mut().map_err(|why| unreadable(why))?;
+        let before = ours.clone();
+        if theirs.is_empty() {
+            return Ok(before);
+        }
+        ours.extend(theirs);
+        if let Err(e) = keep(&home, ours) {
+            *ours = before;
+            return Err(e);
+        }
+        Ok(before)
+    }
+
+    /// The default profile's projects put back as [`Self::merge_into_home`] found them.
+    pub fn put_back_home(&mut self, before: Vec<Project>) {
+        let home = self.home.to_path_buf();
+        if let Ok(ours) = self.at(&home)
+            && ours.len() != before.len()
+        {
+            if let Err(e) = keep(&home, &before) {
+                tracing::error!(
+                    "the default profile's projects weren't put back: {}",
+                    e.message
+                );
+            }
+            *ours = before;
+        }
+    }
+
+    /// `root`'s projects forgotten: its profile is gone.
+    pub fn forget(&mut self, root: &Path) {
+        self.roots.remove(root);
+    }
+}
+
 impl std::ops::Deref for Held<'_> {
     type Target = Kept;
 

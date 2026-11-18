@@ -208,18 +208,21 @@ fn order(
     tried
 }
 
-/// The account a new conversation's first turn would talk through now.
-pub fn next(shared: &Shared) -> Option<String> {
+/// The account a new conversation of `scope`'s profile would talk through now: one of its
+/// accounts (B00-40, PROFILES-47).
+pub fn next(shared: &Shared, scope: &crate::profiles::Scope) -> Option<String> {
+    next_with(shared, scope).map(|(_, account)| account.id)
+}
+
+/// [`next`], with its tool and account.
+pub fn next_with(shared: &Shared, scope: &crate::profiles::Scope) -> Option<(Tool, Account)> {
     let chosen = crate::settings::load(&shared.config.home).talk_account;
     let chosen = chosen.filter(|id| {
         id != AUTO && crate::accounts::find(&shared.config.agents.get(), id).is_some()
     });
-    // A new conversation of the default profile's: one of its accounts (B00-40).
-    let scope = shared.profiles.default_scope();
     accounts(shared, chosen.as_deref(), None, None)
         .into_iter()
-        .find(|(_, account)| shared.profiles.accounts.holds(&scope, &account.id))
-        .map(|(_, account)| account.id)
+        .find(|(_, account)| shared.profiles.accounts.holds(scope, &account.id))
 }
 
 /// The account the turn is off, having answered on `answered`: the one that failed this turn, else

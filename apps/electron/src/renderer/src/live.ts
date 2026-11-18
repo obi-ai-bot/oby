@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
-import { knownUpTo, withEntries, withLine } from './liveTask';
+import { knownUpTo, withEntries, withLine, withOutput, withTail } from './liveTask';
 import { LIMIT_REACHED, LIMIT_WORDS, MANAGE_USAGE, manageUsage } from './chatgpt';
 import { ApiError, api, isInboxKind, isJobStatus, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type AgentQuestion, type CheckRun, type Repo, type Status, type TranscriptEntry, type Turn, type AskMark } from './obid';
 import { carriedOn, detailOf, pageOf, publishOf, stagesOf } from './jobPage';
@@ -79,7 +79,7 @@ const set = (patch: Partial<Live>) => {
 // putting back the job its own `deleted` event took away)
 // (main brings an event's item's job itself; an answer's the page asks it for)
 const takeEvent = (e: Event) => {
-  if (e.kind === 'transcript' || e.kind === 'transcriptLine') return heard(e);
+  if (e.kind === 'transcript' || e.kind === 'transcriptLine' || e.kind === 'transcriptTail' || e.kind === 'transcriptOutput') return heard(e);
   if (e.kind === 'jobGone') sessions.delete(e.id);
   set(apply(state, e));
 };
@@ -624,7 +624,7 @@ export function lookAtUsage() {
 
 // --- events
 
-export function apply(s: Live, e: Exclude<Event, { kind: 'transcript' | 'transcriptLine' }>): Live {
+export function apply(s: Live, e: Exclude<Event, { kind: 'transcript' | 'transcriptLine' | 'transcriptTail' | 'transcriptOutput' }>): Live {
   switch (e.kind) {
     // A question's card on a turn changes only the card, and nothing about a turn under way
     case 'job': case 'jobGone': case 'inbox': case 'turnAsks': case 'accounts': case 'github':
@@ -1057,9 +1057,15 @@ const sessions = new Map<string, TranscriptEntry[]>();
 const sessionListeners = new Map<string, Set<() => void>>();
 export const sessionNow = (id: string) => sessions.get(id);
 const setSession = (id: string, entries: TranscriptEntry[]) => { sessions.set(id, entries); sessionListeners.get(id)?.forEach((l) => l()); };
-function heard(e: Extract<Event, { kind: 'transcript' | 'transcriptLine' }>) {
+function heard(e: Extract<Event, { kind: 'transcript' | 'transcriptLine' | 'transcriptTail' | 'transcriptOutput' }>) {
   const had = sessions.get(e.job);
-  if (had) setSession(e.job, e.kind === 'transcript' ? withEntries(had, [e.entry]) : withLine(had, e.n, e.append));
+  if (!had) return;
+  switch (e.kind) {
+    case 'transcript': return setSession(e.job, withEntries(had, [e.entry]));
+    case 'transcriptLine': return setSession(e.job, withLine(had, e.n, e.append));
+    case 'transcriptTail': return setSession(e.job, withTail(had, e.n, e.tail));
+    case 'transcriptOutput': return setSession(e.job, withOutput(had, e.n, e.output));
+  }
 }
 // the last to stop showing it lets it go: a job looked at once costs nothing from then on
 export const useSession = (id: string) => useSyncExternalStore(useCallback((l: () => void) => {

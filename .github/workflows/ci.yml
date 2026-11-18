@@ -688,7 +688,11 @@ jobs:
           # The Brain's map is reported, never a failure (the owner's word, 2026-11-17; CI-56).
           if needs.get("brain", {}).get("result") == "failure":
               lines += ["", "The Brain's map is out of date with this change: reported, not a failure. Fix tools/brain in a follow-up."]
-          bad = [job for job, need in needs.items() if job != "brain" and need["result"] in ("failure", "cancelled")]
+          # The proofs are reported, never a failure too (the owner's word, 2026-11-17).
+          if needs.get("proofs", {}).get("result") == "failure":
+              lines += ["", "A proof failed: reported, not a failure. See the proofs job, and fix it in a follow-up."]
+          reported = ("brain", "proofs")
+          bad = [job for job, need in needs.items() if job not in reported and need["result"] in ("failure", "cancelled")]
           if plan["result"] != "success":
               verdict = f"Failed: plan {plan['result']}, so no lane can be trusted."
           elif bad:

@@ -60,6 +60,28 @@ export async function createProfile(name: string, color: string) {
   return made;
 }
 
+// A profile's new name or colour (only what changed is sent): obid's refusal, an ApiError, goes to the
+// form as it said it; on the mock, the mock. Then it's listed as obid answered it
+export async function changeProfile(id: string, change: { name?: string; color?: string }) {
+  const was = state.list?.find((p) => p.id === id);
+  const changed = onObid ? await api.changeProfile(id, change) : { ...was!, ...change };
+  set({ list: (state.list ?? []).map((p) => (p.id === id ? changed : p)) });
+  return changed;
+}
+
+// Deleting a profile: obid makes everything it kept the default's (docs/contracts/profiles.md,
+// PROFILES-44); its refusal goes to the form. Gone from the list, and the open one, if it was, is the
+// default, whose window main then reads (tellMain)
+export async function deleteProfile(id: string) {
+  if (onObid) await api.deleteProfile(id);
+  set({ list: (state.list ?? []).filter((p) => p.id !== id) });
+  if (state.kept === id) {
+    set({ kept: null });
+    try { localStorage.removeItem(KEPT); } catch { /* the default opens anyway: the kept one isn't listed */ }
+  }
+  void tellMain();
+}
+
 // The panel's conversations under the open profile: on the mock, each its own. On obid, obid answers
 // only the open profile's (tellMain), so all of them, as they are
 export function profileChats(chats: Chat[], list: Profile[] | null, kept: string | null) {

@@ -41,6 +41,10 @@ export type TranscriptEntry = {
   todos?: { text: string; state: 'pending' | 'running' | 'done' | (string & {}) }[];
   // this app's, not obid's: it came from a fetch, not an event (liveTask.ts, withLine)
   fetched?: boolean;
+  // this app's too, from obid's events while it runs (LIVETASK-32, 34): a said entry's words past
+  // its last whole line, and a running call's last lines and how many it printed so far
+  tail?: string;
+  output?: { text: string; lines: number };
 };
 // What a call took in and gave back (GET /v1/jobs/{id}/transcript/{n}), masked as the transcript is; kept: false, past what obid keeps
 export type EntryDetail = {
@@ -266,8 +270,15 @@ export type Status = {
   // obid only: the account conversations talk through (none: Auto), and the one a new one's first turn would
   talkAccount?: string | null;
   talkNext?: string | null;
-  // obid only: the tools' own logins found on this Mac that aren't accounts yet
+  // obid only: the tools' own logins found on this Mac that aren't accounts yet (held by no profile)
   availableLogins?: { agent: Agent; id: string; name: string }[];
+  // obid only: the tools' own logins on this Mac that another profile holds, by its id and name
+  // (docs/contracts/profiles.md, PROFILES-43); an older obid sends none
+  otherProfileLogins?: { agent: Agent; id: string; profile: string; profileName: string }[];
+  // obid only: each tool's binary (path null when it isn't found) and its version (CLIVERSIONS);
+  // an older obid sends none. bin: what obid runs it as, binSet: the owner set it in Settings
+  // (ACCOUNTS-26); an older obid sends neither
+  tools?: { agent: string; bin?: string; binSet?: boolean; path: string | null; version: string | null; versionStatus: string; knownBadReason?: string }[];
   models: Record<string, { model: string }>;
   maxRunning: number;
   running: number;
@@ -283,9 +294,6 @@ export type Status = {
   unreadable?: { path: string; error: string; since: string }[];
   // obid only: the optional features it serves, by name (docs/contracts/capabilities.md); an obid before R06-01 sends none
   capabilities?: string[];
-  // each tool's binary: what obid runs it as (bin, binSet: the owner set it in Settings, ACCOUNTS-26),
-  // where it found it and its version, each null when it isn't found; older obids send no bin
-  tools?: { agent: string; bin?: string; binSet?: boolean; path: string | null; version: string | null; versionStatus?: string; knownBadReason?: string }[];
 };
 
 // obid only: "GET /v1/repos", the repositories a job may start in: the listed ones first, then
@@ -420,7 +428,10 @@ export type Event =
   | { kind: 'github'; work: GitHubWork }
   // obid only: an entry of a job's session that came or changed, and a line its agent just wrote
   | { kind: 'transcript'; job: string; entry: TranscriptEntry }
-  | { kind: 'transcriptLine'; job: string; n: number; append: string };
+  | { kind: 'transcriptLine'; job: string; n: number; append: string }
+  // ...the words it's writing past that line, and a running command's last lines (LIVETASK-32, 34)
+  | { kind: 'transcriptTail'; job: string; n: number; tail: string }
+  | { kind: 'transcriptOutput'; job: string; n: number; output: { text: string; lines: number } };
 
 // Server-Sent Events, as the stream's text comes in a piece at a time: each event's name and data
 // to `onEvent`; comments (`: ping`) and other fields are skipped (apps/web/src/api.ts).
@@ -477,6 +488,11 @@ export function parseEvent(name: string, data: string): Event | null {
     case 'transcript':
       if (typeof v.job !== 'string') return null;
       if (typeof v.n === 'number' && typeof v.append === 'string') return { kind: 'transcriptLine', job: v.job, n: v.n, append: v.append };
+      if (typeof v.n === 'number' && typeof v.tail === 'string') return { kind: 'transcriptTail', job: v.job, n: v.n, tail: v.tail };
+      if (typeof v.n === 'number' && typeof (v.output as { text?: unknown } | undefined)?.text === 'string') {
+        const o = v.output as { text: string; lines?: unknown };
+        return { kind: 'transcriptOutput', job: v.job, n: v.n, output: { text: o.text, lines: typeof o.lines === 'number' ? o.lines : 0 } };
+      }
       return typeof (v.entry as TranscriptEntry | undefined)?.n === 'number' ? { kind: 'transcript', job: v.job, entry: v.entry as TranscriptEntry } : null;
     default: return null;
   }

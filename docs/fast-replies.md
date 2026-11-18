@@ -40,7 +40,7 @@ Measured with a throwaway obid (debug build, its own home, events followed over 
 
 Claude Code connects its MCP servers when it starts, before any prompt: with a test server that took 4 s per request and a prompt sent 25 s after the start, `init` came 41 ms after the prompt. So a Claude Code started ahead saves both its start and the connection, as the Agent SDK's `prewarm()` does.
 
-After each of the owner's turns, obid names the next new conversation's id and readies its room, box, login copy and MCP configuration, then starts its Claude Code with no prompt. Until a turn is under way, its token may only connect to Oby's tools and list them. The new conversation's first turn is written to it like a follow-up.
+After each of the owner's turns, obid names the next new conversation's id and readies its room, box, login copy and MCP configuration, then starts its Claude Code with no prompt. It does this for each profile (docs/contracts/profiles.md, PROFILES-46 and 47): the turn's profile first, then the others whose new conversation would talk on Claude Code through one of their own accounts, three profiles at most, one at a time. Until a turn is under way, its token may only connect to Oby's tools and list them. The new conversation's first turn is written to it like a follow-up.
 
 Measured the same way, back to back with #726's code, at load 290–350. The second new conversation in a run got:
 

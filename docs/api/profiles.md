@@ -24,7 +24,9 @@ Chrome-style profiles on this Mac (docs/contracts/profiles.md): a local id and n
 {"id": "3f0c…", "name": "Home", "color": "#3a5a8c", "default": true, "waiting": false}
 ```
 
-Both answer `{"error": "…"}` with:
+**`DELETE /v1/profiles/{id}`** (PROFILES-44, 45): a profile that isn't the default goes, answering `204` with no body. Everything it kept becomes the default profile's, and nothing is deleted, stopped or signed out: its projects are added to the default's `projects.json` after its own (same ids), its id is kept in `profiles.json` under `"merged": [ids]` (left out of the file until a profile is deleted), which makes every conversation, job, helper, account and vault secret kept with it the default's, and its folder `home/profiles/<id>` goes. A request naming it then is refused `400` as an unknown profile. `409` for the default profile (`The default profile isn't deleted…`) or while `profiles.json` didn't read at start; `404` for an id no profile has; `500` when the default's `projects.json` doesn't read or can't be written, or `profiles.json` can't be written (the default's projects put back as they were). Each refusal writes nothing.
+
+Each answers `{"error": "…"}` with:
 
 - `400`: a body that isn't JSON or isn't a profile, a missing, blank or over-40-character name, a colour that isn't `#rrggbb`, an unknown key, or a change with no key. Nothing is written.
 - `404` (`PATCH` only): no profile has that id. Nothing is written.
@@ -39,7 +41,7 @@ Older runners answer `404`.
 
 - `GET /v1/conversations` (`q=` too) and `GET /v1/conversation` answer only the profile's conversations; `POST /v1/plans` `{"new": true}` makes one in it, and `conversation` naming another profile's is `404`.
 - `GET /v1/jobs` lists only the profile's jobs; `POST /v1/jobs` makes one in it, on its accounts only (naming another profile's account is refused as one obid doesn't have).
-- `GET /v1/status`'s `accounts` lists only the profile's; `POST /v1/accounts` adds one to it.
+- `GET /v1/status`'s `accounts` lists only the profile's; `POST /v1/accounts` adds one to it. Its `availableLogins` are the tools' own logins no profile holds; `otherProfileLogins` (add-only, PROFILES-43) are those another profile holds as an account, `[{"agent", "id", "profile", "profileName"}]`, by the holding profile's id and name; and `talkNext` is the account a new conversation of the profile would talk through.
 - `GET /v1/helpers` lists only the profile's; `POST /v1/helpers` makes one in it (`profile`, when sent, must be the request's: `422` otherwise).
 - `GET /v1/obid/vault` lists only the profile's names; `PUT` of a name another profile keeps is `409`, `DELETE` of one `404`.
 - `/v1/jobs/{id}…`, `/v1/conversations/{id}`, `/v1/accounts/{id}…` and `/v1/helpers/{id}` of another profile's are `404`, as an id obid doesn't have.

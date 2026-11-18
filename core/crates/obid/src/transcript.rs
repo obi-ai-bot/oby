@@ -24,6 +24,11 @@ const NAME: usize = 64;
 const SUMMARY: usize = 200;
 /// How many items of a to-do list an entry keeps.
 const TODOS: usize = 50;
+/// How many of a running command's last lines stream, at most this many bytes (LIVETASK-34).
+const LIVE_LINES: usize = 40;
+const LIVE_BYTES: usize = 8 * 1024;
+/// How much of a running command's output is kept to find them in: as much as its detail reads.
+const LIVE_RAW: usize = 128 * 1024;
 /// How much of a job's transcript obid keeps: past either, it writes no more of it.
 pub const MOST_ENTRIES: u64 = 5_000;
 pub const MOST_BYTES: u64 = 8 * 1024 * 1024;
@@ -77,7 +82,23 @@ pub struct Entry {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Change {
     Entry(Box<Entry>),
-    Append { n: u64, text: String },
+    Append {
+        n: u64,
+        text: String,
+    },
+    /// The words of the `said` entry `n` past its last whole line, up to their last whole word,
+    /// masked: each replaces the one before, and a line appended ends it (LIVETASK-32, 33).
+    Tail {
+        n: u64,
+        text: String,
+    },
+    /// The command `n`'s last whole lines while it runs, masked, and how many lines it printed so
+    /// far: each replaces the one before (LIVETASK-34, 35).
+    Output {
+        n: u64,
+        text: String,
+        lines: u64,
+    },
 }
 
 impl From<Entry> for Change {
@@ -99,6 +120,70 @@ struct Writing {
     /// What's held back went past [`crate::detail::TEXT_BYTES`] (a message mostly of base64, a
     /// key that never ends): the message streams no more, and its whole text replaces it.
     stopped: bool,
+    /// The words past the last whole line as they last went out ([`Change::Tail`]).
+    tail_sent: String,
+}
+
+/// A command's output while it runs (LIVETASK-34): its last [`LIVE_RAW`] bytes or so, from a whole
+/// line on, and where Claude Code keeps it.
+struct Running {
+    /// Its transcript entry.
+    n: u64,
+    raw: String,
+    /// The lines it printed so far, all of them.
+    lines: u64,
+    /// What came went past [`LIVE_RAW`] inside one line: dropped until that line ends.
+    skipping: bool,
+    /// Claude Code's task running it, and its output file once there's a session to find it in.
+    task: Option<String>,
+    spill: Option<crate::spill::Spill>,
+    /// What came since its lines last went out, and what went out then.
+    changed: bool,
+    sent: String,
+}
+
+impl Running {
+    fn new(n: u64) -> Running {
+        Running {
+            n,
+            raw: String::new(),
+            lines: 0,
+            skipping: false,
+            task: None,
+            spill: None,
+            changed: false,
+            sent: String::new(),
+        }
+    }
+
+    fn push(&mut self, mut text: &str) {
+        self.lines += text.matches('\n').count() as u64;
+        if self.skipping {
+            match text.find('\n') {
+                Some(end) => {
+                    self.skipping = false;
+                    text = &text[end + 1..];
+                }
+                None => return,
+            }
+        }
+        self.raw.push_str(text);
+        self.changed = true;
+        if self.raw.len() > 2 * LIVE_RAW {
+            let mut from = self.raw.len() - LIVE_RAW;
+            while !self.raw.is_char_boundary(from) {
+                from += 1;
+            }
+            // From a whole line on: what's left of a line cut in two isn't shown.
+            match self.raw[from..].find('\n') {
+                Some(end) => drop(self.raw.drain(..from + end + 1)),
+                None => {
+                    self.raw.clear();
+                    self.skipping = true;
+                }
+            }
+        }
+    }
 }
 
 /// One item of the agent's to-do list.
@@ -139,6 +224,10 @@ struct Live {
     tasks: Vec<Todo>,
     /// The `thought` entry of the thinking going on now, and when it began.
     thinking: Option<(u64, Instant)>,
+    /// The agent's session, where Claude Code keeps a running command's output (crate::spill).
+    session: Option<String>,
+    /// The commands running, by call, with their output so far (LIVETASK-34).
+    running: HashMap<String, Running>,
 }
 
 pub struct Transcripts {
@@ -192,42 +281,69 @@ impl Transcripts {
                 lines,
                 output,
                 patches,
-            } => live
-                .open
-                .remove(id)
-                .map(|(mut entry, started, mut detail)| {
-                    if let Some(output) = output {
-                        detail["output"] = crate::detail::output(output, *exit);
-                    }
-                    if !patches.is_empty() {
-                        detail["diff"] = patches
-                            .iter()
-                            .map(|(path, patch)| {
-                                crate::detail::patch(
-                                    &shown_path(path, worktree),
-                                    &placed(patch, worktree),
-                                )
-                            })
-                            .collect();
-                    }
-                    details.push((entry.n, detail));
-                    let declined = live.declined.as_deref() == Some(id.as_str());
-                    entry.state = Some(
-                        match (declined, failed) {
-                            (true, _) => "declined",
-                            (_, true) => "failed",
-                            _ => "done",
+            } => {
+                live.running.remove(id);
+                live.open
+                    .remove(id)
+                    .map(|(mut entry, started, mut detail)| {
+                        if let Some(output) = output {
+                            detail["output"] = crate::detail::output(output, *exit);
                         }
-                        .into(),
-                    );
-                    entry.seconds = Some(tenths(started));
-                    entry.exit = *exit;
-                    if let Some((added, removed)) = lines {
-                        (entry.added, entry.removed) = (Some(*added), Some(*removed));
-                    }
-                    vec![entry]
-                })
-                .unwrap_or_default(),
+                        if !patches.is_empty() {
+                            detail["diff"] = patches
+                                .iter()
+                                .map(|(path, patch)| {
+                                    crate::detail::patch(
+                                        &shown_path(path, worktree),
+                                        &placed(patch, worktree),
+                                    )
+                                })
+                                .collect();
+                        }
+                        details.push((entry.n, detail));
+                        let declined = live.declined.as_deref() == Some(id.as_str());
+                        entry.state = Some(
+                            match (declined, failed) {
+                                (true, _) => "declined",
+                                (_, true) => "failed",
+                                _ => "done",
+                            }
+                            .into(),
+                        );
+                        entry.seconds = Some(tenths(started));
+                        entry.exit = *exit;
+                        if let Some((added, removed)) = lines {
+                            (entry.added, entry.removed) = (Some(*added), Some(*removed));
+                        }
+                        vec![entry]
+                    })
+                    .unwrap_or_default()
+            }
+            // What a running command printed (LIVETASK-34): kept for [`Transcripts::tick`].
+            Event::Output { id, text } => {
+                if let Some((entry, _, _)) = live.open.get(id) {
+                    let n = entry.n;
+                    live.running
+                        .entry(id.clone())
+                        .or_insert_with(|| Running::new(n))
+                        .push(text);
+                }
+                vec![]
+            }
+            Event::Spilled { id, task } => {
+                if let Some((entry, _, _)) = live.open.get(id) {
+                    let n = entry.n;
+                    live.running
+                        .entry(id.clone())
+                        .or_insert_with(|| Running::new(n))
+                        .task = Some(task.clone());
+                }
+                vec![]
+            }
+            Event::Session(session) => {
+                live.session = Some(session.clone());
+                vec![]
+            }
             // ponytail: a refusal names no call; it's about the latest one still running, which
             // is the one asking.
             Event::Denied(_) => {
@@ -298,8 +414,7 @@ impl Transcripts {
                 }
             },
             Event::Plan(todos) => vec![plan(live, todos.clone())],
-            Event::Session(_)
-            | Event::Step(_)
+            Event::Step(_)
             | Event::Usage(_)
             | Event::Tokens(_)
             | Event::Connectors(_)
@@ -427,6 +542,7 @@ impl Transcripts {
                 }) => said(live, "said", &pending),
                 None => vec![],
             };
+            live.running.clear();
             let mut ended: Vec<Entry> = live
                 .open
                 .drain()
@@ -458,6 +574,70 @@ impl Transcripts {
         if let Some(folder) = self.path(job).parent() {
             let _ = std::fs::remove_dir(folder);
         }
+    }
+
+    /// What streams about every tenth of a second while the job's agent runs, each when it changed
+    /// since it last went out: the words it's writing past their last whole line (LIVETASK-32, 33),
+    /// which make their `said` entry when none is made yet, and each running command's last lines
+    /// (LIVETASK-34, 35). `temp` is the run's `CLAUDE_CODE_TMPDIR`, where Claude Code keeps what a
+    /// running command prints (crate::spill). Nothing for a job whose agent isn't running here.
+    pub fn tick(&self, job: &str, temp: Option<&Path>) -> Vec<Change> {
+        let mut all = self.live.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(live) = all.get_mut(job) else {
+            return vec![];
+        };
+        let mut changes: Vec<Change> = Vec::new();
+        let tail = live
+            .writing
+            .as_ref()
+            .and_then(|w| tail_of(w).filter(|tail| *tail != w.tail_sent));
+        if let Some(tail) = tail {
+            let mut n = live.writing.as_ref().and_then(|w| w.n);
+            if n.is_none() {
+                let mut made = entry(
+                    live,
+                    "said",
+                    None,
+                    crate::brain::briefing::line(&tail, WORDS),
+                );
+                made.text = Some(String::new());
+                let written = self.write(job, live, vec![made]);
+                n = written.first().map(|e| e.n);
+                changes.extend(written.into_iter().map(Change::from));
+            }
+            if let (Some(n), Some(open)) = (n, live.writing.as_mut()) {
+                open.n = Some(n);
+                open.tail_sent.clone_from(&tail);
+                changes.push(Change::Tail { n, text: tail });
+            }
+        }
+        let session = live.session.clone();
+        for run in live.running.values_mut() {
+            if run.spill.is_none()
+                && let (Some(task), Some(session), Some(temp)) = (&run.task, &session, temp)
+            {
+                run.spill = Some(crate::spill::Spill::new(temp, session, task));
+            }
+            if let Some(spill) = run.spill.as_mut() {
+                let more = spill.more();
+                if !more.is_empty() {
+                    run.push(&more);
+                }
+            }
+            if !std::mem::take(&mut run.changed) {
+                continue;
+            }
+            let text = live_output(&run.raw);
+            if text != run.sent {
+                run.sent.clone_from(&text);
+                changes.push(Change::Output {
+                    n: run.n,
+                    text,
+                    lines: run.lines,
+                });
+            }
+        }
+        changes
     }
 
     /// Drops what's held in memory for the job: its turn is over. The file has it all.
@@ -711,6 +891,8 @@ fn writing(live: &mut Live, words: &str) -> (Vec<Entry>, Vec<Change>) {
         return (vec![], vec![]);
     }
     let lines: String = open.pending.drain(..out).collect();
+    // What showed past the last line is in these now: the next words past it start afresh.
+    open.tail_sent.clear();
     let n = open.n;
     let text = crate::detail::mask(&lines);
     match n.and_then(|n| live.now.get_mut(&n)) {
@@ -720,7 +902,14 @@ fn writing(live: &mut Live, words: &str) -> (Vec<Entry>, Vec<Change>) {
             if had.len() >= crate::detail::TEXT_BYTES {
                 return (vec![], vec![]);
             }
+            let first = had.is_empty();
             had.push_str(&text);
+            // Made with its first words before any line was whole (LIVETASK-32): with its first
+            // line, it comes again, its summary that line.
+            if first {
+                entry.summary = crate::brain::briefing::line(had, WORDS);
+                return (vec![entry.clone()], vec![]);
+            }
             (vec![], vec![Change::Append { n: entry.n, text }])
         }
         None => {
@@ -743,6 +932,83 @@ fn held(lines: &[&str]) -> usize {
         .filter(|&begin| !lines[begin..].iter().any(|l| l.contains("-----END")))
         .map_or(0, |begin| lines.len() - begin);
     open_key.max(crate::detail::encoded_tail(lines))
+}
+
+/// The words being written past their last whole line that may show (LIVETASK-32, 33): none while
+/// whole lines wait (a private key or an encoded run not ended yet, `held`) or the line went past
+/// the cap; else the line up to its last whole word, less an end that could be the start of a secret
+/// obid holds, masked. A token being written is one word, so it shows only once it's whole.
+fn tail_of(open: &Writing) -> Option<String> {
+    if open.stopped || open.skipping || open.pending.contains('\n') {
+        return None;
+    }
+    let line = open.pending.as_str();
+    let mut cut = line.trim_end_matches(|c: char| !c.is_whitespace()).len();
+    cut -= crate::secrets::known().held_tail(&line[..cut]);
+    while !line.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let shown = &line[..cut];
+    (!shown.trim().is_empty()).then(|| crate::detail::mask(shown))
+}
+
+/// A running command's last whole lines as they may show (LIVETASK-34, 35): masked as its detail's
+/// output is (crate::detail::output), less a line not ended, a private key not ended and a trailing
+/// run of base64 or hex lines, which wait for what comes next; its last [`LIVE_LINES`], at most
+/// [`LIVE_BYTES`].
+fn live_output(raw: &str) -> String {
+    let Some(end) = raw.rfind('\n') else {
+        return String::new();
+    };
+    let lines: Vec<&str> = raw[..end].split('\n').collect();
+    let whole = lines[..lines.len() - held_output(&lines)].join("\n");
+    if whole.is_empty() {
+        return String::new();
+    }
+    let masked = crate::detail::output(&whole, None)["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let all: Vec<&str> = masked.lines().collect();
+    let mut kept = all[all.len().saturating_sub(LIVE_LINES)..].to_vec();
+    let mut text = kept.join("\n");
+    while text.len() > LIVE_BYTES && kept.len() > 1 {
+        kept.remove(0);
+        text = kept.join("\n");
+    }
+    if text.len() > LIVE_BYTES {
+        let mut from = text.len() - LIVE_BYTES;
+        while !text.is_char_boundary(from) {
+            from += 1;
+        }
+        text = text[from..].to_owned();
+    }
+    text
+}
+
+/// How many of a running command's last whole lines wait for more (LIVETASK-35): a private key not
+/// ended yet (from its BEGIN line), a trailing run of base64 or hex lines, and the line before such a
+/// run, or the last line, when it could lead one as the mask joins it (crate::secrets::encoded_runs:
+/// it ends in 8 or more of a token's characters). A line the mask wouldn't join to what comes next
+/// goes out, so what shows never goes back.
+fn held_output(lines: &[&str]) -> usize {
+    let leads = |line: &str| {
+        line.trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | '\\'))
+            .bytes()
+            .rev()
+            .take_while(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'_' | b'-'))
+            .count()
+            >= 8
+    };
+    let open_key = lines
+        .iter()
+        .rposition(|l| crate::detail::key_begins(l))
+        .filter(|&begin| !lines[begin..].iter().any(|l| l.contains("-----END")))
+        .map_or(0, |begin| lines.len() - begin);
+    let run = crate::detail::encoded_run(lines);
+    let before = lines.len() - run;
+    let lead = before > 0 && leads(lines[before - 1]);
+    open_key.max(run + usize::from(lead))
 }
 
 /// Claude Code's task list as it shows: a deleted task keeps its place in `live.tasks`, its number.
@@ -1012,7 +1278,7 @@ mod tests {
                 .into_iter()
                 .filter_map(|c| match c {
                     Change::Entry(entry) => Some(*entry),
-                    Change::Append { .. } => None,
+                    Change::Append { .. } | Change::Tail { .. } | Change::Output { .. } => None,
                 })
                 .collect()
         }
@@ -1696,5 +1962,260 @@ mod tests {
         );
         // The next message streams again.
         assert_eq!(t.rec("j", &Event::Delta("Next.\n".into()))[0].n, 2);
+    }
+
+    /// Everything `changes` would show, as one string to look in.
+    fn shown(changes: &[Change]) -> String {
+        changes.iter().map(|c| format!("{c:?}\n")).collect()
+    }
+
+    /// LIVETASK-32: the words past the last whole line go out on each tick, up to their last whole
+    /// word, only when they changed; they make the `said` entry when none is made yet, its first
+    /// line then comes as the entry again, and the whole message replaces them.
+    #[test]
+    fn livetask_32_words_stream_past_their_last_line() {
+        let t = transcripts("tail");
+        let delta = |words: &str| t.record("j", &Event::Delta(words.into()), Path::new("/w"), None);
+        assert!(delta("Hello wor").is_empty());
+        let first = t.tick("j", None);
+        let [Change::Entry(made), Change::Tail { n, text }] = &first[..] else {
+            panic!("{first:?}")
+        };
+        assert_eq!(
+            (made.kind.as_str(), made.text.as_deref()),
+            ("said", Some(""))
+        );
+        assert_eq!((*n, text.as_str()), (made.n, "Hello "));
+        let n = made.n;
+        assert!(
+            t.tick("j", None).is_empty(),
+            "nothing changed, nothing goes"
+        );
+        assert!(delta("ld, how").is_empty());
+        assert_eq!(
+            t.tick("j", None),
+            [Change::Tail {
+                n,
+                text: "Hello world, ".into()
+            }]
+        );
+        // Its first whole line: the entry again, its summary that line.
+        let line = delta(" are you?\nNext");
+        let [Change::Entry(again)] = &line[..] else {
+            panic!("{line:?}")
+        };
+        assert_eq!(
+            (again.n, again.text.as_deref(), again.summary.as_str()),
+            (
+                n,
+                Some("Hello world, how are you?\n"),
+                "Hello world, how are you?"
+            )
+        );
+        assert!(t.tick("j", None).is_empty(), "a word not ended yet waits");
+        delta(" step ");
+        assert_eq!(
+            t.tick("j", None),
+            [Change::Tail {
+                n,
+                text: "Next step ".into()
+            }]
+        );
+        // A line after that is appended, and the same words past it go out again.
+        assert_eq!(
+            delta("one.\nNext step "),
+            [Change::Append {
+                n,
+                text: "Next step one.\n".into()
+            }]
+        );
+        assert_eq!(
+            t.tick("j", None),
+            [Change::Tail {
+                n,
+                text: "Next step ".into()
+            }]
+        );
+        let whole = "Hello world, how are you?\nNext step one.\nNext step two.";
+        let ended = t.record("j", &Event::Said(whole.into()), Path::new("/w"), None);
+        assert!(
+            matches!(&ended[..], [Change::Entry(e)] if e.n == n && e.text.as_deref() == Some(whole))
+        );
+        assert!(t.tick("j", None).is_empty());
+    }
+
+    /// LIVETASK-33: a secret split across deltas never shows unmasked in what streams: a token being
+    /// written is one word, held until it's whole; an end that could begin a secret obid holds waits.
+    #[test]
+    fn livetask_33_a_secret_split_across_deltas_never_streams_unmasked() {
+        let t = transcripts("tail-secret");
+        let value = ["tail-", "secret/", "Q7m2+a=b"].concat();
+        crate::secrets::known().learn("vault tail-test", &value);
+        let spaced = ["open ", "sesame-", "Zx81qq"].concat();
+        crate::secrets::known().learn("vault tail-spaced", &spaced);
+        let token = ["ghp_", "abcdefghijklmnopqrstuvwxyz0123456789"].concat();
+        let mut out = String::new();
+        let (a, b) = value.split_at(8);
+        let (c, d) = token.split_at(10);
+        for piece in [
+            format!("the key is {a}"),
+            format!("{b} and then say open "),
+            format!("sesame-Zx81qq now, token {c}"),
+            format!("{d} done "),
+        ] {
+            out += &shown(&t.record("j", &Event::Delta(piece), Path::new("/w"), None));
+            out += &shown(&t.tick("j", None));
+        }
+        crate::secrets::known().forget("vault tail-test");
+        crate::secrets::known().forget("vault tail-spaced");
+        for part in [a, b, "open sesame", "Zx81qq", c, d] {
+            assert!(!out.contains(part), "{part:?} showed: {out}");
+        }
+        assert!(out.contains("[vault: tail-test]"), "{out}");
+        assert!(out.contains("Tail"), "{out}");
+    }
+
+    /// LIVETASK-34: a running command's last whole lines go out on each tick when they changed, with
+    /// how many it printed; Codex's deltas and Claude Code's output file alike; its end ends them.
+    #[test]
+    fn livetask_34_a_running_commands_lines_stream() {
+        let t = transcripts("output");
+        let rec = |e: Event| t.record("j", &e, Path::new("/w"), None);
+        rec(tool_event(
+            "c1",
+            "Bash",
+            json!({"command": "for i in 1 2 3; do echo $i; sleep 1; done"}),
+        ));
+        let output = |text: &str| Event::Output {
+            id: "c1".into(),
+            text: text.into(),
+        };
+        assert!(rec(output("line 1\nline 2\npart")).is_empty());
+        assert_eq!(
+            t.tick("j", None),
+            [Change::Output {
+                n: 1,
+                text: "line 1\nline 2".into(),
+                lines: 2
+            }]
+        );
+        assert!(t.tick("j", None).is_empty());
+        rec(output("ial done\n"));
+        assert_eq!(
+            t.tick("j", None),
+            [Change::Output {
+                n: 1,
+                text: "line 1\nline 2\npartial done".into(),
+                lines: 3
+            }]
+        );
+        // A line of one word could begin a run of base64 over lines: it waits, with the line
+        // before it, for the next (LIVETASK-35).
+        rec(output("word\n"));
+        assert!(t.tick("j", None).is_empty());
+        rec(output("and more words\n"));
+        assert_eq!(
+            t.tick("j", None),
+            [Change::Output {
+                n: 1,
+                text: "line 1\nline 2\npartial done\nword\nand more words".into(),
+                lines: 5
+            }]
+        );
+        // Only its last lines.
+        let many: String = (6..=100).map(|i| format!("line {i}\n")).collect();
+        rec(output(&many));
+        let [
+            Change::Output {
+                text, lines: 100, ..
+            },
+        ] = &t.tick("j", None)[..]
+        else {
+            panic!()
+        };
+        assert_eq!(text.lines().count(), LIVE_LINES);
+        assert!(
+            text.starts_with("line 61\n") && text.ends_with("line 100"),
+            "{text}"
+        );
+        rec(done("c1", false));
+        rec(output("after\n"));
+        assert!(
+            t.tick("j", None).is_empty(),
+            "an ended call streams nothing"
+        );
+        // Claude Code's: read from its task's output file in the run's temporary folder.
+        let temp = t.home.join("temp");
+        let tasks = temp.join("claude-501/-w/sess-1/tasks");
+        std::fs::create_dir_all(&tasks).unwrap();
+        rec(Event::Session("sess-1".into()));
+        rec(tool_event("c2", "Bash", json!({"command": "slow"})));
+        rec(Event::Spilled {
+            id: "c2".into(),
+            task: "b21taen9b".into(),
+        });
+        assert!(t.tick("j", Some(&temp)).is_empty(), "no file yet");
+        std::fs::write(tasks.join("b21taen9b.output"), "line 1\n").unwrap();
+        let [Change::Output { n, text, lines: 1 }] = &t.tick("j", Some(&temp))[..] else {
+            panic!()
+        };
+        assert_eq!((*n, text.as_str()), (2, "line 1"));
+        std::fs::write(tasks.join("b21taen9b.output"), "line 1\nline 2\n").unwrap();
+        assert_eq!(
+            t.tick("j", Some(&temp)),
+            [Change::Output {
+                n: 2,
+                text: "line 1\nline 2".into(),
+                lines: 2
+            }]
+        );
+        // The turn's end ends what runs.
+        t.end_turn("j");
+        std::fs::write(tasks.join("b21taen9b.output"), "line 1\nline 2\nline 3\n").unwrap();
+        assert!(t.tick("j", Some(&temp)).is_empty());
+    }
+
+    /// LIVETASK-35: what a running command prints is masked before it streams, and a secret over
+    /// lines or pieces never streams in halves: a line not ended, a private key not ended and a
+    /// trailing run of base64 wait.
+    #[test]
+    fn livetask_35_a_secret_in_a_commands_output_never_streams() {
+        let t = transcripts("output-secret");
+        let rec = |e: Event| t.record("j", &e, Path::new("/w"), None);
+        rec(tool_event("c1", "Bash", json!({"command": "cat things"})));
+        let value = ["out-", "secret/", "Q7m2+a=b"].concat();
+        crate::secrets::known().learn("vault output-test", &value);
+        let (a, b) = value.split_at(8);
+        let mut out = String::new();
+        let mut piece = |text: String| {
+            rec(Event::Output {
+                id: "c1".into(),
+                text,
+            });
+            out += &shown(&t.tick("j", None));
+        };
+        piece(format!("first {a}"));
+        piece(format!("{b} then\n"));
+        piece("Here it is:\n".into());
+        piece(format!("{}\n", armor("OPENSSH ", false)));
+        piece("b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ\n".into());
+        piece("AAAAAAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAI\n".into());
+        piece(format!("{}\nThat was it.\n", armor("OPENSSH ", true)));
+        // A token in base64 over lines waits until a line that isn't part of the run.
+        let token = ["ghp_", "abcdefghijklmnopqrstuvwxyz0123456789"].concat();
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &token);
+        let (one, two) = b64.split_at(28);
+        piece(format!("{one}\n"));
+        piece(format!("{two}\n"));
+        piece("Done.\n".into());
+        crate::secrets::known().forget("vault output-test");
+        for part in [a, b, "b3BlbnNzaC1", "AAAAAAAAAAEAAAAz", one, two] {
+            assert!(!out.contains(part), "{part:?} showed: {out}");
+        }
+        assert!(out.contains("[vault: output-test]"), "{out}");
+        assert!(
+            out.contains("[redacted: private key") && out.contains("That was it."),
+            "{out}"
+        );
     }
 }
