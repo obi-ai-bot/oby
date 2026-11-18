@@ -1,0 +1,543 @@
+{
+  "schemaVersion": "2",
+  "name": "A member's thread: asking and answering",
+  "version": "1.0.0",
+  "description": "The owner's signed question to a member goes by owner (PEER-4), a secret in it sends nothing (PEER-5); both threads show the exchange with a peerThread event (PEER-1); only the other owner's signed hand answers (PEER-33), with exactly their words by owner on both sides (PEER-31), the card closing with an inbox event and a second answer 409 (PEER-35); a decline goes back as owner_declined (PEER-32).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "alex-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.alex}"
+      }
+    },
+    {
+      "id": "dana-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.dana}"
+      }
+    },
+    {
+      "id": "alex-events",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.alex}"
+      }
+    },
+    {
+      "id": "dana-events",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.dana}"
+      }
+    },
+    {
+      "id": "token-tail",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "peer-5-a-secret-sends-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/peers/dana/ask",
+        "body": {
+          "text": "use ghp_${state.token-tail.seed}"
+        },
+        "as": "device",
+        "device": "${state.alex-device}",
+        "expect": {
+          "status": 422,
+          "text": {
+            "$not": {
+              "$contains": "${state.token-tail.seed}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-5"
+        ]
+      }
+    },
+    {
+      "id": "peer-5-nothing-kept",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-5"
+        ]
+      }
+    },
+    {
+      "id": "peer-4-unsigned-403",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/peers/dana/ask",
+        "body": {
+          "text": "Which branch?"
+        },
+        "expect": {
+          "status": 403
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-4"
+        ]
+      }
+    },
+    {
+      "id": "peer-4-asked-by-the-owner",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/peers/dana/ask",
+        "body": {
+          "text": "Which branch?"
+        },
+        "as": "device",
+        "device": "${state.alex-device}",
+        "expect": {
+          "status": 202,
+          "body": {
+            "by": "owner",
+            "kind": "question",
+            "text": "Which branch?"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-4"
+        ]
+      }
+    },
+    {
+      "id": "peer-1-a-peer-thread-event",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.alex}",
+        "event": "peerThread",
+        "expect": {
+          "body": {
+            "owner": "dana",
+            "posts": {
+              "$any": {
+                "kind": "question",
+                "text": "Which branch?"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-1"
+        ]
+      }
+    },
+    {
+      "id": "peer-1-danas-thread-shows-it-received",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/peers/alex",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "owner": "alex",
+            "posts": [
+              {
+                "kind": "question",
+                "direction": "received",
+                "text": "Which branch?"
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-1"
+        ]
+      }
+    },
+    {
+      "id": "waiting",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "pick": {
+          "where": {
+            "kind": "obiRequest",
+            "obi": {
+              "quoted": {
+                "text": "Which branch?"
+              }
+            }
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "peer-33-the-token-alone-403",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.waiting.picked.id}/answer",
+        "body": {
+          "answer": "fix/billing"
+        },
+        "expect": {
+          "status": 403
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-33"
+        ]
+      }
+    },
+    {
+      "id": "peer-33-done-alone-403",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.waiting.picked.id}/answer",
+        "body": {
+          "done": true
+        },
+        "expect": {
+          "status": 403
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-33"
+        ]
+      }
+    },
+    {
+      "id": "peer-33-the-card-stays",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.waiting.picked.id}",
+                "state": "open"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-33"
+        ]
+      }
+    },
+    {
+      "id": "peer-31-answered-signed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.waiting.picked.id}/answer",
+        "body": {
+          "answer": "fix/billing"
+        },
+        "as": "device",
+        "device": "${state.dana-device}",
+        "expect": {
+          "status": 200
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-31"
+        ]
+      }
+    },
+    {
+      "id": "peer-35-an-inbox-event-closes-it",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.dana}",
+        "event": "inbox",
+        "expect": {
+          "body": {
+            "id": "${state.waiting.picked.id}",
+            "state": "done"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-35"
+        ]
+      }
+    },
+    {
+      "id": "peer-35-a-second-answer-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.waiting.picked.id}/answer",
+        "body": {
+          "answer": "again"
+        },
+        "as": "device",
+        "device": "${state.dana-device}",
+        "expect": {
+          "status": 409
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-35"
+        ]
+      }
+    },
+    {
+      "id": "peer-31-alex-reads-exactly-the-words-by-owner",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/peers/dana",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "posts": {
+              "$any": {
+                "kind": "answer",
+                "direction": "received",
+                "by": "owner",
+                "text": "fix/billing"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-31"
+        ]
+      }
+    },
+    {
+      "id": "peer-31-dana-reads-it-sent-by-owner",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/peers/alex",
+        "expect": {
+          "status": 200,
+          "body": {
+            "posts": {
+              "$any": {
+                "kind": "answer",
+                "direction": "sent",
+                "by": "owner",
+                "text": "fix/billing"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-31"
+        ]
+      }
+    },
+    {
+      "id": "asked-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/peers/dana/ask",
+        "body": {
+          "text": "And the tests?"
+        },
+        "as": "device",
+        "device": "${state.alex-device}",
+        "expect": {
+          "status": 202
+        }
+      }
+    },
+    {
+      "id": "waiting-2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "pick": {
+          "where": {
+            "kind": "obiRequest",
+            "state": "open",
+            "obi": {
+              "quoted": {
+                "text": "And the tests?"
+              }
+            }
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "declined",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.waiting-2.picked.id}/answer",
+        "body": {
+          "answer": "Decline"
+        },
+        "as": "device",
+        "device": "${state.dana-device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "peer-32-owner-declined",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/peers/dana",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "posts": {
+              "$any": {
+                "kind": "decline",
+                "direction": "received",
+                "reason": "owner_declined",
+                "by": "owner"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-32"
+        ]
+      }
+    }
+  ]
+}
