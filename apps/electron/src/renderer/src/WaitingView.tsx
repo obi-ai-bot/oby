@@ -6,7 +6,7 @@ import { useChats } from './chats';
 import { allowWaiting, answerWaiting, approvingTools, homeAsk, itemAsk, mergeWaiting, prChecksOf, projectOf, questionOf, reviewOf, shownId, useLive, waitingOf } from './live';
 import { ReviewBlock } from './AskStack';
 import { QuestionBlock } from './QuestionCard';
-import { AskBlock } from './TaskCard';
+import { AskBlock, startsOnClick } from './TaskCard';
 import { ALLOW_ONCE } from '../../shared/words';
 import type { InboxItem } from './obid';
 
@@ -108,9 +108,17 @@ function WaitingRow({ item: i, onOpenTask, onOpenTalk }: { item: InboxItem; onOp
   const chats = useChats();
   const pr = kind === 'merge' && j?.published ? /\/pull\/(\d+)/.exec(j.published)?.[1] : undefined;
   const where = pr ? `${name(j!.repo)}#${pr}${j!.base ? ` into ${j!.base}` : ''}` : talk ? chats.find((c) => c.id === shownId(talk))?.title : undefined;
+  // a GitHub offer's row starts its work when clicked, as Home's card does (GITHUBWORK-10)
+  const start = card && i.kind === 'github' ? i.options[0] : undefined;
+  const [shownAt] = useState(() => performance.now());
+  const onRow = (e: React.MouseEvent) => {
+    if (!start || !startsOnClick(e, shownAt)) return;
+    if (talk) return onOpenTalk(shownId(talk));
+    void answerWaiting(i, start);
+  };
   const meta = [project ? name(project) : 'No project', where, kind === 'permission' ? (j?.permission?.detail ? 'asks to run a command' : 'asks for permission') : ago((Date.now() - Date.parse(i.created)) / 60_000)].filter(Boolean).join(' · ');
   return (
-    <li className="waiting-row" aria-label={j?.title ?? i.title}>
+    <li className={`waiting-row${start ? ' is-startable' : ''}`} aria-label={j?.title ?? i.title} onClick={onRow}>
       {j && <BrandMark brand={agentOf(j.agent).brand} size={16} mono />}
       <div className="waiting-text">
         <h2 className="waiting-title">{j?.title ?? i.title}</h2>

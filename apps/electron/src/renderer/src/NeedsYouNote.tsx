@@ -5,7 +5,7 @@ import { profileChats, useProfiles } from './profiles';
 import { tasksWith, useTasks } from './tasks';
 
 // Another conversation needs you while Oby's window is in front (docs/contracts/alerts.md,
-// ALERTS-20): nothing alerts on the Mac then (ALERTS-8), so the window says it, quietly, the way T3
+// ALERTS-21): nothing alerts on the Mac then (ALERTS-8), so the window says it, quietly, the way T3
 // Code's in-app toast does (ThreadNotificationCoordinator): a note in the window's corner with the
 // conversation's title and Open, gone after NOTE_FOR or when that conversation opens. Only what
 // newly needs you: what needed you as the window opened, or before, says nothing again. Words

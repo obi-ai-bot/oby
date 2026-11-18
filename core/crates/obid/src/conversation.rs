@@ -18,10 +18,26 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+mod edit;
+mod marks;
+pub use edit::Edit;
+pub use marks::Marks;
+
 /// The turns kept per conversation, the oldest pruned.
 const KEPT: usize = 500;
 /// The conversations kept: past it, starting one forgets the oldest that isn't pinned.
 pub const CONVERSATIONS: usize = 200;
+
+/// Oby's line in a conversation whose words a stop cut (DELIVERY-7, DELIVERY-9): `clean` when obid
+/// was stopped (an update, a quit), else it went down. Not Sangam's words yet: the contract's.
+pub fn cut_line(clean: bool) -> &'static str {
+    if clean {
+        "Oby restarted before it finished answering that. Send it again to get an answer."
+    } else {
+        "Oby went down before it finished answering that. Send it again to get an answer."
+    }
+}
+
 /// The longest title a rename may set.
 const TITLE: usize = 100;
 /// The longest search a list takes, in characters (#593).
@@ -180,6 +196,13 @@ struct Thread {
     /// What its queued words need to be sent again, by their turn's id: never served.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     replays: BTreeMap<String, Replay>,
+    /// When the owner last looked at it or spoke in it (marks.rs): a turn since is unread. None
+    /// for one kept before obid had marks, which reads as read until looked at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    seen: Option<marks::Seen>,
+    /// Put away by the owner (marks.rs): listed under Archived, until restored or spoken in.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    archived: bool,
     /// One more each time obid sends it changed (a `conversation` event), as a job's `revision`
     /// (EVENTS-7). Kept in its file.
     #[serde(default)]
@@ -355,6 +378,7 @@ impl Thread {
         if let Some(profile) = &self.profile {
             summary["profile"] = json!(profile);
         }
+        self.show_marks(&mut summary);
         summary
     }
 
@@ -983,6 +1007,59 @@ impl Conversations {
         }
     }
 
+    /// At start (DELIVERY-7 to 10): the owner's words a stop cut read `interrupted` (those that
+    /// were `starting` or `running`), and each conversation with any gets one Oby turn in obid's
+    /// words ([`cut_line`]: `clean` when obid was stopped, not gone down), in one write with them.
+    /// Words still `queued` come back by conversation, oldest first, with what a replay needs
+    /// ([`Replay`]), for one turn to answer (`crate::brain::recover`). A turn with no `delivery`
+    /// is left as it is.
+    pub fn recover(&self, clean: bool) -> Vec<(String, Vec<(Turn, Replay)>)> {
+        let mut threads = self.lock();
+        let mut queued = vec![];
+        for index in 0..threads.len() {
+            let thread = &mut threads[index];
+            let waiting: Vec<(Turn, Replay)> = (thread.turns.iter())
+                .filter(|t| t.delivery.as_ref().is_some_and(|d| d.status == "queued"))
+                .map(|t| {
+                    (
+                        t.clone(),
+                        thread.replays.get(&t.id).cloned().unwrap_or_default(),
+                    )
+                })
+                .collect();
+            if !waiting.is_empty() {
+                queued.push((thread.id.clone(), waiting));
+            }
+            let kept = thread.clone();
+            let mut cut = vec![];
+            for turn in &mut thread.turns {
+                if let Some(delivery) = turn.delivery.as_mut()
+                    && matches!(delivery.status.as_str(), "starting" | "running")
+                    && delivery.apply(&Move::Interrupted)
+                {
+                    cut.push(serde_json::to_value(turn.revised()).unwrap_or_default());
+                }
+            }
+            if cut.is_empty() {
+                continue;
+            }
+            // obid's own words: nothing the conversation read is in them.
+            let line = Turn::of("oby", cut_line(clean).to_owned());
+            if let Err(e) = self.add(&mut threads, index, line, None) {
+                tracing::warn!(
+                    "conversation {}: the cut words weren't kept: {e:?}",
+                    kept.id
+                );
+                threads[index] = kept;
+                continue;
+            }
+            for turn in cut {
+                self.events.send("turnDelivery", turn);
+            }
+        }
+        queued
+    }
+
     /// Oby's turn telling the conversation `id` how the job `job` ended ([`job_report`], #351).
     /// `foreign`: why the job's summary isn't on obid's allowlist (the job's own reason).
     pub fn job_ended(
@@ -1035,6 +1112,7 @@ impl Conversations {
             profile,
             ..Thread::default()
         };
+        thread.seen_at(thread.created.clone());
         let summary = thread.revised();
         self.write(&thread).map_err(Error::Io)?;
         self.events.send("conversation", summary);
@@ -1066,6 +1144,7 @@ impl Conversations {
             from_obys: true,
             ..Thread::default()
         };
+        thread.seen_at(thread.created.clone());
         let summary = thread.revised();
         self.write(&thread).map_err(Error::Io)?;
         self.events.send("conversation", summary);
@@ -1244,6 +1323,9 @@ impl Conversations {
             thread.replays.remove(&gone.id);
         }
         thread.sequence = sequence;
+        if turn.who == "user" {
+            thread.spoke(turn.at.clone());
+        }
         let summary = thread.revised();
         if let Err(error) = self.write(thread) {
             *thread = kept;
@@ -1382,15 +1464,15 @@ impl Conversations {
     /// under the same lock that writes them, so a change can't put back one just taken off.
     /// `project`: the project it joins (crate::projects::joined), or none to take it out; its own
     /// folders aren't set while it's in one.
-    fn change(
-        &self,
-        id: &str,
-        title: Option<String>,
-        pinned: Option<bool>,
-        folders: Option<FolderChange>,
-        talk_account: Option<Option<String>>,
-        project: Option<Option<(String, Vec<String>)>>,
-    ) -> Result<Value, Error> {
+    fn change(&self, id: &str, edit: Edit) -> Result<Value, Error> {
+        let Edit {
+            title,
+            pinned,
+            folders,
+            talk_account,
+            project,
+            marks,
+        } = edit;
         let mut threads = self.lock();
         let index = index_of(&threads, id)?;
         let thread = &mut threads[index];
@@ -1421,6 +1503,7 @@ impl Conversations {
             // the owner chose again: the pill names it at once, and a move off it is news again
             thread.moved_off = None;
         }
+        thread.mark(marks, obi_protocol::time::format(obi_protocol::time::now()));
         let summary = thread.revised();
         if let Err(e) = self.write(thread) {
             *thread = kept;
@@ -1710,9 +1793,11 @@ pub fn job_report(job: &Value) -> Option<(String, String)> {
         },
         ("failed", _) => format!("{title} failed."),
         ("stopped", _) => format!("{title} was stopped."),
+        // Stopped, as its card's mark says: no decision waits on it (TASKS-25, TASKS-29), so
+        // its line never says it needs the owner; its reason says what can be done.
         ("interrupted", _) => match first_line("reason") {
-            Some(why) => format!("{title} needs you: {why}"),
-            None => format!("{title} needs you."),
+            Some(why) => format!("{title} stopped: {why}"),
+            None => format!("{title} stopped."),
         },
         _ => return None,
     };
@@ -2358,6 +2443,10 @@ struct Change {
     /// A project's id, or null to take it out of its project (crate::projects).
     #[serde(default, deserialize_with = "present")]
     project: Option<Option<String>>,
+    /// The owner looked at it now (true), or Mark unread (false): marks.rs.
+    seen: Option<bool>,
+    /// Put away under Archived (true), or restored (false): marks.rs.
+    archived: Option<bool>,
 }
 
 /// A key that's there, null too, as `Some`.
@@ -2381,18 +2470,23 @@ pub async fn update(
     let change: Change = serde_json::from_slice(&body).map_err(|_| {
         ApiError::new(
             StatusCode::BAD_REQUEST,
-            "The body is {\"title\": \"…\", \"pinned\": true or false, \"folders\": [\"/path\"], \"talkAccount\": an account's id, \"auto\" or null, \"project\": a project's id or null}.",
+            "The body is {\"title\": \"…\", \"pinned\": true or false, \"folders\": [\"/path\"], \"talkAccount\": an account's id, \"auto\" or null, \"project\": a project's id or null, \"seen\": true or false, \"archived\": true or false}.",
         )
     })?;
+    let marks = Marks {
+        seen: change.seen,
+        archived: change.archived,
+    };
     if change.title.is_none()
         && change.pinned.is_none()
         && change.folders.is_none()
         && change.talk_account.is_none()
         && change.project.is_none()
+        && !marks.any()
     {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
-            "Send a title, pinned, folders, talkAccount, project, or more than one.",
+            "Send a title, pinned, folders, talkAccount, project, seen, archived, or more than one.",
         ));
     }
     if let Some(Some(account)) = &change.talk_account {
@@ -2439,14 +2533,15 @@ pub async fn update(
         )),
         other => other.map(|_| None),
     };
-    let summary = shared.conversations.change(
-        &id,
+    let edit = Edit {
         title,
-        change.pinned,
+        pinned: change.pinned,
         folders,
-        change.talk_account,
+        talk_account: change.talk_account,
         project,
-    )?;
+        marks,
+    };
+    let summary = shared.conversations.change(&id, edit)?;
     Ok((StatusCode::OK, axum::Json(summary)).into_response())
 }
 
@@ -2718,16 +2813,22 @@ mod tests {
             job_report(&job("stopped")).unwrap().1,
             "Fix oby #351 was stopped."
         );
+        // TASKS-29: no decision waits on an interrupted task (TASKS-25), so its line says it
+        // stopped, never that it needs the owner.
         assert_eq!(
             job_report(&job("interrupted")).unwrap().1,
-            "Fix oby #351 needs you."
+            "Fix oby #351 stopped."
         );
-        let mut needs_you = job("interrupted");
-        needs_you["reason"] = json!("Stopped at a limit: the round ran past 45 minutes.");
+        let mut stopped = job("interrupted");
+        stopped["reason"] = json!(
+            "GOAL NOT MET: tests still fail The branch is kept and nothing was pushed: tell it what's left, or Publish it as it is."
+        );
+        let said = job_report(&stopped).unwrap().1;
         assert_eq!(
-            job_report(&needs_you).unwrap().1,
-            "Fix oby #351 needs you: Stopped at a limit: the round ran past 45 minutes."
+            said,
+            "Fix oby #351 stopped: GOAL NOT MET: tests still fail The branch is kept and nothing was pushed: tell it what's left, or Publish it as it is."
         );
+        assert!(!said.contains("needs you"), "{said}");
         let mut nothing = job("done");
         nothing["reason"] = json!("Nothing committed, so nothing was published.");
         assert_eq!(
@@ -3078,7 +3179,13 @@ mod tests {
         std::fs::write(&file, kept.to_string()).unwrap();
         let conversations = super::Conversations::open(&home, crate::events::Events::new());
         let summary = conversations
-            .change(&id, None, Some(true), None, None, None)
+            .change(
+                &id,
+                super::Edit {
+                    pinned: Some(true),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         let saved: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
@@ -3484,7 +3591,13 @@ mod tests {
         let conversations = super::Conversations::open(&home, events.clone());
         let id = conversations.start_for("Talk").unwrap();
         conversations
-            .change(&id, None, None, None, Some(Some("gone".into())), None)
+            .change(
+                &id,
+                super::Edit {
+                    talk_account: Some(Some("gone".into())),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         let saved = home.join("saved");
         std::fs::rename(&conversations.dir, &saved).unwrap();

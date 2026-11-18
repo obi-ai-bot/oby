@@ -849,7 +849,12 @@ if selected && [[ -n "$brain" ]]; then
         echo "oby-check: the Brain's map isn't checked in a job's box: the Mac's check and the merge queue run it"
     else
         [[ -d tools/brain/node_modules ]] || echo "oby-check: tools/brain has no node_modules: run npm install there first" >&2
-        step npm --prefix tools/brain run --silent test
+        # Report only (the owner's word, 2026-11-17): a stale map is said, never a failure.
+        plan_group
+        echo "==> npm --prefix tools/brain run --silent test (reported, not a failure)"
+        if [[ -z "${OBY_CHECK_PLAN:-}" ]] && ! npm --prefix tools/brain run --silent test; then
+            echo "oby-check: the Brain's map is out of date with this change (reported, not a failure): fix tools/brain/brain.config.ts in a follow-up"
+        fi
     fi
 fi
 

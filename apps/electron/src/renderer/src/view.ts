@@ -109,6 +109,7 @@ export type Job = {
   request: string;     // your own words, or the message it came from
   agent: Agent | (string & {});  // obid's; one this build doesn't know shows by agentOf
   account: string;     // which of the accounts it runs on (Personal, Deskree, or someone's shared one)
+  accountId?: string;  // obid's: that account's id
   on?: string;         // whose Mac it runs on, when not this one ("Wellington’s Mac")
   model: string;
   repo: string;

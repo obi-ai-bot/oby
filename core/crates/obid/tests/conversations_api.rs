@@ -105,8 +105,12 @@ fn conversations_are_listed_paged_renamed_pinned_and_deleted() {
             .map(String::as_str)
             .collect();
         // With `talkedOn`, once it has answered (docs/contracts/conversation-agent.md),
-        // `revision` (EVENTS-7) and `project` (PROJECTS-4).
-        assert_eq!(keys.len(), 11, "{conversation}");
+        // `revision` (EVENTS-7), `project` (PROJECTS-4), and `seen` and `unread`: the owner's own
+        // words saw it, and Oby's answer came after, which no app has looked at yet
+        // (docs/contracts/conversation-states.md, CHATSTATE-6). Nothing archived.
+        assert_eq!(keys.len(), 13, "{conversation}");
+        assert!(conversation["seen"].is_string(), "{conversation}");
+        assert_eq!(conversation["unread"], true, "{conversation}");
         assert_eq!(conversation["talkedOn"], "stub");
         assert_eq!(conversation["tasks"], json!([]));
         assert_eq!(conversation["folders"], json!([]));

@@ -1074,6 +1074,15 @@ fn question_waits(obid: &Obid, id: &str) -> Value {
     job
 }
 
+/// Job `id`'s question once the turn that asked it ended: its summary there.
+fn asked_and_ended(obid: &Obid, id: &str) -> Value {
+    question_waits(obid, id);
+    within(60, "the turn that asked ends", || {
+        let job = call(obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (!summary(&job).is_empty()).then_some(job)
+    })
+}
+
 /// The owner answers job `id`'s waiting question with `answer`: an option's label or their words.
 fn answer_question(obid: &Obid, id: &str, job: &Value, answer: &str) {
     let answered = call(
@@ -1126,7 +1135,7 @@ fn a_cursor_job_asks_the_owner_and_resumes_with_the_answer() {
     let folder = Folder::new("cursor-asks");
     let obid = obid(&folder, false);
     let id = dispatch(&obid, json!({"agent": "cursor", "task": "ASK OWNER"}));
-    let job = question_waits(&obid, &id);
+    let job = asked_and_ended(&obid, &id);
     assert_eq!(job["status"], "running", "{job}");
     assert_eq!(job["step"], "Waiting for your answer", "{job}");
     assert_eq!(job["permission"]["tool"], "AskUserQuestion", "{job}");
@@ -1165,7 +1174,7 @@ fn a_codex_job_asks_the_owner_and_resumes_with_the_answer() {
     let folder = Folder::new("codex-asks");
     let obid = obid(&folder, false);
     let id = dispatch(&obid, json!({"agent": "codex", "task": "ASK OWNER"}));
-    let job = question_waits(&obid, &id);
+    let job = asked_and_ended(&obid, &id);
     assert_eq!(job["status"], "running", "{job}");
     assert!(
         summary(&job).starts_with("Asked: Asked the owner. End your turn now"),
@@ -1186,6 +1195,64 @@ fn a_codex_job_asks_the_owner_and_resumes_with_the_answer() {
     );
 }
 
+/// PERMISSIONS-22, PERMISSIONS-23: a Codex job's `oby_ask_owner` question shows the moment the
+/// call comes, its turn still open (Codex keeping it open, as codex-cli 0.163 did in the drive of
+/// 2026-11-17): the job's card, its step and the inbox's `agentQuestion` item. The owner's answer
+/// ends that open turn and resumes the same thread with it, and the job ends done.
+#[test]
+fn permissions_22_a_codex_question_shows_while_its_turn_is_still_open() {
+    let folder = Folder::new("codex-asks-open");
+    let obid = obid(&folder, false);
+    let id = dispatch(&obid, json!({"agent": "codex", "task": "ASK OWNER HOLD"}));
+    let job = question_waits(&obid, &id);
+    assert_eq!(job["status"], "running", "{job}");
+    assert_eq!(job["step"], "Waiting for your answer", "{job}");
+    assert_eq!(job["permission"]["question"]["question"], "Which store?");
+    // Its turn is still open: it heard the tool's answer and said nothing since.
+    within(60, "the call answered the agent", || {
+        logged(&obid, &id, "held.log")
+            .starts_with("Asked the owner.")
+            .then_some(())
+    });
+    assert!(summary(&job).is_empty(), "{job}");
+    let card = job["permission"]["id"].clone();
+    let still = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(still["permission"]["id"], card, "{still}");
+
+    answer_question(&obid, &id, &job, "postgres");
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert!(
+        summary(&job).starts_with("heard: You asked the owner with oby_ask_owner"),
+        "{job}"
+    );
+    assert!(
+        summary(&job).contains("- \"Which store?\": the owner answered \"Postgres\""),
+        "{job}"
+    );
+}
+
+/// PERMISSIONS-24: a turn that ends after it asked waits on the same card it showed while open,
+/// never a second one: the card's id and its one inbox item stay.
+#[test]
+fn permissions_24_an_ended_turn_waits_on_the_card_it_showed() {
+    let folder = Folder::new("codex-asks-same-card");
+    let obid = obid(&folder, false);
+    let id = dispatch(&obid, json!({"agent": "codex", "task": "ASK OWNER"}));
+    let first = question_waits(&obid, &id)["permission"]["id"].clone();
+    let job = asked_and_ended(&obid, &id);
+    assert_eq!(job["permission"]["id"], first, "{job}");
+    let items = call(&obid, "GET", "/v1/inbox", None).body;
+    let questions: Vec<&Value> = items
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["job"] == id.as_str() && i["kind"] == "agentQuestion")
+        .collect();
+    assert_eq!(questions.len(), 1, "{items}");
+    assert!(questions[0]["done"].is_null(), "{items}");
+}
+
 /// LANES-21 (docs/contracts/lanes.md, #2425): the owner's Codex job in Bypass (LANES-18, under
 /// `approval_policy = "never"`) calls Oby's own `oby_ask_owner` with Oby's server approved before
 /// the run, as codex-cli 0.163 needs: the owner is asked, and the answer picks its thread up.
@@ -1198,7 +1265,7 @@ fn lanes_21_an_own_bypass_codex_job_runs_obys_own_tools() {
         &obid,
         json!({"agent": "codex", "task": "ASK OWNER", "mode": "bypass"}),
     );
-    let job = question_waits(&obid, &id);
+    let job = asked_and_ended(&obid, &id);
     assert!(
         summary(&job).starts_with("Asked: Asked the owner. End your turn now"),
         "{job}"

@@ -141,9 +141,10 @@ function reply(id: string, text: () => string, start?: () => string[] | undefine
 // Oby says what it did with it. Running, it's passed on; still waiting on your
 // decision, it's passed on with a nudge; done, it starts a follow-up task,
 // whose card shows under Oby's reply.
-export function tell(id: string, text: string, att?: Attachments) {
+// On obid, whether obid took them: the message box keeps words obid refused (ATTACH-20).
+export function tell(id: string, text: string, att?: Attachments): Promise<boolean> | undefined {
   // on obid, from the task's page or thread: into its conversation, made now if it has none
-  if (onObid) return live.tellJob(id, text, att?.files, true).then(() => undefined);
+  if (onObid) return live.tellJob(id, text, att?.files, true).then((j) => j !== undefined);
   const t = text.trim(), r = relay(id, t);
   if ((!t && !hasAttachments(att)) || !r) return;
   say(id, { who: 'you', text: t, ago: 0, ...att });
@@ -202,6 +203,11 @@ export function stop(id: string) {
     status: 'done',
     job: { ...k.job, status: 'stopped', ask: undefined, step: 'Stopped', finished: 0, stages: k.job.stages.map((st) => (st.state === 'current' ? { ...st, state: 'skipped' } : st)) },
   }));
+}
+// Use another account (CHATSTATE-3): obid's move; on the mock, at once
+export function moveTask(id: string, account: { id: string; name: string }) {
+  if (onObid) return void live.moveJob(id, account.id);
+  update(id, (k) => ({ job: { ...k.job, account: account.name, accountId: account.id } }));
 }
 // A failed or interrupted task's menu (TASKS-25): Try again sends obid's Try-again words; Stop here
 // lets it go. On the mock, at once (TASKS-10)

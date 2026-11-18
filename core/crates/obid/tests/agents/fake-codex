@@ -23,7 +23,9 @@
 //                    SECRET) and says what came back
 //   ASK OWNER        asks the owner with Oby's `oby_ask_owner` (approved first, as Codex does; in
 //                    an own run, only if Oby's server was approved before it, as codex-cli 0.163),
-//                    then ends its turn; resumed, says what it heard
+//                    then ends its turn; resumed, says what it heard. ASK OWNER HOLD keeps its turn
+//                    open after the call answers, as codex-cli 0.163 did in a drive (2026-11-17),
+//                    writing .obi/held.log, until obid ends it
 //   ESCAPE           writes a file outside the worktree without asking, and says how that went
 //   QUIET            says nothing until it is ended, then in the turn obid continues says "Carried
 //                    on.", having heard its task again under "What you were last sent"
@@ -301,6 +303,11 @@ async function runTurn(turnId, prompt) {
     const listed = await post("tools/list", {});
     if (!listed.result.tools.some((t) => t.name === "oby_ask_owner")) return complete(turnId, `no oby_ask_owner in ${JSON.stringify(listed)}`);
     const answer = await post("tools/call", { name: "oby_ask_owner", arguments: args });
+    if (task.includes("ASK OWNER HOLD")) {
+      mkdirSync(".obi", { recursive: true });
+      appendFileSync(".obi/held.log", `${answer.result.content[0].text}\n`);
+      return;
+    }
     return complete(turnId, `Asked: ${answer.result.content[0].text}`);
   }
   if (task.includes("QUIET") || task.includes("DIE")) {

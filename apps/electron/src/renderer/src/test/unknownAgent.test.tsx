@@ -94,7 +94,7 @@ describe('PROVIDERS-5: an agent this build doesn’t know shows under its id', (
     s.seen.add('j1');
     const task = live.taskOf(s, job);
     const read = (html: string) => html.replaceAll('<!-- -->', '');
-    for (const html of [read(renderToStaticMarkup(<TaskCard task={task} />)), read(renderToStaticMarkup(<ThreadTask task={task} current onOpen={() => {}} />))]) {
+    for (const html of [read(renderToStaticMarkup(<TaskCard task={task} />)), read(renderToStaticMarkup(<ThreadTask task={task} />))]) {
       expect(html).toContain('gemini · ');
       expect(html).not.toContain('Claude Code');
     }

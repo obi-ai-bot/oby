@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Chat } from '../chats';
 
-// Another conversation needs you while the window is in front (docs/contracts/alerts.md, ALERTS-20):
+// Another conversation needs you while the window is in front (docs/contracts/alerts.md, ALERTS-21):
 // a quiet note in the window, never for the one open, only for what newly needs you.
 
 const page = vi.hoisted(() => ({ chats: [] as Chat[] }));
@@ -30,8 +30,8 @@ async function shown(chats: Chat[], open: string | null, onOpen = vi.fn()) {
 }
 const note = () => host.querySelector('.needs-note');
 
-describe('ALERTS-20: another conversation needs you, in the window', () => {
-  it('alerts_20_a_conversation_that_newly_needs_you_shows_a_note_with_open', async () => {
+describe('ALERTS-21: another conversation needs you, in the window', () => {
+  it('alerts_21_a_conversation_that_newly_needs_you_shows_a_note_with_open', async () => {
     await shown([chat('a', 'Fix the login'), chat('b', 'Release notes')], 'a');
     expect(note()).toBeNull();
     const onOpen = await shown([chat('a', 'Fix the login'), chat('b', 'Release notes', true)], 'a');
@@ -42,7 +42,7 @@ describe('ALERTS-20: another conversation needs you, in the window', () => {
     expect(note()).toBeNull();
   });
 
-  it('alerts_20_the_open_conversation_and_what_needed_you_before_say_nothing', async () => {
+  it('alerts_21_the_open_conversation_and_what_needed_you_before_say_nothing', async () => {
     // what needs you as the window opens is a baseline
     await shown([chat('a', 'A', true), chat('b', 'B')], 'b');
     expect(note()).toBeNull();
@@ -51,14 +51,14 @@ describe('ALERTS-20: another conversation needs you, in the window', () => {
     expect(note()).toBeNull();
   });
 
-  it('alerts_20_nothing_while_the_window_isnt_in_front_the_macs_alert_says_it', async () => {
+  it('alerts_21_nothing_while_the_window_isnt_in_front_the_macs_alert_says_it', async () => {
     await shown([chat('a', 'A'), chat('b', 'B')], 'a');
     focused = false;
     await shown([chat('a', 'A'), chat('b', 'B', true)], 'a');
     expect(note()).toBeNull();
   });
 
-  it('alerts_20_the_note_goes_once_its_conversation_no_longer_needs_you', async () => {
+  it('alerts_21_the_note_goes_once_its_conversation_no_longer_needs_you', async () => {
     await shown([chat('a', 'A'), chat('b', 'B')], 'a');
     await shown([chat('a', 'A'), chat('b', 'B', true)], 'a');
     expect(note()).not.toBeNull();
@@ -66,7 +66,7 @@ describe('ALERTS-20: another conversation needs you, in the window', () => {
     expect(note()).toBeNull();
   });
 
-  it('alerts_20_the_pure_rules', async () => {
+  it('alerts_21_the_pure_rules', async () => {
     const { needingOf, newlyNeeding } = await import('../NeedsYouNote');
     expect(needingOf([chat('a', 'A', true), chat('b', 'B')], ['b', 'gone'])).toEqual(['a', 'b']);
     expect(newlyNeeding(null, ['a'], null)).toEqual([]);

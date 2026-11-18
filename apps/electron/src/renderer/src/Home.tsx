@@ -7,7 +7,6 @@ import GroupView from './GroupView';
 import ChatView from './ChatView';
 import TaskView from './TaskView';
 import SessionView from './SessionView';
-import TaskThread from './TaskThread';
 import Sidebar from './Sidebar';
 import TaskMenu from './TaskMenu';
 import ConvoMenu from './ConvoMenu';
@@ -74,18 +73,16 @@ function rubberBand(w: number) {
 }
 
 // Where you are, as the steps that got you there (the title bar's trail): a
-// kind of work's cards, a task's page, a task's own thread, a conversation
-// with Oby, the archive, someone else's Oby, a conversation with it. Each
-// opens over the one before; the trail follows the way you came, not a fixed
-// hierarchy (a task from the side panel is just the task; from a chip, the kind
-// of work, then the task; from a conversation's card, the conversation, then
-// the task). Opening a step already in the trail goes back to it rather than
+// kind of work's cards, a task's page, a conversation with Oby, the archive,
+// someone else's Oby, a conversation with it. Each opens over the one before;
+// the trail follows the way you came, not a fixed hierarchy (a task from the
+// side panel is just the task; from a chip, the kind of work, then the task).
+// Opening a step already in the trail goes back to it rather than
 // adding it again, so a task and its conversation go back and forth.
 type Step =
   | { kind: 'group'; id: string; tab: Tab }
   // member: a member of the live Obysphere (their thread), by owner id
-  // agent: a task's own thread, a conversation of its own (LIVETASK-22), over the conversation that started it
-  | { kind: 'task' | 'thread' | 'talk' | 'oby' | 'peer' | 'member' | 'settings' | 'session' | 'agent'; id: string }
+  | { kind: 'task' | 'thread' | 'talk' | 'oby' | 'peer' | 'member' | 'settings' | 'session'; id: string }
   // an Obysphere's settings, its knowledge or its room: which one
   | { kind: 'sphere' | 'knowledge' | 'room'; id: string }
   | { kind: 'archive'; id?: undefined }
@@ -95,6 +92,7 @@ type Layer = Step & { key: string; leaving?: boolean };
 const same = (a: Step, b: Step) => a.kind === b.kind && a.id === b.id;
 let made = 0;
 const layer = (step: Step): Layer => ({ ...step, key: `${step.kind}:${step.id ?? ''}:${++made}` });
+let flashes = 0;
 
 export default function Home() {
   const tasks = useTasks();  // counts and dots follow tasks being added and opened
@@ -156,7 +154,7 @@ export default function Home() {
 
   // the task on top, if a task's page is: its ⋮ in the title bar, and renaming it in place there;
   // the same for a conversation with Oby
-  const shown = top?.kind === 'task' || top?.kind === 'agent' ? tasks.find((t) => t.id === top.id) : undefined;
+  const shown = top?.kind === 'task' ? tasks.find((t) => t.id === top.id) : undefined;
   const onPage = top?.kind === 'task';
   const shownTalk = top?.kind === 'talk' ? chats.find((c) => c.id === top.id) : undefined;
   // an agent's conversation: its face and name in the bar, and no menu (it goes with its agent)
@@ -183,7 +181,7 @@ export default function Home() {
   const backOut = (i: number) => { if (i > 0 || !chatFirst) backTo(i - 1); else home(); };
   // deleted from its page or a conversation: its page goes too
   useEffect(() => {
-    const i = live.findIndex((l) => (l.kind === 'task' || l.kind === 'agent') && !tasks.some((t) => t.id === l.id));
+    const i = live.findIndex((l) => l.kind === 'task' && !tasks.some((t) => t.id === l.id));
     if (i >= 0) backOut(i);
   }, [tasks]);
   // an Obysphere deleted or left (from its settings): its settings, Knowledge, room and threads go too
@@ -203,7 +201,14 @@ export default function Home() {
     const c = chatOfTask(id);
     return c ? { kind: 'talk', id: c.id } : { kind: 'thread', id };
   };
-  const openTask = (id: string) => push({ kind: 'task', id });
+  // Every way to a task (a notification, Waiting for you, its row, Home's stack) opens the conversation
+  // that started it, scrolled to its card and lighting it a moment; one with no conversation (from
+  // GitHub, another Oby) its own thread, the same card and what it did under it (LIVETASK-28). how:
+  // over what's open (back returns to it), or a fresh start
+  const [flash, setFlash] = useState<{ task: string; n: number } | null>(null);
+  const openAt = (id: string, how: (step: Step) => void = start) => { how(conversationOf(id)); setFlash({ task: id, n: ++flashes }); };
+  // chat first, a task opens in its conversation; Home's earlier design (?home) keeps its page
+  const openTask = (id: string) => (chatFirst ? openAt(id, push) : push({ kind: 'task', id }));
   const goToConversation = (id: string) => push(conversationOf(id));
   // asked in Home's message box: a new conversation, open straight away
   const ask = (text: string, att: Attachments) => {
@@ -234,17 +239,23 @@ export default function Home() {
   }, [fresh]);
 
   // Oby's alerts (main/notify.ts): main hears what's on top (a task's page, a conversation, or Home),
-  // so nothing alerts for it; a clicked alert opens its task, its conversation, a Settings page,
-  // or Home, once that's here (a closed window opens again first)
+  // so nothing alerts for it; a clicked alert opens its task in its conversation at its card
+  // (LIVETASK-28), else its conversation, a Settings page, or Home, once that's here (a closed window
+  // opens again first)
   useEffect(() => {
-    window.app?.showing?.(!top ? {} : top.kind === 'task' || top.kind === 'thread' || top.kind === 'agent' ? { job: top.id } : top.kind === 'talk' ? { conversation: realId(top.id) } : null);
+    window.app?.showing?.(!top ? {} : top.kind === 'task' || top.kind === 'thread' ? { job: top.id } : top.kind === 'talk' ? { conversation: realId(top.id) } : null);
   }, [top?.kind, top?.id]);
   const [opening, setOpening] = useState<{ job?: string; conversation?: string; settings?: string } | null>(null);
   useEffect(() => window.app?.onOpen?.(setOpening), []);
   useEffect(() => {
     if (!opening) return;
     const talk = opening.conversation && shownId(opening.conversation);
-    if (opening.job) { if (!tasks.some((t) => t.id === opening.job)) return; start({ kind: 'task', id: opening.job }); }
+    if (opening.job) {
+      // its conversation listed first, when it has one, so it opens there and not in a thread of its own
+      const t = tasks.find((k) => k.id === opening.job), c = t?.job.conversation && shownId(t.job.conversation);
+      if (!t || (c && !chats.some((k) => k.id === c))) return;
+      openAt(opening.job);
+    }
     else if (talk) { if (!chats.some((c) => c.id === talk)) return; start({ kind: 'talk', id: talk }); }
     else if (opening.settings) start({ kind: 'settings', id: opening.settings });
     else home();
@@ -379,7 +390,6 @@ export default function Home() {
     if (l.kind === 'group') return TYPES.find((t) => t.id === l.id)?.label ?? '';
     if (l.kind === 'task') { const t = tasks.find((k) => k.id === l.id); return t ? `${t.who ? `${t.who} ` : ''}${t.title}` : ''; }
     if (l.kind === 'thread') { const t = tasks.find((k) => k.id === l.id); return t ? convoTitle(t.job) : ''; }
-    if (l.kind === 'agent') return tasks.find((k) => k.id === l.id)?.title ?? '';
     if (l.kind === 'talk') return chats.find((c) => c.id === l.id)?.title ?? '';
     if (l.kind === 'archive') return 'Archived';
     if (l.kind === 'waiting') return 'Waiting for you';
@@ -410,9 +420,8 @@ export default function Home() {
         onNewChat={newChat}
         onHome={home}
         onOpenGroup={(id) => start({ kind: 'group', id, tab: firstTab(id) })}
-        onOpenTask={(id) => start({ kind: 'task', id })}
-        onOpenAgent={(id, chat) => start({ kind: 'talk', id: chat }, { kind: 'agent', id })}
-        activeAgent={top?.kind === 'agent' ? top.id : null}
+        onOpenTask={(id) => (chatFirst ? openAt(id) : start({ kind: 'task', id }))}
+        onOpenAgent={(id) => openAt(id)}
         onOpenChat={(id) => start({ kind: 'task', id }, conversationOf(id))}
         onOpenOby={(name) => start({ kind: 'oby', id: name })}
         onOpenMember={(owner) => start({ kind: 'member', id: owner })}
@@ -540,7 +549,7 @@ export default function Home() {
           <section className="attention" aria-label="Your tasks">
             {/* coming in from setting up: it waits till Oby has hopped up, then rises in (app.css) */}
             <span className={`attention-label${chatFirst || !(running || needsYou) ? ' is-idle' : ''}${enterIn ? (arriving ? ' is-waiting' : ' is-arrival') : ''}`}>{chatFirst ? HELLO : attention(running, needsYou, tasks.length === 0)}</span>
-            {/* what Oby is asking you, answered here; opening one goes to its task's page */}
+            {/* what Oby is asking you, answered here; opening one goes to its task (chat first: in its conversation, at its card) */}
             {(!chatFirst || !away) && <AskStack active={!away} onOpen={openTask} onOpenTalk={(id) => start({ kind: 'talk', id })} />}
             {/* every kind of work, in its usual order, whatever's going on in it (a
                 kind with nothing open opens on its completed ones), so the kinds
@@ -571,7 +580,7 @@ export default function Home() {
       </main>
 
       {onObid && <Connection />}
-      {/* another conversation needs you while the window is in front (ALERTS-20) */}
+      {/* another conversation needs you while the window is in front (ALERTS-21) */}
       <NeedsYouNote open={top?.kind === 'talk' ? top.id : null} onOpen={(id) => start({ kind: 'talk', id })} />
       {/* asking Oby: a new conversation, opened at once */}
       <Composer
@@ -604,10 +613,9 @@ export default function Home() {
         const back = () => { if (i < 0 || (chatFirst && i === 0 && l.kind === 'talk')) return; if (i > 0) backTo(i - 1); else home(); };
         if (l.kind === 'group') return <GroupView key={l.key} group={TYPES.find((t) => t.id === l.id)!} tab={l.tab} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenTask={openTask} onOpenArchive={() => push({ kind: 'archive' })} />;
         if (l.kind === 'task') return <TaskView key={l.key} id={l.id} leaving={leaving} covered={covered} onBack={back} onHome={home} onGone={onGone} onTell={tellFromTask} onSession={(id) => push({ kind: 'session', id })} />;
-        if (l.kind === 'agent') return <TaskThread key={l.key} id={l.id} leaving={leaving} covered={covered} onBack={back} onGone={onGone} onOpenAgent={(id) => push({ kind: 'agent', id })} />;
         if (l.kind === 'session') return <SessionView key={l.key} id={l.id} leaving={leaving} covered={covered} onBack={back} onGone={onGone} onTell={tellFromTask} />;
-        if (l.kind === 'archive') return <ArchiveView key={l.key} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenTask={openTask} />;
-        if (l.kind === 'waiting') return <WaitingView key={l.key} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenTask={(id) => push({ kind: 'agent', id })} onOpenTalk={(id) => push({ kind: 'talk', id })} />;
+        if (l.kind === 'archive') return <ArchiveView key={l.key} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenTask={openTask} onOpenTalk={(id) => push({ kind: 'talk', id })} />;
+        if (l.kind === 'waiting') return <WaitingView key={l.key} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenTask={(id) => openAt(id, push)} onOpenTalk={(id) => push({ kind: 'talk', id })} />;
         if (l.kind === 'settings') return <SettingsView key={l.key} page={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;
         if (l.kind === 'sphere') return <SphereSettings key={l.key} id={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;
         if (l.kind === 'knowledge') return <KnowledgeView key={l.key} id={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;
@@ -615,7 +623,9 @@ export default function Home() {
         if (l.kind === 'member') return <PeerThreadView key={l.key} owner={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;
         if (l.kind === 'oby') return <ObyView key={l.key} name={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenConvo={(id) => push({ kind: 'peer', id })} />;
         const kind = l.kind === 'talk' ? 'oby' : l.kind === 'peer' ? 'peer' : 'task';
-        return <ChatView key={l.key} kind={kind} id={l.id} leaving={leaving} covered={covered} onBack={back} onGone={onGone} onOpenTask={openTask} onOpenAgent={(id) => push({ kind: 'agent', id })} onOpenMember={(owner) => push({ kind: 'member', id: owner })} />;
+        // opened at a task: the conversation on top lights its card
+        const at = flash && i === live.length - 1 && kind !== 'peer' ? flash : undefined;
+        return <ChatView key={l.key} kind={kind} id={l.id} leaving={leaving} covered={covered} flash={at} onFlashed={() => setFlash(null)} onBack={back} onGone={onGone} onOpenMember={(owner) => push({ kind: 'member', id: owner })} />;
       })}
       {/* chat first: nothing over a conversation but its own: what it and its tasks ask waits in the
           drawer over its box (ChatView, DecisionBar), what other conversations ask on their rows and

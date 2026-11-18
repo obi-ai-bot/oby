@@ -461,7 +461,22 @@ pub async fn run_turn(
     decide: impl Fn(&str, &Value) -> Ruling,
     on_event: impl FnMut(Event),
 ) -> std::io::Result<Turn> {
-    let conn = Conn::spawn(&launch, limit, stop, false).await?;
+    run_turn_steered(launch, prompt, limit, stop, None, decide, on_event).await
+}
+
+/// [`run_turn`], the owner's words written into it as they come (`steer`, crate::steer): its
+/// `launch` has `--replay-user-messages`, so obid sees each taken.
+pub async fn run_turn_steered(
+    launch: Launch,
+    prompt: &str,
+    limit: impl Into<crate::conn::Limit>,
+    stop: watch::Receiver<process::Signal>,
+    steer: Option<std::sync::Arc<crate::steer::Steer>>,
+    decide: impl Fn(&str, &Value) -> Ruling,
+    on_event: impl FnMut(Event),
+) -> std::io::Result<Turn> {
+    let mut conn = Conn::spawn(&launch, limit, stop, false).await?;
+    conn.steer = steer;
     Ok(turn_on(conn, prompt, decide, on_event, false).await.0)
 }
 
@@ -693,6 +708,12 @@ pub async fn turn_on(
                     }
                 }
             }
+            // A line obid wrote, which Claude Code took (crate::steer): never a tool's answer.
+            Some("user") if message["isReplay"] == true => {
+                if let Some(steer) = &conn.steer {
+                    steer.replayed();
+                }
+            }
             // A tool's answer, in the user message that hands it back to the model.
             Some("user") => {
                 for block in message["message"]["content"]
@@ -797,6 +818,10 @@ pub async fn turn_on(
                     } else {
                         format!("Waiting for {what}")
                     }));
+                    continue;
+                }
+                // Words it hasn't taken yet are its next turn, in this same process (crate::steer).
+                if conn.steer.as_ref().is_some_and(|steer| !steer.over()) {
                     continue;
                 }
                 // The turn is over: no more input (unless it's kept), and nothing more to read.

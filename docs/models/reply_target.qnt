@@ -3,10 +3,11 @@
 // docs/contracts/live-task.md). It models, by function:
 // - replyTarget in apps/electron/src/renderer/src/replyTarget.ts: the box alone picks where its words go, the foot
 //   box Oby and no job, a card's box that card's job and nothing else (target reads only the box);
-// - openCards in apps/electron/src/renderer/src/AgentThread.tsx, with ChatView's open and fold in ChatView.tsx: a
-//   card shows open when the owner opened it, or when it needs them and they didn't fold it during this need
-//   (shownOpen, openCard, foldCard, needsYou, answered; LIVETASK-16). The spec's open, fold and type are
-//   openCard, foldCard and typeIn here: fold is a Quint built-in and type a keyword.
+// - openCards, as AgentThread.tsx had them (deleted 2026-11-17: a card no longer opens, LIVETASK-29, and a task's
+//   chip on the conversation's box is a card's box here, LIVETASK-30): a card shows open when the owner opened
+//   it, or when it needs them and they didn't fold it during this need (shownOpen, openCard, foldCard, needsYou,
+//   answered; LIVETASK-16). The spec's open, fold and type are openCard, foldCard and typeIn here: fold is a
+//   Quint built-in and type a keyword. Kept as the general case: more ways to open a box never change a target.
 // Which cards are open or which box is focused is in the state, so the model shows they never change a target.
 // wordsReachOneTarget is the property: the last words typed in the foot box reached Oby and no job, and the last
 // typed in a card's box reached that job alone. It is expected to hold in every sequence up to 10 steps

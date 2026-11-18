@@ -5,7 +5,7 @@ import { ChatsCircleIcon, GearSixIcon, HouseIcon, ListChecksIcon, PlusIcon } fro
 import { BrandMark } from './brands';
 import { ARCHIVE_AFTER, TYPES, archivedTasks, asksWaiting, countOf, getArchiveAfter, hasFresh, markSeen, openOf, renameTask, setArchiveAfter, tasksOf, tasksWith, toDoOf, useTasks, type Task } from './tasks';
 import { OBYS } from './mock';
-import { ago } from './view';
+import { ENDED, ago } from './view';
 import { ObyFace, OwnerAvatar } from './ObyFace';
 import { useScrollThumb } from './useScrollThumb';
 import { Menu } from './Menu';
@@ -16,11 +16,12 @@ import CreateSphereModal from './CreateSphereModal';
 import SphereTile from './SphereTile';
 import { CAN_CREATE, ME, SAMPLE, cancelInvite, invite, memberCount, urlOf, useSpheres, type Sphere } from './spheres';
 import TaskMenu from './TaskMenu';
-import ConvoMenu from './ConvoMenu';
+import ConvoMenu, { DeleteChatWindow } from './ConvoMenu';
+import { latestTask, rowMark } from './chatState';
 import StatusDot, { TaskMark } from './StatusDot';
 import { askCardLine, memberOpens, mockConvosWith, plainId, useConvos } from './peers';
 import { roomOpens, useRoom } from './room';
-import { chatOfTask, lastAgo, latestChat, renameChat, useChats, type Chat } from './chats';
+import { archivedChats, chatOfTask, lastAgo, latestChat, renameChat, useChats, type Chat } from './chats';
 import { chatFirst, everything, onObid } from './lean';
 import { tasksMatching, useObidSearch } from './search';
 import { ariaKeys, shortcutLabel, withShortcut } from './shortcuts';
@@ -68,7 +69,7 @@ const SEARCHABLE: Section[] = ['oby', 'conversations'];
 // ?home: Home and Conversations, ?everything also + and your account picture),
 // the column beside them shows it. Search, on the tabs that have it, sits by the panel icon.
 // It opens from the left and pushes the view over.
-export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOpenGroup, onOpenTask, onOpenAgent, activeAgent = null, onOpenChat, onOpenOby, onOpenMember, onOpenTalk, onOpenArchive, onOpenSetting, onOpenSphereSetting, onOpenKnowledge, onOpenRoom, onOpenWaiting, activeWaiting = false, activeOby = null, activeTalk = null, activeSetting = null, activeSphereSetting = null, activeKnowledge = null, active = null, width, onResize }: {
+export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOpenGroup, onOpenTask, onOpenAgent, onOpenChat, onOpenOby, onOpenMember, onOpenTalk, onOpenArchive, onOpenSetting, onOpenSphereSetting, onOpenKnowledge, onOpenRoom, onOpenWaiting, activeWaiting = false, activeOby = null, activeTalk = null, activeSetting = null, activeSphereSetting = null, activeKnowledge = null, active = null, width, onResize }: {
   open: boolean;
   onClose: () => void;  // the panel closes (its tab's icon again, while that tab is showing)
   onNewChat: () => void;
@@ -76,8 +77,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   atHome: boolean;  // on Home's own page, nothing open over it
   onOpenGroup: (id: string) => void;  // chat first: a kind of work's cards (Home's chips, on Home)
   onOpenTask: (id: string) => void;  // a task's page, on its own
-  onOpenAgent?: (id: string, chat: string) => void;  // a nested task's own thread, over the conversation that started it
-  activeAgent?: string | null;  // the nested task whose thread is showing: its row is highlighted
+  onOpenAgent?: (id: string) => void;  // a nested task: the conversation that started it, at its card (LIVETASK-28)
   onOpenChat: (id: string) => void;  // a task's conversation, from its menu or its row's icon
   onOpenOby: (name: string) => void;  // someone else's Oby, from the mock's Obysphere: its conversations
   onOpenMember: (owner: string) => void;  // a member of the live Obysphere, by owner id: their thread
@@ -121,8 +121,10 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   // the open profile's (profiles.ts): on the mock its own conversations, on obid all of them
   const profiles = useProfiles();
   const withAgents = profileChats(useChats(), profiles.list, profiles.kept);
-  // a helper's conversation is under Agents only (AgentsList), never among the chats
-  const chats = withAgents.filter((c) => !c.helper);
+  // a helper's conversation is under Agents only (AgentsList), never among the chats; an archived one
+  // is under Archived, but while something in it needs you (CHATSTATE-9)
+  const waitsIn = new Set(tasksWith('needs').flatMap((t) => chatOfTask(t.id)?.id ?? []));
+  const chats = withAgents.filter((c) => !c.helper && (!c.archived || c.needs || waitsIn.has(c.id)));
   const shownProfile = profiles.list?.length ? openProfile(profiles.list, profiles.kept) : undefined;
   // the title's menu (ProfileMenu), and New profile…'s form
   const [profileMenu, setProfileMenu] = useState<DOMRect | null>(null);
@@ -271,7 +273,8 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     return { rows: more.has(g.id) ? g.tasks : [...open, ...done.slice(0, keep)], hidden: Math.max(0, done.length - keep) };
   };
   const toggleMore = (id: string) => setMore((m) => { const next = new Set(m); if (!next.delete(id)) next.add(id); return next; });
-  const archivedCount = archivedTasks().length;
+  // what Archived holds: done tasks that left Home, and chat first, the conversations put away
+  const archivedCount = archivedTasks().length + (chatFirst ? archivedChats(withAgents).length : 0);
   const { list, onScroll, thumbProps } = useScrollThumb<HTMLDivElement>();
   const pick = (id: Section) => {
     // Home again, while it's showing: back to Home's own page if something's open over it,
@@ -372,8 +375,10 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   ].filter((g) => g.rows.length || (g.id && !q));
   const convoRow = (c: Chat) => {
     const kids = chatFirst ? kidsOf(tasks, c.id, chatIdOf) : [];
-    const lit = kids.some((k) => k.id === activeAgent);
-    const shown = kids.length > 0 && (kidsShown[c.id] ?? (activeTalk === c.id || lit || kids.some((k) => k.status === 'needs')));
+    // its one mark (CHATSTATE-5): needs you, working, unread, then how its latest task ended
+    const latest = chatFirst ? latestTask(tasks, c.id, chatIdOf) : undefined;
+    const mark = chatFirst ? rowMark({ needs: !!c.needs || needing.has(c.id), working: working.has(c.id), unread: !!c.unread, latest }) : null;
+    const shown = kids.length > 0 && (kidsShown[c.id] ?? (activeTalk === c.id || kids.some((k) => k.status === 'needs')));
     return (
     <div key={c.id} className={`convo-nest${kids.length ? ' has-kids' : ''}`}>
     {kids.length > 0 && (
@@ -385,7 +390,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     <div
       role="button"
       tabIndex={0}
-      className={`connector task convo-row${activeTalk === c.id ? ' is-active' : ''}${convoMenu?.id === c.id ? ' is-menu-open' : ''}`}
+      className={`connector task convo-row${activeTalk === c.id ? ' is-active' : ''}${convoMenu?.id === c.id ? ' is-menu-open' : ''}${c.unread ? ' is-unread' : ''}`}
       aria-current={activeTalk === c.id || undefined}
       onClick={() => onOpenTalk(c.id)}
       onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) { e.preventDefault(); e.currentTarget.click(); } }}
@@ -413,10 +418,13 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
       </span>
       {/* when it last moved; on hover, its ⋮ in the same spot */}
       <span className="sidebar-item-ago">{c.typing ? 'now' : ago(lastAgo(c))}</span>
-      {/* under it, its state as a mark: something in it needs you, or a task of its is working */}
-      {chatFirst && (c.needs || needing.has(c.id)
-        ? <span className="status-dot is-needs" role="img" aria-label="Needs you" />
-        : working.has(c.id) && <span className="status-dot is-working" role="img" aria-label="Running" />)}
+      {/* under it, its state as a mark: something in it needs you, a task of its is working, something
+          new in it, or how its latest task ended */}
+      {mark === 'needs' && <span className="status-dot is-needs" role="img" aria-label="Needs you" />}
+      {mark === 'working' && <span className="status-dot is-working" role="img" aria-label="Running" />}
+      {mark === 'unread' && <span className="status-dot is-new" role="img" aria-label="Unread" />}
+      {mark === 'failed' && <span className="status-dot is-failed" role="img" aria-label={`Latest task: ${ENDED[latest!.job.status]}`} />}
+      {mark === 'done' && <span className="convo-done" role="img" aria-label="Latest task: Done"><Check size={11} strokeWidth={2.2} /></span>}
       <button
         className="sidebar-item-more"
         aria-label={`More for ${c.title}`}
@@ -427,16 +435,15 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
         <EllipsisVertical size={14} strokeWidth={1.6} />
       </button>
     </div>
-    {/* its tasks, each a session of its own: its agent, its title, what it's on, its state (screen 03) */}
+    {/* its tasks, each a mark of its progress: its agent, its title, what it's on, its state (screen 03); a click opens this conversation at its card */}
     {shown && (
       <div className="convo-kids" role="group" aria-label={`${c.title}’s tasks`}>
         {kids.map((k) => (
           <button
             key={k.id}
-            className={`convo-kid${activeAgent === k.id ? ' is-active' : ''}`}
-            aria-current={activeAgent === k.id || undefined}
+            className="convo-kid"
             title={kidTitle(k)}
-            onClick={() => { markSeen(k.id); onOpenAgent?.(k.id, c.id); }}
+            onClick={() => { markSeen(k.id); onOpenAgent?.(k.id); }}
             onContextMenu={(e) => { e.preventDefault(); setTaskMenu({ id: k.id, at: new DOMRect(e.clientX, e.clientY, 0, 0), atPointer: true }); }}
           >
             <BrandMark brand={k.brand} size={14} />
@@ -911,6 +918,8 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
           <button role="menuitem" className="is-danger" onClick={() => { cancelInvite(sphere.id, inviteMenu.email); setInviteMenu(null); }}>Cancel invite</button>
         </Menu>
       )}
+      {/* deleting a conversation asks first, wherever its menu was (CHATSTATE-8) */}
+      <DeleteChatWindow />
       {/* a conversation's menu (ConvoMenu) */}
       {convoMenu && menuConvo && (
         <ConvoMenu

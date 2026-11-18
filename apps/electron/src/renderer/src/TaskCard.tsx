@@ -238,6 +238,14 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
 // bar: the drawer over the message box (DecisionBar, LIVETASK-24): its kind and headline on one line
 // (from: the task it's from, in a conversation), obid's text and a check's command behind Details,
 // a permission's command on one line, and Later only the drawer's own onLater, never an answer.
+// A GitHub offer's card, on Home and in Waiting for you (docs/contracts/github-work.md, GITHUBWORK-10):
+// whether a click on it counts as its start, as its start button's would. Not on its own buttons and
+// links, not one that selected its text, and not before its words have shown (one click, one answer).
+export function startsOnClick(e: React.MouseEvent, shownAt: number) {
+  if ((e.target as Element).closest('button, a, input, textarea, select, summary, [role="button"]')) return false;
+  return !window.getSelection?.()?.toString() && performance.now() - shownAt >= 500;
+}
+
 export function AskBlock({ task, inChat = false, onAnswer, bar }: {
   task: Pick<Task, 'id' | 'answer'> & { job: Pick<Task['job'], 'ask'> }; inChat?: boolean; onAnswer?: (option: string) => void;
   bar?: { onLater: () => void; from?: string; count?: React.ReactNode };
