@@ -960,6 +960,8 @@ printf '%s\n' "$committed_script" >scripts/oby-check.sh
 agents_md_at_limit
 for group in rust electron swift factory scan; do
     said=$(OBY_CHECK_ONLY="$group" OBY_CHECK_ALL=1 OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
+    # The Obysphere's block builds obid in the electron group (RIG-35): that one cargo step is its.
+    [[ "$group" != electron ]] || said=$(grep -vxF -- '==> cargo --quiet build --manifest-path core/Cargo.toml -p obid' <<<"$said")
     case "$group" in
         rust) wanted='cargo'; unwanted='apps/electron run\|==> gitleaks\|==> swift\|==> xcodebuild\|unittest' ;;
         electron) wanted='apps/electron run'; unwanted='==> cargo\|==> gitleaks\|Rust core has\|==> swift\|==> xcodebuild\|unittest' ;;
@@ -1322,7 +1324,10 @@ limits_passes 'the Rust core past its old line limit, under oby-check-blok' HEAD
 grep -qxF "$past_report" <<<"$ran" || wrong "CI-35: the Rust core past its old line limit, under oby-check-blok, wasn't reported"
 code "$jobs" "$((jobs_limit + 1))"
 limits_commit 'jobs.rs past'
-limits_fails "one line past jobs.rs's limit" "jobs.rs's line limit" HEAD
+# jobs.rs's limit is reported, never a failure (#2495, the owner's word of 2026-11-17).
+limits_passes "one line past jobs.rs's limit" HEAD
+grep -q "past its limit of $jobs_limit (reported, not a failure)" <<<"$ran" ||
+    wrong "CI-35: one line past jobs.rs's limit wasn't reported"
 rm "$jobs"
 sleeps "$sleepy" "$((sleep_limit + 1))"
 limits_commit 'one sleep past'
@@ -1341,7 +1346,7 @@ set_limit jobs_rs_limit "$((jobs_limit - 100))"
 code "$jobs" "$((jobs_limit - 50))"
 limits_commit 'a cut that lowers the limit'
 git show HEAD~1:scripts/oby-check.sh >scripts/oby-check.sh
-limits_fails "a commit's lower limit, from an earlier base" "jobs.rs's line limit" HEAD~1
+limits_passes "a commit's lower limit, from an earlier base" HEAD~1
 grep -q "jobs.rs has $((jobs_limit - 50)) production lines, past its limit of $((jobs_limit - 100))" <<<"$ran" ||
     wrong "CI-35: from an earlier base, the commit's lower limit didn't hold"
 limits_passes "the running copy's limit, from the commit itself" HEAD
