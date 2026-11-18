@@ -1751,7 +1751,14 @@ async fn token(
         .iter()
         .find(|m| m["obi"] == obi.as_str() && m["status"] == "active")
     else {
-        return oauth("invalid_grant");
+        // In the real Sphere's words (obi-sphere server/src/oauth.ts): a removed member's
+        // delegation is no longer exchanged (SPHERE-22).
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": "invalid_grant",
+                              "error_description": "the actor is not an active member owned by the subject"})),
+        )
+            .into_response();
     };
     let current = member["keys"]
         .as_array()
