@@ -1,0 +1,37 @@
+/* Home's stack (AskStack), over app.css's rules for it (docs/contracts/github-work.md, GITHUBWORK-20).
+   room.css styles another card by the same .ask-card name (a 1px border, a see-through background,
+   14px corners) and loads after app.css, so on the stack the top card turned see-through and the
+   cards behind it showed through it as a second, offset box. Here the stack's own card wins: opaque,
+   no border, its own corners and padding. The cards behind it are only their bottom edge, under it */
+.asks > .ask-card { display: block; width: auto; padding: 16px 18px; border: 0; border-radius: 22px; background: var(--chip); }
+.asks > .ask-peek { top: auto; height: 48px; }  /* tall enough for its 22px corners, so its edge is a card's */
+
+/* A GitHub offer's card, lean (GitHubCard.tsx, GITHUBWORK-21 to 27): one line (its kind, its own
+   title, whose and where; the pager at its end when there are several), then only the failed checks,
+   then the start button, Later and Dismiss, Open on GitHub quiet at the row's end. What's under the
+   line starts where its words do, past the GitHub mark */
+.asks > .ask-card.is-github { padding: 12px 14px 12px 16px; }
+.gh-line { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 24px; }
+.gh-line > svg { flex: none; color: var(--muted); }
+.gh-what { flex: 1; min-width: 0; margin: 0; display: flex; align-items: baseline; gap: 6px; font-size: var(--text-md); line-height: 20px; white-space: nowrap; }
+.gh-kind { flex: none; color: var(--needs); font-size: var(--text-sm); font-weight: 500; }
+.gh-kind.is-failed { color: var(--danger); }
+.gh-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-weight: 500; }
+.gh-meta { flex: none; color: var(--muted); }
+.gh-line .ask-nav { margin: 0 -6px 0 0; }
+.gh-note { margin: 2px 0 0 24px; color: var(--muted); font-size: var(--text-sm); line-height: 18px; overflow-wrap: anywhere; }
+.gh-checks { list-style: none; margin: 6px 0 0 24px; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.gh-checks li { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--danger); font-size: var(--text-sm); line-height: 20px; }
+.gh-checks .status-dot { flex: none; width: 7px; height: 7px; }
+.gh-check { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gh-check-name { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+.gh-check-details, .gh-checks-more { flex: none; padding: 0; border: 0; background: none; color: var(--muted); font: inherit; font-size: var(--text-sm); cursor: pointer; transition: color var(--fade); }
+.gh-check-details { margin-left: auto; }
+.gh-check-details:hover, .gh-checks-more:hover { color: var(--ink); }
+.gh-actions { margin: 10px 0 0 24px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; }
+.gh-actions .tc-options { margin: 0; gap: 4px; }
+.gh-actions .tc-option { height: 28px; padding: 0 12px; }
+.gh-actions .tc-option.is-primary { margin-right: 4px; }
+.gh-links { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+.gh-open { gap: 1px; color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
+.gh-answered { margin: 10px 0 0 24px; }
