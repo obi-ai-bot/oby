@@ -17,6 +17,7 @@ pub const NODES: &[(&str, &str)] = &[
     ("obid-start", "Starts a scratch obid on its own home and port, with stand-in agents (again with the same name: a restart on the same home)."),
     ("obid-stop", "Stops a scratch obid this suite started, by PID: SIGTERM, then SIGKILL."),
     ("call", "Calls an obid endpoint as the owner, a paired device's signed words, another token or none; optionally waits until it answers as expected."),
+    ("call-wait", "Waits for the answer of a call sent in the background, and asserts it."),
     ("check", "Asserts a value (a former step's output) against an expectation."),
     ("events-follow", "Follows GET /v1/events from now on."),
     ("events-wait", "Waits for an event on /v1/events matching an expectation, or that none comes."),
@@ -38,14 +39,76 @@ pub const NODES: &[(&str, &str)] = &[
     ("sphere-lie", "Has the lying Sphere serve an owner's cards signed by a new owner key from now on."),
 ];
 
+type Pending =
+    std::collections::HashMap<String, tokio::task::JoinHandle<std::result::Result<Value, String>>>;
+static PENDING: std::sync::Mutex<Option<Pending>> = std::sync::Mutex::new(None);
+
 pub async fn run_node(run: &Run, name: &str, input: Value) -> Result<Value> {
     match name {
         "obid-start" => obid::start(run, serde_json::from_value(input)?).await,
         "obid-stop" => {
             let pid = input["obid"]["pid"].as_u64().context("obid.pid")? as u32;
+            // `kill`: SIGKILL, obid ending with no chance to save anything (a crash, a power cut).
+            if input["kill"] == true {
+                anyhow::ensure!(
+                    crate::procs::ours(pid),
+                    "process {pid} isn't one this suite started"
+                );
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGKILL);
+                }
+            }
             obid::stop(pid, Duration::from_secs(10)).await
         }
+        // `background`: the request goes now and the step answers its handle at once; a
+        // `call-wait` step later waits for its answer (a turn's words, which block until it ends,
+        // while a later step stops or cancels it).
+        "call" if input["background"] == true => {
+            let handle = uuid::Uuid::new_v4().to_string();
+            let mut request = input.clone();
+            request.as_object_mut().unwrap().remove("background");
+            let task =
+                tokio::spawn(async move { call(&request).await.map_err(|e| format!("{e:#}")) });
+            PENDING
+                .lock()
+                .unwrap()
+                .get_or_insert_with(Default::default)
+                .insert(handle.clone(), task);
+            Ok(json!({"handle": handle}))
+        }
         "call" => call(&input).await,
+        "call-wait" => {
+            let handle = sphere::str_of(&input["call"], "handle")?;
+            let task = PENDING
+                .lock()
+                .unwrap()
+                .as_mut()
+                .and_then(|p| p.remove(handle))
+                .context("no background call with that handle (or it was waited for already)")?;
+            let seconds = input["seconds"].as_u64().unwrap_or(120);
+            let answer = tokio::time::timeout(Duration::from_secs(seconds), task)
+                .await
+                .with_context(|| {
+                    format!("the background call answered nothing within {seconds} s")
+                })??
+                .map_err(|e| anyhow::anyhow!(e))?;
+            let want = input.get("expect");
+            let text = answer["text"].as_str().unwrap_or_default().to_string();
+            let status = answer["status"].as_u64().unwrap_or(0) as u16;
+            if let Some(w) = want {
+                let failures = answer_failures(w, status, &answer["body"], &text);
+                if !failures.is_empty() {
+                    bail!(
+                        "{}: {}",
+                        failures.join("; "),
+                        text.chars().take(600).collect::<String>()
+                    );
+                }
+            }
+            let mut out = answer.clone();
+            out["red"] = red_proof(want, status, &answer["body"], &text);
+            Ok(out)
+        }
         "check" => {
             let failures = expect::check(&input["expect"], &input["value"], "");
             if failures.is_empty() {
@@ -79,7 +142,18 @@ pub async fn run_node(run: &Run, name: &str, input: Value) -> Result<Value> {
             Ok(found)
         }
         "cleanup" => Ok(json!({"stopped": crate::procs::stop_all().await})),
-        "home-file" => home_file(&input),
+        // `within`: asked again until it holds, for a file obid writes a moment later.
+        "home-file" => {
+            let until = std::time::Instant::now()
+                + Duration::from_secs(input["within"].as_u64().unwrap_or(0));
+            loop {
+                match home_file(&input) {
+                    Ok(v) => break Ok(v),
+                    Err(e) if std::time::Instant::now() >= until => break Err(e),
+                    Err(_) => tokio::time::sleep(Duration::from_millis(250)).await,
+                }
+            }
+        }
         "device-pair" => device_pair(&input).await,
         "device-sign" => device_sign(&input),
         "owner-key" => {

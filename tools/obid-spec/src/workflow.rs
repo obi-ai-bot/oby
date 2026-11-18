@@ -30,6 +30,9 @@ pub struct Step {
     pub inputs: Value,
     pub proves: Vec<String>,
     pub expected_red: Option<String>,
+    /// `ui.flaky`: a known intermittent bug's issue. Its failure is listed and doesn't fail the
+    /// run; its pass is a pass.
+    pub flaky: Option<String>,
     pub active: bool,
 }
 
@@ -103,6 +106,7 @@ pub fn parse(text: &str, file: &Path, area: &str, nodes: &[&str]) -> Result<Work
             inputs: raw.get("inputs").cloned().unwrap_or(json!({})),
             proves,
             expected_red: raw["ui"]["expectedRed"].as_str().map(str::to_string),
+            flaky: raw["ui"]["flaky"].as_str().map(str::to_string),
             active: raw["active"].as_bool().unwrap_or(true),
         });
     }

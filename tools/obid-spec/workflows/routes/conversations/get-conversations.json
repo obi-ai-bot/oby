@@ -1,0 +1,160 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/conversations",
+  "version": "1.0.0",
+  "description": "The list, pinned first then newest: [] with none; 422 for a q with no word or an after that isn't a cursor; a search finds a turn's words.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/conversations"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "none",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY billing retries",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "billing retries"
+          }
+        }
+      }
+    },
+    {
+      "id": "tick",
+      "use": "runtime.rust:next-second"
+    },
+    {
+      "id": "second",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Something else",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Something else"
+          }
+        }
+      }
+    },
+    {
+      "id": "newest-first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.second.body.conversation}",
+              "pinned": false
+            },
+            {
+              "id": "${state.first.body.conversation}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "q-blank-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations?q=%20",
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "after-not-a-cursor-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations?after=zzz",
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "search-finds-the-words",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations?q=billing",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.first.body.conversation}",
+              "turn": {
+                "text": {
+                  "$contains": "billing"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

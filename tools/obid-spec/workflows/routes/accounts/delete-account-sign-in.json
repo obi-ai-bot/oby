@@ -1,0 +1,128 @@
+{
+  "schemaVersion": "2",
+  "name": "DELETE /v1/accounts/{id}/sign-in",
+  "version": "1.0.0",
+  "description": "Cancels a sign-in: 204, also with none under way; 404 for an account obid doesn't have; the account no longer says it's signing in.",
+  "trigger": {
+    "http": {
+      "method": "DELETE",
+      "path": "/v1/accounts/{id}/sign-in"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "added",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "claude",
+          "name": "Work"
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "claude",
+            "name": "Work",
+            "signedIn": false
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/accounts/${state.added.body.id}/sign-in",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/accounts/deadbeef/sign-in",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "none-under-way-204",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/accounts/${state.added.body.id}/sign-in",
+        "expect": {
+          "status": 204
+        }
+      }
+    },
+    {
+      "id": "start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.added.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "cancelled-204",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/accounts/${state.added.body.id}/sign-in",
+        "expect": {
+          "status": 204
+        }
+      }
+    },
+    {
+      "id": "not-signing-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.added.body.id}",
+                "signedIn": false,
+                "signingIn": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,167 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/conversation",
+  "version": "1.0.0",
+  "description": "A conversation's turns, oldest first: 422 for a limit that isn't 1 to 500, 404 for an id or turn it doesn't have, [] with none; the owner's words and Oby's reply.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/conversation"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "none-yet",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "limit-0-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?limit=0",
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "limit is 1 to 500."
+          }
+        }
+      }
+    },
+    {
+      "id": "limit-not-a-number-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?limit=x",
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "limit is a number."
+          }
+        }
+      }
+    },
+    {
+      "id": "unknown-id-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=00000000-0000-4000-8000-000000000000",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Fine.",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Fine."
+          }
+        }
+      }
+    },
+    {
+      "id": "the-thread",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "who": "user",
+              "text": "SAY Fine.",
+              "conversation": "${state.said.body.conversation}",
+              "delivery": {
+                "status": "answered"
+              }
+            },
+            {
+              "who": "oby",
+              "text": "Fine.",
+              "jobs": []
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "limit-1-the-last",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}&limit=1",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "who": "oby"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "before-a-turn-not-there-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}&before=nope",
+        "expect": {
+          "status": 404
+        }
+      }
+    }
+  ]
+}

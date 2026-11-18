@@ -1,0 +1,148 @@
+{
+  "schemaVersion": "2",
+  "name": "PUT /v1/settings/agents/{agent}",
+  "version": "1.0.0",
+  "description": "The binary obid runs as a tool (ACCOUNTS-26 to 28): 404 for a tool obid doesn't run, 422 badBin and notFound with nothing changed; a path it finds is kept, and null brings back the configuration's.",
+  "trigger": {
+    "http": {
+      "method": "PUT",
+      "path": "/v1/settings/agents/{agent}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/agents/claude",
+        "body": {
+          "bin": null
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "a-tool-obid-doesnt-run-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/agents/gemini",
+        "body": {
+          "bin": null
+        },
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "accounts-27-bad-bin-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/agents/codex",
+        "body": {
+          "bin": "rm -rf"
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "reason": "badBin"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-27"
+        ]
+      }
+    },
+    {
+      "id": "accounts-27-not-found-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/agents/codex",
+        "body": {
+          "bin": "/nowhere/codex"
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "reason": "notFound"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-27"
+        ]
+      }
+    },
+    {
+      "id": "accounts-26-kept",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/agents/codex",
+        "body": {
+          "bin": "/usr/bin/true"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "agent": "codex",
+            "bin": "/usr/bin/true",
+            "binSet": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-26"
+        ]
+      }
+    },
+    {
+      "id": "accounts-28-null-brings-back-the-configurations",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/agents/codex",
+        "body": {
+          "bin": null
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "binSet": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-28"
+        ]
+      }
+    }
+  ]
+}

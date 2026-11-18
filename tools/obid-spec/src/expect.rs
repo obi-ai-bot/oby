@@ -290,6 +290,8 @@ fn refused_by(want: &Value) -> Value {
             },
             "$none" => Value::Array(vec![arg.clone()]),
             "$any" => Value::Array(vec![]),
+            // One more than it wants, whatever it counts.
+            "$len" => Value::Array(vec![Value::Null; arg.as_u64().unwrap_or(0) as usize + 1]),
             "$not" => match matcher(arg) {
                 Some(("$contains", Value::String(s))) => Value::String(s.clone()),
                 Some(_) => sentinel(),
@@ -411,9 +413,8 @@ mod mutant_tests {
 
     #[test]
     fn obidspec_6_every_mutant_of_a_real_assertion_fails() {
-        let body =
-            json!({"state": "joined", "list": [{"k": 1}], "missing": null, "n": 3, "s": "hello"});
-        let expect = json!({"status": 200, "body": {"state": "joined", "list": {"$any": {"k": 1}}},
+        let body = json!({"state": "joined", "list": [{"k": 1}], "missing": null, "n": 3, "s": "hello", "one": [1]});
+        let expect = json!({"status": 200, "body": {"state": "joined", "list": {"$any": {"k": 1}}, "one": {"$len": 1}},
             "paths": {"gone": {"$exists": false}, "n": {"$ne": 4}, "s": {"$contains": "ell"}, "list": {"$count": [{"k": 1}, 1]}},
             "text": {"$not": {"$contains": "secret"}}});
         assert!(judge(
@@ -427,7 +428,7 @@ mod mutant_tests {
         )
         .is_empty());
         let all = mutants(&expect, 200, &body, "ok");
-        assert_eq!(all.len(), 8);
+        assert_eq!(all.len(), 9);
         for m in &all {
             assert!(!judge(&expect, m).is_empty(), "{} passed", m.what);
         }

@@ -1,0 +1,81 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/settings/models",
+  "version": "1.0.0",
+  "description": "Each tool's default model and efforts, as status shows them.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/settings/models"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/models",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "models",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/models",
+        "expect": {
+          "status": 200,
+          "body": {
+            "claude": {
+              "model": {
+                "$type": "string"
+              },
+              "effort": {
+                "$type": "string"
+              }
+            },
+            "codex": {
+              "model": {
+                "$type": "string"
+              }
+            },
+            "cursor": {
+              "model": "auto"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "as-status-says",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "body": {
+            "models": "${state.models.body}"
+          }
+        }
+      }
+    }
+  ]
+}

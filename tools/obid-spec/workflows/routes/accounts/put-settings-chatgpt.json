@@ -1,0 +1,102 @@
+{
+  "schemaVersion": "2",
+  "name": "PUT /v1/settings/chatgpt",
+  "version": "1.0.0",
+  "description": "Whether the owner saw the ChatGPT welcome: false at first; set, it reads back.",
+  "trigger": {
+    "http": {
+      "method": "PUT",
+      "path": "/v1/settings/chatgpt"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/chatgpt",
+        "body": {
+          "welcomed": true
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "not-welcomed-at-first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/chatgpt",
+        "expect": {
+          "status": 200,
+          "body": {
+            "welcomed": false
+          }
+        }
+      }
+    },
+    {
+      "id": "not-a-bool-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/chatgpt",
+        "body": {
+          "welcomed": "yes"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "welcomed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/chatgpt",
+        "body": {
+          "welcomed": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "welcomed": true
+          }
+        }
+      }
+    },
+    {
+      "id": "read-back",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/chatgpt",
+        "expect": {
+          "status": 200,
+          "body": {
+            "welcomed": true
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,142 @@
+{
+  "schemaVersion": "2",
+  "name": "PUT /v1/settings/permissions",
+  "version": "1.0.0",
+  "description": "The default mode: 400 for a body that isn't JSON, 422 for a mode obid doesn't have; narrower takes the token, wider the owner's signed click, kept 0600.",
+  "trigger": {
+    "http": {
+      "method": "PUT",
+      "path": "/v1/settings/permissions"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "ask"
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "not-json-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "raw": "x",
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "unknown-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "yolo"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "narrower",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "ask"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": "ask"
+          }
+        }
+      }
+    },
+    {
+      "id": "wider-unsigned-403",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "bypass"
+        },
+        "expect": {
+          "status": 403
+        }
+      }
+    },
+    {
+      "id": "wider-signed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "bypass"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": "bypass"
+          }
+        }
+      }
+    },
+    {
+      "id": "kept-0600",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "permissions.json",
+        "expect": {
+          "exists": true,
+          "mode": "0600",
+          "json": {
+            "mode": "bypass"
+          }
+        }
+      }
+    }
+  ]
+}
