@@ -1002,6 +1002,10 @@ impl Jobs {
                         let _ = cut.send(Signal::Stop);
                     }
                 }
+                // How full its session's context is now (USAGE-15): the latest, whatever round
+                AgentEvent::Context(context) => {
+                    jobs.update(id, |job| job.context_window = Some(context));
+                }
                 // The words, to-do list and a running command's output are the transcript's.
                 AgentEvent::Delta(_)
                 | AgentEvent::Output { .. }

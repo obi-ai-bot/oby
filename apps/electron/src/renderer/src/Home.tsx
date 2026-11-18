@@ -11,6 +11,7 @@ import Sidebar from './Sidebar';
 import TaskMenu from './TaskMenu';
 import ConvoMenu from './ConvoMenu';
 import Composer from './Composer';
+import NeedsYouNote from './NeedsYouNote';
 import SettingsTip, { dismissSettingsTip } from './SettingsTip';
 import { setFolders } from './folders';
 import AskStack from './AskStack';
@@ -579,6 +580,8 @@ export default function Home() {
       </main>
 
       {onObid && <Connection />}
+      {/* another conversation needs you while the window is in front (ALERTS-21) */}
+      <NeedsYouNote open={top?.kind === 'talk' ? top.id : null} onOpen={(id) => start({ kind: 'talk', id })} />
       {/* asking Oby: a new conversation, opened at once */}
       <Composer
         home

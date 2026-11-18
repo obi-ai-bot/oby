@@ -66,6 +66,8 @@ pub struct Words {
     /// An app of the owner's signed them (docs/contracts/signed-words.md): only then are they the
     /// owner's own word for what Oby does at once (TASKCONV-6).
     pub signed: bool,
+    /// The message box's chips sent with them (brain::defaults, COMPOSER-3).
+    pub defaults: Option<super::defaults::Defaults>,
 }
 
 /// What the owner's next turn in a conversation answers ([`Turns::wait_turn`]): every word said
@@ -89,6 +91,9 @@ pub struct Turns {
     /// One lock per conversation, held by the owner's turn there until it ends: one answer at a
     /// time in a conversation (docs/mac-design.md 1.6).
     owners: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Waiting words the owner cancelled on their own (COMPOSER-11), by user turn: they keep their
+    /// place, so words before them still wait for their waiter, and no turn answers them.
+    dropped: Mutex<std::collections::HashSet<String>>,
 }
 
 impl Turns {
@@ -131,10 +136,15 @@ impl Turns {
         {
             return None;
         }
+        let mut dropped = self.dropped.lock().unwrap_or_else(|e| e.into_inner());
         let taken: Vec<Words> = waiting
             .extract_if(.., |(c, _)| c == conversation)
             .map(|(_, w)| w)
+            .filter(|w| !dropped.remove(&w.turn))
             .collect();
+        drop(dropped);
+        // Every word left was cancelled on its own: nothing to answer.
+        let turn = taken.last()?.turn.clone();
         Some(Next {
             words: Words {
                 turn,
@@ -147,6 +157,8 @@ impl Turns {
                 jobs: taken.iter().flat_map(|w| w.jobs.clone()).collect(),
                 // Words said together are the owner's own only when every one was signed.
                 signed: taken.iter().all(|w| w.signed),
+                // Words answered together: the latest words' chips (COMPOSER-7).
+                defaults: taken.last().and_then(|w| w.defaults.clone()),
             },
             turns: taken.into_iter().map(|w| w.turn).collect(),
             _held: held,
@@ -188,9 +200,28 @@ impl Turns {
     pub fn cancel(&self, conversation: Option<&str>) -> Vec<String> {
         let mut waiting = self.waiting();
         let dropped = waiting.extract_if(.., |(c, _)| conversation.is_none_or(|id| c == id));
-        let dropped = dropped.map(|(_, w)| w.turn).collect();
+        let dropped: Vec<String> = dropped.map(|(_, w)| w.turn).collect();
+        let mut alone = self.dropped.lock().unwrap_or_else(|e| e.into_inner());
+        alone.retain(|t| !dropped.contains(t));
+        drop(alone);
         self.mark(conversation, |c| c.cancelled.store(true, Ordering::SeqCst));
         dropped
+    }
+
+    /// Drops the owner's words of `turn` while they still wait in `conversation`, and nothing
+    /// else: the turn under way goes on, and so do the other words waiting (COMPOSER-11). Their
+    /// user turn when they were dropped; none when a turn had taken them, or they were never there.
+    pub fn drop_waiting(&self, conversation: &str, turn: &str) -> Vec<String> {
+        let waiting = self.waiting();
+        let mut dropped = self.dropped.lock().unwrap_or_else(|e| e.into_inner());
+        let there = waiting
+            .iter()
+            .any(|(c, w)| c == conversation && w.turn == turn);
+        if there && dropped.insert(turn.to_owned()) {
+            vec![turn.to_owned()]
+        } else {
+            vec![]
+        }
     }
 
     fn mark(&self, conversation: Option<&str>, mark: impl Fn(&Control)) -> bool {
@@ -353,6 +384,7 @@ mod tests {
             attachments: vec![format!("{turn}.png")],
             jobs: vec![],
             signed: true,
+            defaults: None,
         };
         let wait = |turn: &'static str| {
             let turns = turns.clone();
@@ -397,6 +429,110 @@ mod tests {
         turns.cancel(Some("c1"));
         drop(held);
         assert!(dropped.await.unwrap().is_none(), "cancelled");
+        assert!(turns.waiting().is_empty());
+    }
+
+    /// COMPOSER-7: words answered together take the latest words' chips.
+    #[tokio::test]
+    async fn composer_7_words_answered_together_take_the_latest_chips() {
+        let turns = Arc::new(Turns::default());
+        let chips = |mode: &str| super::super::defaults::Defaults {
+            mode: Some(mode.into()),
+            ..Default::default()
+        };
+        let words = |turn: &str, defaults| Words {
+            turn: turn.into(),
+            said: turn.into(),
+            attachments: vec![],
+            jobs: vec![],
+            signed: true,
+            defaults,
+        };
+        let held = turns.wait_turn("c1", words("t1", None)).await.unwrap();
+        let (a, b) = (turns.clone(), turns.clone());
+        let early = tokio::spawn(async move {
+            a.wait_turn("c1", words("t2", Some(chips("plan"))))
+                .await
+                .map(|n| n.words.defaults)
+        });
+        while turns.waiting().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        let late = tokio::spawn(async move {
+            b.wait_turn("c1", words("t3", Some(chips("ask"))))
+                .await
+                .map(|n| n.words.defaults)
+        });
+        while turns.waiting().len() < 2 {
+            tokio::task::yield_now().await;
+        }
+        drop(held);
+        assert!(early.await.unwrap().is_none());
+        assert_eq!(late.await.unwrap(), Some(Some(chips("ask"))));
+    }
+
+    /// COMPOSER-11: words cancelled on their own while they wait go alone: the turn under way
+    /// goes on, words before them are answered as if they'd never come, and words a turn took
+    /// already can't be dropped.
+    #[tokio::test]
+    async fn composer_11_cancelled_waiting_words_go_alone() {
+        let turns = Arc::new(Turns::default());
+        let words = |turn: &str| Words {
+            turn: turn.into(),
+            said: format!("said {turn}"),
+            attachments: vec![],
+            jobs: vec![],
+            signed: true,
+            defaults: None,
+        };
+        let wait = |turn: &'static str| {
+            let turns = turns.clone();
+            tokio::spawn(async move {
+                turns
+                    .wait_turn("c1", words(turn))
+                    .await
+                    .map(|n| (n.turns, n.words.turn))
+            })
+        };
+        let waiting = |n: usize| {
+            let turns = turns.clone();
+            async move {
+                while turns.waiting().len() < n {
+                    tokio::task::yield_now().await;
+                }
+            }
+        };
+        let underway = turns.wait_turn("c1", words("t1")).await.unwrap();
+        let control = turns.begin("t1", "c1");
+        let second = wait("t2");
+        waiting(1).await;
+        let third = wait("t3");
+        waiting(2).await;
+        assert_eq!(turns.drop_waiting("c1", "t3"), ["t3"]);
+        assert!(turns.drop_waiting("c1", "t3").is_empty(), "once");
+        assert!(
+            turns.drop_waiting("c1", "t1").is_empty(),
+            "the turn under way isn't waiting"
+        );
+        assert!(
+            turns.drop_waiting("c2", "t2").is_empty(),
+            "another conversation's"
+        );
+        assert!(control.live(), "the turn under way goes on");
+        drop(underway);
+        // t2 deferred to the latest words' waiter, which answers it alone.
+        assert!(second.await.unwrap().is_none());
+        assert_eq!(
+            third.await.unwrap(),
+            Some((vec!["t2".to_owned()], "t2".to_owned()))
+        );
+        // Only dropped words left: nothing answers them.
+        let held = turns.wait_turn("c1", words("t4")).await.unwrap();
+        let alone = wait("t5");
+        waiting(1).await;
+        assert_eq!(turns.drop_waiting("c1", "t5"), ["t5"]);
+        drop(held);
+        assert!(alone.await.unwrap().is_none());
         assert!(turns.waiting().is_empty());
     }
 

@@ -739,6 +739,55 @@ pub fn claude_tokens(result: &Value, api_key_source: Option<&str>) -> Tokens {
     tokens
 }
 
+/// How full an agent's context window is, as its tool last said (docs/contracts/usage.md,
+/// USAGE-15 to 17): the tokens its next call would carry, and the window's size when the tool says
+/// it. Only the tool's own numbers, never worked out from a model's name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextWindow {
+    pub used: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+}
+
+/// Claude Code's: its own last message's `usage` (input, cache read and written, and its output,
+/// all of which its next call carries), and the largest `contextWindow` its `result`'s
+/// `modelUsage` names. None without a message's usage.
+pub fn claude_context(last: Option<&Value>, result: &Value) -> Option<ContextWindow> {
+    let usage = last?;
+    let used = [
+        "input_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "output_tokens",
+    ]
+    .iter()
+    .filter_map(|key| usage[*key].as_u64())
+    .sum::<u64>();
+    let size = result["modelUsage"]
+        .as_object()
+        .into_iter()
+        .flat_map(|models| models.values())
+        .filter_map(|m| m["contextWindow"].as_u64())
+        .filter(|size| *size > 0)
+        .max();
+    (used > 0).then_some(ContextWindow { used, size })
+}
+
+/// Codex's, from `thread/tokenUsage/updated`'s `tokenUsage`: its `last` call's `totalTokens` (else
+/// its input and output), and `modelContextWindow`.
+pub fn codex_context(usage: &Value) -> Option<ContextWindow> {
+    let last = &usage["last"];
+    let used = last["totalTokens"].as_u64().or_else(|| {
+        let input = last["inputTokens"].as_u64()?;
+        Some(input + last["outputTokens"].as_u64().unwrap_or(0))
+    })?;
+    let size = usage["modelContextWindow"]
+        .as_u64()
+        .filter(|size| *size > 0);
+    (used > 0).then_some(ContextWindow { used, size })
+}
+
 /// One of Codex's `tokenUsage` breakdowns (`total` or `last`, from `thread/tokenUsage/updated`).
 /// Its `inputTokens` include the cached ones; Codex reports no cache writes or cost.
 fn codex_breakdown(b: &Value) -> Option<Tokens> {
@@ -887,6 +936,54 @@ pub fn split(rise: f64, weights: &[u64]) -> Vec<f64> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn usage_15_claude_codes_context_is_its_last_messages_usage_against_its_window() {
+        let last = json!({"input_tokens": 10, "cache_creation_input_tokens": 500, "cache_read_input_tokens": 40_000, "output_tokens": 300});
+        let result = json!({"modelUsage": {
+            "claude-sonnet-4-5": {"inputTokens": 900, "contextWindow": 200_000},
+            "claude-haiku-4-5": {"inputTokens": 9, "contextWindow": 100_000}
+        }});
+        assert_eq!(
+            claude_context(Some(&last), &result),
+            Some(ContextWindow {
+                used: 40_810,
+                size: Some(200_000)
+            })
+        );
+        // a Claude Code that names no window: the tokens alone
+        assert_eq!(
+            claude_context(Some(&last), &json!({"usage": {}})),
+            Some(ContextWindow {
+                used: 40_810,
+                size: None
+            })
+        );
+        // no message's usage: nothing said
+        assert_eq!(claude_context(None, &result), None);
+        assert_eq!(claude_context(Some(&json!({})), &result), None);
+    }
+
+    #[test]
+    fn usage_16_codexs_context_is_its_last_calls_tokens_against_its_window() {
+        let usage = json!({"total": {"totalTokens": 90_000}, "last": {"totalTokens": 31_000, "inputTokens": 30_000, "outputTokens": 1_000}, "modelContextWindow": 272_000});
+        assert_eq!(
+            codex_context(&usage),
+            Some(ContextWindow {
+                used: 31_000,
+                size: Some(272_000)
+            })
+        );
+        let older = json!({"last": {"inputTokens": 30_000, "outputTokens": 1_000}, "modelContextWindow": null});
+        assert_eq!(
+            codex_context(&older),
+            Some(ContextWindow {
+                used: 31_000,
+                size: None
+            })
+        );
+        assert_eq!(codex_context(&json!({"total": {"totalTokens": 5}})), None);
+    }
 
     struct Home(PathBuf);
     impl Home {

@@ -98,6 +98,8 @@ pub struct Session {
     pub attachments: Vec<String>,
     /// The jobs the owner attached to their words, by obid's own ids.
     pub attached_jobs: Vec<String>,
+    /// The message box's chips sent with the words (super::defaults, COMPOSER-4 and 5).
+    pub defaults: Option<super::defaults::Defaults>,
     /// obid's word on repositories the owner named that repos/ doesn't hold yet
     /// ([`named_checkouts`]), put before their words.
     pub repos_note: Option<String>,
@@ -1533,6 +1535,7 @@ async fn session(
         said: said.to_owned(),
         attachments: asked.attachments.to_vec(),
         attached_jobs: asked.jobs.to_vec(),
+        defaults: asked.defaults.cloned(),
         repos_note,
         control: control.clone(),
         jobs: Mutex::new(vec![]),
@@ -2565,7 +2568,8 @@ async fn one(
             | Event::Thinking { .. }
             | Event::Plan(_)
             | Event::Usage(_)
-            | Event::Tokens(_) => {}
+            | Event::Tokens(_)
+            | Event::Context(_) => {}
             // An own Claude Code session has the owner's own MCP servers and claude.ai connectors,
             // as their terminal does (LANES-12): Settings › Connectors shows them (CONNECTORS-1).
             // A boxed one's are obid's only, never theirs (CONNECTORS-3).
@@ -3844,6 +3848,7 @@ mod tests {
             said: String::new(),
             attachments: vec![],
             attached_jobs: vec![],
+            defaults: None,
             repos_note: None,
             control,
             jobs: Mutex::new(vec![]),
@@ -4002,6 +4007,7 @@ mod tests {
             said: String::new(),
             attachments: vec![],
             attached_jobs: vec![],
+            defaults: None,
             repos_note: None,
             control,
             jobs: Mutex::new(vec![]),
@@ -4624,6 +4630,7 @@ mod tests {
             said: String::new(),
             attachments: vec![],
             attached_jobs: vec![],
+            defaults: None,
             repos_note: None,
             control,
             jobs: Mutex::new(vec![]),

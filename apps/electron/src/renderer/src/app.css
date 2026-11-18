@@ -683,6 +683,11 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .tc-meter { width: 72px; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); overflow: hidden; display: flex; gap: 1px; }
 .tc-meter > span { height: 100%; background: rgba(255, 255, 255, 0.4); }
 .tc-meter > .is-job { background: var(--ink); }
+/* the context window's (USAGE-15): its own row under the usage, yellow past 80%, red past 90% */
+.tc-context { margin-top: 8px; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.tc-context b { color: var(--ink); font-weight: 500; }
+.tc-meter.is-high > .is-job { background: var(--full); }
+.tc-meter.is-over > .is-job { background: var(--over); }
 .tc-out { margin-top: 14px; }
 .tc-out h4 { margin: 0 0 6px; color: var(--label); font-size: var(--text-sm); font-weight: 500; }
 @media (prefers-reduced-motion: reduce) { .tc-tools .is-running .tc-tool-verb { animation: none; background: none; color: var(--ink); } }
@@ -1871,6 +1876,12 @@ button.connector { width: 100%; text-align: left; }
 .set-address:focus-within { border-color: var(--field-edge-on); }
 .set-address.is-bad, .set-address.is-bad:focus-within { border-color: rgba(240, 113, 103, 0.5); }
 .set-problem { color: var(--danger); }
+/* a tool's binary (Settings › Agents › Binaries, ACCOUNTS-26): where it was found cut to one line
+   (the whole on hover), the field and its button beside it */
+.set-bin .set-label { flex: 1; min-width: 0; }
+.set-bin .set-about { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.set-bin .set-control { flex: none; gap: 8px; }
+.set-bin .set-field { width: 220px; }
 
 /* an account: what it's used this week, as a bar under its name */
 .set-usage { align-items: flex-start; }
@@ -2100,6 +2111,21 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
   color: var(--text); font-size: var(--text-md); line-height: 20px; text-align: center; white-space: pre-line;
 }
 .connection.is-down { color: var(--ink); border-color: color-mix(in srgb, var(--over) 45%, transparent); }
+
+/* another conversation needs you while the window is in front (NeedsYouNote, ALERTS-21): a quiet
+   note in the window's corner, the T3 Code way, with Open */
+.needs-note {
+  position: absolute; right: 16px; top: calc(var(--bar, 52px) + 8px); z-index: 60; display: flex; align-items: center; gap: 10px;
+  max-width: min(380px, calc(100vw - 32px)); padding: 10px 10px 10px 14px;
+  border-radius: 12px; border: 1px solid var(--surface-edge); background: var(--surface);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); color: var(--text); font-size: var(--text-md);
+  animation: fade-in 160ms var(--warm) both;
+}
+.needs-note-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--needs); }
+.needs-note-words { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.needs-note-words b { color: var(--ink); font-weight: 500; }
+.needs-note-title { color: var(--muted); font-size: var(--text-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.needs-note-close { flex: none; }
 
 /* --- Oby talking (ObyFaceLive; the owner's, 2026-10-27, ~/Projects/Deskree/research/oby-specs/balloon-final.css) ---
    The speech balloon: Q*bert's grawlix beside Oby's head while its words come in. It grows out of its
@@ -2447,3 +2473,44 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .profile-sheet .modal-lede + .modal-label { margin-top: 0; }
 .profile-sheet .profile-swatches { margin-top: 0; }
 .profile-sheet .profile-delete { margin-right: auto; }
+
+/* The message box's chips (docs/contracts/composer.md, COMPOSER-1 and 2): the mode and the model of the
+   tasks the words start, before the talk pill, as T3 Code's composer has them. Left to Settings and
+   Oby (Default, Auto), they're muted */
+.composer-talk { display: flex; align-items: center; gap: 0; }
+.task-chips { display: flex; align-items: center; min-width: 0; }
+.task-chip > span { max-width: 140px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.task-chip > svg:first-child { margin-right: 4px; color: var(--muted); }
+.task-chip.is-default { color: var(--muted); }
+.task-chip.is-default:hover, .task-chip.is-default.is-on { color: var(--ink); }
+.task-models .menu-label.task-tool { display: flex; align-items: center; gap: 6px; }
+/* a model's row: its name, then at its end the arrow to its efforts, and its check after it */
+.row-menu .task-models .menu-sub-anchor > button > svg.task-more { margin-left: auto; color: var(--muted); }
+.row-menu .task-models .menu-sub-anchor > button > svg.menu-check { color: var(--ink); }
+.row-menu .task-models .menu-sub-anchor > button > svg.task-more + svg.menu-check { margin-left: 6px; }
+.row-menu .task-efforts { left: calc(100% + 4px); min-width: 150px; }
+.row-menu .task-efforts.is-left { left: auto; right: calc(100% + 4px); }
+/* Words waiting for the turn under way (COMPOSER-8): a row each over the box, Edit and Cancel at its end */
+/* over the box as the Settings tip is, so the box keeps its place: within the page's gutters */
+.queued-words { position: absolute; left: var(--gutter); right: var(--gutter); bottom: calc(100% + 4px); z-index: 1; display: flex; flex-direction: column; gap: 4px; }
+.queued-row { background: var(--chip); }
+.queued-row { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 6px 0 12px; border: 1px solid var(--line); border-radius: 17px; color: var(--text); font-size: var(--text-sm); }
+.queued-row[aria-busy] { opacity: 0.6; }
+.queued-icon, .queued-label, .queued-files { flex: none; color: var(--muted); }
+.queued-files { display: flex; align-items: center; gap: 2px; }
+.queued-text { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--ink); }
+/* Files dragged over the box (COMPOSER-13): its outline lit, as when it's focused */
+.composer-field.is-dropping { border-color: var(--field-edge-on); background: rgba(255, 255, 255, 0.03); }
+.composer-drop-note { position: absolute; left: calc(var(--gutter) + 12px); right: var(--gutter); bottom: calc(100% + 4px); margin: 0; color: var(--muted); font-size: var(--text-sm); }
+/* @'s files (COMPOSER-14), after the Obys: the name, its path under it */
+.mention-panel .mention-file .add-item-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.slash-panel .add-empty { margin: 10px 12px; line-height: 18px; }
+/* Stop pressed (COMPOSER-12): "Stopping…", its square dimmed and turning until the turn ends */
+.composer-grid > .composer-send.is-stopping { opacity: 0.5; cursor: default; }
+.composer-send.is-stopping svg { animation: stopping 1.2s linear infinite; }
+@keyframes stopping { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .composer-send.is-stopping svg { animation: none; } }
+/* the conversation's last words never hide under the waiting rows: its end moves up by theirs (38px each) */
+.chat-layer:has(.queued-row) .chat { padding-bottom: calc(24px + 38px); }
+.chat-layer:has(.queued-row + .queued-row) .chat { padding-bottom: calc(24px + 2 * 38px); }
+.chat-layer:has(.queued-row + .queued-row + .queued-row) .chat { padding-bottom: calc(24px + 3 * 38px); }

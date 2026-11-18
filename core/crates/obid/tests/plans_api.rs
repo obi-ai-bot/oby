@@ -3219,6 +3219,141 @@ fn delivery_3_cancel_marks_running_and_waiting_words_cancelled() {
     );
 }
 
+/// COMPOSER-9 and 11: one message waiting is cancelled alone, by its turn: it reads `cancelled`
+/// and its request answers `none`; the turn under way goes on to its answer, and the words before
+/// it are answered by themselves. Words a turn took already aren't dropped.
+#[test]
+fn composer_9_one_waiting_message_is_cancelled_alone() {
+    let folder = Folder::new("composer-9");
+    let obid = started_harness(&folder);
+    let id = said_anew(&obid, "SAY Ready.")["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let send = |words: &str| {
+        call(
+            &obid,
+            "POST",
+            "/v1/plans",
+            Some(&json!({"said": words, "conversation": id})),
+        )
+        .body
+    };
+    let turn = |words: &str| {
+        user_turn(&obid, &id, words)["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let cancel = |turn: &str| {
+        call(
+            &obid,
+            "POST",
+            "/v1/plans/cancel",
+            Some(&json!({"conversation": id, "turn": turn})),
+        )
+    };
+    let (running, kept, dropped) = std::thread::scope(|scope| {
+        let running = scope.spawn(|| send("LINGER 1500"));
+        reads(&obid, &id, "LINGER 1500", "running");
+        let kept = scope.spawn(|| send("SAY kept"));
+        reads(&obid, &id, "SAY kept", "queued");
+        let dropped = scope.spawn(|| send("SAY dropped"));
+        reads(&obid, &id, "SAY dropped", "queued");
+        let gone = turn("SAY dropped");
+        let answer = cancel(&gone);
+        assert_eq!(answer.status, 200);
+        assert_eq!(answer.body, json!({"cancelled": true, "dropped": [gone]}));
+        assert_eq!(cancel(&gone).body["dropped"], json!([]), "once");
+        assert_eq!(
+            cancel(&turn("LINGER 1500")).body["dropped"],
+            json!([]),
+            "the turn under way isn't waiting"
+        );
+        (
+            running.join().unwrap(),
+            kept.join().unwrap(),
+            dropped.join().unwrap(),
+        )
+    });
+    assert_ne!(
+        running["kind"], "none",
+        "the turn under way went on: {running}"
+    );
+    // The dropped words' request answers none; the words before them, which waited on it, are
+    // answered all the same, in the conversation (their own request answered none, as words
+    // answered together do).
+    assert_eq!(dropped["kind"], "none", "{dropped}");
+    assert_eq!(kept["kind"], "none", "{kept}");
+    assert_eq!(
+        user_turn(&obid, &id, "SAY dropped")["delivery"]["status"],
+        "cancelled"
+    );
+    assert_eq!(
+        user_turn(&obid, &id, "SAY kept")["delivery"]["status"],
+        "answered"
+    );
+    let turns = call(&obid, "GET", &format!("/v1/conversation?id={id}"), None).body;
+    assert!(
+        turns
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["who"] == "oby" && t["text"] == "kept"),
+        "{turns}"
+    );
+    // A turn needs its conversation; Stop takes none.
+    let lone = call(
+        &obid,
+        "POST",
+        "/v1/plans/cancel",
+        Some(&json!({"turn": "x"})),
+    );
+    assert_eq!(lone.status, 422, "{:?}", lone.body);
+    let stop = call(
+        &obid,
+        "POST",
+        "/v1/conversation/stop",
+        Some(&json!({"conversation": id, "turn": "x"})),
+    );
+    assert_eq!(stop.status, 400, "{:?}", stop.body);
+}
+
+/// COMPOSER-6: chips obid can't use are refused before anything is kept.
+#[test]
+fn composer_6_unusable_defaults_are_refused() {
+    let folder = Folder::new("composer-6");
+    let obid = started_harness(&folder);
+    for defaults in [
+        json!({"mode": "yolo"}),
+        json!({"model": "x"}),
+        json!({"agent": "claude", "effort": "ludicrous"}),
+        json!({"account": "x"}),
+    ] {
+        let answer = call(
+            &obid,
+            "POST",
+            "/v1/plans",
+            Some(&json!({"said": "SAY hi", "new": true, "defaults": defaults})),
+        );
+        assert!(
+            [400, 422].contains(&answer.status),
+            "{defaults}: {:?}",
+            answer.body
+        );
+    }
+    let answer = call(
+        &obid,
+        "POST",
+        "/v1/plans",
+        Some(
+            &json!({"said": "SAY hi", "new": true, "defaults": {"mode": "plan", "agent": "claude", "model": "claude-opus-5-5", "effort": "high"}}),
+        ),
+    );
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    assert_eq!(answer.body["text"], "hi", "{:?}", answer.body);
+}
+
 /// DELIVERY-4: words no agent session could answer read `failed`, with why, and every secret
 /// obid knows taken out of it. The vault holds words of obid's own answer that the harness's own
 /// redaction never sees, so only the delivery's takes them out.

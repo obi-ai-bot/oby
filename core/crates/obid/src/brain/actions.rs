@@ -71,6 +71,8 @@ pub struct Asked<'a> {
     pub turn: &'a str,
     /// An app of the owner's signed the words (`Control::signed`).
     pub signed: bool,
+    /// The message box's chips sent with them (super::defaults, COMPOSER-4 and 5).
+    pub defaults: Option<&'a super::defaults::Defaults>,
 }
 
 /// A plan that answers rather than acts: a reply, a question, or jobs it starts (#269). `live` is
@@ -203,6 +205,12 @@ fn planned_job(
     // Work planned after the turn read something untrusted starts now, marked untrusted, in the
     // owner's mode (the owner's decision of 2026-10-27, replacing 2026-10-23's Sandbox at most),
     // and publishes by itself as any job does (the owner's decision of 2026-10-24).
+    let new = super::defaults::Defaults::apply(
+        asked.defaults,
+        new,
+        asked.signed,
+        shared.jobs.bypass_widens(),
+    );
     marked(
         super::written_in(shared, asked.conversation, new),
         asked,
@@ -305,7 +313,10 @@ async fn dispatch(
         // A job that would never ask the owner anything widens trust: only their own Confirm
         // starts it (the owner's decision of 2026-10-16; review on #551), untrusted or not.
         // Not where Bypass is their own default: `planned_job` left the mode out then.
-        if new.mode.as_deref() == Some("bypass") {
+        // The owner's own chip on words an app of theirs signed is their word (COMPOSER-4).
+        if new.mode.as_deref() == Some("bypass")
+            && !super::defaults::Defaults::owners_bypass(asked.defaults, asked.signed)
+        {
             let what = describe(&new);
             confirm(
                 shared,
@@ -1278,6 +1289,7 @@ mod tests {
             conversation: "c",
             turn: "t",
             signed,
+            defaults: None,
         };
         let other = asked("Fix the docs", true);
         assert_eq!(named_branch(&d, false, &other).as_deref(), Some("gh-pages"));
@@ -1324,6 +1336,7 @@ mod tests {
                 conversation: "c",
                 turn: "t",
                 signed,
+                defaults: None,
             };
             let new = marked(NewJob::default(), &asked, researched);
             assert_eq!(new.own_conversation, signed, "{signed} {researched}");

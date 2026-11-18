@@ -19,11 +19,20 @@ import { usePrompt } from './prompts';
 import { leave, useGlide } from './glide';
 import { folderName, folderPlace, foldersOf, pickFolders, setFolders, useFolders, usedFolders, useRecentFolders } from './folders';
 import { everything } from './lean';
-import { keeper, leftInBox } from './drafts';
+import { dataOf, fileOf, hold, keeper, leftInBox, type KeptTag } from './drafts';
 import TalkPill from './TalkPill';
 import { useChats, type Chat } from './chats';
 import { useProjects, useProjectsOn } from './projects';
 import { ProjectChip } from './ProjectSheet';
+import TaskChips from './TaskChips';
+import QueuedWords from './QueuedWords';
+import { chipsOf, defaultsOf } from './chips';
+import { FOLDER_DROPPED, dropped, fileWords, isFileDrag, noCommands, slashOf, useMentionFiles, useStopping } from './composerInput';
+import { useLive } from './live';
+import { onObid } from './lean';
+import { has } from '../../shared/capabilities';
+import type { ConversationFile } from './obid';
+import type { Queued } from './chats';
 
 // What a message carries besides its words: files or photos (a photo with a
 // small preview of itself), tasks attached. (Other Obys are brought in by name,
@@ -71,7 +80,7 @@ export const stackedAt = (was: boolean, height: number, text: string) => was || 
 // Send is Stop while Oby answers and there's nothing to send (CHATFIRST-33)
 export const stopShows = (answering: boolean, filled: boolean, attached: number) => answering && !filled && !attached;
 
-export default function Composer({ placeholder, prompts = false, note, label, onSend, home = false, hidden = false, autoFocus = !home, className = '', style, repos: withRepos = false, conversation, talk, draft, say, onStop }: {
+export default function Composer({ placeholder, prompts = false, note, label, onSend, home = false, hidden = false, autoFocus = !home, className = '', style, repos: withRepos = false, conversation, talk, draft, say, onStop, queued = [], onCancelQueued }: {
   placeholder?: string;
   prompts?: boolean;  // no placeholder of its own: one of Oby's prompts, changing now and then (prompts.ts)
   note?: React.ReactNode;  // a line just over the box (Home's Settings tip), coming and going with it
@@ -90,6 +99,10 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   talk?: Chat | true;  // who Oby talks through, by send: this conversation's, or (true, Home's) a new one's
   draft?: string;    // the box its unsent words are kept as (drafts.ts, box); none: not kept
   onStop?: () => void;  // Oby is answering here: with nothing to send, send is Stop (CHATFIRST-33)
+  // words sent while Oby answers, waiting their turn: over the box, with Edit and Cancel (COMPOSER-8 to 10).
+  // onCancelQueued answers whether obid dropped them
+  queued?: Queued[];
+  onCancelQueued?: (q: Queued) => Promise<boolean>;
   hidden?: boolean;
   autoFocus?: boolean;  // focused on opening (a conversation's is; Home's and a task page's aren't)
   className?: string;  // a page's own spacing around it
@@ -118,6 +131,24 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   }, [view]);
   const [attached, setAttached] = useState<Attached[]>([]);
   const stopping = stopShows(!!onStop, filled, attached.length);
+  // Stop pressed: "Stopping…" until the turn really ends (COMPOSER-12)
+  const [stopPending, askStop] = useStopping(!!onStop);
+  // The chips (COMPOSER-1 to 3): where words go to Oby (Home's, a conversation's), once obid takes them
+  const status = useLive().status;
+  const chipsShown = !!talk && !wordsOnly && (!onObid || has(status, 'composer-v1'));
+  // the whole text, for a / at its start (COMPOSER-16); Esc puts the commands' list away until the / goes
+  const [typed, setTyped] = useState('');
+  const slash = chipsShown ? slashOf(typed) : null;
+  const [slashClosed, setSlashClosed] = useState(false);
+  useEffect(() => { if (slash === null) setSlashClosed(false); }, [slash]);
+  // files dragged over the box, and what it says of folders dropped (COMPOSER-13)
+  const [dragging, setDragging] = useState(false);
+  const [dropNote, setDropNote] = useState('');
+  useEffect(() => {
+    if (!dropNote) return;
+    const t = setTimeout(() => setDropNote(''), 5000);
+    return () => clearTimeout(t);
+  }, [dropNote]);
   // its files going up: a second send waits
   const sending = useRef(false);
   const { repos, last } = useRepos(conversation);
@@ -142,6 +173,12 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   const inProject = !!conversation && projectsOn && !!chats.find((c) => c.id === conversation)?.project;
   const ownFolders = canFolders && !project && !inProject;
   const folders = !canFolders || project || inProject ? [] : conversation ? kept : homeFolders;
+  // how many folders the conversation works in: a file of one of several is named after its folder
+  const chat = chats.find((c) => c.id === conversation);
+  const workFolders = inProject ? projects.find((p) => p.id === chat?.project)?.folders.length ?? 1 : kept.length;
+  // the tool the conversation talks through, for the commands' list when no chip names one
+  const [accounts] = useAccounts();
+  const accountAgent = accounts.find((a) => a.id === (chat?.talkedOn ?? chat?.talkAccount))?.agent;
   // from the list as it is when it's applied (a tag's × applies after its 140ms leave: two quick ×s
   // mustn't bring the first back)
   const putFolders = (next: (was: string[]) => string[]) => (conversation ? setFolders(conversation, next(foldersOf(conversation))) : setHomeFolders(next));
@@ -162,13 +199,20 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   const [atClosed, setAtClosed] = useState(false);
   // a name typed out in full is done: the list goes, and Enter sends
   const fullName = at !== null && OBYS.some((o) => o.name.toLowerCase() === at.toLowerCase());
-  const matches = wordsOnly || at === null || atClosed || view || fullName ? [] : obysFor(at);
-  useClicksEverywhere(matches.length > 0);
+  const listing = !(wordsOnly || at === null || atClosed || view || fullName);
+  // after the Obys, the files of the conversation's folders (COMPOSER-14)
+  const atFiles = useMentionFiles(listing && conversation ? conversation : undefined, listing ? at : null);
+  const matches: ({ kind: 'oby'; name: string } | { kind: 'file'; file: ConversationFile })[] = listing
+    ? [...obysFor(at!).map((o) => ({ kind: 'oby' as const, name: o.name })), ...atFiles.map((file) => ({ kind: 'file' as const, file }))] : [];
+  const slashShown = slash !== null && !slashClosed && !view;
+  useClicksEverywhere(matches.length > 0 || slashShown);
   const pickOby = (name: string) => { setView(null); box.current?.mention(name); box.current?.focus(); };
+  const pickMatch = (m: (typeof matches)[number]) => pickOby(m.kind === 'oby' ? m.name : fileWords(m.file, workFolders));
   const onMentionKey = (key: MentionKey) => {
+    if (slashShown && !matches.length) { if (key !== 'close') return false; setSlashClosed(true); return true; }
     if (!matches.length) return false;
     if (key === 'close') setAtClosed(true);
-    else if (key === 'pick') pickOby(matches[Math.min(lit, matches.length - 1)].name);
+    else if (key === 'pick') pickMatch(matches[Math.min(lit, matches.length - 1)]);
     else setLit((i) => (Math.min(i, matches.length - 1) + (key === 'down' ? 1 : matches.length - 1)) % matches.length);
     return true;
   };
@@ -230,13 +274,44 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   // quit loses nothing. Sending empties the box, which lets its draft go.
   const drafts = useRef<ReturnType<typeof keeper>>(null);
   drafts.current ??= keeper();
+  // which box the tags shown are of: none kept for a box until its own are put back
+  const [tagsOf, setTagsOf] = useState<string>();
   useLayoutEffect(() => {
     const d = drafts.current!, b = box.current;
     const text = d.show(draft ?? null);
     if (b && draft !== undefined && (text || b.text())) b.setText(text);
+    // its tags and choices come back with its words (DRAFTS-4 to 7): a file whose bytes weren't
+    // kept, after a relaunch, doesn't
+    if (draft !== undefined && !wordsOnly) {
+      const e = d.more();
+      setAttached((e.tags ?? []).flatMap((t): Attached[] => {
+        if (t.kind !== 'file') return t.kind === 'repo' ? [] : [t];
+        const file = fileOf(draft, t);
+        return file ? [{ kind: 'file', name: t.name, file, preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined }] : [];
+      }));
+      const r = e.tags?.find((t) => t.kind === 'repo');
+      setRepoPick(r && r.kind === 'repo' ? r.name : undefined);
+      if (home) { setHomeProject(e.project ?? null); setHomeFolders(e.folders ?? []); }
+      setTagsOf(draft);
+    }
     addEventListener('pagehide', d.flush);
     return () => { removeEventListener('pagehide', d.flush); d.flush(); };
   }, [draft]);
+  // and are kept as they change, the files' bytes read first (DRAFTS-4 to 8)
+  useEffect(() => {
+    if (draft === undefined || wordsOnly || tagsOf !== draft) return;
+    const files = attached.flatMap((a) => (a.kind === 'file' ? [a] : []));
+    hold(draft, files);
+    let gone = false;
+    void Promise.all(files.map((f) => (f.file ? dataOf(f.file) : undefined))).then((datas) => {
+      if (gone) return;
+      let n = 0;
+      const tags = attached.map((a): KeptTag => (a.kind === 'file' ? { kind: 'file', name: a.name, ...(a.file?.type ? { type: a.file.type } : {}), ...(datas[n++] ? { data: datas[n - 1] } : {}) } : a));
+      if (typeof repoPick === 'string') tags.push({ kind: 'repo', name: repoPick });
+      drafts.current!.carry({ tags, ...(home ? { project: homeProject, folders: homeFolders } : {}) });
+    });
+    return () => { gone = true; };
+  }, [attached, repoPick, homeProject, homeFolders, tagsOf, draft]);
   // Home's box stepping aside (a page opened over it) puts its panel away
   useEffect(() => { if (hidden) setView(null); }, [hidden]);
   // a click outside the box and its panel closes the panel (anywhere in the window)
@@ -277,6 +352,8 @@ export default function Composer({ placeholder, prompts = false, note, label, on
         repo,
         ...(folders.length && !inProject ? { folders } : {}),
         ...(project ? { project } : {}),
+        // the chips go with the words, and stay for the next (COMPOSER-3)
+        ...(chipsShown && defaultsOf(chipsOf(draft)) ? { defaults: defaultsOf(chipsOf(draft)) } : {}),
       });
       if (went instanceof Promise) {
         sending.current = true;
@@ -302,9 +379,31 @@ export default function Composer({ placeholder, prompts = false, note, label, on
       } else b.focus();
     }}>
       {note}
+      {/* words sent while Oby answers, waiting their turn (COMPOSER-8 to 10) */}
+      {onCancelQueued && <QueuedWords queued={queued} onCancel={onCancelQueued} onEdit={async (q) => {
+        if (!(await onCancelQueued(q))) return;
+        const b = box.current, now = b?.text().trim() ?? '';
+        b?.setText(now ? `${q.text}\n\n${now}` : q.text);
+        b?.focus();
+      }} />}
+      {dropNote && <p className="composer-drop-note" role="status">{dropNote}</p>}
       <div
         ref={field}
-        className={`composer-field${stacked ? ' is-stacked' : ''}`}
+        className={`composer-field${stacked ? ' is-stacked' : ''}${dragging ? ' is-dropping' : ''}`}
+        // files dropped on the box are attached, as + › Add files does (COMPOSER-13); a box of
+        // words alone (the room) takes none
+        onDragEnter={wordsOnly ? undefined : (e) => { if (isFileDrag(e.dataTransfer)) { e.preventDefault(); setDragging(true); } }}
+        onDragOver={wordsOnly ? undefined : (e) => { if (isFileDrag(e.dataTransfer)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } }}
+        onDragLeave={wordsOnly ? undefined : (e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false); }}
+        onDrop={wordsOnly ? undefined : (e) => {
+          if (!isFileDrag(e.dataTransfer)) return;
+          e.preventDefault();
+          setDragging(false);
+          const got = dropped(e.dataTransfer);
+          addFiles(got.files);
+          if (got.folders && !got.files.length) setDropNote(FOLDER_DROPPED);
+          box.current?.focus();
+        }}
         // A click anywhere in the box is a click in the text (the room around it,
         // between the buttons, included), not just on the text itself; its
         // buttons, tags, panel and scrollbar keep their own clicks
@@ -336,23 +435,33 @@ export default function Composer({ placeholder, prompts = false, note, label, on
           />
         )}
         {matches.length > 0 && (
-          <div className="add-panel mention-panel" role="listbox" aria-label="Obys">
-            {matches.map((o, i) => (
+          <div className="add-panel mention-panel" role="listbox" aria-label={atFiles.length ? 'Obys and files' : 'Obys'}>
+            {matches.map((m, i) => (
               <button
                 type="button"
                 role="option"
-                key={o.name}
+                key={m.kind === 'oby' ? m.name : `${m.file.folder}/${m.file.path}`}
                 aria-selected={i === Math.min(lit, matches.length - 1)}
-                className={i === Math.min(lit, matches.length - 1) ? 'is-lit' : ''}
+                className={`${i === Math.min(lit, matches.length - 1) ? 'is-lit' : ''}${m.kind === 'file' ? ' mention-file' : ''}`.trim()}
                 // the text keeps the focus (and its cursor)
                 onMouseDown={(e) => e.preventDefault()}
                 onMouseEnter={() => setLit(i)}
-                onClick={() => pickOby(o.name)}
+                onClick={() => pickMatch(m)}
+                title={m.kind === 'file' ? `${m.file.folder}/${m.file.path}` : undefined}
               >
-                <OwnerAvatar name={o.name} size={22} />
-                <span className="add-item-text">{o.name}’s Oby</span>
+                {m.kind === 'oby' ? <OwnerAvatar name={m.name} size={22} /> : <File size={16} strokeWidth={1.6} />}
+                {m.kind === 'oby'
+                  ? <span className="add-item-text">{m.name}’s Oby</span>
+                  : <span className="add-item-text">{m.file.path.split('/').pop()}<span className="add-item-about">{fileWords(m.file, workFolders)}</span></span>}
               </button>
             ))}
+          </div>
+        )}
+        {/* a / at the start: the chosen agent's own commands, where obid can list them; it lists
+            none yet, so the list says what's missing (COMPOSER-16) */}
+        {slashShown && !matches.length && (
+          <div className="add-panel slash-panel" role="dialog" aria-label="Commands">
+            <p className="add-empty">{noCommands(agentOf(chipsOf(draft).agent ?? accountAgent ?? 'claude').name)}</p>
           </div>
         )}
         {/* no talking (v1): send before the usage gauge, which keeps the end */}
@@ -417,7 +526,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
             autoFocus={autoFocus}
             placeholder={prompts ? prompt : placeholder ?? ''}
             label={label}
-            onText={(t) => { setFilled(!!t.trim()); setNamed(mentioned(t)); drafts.current!.typed(t); }}
+            onText={(t) => { setFilled(!!t.trim()); setNamed(mentioned(t)); setTyped(t); drafts.current!.typed(t); }}
             // each change narrows the list, so the first is lit again
             onMention={(q) => { setAt(q); setLit(0); if (q === null) setAtClosed(false); }}
             onMentionKey={onMentionKey}
@@ -426,7 +535,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
             onHeight={(h) => setStacked((was) => stackedAt(was, h, box.current?.text() ?? ''))}
             onPasteFiles={wordsOnly ? undefined : (list) => addFiles(list, true)}
           />
-          {talk && <div className="composer-talk"><TalkPill chat={talk === true ? undefined : talk} /></div>}
+          {talk && <div className="composer-talk">{chipsShown && <TaskChips box={draft} />}<TalkPill chat={talk === true ? undefined : talk} /></div>}
           {/* how much of the agents' accounts is used, session and week (UsagePanel on a click) */}
           {!wordsOnly && <UsageGauge ref={gauge} open={view === 'usage'} onClick={() => (view === 'usage' ? closePanel() : setView('usage'))} />}
           {/* at the end: talk instead of typing while the box is empty; once there's
@@ -441,7 +550,9 @@ export default function Composer({ placeholder, prompts = false, note, label, on
           {/* Oby answering, and nothing to send: Stop where send is (the owner's ask of 2026-11-10);
               words typed meanwhile are sent as ever, and wait their turn */}
           {stopping ? (
-            <button type="button" className="composer-button composer-send is-always is-ready" aria-label="Stop" onMouseDown={(e) => e.preventDefault()} onClick={onStop}>
+            // pressed, it says "Stopping…" until the turn really ends (COMPOSER-12)
+            <button type="button" className={`composer-button composer-send is-always is-ready${stopPending ? ' is-stopping' : ''}`} aria-label={stopPending ? 'Stopping…' : 'Stop'} title={stopPending ? 'Stopping…' : undefined}
+              disabled={stopPending} onMouseDown={(e) => e.preventDefault()} onClick={() => { askStop(); onStop?.(); }}>
               <Square size={13} strokeWidth={1.8} fill="currentColor" />
             </button>
           ) : (

@@ -414,7 +414,11 @@ impl Transcripts {
                 }
             },
             Event::Plan(todos) => vec![plan(live, todos.clone())],
-            Event::Step(_) | Event::Usage(_) | Event::Tokens(_) | Event::Connectors(_) => vec![],
+            Event::Step(_)
+            | Event::Usage(_)
+            | Event::Tokens(_)
+            | Event::Connectors(_)
+            | Event::Context(_) => vec![],
         };
         let written = self.write(job, live, entries);
         for (n, detail) in details {

@@ -20,7 +20,7 @@ import Said from './Said';
 import { convoTitle, threadOf } from './mock';
 import { ENDED, agentOf, type Message } from './view';
 import { asksWaiting, markSeen, stop, tell, tellPlaceholder, useTasks, type Task } from './tasks';
-import { obys, ofObid, seeChat, stopChat, tellChat, useChats, type Chat } from './chats';
+import { cancelQueued, obys, ofObid, seeChat, stopChat, tellChat, useChats, type Chat } from './chats';
 import CantRunLine from './CantRunLine';
 import Refusals from './Refusals';
 import SetupCard from './SetupCard';
@@ -377,6 +377,9 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
           talk={talk && !talk.local && (!onObid || talkReady(talk.id)) ? talk : undefined}
           draft={task ? draftBox.task(task.id) : talk ? draftBox.conversation(talk.id) : draftBox.peer(convo!.id)}
           onStop={task ? (task.status === 'running' && !task.unknown ? () => stop(task.id) : undefined) : talk && typing && ofObid(talk.id) && talkReady(talk.id) ? () => stopChat(talk.id) : undefined}
+          // words sent while Oby answers here, waiting their turn (COMPOSER-8 to 10)
+          queued={talk?.queued}
+          onCancelQueued={talk ? (q) => cancelQueued(talk.id, q.id) : undefined}
         />
       )}
       {/* a card's menu: tell its agent something, Stop or Archive, and Delete */}
