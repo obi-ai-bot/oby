@@ -1,4 +1,4 @@
-//! AUTOFIX, the dispatcher's side (docs/contracts/autofix.md, AUTOFIX-1 to 16): when the owner's
+//! AUTOFIX, the dispatcher's side (docs/contracts/autofix.md, AUTOFIX-1 to 20): when the owner's
 //! own task's pull request reads red, the same task's next step, decided by crate::autofix on
 //! typed facts. A rerun on GitHub with no agent turn, one more round of its own agent in its own
 //! session (the failure quoted as data), the merge queue again, or, past its limits, one line and
@@ -62,10 +62,11 @@ impl Jobs {
         }
     }
 
-    /// AUTOFIX-1 to 10: the owner's own task `job`'s pull request is red at `head`. While its round
-    /// works, nothing; else crate::autofix decides: a rerun on GitHub, a fix round, or giving up,
-    /// which says so once and leaves the card. Whether nothing waits on the owner now.
-    async fn autofix(
+    /// AUTOFIX-1 to 10: the owner's own task `job`'s pull request is red at `head`, or the owner's
+    /// own pull request a Fix CI task pushed onto (AUTOFIX-14). While its round works, nothing;
+    /// else crate::autofix decides: a rerun on GitHub, a fix round, or giving up, which says so
+    /// once and leaves the card. Whether nothing waits on the owner now.
+    pub(super) async fn autofix(
         self: &Arc<Self>,
         job: &Job,
         gh: &Path,
@@ -77,7 +78,7 @@ impl Jobs {
             return true;
         }
         // Someone else's push is theirs (MERGING-25): no round, the card as before (AUTOFIX-15).
-        if job.pushed_head() != Some(head) {
+        if onto_pr::head(job) != Some(head) {
             return false;
         }
         let red = Red {

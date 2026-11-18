@@ -57,6 +57,19 @@ fn configured(folder: &Folder) -> Value {
     config
 }
 
+/// obid as the app starts it, its `TMPDIR` the Mac's per-user temporary folder (short), not the
+/// test's own (as long as its home): where a conversation's Cursor keeps its sockets when obid's
+/// home has no room for them (CONVERSATION-AGENT-41).
+fn start(folder: &Path, config: &Value, path_first: Option<&Path>) -> Obid {
+    let temp = std::env::temp_dir();
+    start_with(
+        folder,
+        config,
+        path_first,
+        &[("TMPDIR", temp.to_str().unwrap())],
+    )
+}
+
 fn obid(name: &str) -> (Folder, Obid) {
     let folder = Folder::new(name);
     let config = configured(&folder);
@@ -1098,6 +1111,89 @@ fn conversation_agent_7_a_cursor_that_never_started_leaves_no_mark() {
     let on = call_typed(&obid, "POST", "/v1/plans", &words);
     assert_eq!(listed(&obid, &id)["talkedOn"], CURSOR, "{}", on.text);
     assert!(foreign(&id).as_str().unwrap().contains("Cursor"));
+}
+
+/// CONVERSATION-AGENT-41: Cursor keeps its sockets in its data folder while that has room for them,
+/// else in its `TMPDIR`, else in `/tmp/.cursor`, which its box denies, and it stops as it starts
+/// (cursor-agent 2026.11.13, which the stand-in follows). A test's home is past that room, as a long
+/// user name's is: the conversation's Cursor still answers, turn after turn, its `TMPDIR` a short
+/// folder of its own that goes when the turn ends.
+#[cfg(target_os = "macos")]
+#[test]
+fn conversation_agent_41_a_cursor_conversation_answers_whatever_the_homes_length() {
+    let (_folder, obid) = obid("talk-cursor-sockets");
+    let first = said(&obid, json!({"said": "HELLO", "new": true}));
+    let id = conversation(&first);
+    choose(&obid, &id, json!(CURSOR));
+    let data = obid.home.join("logins").join(format!("t-{}", &id[..8]));
+    assert!(
+        data.join("d").as_os_str().len() > 83,
+        "a home with room for Cursor's sockets proves nothing: {}",
+        data.display()
+    );
+    for turn in 1..=3 {
+        let hello = said(&obid, json!({"said": "HELLO", "conversation": id}));
+        assert_eq!(text(&hello), "Hello there.", "turn {turn}: {}", hello.text);
+    }
+    assert_eq!(listed(&obid, &id)["talkedOn"], CURSOR);
+    assert_eq!(cursor_turns(&obid).len(), 3);
+    let temp = std::env::temp_dir().join(format!("oby-c-{}", &id[..8]));
+    assert!(!temp.exists(), "{} stays after the turn", temp.display());
+}
+
+/// CONVERSATION-AGENT-42: where Cursor would find no room for its sockets anywhere it may write, the
+/// conversation doesn't start it, and the turn that moves says why, never a bare "couldn't run".
+#[cfg(target_os = "macos")]
+#[test]
+fn conversation_agent_42_no_room_for_cursors_sockets_says_why() {
+    let folder = Folder::new("talk-cursor-no-room");
+    let config = configured(&folder);
+    // The test's own TMPDIR, as long as its home.
+    let obid = support::start(&folder.0, &config, None);
+    let first = said(&obid, json!({"said": "HELLO", "new": true}));
+    let id = conversation(&first);
+    choose(&obid, &id, json!(CURSOR));
+    let moved = said(&obid, json!({"said": "HELLO", "conversation": id}));
+    assert!(
+        text(&moved)
+            .contains("Cursor · Cursor stub couldn't start: Cursor has no room for its sockets")
+            && text(&moved).contains("give obid a shorter home, so I moved to Claude Code · Stub."),
+        "{}",
+        moved.text
+    );
+    assert!(cursor_turns(&obid).is_empty());
+}
+
+/// CONVERSATION-AGENT-43: an agent that stops as it starts, before a word, says why: the box's own
+/// end (`killed by signal 9`) isn't how it ended, its own exit is, with its last line on stderr; and
+/// the turn that moves says it (as CONVERSATION-AGENT-26).
+#[cfg(target_os = "macos")]
+#[test]
+fn conversation_agent_43_an_agent_that_stops_as_it_starts_says_why() {
+    let (_folder, obid) = obid("talk-cursor-stops");
+    let first = said(&obid, json!({"said": "HELLO", "new": true}));
+    let id = conversation(&first);
+    let room = obid.home.join("conversations").join(&id).join("room");
+    std::fs::write(room.join("stop-at-start"), "").unwrap();
+    choose(&obid, &id, json!(CURSOR));
+    let moved = said(&obid, json!({"said": "HELLO", "conversation": id}));
+    assert!(
+        text(&moved).ends_with(
+            "Cursor · Cursor stub couldn't start: Cursor stopped as it started: fake-cursor-harness: it stopped as it started, so I moved to Claude Code · Stub."
+        ),
+        "{}",
+        moved.text
+    );
+    let log = obid.log();
+    let failed = log
+        .lines()
+        .find(|l| l.contains("its session failed twice"))
+        .unwrap_or_else(|| panic!("no failure line: {log}"));
+    assert!(
+        failed.contains("attempt 1: exit status 3 (fake-cursor-harness: it stopped as it started)"),
+        "{failed}"
+    );
+    assert!(!failed.contains("signal 9"), "{failed}");
 }
 
 /// Moved onto Cursor with nobody choosing it: the line says what stays with the conversation.

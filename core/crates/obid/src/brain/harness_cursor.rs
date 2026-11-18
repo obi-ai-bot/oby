@@ -15,6 +15,8 @@
 //!   limits). Where the box can't hold it to the proxy, it doesn't talk (macOS's Seatbelt does);
 //! - its commands ask, and obid's rule refuses them all: a boxed conversation runs none (CONVO-2).
 
+use std::path::{Path, PathBuf};
+
 use serde_json::{Value, json};
 
 use super::harness::{Place, orientation};
@@ -63,6 +65,7 @@ pub(super) fn launch(
     token: &str,
     resume: &Option<String>,
 ) -> Result<(Launch, crate::acp::Options), String> {
+    let temp = temp_for(&place.cursor, conversation)?;
     crate::secrets::known().learn(
         &format!("conversation {} MCP token", place.folder.display()),
         token,
@@ -70,7 +73,7 @@ pub(super) fn launch(
     let launch = shared.jobs.conversation_cursor_launch(
         account,
         &place.room,
-        &place.temp,
+        &temp,
         &place.cursor,
         vec![place.repos.clone()],
         place.folder.join("agent.log"),
@@ -88,6 +91,51 @@ pub(super) fn launch(
         &offered,
     ));
     Ok((launch, options))
+}
+
+/// Where a conversation's Cursor keeps its sockets when its data folder (under obid's home) is too
+/// long for them (CONVERSATION-AGENT-41): `TMPDIR/.cursor`, the next place Cursor tries, so its
+/// `TMPDIR` is a folder of the conversation's own in the Mac's per-user temporary folder (the
+/// user's alone, and short), never the conversation's `home`, which is longer still. Past it Cursor
+/// takes `/tmp/.cursor`, which its box denies, and stops as it starts (cursor-agent 2026.11.13).
+pub(super) fn temp_of(conversation: &str) -> PathBuf {
+    let short: String = conversation
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(8)
+        .collect();
+    std::env::temp_dir().join(format!("oby-c-{short}"))
+}
+
+/// [`temp_of`], made fresh for an attempt (none of an earlier one's sockets or logs, never through
+/// a link left in its place, the user's alone): or, saying why, a conversation whose Cursor would
+/// find no room for its sockets there either.
+fn temp_for(cursor: &Path, conversation: &str) -> Result<PathBuf, String> {
+    let room = crate::acp::cursor::SOCKET_ROOM;
+    let temp = temp_of(conversation);
+    let data = crate::acp::cursor::data_dir(cursor).as_os_str().len();
+    let spare = temp.join(".cursor").as_os_str().len();
+    if data > room && spare > room {
+        return Err(format!(
+            "Cursor has no room for its sockets (its folder under obid's home would be {data} characters, and in the Mac's temporary folder {spare}, both past {room}), so a conversation doesn't run on it: give obid a shorter home"
+        ));
+    }
+    // A link in its place goes, not what it leads to.
+    let _ = std::fs::remove_dir_all(&temp);
+    crate::store::make_private_dir(&temp)
+        .map_err(|e| format!("obid can't make Cursor's temporary folder: {e}"))?;
+    if !crate::sandbox::private_folder(&temp, nix::unistd::getuid().as_raw()) {
+        return Err(
+            "Cursor's temporary folder isn't obid's alone, so a conversation doesn't run on it"
+                .into(),
+        );
+    }
+    Ok(temp)
+}
+
+/// The turn ended: its Cursor's temporary folder goes.
+pub(super) fn forget_temp(conversation: &str) {
+    let _ = std::fs::remove_dir_all(temp_of(conversation));
 }
 
 fn options(
