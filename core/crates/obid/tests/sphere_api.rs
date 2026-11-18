@@ -3575,6 +3575,28 @@ async fn ask_35_members_list_their_lookalikes() {
     });
 }
 
+/// ASK-37: each member carries what obid calls them to the owner, for the message box's @ list: their
+/// card's name, as a thread names them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ask_37_members_carry_their_card_name() {
+    let folder = Folder::new("ask-37");
+    let (sphere, obid, _ernesto) = setup(&folder, &stub_agent(), None).await;
+    let _dana = TestObi::join_named(&sphere, "obi-dana", "dana", "Dana Scully's Oby").await;
+    tokio::task::block_in_place(|| {
+        let members = get(&obid, "/v1/obid/sphere/members");
+        let dana = members
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["owner"] == "dana")
+            .cloned()
+            .unwrap();
+        let thread = get(&obid, "/v1/obid/sphere/peers/dana");
+        assert_eq!(dana["name"], thread["name"], "{members} {thread}");
+        assert_eq!(dana["name"], "Dana Scully", "{members}");
+    });
+}
+
 /// RECEIPTS-10: a `failed` item's Try again sent again with its key answers what the first did, and
 /// the job runs one more round, not two.
 #[test]

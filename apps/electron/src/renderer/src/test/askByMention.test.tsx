@@ -37,7 +37,7 @@ afterEach(async () => {
   editor.mention = [];
 });
 
-type Member = { obi: string; owner: string; accepts: string[]; lookalike?: string[] };
+type Member = { obi: string; owner: string; name?: string; accepts: string[]; lookalike?: string[] };
 const at = '2026-11-18T10:00:00Z';
 const STATUS = (capabilities: string[]) => ({ runner: { version: '0.2.4', host: 'mac' }, accounts: [{ id: 'p', agent: 'claude', name: 'Personal', signedIn: true }], models: {}, maxRunning: 6, running: 0, capabilities });
 const convo = { id: 'c1', title: 'Billing', pinned: false, created: at, lastActivity: at, cursor: '', folders: [] };
@@ -106,6 +106,18 @@ describe('asking by @ in the message box', () => {
     await click(button(/^Add to the message$/)!);
     await click(button(/Add other Obys/)!);
     expect([...document.querySelectorAll('.add-list [role="option"] .add-item-text')].map((o) => o.textContent)).toEqual(['dana’s Oby', 'dima’s Oby']);
+  });
+
+  it('ask_37_members_show_by_card_name_and_mention_by_owner_id', async () => {
+    // whoever obid lists for the joined Sphere, by their card's name, their owner id beside it
+    await box([{ obi: 'obi-x', owner: 'dscully', name: 'Dana Scully', accepts: ['question'] }, { ...DANA, name: 'dana' }]);
+    await type('@d');
+    expect(listed()).toEqual(['Dana Scully’s Obydscully', 'dana’s Oby']);
+    // found by a word of the card's name too; the mention is the exact owner id
+    await type('@scu');
+    expect(listed()).toEqual(['Dana Scully’s Obydscully']);
+    await click(document.querySelector('.mention-panel [role="option"]')!);
+    expect(editor.mention).toEqual(['dscully']);
   });
 
   it('ask_37_out_of_a_sphere_at_lists_no_one', async () => {

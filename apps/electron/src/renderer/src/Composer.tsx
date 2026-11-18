@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowUp, Check, ChevronLeft, File, FolderGit2, FolderOpen, Gauge, Laptop, ListChecks, Plus, Search, Settings, Square, X } from 'lucide-react';
 import { ObyIcon, OwnerAvatar } from './ObyFace';
 import { PLACES, SHARED_WITH_ME } from './mock';
-import { askableFor, notThem, useAskable, type Askable } from './askable';
+import { aboutOf, askableFor, useAskable, type Askable } from './askable';
 import { agentOf, type Attachments } from './view';
 
 import MessageEditor, { type EditorHandle, type MentionKey } from './MessageEditor';
@@ -206,7 +206,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   const listing = !(wordsOnly || at === null || atClosed || view || fullName);
   // after the Obys, the files of the conversation's folders (COMPOSER-14)
   const atFiles = useMentionFiles(listing && conversation ? conversation : undefined, listing ? at : null);
-  const matches: ({ kind: 'oby'; name: string; lookalike?: string[] } | { kind: 'file'; file: ConversationFile })[] = listing
+  const matches: ({ kind: 'oby' } & Askable | { kind: 'file'; file: ConversationFile })[] = listing
     ? [...askableFor(at!, askable).map((o) => ({ kind: 'oby' as const, ...o })), ...atFiles.map((file) => ({ kind: 'file' as const, file }))] : [];
   const slashShown = slash !== null && !slashClosed && !view;
   useClicksEverywhere(matches.length > 0 || slashShown);
@@ -453,7 +453,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
                 onClick={() => pickMatch(m)}
                 title={m.kind === 'file' ? `${m.file.folder}/${m.file.path}` : undefined}
               >
-                {m.kind === 'oby' ? <OwnerAvatar name={m.name} size={22} /> : <File size={16} strokeWidth={1.6} />}
+                {m.kind === 'oby' ? <OwnerAvatar name={m.card ?? m.name} size={22} /> : <File size={16} strokeWidth={1.6} />}
                 {m.kind === 'oby'
                   ? <ObyRow oby={m} />
                   : <span className="add-item-text">{m.file.path.split('/').pop()}<span className="add-item-about">{fileWords(m.file, workFolders)}</span></span>}
@@ -668,7 +668,7 @@ function AddPanel({ view, opening, tasks, repos, onView, onBlur, onFiles, onFold
       <div ref={list} className={`add-list${view === 'folder' ? ' is-folders' : ''}`} role="listbox" aria-multiselectable={view === 'folder' || undefined} onScroll={onScroll}>
         {view === 'oby' && obys.map((o) => (
           <button type="button" role="option" aria-selected={isNamed(o.name)} key={o.name} onClick={() => onPickOby(o.name)}>
-            <OwnerAvatar name={o.name} size={22} />
+            <OwnerAvatar name={o.card ?? o.name} size={22} />
             <ObyRow oby={o} />
             {isNamed(o.name) && <Check size={14} strokeWidth={1.8} className="add-check" />}
           </button>
@@ -731,10 +731,12 @@ function AddPanel({ view, opening, tasks, repos, onView, onBlur, onFiles, onFold
   );
 }
 
-// An Oby in the @ list or + › Add other Obys: whose it is, and, for a member whose owner id looks
-// like another's, who it isn't (ASK-38), as the ASK-34 Confirm says it
+// An Oby in the @ list or + › Add other Obys: whose it is, by their card's name, their owner id beside
+// it when that differs, and, for a member whose owner id looks like another's, who it isn't (ASK-38),
+// as the ASK-34 Confirm says it. A mention picked is always the owner id
 function ObyRow({ oby }: { oby: Askable }) {
-  return <span className="add-item-text">{oby.name}’s Oby{oby.lookalike?.length ? <span className="add-item-about">{notThem(oby.lookalike)}</span> : null}</span>;
+  const about = aboutOf(oby);
+  return <span className="add-item-text">{oby.card ?? oby.name}’s Oby{about ? <span className="add-item-about">{about}</span> : null}</span>;
 }
 
 // Esc while there's something typed in a message box is the box's (it would
