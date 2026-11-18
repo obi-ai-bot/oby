@@ -56,6 +56,10 @@ struct Kept {
     /// The owners whose changed key's card this owner cancelled: no card for them again until they
     /// leave the Sphere and come back (SPHERE-8).
     declined: BTreeSet<String>,
+    /// The owners this owner let obid send words to in the clear while their Oby's card has no seal
+    /// key (SPHERE-19): by default nothing goes to them (SPHERE-18). Their signed word only; an
+    /// accepted new key for that owner forgets it.
+    in_clear: BTreeSet<String>,
 }
 
 pub struct Pins {
@@ -225,6 +229,8 @@ impl Pins {
             verified: true,
         };
         let answer = to_json(owner, pin);
+        // Someone with a new key isn't who the owner let have words in the clear (SPHERE-19).
+        kept.in_clear.remove(owner);
         let copy = kept.clone();
         drop(kept);
         self.save(&copy);
@@ -275,6 +281,27 @@ impl Pins {
     pub fn decline(&self, owner: &str) {
         let mut kept = self.pins.lock().unwrap();
         if kept.declined.insert(owner.to_owned()) {
+            let copy = kept.clone();
+            drop(kept);
+            self.save(&copy);
+        }
+    }
+
+    /// Whether this owner let obid send `owner`'s Obys words in the clear while their card has no
+    /// seal key (SPHERE-19).
+    pub fn allows_clear(&self, owner: &str) -> bool {
+        self.pins.lock().unwrap().in_clear.contains(owner)
+    }
+
+    /// Keeps whether this owner lets obid send `owner`'s Obys words in the clear (SPHERE-19).
+    pub fn allow_clear(&self, owner: &str, allow: bool) {
+        let mut kept = self.pins.lock().unwrap();
+        let changed = if allow {
+            kept.in_clear.insert(owner.to_owned())
+        } else {
+            kept.in_clear.remove(owner)
+        };
+        if changed {
             let copy = kept.clone();
             drop(kept);
             self.save(&copy);

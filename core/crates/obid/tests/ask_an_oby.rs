@@ -38,6 +38,14 @@ async fn setup_again(folder: &Folder) -> (FakeSphere, Obid, TestObi, Value) {
     // The directory obid read at joining had no Ernesto.
     let members = call(&obid, "GET", "/v1/obid/sphere/members", None);
     assert_eq!(members.status, 200, "{}", members.text);
+    // SPHERE-18: Ernesto's card has no seal key, so the owner lets obid ask him unsealed.
+    let unsealed = call_typed(
+        &obid,
+        "PUT",
+        "/v1/obid/sphere/peers/ernesto/unsealed",
+        &json!({"allow": true}),
+    );
+    assert_eq!(unsealed.status, 200, "{}", unsealed.text);
     (sphere, obid, ernesto, config)
 }
 
@@ -821,6 +829,16 @@ async fn ask_34_a_lookalike_waits_for_a_confirm_naming_both() {
     let (sphere, obid, _ernesto) = setup(&folder).await;
     let dima = TestObi::join_named(&sphere, "obi-dima", "dima", "dima's Oby").await;
     let dirna = TestObi::join_named(&sphere, "obi-dirna", "dirna", "dirna's Oby").await;
+    tokio::task::block_in_place(|| {
+        // SPHERE-19: this member's card has no seal key; the owner lets obid ask unsealed.
+        let unsealed = call_typed(
+            &obid,
+            "PUT",
+            "/v1/obid/sphere/peers/dirna/unsealed",
+            &json!({"allow": true}),
+        );
+        assert_eq!(unsealed.status, 200, "{}", unsealed.text);
+    });
     let (_, said) = tokio::task::block_in_place(|| {
         typed(
             &obid,
@@ -963,6 +981,16 @@ async fn ask_5_a_card_renamed_after_the_question_doesnt_change_who_answered() {
     let folder = Folder::new("ask-5-renamed");
     let (sphere, obid, _ernesto) = setup(&folder).await;
     let mal = TestObi::join_named(&sphere, "obi-mal", "malcolm", "Mal's Oby").await;
+    tokio::task::block_in_place(|| {
+        // SPHERE-19: this member's card has no seal key; the owner lets obid ask unsealed.
+        let unsealed = call_typed(
+            &obid,
+            "PUT",
+            "/v1/obid/sphere/peers/malcolm/unsealed",
+            &json!({"allow": true}),
+        );
+        assert_eq!(unsealed.status, 200, "{}", unsealed.text);
+    });
     let reread = |obid: &Obid| {
         tokio::task::block_in_place(|| call(obid, "GET", "/v1/obid/sphere/members", None));
     };

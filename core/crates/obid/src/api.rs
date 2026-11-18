@@ -374,6 +374,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
             "/v1/obid/sphere/peers/{owner}/ask",
             post(crate::sphere::routes::peer_ask),
         )
+        .route(
+            "/v1/obid/sphere/peers/{owner}/unsealed",
+            axum::routing::put(crate::sphere::routes::allow_unsealed),
+        )
         .route("/v1/memory", get(crate::memory::get))
         .route(
             "/v1/memory/{id}",

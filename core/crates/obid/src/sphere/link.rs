@@ -1798,6 +1798,11 @@ impl Link {
             "tokenExpiresAt": state.token.as_ref().map(|t| time::format(t.1)),
             "lastPoll": state.last_poll.map(time::format),
             "lastError": state.last_error,
+            "revokedAt": joined.and_then(|m| m.revoked.as_ref()).map(|r| time::format(r.at)),
+            // A membership revoked before obid kept why was revoked the one way it can be.
+            "revokedReason": joined.filter(|m| m.state == "revoked").map(|m| {
+                m.revoked.as_ref().map_or(super::membership::REMOVED, |r| r.reason.as_str())
+            }),
         })
     }
 
@@ -2305,6 +2310,7 @@ impl Link {
             obi_id,
             card,
             joined_at: now,
+            revoked: None,
         };
         crate::secrets::known().learn(DELEGATION_SECRET, &delegation);
         let kept = self
@@ -2659,9 +2665,8 @@ impl Link {
                     .any(|x| x == obi_protocol::identity::CARD_RUNTIME));
         let revoked = {
             let mut state = self.lock();
-            let revoked = me
-                .and_then(|me| members.iter().find(|m| m["obi"] == me.as_str()).cloned())
-                .is_some_and(|m| m["status"] == "revoked");
+            let mine = me.and_then(|me| members.iter().find(|m| m["obi"] == me.as_str()).cloned());
+            let revoked = mine.as_ref().is_some_and(|m| m["status"] == "revoked");
             state.directory = directory;
             state.directory_read = now;
             state.team_reads_seal_keys = team_reads_seal_keys;
@@ -2673,6 +2678,17 @@ impl Link {
             }
             if revoked && let Some(m) = state.membership.as_mut() {
                 m.state = "revoked".into();
+                // When and why, kept once: the apps say so instead of the Obysphere vanishing
+                // (SPHERE-20).
+                let at = mine
+                    .as_ref()
+                    .and_then(|m| m["revoked_at"].as_str())
+                    .and_then(time::parse)
+                    .unwrap_or(now);
+                m.revoked.get_or_insert(super::membership::Revoked {
+                    at,
+                    reason: super::membership::REMOVED.into(),
+                });
             }
             revoked.then(|| state.membership.clone()).flatten()
         };
@@ -2922,7 +2938,8 @@ impl Link {
                     let mut accepts = m.accepts.clone();
                     accepts.sort();
                     json!({"obi": obi, "owner": m.owner, "accepts": accepts,
-                           "sealed": m.seal.is_some(), "verified": self.pins.verified(&m.owner)})
+                           "sealed": m.seal.is_some(), "verified": self.pins.verified(&m.owner),
+                           "unsealed": self.pins.allows_clear(&m.owner)})
                 })
                 .collect()
         };
@@ -2937,6 +2954,37 @@ impl Link {
             (a["owner"].as_str(), a["obi"].as_str()).cmp(&(b["owner"].as_str(), b["obi"].as_str()))
         });
         Ok(json!(list))
+    }
+
+    /// `PUT /v1/obid/sphere/peers/{owner}/unsealed` `{"allow": true|false}`: whether obid may send
+    /// `owner`'s Obys words in the clear while their card has no seal key (SPHERE-19). The route
+    /// takes the owner's signature to allow it; taking it back sends less, and needs none.
+    pub async fn allow_unsealed(&self, owner: &str, body: &[u8]) -> Result<Value, ApiError> {
+        let map = object(body, &["allow"])?;
+        let Some(allow) = map.get("allow").and_then(Value::as_bool) else {
+            return Err(api(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "allow is true or false.",
+            ));
+        };
+        let known = || {
+            self.lock()
+                .directory
+                .members
+                .values()
+                .any(|m| m.owner == owner)
+        };
+        // One who just joined is read from the Sphere first.
+        if !known()
+            && let Err(e) = self.read_directory().await
+        {
+            self.note_error(&e);
+        }
+        if !known() && !self.pins.allows_clear(owner) {
+            return Err(api(StatusCode::NOT_FOUND, "There's no such member."));
+        }
+        self.pins.allow_clear(owner, allow);
+        Ok(json!({"owner": owner, "unsealed": allow}))
     }
 
     /// `PUT /v1/obid/sphere/membership`: a new card and/or delegation the owner signed (to take
@@ -3162,6 +3210,21 @@ const CHOOSE_REPOS_FIRST: &str =
 /// Why an answer no device of the owner's signed doesn't reach another Oby's question (PEER-33).
 pub const NEEDS_YOUR_HAND: &str =
     "Only you answer this one, from your own app: this answer wasn't signed, so nothing was sent.";
+
+/// Why an Accept of another Oby's review request or handoff that no device of the owner's signed
+/// is refused (SPHERE-17).
+pub const NEEDS_YOUR_ACCEPT: &str = "Only you accept another Oby's work, from your own app: this Accept wasn't signed, so nothing started.";
+
+/// The `reason` of a request refused because its receiver's card has no seal key (SPHERE-18).
+pub const NOT_SEALED: &str = "not_sealed";
+
+/// Why nothing went to `owner`'s Oby: its card has no seal key, and this owner didn't let obid send
+/// it words in the clear (SPHERE-18).
+pub fn not_sealed(owner: &str) -> String {
+    format!(
+        "{owner}'s Oby can't receive sealed asks yet, so nothing was sent. Ask {owner} to update Oby, or let Oby send to {owner} unsealed."
+    )
+}
 
 /// Why a Confirm without the owner's tap is refused (#776).
 pub const NEEDS_YOUR_TAP: &str =
@@ -3616,6 +3679,7 @@ mod tests {
             obi_id: "obi-wellington".into(),
             card: json!({}),
             joined_at: 0,
+            revoked: None,
         };
         link.lock().membership = Some(membership("joined"));
         let confirm = json!({"answer": inbox::CONFIRM}).to_string();
@@ -3807,6 +3871,7 @@ mod tests {
                 obi_id: "obi-wellington".into(),
                 card: json!({}),
                 joined_at: 0,
+                revoked: None,
             });
             state
                 .directory
@@ -3900,6 +3965,7 @@ mod tests {
                 obi_id: "obi-wellington".into(),
                 card: json!({}),
                 joined_at: 0,
+                revoked: None,
             });
             for (obi, owner) in [
                 ("obi-wellington", "wellington"),
@@ -4062,6 +4128,7 @@ mod tests {
             obi_id: "obi-wellington".into(),
             card: json!({}),
             joined_at: time::now(),
+            revoked: None,
         }
     }
 
