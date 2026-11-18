@@ -62,7 +62,7 @@ describe('POLICY-5', () => {
     expect(b.sphereSetPolicy).toHaveBeenCalledWith(0);
     await b.write(answer(1, [starterRule()], true));
     expect(group()!.textContent).toContain('Every member may ask every other member’s Oby');
-    expect(group()!.textContent).toContain('Questions and reviews, in every repository.');
+    expect(group()!.textContent).toContain('Questions, reviews and handoffs, in every repository.');
     expect(group()!.textContent).not.toContain('Nobody may ask yet');
     expect(letAsk()).toBeUndefined();
   });

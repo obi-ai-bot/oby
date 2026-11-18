@@ -54,6 +54,15 @@ pub async fn leave(State(shared): State<Arc<Shared>>) -> Result<Response, ApiErr
     Ok(json(StatusCode::OK, shared.link.leave().await?))
 }
 
+/// `PUT /v1/obid/sphere/owner`: who obid joins its first Sphere as (SPHERE-21). obid's token only:
+/// not on the gateway, and no other Oby reaches it.
+pub async fn set_owner(
+    State(shared): State<Arc<Shared>>,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    Ok(json(StatusCode::OK, shared.link.set_owner(&body)?))
+}
+
 /// `GET /v1/obid/sphere/pins`.
 pub async fn pins(State(shared): State<Arc<Shared>>) -> Response {
     json(StatusCode::OK, shared.link.pins_json())

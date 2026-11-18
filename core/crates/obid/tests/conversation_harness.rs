@@ -4121,27 +4121,31 @@ fn oby_continue_job_continues_a_job_in_its_session() {
     );
 }
 
-/// oby_archive_job hides a job that ended and needs nothing, reversibly, at once even after the
-/// web; oby_delete_job always waits for the owner's Confirm, which removes the job, its worktree
-/// and its open items, and the REST routes do the same for the apps.
+/// oby_archive_job hides a job that ended with no decision open (a failed one too: TASKS-31),
+/// reversibly, at once even after the web; oby_delete_job always waits for the owner's Confirm,
+/// which removes the job, its worktree and its open items, and the REST routes do the same for the
+/// apps.
 #[test]
 fn archive_is_at_once_and_delete_waits_for_confirm() {
     let (_folder, obid) = obid_failing_jobs("harness-archive");
     let (id, conversation) = ended_job(&obid, None);
     let archive = format!(r#"OBY oby_archive_job {{"id": "{id}"}}"#);
-    let needs = said(
+    let failed = said(
         &obid,
         json!({"said": archive, "conversation": conversation}),
     );
     assert!(
-        oby_said(&needs).contains("It still needs you: dismiss it first"),
+        oby_said(&failed).contains("Archived Add a greeting."),
         "{}",
-        needs.text
+        failed.text
     );
-    assert_eq!(
-        call(&obid, "POST", &format!("/v1/jobs/{id}/dismiss"), None).status,
-        200
+    let unarchived = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/archive"),
+        Some(&json!({"archived": false})),
     );
+    assert_eq!(unarchived.status, 200, "{}", unarchived.text);
     let done = said(
         &obid,
         json!({"said": format!("WEB {archive}"), "conversation": conversation}),
@@ -4193,6 +4197,10 @@ fn archive_is_at_once_and_delete_waits_for_confirm() {
         422
     );
 
+    // Delete on a job that ended and was never put away: an archived one may have lost its
+    // worktree to the cleanup pass already (CLEANUP-5).
+    let (id, _) = ended_job(&obid, None);
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
     let worktree = PathBuf::from(job["worktree"].as_str().unwrap());
     assert!(worktree.is_dir());
     let branch = job["branch"].as_str().unwrap().to_owned();

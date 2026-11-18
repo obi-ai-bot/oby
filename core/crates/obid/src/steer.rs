@@ -10,7 +10,7 @@
 //! nothing is written, so a Claude Code that doesn't replay hears no word this way (the words wait
 //! for its next turn, as before).
 //!
-//! Codex (TASKCONV-36 to 38) takes them through `turn/steer` on its turn under way, as T3 Code
+//! Codex (TASKCONV-36 and 37) takes them through `turn/steer` on its turn under way, as T3 Code
 //! does: Codex answers each at once, and an answer that isn't an error is the word taken, which it
 //! hears at its next step (codex-cli 0.163, 2026-11-18). Its turn opens to words once `turn/start`
 //! answers; words that come as a turn ends start the thread's next turn in the same process
