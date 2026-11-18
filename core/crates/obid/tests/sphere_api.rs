@@ -3990,3 +3990,57 @@ async fn sphere_20_a_revoked_membership_says_when_and_why() {
     assert_eq!(me["revokedAt"], "2026-11-18T09:00:00Z", "{me}");
     assert_eq!(me["revokedReason"], "removed", "{me}");
 }
+/// SPHERE-21: before its first join, the person chooses who their Oby joins as, with obid's token:
+/// a body with no owner, or one that isn't an owner id, is `422` and changes nothing (the app's
+/// probe); a valid one is kept, across a restart, and the join is as that owner; once a membership
+/// exists it's `409`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sphere_21_the_owner_id_is_chosen_before_the_first_join() {
+    let folder = Folder::new("sphere-21");
+    let sphere = FakeSphere::start().await;
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &stub_agent());
+    let obid = start(&folder.0, &config, None);
+    let target = "/v1/obid/sphere/owner";
+    let before = tokio::task::block_in_place(|| get(&obid, "/v1/obid/sphere"))["owner"].clone();
+    tokio::task::block_in_place(|| {
+        for body in [
+            json!({}),
+            json!({"owner": ""}),
+            json!({"owner": "Dana"}),
+            json!({"owner": "-dana"}),
+            json!({"owner": 7}),
+            json!({"owner": "dana", "other": 1}),
+        ] {
+            let refused = call(&obid, "PUT", target, Some(&body));
+            assert_eq!(refused.status, 422, "{body}: {}", refused.text);
+        }
+        assert_eq!(
+            get(&obid, "/v1/obid/sphere")["owner"],
+            before,
+            "nothing changed"
+        );
+        let kept = call(&obid, "PUT", target, Some(&json!({"owner": "dana-k"})));
+        assert_eq!(kept.status, 200, "{}", kept.text);
+        assert_eq!(kept.body, json!({"owner": "dana-k"}));
+        assert_eq!(get(&obid, "/v1/obid/sphere")["owner"], "dana-k");
+    });
+    // Kept across a restart.
+    drop(obid);
+    let obid = start(&folder.0, &config, None);
+    tokio::task::block_in_place(|| {
+        assert_eq!(get(&obid, "/v1/obid/sphere")["owner"], "dana-k");
+        let joined = join_a(&obid, &sphere, &Owner::new("dana-k"));
+        assert_eq!(joined["state"], "joined");
+        assert_eq!(joined["owner"], "dana-k");
+        let late = call(
+            &obid,
+            "PUT",
+            target,
+            Some(&json!({"owner": "someone-else"})),
+        );
+        assert_eq!(late.status, 409, "{}", late.text);
+        assert!(late.text.contains("leave it first"), "{}", late.text);
+        assert_eq!(get(&obid, "/v1/obid/sphere")["owner"], "dana-k");
+    });
+}
