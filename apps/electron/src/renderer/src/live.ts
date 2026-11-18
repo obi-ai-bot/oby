@@ -641,8 +641,10 @@ export function lookAtUsage() {
 
 export function apply(s: Live, e: Exclude<Event, { kind: 'transcript' | 'transcriptLine' | 'transcriptTail' | 'transcriptOutput' }>): Live {
   switch (e.kind) {
-    // A question's card on a turn changes only the card, and nothing about a turn under way
-    case 'job': case 'jobGone': case 'inbox': case 'turnAsks': case 'accounts': case 'github':
+    // A question's card on a turn changes only the card, and nothing about a turn under way; so
+    // does its words' delivery, which only moves them between the waiting row and the conversation
+    // (waitingWords, COMPOSER-19)
+    case 'job': case 'jobGone': case 'inbox': case 'turnAsks': case 'turnDelivery': case 'accounts': case 'github':
       return { ...s, ...applyToObid(s, e) };
     // a conversation's isn't taken as the one this app's words start: another device may start one
     // meanwhile (the words' own turn, or the plan's answer, says which is this app's). Its listing
