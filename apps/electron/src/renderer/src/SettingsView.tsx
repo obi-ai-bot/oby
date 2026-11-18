@@ -7,6 +7,7 @@ import { AGENTS, agentOf, type Agent } from './view';
 import { MODES, SANDBOX } from './modes';
 import { OwnerAvatar } from './ObyFace';
 import { useSpheres } from './spheres';
+import { SphereJoinPage } from './SphereSettings';
 import { everything, onObid } from './lean';
 import qrcode from 'qrcode-generator';
 import { ApiError, api, qrText, type CursorGroup, type Invitation, type PairedDevice, type ModelOptions, type Models, type SavedRule, type SignIn, type Status } from './obid';
@@ -44,6 +45,8 @@ const LATER = new Set(['remote', 'sharing', 'vault', 'accounts', 'models']);
 export const SETTINGS_PAGES = [
   { id: 'general', label: 'General' },
   { id: 'agents', label: 'Agents' },
+  // joining one from its invite link (SphereSettings.tsx, SPHEREAPP-4)
+  { id: 'obysphere', label: 'Obysphere' },
   { id: 'sharing', label: 'Sharing' },
   { id: 'remote', label: 'Remote access' },
   { id: 'accounts', label: 'Accounts' },
@@ -1266,7 +1269,7 @@ function About() {
   </>;
 }
 
-const PAGES: Record<string, () => React.ReactNode> = { general: General, agents: Agents, sharing: Sharing, remote: Remote, accounts: Accounts, models: Models, connectors: Connectors, vault: Vault, about: About };
+const PAGES: Record<string, () => React.ReactNode> = { general: General, agents: Agents, obysphere: () => <SphereJoinPage />, sharing: Sharing, remote: Remote, accounts: Accounts, models: Models, connectors: Connectors, vault: Vault, about: About };
 
 // The default mode, with what it lets the agent do under it
 function ModeRow({ mode, setMode, modes = MODES }: { mode: string; setMode: (m: string) => void; modes?: typeof MODES }) {

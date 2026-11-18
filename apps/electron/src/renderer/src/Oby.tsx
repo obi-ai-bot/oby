@@ -39,6 +39,9 @@ declare global {
       // an Obysphere joined by its invite link, and Leave (preload, main/sphere.ts)
       onSphere?(fn: (joined: { sphere: string; name: string }) => void): () => void;
       sphereLeave?(): Promise<string | null>;
+      // an invite link pasted in the app, joined through main's one join path; a task handed to a member's Oby (SPHEREAPP-3, 6)
+      sphereJoin?(link: string): Promise<import('../../shared/invite').Joined>;
+      sphereHandoff?(ask: import('../../shared/handoff').HandoffAsk): Promise<string | null>;
       // a task's worktree in the owner's Terminal or editor, by its id, and that editor's name (preload, main/worktree.ts)
       openWorktree?(job: string, where: 'terminal' | 'editor'): Promise<boolean>;
       editorName?(): Promise<string | null>;

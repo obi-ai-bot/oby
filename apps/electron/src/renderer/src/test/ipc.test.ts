@@ -20,6 +20,7 @@ const the = vi.hoisted(() => ({
   refuseOpen: false,
   checks: 0,
   policies: 0,
+  joins: 0,
 }));
 vi.mock('electron', async () => {
   const { EventEmitter } = await import('node:events');
@@ -83,12 +84,15 @@ vi.mock('../../../main/obid', async (original) => ({
   chooseProfile: () => false,
   openedProfile: () => null,
 }));
-vi.mock('../../../shared/sphere', () => ({
-  NotThisKey: class extends Error {}, join() {}, joinWarning() {}, leave() {}, parseInvite() {}, keepMembership: async () => {},
+vi.mock('../../../shared/sphere', async (original) => ({
+  // links read as main reads them; nothing joins
+  parseInvite: (await original<typeof import('../../../shared/sphere')>()).parseInvite,
+  NotThisKey: class extends Error {}, join: async () => { the.joins++; }, joinWarning() {}, leave() {}, keepMembership: async () => {},
   readPolicy: async () => { the.policies++; }, addStarterRule: async () => { the.policies++; },
 }));
 
 const FORBIDDEN = { status: 403, text: '' };
+const LINK = `https://sphere.example.com/join#sphere=demo&name=Demo%20team&id=9187a87a-3126-424c-8861-8811bba1a5ec&secret=${'A'.repeat(43)}`;
 const NOT_OBID = { status: 400, text: '{"error":"Not an obid call."}' };
 // every channel, with arguments its handler would act on, and what a sender that isn't the
 // window's own page gets (sync: its returnValue; undefined: nothing, as send gets)
@@ -122,6 +126,8 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'sphere-leave': { args: [], refusal: 'Not this app’s page.' },
   'sphere-policy': { args: [], refusal: null },
   'sphere-set-policy': { args: [0], refusal: null },
+  'sphere-join': { args: [LINK], refusal: { kind: 'failed', name: '', why: 'Not this app’s page.' } },
+  'sphere-handoff': { args: [{ to: 'dana', goal: 'Add a name option', repo: 'acme/app', base: 'main' }], refusal: 'Not this app’s page.' },
   'render-error': { args: ['TypeError', 'm', ''], refusal: undefined },
 };
 
@@ -353,5 +359,69 @@ describe('ALERTS-19', () => {
       the.refuseOpen = false;
       logged.mockRestore();
     }
+  });
+});
+
+// docs/contracts/sphere-app.md: a link pasted in the app, and a task handed over, go only right after
+// a click or key main saw itself
+describe('SPHEREAPP-4 and 6', () => {
+  it('sphereapp_4_a_pasted_link_joins_through_main_s_own_dialog_only_after_a_click_main_saw', async () => {
+    while (takeInput()) { /* other tests' */ }
+    const before = { dialogs: the.dialogs, joins: the.joins };
+    // the page alone: refused, no dialog, nothing joined
+    expect(await call('sphere-join', own(), LINK)).toEqual({ kind: 'failed', name: '', why: 'Joining takes your own click.' });
+    expect(the.dialogs).toBe(before.dialogs);
+    // a click: main's own Join dialog, the oby:// link's; its Cancel joins nothing
+    input();
+    expect(await call('sphere-join', own(), LINK)).toEqual({ kind: 'cancelled' });
+    expect(the.dialogs).toBe(before.dialogs + 1);
+    expect(the.joins).toBe(before.joins);
+    // a text that isn't a link: said, no dialog
+    input();
+    expect(await call('sphere-join', own(), 'https://example.com/')).toEqual({ kind: 'not_a_link' });
+    expect(the.dialogs).toBe(before.dialogs + 1);
+  });
+
+  it('sphereapp_6_a_task_is_handed_over_only_right_after_a_click_main_saw', async () => {
+    while (takeInput()) { /* other tests' */ }
+    const ask = { to: 'dana', goal: 'Add a name option', repo: 'acme/app', base: 'main' };
+    const before = the.calls.length;
+    expect(await call('sphere-handoff', own(), ask)).toBe('Handing a task over takes your own click.');
+    expect(the.calls.length).toBe(before);
+    // a click: main asks obid who's in (no one here), and says so
+    input();
+    expect(await call('sphere-handoff', own(), ask)).toBe('dana isn’t in your Obysphere.');
+    expect(the.calls.slice(before).map((c) => `${c[0]} ${c[1]}`)).toEqual(['GET /v1/obid/sphere/members']);
+    // the page's object is read as four strings, nothing more
+    expect(await call('sphere-handoff', own(), { ...ask, goal: 7 })).toBe('Not this app’s page.');
+  });
+
+  it('sphereapp_6_main_sends_obid_one_handoff_to_their_oby_that_takes_tasks', async () => {
+    const { handOff } = await import('../../../main/sphere');
+    const sent: unknown[][] = [];
+    const members = [
+      { obi: 'obi-dana-old', owner: 'dana', accepts: ['question', 'review_request'], sealed: true },
+      { obi: 'obi-dana', owner: 'dana', accepts: ['question', 'review_request', 'handoff'], sealed: true },
+      { obi: 'obi-ben', owner: 'ben', accepts: ['question'], sealed: true },
+    ];
+    const fake = (answer: { status: number; text: string }) => async (method: string, path: string, body?: unknown) => {
+      sent.push([method, path, body]);
+      return method === 'GET' ? { status: 200, text: JSON.stringify(members) } : answer;
+    };
+    const ask = { to: 'dana', goal: '  Add a name option to the greeter ', repo: 'acme/app', base: 'main' };
+    expect(await handOff(ask, fake({ status: 202, text: '{}' }))).toBeNull();
+    expect(sent[1]).toEqual(['POST', '/v1/obid/sphere/requests', {
+      to: 'obi-dana', type: 'handoff', expiresIn: 604800,
+      body: { goal: 'Add a name option to the greeter', repo: 'acme/app', base_branch: 'main', acceptance: [{ kind: 'tests_pass' }] },
+    }]);
+    // a member whose Oby doesn't take tasks, the Sphere's rules, and a form that can't go: words, and nothing sent
+    sent.length = 0;
+    expect(await handOff({ ...ask, to: 'ben' }, fake({ status: 202, text: '{}' }))).toBe('ben’s Oby doesn’t take tasks yet.');
+    expect(await handOff(ask, fake({ status: 502, text: JSON.stringify({ error: 'The Sphere refused it: policy_denied: no rule' }) })))
+      .toBe('This Obysphere’s rules don’t allow handing over tasks yet. An admin can change that.');
+    expect(sent.filter((c) => c[0] === 'POST')).toHaveLength(1);
+    sent.length = 0;
+    expect(await handOff({ ...ask, repo: 'not a repo' }, fake({ status: 202, text: '{}' }))).toBe('That task can’t go as it is.');
+    expect(sent).toEqual([]);
   });
 });

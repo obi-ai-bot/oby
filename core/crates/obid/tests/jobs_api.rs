@@ -2662,6 +2662,41 @@ fn jobstate_2_try_again_resets_the_round() {
     try_again_clears("jobstate-2", obid::job::Status::Failed);
 }
 
+/// TASKS-31 (#2506): a task that ended `failed` or `interrupted` with no decision open archives
+/// (`200`), as a done one does: it asks nothing (TASKS-25). One whose merge still waits on the
+/// owner stays out of Archived (`409`, obid's words).
+#[test]
+fn tasks_31_a_failed_or_interrupted_task_archives() {
+    use obid::job::Status;
+    let folder = Folder::new("tasks-31");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote);
+    seeded(&folder.0, "aaaa0031", Status::Failed);
+    seeded(&folder.0, "aaaa0032", Status::Interrupted);
+    let mut waits = seeded(&folder.0, "aaaa0033", Status::Failed);
+    waits.merge_needs_you = true;
+    keep(&folder.0, &waits);
+    let obid = start(&folder.0, &config);
+    for id in ["aaaa0031", "aaaa0032"] {
+        let archived = request(
+            &obid,
+            "POST",
+            &format!("/v1/jobs/{id}/archive"),
+            Some(r#"{"archived": true}"#),
+        );
+        assert_eq!(archived.status, 200, "{id}: {}", archived.text);
+        assert!(!archived.body["archived"].is_null(), "{}", archived.text);
+    }
+    let refused = request(
+        &obid,
+        "POST",
+        "/v1/jobs/aaaa0033/archive",
+        Some(r#"{"archived": true}"#),
+    );
+    assert_eq!(refused.status, 409, "{}", refused.text);
+    assert!(refused.text.contains("still needs you"), "{}", refused.text);
+}
+
 /// JOBSTATE-9 (docs/contracts/job-state.md): Try again on an `interrupted` job.
 #[test]
 fn jobstate_9_try_again_after_interrupted_resets_the_round() {
