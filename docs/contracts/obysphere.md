@@ -1,6 +1,6 @@
 # Joining an Obysphere by a private link
 
-The business behavior contract for the Electron app joining an Obysphere someone else made (Dmytro's, for his demo of two Obys on one Obysphere), from [the template](../business-contract-template.md). Issue: [#1584](https://github.com/obi-ai-bot/oby/issues/1584). Scenarios are numbered `SPHERE-n`; the tests that prove them are named after them (`sphere_1_…` in `apps/electron/src/renderer/src/test/sphere.test.ts`; SPHERE-5, and SPHERE-6 against real obids, are `apps/electron/scripts/test-sphere.mjs`, `npm run test:sphere`; SPHERE-8 to 10, obid's alone, are `sphere_8_…` to `sphere_10_…` in `core/crates/obid/tests/sphere_api.rs`, SPHERE-8's cap after Cancel in `sphere_8_after_cancel_no_card_until_the_member_leaves_and_comes_back`; SPHERE-14 to 16, the side panel's, are `SPHERE-14: …` to `SPHERE-16: …` in `apps/electron/src/renderer/src/test/sphereMenu.test.tsx`).
+The business behavior contract for the Electron app joining an Obysphere someone else made (Dmytro's, for his demo of two Obys on one Obysphere), from [the template](../business-contract-template.md). Issue: [#1584](https://github.com/obi-ai-bot/oby/issues/1584). Scenarios are numbered `SPHERE-n`; the tests that prove them are named after them (`sphere_1_…` in `apps/electron/src/renderer/src/test/sphere.test.ts`; SPHERE-5, and SPHERE-6 against real obids, are `apps/electron/scripts/test-sphere.mjs`, `npm run test:sphere`; SPHERE-8 to 10, obid's alone, are `sphere_8_…` to `sphere_10_…` in `core/crates/obid/tests/sphere_api.rs`, SPHERE-8's cap after Cancel in `sphere_8_after_cancel_no_card_until_the_member_leaves_and_comes_back`; SPHERE-14 to 16, the side panel's, are `SPHERE-14: …` to `SPHERE-16: …` in `apps/electron/src/renderer/src/test/sphereMenu.test.tsx`; SPHERE-21, obid's alone, is `sphere_21_…` in `core/crates/obid/tests/sphere_api.rs`).
 
 ## Feature and status
 
@@ -73,6 +73,7 @@ The business behavior contract for the Electron app joining an Obysphere someone
 - **SPHERE-14** On a joined Obysphere the side panel shows no Invite member; on the mock's Obyspheres (`?everything`) and on the tour's sample it shows as Sangam designed it.
 - **SPHERE-15** Leave *name* in the Obysphere's ⋮ menu opens the same confirmation as its settings' Leave; Cancel, Esc, the x or a click outside changes nothing; confirming leaves once, as SPHERE-4 says, and the panel leaves the Obysphere.
 - **SPHERE-16** An admin's ⋮ menu has no Leave.
+- **SPHERE-21** Before its first join, the person chooses who their Oby joins as (`PUT /v1/obid/sphere/owner` `{"owner"}`, obid's token only, not on the gateway): a body with no `owner`, another key, or one that isn't an owner id is `422` and changes nothing; a valid one answers `{"owner"}`, is kept across a restart, and the join is as that owner; once a membership exists it's `409` with "This Oby is already in an Obysphere as its owner: leave it first to join as someone else." (`sphere_21_…` in `core/crates/obid/tests/sphere_api.rs`).
 
 ### Test it when it's done (Dmytro's demo, two Macs)
 
