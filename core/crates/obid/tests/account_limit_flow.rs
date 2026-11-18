@@ -1387,6 +1387,57 @@ fn limits_16_a_running_job_moves_by_hand() {
     call(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
 }
 
+/// TASKS-32 (#2485): a running task moved to another account tells its conversation where it went
+/// and why, once, as a move: never that it was stopped, since it goes on there.
+#[test]
+fn tasks_32_a_moved_task_reads_as_moved_never_stopped() {
+    let folder = Folder::new("tasks-32-moved");
+    let config = limit_config(&folder.0, "fake-claude", true);
+    let obid = start(&folder.0, &config, None);
+    let id = post(&obid, "SLEEP");
+    let running = within(60, "the job runs", || {
+        let job = job_now(&obid, &id);
+        (job["status"] == "running").then_some(job)
+    });
+    let conversation = running["conversation"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a task has a conversation: {running}"))
+        .to_owned();
+    let body = json!({"account": "codex", "why": "Claude keeps looping"});
+    let moved = call_typed(&obid, "POST", &format!("/v1/jobs/{id}/move"), &body);
+    assert_eq!(moved.status, 200, "{}", moved.text);
+    let said = |obid: &Obid| -> Vec<String> {
+        call(
+            obid,
+            "GET",
+            &format!("/v1/conversation?id={conversation}"),
+            None,
+        )
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["who"] == "oby")
+        .filter_map(|t| t["text"].as_str().map(str::to_owned))
+        .collect()
+    };
+    let line = "moved to Codex · Codex account: Claude keeps looping.";
+    within(30, "the move's line", || {
+        said(&obid).iter().any(|t| t.ends_with(line)).then_some(())
+    });
+    within(60, "Codex takes the round over", || {
+        (job_now(&obid, &id)["status"] == "running").then_some(())
+    });
+    let lines = said(&obid);
+    assert_eq!(
+        lines.iter().filter(|t| t.ends_with(line)).count(),
+        1,
+        "{lines:?}"
+    );
+    assert!(!lines.iter().any(|t| t.contains("stopped")), "{lines:?}");
+    call(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
+}
+
 /// LIMITS-16: what can't move answers `422` with why and leaves the job as it was; an unknown
 /// job is `404`.
 #[test]
