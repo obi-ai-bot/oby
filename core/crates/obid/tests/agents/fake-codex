@@ -54,6 +54,13 @@
 //   RELAY            a turn on a ChatGPT login: through obid's relay, as real Codex takes one, saying
 //                    what the model said; RELAY HOLD writes its environment to .obi/env-seen.json
 //                    and waits for .obi/go first
+//   STEPS: <n> <ms> [REFUSE STEER]  works n steps of ms each, appending its pid and the turn's
+//                    prompt's first line to .obi/turns.log every turn; words steered in are heard at
+//                    the next step's end, its turn ending "heard: <words>"; with none, "Done in <n>
+//                    steps."; a later turn on its thread says "heard: <prompt>" at once. REFUSE
+//                    STEER refuses every `turn/steer` as codex-cli 0.163 does once a turn ended
+//                    ("no active turn to steer"). Every `turn/steer` without a turn under way, or
+//                    naming another, is refused so
 //   TOKENS           its thread uses 1000 input tokens (600 of them cached) and 100 output tokens
 //                    more, reported in `thread/tokenUsage/updated` twice
 //   Oby's review     (its prompt names .obi/inputs/asked.md) approves; of work asked with CODEX
@@ -113,6 +120,8 @@ const ask = (method, params) => new Promise((done) => {
   send({ id, method, params });
 });
 let steered = [];
+// The turn under way, which `turn/steer` must name.
+let active = null;
 let thread = null;
 let state = null;
 
@@ -148,7 +157,7 @@ const configRead = () => {
 };
 const item = (type, fields) => ({ type, id: randomUUID(), ...fields });
 const complete = (turnId, text, status = "completed", error = null) =>
-  send({ method: "turn/completed", params: { threadId: thread, turn: { id: turnId, status, error, items: text == null ? [] : [{ type: "agentMessage", id: "m1", text }] } } });
+  (active = null, send({ method: "turn/completed", params: { threadId: thread, turn: { id: turnId, status, error, items: text == null ? [] : [{ type: "agentMessage", id: "m1", text }] } } }));
 
 // A turn on a ChatGPT login (crate::chatgpt_relay), as real Codex takes one (spike S5): it posts to
 // its `base_url` with the token named by `env_key`; a 401, a 403, a 5xx or a `response.failed` is
@@ -186,6 +195,18 @@ async function runTurn(turnId, prompt) {
     : state.sandbox !== "danger-full-access" || state.approvalPolicy !== "untrusted")
     return complete(turnId, null, "failed", { message: `started with ${state.sandbox} / ${state.approvalPolicy} / ${state.permissions}` });
   const task = state.task;
+  const steps = task.match(/STEPS: (\d+) (\d+)/);
+  if (steps) {
+    mkdirSync(".obi", { recursive: true });
+    appendFileSync(".obi/turns.log", `${process.pid} ${prompt.split("\n")[0]}\n`);
+    if (prompt !== task) return complete(turnId, `heard: ${prompt}`);
+    for (let step = 0; step < Number(steps[1]); step++) {
+      await new Promise((r) => setTimeout(r, Number(steps[2])));
+      send({ method: "item/completed", params: { threadId: thread, turnId, item: item("agentMessage", { text: `step ${step + 1}` }) } });
+      if (steered.length) return complete(turnId, `heard: ${steered.splice(0).join(" | ")}`);
+    }
+    return complete(turnId, `Done in ${steps[1]} steps.`);
+  }
   if (task.includes("LANE")) return own ? undefined : complete(turnId, `boxed: CODEX_HOME=${process.env.CODEX_HOME}`);
   if (task.includes("RELAY")) {
     if (task.includes("HOLD")) {
@@ -480,12 +501,15 @@ rl.on("line", (line) => {
       state.model = params.model ?? null;
       state.effort = params.effort ?? null;
       save();
+      active = turnId;
       send({ id, result: { turn: { id: turnId, status: "inProgress", items: [] } } });
       send({ method: "turn/started", params: { threadId: thread, turn: { id: turnId } } });
       runTurn(turnId, text);
       return;
     }
     case "turn/steer":
+      if (active === null || params.expectedTurnId !== active || state.task?.includes("REFUSE STEER"))
+        return send({ id, error: { code: -32600, message: "no active turn to steer" } });
       steered.push(params.input.map((i) => i.text).join(" "));
       return send({ id, result: { turnId: params.expectedTurnId } });
     case "turn/interrupt":

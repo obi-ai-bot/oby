@@ -18,7 +18,7 @@ if (process.argv[2] === "debug" && process.argv[3] === "models") {
 // refused unless its server was approved before the run, as codex-cli 0.163. Threads are kept in
 // $CODEX_HOME/threads, so `thread/resume` works across processes; one process takes turn after turn
 // on its thread, as Codex's own app-server does. Each turn is one line of $CODEX_HOME/turns.jsonl:
-// its pid, argv, cwd, HOME, CODEX_HOME, the prompt, the thread this process resumed, its settings,
+// its process's own id, argv, cwd, HOME, CODEX_HOME, the prompt, the thread this process resumed, its settings,
 // and what its CODEX_HOME holds.
 // What a turn does comes from the last line of the owner's words:
 //   RELAY              a turn on a ChatGPT login: through obid's relay, as fake-codex's
@@ -147,8 +147,10 @@ const ask = (method, params) => new Promise((done) => {
 });
 let thread = null;
 let resumed = null;
-// The turns this process has taken.
+// The turns this process has taken, and its own id: its pid inside a box with a pid namespace of
+// its own (bubblewrap's, on Linux) isn't the one outside, and may be another process's next time.
 let turnsHere = 0;
+const procId = randomUUID();
 let state = null;
 
 const save = () => writeFileSync(join(threads, `${thread}.json`), JSON.stringify(state));
@@ -465,7 +467,7 @@ rl.on("line", (line) => {
       const turnId = randomUUID();
       const prompt = params.input.map((i) => i.text).join("\n");
       mkdirSync(records, { recursive: true });
-      appendFileSync(join(records, "turns.jsonl"), JSON.stringify({ at: Date.now(), pid: process.pid, argv, cwd: process.cwd(), home: process.env.HOME,
+      appendFileSync(join(records, "turns.jsonl"), JSON.stringify({ at: Date.now(), proc: procId, argv, cwd: process.cwd(), home: process.env.HOME,
         codexHome: process.env.CODEX_HOME ?? null, holds: readdirSync(home).sort(), prompt, resumed,
         sandbox: state.sandbox, approvalPolicy: state.approvalPolicy, permissions: state.permissions ?? null,
         instructions: state.instructions, model: params.model ?? null }) + "\n");

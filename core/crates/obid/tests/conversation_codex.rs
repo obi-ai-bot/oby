@@ -540,11 +540,19 @@ fn a_codex_conversation_resumes_its_thread() {
     assert_eq!(other.body["text"], "resume=none", "{}", other.text);
 }
 
-/// Whether process `pid` is still running.
-fn alive(pid: u64) -> bool {
-    std::process::Command::new("/bin/kill")
-        .args(["-0", &pid.to_string()])
-        .stderr(std::process::Stdio::null())
+/// The pattern of `conversation`'s `app-server` command lines: its stand-in's, and its box's
+/// around it (bubblewrap's on Linux, the watcher on macOS), each naming the conversation's MCP
+/// endpoint before `app-server`. Looked for from outside the box: inside a pid namespace of its own
+/// (Linux) the stand-in's own pid is another.
+fn codex_of(conversation: &str) -> String {
+    format!("conversation-{conversation}.*app-server")
+}
+
+/// Whether a process of `conversation`'s Codex is running.
+fn codex_running(conversation: &str) -> bool {
+    std::process::Command::new("pgrep")
+        .args(["-f", &codex_of(conversation)])
+        .stdout(std::process::Stdio::null())
         .status()
         .is_ok_and(|s| s.success())
 }
@@ -572,14 +580,14 @@ fn conversation_agent_44_codex_follow_ups_go_to_its_running_app_server() {
     }
     let turns = turns(&obid);
     assert_eq!(turns.len(), 3, "{turns:?}");
-    let pid = turns[0]["pid"].as_u64().unwrap();
+    let process = turns[0]["proc"].as_str().unwrap();
     assert!(
-        turns.iter().all(|t| t["pid"] == pid),
+        turns.iter().all(|t| t["proc"] == process),
         "one app-server for every turn: {turns:?}"
     );
     // Its later turns resumed nothing: the thread was loaded already.
     assert!(turns.iter().all(|t| t["resumed"].is_null()), "{turns:?}");
-    assert!(alive(pid), "it waits for the next turn");
+    assert!(codex_running(&conversation), "it waits for the next turn");
     let log = obid.log();
     assert_eq!(
         log.lines()
@@ -597,8 +605,8 @@ fn conversation_agent_44_codex_follow_ups_go_to_its_running_app_server() {
         None,
     );
     assert!(deleted.status < 300, "{}", deleted.text);
-    within(10, "its Codex to end with it", || {
-        (!alive(pid)).then_some(())
+    within(15, "its Codex to end with it", || {
+        (!codex_running(&conversation)).then_some(())
     });
 }
 
@@ -609,23 +617,21 @@ fn conversation_agent_45_a_waiting_codex_that_died_picks_its_thread_up_again() {
     let (_folder, obid) = obid("codex-conv-warm-died", true);
     let first = said(&obid, json!({"said": "HELLO", "new": true}));
     let conversation = first.body["conversation"].as_str().unwrap().to_owned();
-    let pid = turns(&obid)[0]["pid"].as_u64().unwrap();
-    assert!(alive(pid));
-    std::process::Command::new("/bin/kill")
-        .args(["-9", &pid.to_string()])
+    assert!(codex_running(&conversation), "it waits for the next turn");
+    std::process::Command::new("pkill")
+        .args(["-KILL", "-f", &codex_of(&conversation)])
         .status()
         .unwrap();
-    within(10, "the waiting Codex to die", || {
-        (!alive(pid)).then_some(())
+    within(15, "the waiting Codex to die", || {
+        (!codex_running(&conversation)).then_some(())
     });
     let again = said(
         &obid,
         json!({"said": "REMEMBER", "conversation": conversation}),
     );
     let turns = turns(&obid);
-    let thread = turns[0]["resumed"].clone();
-    assert!(thread.is_null(), "{turns:?}");
-    assert_ne!(turns[1]["pid"], pid, "{turns:?}");
+    assert!(turns[0]["resumed"].is_null(), "{turns:?}");
+    assert_ne!(turns[1]["proc"], turns[0]["proc"], "{turns:?}");
     assert!(turns[1]["resumed"].is_string(), "{turns:?}");
     assert_eq!(
         words(&again),

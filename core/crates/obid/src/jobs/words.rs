@@ -1,13 +1,13 @@
 //! The owner's words to a job's agent between and during its turns (#1661, TASKCONV-33 to 35):
-//! what its next turn hears (`Job::heard`, `Job::owners`), and the words a Claude Code turn under
-//! way takes as they come (crate::steer), which leave `heard` once that turn is over. It owns the
+//! what its next turn hears (`Job::heard`, `Job::owners`), and the words a Claude Code or Codex
+//! turn under way takes as they come (crate::steer), which leave `heard` once that turn is over. It owns the
 //! jobs' `steers` while a turn runs; it never starts, stops or publishes a job.
 
 use super::*;
 
 impl Jobs {
-    /// A Claude Code turn of job `id` starts: the owner's words from now on go into it as they
-    /// come, once its agent replays (crate::steer).
+    /// A Claude Code or Codex turn of job `id` starts: the owner's words from now on go into it as
+    /// they come, once its agent replays them or its Codex turn started (crate::steer).
     pub(super) fn steer_open(&self, id: &str) -> Arc<crate::steer::Steer> {
         let steer = Arc::new(crate::steer::Steer::default());
         self.lock().steers.insert(id.to_owned(), steer.clone());

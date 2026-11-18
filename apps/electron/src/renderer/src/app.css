@@ -1108,12 +1108,22 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .model-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-row .menu-check { flex: none; margin-left: auto; color: var(--ink); }
 .model-empty { padding: 8px 10px; color: var(--muted); font-size: var(--text-sm); }
+/* the account's efforts under its models (COMPOSER-17): a line, "Effort", then a pill each, four to a row
+   (talk.ts EFFORT_PILLS: the list's height counts them) */
+.model-efforts { flex: none; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); display: flex; flex-direction: column; }
+.model-efforts-label { height: 22px; padding: 0 10px; display: flex; align-items: center; color: var(--label); font-size: var(--text-sm); }
+.model-efforts-pills { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+.row-menu .model-efforts-pills button.effort-pill { box-sizing: border-box; height: 28px; margin: 0; padding: 0 6px; justify-content: center; border: 1px solid var(--line); border-radius: var(--radius-pill); font-size: var(--text-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row-menu .model-efforts-pills button.effort-pill[aria-checked="true"] { border-color: transparent; background: rgba(255, 255, 255, 0.14); color: var(--ink); }
 /* just past the gauge's top right corner, clear of its line */
 .usage-dot { position: absolute; top: 5px; right: 4px; width: 6px; height: 6px; border-radius: 50%; }
 .usage-dot.is-high { background: var(--full); }
 .usage-dot.is-over { background: var(--over); }
 /* its panel: a header with the way to Settings › Accounts, then each account's week */
 .usage-panel { padding: 8px 8px 20px; gap: 2px; }  /* 12px more at the bottom than the top */
+/* as wide as the account menu, on its gauge as that menu is on its pill (COMPOSER-18): Composer.tsx sets
+   its width, right and bottom from the gauge; it opens from its bottom right, where the gauge is */
+.usage-panel { left: auto; right: -1px; box-sizing: border-box; transform-origin: bottom right; }
 .usage-head { margin: 0 0 2px 8px; display: flex; align-items: center; justify-content: space-between; color: var(--label); font-size: var(--text-sm); }
 .usage-row { padding: 8px; display: flex; align-items: flex-start; gap: 10px; }
 .usage-row > svg { flex: none; margin-top: 1px; color: var(--muted); }
@@ -2477,22 +2487,14 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .profile-sheet .profile-swatches { margin-top: 0; }
 .profile-sheet .profile-delete { margin-right: auto; }
 
-/* The message box's chips (docs/contracts/composer.md, COMPOSER-1 and 2): the mode and the model of the
-   tasks the words start, before the talk pill, as T3 Code's composer has them. Left to Settings and
-   Oby (Default, Auto), they're muted */
+/* The message box's mode chip (docs/contracts/composer.md, COMPOSER-1): the mode of the tasks the words
+   start, before the talk pill, as T3 Code's composer has it. Left to Settings (Default), it's muted */
 .composer-talk { display: flex; align-items: center; gap: 0; }
 .task-chips { display: flex; align-items: center; min-width: 0; }
 .task-chip > span { max-width: 140px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .task-chip > svg:first-child { margin-right: 4px; color: var(--muted); }
 .task-chip.is-default { color: var(--muted); }
 .task-chip.is-default:hover, .task-chip.is-default.is-on { color: var(--ink); }
-.task-models .menu-label.task-tool { display: flex; align-items: center; gap: 6px; }
-/* a model's row: its name, then at its end the arrow to its efforts, and its check after it */
-.row-menu .task-models .menu-sub-anchor > button > svg.task-more { margin-left: auto; color: var(--muted); }
-.row-menu .task-models .menu-sub-anchor > button > svg.menu-check { color: var(--ink); }
-.row-menu .task-models .menu-sub-anchor > button > svg.task-more + svg.menu-check { margin-left: 6px; }
-.row-menu .task-efforts { left: calc(100% + 4px); min-width: 150px; }
-.row-menu .task-efforts.is-left { left: auto; right: calc(100% + 4px); }
 /* Words waiting for the turn under way (COMPOSER-8): a row each over the box, Edit and Cancel at its end */
 /* over the box as the Settings tip is, so the box keeps its place: within the page's gutters */
 .queued-words { position: absolute; left: var(--gutter); right: var(--gutter); bottom: calc(100% + 4px); z-index: 1; display: flex; flex-direction: column; gap: 4px; }

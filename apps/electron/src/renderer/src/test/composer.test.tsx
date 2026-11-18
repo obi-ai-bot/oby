@@ -98,29 +98,41 @@ describe('the chips', () => {
     expect(o.calls.filter((c) => c.method !== 'GET')).toEqual([]);
   });
 
-  it('composer_2_the_model_chip_sets_tool_model_and_effort', async () => {
-    const { o } = await box();
-    await click(button(/^Model for tasks: Auto/));
-    await click(button('Opus 5.5'));
-    expect(button(/^Model for tasks: Claude Code Opus 5\.5/)).toBeTruthy();
-    await click(button(/^Model for tasks:/));
-    // (in the menu: the chip itself now reads Opus 5.5 too)
-    const inMenu = [...document.querySelectorAll('.task-models button')].find((b) => b.textContent === 'Opus 5.5')!;
-    await act(async () => { inMenu.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); });
-    await click(button('High'));
-    expect(button(/^Model for tasks: Claude Code Opus 5\.5 · High/)).toBeTruthy();
-    expect(o.calls.filter((c) => c.method === 'PATCH')).toEqual([]);
-  });
-
   it('composer_3_the_chips_go_with_the_words', async () => {
     const onSend = vi.fn();
     localStorage.setItem('oby.chips', JSON.stringify({ 'conversation:c1': { mode: 'acceptEdits', agent: 'claude', model: 'claude-opus-5-5', effort: 'high', at: Date.now() } }));
     await box({ onSend });
     await type('Fix the login page');
     await act(async () => { document.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
-    expect(onSend.mock.calls[0][1].defaults).toEqual({ mode: 'acceptEdits', agent: 'claude', model: 'claude-opus-5-5', effort: 'high' });
+    // the mode alone: a tool, model and effort 0.2.23's model chip kept show nowhere, so go nowhere (COMPOSER-17)
+    expect(onSend.mock.calls[0][1].defaults).toEqual({ mode: 'acceptEdits' });
     // they stay, for the next words
     expect(button(/^Mode for tasks: Accept edits/)).toBeTruthy();
+  });
+
+  it('composer_17_one_auto_the_accounts', async () => {
+    await box();
+    // no model chip: the mode chip, then the talk pill, whose Auto is the only one
+    expect(button(/^Model for tasks/)).toBeUndefined();
+    const talk = document.querySelector('.composer-talk')!;
+    expect(talk.querySelectorAll('.task-chip')).toHaveLength(1);
+    expect([...talk.querySelectorAll('button')].filter((b) => /Auto/.test(b.textContent ?? ''))).toHaveLength(1);
+  });
+
+  it('composer_18_the_usage_panel_is_the_account_menus_width_on_its_gauge', async () => {
+    await box();
+    const rects = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      if (this.classList.contains('composer-field')) return new DOMRect(100, 600, 800, 46);
+      if (this.classList.contains('composer-usage')) return new DOMRect(830, 606, 34, 34);
+      return new DOMRect(0, 0, 0, 0);
+    });
+    await click(button(/^Usage/));
+    const panel = document.querySelector<HTMLElement>('.usage-panel')!;
+    // the account menu's 380, its right edge on the gauge's, 4px over it (Menu's gap), not the box's width
+    expect(panel.style.width).toBe('380px');
+    expect(panel.style.right).toBe(`${900 - 864}px`);
+    expect(panel.style.bottom).toBe(`${646 - 606 + 4}px`);
+    rects.mockRestore();
   });
 
   it('composer_3_an_obid_without_composer_v1_gets_no_chips', async () => {

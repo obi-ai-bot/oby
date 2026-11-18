@@ -64,15 +64,24 @@ export const hasModelSearch = (count: number) => count > MODEL_SEARCH_OVER;
 // Where a model list goes: beside its menu (left of it, else right of it, else over it, as menus with no
 // room do), its first row level with the account's row, all of it inside the window; as tall as its
 // models (all of them, not the ones a search leaves) up to a cap, the rest scrolling inside it.
-export function modelMenuPlace(w: { menuLeft: number; menuRight: number; menuTop: number; rowTop: number; count: number; windowWidth: number; windowHeight: number }) {
+export function modelMenuPlace(w: { menuLeft: number; menuRight: number; menuTop: number; rowTop: number; count: number; efforts?: number; windowWidth: number; windowHeight: number }) {
   const { width, row, gap, pad, border, search, edge, side, max } = MODEL_MENU;
   const wide = Math.min(width, w.windowWidth - 2 * edge);
   const rows = Math.max(w.count, 1);
-  const natural = 2 * (pad + border) + (hasModelSearch(w.count) ? search : 0) + rows * row + (rows - 1) * gap;
+  const natural = 2 * (pad + border) + (hasModelSearch(w.count) ? search : 0) + rows * row + (rows - 1) * gap + effortsHeight(w.efforts ?? 0);
   const height = Math.min(natural, max, w.windowHeight - 2 * edge);
   const where = w.menuLeft - side - wide >= edge ? 'left' : w.menuRight + side + wide <= w.windowWidth - edge ? 'right' : 'over';
   const viewportTop = Math.max(edge, Math.min(w.rowTop - pad - border, w.windowHeight - edge - height));
   return { side: where as 'left' | 'right' | 'over', width: where === 'over' ? Math.min(wide, w.menuRight - w.menuLeft - 2 * edge) : wide, height, top: viewportTop - w.menuTop - border };
+}
+// The account's efforts under its models (COMPOSER-17): a line, "Effort", then its efforts as pills,
+// aRow to a row; none, no room
+export const EFFORT_PILLS = { line: 13, label: 22, row: 28, gap: 4, aRow: 4 } as const;
+export function effortsHeight(count: number) {
+  if (!count) return 0;
+  const { line, label, row, gap, aRow } = EFFORT_PILLS;
+  const rows = Math.ceil(count / aRow);
+  return line + label + rows * row + (rows - 1) * gap;
 }
 export function modelUsage(a: Account) {
   if (a.full) return 'Full';

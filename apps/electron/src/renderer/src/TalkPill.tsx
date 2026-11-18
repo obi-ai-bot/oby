@@ -3,7 +3,7 @@ import { Check, ChevronDown, ChevronRight, Plus } from 'lucide-react';
 import { BrandMark } from './brands';
 import { Menu } from './Menu';
 import { everything } from './lean';
-import { useAccounts, useModels, useTalkDefault, type Account } from './SettingsView';
+import { EFFORT_NAMES, useAccounts, useModels, useTalkDefault, type Account } from './SettingsView';
 import { chooseTalk, lookAtUsage, useTalkSetting, type Chat } from './chats';
 import { AUTO, MENU_WIDTH, PILL_TOOL_NAME, accountModels, chosenOf, dot, hasModelSearch, list, menuModels, modelChoice, modelMenuPlace, modelUsage, percent, rowTitle, shownAccount, toolName, usageLines } from './talk';
 import { agentOf, type Agent } from './view';
@@ -49,12 +49,21 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
   const menuOf = (a: Account) => menuModels(modelsOf(a), modelOf(a).id, options[a.agent as Agent]?.groups);
   // its model, after its name: none for a tool this build doesn't know, which it has no list of
   const modelWords = (a: Account) => (isAgent(a.agent) ? ` · ${modelOf(a).name}` : '');
-  const pick = async (account: string, model?: string) => {
+  // the efforts its model takes, under its models (COMPOSER-17): Cursor's are in its model's name
+  // (AGENTS-11), so none; and the one it runs on, as Settings › Agents has it
+  const effortsOf = (a: Account): string[] => {
+    if (a.agent === 'cursor' || !isAgent(a.agent)) return [];
+    const tool = options[a.agent];
+    return tool?.models.find((m) => m.id === modelOf(a).id)?.efforts ?? tool?.efforts ?? [];
+  };
+  const effortOf = (a: Account) => tuning(a).effort ?? (defaults[a.agent as Agent] as { effort?: string } | undefined)?.effort;
+  const pick = async (account: string, model?: string, effort?: string) => {
     if (saving) return;
     setSaving(true);
     setError('');
     try {
       if (model != null) await tune(account, { model });
+      if (effort != null) await tune(account, { effort });
       if (chat) await chooseTalk(chat.id, account); else await setDefault(account);
       close();
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
@@ -65,7 +74,7 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
     const m = (button.closest('.row-menu') ?? button).getBoundingClientRect(), r = button.getBoundingClientRect();
     const count = menuOf(a).length;
     setSub({ account: a, button, from: scrolled, query: '', search: hasModelSearch(count),
-      ...modelMenuPlace({ menuLeft: m.left, menuRight: m.right, menuTop: m.top, rowTop: r.top, count, windowWidth: innerWidth, windowHeight: innerHeight }) });
+      ...modelMenuPlace({ menuLeft: m.left, menuRight: m.right, menuTop: m.top, rowTop: r.top, count, efforts: effortsOf(a).length, windowWidth: innerWidth, windowHeight: innerHeight }) });
   };
   useEffect(() => {
     if (at) (menu.current?.querySelector<HTMLButtonElement>(':scope > button[aria-checked="true"], :scope > .menu-sub-anchor > button[aria-checked="true"]:not(:disabled)') ?? menu.current?.querySelector('button'))?.focus();
@@ -176,6 +185,14 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
                 <span className="model-name">{m.name}</span>{m.on && <Check size={14} strokeWidth={1.8} className="menu-check" />}
               </button>) : <span className="model-empty">No models match</span>}
             </span>
+            {/* the effort it runs on, under its models (COMPOSER-17), kept on the account as its model is */}
+            {effortsOf(subAccount).length > 0 && <span className="model-efforts" role="group" aria-label="Effort">
+              <span className="model-efforts-label">Effort</span>
+              <span className="model-efforts-pills">
+                {effortsOf(subAccount).map((e) => <button key={e} className="effort-pill" role="menuitemradio" aria-checked={e === effortOf(subAccount)} disabled={saving}
+                  onClick={() => void pick(subAccount.id, undefined, e)}>{EFFORT_NAMES[e] ?? e}</button>)}
+              </span>
+            </span>}
           </span>}
         </Menu>
       )}
