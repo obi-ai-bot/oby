@@ -398,10 +398,12 @@ describe('obysphere in the side panel', () => {
     expect(s).toMatchObject({ id: 'live:demo', name: 'Demo team', live: true, revoked: true, members: [] });
     expect(s.why).toBeUndefined();
     expect(spheres.revokedLine(s)).toBe('Demo team’s admin took your Oby out.');
-    // obid's reason, once it gives one (add-only): one line of text, quoted, nothing that steers the text
-    const said = spheres.liveSphere({ ...revoked, revokedReason: 'left the team\n\u202Eevil' }, [], {})!;
-    expect(spheres.revokedLine(said)).toBe('demo’s admin took your Oby out. They said: “left the team evil”');
-    expect(spheres.liveSphere({ ...revoked, revokedReason: '' }, [], {})!.why).toBeUndefined();
+    // obid's code (add-only): `removed` says the same; a code this app doesn't know yet is never shown
+    expect(spheres.revokedLine(spheres.liveSphere({ ...revoked, revokedReason: 'removed' }, [], {})!)).toBe('demo’s admin took your Oby out.');
+    const unknown = spheres.liveSphere({ ...revoked, revokedReason: 'sphere_deleted' }, [], {})!;
+    expect(spheres.revokedLine(unknown)).toBe('Your Oby isn’t in demo any more.');
+    expect(spheres.revokedLine(unknown)).not.toContain('sphere_deleted');
+    expect(spheres.liveSphere({ ...revoked, revokedReason: null }, [], {})!.why).toBeUndefined();
   });
 
   it('sphere_7_a_live_obysphere_s_members_open_no_made_up_conversation', () => {

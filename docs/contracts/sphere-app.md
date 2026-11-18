@@ -5,7 +5,7 @@ The business behavior contract for what the Electron app does in an Obysphere at
 ## Feature and status
 
 - **Outcome:** A stranger joins their team's Obysphere from its invite link inside Oby, on first run or in Settings, seeing who they will join as before anything is made. Every member may hand every other a task, including members who joined before handoffs. An owner hands a member's Oby a task from that member's thread and reads what comes back there. An Oby whose admin took it out says so instead of vanishing.
-- **Status:** **Implemented** in the Electron app (`apps/electron`). Changing the owner id waits on obid's add-only `PUT /v1/obid/sphere/owner` (SPHEREAPP-9): until obid serves it, the id shows read-only. A revoke's reason reads obid's add-only `revokedReason` once obid sends it.
+- **Status:** **Implemented** in the Electron app (`apps/electron`). Changing the owner id waits on obid's add-only `PUT /v1/obid/sphere/owner` (SPHEREAPP-9): until obid serves it, the id shows read-only. A revoke's words follow obid's add-only `revokedReason` code once obid sends it.
 - **Scope:** the app only. **Out of scope:** making an Obysphere, inviting, and an admin removing a member (the Obysphere's own site does those); handing over a task by talking to Oby (`oby_handoff`, #2428's conversation tool); comparing keys.
 
 ## Behavior
@@ -33,7 +33,7 @@ The business behavior contract for what the Electron app does in an Obysphere at
 
 ### A revoked membership
 
-- When obid's membership is `revoked`, the Obysphere stays in the side panel with no members, its settings open with the line `<name>’s admin took your Oby out.` (and `They said: “<reason>”` when obid gives a reason, one line of plain text), the field for a new link, and Leave. Its rules and What your Oby tells are not shown. Settings › Obysphere shows the same line over its field. Joining again leaves the revoked membership first (SPHERE-1's join).
+- When obid's membership is `revoked`, the Obysphere stays in the side panel with no members, its settings open with a line from obid's `revokedReason` code (an open set): `removed`, or no code, says `<name>’s admin took your Oby out.`; a code this app doesn't know says `Your Oby isn’t in <name> any more.`, and a code is never shown as it is. Then the field for a new link, and Leave. Its rules and What your Oby tells are not shown. Settings › Obysphere shows the same line over its field. Joining again leaves the revoked membership first (SPHERE-1's join).
 
 ### Handing a member's Oby a task
 
@@ -57,12 +57,12 @@ The business behavior contract for what the Electron app does in an Obysphere at
 
 - The owner key never leaves main; the page never holds anything to sign (Approvals, AGENTS.md).
 - Handoffs are typed: the page sends four strings, main builds the body from them; another Oby's words come back only as quoted posts.
-- obid's API is unchanged: the app reads `revokedReason` add-only and sends only what obid already takes.
+- obid's API is unchanged by this app: it reads `revokedReason` add-only and sends only what obid already takes.
 
 ## Interfaces and dependencies
 
 - IPC: `sphere-join` (a string: the link) and `sphere-handoff` (`{to, goal, repo, base}`), in [ipc.md](ipc.md).
-- obid: `GET /v1/obid/sphere`, `GET /v1/obid/sphere/members`, `POST /v1/obid/sphere/requests`, `PUT /v1/obid/sphere/membership`, `GET /v1/repos`.
+- obid: `GET /v1/obid/sphere` (with `revokedReason`, B1's), `GET /v1/obid/sphere/members`, `POST /v1/obid/sphere/requests`, `PUT /v1/obid/sphere/membership`, `GET /v1/repos`.
 - obid's `PUT /v1/obid/sphere/owner` `{owner}` (add-only, B1's): `2xx` with the owner kept, `409` once any membership exists, `422` for a body without a valid owner; `404` from an obid without it.
 
 ## Acceptance scenarios
@@ -71,7 +71,7 @@ The business behavior contract for what the Electron app does in an Obysphere at
 - **SPHEREAPP-2** Given a membership whose card accepts `review_request`, `question` and `run_request` and whose delegation lacks `send:handoff`, when main keeps it, then one new card accepts all four and one new delegation carries every scope it had plus the app's; the next keep signs nothing. `sphereapp_2_…` (`sphere.test.ts`).
 - **SPHEREAPP-3** Given first run's Obysphere step, when the owner pastes a text that isn't a link, then it says so and Join stays off; a link shows its name, host and the owner id it joins as; Join hands main the link and shows `You’re in <name>.`, a failure's words, or nothing on Cancel. `sphereapp_3_…` (`sphereApp.test.tsx`).
 - **SPHEREAPP-4** Given Settings › Obysphere, when not in one, then it has the same field; in one, its name and owner id and no field. Main joins a pasted link only right after a click it saw, through its own dialog, whose Cancel joins nothing. `sphereapp_4_…` (`sphereApp.test.tsx`, `ipc.test.ts`).
-- **SPHEREAPP-5** Given obid's membership `revoked`, then the Obysphere stays with no members and says its admin took the Oby out (with obid's reason as one quoted line when given), with the link field and Leave, and without its rules or What your Oby tells. `sphereapp_5_…` (`sphere.test.ts`, `sphereApp.test.tsx`).
+- **SPHEREAPP-5** Given obid's membership `revoked`, then the Obysphere stays with no members and says its admin took the Oby out (`removed` or no code; an unknown code says only that it's out, never the code), with the link field and Leave, and without its rules or What your Oby tells. `sphereapp_5_…` (`sphere.test.ts`, `sphereApp.test.tsx`).
 - **SPHEREAPP-6** Given a member's thread, when the owner fills the form and clicks Hand it over, then main, only right after that click, sends obid one `handoff` to the member's Oby that takes tasks, with the trimmed fields and `tests_pass`, open 7 days; a form that can't go, a member whose Oby doesn't take tasks and the rules' refusal each say why and send nothing more. `sphereapp_6_…` (`sphereApp.test.tsx`, `ipc.test.ts`).
 - **SPHEREAPP-7** Given a handed task's exchange, then the thread's line under it says where it stands in words: waiting, said yes, the result came back, or each decline's reason. `sphereapp_7_…` (`sphereApp.test.tsx`).
 - **SPHEREAPP-8** Given a joined Obysphere on obid, then the app never asks obid for its room, so the room never opens, and the message box offers no other Obys. `sphereapp_8_…` (`sphereApp.test.tsx`).

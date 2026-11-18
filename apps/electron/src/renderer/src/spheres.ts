@@ -19,8 +19,8 @@ export type Sphere = {
   // live: the one obid is in (docs/contracts/obysphere.md), at its own address; me: who your Oby
   // acts for there (obid's owner id); obi: your Oby's id there
   live?: true; url?: string; me?: string; obi?: string;
-  // the live one's admin took this Oby out (obid's membership `revoked`): it stays, saying so, until
-  // the owner leaves it or joins again (SPHEREAPP-5); why: the Sphere's reason, when obid gives one
+  // the live one took this Oby out (obid's membership `revoked`): it stays, saying so, until the owner
+  // leaves it or joins again (SPHEREAPP-5); why: obid's code for it (`revokedReason`), when it gives one
   revoked?: true; why?: string;
 };
 // you (until there's sign-in)
@@ -96,19 +96,20 @@ const LIVE = 'live:';
 // room" and its posts all wait on obid saying it's there (room.ts). Back once obi-sphere deploys it.
 export const ROOM_SHOWS = false;
 const NAMES = 'oby.sphereNames';
-// revokedReason: added by obid with its revoked state (add-only; absent until then)
+// revokedReason: obid's code for a revoke (add-only, an open set: `removed` today), null otherwise;
+// absent from an obid before it
 type Membership = { state: string; url: string | null; sphere: string | null; owner?: string; obiId?: string; revokedReason?: string | null };
-// one line of the Sphere's words, at most 300 characters, as text: no control or direction characters
-// eslint-disable-next-line no-control-regex
-const oneLine = (v: unknown) => (typeof v === 'string' ? [...v.replace(/[\u0000-\u001F\u007F\u202A-\u202E\u2066-\u2069]+/g, ' ').trim()].slice(0, 300).join('') : '');
 export function liveSphere(m: Membership, members: { owner: string }[], names: Record<string, string>): Sphere | null {
   if ((m.state !== 'joined' && m.state !== 'revoked') || !m.sphere || !m.url) return null;
   const base = { id: LIVE + m.sphere, name: names[m.sphere] ?? m.sphere, slug: m.sphere, admin: false, invited: [], live: true as const, url: m.url, me: m.owner, obi: m.obiId };
-  if (m.state === 'revoked') return { ...base, members: [], revoked: true, ...(oneLine(m.revokedReason) ? { why: oneLine(m.revokedReason) } : {}) };
+  if (m.state === 'revoked') return { ...base, members: [], revoked: true, ...(typeof m.revokedReason === 'string' && m.revokedReason ? { why: m.revokedReason } : {}) };
   return { ...base, members: [...new Set(members.map((x) => x.owner))] };
 }
-// What a revoked Obysphere says, where its members were (SPHEREAPP-5)
-export const revokedLine = (s: Sphere) => `${s.name}’s admin took your Oby out.${s.why ? ` They said: “${s.why}”` : ''}`;
+// What a revoked Obysphere says, where its members were (SPHEREAPP-5), by obid's code, never the code
+// itself: `removed` (and an obid that gives none) is the Sphere taking it out; a code this app doesn't
+// know yet says only that it's out
+export const revokedLine = (s: Sphere) =>
+  (!s.why || s.why === 'removed' ? `${s.name}’s admin took your Oby out.` : `Your Oby isn’t in ${s.name} any more.`);
 // a step that goes when its Obysphere does: a member's thread with the live one
 export const outOfSphere = (l: { kind: string; id?: string }, all: Sphere[]) =>
   ((l.kind === 'sphere' || l.kind === 'knowledge' || l.kind === 'room') && !all.some((s) => s.id === l.id)) || (l.kind === 'member' && !all.some((s) => s.live));
