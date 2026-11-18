@@ -805,10 +805,10 @@ impl Jobs {
         let rounds = owner && self.get(id).is_some_and(|job| !job.read_only());
         // LANES-8: an own run's refs are its own; obid reads the clone's before and after it.
         let own_run = self.own_turn(id, launch.own_sandbox).await?;
+        // Its HEAD read by obid's own git pinned to the job's git folders, as obid checked them: no
+        // box started for one ref before the agent's (TASKCONV-40).
         let before = match records || rounds {
-            true => Box::pin(self.sandboxed_git(id, &["rev-parse", "--verify", "HEAD"], None))
-                .await
-                .ok(),
+            true => Some(self.worktree_head(id).await).filter(|head| git::is_sha(head)),
             false => None,
         };
         let started = obi_protocol::time::now();
@@ -821,7 +821,6 @@ impl Jobs {
             run.settle().await?;
         }
         if let Some(before) = before {
-            let before = String::from_utf8_lossy(&before).trim().to_owned();
             if records {
                 Box::pin(self.record_turn(id, &before, started)).await;
             }
