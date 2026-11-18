@@ -231,13 +231,13 @@
           "status": 200,
           "body": {
             "owner": "alex",
-            "posts": [
-              {
+            "posts": {
+              "$any": {
                 "kind": "question",
                 "direction": "received",
                 "text": "Which branch?"
               }
-            ]
+            }
           }
         }
       },
