@@ -23,6 +23,8 @@ if (process.argv[2] === "debug" && process.argv[3] === "models") {
 //   RELAY              a turn on a ChatGPT login: through obid's relay, as fake-codex's
 //   SLEEP              goes on until it's stopped
 //   HELLO              searches the web for "greetings" and streams "Hello there."
+//   ASK <question> | <option> | <option>…  asks the owner (item/tool/requestUserInput), then
+//                      says "asked: <its answer's words>"
 //   REMEMBER           says "resume=<the thread it resumed, or none>"
 //   TOOLS              says "tools: <the oby tools, by name>"
 //   OBY <tool> <json>  calls the oby tool with the json and says "oby: <what it answered>"
@@ -365,6 +367,14 @@ async function act(turnId, words) {
     event("item/started", turnId, { item: search });
     event("item/completed", turnId, { item: search });
     return say(turnId, "Hello there.");
+  }
+  if (words.startsWith("ASK ")) {
+    // As Codex's request_user_input: a question with options, answered by obid.
+    const [question, ...labels] = words.slice(4).split(" | ");
+    const answer = await ask("item/tool/requestUserInput", { threadId: thread, turnId, itemId: randomUUID(),
+      questions: [{ id: "q1", header: "Choice", question, isOther: false, isSecret: false,
+        options: labels.map((label) => ({ label, description: "" })) }] });
+    return say(turnId, `asked: ${JSON.stringify(answer?.answers?.q1?.answers ?? null)}`);
   }
   if (words.startsWith("REMEMBER")) return say(turnId, `resume=${resumed ?? "none"}`);
   if (words.startsWith("TOOLS")) {

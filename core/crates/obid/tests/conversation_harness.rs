@@ -269,6 +269,45 @@ fn a_turn_streams_its_words_and_ends_in_a_turn() {
 }
 
 /// Later turns resume the conversation's own session, also after obid restarts.
+/// CONVERSATION-AGENT-47: a Claude Code conversation asks the owner with choices: its
+/// AskUserQuestion is the turn's answer, a question with its options as the apps show one, and the
+/// owner's pick comes back to the same session as their next words.
+#[test]
+fn conversation_agent_47_claude_code_asks_with_choices() {
+    let (_folder, obid) = obid("harness-ask", true);
+    let asked = said(
+        &obid,
+        json!({"said": "ASK English or French? | English | French", "new": true}),
+    );
+    assert_eq!(asked.body["kind"], "question", "{}", asked.text);
+    assert_eq!(asked.body["question"]["text"], "English or French?");
+    assert_eq!(
+        asked.body["question"]["options"],
+        json!(["English", "French"]),
+        "{}",
+        asked.text
+    );
+    let conversation = asked.body["conversation"].as_str().unwrap().to_owned();
+    let picked = said(
+        &obid,
+        json!({"said": "French", "conversation": conversation}),
+    );
+    assert_eq!(picked.body["kind"], "reply", "{}", picked.text);
+    let turns = turns(&obid);
+    assert_eq!(turns.len(), 2, "{turns:?}");
+    assert!(
+        turns[0]["argv"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a.as_str().is_some_and(|a| a.split(',').any(|t| t == "AskUserQuestion"))),
+        "its tools: {turns:?}"
+    );
+    assert!(turns[1]["prompt"].as_str().unwrap().ends_with("French"), "{turns:?}");
+    // The same session, waiting, took the pick.
+    assert_eq!(turns[1]["id"], turns[0]["id"], "{turns:?}");
+}
+
 #[test]
 fn a_conversation_resumes_its_session() {
     let (folder, obid) = obid("harness-resume", true);
