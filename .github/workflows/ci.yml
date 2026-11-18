@@ -1,14 +1,16 @@
 # CI: what GitHub runs on GitHub's standard Ubuntu runners, with one job, Check, that says whether
 # the run passed (docs/ci.md, "What GitHub runs"; the design is docs/ci-architecture.md).
 #
-#   plan            which lanes the change reaches, from the paths it changed, and gitleaks (with
-#                   .gitleaks.toml) over the commits it brings
+#   plan            which lanes the change reaches, from the paths it changed, which Rust tests run
+#                   (scripts/ci-rust-tests.sh), and gitleaks (with .gitleaks.toml) over the commits
+#                   it brings
 #   lint            in core/: cargo fmt --check, clippy -D warnings on every target
 #   limits          obid's line limits on the checked commit, from the run's base: the script's
 #                   own (OBY_CHECK_ONLY=limits scripts/oby-check.sh, docs/contracts/ci.md, CI-35)
-#   rust-build      in core/: one cargo nextest archive of the workspace, kept 1 day
-#   rust-test       the archive's tests in 4 nextest shards (core/.config/nextest.toml's ci
-#                   profile: one retry), each keeping its JUnit report 14 days
+#   rust-build      in core/: one cargo nextest archive of the tests plan chose (the workspace's,
+#                   or obid's lib and the test binaries it named), kept 1 day
+#   rust-test       the archive's tests plan chose, in 1 to 4 nextest shards (core/.config/
+#                   nextest.toml's ci profile: one retry), each keeping its JUnit report 14 days
 #   e2e             make e2e: headless, stub agents, no credentials, against oby-sphere's commit
 #   control-plane   cloud/control-plane: pnpm test (vitest inside Miniflare) and pnpm check
 #   electron        apps/electron: npm ci, typecheck, test and build
@@ -18,22 +20,34 @@
 #   proofs          obid's Kani harnesses: every one compiled, and the ones the change requires by
 #                   path proved (scripts/kani-required.sh); every one proved nightly and on demand
 #                   (docs/proofs.md, CI-57 to 59)
-#   Check           needs every job: fails when plan didn't pass or any job failed or was
-#                   cancelled (a skipped job passes), and writes the lanes, each job's result, a
-#                   failed shard's tests and every flaky test to its summary
+#   Check           needs every job: fails when plan didn't pass, any job failed or was cancelled
+#                   (a skipped job passes), or a guard plan named ran no test; writes the lanes,
+#                   which Rust tests ran and why, each job's result, a failed shard's tests and
+#                   every flaky test to its summary
 #
 # The Apple apps (xcodebuild) and swift test are the Mac check's (AGENTS.md, "Build and run").
 #
 # Modes. A job is skipped with `if:`, never with a workflow-level `paths:` (a workflow skipped by a
 # path filter leaves its check Pending, which blocks merging; a skipped job reports success):
-#   - A draft pull request without the `full-ci` label skips every job, Check included. The label
-#     takes effect on the next push after labelling.
-#   - A ready pull request into dev runs plan, lint when the rust lane is reached, and Check: no
-#     test job. The Mac check (scripts/oby-check.sh) runs the tests each change reaches.
-#   - A pull request labelled `full-ci` or into main, the merge queue (merge_group), the nightly
-#     run on dev and a run on demand (workflow_dispatch) run every job their lanes reach. The
-#     nightly and on-demand runs reach every lane. limits follows the rust lane, so the queue
-#     judges obid's line limits on the group's combined code, which no branch's own check sees.
+#   - A draft pull request without the `full-ci` or `full-suite` label skips every job, Check
+#     included. A label takes effect on the next push after labelling.
+#   - A ready pull request into dev runs plan, lint when the rust lane is reached, the guards
+#     (below) when the change reaches what they read, and Check: no other test job. The Mac check
+#     (scripts/oby-check.sh) runs the tests each change reaches.
+#   - A pull request labelled `full-ci` into dev runs every job its lanes reach, and of the Rust
+#     tests the guards and the ones the change can break (scripts/ci-rust-tests.sh affected),
+#     every one when it can't tell which.
+#   - A pull request labelled `full-suite` or into main, the merge queue (merge_group), the nightly
+#     run on dev and a run on demand (workflow_dispatch) run every job their lanes reach, and every
+#     Rust test when the rust lane is reached; the guards otherwise, when the change reaches what
+#     they read. The nightly and on-demand runs reach every lane. limits follows the rust lane, so
+#     the queue judges obid's line limits on the group's combined code, which no branch's own check
+#     sees.
+#   - The guards: Rust tests that each keep two places in agreement (the route guard: obid's
+#     routes and the apps' calls; the API docs; the prompt budget; and the rest
+#     scripts/ci-rust-tests.sh lists). They run in every run but a skipped draft whose change
+#     reaches core/, apps/electron/, apps/shared/, docs/api/, docs/runner-api.md, docs/contracts/
+#     or e2e/, whatever its lanes, so an app-only change that calls a route obid lacks fails.
 #   - Only the nightly and on-demand runs save caches: a pull request's caches can't be read by
 #     any other pull request (they're scoped to refs/pull/<n>/merge), so they only churned the
 #     repository's 10 GB.
@@ -69,7 +83,7 @@ env:
 jobs:
   plan:
     name: plan
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci')
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'full-suite')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -82,6 +96,15 @@ jobs:
       tools: ${{ steps.lanes.outputs.tools }}
       brain: ${{ steps.lanes.outputs.brain }}
       proofs: ${{ steps.lanes.outputs.proofs }}
+      selector: ${{ steps.lanes.outputs.selector }}
+      rust-tests: ${{ steps.lanes.outputs.rust-tests }}
+      rust-why: ${{ steps.lanes.outputs.rust-why }}
+      rust-targets: ${{ steps.lanes.outputs.rust-targets }}
+      rust-filter: ${{ steps.lanes.outputs.rust-filter }}
+      rust-shards: ${{ steps.lanes.outputs.rust-shards }}
+      rust-shard-count: ${{ steps.lanes.outputs.rust-shard-count }}
+      rust-guards: ${{ steps.lanes.outputs.rust-guards }}
+      rust-selected: ${{ steps.lanes.outputs.rust-selected }}
     env:
       GITLEAKS_VERSION: 8.30.1
       GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
@@ -92,9 +115,10 @@ jobs:
           persist-credentials: false
 
       # The mode: test jobs run in the merge queue, nightly, on demand, and on a pull request
-      # labelled full-ci or into main. The lanes: a pull request's diff from its merge base, the
-      # merge queue's from the group's base, every lane nightly and on demand. A path no row names,
-      # or a diff that can't be read, reaches every lane.
+      # labelled full-ci or full-suite or into main. The lanes: a pull request's diff from its merge
+      # base, the merge queue's from the group's base, every lane nightly and on demand. A path no
+      # row names, or a diff that can't be read, reaches every lane. The Rust tests: every one, the
+      # affected set or the guards (scripts/ci-rust-tests.sh, docs/ci.md, "Which Rust tests run").
       - name: What the change reaches
         id: lanes
         env:
@@ -102,27 +126,33 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           FULL_CI: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+          FULL_SUITE: ${{ contains(github.event.pull_request.labels.*.name, 'full-suite') }}
         run: |
           tests=true
           case "$GITHUB_EVENT_NAME" in
             pull_request)
-              if [ "$FULL_CI" = true ]; then mode="pull request, labelled full-ci"
-              elif [ "$BASE_REF" = main ]; then mode="pull request into main"
-              else mode="pull request into $BASE_REF: plan and lint only"; tests=false
+              if [ "$FULL_SUITE" = true ]; then mode="pull request, labelled full-suite"; suite=full
+              elif [ "$BASE_REF" = main ]; then mode="pull request into main"; suite=full
+              elif [ "$FULL_CI" = true ]; then mode="pull request, labelled full-ci"; suite=affected
+              else mode="pull request into $BASE_REF: plan, lint and the guards"; suite=guards; tests=false
               fi
               range="$BASE...$HEAD" ;;
-            merge_group) mode="merge queue"; range="$BASE..$HEAD" ;;
-            schedule) mode="nightly"; range="" ;;
-            *) mode="$GITHUB_EVENT_NAME"; range="" ;;
+            merge_group) mode="merge queue"; suite=full; range="$BASE..$HEAD" ;;
+            schedule) mode="nightly"; suite=full; range="" ;;
+            *) mode="$GITHUB_EVENT_NAME"; suite=full; range="" ;;
           esac
 
-          rust=false e2e=false electron=false control_plane=false tools=false brain=false proofs=""
-          every_lane() { rust=true e2e=true electron=true control_plane=true tools=true brain=true proofs=all; }
+          rust=false e2e=false electron=false control_plane=false tools=false brain=false proofs="" guards=false selector=false files=""
+          every_lane() { rust=true e2e=true electron=true control_plane=true tools=true brain=true proofs=all guards=true; }
+          # The Rust test selector's own tests: when it, they or the Mac's map it reads changed, and
+          # in a run with no diff (nightly, on demand).
+          [ -n "$range" ] || selector=true
           if [ -z "$range" ]; then
             every_lane
           elif ! files=$(git diff --name-only "$range"); then
             echo "The diff $range can't be read: every lane."
             every_lane
+            files=""
           else
             # The Kani harnesses the change requires by path (CI-58): `all`, or their filters.
             proofs=$(scripts/kani-required.sh <<< "$files" | tr '\n' ' ' | sed 's/ $//')
@@ -131,6 +161,11 @@ jobs:
               # What the Brain reads (CI-56), apart from the lanes below.
               case "$f" in
                 tools/brain/*|core/crates/obid/src/*|apps/electron/src/*|apps/shared/*|docs/api/*|docs/runner-api.md|AGENTS.md) brain=true ;;
+              esac
+              # What the Rust guards read (scripts/ci-rust-tests.sh), whatever the lane.
+              case "$f" in
+                core/*|apps/electron/*|apps/shared/*|docs/api/*|docs/runner-api.md|docs/contracts/*|e2e/*) guards=true ;;
+                scripts/ci-rust-tests*|scripts/oby-check*) selector=true ;;
               esac
               case "$f" in
                 .github/*|scripts/oby-check*|core/Cargo.lock|core/Cargo.toml|rust-toolchain*) every_lane ;;
@@ -146,9 +181,25 @@ jobs:
               esac
             done <<< "$files"
           fi
+          # Which Rust tests: with the rust lane, the mode's (in a run that tests) or the guards (in
+          # one that doesn't); without it, the guards when the change reaches what they read. A run
+          # that reaches every lane has no diff to map, and tests everything.
+          if [ "$rust" = true ] && [ "$tests" = true ]; then want=$suite
+          elif [ "$rust" = true ] || [ "$guards" = true ]; then want=guards
+          else want=none
+          fi
+          if [ "$want" = none ]; then
+            rust_out=$(printf '%s\n' rust-tests=none "rust-why=the change reaches no Rust test" "rust-shards=[]" rust-shard-count=0 "rust-guards=[]")
+          elif ! rust_out=$(printf '%s\n' "$files" | CI_RUST_RANGE="$range" scripts/ci-rust-tests.sh "$want"); then
+            echo "scripts/ci-rust-tests.sh failed: plan fails, so no lane can be trusted."
+            exit 1
+          fi
+
           echo "mode=$mode tests=$tests"
           echo "rust=$rust e2e=$e2e electron=$electron control-plane=$control_plane tools=$tools brain=$brain"
           echo "proofs required: ${proofs:-none}"
+          echo "$rust_out"
+          echo "$rust_out" >> "$GITHUB_OUTPUT"
           {
             echo "mode=$mode"
             echo "tests=$tests"
@@ -159,7 +210,13 @@ jobs:
             echo "tools=$tools"
             echo "brain=$brain"
             echo "proofs=$proofs"
+            echo "selector=$selector"
           } >> "$GITHUB_OUTPUT"
+
+      # scripts/ci-rust-tests.sh's own tests (CI-60 to 65), on this checkout's tree and history.
+      - name: The Rust test selector's own tests
+        if: steps.lanes.outputs.selector == 'true'
+        run: bash scripts/ci-rust-tests-test.sh
 
       - name: Install gitleaks
         run: |
@@ -246,10 +303,11 @@ jobs:
         run: OBY_CHECK_ONLY=limits scripts/oby-check.sh "${BASE:-HEAD}"
 
   rust-build:
-    # The suite compiled once: rust-test's 4 shards run it from this archive and compile nothing.
+    # The tests plan chose, compiled once: rust-test's shards run them from this archive and compile
+    # nothing. Every test of the workspace, or obid's lib and the test binaries plan named.
     name: rust-build
     needs: plan
-    if: needs.plan.outputs.rust == 'true' && needs.plan.outputs.tests == 'true'
+    if: needs.plan.outputs.rust-tests == 'full' || needs.plan.outputs.rust-tests == 'affected' || needs.plan.outputs.rust-tests == 'guards'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -270,8 +328,15 @@ jobs:
         with:
           tool: cargo-nextest@0.9.150
 
+      # RUST_TARGETS is `--workspace`, or `-p obid --lib --test <name>...` (names checked by
+      # scripts/ci-rust-tests.sh: lowercase letters, digits and `_` only), split into words here.
       - name: cargo nextest archive
-        run: cargo nextest archive --manifest-path core/Cargo.toml --workspace --locked --archive-file "$RUNNER_TEMP/nextest-archive.tar.zst"
+        env:
+          RUST_TARGETS: ${{ needs.plan.outputs.rust-targets }}
+        run: |
+          read -r -a targets <<< "$RUST_TARGETS"
+          echo "Building: ${targets[*]}"
+          cargo nextest archive --manifest-path core/Cargo.toml "${targets[@]}" --locked --archive-file "$RUNNER_TEMP/nextest-archive.tar.zst"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -281,14 +346,16 @@ jobs:
           if-no-files-found: error
 
   rust-test:
-    name: rust-test (${{ matrix.shard }}/4)
+    name: rust-test (${{ matrix.shard }}/${{ needs.plan.outputs.rust-shard-count }})
     needs: [plan, rust-build]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        # 4 for every test; for the affected set, one per 20,000 lines of its test binaries, at
+        # most 4; 1 for the guards (scripts/ci-rust-tests.sh).
+        shard: ${{ fromJSON(needs.plan.outputs.rust-shards || '[1]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -334,12 +401,19 @@ jobs:
       # The archive extracts into core/, so its binaries sit at the core/target paths rust-build
       # compiled them for (env!("CARGO_BIN_EXE_obid") is fixed at compile time), and the
       # workspace's files (tests' fixtures, routes_guard's docs/api) are this checkout's. Retries
-      # come from the ci profile, never from the command line.
-      - name: cargo nextest run (${{ matrix.shard }}/4)
+      # come from the ci profile, never from the command line. RUST_FILTER, when plan gave one,
+      # keeps the tests it chose of the archive's; a shard it leaves empty passes, and Check fails
+      # a run whose guards ran no test.
+      - name: cargo nextest run (${{ matrix.shard }}/${{ needs.plan.outputs.rust-shard-count }})
+        env:
+          RUST_FILTER: ${{ needs.plan.outputs.rust-filter }}
+          SHARD: ${{ matrix.shard }}/${{ needs.plan.outputs.rust-shard-count }}
         run: |
+          filter=()
+          if [ -n "$RUST_FILTER" ]; then filter=(-E "$RUST_FILTER"); fi
           cargo nextest run --archive-file "$RUNNER_TEMP/nextest-archive.tar.zst" \
             --workspace-remap "$GITHUB_WORKSPACE/core" --extract-to "$GITHUB_WORKSPACE/core" \
-            --partition "slice:${{ matrix.shard }}/4" --profile ci --no-fail-fast
+            --partition "slice:$SHARD" --profile ci --no-fail-fast --no-tests=warn "${filter[@]}"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
@@ -629,7 +703,7 @@ jobs:
     # The run's one status: the merge queue requires it (R01-03).
     name: Check
     needs: [plan, lint, limits, rust-build, rust-test, control-plane, e2e, electron, tools, brain, proofs]
-    if: always() && (github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci'))
+    if: always() && (github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'full-suite'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -640,13 +714,14 @@ jobs:
           path: junit
 
       # A failed test has <failure> or <error> in its shard's JUnit (its retry failed too); one
-      # that passed on its retry has <flakyFailure> only.
+      # that passed on its retry has <flakyFailure> only. Each guard plan named must have run at
+      # least one test, or the run fails: a guard renamed or gone is said, never skipped quietly.
       - name: The run's result
         shell: python3 {0}
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: |
-          import json, os, sys
+          import json, os, re, sys
           import xml.etree.ElementTree as ET
 
           needs = json.loads(os.environ["NEEDS"])
@@ -654,35 +729,53 @@ jobs:
           out = plan.get("outputs") or {}
           lanes = ["rust", "e2e", "electron", "control-plane", "tools", "brain"]
           reached = [lane for lane in lanes if out.get(lane) == "true"]
+          rust_tests = out.get("rust-tests") or "none"
           lines = [
               "## Check",
               "",
               f"- Mode: {out.get('mode') or 'unknown: plan gave none'}",
               f"- Lanes: {', '.join(reached) or 'none'}",
+              f"- Rust tests: {rust_tests}, {out.get('rust-why') or 'plan gave no reason'}",
+          ]
+          if rust_tests != "none":
+              lines.append(f"- Ran: {out.get('rust-selected') or 'unknown'}")
+          lines += [
               "",
               "| Job | Result |",
               "|---|---|",
           ]
           lines += [f"| {job} | {need['result']} |" for job, need in needs.items()]
 
-          failed, flaky, unreported = {}, [], []
+          shards = json.loads(out.get("rust-shards") or "[]")
+          guards = json.loads(out.get("rust-guards") or "[]")
+          count = len(shards)
+          failed, flaky, unreported, ran = {}, [], [], []
           if needs["rust-test"]["result"] in ("success", "failure"):
-              for shard in range(1, 5):
+              for shard in shards:
                   path = f"junit/junit-{shard}/junit.xml"
                   if not os.path.exists(path):
-                      unreported.append(f"{shard}/4")
+                      unreported.append(f"{shard}/{count}")
                       continue
                   for suite in ET.parse(path).getroot().iter("testsuite"):
                       for case in suite.iter("testcase"):
+                          ran.append((suite.get("name"), case.get("name")))
                           name = f"{suite.get('name')} {case.get('name')}"
                           if case.find("failure") is not None or case.find("error") is not None:
                               failed.setdefault(shard, []).append(name)
                           elif case.find("flakyFailure") is not None:
-                              flaky.append(f"{name} (shard {shard}/4)")
+                              flaky.append(f"{name} (shard {shard}/{count})")
+          silent = []
+          if needs["rust-test"]["result"] in ("success", "failure") and not unreported:
+              lines += ["", f"Rust tests run: {len(ran)}, in {count} shard{'s' if count != 1 else ''}."]
+              for name, suite, pattern in guards:
+                  if not any(s == suite and re.search(pattern, t) for s, t in ran):
+                      silent.append(name)
           for shard, tests in sorted(failed.items()):
-              lines += ["", f"### Failed: rust-test {shard}/4", ""] + [f"- `{t}`" for t in tests]
+              lines += ["", f"### Failed: rust-test {shard}/{count}", ""] + [f"- `{t}`" for t in tests]
           if unreported:
               lines += ["", f"No JUnit report from rust-test {', '.join(unreported)}: it stopped before its tests ended."]
+          if silent:
+              lines += ["", "### Guards that ran no test", "", "Renamed or gone: change scripts/ci-rust-tests.sh's list with them.", ""] + [f"- `{g}`" for g in silent]
           if flaky:
               lines += ["", "### Flaky", "", "Passed only on a retry:", ""] + [f"- `{t}`" for t in flaky]
 
@@ -698,6 +791,8 @@ jobs:
               verdict = f"Failed: plan {plan['result']}, so no lane can be trusted."
           elif bad:
               verdict = f"Failed: {', '.join(bad)}."
+          elif silent:
+              verdict = f"Failed: the guards {', '.join(silent)} ran no test."
           else:
               verdict = "Passed."
           lines += ["", f"**{verdict}**"]

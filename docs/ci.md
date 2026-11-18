@@ -1,6 +1,6 @@
 # Checks
 
-Checks run in two places: GitHub's `CI` workflow (`.github/workflows/ci.yml`) and the Mac's `scripts/oby-check.sh`. Every pull request says what was run and what it printed. This page is what runs today (docs/contracts/ci.md, CI-1 to 6 and CI-17 to 20), the CLI canary (CI-14 to 16) and how a merge lands (CI-7, 8 and 21); the design behind it is [docs/ci-architecture.md](ci-architecture.md).
+Checks run in two places: GitHub's `CI` workflow (`.github/workflows/ci.yml`) and the Mac's `scripts/oby-check.sh`. Every pull request says what was run and what it printed. This page is what runs today (docs/contracts/ci.md, CI-1 to 6, CI-17 to 20 and CI-60 to 65), the CLI canary (CI-14 to 16) and how a merge lands (CI-7, 8 and 21); the design behind it is [docs/ci-architecture.md](ci-architecture.md).
 
 ## What GitHub runs
 
@@ -8,28 +8,28 @@ Checks run in two places: GitHub's `CI` workflow (`.github/workflows/ci.yml`) an
 
 | Job | What it runs |
 | --- | --- |
-| `plan` | Which lanes the change reaches (below), and gitleaks with `.gitleaks.toml` over the commits the run brings: a pull request's from its merge base, the merge queue's from the group's base. A nightly or on-demand run on `dev` has no earlier commit and scans its head commit alone. A finding fails `plan`. |
+| `plan` | Which lanes the change reaches (below), which Rust tests run ("Which Rust tests run"), and gitleaks with `.gitleaks.toml` over the commits the run brings: a pull request's from its merge base, the merge queue's from the group's base. A nightly or on-demand run on `dev` has no earlier commit and scans its head commit alone. A finding fails `plan`. |
 | `lint` | In `core/`: `cargo fmt --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings`. |
 | `limits` | `OBY_CHECK_ONLY=limits scripts/oby-check.sh <base>` on the checked commit, with full history: it reports obid's production line count and its difference from the base (CI-49), and judges `jobs.rs`'s lines, the tests' sleeps, `AGENTS.md`'s bytes and the flaky list's guard by the script's own counting (docs/contracts/ci.md, CI-35). The base is `merge_group.base_sha` in the queue, `pull_request.base.sha` on a pull request, and the commit itself nightly and on demand. It installs nothing. |
-| `rust-build` | One `cargo nextest archive --workspace --locked` of `core/`, uploaded and kept 1 day. |
-| `rust-test` (1/4 to 4/4) | The archive's tests, a quarter each (`--partition slice:k/4`), with `--profile ci --no-fail-fast`, bubblewrap and gitleaks set up. Each uploads its JUnit report, pass or fail, kept 14 days. |
+| `rust-build` | One `cargo nextest archive --locked` of `core/` with the targets `plan` chose (`--workspace`, or `-p obid --lib --test <name>…`), uploaded and kept 1 day. |
+| `rust-test` (1/n to n/n) | The archive's tests `plan`'s filter keeps, in the shards `plan` chose (1 to 4, `--partition slice:k/n`), with `--profile ci --no-fail-fast --no-tests=warn`, bubblewrap and gitleaks set up. Each uploads its JUnit report, pass or fail, kept 14 days. |
 | `e2e` | `make e2e`: stub agents, against the oby-sphere commit in `e2e/sphere.ref`, the deployed Sphere's (the rig and `test:sphere` read the same one). |
 | `control-plane` | In `cloud/control-plane/`: `pnpm test` and `pnpm check`. |
 | `electron` | In `apps/electron/`: `npm ci`, `npm run typecheck`, `npm test`, `npm run build` (Node 22, with zsh installed: the ChatGPT gate's test runs `scripts/package.sh` with `/bin/zsh`). |
 | `tools` | `cargo test` in `tools/oby-check-blok/`, its own Cargo workspace, with the tool installed and gitleaks on `PATH`, since its tests run `scripts/oby-check.sh`. |
 | `brain` | In `tools/brain/`: `npm ci`, `npm run typecheck`, `npm test` (the Brain's map of obid and the app, read from the code) and the extractor's `cargo test` (CI-56). Reported, never a failure: `Check` ignores its result. |
 | `proofs` | Kani at its pin: every obid harness compiled (`cargo kani -p obid --tests --only-codegen`, CI-57), then the harnesses the change requires by path proved (`scripts/kani-required.sh` and `scripts/kani-prove.sh`, CI-58), each within 20 minutes, but those on `core/.config/kani-slow.txt`; every one nightly and on demand (CI-59). docs/proofs.md says what they prove. |
-| `Check` | Needs every job above. |
+| `Check` | Needs every job above. Fails when a guard `plan` named ran no test. |
 
 **Modes.** Which jobs run depends on the event, then on the lanes:
 
 | Run | Jobs |
 | --- | --- |
-| A draft pull request without `full-ci` | none: every job is skipped, `Check` too |
-| A ready pull request into `dev` | `plan`, `lint` when the `rust` lane is reached, `Check`: no test job |
-| A pull request labelled `full-ci` (a draft too, from the next push after labelling) | `plan`, `Check`, and every job its lanes reach |
-| A pull request into `main` | the same as `full-ci` |
-| The merge queue (`merge_group`) | the same, over the group's whole diff (`merge_group.base_sha..head_sha`) |
+| A draft pull request without `full-ci` or `full-suite` | none: every job is skipped, `Check` too |
+| A ready pull request into `dev` | `plan`, `lint` when the `rust` lane is reached, the Rust guards when the change reaches what they read, `Check`: no other test job |
+| A pull request into `dev` labelled `full-ci` (a draft too, from the next push after labelling) | `plan`, `Check`, every job its lanes reach, and of the Rust tests the affected set and the guards |
+| A pull request labelled `full-suite`, or into `main` | `plan`, `Check`, every job its lanes reach, and every Rust test |
+| The merge queue (`merge_group`) | the same as `full-suite`, over the group's whole diff (`merge_group.base_sha..head_sha`) |
 | Nightly at 03:17 UTC on `dev`, and on demand (`workflow_dispatch`) | every job: every lane is reached |
 
 A newer push to the same pull request cancels the run it supersedes; merge queue, nightly and on-demand runs always run to the end. A push to `dev` or `main` starts no run. On demand: `gh workflow run ci.yml --ref dev`.
@@ -49,9 +49,24 @@ A newer push to the same pull request cancels the run it supersedes; merge queue
 | any other path | every lane |
 | a diff that can't be read (a missing commit, `git diff` failing) | every lane |
 
-`lint`, `rust-build` and `rust-test` follow `rust`, and so do `limits` and `proofs` in the runs that test (not on a ready pull request into `dev`); `e2e`, `electron`, `control-plane` and `tools` follow their own lanes. `brain` follows what the Brain reads, apart from the rows above: `tools/brain/**`, obid's `src/`, `apps/electron/src/`, `apps/shared/`, `docs/api/`, `docs/runner-api.md` and `AGENTS.md` (every lane reaches it too). `plan` also prints the Kani harnesses the change requires (`proofs required:`), `all` when every lane is reached.
+`lint` follows `rust`, and so do `limits` and `proofs` in the runs that test (not on a ready pull request into `dev`); `rust-build` and `rust-test` follow `plan`'s choice of Rust tests (below); `e2e`, `electron`, `control-plane` and `tools` follow their own lanes. `brain` follows what the Brain reads, apart from the rows above: `tools/brain/**`, obid's `src/`, `apps/electron/src/`, `apps/shared/`, `docs/api/`, `docs/runner-api.md` and `AGENTS.md` (every lane reaches it too). `plan` also prints the Kani harnesses the change requires (`proofs required:`), `all` when every lane is reached.
 
-**`Check`'s rule.** It fails when `plan` didn't succeed (so skipped lanes can never pass over a broken plan), or when any job failed or was cancelled; a skipped job passes. Its step summary shows the mode, the lanes, each job's result, each failed shard with its failing tests (from that shard's JUnit), and under "Flaky" every test that passed only on its retry.
+**Which Rust tests run.** `plan` hands the changed paths to `scripts/ci-rust-tests.sh` (docs/contracts/ci.md, CI-60 to 65), which prints the archive's targets, a nextest filter and the shards:
+
+| Run | Rust tests |
+| --- | --- |
+| The merge queue, nightly, on demand, a pull request into `main` or labelled `full-suite`, reaching `rust` | every test of the workspace, 4 shards |
+| A pull request into `dev` labelled `full-ci`, reaching `rust` | the affected set and the guards; every test when the map can't decide |
+| Any other run but a skipped draft that reaches `rust`, or whose change reaches `core/`, `apps/electron/`, `apps/shared/`, `docs/api/`, `docs/runner-api.md`, `docs/contracts/` or `e2e/` | the guards, 1 shard |
+| Anything else | none |
+
+- **The affected set** is the Mac's own map, not a new one: `OBY_CHECK_PLAN=1 OBY_CHECK_PATHS=<the paths> scripts/oby-check.sh` names the obid test binaries and lib modules a worker's check runs (`tests/<module>.rs` and `tests/<module>_api.rs`, the binaries naming a touched folder of `tests/`, `jobs_setup` and `released_files` for their sources). The script widens it by obid's imports: each module's whole lib tests (`sphere::`, not only `sphere::pins::`), and every test binary named after the module (`sphere_questions`, `mcp_sphere`) or importing it (`obid::sphere`). A file under obid that the crate includes (`prompt-budget.txt`, `cli-versions.json`) counts as the modules that name it. A one-file change to `core/crates/obid/src/sphere/` runs 8 binaries of 62 and `sphere::`'s lib tests, in 2 shards.
+- **Every test when the map can't decide**: the workspace's manifests and lock, `rust-toolchain*`, `core/.config/`, the checks themselves (`.github/`, `scripts/oby-check*`, `scripts/ci-rust-tests*`), obid's `tests/support/`, its `lib.rs` or `main.rs` beyond a module declared (`pub mod x;`, read from the run's diff), a file in its `src/` that isn't Rust, another crate under `core/crates/` (obid builds on `obi-protocol`), a file of `e2e/` the tests' support runs (`e2e/lib/fixture.mjs`), and a change the map names no test for, or plans all of obid's lib tests or another crate's tests for. `plan`'s log says which.
+- **The guards** run in every run that runs Rust tests, and are the only ones on a ready pull request without a label and on an app-only change in the queue. Each keeps two places in agreement, so a change to either side can break it whatever its lane: `routes_guard` (obid's routes, `docs/api/routes.txt`, the gateway's `ROUTES`, the apps' calls), `state_owner` (who writes a job's state), `released_files` (what released obids wrote), `runner_api`'s `caps_` tests (`GET /v1/status` and its API doc), and obid's lib tests `prompt_budget_holds`, `unsafe_1_…`, `keychain_1_…`, `merging_2_…` (merge.rs and `scripts/oby-check.sh`), `agentmcp_7_…` and `one_protocol_version_list` (read from obid's sources), and the secret scan's two over `README.md`, `docs/ARCHITECTURE.md` and the repository's file names. The list is in the script; `Check` fails when one ran no test, and `scripts/ci-rust-tests-test.sh` (run by `plan` when the script or the Mac's map changes, and nightly) fails when one names a binary or function obid lacks. `tests/swift_client.rs` keeps the Swift client to obid too, but builds only on macOS: the Mac's check runs it.
+- **Shards**: 4 for every test; for the affected set, one per 20,000 lines of its test binaries beyond the guards, at most 4 (the whole suite's 82,000 lines run in 4); 1 for the guards. A shard the filter leaves empty passes.
+- **What it costs**: the merge queue still runs everything, so a test the affected set missed fails there, and the group with it, not on `dev`. Replayed over the 65 Rust pull requests among the last 100 merged into `dev` (to `793e04ae`), the map chose every test for 18 (8 changed the checks, 4 the workspace's manifests, 4 obid's crate root beyond a module, 2 the e2e fixture) and the affected set for 47: 7 in 1 shard, 13 in 2, 12 in 3, 9 in 4.
+
+**`Check`'s rule.** It fails when `plan` didn't succeed (so skipped lanes can never pass over a broken plan), when any job failed or was cancelled, or when a guard `plan` named ran no test; a skipped job passes. Its step summary shows the mode, the lanes, which Rust tests ran and why (every test, the affected set or the guards, with the binaries and modules), how many tests ran in how many shards, each job's result, each failed shard with its failing tests (from that shard's JUnit), any guard that ran no test, and under "Flaky" every test that passed only on its retry.
 
 **Shards and retries.** nextest runs each test in its own process. `core/.config/nextest.toml`'s `ci` profile retries a failed test once, writes `target/nextest/ci/junit.xml`, and stops a test after 5 minutes (60-second periods, 5 of them). A test that passes on its retry shows as `flakyFailure` in the JUnit and in `Check`'s "Flaky" list. The same file holds the flaky list (docs/contracts/ci.md, CI-26 to 28): its `[[profile.ci.overrides]]` entries, each naming one exact test and the task that fixes it, get `retries = 2`.
 
