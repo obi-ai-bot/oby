@@ -3,65 +3,256 @@
   "name": "PUT /v1/obid/sphere/owner",
   "version": "1.0.0",
   "description": "Who obid joins its first Obysphere as (SPHERE-21): 422 for a body with no owner, another key or an id that isn't one, and nothing changes; 200 keeps it across a restart and the join is as that owner; 409 once a membership exists. obid's token only.",
-  "trigger": { "http": { "method": "PUT", "path": "/v1/obid/sphere/owner" } },
+  "trigger": {
+    "http": {
+      "method": "PUT",
+      "path": "/v1/obid/sphere/owner"
+    }
+  },
+  "tags": [
+    "launch"
+  ],
   "steps": [
-    { "id": "obid", "use": "runtime.rust:obid-start", "inputs": { "owner": "alex" } },
     {
-      "id": "no-token-401", "use": "runtime.rust:call",
-      "inputs": { "obid": "${state.obid}", "method": "PUT", "path": "/v1/obid/sphere/owner", "as": "none",
-                  "body": { "owner": "dana" }, "expect": { "status": 401 } }
+      "id": "obid",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "owner": "alex"
+      }
     },
     {
-      "id": "sphere-21-no-owner-422", "use": "runtime.rust:call", "ui": { "proves": ["SPHERE-21"] },
-      "inputs": { "obid": "${state.obid}", "method": "PUT", "path": "/v1/obid/sphere/owner", "body": {},
-                  "expect": { "status": 422 } }
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.obid}",
+        "method": "PUT",
+        "path": "/v1/obid/sphere/owner",
+        "as": "none",
+        "body": {
+          "owner": "dana"
+        },
+        "expect": {
+          "status": 401
+        }
+      }
     },
     {
-      "id": "sphere-21-another-key-422", "use": "runtime.rust:call", "ui": { "proves": ["SPHERE-21"] },
-      "inputs": { "obid": "${state.obid}", "method": "PUT", "path": "/v1/obid/sphere/owner",
-                  "body": { "owner": "dana", "name": "Dana" }, "expect": { "status": 422 } }
+      "id": "sphere-21-no-owner-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "SPHERE-21"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.obid}",
+        "method": "PUT",
+        "path": "/v1/obid/sphere/owner",
+        "body": {},
+        "expect": {
+          "status": 422
+        }
+      }
     },
     {
-      "id": "sphere-21-not-an-owner-id-422", "use": "runtime.rust:call", "ui": { "proves": ["SPHERE-21"] },
-      "inputs": { "obid": "${state.obid}", "method": "PUT", "path": "/v1/obid/sphere/owner",
-                  "body": { "owner": "-Dana Smith" }, "expect": { "status": 422 } }
+      "id": "sphere-21-another-key-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "SPHERE-21"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.obid}",
+        "method": "PUT",
+        "path": "/v1/obid/sphere/owner",
+        "body": {
+          "owner": "dana",
+          "name": "Dana"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
     },
     {
-      "id": "sphere-21-refused-changes-nothing", "use": "runtime.rust:call", "ui": { "proves": ["SPHERE-21"] },
-      "inputs": { "obid": "${state.obid}", "method": "GET", "path": "/v1/obid/sphere",
-                  "expect": { "status": 200, "body": { "state": "none", "owner": "alex" } } }
+      "id": "sphere-21-not-an-owner-id-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "SPHERE-21"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.obid}",
+        "method": "PUT",
+        "path": "/v1/obid/sphere/owner",
+        "body": {
+          "owner": "-Dana Smith"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
     },
     {
-      "id": "sphere-21-valid-200", "use": "runtime.rust:call", "ui": { "proves": ["SPHERE-21"] },
-      "inputs": { "obid": "${state.obid}", "method": "PUT", "path": "/v1/obid/sphere/owner",
-                  "body": { "owner": "dana-2" }, "expect": { "status": 200, "body": { "owner": "dana-2" } } }
+      "id": "sphere-21-refused-changes-nothing",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "SPHERE-21"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.obid}",
+        "method": "GET",
+        "path": "/v1/obid/sphere",
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "none",
+            "owner": "alex"
+          }
+        }
+      }
     },
     {
-      "id": "sphere-21-kept-in-home", "use": "runtime.rust:home-file", "ui": { "proves": ["SPHERE-21"] },
-      "inputs": { "obid": "${state.obid}", "path": "owner", "expect": { "exists": true, "mode": "0600", "text": { "$contains": "dana-2" } } }
+      "id": "sphere-21-valid-200",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "SPHERE-21"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.obid}",
+        "method": "PUT",
+        "path": "/v1/obid/sphere/owner",
+        "body": {
+          "owner": "dana-2"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "owner": "dana-2"
+          }
+        }
+      }
     },
-    { "id": "stop", "use": "runtime.rust:obid-stop", "inputs": { "obid": "${state.obid}" } },
-    { "id": "restarted", "use": "runtime.rust:obid-start", "inputs": { "owner": "alex" } },
     {
-      "id": "sphere-21-kept-across-a-restart", "use": "runtime.rust:call", "ui": { "proves": ["SPHERE-21"] },
-      "inputs": { "obid": "${state.restarted}", "method": "GET", "path": "/v1/obid/sphere",
-                  "expect": { "status": 200, "body": { "state": "none", "owner": "dana-2" } } }
+      "id": "sphere-21-kept-in-home",
+      "use": "runtime.rust:home-file",
+      "ui": {
+        "proves": [
+          "SPHERE-21"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.obid}",
+        "path": "owner",
+        "expect": {
+          "exists": true,
+          "mode": "0600",
+          "text": {
+            "$contains": "dana-2"
+          }
+        }
+      }
     },
-    { "id": "sphere", "use": "runtime.rust:sphere-make" },
-    { "id": "owner-key", "use": "runtime.rust:owner-key" },
     {
-      "id": "join", "use": "runtime.rust:sphere-join",
-      "inputs": { "obid": "${state.restarted}", "sphere": "${state.sphere}", "ownerKey": "${state.owner-key}" }
+      "id": "stop",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.obid}"
+      }
     },
     {
-      "id": "sphere-21-the-join-is-as-that-owner", "use": "runtime.rust:check", "ui": { "proves": ["SPHERE-21"] },
-      "inputs": { "value": "${state.join}", "expect": { "body": { "state": "joined", "owner": "dana-2" } } }
+      "id": "restarted",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "owner": "alex"
+      }
     },
     {
-      "id": "sphere-21-joined-409", "use": "runtime.rust:call", "ui": { "proves": ["SPHERE-21"] },
-      "inputs": { "obid": "${state.restarted}", "method": "PUT", "path": "/v1/obid/sphere/owner",
-                  "body": { "owner": "erin" },
-                  "expect": { "status": 409, "paths": { "error": { "$contains": "already in an Obysphere as its owner" } } } }
+      "id": "sphere-21-kept-across-a-restart",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "SPHERE-21"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.restarted}",
+        "method": "GET",
+        "path": "/v1/obid/sphere",
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "none",
+            "owner": "dana-2"
+          }
+        }
+      }
+    },
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "owner-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "join",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.restarted}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.owner-key}"
+      }
+    },
+    {
+      "id": "sphere-21-the-join-is-as-that-owner",
+      "use": "runtime.rust:check",
+      "ui": {
+        "proves": [
+          "SPHERE-21"
+        ]
+      },
+      "inputs": {
+        "value": "${state.join}",
+        "expect": {
+          "body": {
+            "state": "joined",
+            "owner": "dana-2"
+          }
+        }
+      }
+    },
+    {
+      "id": "sphere-21-joined-409",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "SPHERE-21"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.restarted}",
+        "method": "PUT",
+        "path": "/v1/obid/sphere/owner",
+        "body": {
+          "owner": "erin"
+        },
+        "expect": {
+          "status": 409,
+          "paths": {
+            "error": {
+              "$contains": "already in an Obysphere as its owner"
+            }
+          }
+        }
+      }
     }
   ]
 }

@@ -1561,7 +1561,9 @@
             "CI-62": "GitHub Actions lanes and scripts/ci-rust-tests.sh.",
             "CI-63": "GitHub Actions lanes and scripts/ci-rust-tests.sh.",
             "CI-64": "GitHub Actions lanes and scripts/ci-rust-tests.sh.",
-            "CI-65": "GitHub Actions lanes and scripts/ci-rust-tests.sh."
+            "CI-65": "GitHub Actions lanes and scripts/ci-rust-tests.sh.",
+            "CI-66": "GitHub Actions lanes and the Mac's check (scripts/oby-check.sh).",
+            "CI-67": "GitHub Actions lanes and the Mac's check (scripts/oby-check.sh)."
           }
         },
         "engine.md": {
@@ -1963,7 +1965,9 @@
             "OBIDSPEC-7": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)",
             "OBIDSPEC-8": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)",
             "OBIDSPEC-9": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)",
-            "OBIDSPEC-10": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)"
+            "OBIDSPEC-10": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)",
+            "OBIDSPEC-11": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)",
+            "OBIDSPEC-12": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)"
           }
         }
       }

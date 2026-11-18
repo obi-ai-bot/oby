@@ -20,6 +20,9 @@ pub struct Workflow {
     pub area: String,
     /// The route it proves (`POST /v1/obid/sphere/join`), for a route's workflow.
     pub route: Option<String>,
+    /// Its tags (`"tags": ["launch"]`): `obid-spec run --tag <tag>` runs only the workflows that
+    /// carry it, such as the merge queue's launch flows (OBIDSPEC-12).
+    pub tags: Vec<String>,
     pub steps: Vec<Step>,
 }
 
@@ -67,6 +70,18 @@ pub fn parse(text: &str, file: &Path, area: &str, nodes: &[&str]) -> Result<Work
     if area != "triggers" && route.is_none() {
         bail!("a route's workflow has an http trigger");
     }
+    let tags = match &doc["tags"] {
+        Value::Null => vec![],
+        Value::Array(list) => list
+            .iter()
+            .map(|t| {
+                t.as_str()
+                    .map(str::to_string)
+                    .context("a tag isn't a string")
+            })
+            .collect::<Result<Vec<_>>>()?,
+        _ => bail!("tags isn't a list"),
+    };
     let list = doc["steps"]
         .as_array()
         .filter(|s| !s.is_empty())
@@ -115,6 +130,7 @@ pub fn parse(text: &str, file: &Path, area: &str, nodes: &[&str]) -> Result<Work
         file: file.to_path_buf(),
         area: area.to_string(),
         route,
+        tags,
         steps,
     })
 }

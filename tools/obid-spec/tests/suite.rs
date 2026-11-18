@@ -482,6 +482,86 @@ fn obidspec_10_a_flaky_step_fails_quietly_and_passes_as_a_pass() {
     assert!(!out.contains("flaky, failed"), "{out}");
 }
 
+/// `run --tag` runs only the workflows that carry the tag, and the shipped launch set is the
+/// Obysphere's and the launch flows' (OBIDSPEC-12).
+#[test]
+fn obidspec_12_a_tag_runs_only_its_workflows() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("wf/triggers")).unwrap();
+    let good = check("a", json!(1), json!({"body": 1}), json!({}));
+    let bad = check("b", json!(1), json!({"body": 2}), json!({}));
+    for (name, step, tags) in [
+        ("tagged", good, json!(["launch"])),
+        ("untagged", bad, Value::Null),
+    ] {
+        let mut doc =
+            json!({"schemaVersion": "2", "name": name, "trigger": {"manual": {}}, "steps": [step]});
+        if !tags.is_null() {
+            doc["tags"] = tags;
+        }
+        std::fs::write(
+            dir.path().join(format!("wf/triggers/{name}.json")),
+            doc.to_string(),
+        )
+        .unwrap();
+    }
+    let run = |tag: Option<&str>| {
+        let mut args = vec!["run", "--obid", "/bin/echo"];
+        if let Some(t) = tag {
+            args.extend(["--tag", t]);
+        }
+        let out = Command::new(env!("CARGO_BIN_EXE_obid-spec"))
+            .args(&args)
+            .env("OBID_SPEC_WORKFLOWS", dir.path().join("wf"))
+            .env("TMPDIR", dir.path())
+            .output()
+            .unwrap();
+        (
+            out.status.code().unwrap_or(-1),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        )
+    };
+    let (code, out) = run(Some("launch"));
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("1 workflows: 1 passed"), "{out}");
+    let (code, out) = run(None);
+    assert_eq!(code, 1, "{out}");
+    let (code, _) = run(Some("nothing-has-it"));
+    assert_ne!(code, 0);
+    // The shipped launch set: every Obysphere workflow and the launch flows, nothing else.
+    let shipped = workflow::load_all(&suite().join("workflows"), &obid_spec::node_names()).unwrap();
+    let launch: Vec<_> = shipped
+        .iter()
+        .filter(|w| w.tags.iter().any(|t| t == "launch"))
+        .collect();
+    assert!(launch.iter().any(|w| w.area == "sphere"));
+    for w in &shipped {
+        let file = w.file.file_name().unwrap().to_string_lossy();
+        let should = w.area == "sphere"
+            || file.starts_with("sphere-")
+            || LAUNCH_FLOWS.contains(&file.as_ref());
+        assert_eq!(
+            w.tags.iter().any(|t| t == "launch"),
+            should,
+            "{}",
+            w.file.display()
+        );
+    }
+}
+
+/// The launch flows' workflows (the owner's freeze of 2026-11-18 keeps the set to these).
+const LAUNCH_FLOWS: &[&str] = &[
+    "conversation-deliveries.json",
+    "conversation-tasks.json",
+    "task-states.json",
+    "task-admission-and-receipts.json",
+    "account-limits-and-busy.json",
+];
+
 /// No shipped workflow ever has obid look for a tool by a bare name (a `bin` in `PUT
 /// /v1/settings/agents/{agent}` or an `obid-start` configuration): obid would search the person's
 /// install folders for it and run what it finds (OBIDSPEC-8).

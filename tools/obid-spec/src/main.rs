@@ -3,7 +3,7 @@
 //! child (`obid-spec-nodes`, BLOK's gRPC over its stdin and stdout) and its own scratch folder, so
 //! every obid it starts has its own home and port.
 //!
-//!   obid-spec run [--only <area>] [--workflow <text>] [--jobs <n>] [--obid <path>] [--keep]
+//!   obid-spec run [--only <area>] [--tag <tag>] [--workflow <text>] [--jobs <n>] [--obid <path>] [--keep]
 //!   obid-spec coverage [--only <area>] [--gate]
 //!   obid-spec list
 //!   obid-spec nodes
@@ -51,6 +51,7 @@ fn scope() -> Result<Value> {
 struct Args {
     command: String,
     only: Option<String>,
+    tag: Option<String>,
     workflow: Option<String>,
     jobs: usize,
     obid: Option<PathBuf>,
@@ -64,6 +65,7 @@ fn args() -> Result<Args> {
     let mut a = Args {
         command,
         only: None,
+        tag: None,
         workflow: None,
         jobs: MAX_JOBS,
         obid: std::env::var_os("OBID_SPEC_OBID").map(PathBuf::from),
@@ -74,6 +76,7 @@ fn args() -> Result<Args> {
         let mut value = || list.next().with_context(|| format!("{flag} needs a value"));
         match flag.as_str() {
             "--only" => a.only = Some(value()?),
+            "--tag" => a.tag = Some(value()?),
             "--workflow" => a.workflow = Some(value()?),
             "--jobs" => a.jobs = value()?.parse::<usize>()?.clamp(1, MAX_JOBS),
             "--obid" => a.obid = Some(value()?.into()),
@@ -134,7 +137,7 @@ async fn run_main() -> Result<i32> {
         }
         "run" => run(a).await,
         _ => {
-            println!("obid-spec run [--only <area>] [--workflow <text>] [--jobs <n>] [--obid <path>] [--keep]\nobid-spec coverage [--only <area>] [--gate]\nobid-spec list\nobid-spec nodes");
+            println!("obid-spec run [--only <area>] [--tag <tag>] [--workflow <text>] [--jobs <n>] [--obid <path>] [--keep]\nobid-spec coverage [--only <area>] [--gate]\nobid-spec list\nobid-spec nodes");
             Ok(if a.command == "help" { 0 } else { 2 })
         }
     }
@@ -203,6 +206,9 @@ async fn run(a: Args) -> Result<i32> {
     let mut workflows = workflow::load_all(&workflows_dir(), &names)?;
     if let Some(only) = &a.only {
         workflows.retain(|w| &w.area == only);
+    }
+    if let Some(tag) = &a.tag {
+        workflows.retain(|w| w.tags.iter().any(|t| t == tag));
     }
     if let Some(text) = &a.workflow {
         workflows.retain(|w| {

@@ -6,6 +6,9 @@
   "trigger": {
     "manual": {}
   },
+  "tags": [
+    "launch"
+  ],
   "steps": [
     {
       "id": "sphere",

@@ -12,9 +12,13 @@ Build both binaries first: `cargo build --manifest-path tools/obid-spec/Cargo.to
   obid's scenarios proven, exit 1 when anything is missing; `--gate`, the check's, fails only on
   what must hold now and reports the unproven scenarios as the backlog.
 
-The check runs it: `scripts/oby-check.sh` for a change to a route or to the suite, and GitHub's
-`obid-spec` job in the merge queue and nightly. A step that turns red there is a regression or a
-new bug: fix the product, or file the bug and mark the step `ui.expectedRed`; loosen a step only when the step itself was wrong.
+The check runs it: GitHub's merge queue the `launch` workflows, nightly all of them, and a pull
+request only when it changes the suite or carries `full-suite`. A step that turns red there is a
+regression or a new bug: fix the product, or file the bug and mark the step `ui.expectedRed`;
+loosen a step only when the step itself was wrong.
+
+The suite is frozen until launch (the owner's decision of 2026-11-18): add a workflow or a step
+only to prove a bug fix or a launch flow (README.md, "Frozen until launch").
 
 When you change a route or a trigger, add or change its workflow under
 `tools/obid-spec/workflows/` (README.md, "Adding to it"), name each asserting step after the
