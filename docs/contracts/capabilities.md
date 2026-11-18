@@ -35,7 +35,8 @@ The business behavior contract for `capabilities` on `GET /v1/status`, from [the
 
 ## Interfaces and dependencies
 
-- `GET /v1/status`: `"capabilities": ["events-replay-v1", "folders-v1", "profile-projects-v1", "profile-scope-v1", "project-jobs-v1", "projects-v1", "revisions-v1"]`, add-only (docs/runner-api.md, `GET /v1/status`, with its Capabilities table: Name, What it means, Since).
+- `GET /v1/status`: `"capabilities": ["conversation-marks-v1", "events-replay-v1", "folders-v1", "profile-projects-v1", "profile-scope-v1", "project-jobs-v1", "projects-v1", "revisions-v1"]`, add-only (docs/runner-api.md, `GET /v1/status`, with its Capabilities table: Name, What it means, Since).
+- `conversation-marks-v1`: a conversation's `seen`, `unread` and `archived`, and `seen` and `archived` on `PATCH /v1/conversations/{id}` ([conversation-states.md](conversation-states.md)), since CHATSTATE-6: an app sends them only to an obid that lists it.
 - `folders-v1`: obid takes working folders (`folders` on `POST /v1/plans`, on conversations and on `PATCH /v1/conversations/{id}`), the behaviour `folders: true` announces, since #1572.
 - `profile-projects-v1`: obid reads the `Oby-Profile` header on the project routes and on `project` in `PATCH /v1/conversations/{id}` and `POST /v1/plans`, and keeps projects per profile ([profiles.md](profiles.md)), since A00-79: an app sends the header only to an obid that lists it.
 - `profile-scope-v1`: obid reads `Oby-Profile` on every `/v1` route and on `GET /v1/events`, and keeps conversations, jobs, helpers, accounts and vault secrets per profile ([profiles.md](profiles.md)), since B00-40. An older obid answers every profile's on those routes.
