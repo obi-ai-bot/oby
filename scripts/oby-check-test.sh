@@ -179,12 +179,14 @@ expect no 'jobs.rs has .* past' 'jobs.rs at its limit is within it'
 code "$jobs" "$((jobs_limit + 1))"
 expect 'jobs.rs has .* past its limit' 'jobs.rs one line past its limit'
 counted "$((jobs_limit + 1))" "jobs.rs's lines count in the Rust core's"
-if ran=$(env -u OBY_CHECK_PLAN scripts/oby-check.sh HEAD 2>&1); then
-    echo 'oby-check-test: a run with jobs.rs past its limit passed' >&2
+# Past its limit is reported, never a failure (the owner's word, 2026-11-17).
+ran=$(env -u OBY_CHECK_PLAN scripts/oby-check.sh HEAD 2>&1) || true
+grep -q "failed: jobs.rs's line limit" <<<"$ran" && {
+    echo "oby-check-test: a run with jobs.rs past its limit failed on it, which is reported only: $ran" >&2
     exit 1
-fi
-grep -q "failed: jobs.rs's line limit" <<<"$ran" || {
-    echo "oby-check-test: a run with jobs.rs past its limit failed without naming it: $ran" >&2
+}
+grep -q "past its limit of .* (reported, not a failure)" <<<"$ran" || {
+    echo "oby-check-test: a run with jobs.rs past its limit didn't report it: $ran" >&2
     exit 1
 }
 # A commit that shrinks jobs.rs and lowers its limit is held to that, against the base's copy.

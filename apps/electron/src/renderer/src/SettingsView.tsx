@@ -406,7 +406,9 @@ function useSignIns(accounts: Account[], setAccounts: (a: Account[]) => void) {
   // GET /v1/status has them, read as the page opens and after a change (obid also reads the usage
   // shown here then, which comes in its `accounts` event)
   const [offered, setOffered] = useState<Found[]>(onObid ? [] : [{ agent: 'codex', id: 'codex', name: 'Codex' }]);
-  const look = () => { if (onObid) api.status().then((s) => setOffered(s.availableLogins ?? []), () => {}); };
+  // and those another profile holds (an account is in one profile only, B00-40: PROFILES-50)
+  const [elsewhere, setElsewhere] = useState<NonNullable<Status['otherProfileLogins']>>([]);
+  const look = () => { if (onObid) api.status().then((s) => { setOffered(s.availableLogins ?? []); setElsewhere(s.otherProfileLogins ?? []); }, () => {}); };
   useEffect(look, []);
   // sign-ins under way, by account: opening, then its page (with Codex's code, or Claude Code's to
   // paste), then that code on its way ('sending') or sent with no answer in time ('sent')
@@ -485,7 +487,7 @@ function useSignIns(accounts: Account[], setAccounts: (a: Account[]) => void) {
       put(gone.id); look();
       if (said?.revoked === false) setProblems((p) => ({ ...p, [ADD]: `ChatGPT didn’t confirm ending ${gone.name}’s session. You can disconnect it in ChatGPT settings.` }));
     }))} onClose={() => setRemoving(null)} />;
-  return { offered, setOffered, look, signing, put, problems, busy, tried, signIn, signInChatGpt, sendCode, cancel, remove, removeWindow };
+  return { offered, setOffered, elsewhere, look, signing, put, problems, busy, tried, signIn, signInChatGpt, sendCode, cancel, remove, removeWindow };
 }
 
 function Accounts() {
@@ -865,8 +867,14 @@ export function Agents() {
   const [chosen, setChosen] = useDefaultAccount();
   const [talking, setTalking] = useTalkDefault();
   // signing in, as Settings › Accounts does (useSignIns): its states, its problems, the tool's own login
-  const { offered, setOffered, look, signing, problems, signIn, signInChatGpt, sendCode, cancel, remove, removeWindow } = useSignIns(accounts, setAccounts);
+  const { offered, setOffered, elsewhere, look, signing, problems, signIn, signInChatGpt, sendCode, cancel, remove, removeWindow } = useSignIns(accounts, setAccounts);
   const [adding, setAdding] = useState(false);
+  // under Add account: what was found on this Mac, and where each login another profile holds is
+  // (the words are proposals, Sangam's to rewrite)
+  const found = [
+    ...(offered.length ? [`Found on this Mac: ${offered.map((l) => agentOf(l.agent).name).join(', ')}`] : []),
+    ...elsewhere.map((l) => `${agentOf(l.agent).name}’s login on this Mac is in ${l.profileName}. Add another account to sign in with a different login here.`),
+  ];
   const { status } = useLive();
   useEffect(() => {
     const x = signInNext ? accounts.find((a) => a.id === signInNext) : undefined;
@@ -902,7 +910,7 @@ export function Agents() {
         </Row>
       )}
     </Group>
-    <Group i={2} footer={problems[ADD] ? <span className="set-problem" role="alert">{problems[ADD]}</span> : offered.length ? `Found on this Mac: ${offered.map((l) => agentOf(l.agent).name).join(', ')}` : undefined}>
+    <Group i={2} footer={problems[ADD] ? <span className="set-problem" role="alert">{problems[ADD]}</span> : found.length ? <>{found.map((line) => <span key={line} className="set-footer-line">{line}</span>)}</> : undefined}>
       {/* the card's action, not a row's: on the left */}
       <div className="set-row is-action">
         <button className="set-button is-primary" onClick={() => setAdding(true)}>Add account</button>

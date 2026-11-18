@@ -1,11 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { BrandMark } from './brands';
+import { GitHubAsk } from './GitHubCard';
 import { AskBlock, startsOnClick } from './TaskCard';
 import { OfferBlock } from './OfferCard';
 import { QuestionBlock } from './QuestionCard';
 import { answerQuestion } from './live';
 import { answer, asksWaiting, openOnGitHub, tasksWith, useTasks, type Asking, type PersonReview, type Task } from './tasks';
+import './askStack.css';
 
 // What Oby is asking you, on Home, under the attention line: one card per task
 // that needs you, stacked, so everything can be answered in one place without
@@ -104,6 +106,8 @@ export default function AskStack({ active, onOpen, onOpenTalk }: { active: boole
 // One card: the task it's for, where it is in the stack (and the way round it)
 // and the way to its page (or GitHub's, or the offer's conversation), then its
 // decision as on the task's card (an offer's, as in its conversation).
+// A GitHub offer is its lean card instead (GitHubCard.tsx, GITHUBWORK-20 to 27): one line,
+// the failed checks, its buttons, the pager on its line only when there are several.
 function AskCard({ entry, count, many, className = 'is-up', ref, onOpen, onOpenTalk, onPrev, onNext, onAnswer }: {
   entry: Entry;
   count: string;
@@ -128,27 +132,34 @@ function AskCard({ entry, count, many, className = 'is-up', ref, onOpen, onOpenT
     answer(entry.id, start);
     onAnswer?.(start);
   };
+  const nav = (
+    <span className="ask-nav">
+      {many && <button className="icon-button" aria-label="Previous" onClick={onPrev}><ChevronLeft size={14} strokeWidth={1.8} /></button>}
+      <span className="ask-count" aria-live="polite">{count}</span>
+      {many && <button className="icon-button" aria-label="Next" onClick={onNext}><ChevronRight size={14} strokeWidth={1.8} /></button>}
+    </span>
+  );
+  // a GitHub offer: its lean card, the pager on its line only when there are several (GITHUBWORK-20 to 27)
+  const github = !entry.task && entry.url && entry.ask?.kind === 'start' ? { ...entry, url: entry.url, ask: entry.ask } : undefined;
   return (
-    <article ref={ref} className={`ask-card ${className}${start ? ' is-startable' : ''}`} aria-label={entry.title} onClick={onCard}>
-      <header className="tc-head">
-        {entry.brand && <BrandMark brand={entry.brand} size={16} mono />}
-        <h2 className="tc-title">
-          {entry.who && <span className="tc-who">{entry.who}</span>}
-          {entry.title}
-        </h2>
-        <span className="ask-nav">
-          {many && <button className="icon-button" aria-label="Previous" onClick={onPrev}><ChevronLeft size={14} strokeWidth={1.8} /></button>}
-          <span className="ask-count" aria-live="polite">{count}</span>
-          {many && <button className="icon-button" aria-label="Next" onClick={onNext}><ChevronRight size={14} strokeWidth={1.8} /></button>}
-        </span>
-        {entry.task ? <button className="tc-link ask-open" onClick={() => onOpen?.(entry.id)}>Open task<ChevronRight size={14} strokeWidth={1.8} /></button>
-          : entry.url ? <button className="tc-link ask-open" onClick={() => openOnGitHub(entry.url)}>Open on GitHub<ChevronRight size={14} strokeWidth={1.8} /></button>
-          : entry.talk && <button className="tc-link ask-open" onClick={() => onOpenTalk?.(entry.talk!)}>Open conversation<ChevronRight size={14} strokeWidth={1.8} /></button>}
-      </header>
-      {entry.offer ? <OfferBlock offer={entry.offer} onAnswer={onAnswer} />
-        : entry.question ? <QuestionBlock question={entry.question} onAnswer={onAnswer} />
-        : entry.review ? <ReviewBlock review={entry.review} onAnswer={onAnswer} />
-        : <AskBlock task={{ id: entry.id, answer: entry.answer, job: { ask: entry.ask } }} onAnswer={onAnswer} />}
+    <article ref={ref} className={`ask-card ${className}${github ? ' is-github' : ''}${start ? ' is-startable' : ''}`} aria-label={entry.title} onClick={onCard}>
+      {github ? <GitHubAsk entry={github} nav={many ? nav : undefined} onAnswer={onAnswer} onOpenTalk={onOpenTalk} /> : <>
+        <header className="tc-head">
+          {entry.brand && <BrandMark brand={entry.brand} size={16} mono />}
+          <h2 className="tc-title">
+            {entry.who && <span className="tc-who">{entry.who}</span>}
+            {entry.title}
+          </h2>
+          {nav}
+          {entry.task ? <button className="tc-link ask-open" onClick={() => onOpen?.(entry.id)}>Open task<ChevronRight size={14} strokeWidth={1.8} /></button>
+            : entry.url ? <button className="tc-link ask-open" onClick={() => openOnGitHub(entry.url)}>Open on GitHub<ChevronRight size={14} strokeWidth={1.8} /></button>
+            : entry.talk && <button className="tc-link ask-open" onClick={() => onOpenTalk?.(entry.talk!)}>Open conversation<ChevronRight size={14} strokeWidth={1.8} /></button>}
+        </header>
+        {entry.offer ? <OfferBlock offer={entry.offer} onAnswer={onAnswer} />
+          : entry.question ? <QuestionBlock question={entry.question} onAnswer={onAnswer} />
+          : entry.review ? <ReviewBlock review={entry.review} onAnswer={onAnswer} />
+          : <AskBlock task={{ id: entry.id, answer: entry.answer, job: { ask: entry.ask } }} onAnswer={onAnswer} />}
+      </>}
     </article>
   );
 }

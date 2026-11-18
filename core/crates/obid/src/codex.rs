@@ -580,6 +580,17 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
                     (self.on_event)(Event::Delta(delta.to_owned()));
                 }
             }
+            Some("item/commandExecution/outputDelta") => {
+                if let (Some(id), Some(delta)) = (
+                    params["itemId"].as_str(),
+                    params["delta"].as_str().filter(|d| !d.is_empty()),
+                ) {
+                    (self.on_event)(Event::Output {
+                        id: id.to_owned(),
+                        text: delta.to_owned(),
+                    });
+                }
+            }
             Some("item/completed") if item["type"] == "agentMessage" => {
                 if let Some(said) = item["text"].as_str().filter(|s| !s.is_empty()) {
                     self.said = Some(said.to_owned());
@@ -1705,6 +1716,65 @@ exec sleep 30
         .await
         .unwrap();
         assert_eq!(*tools.lock().unwrap(), ["Agent", "Tool"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LIVETASK-34: what a job's command prints while it runs comes as it prints it, by the call.
+    #[tokio::test]
+    async fn livetask_34_a_commands_output_comes_while_it_runs() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("obid-codex-output-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let bin = root.join("codex");
+        std::fs::write(
+            &bin,
+            r#"#!/bin/sh
+read l; echo '{"id":1,"result":{}}'
+read l
+read l; echo '{"id":2,"result":{"thread":{"id":"t1"}}}'
+read l; echo '{"id":3,"result":{"turn":{"id":"u1"}}}'
+echo '{"method":"item/started","params":{"threadId":"t1","turnId":"u1","item":{"type":"commandExecution","id":"c1","command":"/bin/zsh -lc '"'"'slow'"'"'"}}}'
+echo '{"method":"item/commandExecution/outputDelta","params":{"threadId":"t1","turnId":"u1","itemId":"c1","delta":"line 1\\n"}}'
+echo '{"method":"item/commandExecution/outputDelta","params":{"threadId":"t1","turnId":"u1","itemId":"c1","delta":""}}'
+echo '{"method":"item/commandExecution/outputDelta","params":{"threadId":"t1","turnId":"u1","itemId":"c1","delta":"line 2\\n"}}'
+echo '{"method":"item/completed","params":{"threadId":"t1","turnId":"u1","item":{"type":"commandExecution","id":"c1","command":"slow","status":"completed","exitCode":0,"aggregatedOutput":"line 1\\nline 2\\n"}}}'
+echo '{"method":"turn/completed","params":{"threadId":"t1","turn":{"id":"u1","status":"completed","items":[{"type":"agentMessage","text":"Done."}]}}}'
+exec sleep 30
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let launch = Launch {
+            argv: vec![bin.into_os_string()],
+            env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+            cwd: root.clone(),
+            stderr: root.join("agent.log"),
+            own_sandbox: false,
+            group: None,
+        };
+        // (sh's echo turns `\\n` into the two characters JSON wants)
+        let (_stop, stop) = watch::channel(process::Signal::Run);
+        let seen = std::sync::Mutex::new(Vec::new());
+        run_turn(
+            launch,
+            "Do it.",
+            &Options::default(),
+            Duration::from_secs(60),
+            stop,
+            |_, _| Ruling::Now(Answer::Allow),
+            |event| match event {
+                Event::Output { id, text } => seen.lock().unwrap().push(format!("{id}: {text}")),
+                Event::ToolDone { id, .. } => seen.lock().unwrap().push(format!("{id} ended")),
+                _ => {}
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            ["c1: line 1\n", "c1: line 2\n", "c1 ended"]
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

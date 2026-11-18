@@ -186,7 +186,8 @@ function lineOf(e: TranscriptEntry, now: number): Entry | undefined {
   const n = e.n;
   switch (e.kind) {
     case 'start': return { n, kind: 'start', text: e.summary, at: clock(e.at) };
-    case 'said': return { n, kind: 'said', text: e.text ?? e.summary, at: clock(e.at) };
+    // still being written while obid streams its words past the last whole line (LIVETASK-32)
+    case 'said': return { n, kind: 'said', text: (e.text ?? e.summary) + (e.tail ?? ''), at: clock(e.at), live: e.tail !== undefined || undefined };
     case 'thought': return { n, kind: 'thought', text: e.text ?? '', seconds: e.seconds ?? 0, running: e.state === 'running' || undefined };
     case 'you': return { n, kind: 'you', text: e.text ?? e.summary, at: clock(e.at) };
     case 'plan': return { n, kind: 'plan', todos: e.todos ?? [] };
@@ -198,6 +199,7 @@ function lineOf(e: TranscriptEntry, now: number): Entry | undefined {
         state,
         seconds: e.seconds ?? (state === 'running' ? since(e.at, now) : 0),
         meta: state === 'declined' ? 'Declined' : !known ? undefined : e.exit ? `exit ${e.exit}` : e.added || e.removed ? `+${e.added ?? 0} −${e.removed ?? 0}` : undefined,
+        live: state === 'running' && e.output ? { output: e.output.text, lines: e.output.lines } : undefined,
       };
     }
     default: return undefined;

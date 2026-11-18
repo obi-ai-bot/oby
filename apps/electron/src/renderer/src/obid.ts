@@ -172,6 +172,9 @@ export const api = {
   // obid only: the profiles on this Mac (docs/api/profiles.md), and a new one; older runners answer 404
   profiles: () => call<Profile[]>('GET', '/v1/profiles'),
   createProfile: (name: string, color: string) => call<Profile>('POST', '/v1/profiles', { name, color }),
+  // its new name or colour, only what changed; and deleting it (its own become the default's)
+  changeProfile: (p: string, change: { name?: string; color?: string }) => call<Profile>('PATCH', `/v1/profiles/${id(p)}`, change),
+  deleteProfile: (p: string) => call<null>('DELETE', `/v1/profiles/${id(p)}`),
   // obid only: the projects (docs/api/projects.md), a new one, a change and a delete
   projects: () => call<Project[]>('GET', '/v1/projects'),
   createProject: ({ name, folders, repos }: { name: string; folders: string[]; repos: string[] }) => call<Project>('POST', '/v1/projects', { name, folders, repos }),
