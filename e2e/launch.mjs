@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The launch list's Obysphere tests, L1 to L8 (docs/contracts/test-rig.md, RIG-27 to 34; the launch
+// The launch list's Obysphere tests, L1 to L9 (docs/contracts/test-rig.md, RIG-27 to 34 and 36; the launch
 // plan's "Launch list"): what a stranger does with Oby and a teammate's Oby, on the rig's local
 // Sphere at the deployed server's commit (e2e/sphere.ref), with "you" driven through the Electron
 // dev app with real clicks and the app's own keys (e2e/lib/app-driver.mjs). Dana is the rig's
@@ -35,6 +35,9 @@ const RIG = resolve(process.env.OBY_RIG_DIR || join(homedir(), "Library/Applicat
 const PORTS = { you: 8794, dana: 8795 };
 const REPO = "obi-e2e/fixture-app";
 const KNOWN_RED = join(HERE, "launch-red.json");
+// A review or a handoff runs a job on your stand-in: about a minute alone, longer when the check
+// builds and tests beside it on the same Mac (L6 took more than 5 minutes there)
+const REVIEW_WAIT = 600_000;
 
 const args = process.argv.slice(2);
 const keep = args.includes("--keep"), gate = args.includes("--gate");
@@ -250,20 +253,23 @@ const SCENARIOS = [
     // a look-alike: a third Oby, "dama", joins the same Sphere
     const dama = await thirdOby("dama");
     await until("you seeing dama", async () => (await membersOf(you)).some((m) => m.owner === "dama"), 60_000).catch(() => red("your obid doesn't list dama within 60 s"));
-    // your own words, typed in Home's box with Enter: the stand-in asks dana through oby_ask, and obid's
-    // Confirm names the look-alike (ASK-34)
+    // your own words, typed in Home's box and sent with a click on Send (an Enter in the rig's hidden
+    // window never reaches main, so it would go unsigned): the stand-in asks dana through oby_ask, and
+    // obid's Confirm names the look-alike (ASK-34)
     await goHome();
     const box = ctx.page.getByRole("textbox", { name: "Message Oby" });
     await box.click({ timeout: 10_000 }).catch(async (e) => red(`Home's box can't be clicked (${e.message.split("\n").slice(0, 12).join(" / ")}); on screen: ${JSON.stringify(await buttons())}, ${await ctx.page.getByRole("textbox").evaluateAll((els) => JSON.stringify(els.map((x) => [x.getAttribute("aria-label"), x.offsetParent !== null, !!x.closest("[inert]")])))}`));
     await ctx.page.keyboard.insertText(`OBY oby_ask ${JSON.stringify({ to: "dana", question: "Are you on the billing work?" })}`);
-    await ctx.page.keyboard.press("Enter");
+    await sendFromHome();
     const confirm = await until("a Confirm naming the look-alike", async () => (await you.get("/v1/inbox")).find((i) => i.kind === "confirm" && /\bnot dama\b/.test(i.title)), 60_000)
       .catch(async () => red(`no Confirm naming dama as a look-alike within 60 s: ${JSON.stringify((await you.get("/v1/inbox")).map((i) => [i.kind, i.title]))}`));
     ok(`obid's Confirm: "${confirm.title}"`);
     await showing(ctx.page, /not dama/, 30).catch(() => red("the Confirm naming dama isn't on the app's screen"));
     ok("the app shows it");
     // settled with your click, so it doesn't stand over what comes to Home next
-    const cancel = await firstVisible([ctx.page.getByRole("button", { name: /^(Cancel|Don.t ask|No)$/ })], 5000);
+    // its card stands on Home: Cancel there, in that card
+    await goHome();
+    const cancel = await firstVisible([buttonIn("Ask dana's Oby, not dama's", "Cancel")], 10_000);
     if (cancel) { await sleep(600); await cancel.click(); }
     await until("the Confirm settled", async () => !(await you.get("/v1/inbox")).some((i) => i.id === confirm.id && i.state === "open"), 30_000)
       .catch(() => say("  note the look-alike Confirm is still open: it may stand over Home's next cards"));
@@ -319,13 +325,13 @@ const SCENARIOS = [
     };
     // first, your click: before an unsigned "remember" could make later ones accept themselves
     const first = await request();
-    const card = await acceptOn(/review/i).catch(() => red(`no Accept under Waiting for you for Dana's review request; on screen: ${JSON.stringify(ctx.lastButtons)}`));
+    const card = await acceptOn("Review request from dana").catch(() => red(`no Accept under Waiting for you for Dana's review request; on screen: ${JSON.stringify(ctx.lastButtons)}`));
     await sleep(600); // a card takes no click in its first half second
     await card.click();
     const ended = await until("Dana's exchange ending", async () => {
       const seen = await dana.get(`/v1/obid/sphere/exchanges/${encodeURIComponent(first.correlationId)}`);
       return !["sent", "accepted"].includes(seen.state) && seen;
-    }, 300_000).catch(() => red("Dana's review didn't end within 5 minutes"));
+    }, REVIEW_WAIT).catch(() => red(`Dana's review didn't end within ${REVIEW_WAIT / 60_000} minutes`));
     const result = ended.messages.findLast((m) => m.envelope?.type === "result")?.envelope.body;
     check(result?.outcome === "approved", `the review came back ${result?.outcome ?? ended.state}, not approved`);
     check((result?.findings ?? []).length >= 2, `the review came back with ${(result?.findings ?? []).length} findings, not the fixture's two`);
@@ -359,13 +365,13 @@ const SCENARIOS = [
     }, 90_000).catch(() => red("the handoff neither reached your inbox nor was refused within 90 s"));
     if (where.theirs) red(`the handoff was ${where.theirs.state} (the starter rule ${spec.starterRule().actions.includes("handoff") ? "has" : "lacks"} handoff: B2 wave 1, shared/policy.ts; #2429)`);
     ok(`on your Home: "${where.mine.title}"`);
-    const accept = await acceptOn(/task/i).catch(() => red(`no Accept under Waiting for you for Dana's task; on screen: ${JSON.stringify(ctx.lastButtons)}`));
+    const accept = await acceptOn("Task from dana").catch(() => red(`no Accept under Waiting for you for Dana's task; on screen: ${JSON.stringify(ctx.lastButtons)}`));
     await sleep(600);
     await accept.click();
     const ended = await until("Dana's exchange ending", async () => {
       const seen = await dana.get(`/v1/obid/sphere/exchanges/${encodeURIComponent(correlationId)}`);
       return !["sent", "accepted"].includes(seen.state) && seen;
-    }, 300_000).catch(() => red("Dana's handoff didn't end within 5 minutes"));
+    }, REVIEW_WAIT).catch(() => red(`Dana's handoff didn't end within ${REVIEW_WAIT / 60_000} minutes`));
     const result = ended.messages.findLast((m) => m.envelope?.type === "result")?.envelope.body;
     check(result && /^[0-9a-f]{40}$/.test(result.sha ?? result.head_sha ?? ""), `the result has no sha: ${JSON.stringify(result ?? ended.state).slice(0, 300)}`);
     check(result.branch ?? result.head_branch, "the result has no branch");
@@ -413,6 +419,36 @@ const SCENARIOS = [
     check(shown === 1, `your thread shows the ask ${shown} times`);
     ok("exactly one exchange each side and one answer");
   } },
+  { id: "L9", rig: "RIG-36", title: "@ in Home's box asks a member's Oby: picked from the joined Sphere's members, sent with a click, signed", run: async () => {
+    await writePolicy(RULES);
+    if ((await dana.get("/v1/obid/sphere")).state !== "joined") red("Dana isn't in the Sphere: L9 runs before L8");
+    // a new conversation, as a person starts one: an earlier one (L2's) may be open on Home
+    await goHome();
+    await showSidebar(ctx.page);
+    const fresh = await firstVisible([ctx.page.getByRole("button", { name: "New conversation", exact: true }), ctx.page.getByText("New conversation", { exact: true })], 3000);
+    if (fresh) await fresh.click({ timeout: 5000 });
+    const box = homeBox();
+    await box.click({ timeout: 10_000 });
+    await ctx.page.keyboard.insertText("@dan");
+    const option = await until("dana in the @ list", async () => {
+      const o = ctx.page.locator(".mention-panel [role=\"option\"]").filter({ hasText: /dana/ });
+      return (await o.count()) ? o.first() : null;
+    }, 30_000).catch(async () => red(`the @ list shows no dana, a member of the joined Sphere (it shows: ${JSON.stringify(await ctx.page.locator(".mention-panel [role=\"option\"]").allInnerTexts().catch(() => []))}): the @ list reads no live members (the @ ask, ASK-37 to 41)`));
+    await option.click();
+    const question = `Which branch are you on? ${randomBytes(3).toString("hex")}`;
+    await ctx.page.keyboard.insertText(` ${question}`);
+    const before = new Set((await exchangesOf(you)).map((e) => e.correlationId));
+    await sendFromHome();
+    const sent = await until("the ask the @ made", async () => (await exchangesOf(you)).find((e) => !before.has(e.correlationId) && textOf(e).includes(question)), 60_000)
+      .catch(async () => red(`no ask went to dana within 60 s of Send (your inbox: ${JSON.stringify((await you.get("/v1/inbox")).filter((i) => i.state === "open").map((i) => [i.kind, i.title]))})`));
+    check(sent.type === "question" || sent.messages?.[0]?.envelope?.type === "question", `the ask went as ${sent.type ?? sent.messages?.[0]?.envelope?.type}, not a question`);
+    check(!textOf(sent).includes("@dana"), "the question carries the @dana mention");
+    check(!(await you.get("/v1/inbox")).some((i) => i.kind === "confirm" && i.state === "open" && i.title.includes(question.slice(0, 20))), "the ask waited on a Confirm: your words weren't taken as signed");
+    ok(`your @dana and click on Send asked Dana's Oby at once, signed (${sent.correlationId})`);
+    await until("the answer on the ask's card", async () => /wasn’t bothered|wasn't bothered/.test(await ctx.page.locator(".ask-card").filter({ hasText: question.slice(0, 20) }).last().innerText().catch(() => "")), 120_000)
+      .catch(async () => red(`the ask's card in the conversation doesn't show Dana's answer within 2 minutes: ${JSON.stringify(await ctx.page.locator(".ask-card").allInnerTexts().catch(() => []))}`));
+    ok("its card in the conversation shows Dana's Oby's answer");
+  } },
   { id: "L8", rig: "RIG-34", title: "Leave drops Dana and an ask says so; a revoke shows a line; a new link rejoins", run: async () => {
     const danaKey = () => createPrivateKey(rigState().ownerKeys.dana);
     const left = await spec.leave(dana.call, danaKey);
@@ -429,7 +465,12 @@ const SCENARIOS = [
     const revoked = await s.call(`/spheres/rig/members/${encodeURIComponent(obiId)}`, { method: "DELETE", token: await s.admin() });
     check(revoked.status < 300, `the admin's revoke: ${revoked.status} ${JSON.stringify(revoked.body)}`);
     await until("obid seeing the revoke", async () => (await you.get("/v1/obid/sphere")).state !== "joined", 90_000).catch(() => red("your obid still says joined 90 s after the revoke"));
-    await showing(ctx.page, /removed|revoked|no longer in|took you out/i, 60).catch(() => red("the app shows no line saying you were removed (B2 wave 1: revoked line; B1: revoked state)"));
+    await openSphere(ctx.page);
+    // revokedLine (spheres.ts): "The rig’s admin took your Oby out." or "Your Oby isn’t in The rig any more."
+    // the app reads the membership again once a minute (spheres.ts): two of its reads
+    const after = await you.get("/v1/obid/sphere");
+    ok(`obid says ${after.state}${after.revokedReason ? ` (${after.revokedReason})` : ""}`);
+    await showing(ctx.page, /took your Oby out|isn’t in The rig any more/i, 130).catch(() => red(`the app shows no line saying you were removed within 2 minutes; obid says ${after.state}${after.state === "revoked" ? "" : ", not revoked, so the app has nothing to say it from"}`));
     ok("the app says you were removed");
     const link = await newLink();
     const field = await linkField(ctx.page);
@@ -515,20 +556,32 @@ function scanFolder(dir, needle) {
 }
 
 const goHome = () => home(ctx.page);
+// Home's box: a new conversation's, or the open one's ("Reply to Oby")
+const homeBox = () => ctx.page.getByRole("textbox", { name: /^(Message|Reply to) Oby$/ }).last();
+// Home's box's own Send arrow, clicked: main sees the click and signs the words
+async function sendFromHome() {
+  await sleep(300);
+  const box = homeBox();
+  await box.locator("xpath=ancestor::form[1]").getByRole("button", { name: "Send", exact: true }).click({ timeout: 10_000 });
+}
 // The side panel's Waiting for you, where another Oby's request waits for the owner, and its Accept:
 // the card's own button, found again until it shows
-async function acceptOn(what) {
-  return until(`Accept under Waiting for you (${what})`, async () => {
+async function acceptOn(title) {
+  return until(`Accept under Waiting for you (${title})`, async () => {
     await goHome();
     await showSidebar(ctx.page);
     const waiting = await firstVisible([ctx.page.getByRole("button", { name: /^Waiting for you/ }), ctx.page.getByText(/^Waiting for you$/)], 2000);
     if (waiting) await waiting.click({ timeout: 5000 }).catch(() => {});
     await sleep(500);
-    const accept = ctx.page.getByRole("button", { name: "Accept", exact: true });
+    const accept = buttonIn(title, "Accept");
     ctx.lastButtons = await buttons();
     return (await accept.count()) ? accept.first() : null;
   }, 60_000);
 }
+// The button named `name` in the card whose title is `title`: earlier cards (a request an unsigned
+// Accept left open, say) stand beside it with buttons of the same name
+const buttonIn = (title, name) => ctx.page.getByText(title, { exact: true }).first()
+  .locator(`xpath=ancestor::*[.//button[normalize-space()='${name}']][1]`).getByRole("button", { name, exact: true }).first();
 // What the person could click, for a red that needs to say what was on screen instead
 const buttons = () => ctx.page.getByRole("button").evaluateAll((els) => els.filter((e) => e.offsetParent).map((e) => (e.getAttribute("aria-label") || e.innerText || "").trim().slice(0, 40)));
 
