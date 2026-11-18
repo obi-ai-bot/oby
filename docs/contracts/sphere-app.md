@@ -50,6 +50,12 @@ The business behavior contract for what the Electron app does in an Obysphere at
 - On the same click, main adds what the members rule lacks (SPHEREAPP-1), so a new member can hand off tasks.
 - A member who isn't admin sees no group, and main asks the Sphere for no list; one who isn't in an Obysphere makes nothing. The Sphere's refusal says `Only the Obysphere’s admins can invite.`; a click main didn't see, `Making a link takes your own click.`. Making an Obysphere stays hidden (`CAN_CREATE`).
 
+### Admins (Make admin, Remove admin, the sole-admin notice)
+
+- In a live Obysphere's settings, the Members list says who is `Admin` and who is `Member`, as the Sphere's `admins` say (the rules' read brings them, with this Oby's owner id). To its admins, each other member's row has **Make admin**, or **Remove admin** for one who is. Nobody's row is shown to a member who isn't admin with either.
+- Main changes it with the owner's own `admin` token, only right after a click or key main saw itself: `PUT` or `DELETE /v0.1/spheres/{sphere}/admins/{owner}` (sphere-api.md section 2). The Sphere's answer lists its admins, and the list shows them. The Sphere keeps at least one admin (`409`: `An Obysphere keeps at least one admin.`) and makes admin only an owner who has joined (`409`: `<owner> hasn’t joined with their own key yet.`); a member who isn't admin: `Only the Obysphere’s admins can change who’s admin.`; no click main saw: `Changing who’s admin takes your own click.`
+- **The sole-admin notice.** While this owner is its only admin, the Members list and Settings › Obysphere (over Invite teammates) say `You’re the only admin of <name>. Make someone else an admin so it never hangs on one Mac.` A notice, never a block: nothing waits on it.
+
 ### Hidden for launch
 
 - The room: the app never looks for one, so its tile click, Settings' "Also post in the room" and its posts never show (`ROOM_SHOWS` in `spheres.ts`).
@@ -69,8 +75,8 @@ The business behavior contract for what the Electron app does in an Obysphere at
 
 ## Interfaces and dependencies
 
-- IPC: `sphere-join` (a string: the link), `sphere-handoff` (`{to, goal, repo, base}`), `sphere-invitations`, `sphere-invite` and `sphere-withdraw` (a string: the invitation's id), in [ipc.md](ipc.md).
-- The Obysphere: `GET`, `POST` and `DELETE /v0.1/spheres/{sphere}/invitations`, with the owner's own `admin` token (sphere-api.md section 4).
+- IPC: `sphere-join` (a string: the link), `sphere-handoff` (`{to, goal, repo, base}`), `sphere-invitations`, `sphere-invite`, `sphere-withdraw` (a string: the invitation's id) and `sphere-admin` (an owner id and a boolean), in [ipc.md](ipc.md).
+- The Obysphere: `GET`, `POST` and `DELETE /v0.1/spheres/{sphere}/invitations` (section 4), and `PUT` and `DELETE /v0.1/spheres/{sphere}/admins/{owner}` (section 2), with the owner's own `admin` token.
 - obid: `GET /v1/obid/sphere` (with `revokedReason`, B1's), `GET /v1/obid/sphere/members`, `POST /v1/obid/sphere/requests`, `PUT /v1/obid/sphere/membership`, `GET /v1/repos`.
 - obid's `PUT /v1/obid/sphere/owner` `{owner}` (add-only, B1's): `2xx` with the owner kept, `409` once any membership exists, `422` for a body without a valid owner; `404` from an obid without it.
 
@@ -88,6 +94,8 @@ The business behavior contract for what the Electron app does in an Obysphere at
 - **SPHEREAPP-9** Given a link pasted before a first join, when obid doesn't serve `PUT /v1/obid/sphere/owner`, then the owner id shows with no Change; when it does, Change and Save send `{owner}` lower-cased and the line shows the id obid kept; an id that isn't one says so and sends nothing; `409` says it can't change once joined. `sphereapp_9_…` (`sphereApp.test.tsx`).
 
 - **SPHEREAPP-10** Given Settings › Obysphere in a joined Obysphere, when the Sphere says this owner isn't admin, then no invite group shows and no list is asked for; when it says admin, the open links show with uses left and until when; Make a link, only right after a click main saw, asks the Sphere with the owner's `admin` token for `{expires_in: 1209600, max_uses: 5}`, adds what the members rule lacks, and shows an `oby://` link that reads back to the same Sphere, host, id and secret, with Copy; Withdraw, likewise after a click, deletes that link and shows the list as it is; the list never carries a secret. `sphereapp_10_…` (`sphere.test.ts`, `sphereApp.test.tsx`, `ipc.test.ts`).
+
+- **SPHEREAPP-11** Given a live Obysphere whose only admin is this owner, then its settings and Settings › Obysphere say so in the notice; Make admin on a member, only right after a click main saw, sends `PUT …/admins/<owner>` with the owner's `admin` token and shows them `Admin`, and the notice goes; Remove admin sends `DELETE`; the Sphere's refusals (the last admin, an owner who hasn't joined, a member who isn't admin) say why and change nothing shown; a member who isn't admin sees no buttons and no notice. `sphereapp_11_…` (`sphere.test.ts`, `sphereApp.test.tsx`, `ipc.test.ts`).
 
 ### Test it when it's done
 

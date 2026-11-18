@@ -4,8 +4,8 @@ import { keptKey } from './device';
 import { obid, type Trusted } from './obid';
 import { ipc } from './ipc';
 import { takeInput } from './words';
-import { safeInteger, string, type Decoder } from '../shared/decode';
-import { NotThisKey, addStarterRule, join, joinWarning, keepMembership, leave, listInvitations, makeInvitation, parseInvite, readPolicy, withdrawInvitation, type InvitesAnswer, type PolicyAnswer } from '../shared/sphere';
+import { boolean, safeInteger, string, type Decoder } from '../shared/decode';
+import { NotThisKey, addStarterRule, join, joinWarning, keepMembership, leave, listInvitations, makeInvitation, parseInvite, readPolicy, setAdmin, withdrawInvitation, type AdminsAnswer, type InvitesAnswer, type PolicyAnswer } from '../shared/sphere';
 import { withStarterRule } from '../shared/policy';
 import { SCRATCH } from '../shared/build';
 import { HANDOFF_OPEN, handoffBody, type HandoffAsk } from '../shared/handoff';
@@ -179,6 +179,11 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
       return { ...made, handoffs: !!now.policy && !withStarterRule(now.policy.rules) };
     });
   }, null);
+  // Make admin, Remove admin (SPHEREAPP-11): with the owner's admin token, only right after a click
+  // or key main saw itself, one each
+  ipc(trusted).handle('sphere-admin', [string, boolean], async (_e, owner, on): Promise<AdminsAnswer> => (
+    takeInput() ? setAdmin(obid, ownerKey, owner, on).catch((e) => ({ admins: null, refused: 'failed' as const, why: e instanceof Error ? e.message : String(e) }))
+      : { admins: null, refused: 'failed', why: 'Changing who’s admin takes your own click.' }), null);
   ipc(trusted).handle('sphere-withdraw', [string], async (_e, id) => (
     takeInput() ? invited(() => withdrawInvitation(obid, ownerKey, id)) : notInvited('Withdrawing a link takes your own click.')), null);
 }

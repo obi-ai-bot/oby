@@ -332,3 +332,73 @@ describe('SPHEREAPP-10: an admin invites teammates from Settings › Obysphere',
     expect(host.querySelector('.invite-made')).toBeNull();
   });
 });
+
+describe('SPHEREAPP-11: Make admin, Remove admin, and the sole-admin notice', () => {
+  const JOINED = { state: 'joined', url: 'https://sphere.example.com', sphere: 'demo', owner: 'wellington', obiId: 'obi-1' };
+  const policyOf = (admins: string[]) => ({ sphere: 'demo', policy: { version: 1, updated_at: '', rules: [] }, admin: admins.includes('wellington'), refused: null, why: null, admins, me: 'wellington' });
+  const sphereAdmin = vi.fn();
+  async function settings(admins: string[]) {
+    answers['GET /v1/obid/sphere'] = JOINED;
+    answers['GET /v1/obid/sphere/members'] = [{ owner: 'dana' }, { owner: 'ernesto' }];
+    sphereAdmin.mockReset();
+    Object.assign((window as unknown as { app: Record<string, unknown> }).app, {
+      onSphere: () => () => {}, spherePolicy: vi.fn(async () => policyOf(admins)), sphereAdmin,
+      sphereInvitations: vi.fn(async () => ({ invitations: [], link: null, refused: null, why: null })),
+    });
+    await import('../spheres');
+    await settle();
+    const { default: SphereSettings } = await import('../SphereSettings');
+    await act(async () => root.render(<SphereSettings id="live:demo" leaving={false} onClose={() => {}} onGone={() => {}} />));
+    await settle();
+  }
+  const roleOf = (owner: string) => [...host.querySelectorAll('.set-member')].find((r) => r.querySelector('.set-label')?.textContent?.startsWith(owner))?.querySelector('.set-role')?.textContent;
+
+  it('sphereapp_11_a_sole_admin_is_told_and_makes_a_member_admin', async () => {
+    await settings(['wellington']);
+    expect(host.textContent).toContain('You’re the only admin of demo. Make someone else an admin so it never hangs on one Mac.');
+    expect(roleOf('wellington')).toBe('Admin');
+    expect(roleOf('dana')).toBe('Member');
+    sphereAdmin.mockResolvedValueOnce({ admins: ['dana', 'wellington'], refused: null, why: null });
+    await act(async () => (host.querySelector('[aria-label="Make dana an admin"]') as HTMLButtonElement).click());
+    await settle();
+    expect(sphereAdmin).toHaveBeenCalledWith('dana', true);
+    expect(roleOf('dana')).toBe('Admin');
+    // no longer the only one: the notice goes, and dana's row offers Remove admin
+    expect(host.textContent).not.toContain('only admin');
+    sphereAdmin.mockResolvedValueOnce({ admins: ['wellington'], refused: null, why: null });
+    await act(async () => (host.querySelector('[aria-label="Remove dana as admin"]') as HTMLButtonElement).click());
+    await settle();
+    expect(sphereAdmin).toHaveBeenLastCalledWith('dana', false);
+    expect(roleOf('dana')).toBe('Member');
+  });
+
+  it('sphereapp_11: a refusal says why; a member who isn’t admin gets no buttons and no notice', async () => {
+    await settings(['wellington']);
+    sphereAdmin.mockResolvedValueOnce({ admins: null, refused: 'failed', why: 'ernesto hasn’t joined with their own key yet.' });
+    await act(async () => (host.querySelector('[aria-label="Make ernesto an admin"]') as HTMLButtonElement).click());
+    await settle();
+    expect(host.querySelector('[role="alert"]')!.textContent).toBe('ernesto hasn’t joined with their own key yet.');
+    expect(roleOf('ernesto')).toBe('Member');
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    vi.resetModules();
+    await settings(['dana']);
+    expect(host.querySelector('[aria-label="Make ernesto an admin"]')).toBeNull();
+    expect(host.textContent).not.toContain('only admin');
+    expect(roleOf('dana')).toBe('Admin');
+    expect(roleOf('wellington')).toBe('Member');
+  });
+
+  it('sphereapp_11: Settings › Obysphere tells a sole admin too, above Invite teammates', async () => {
+    answers['GET /v1/obid/sphere'] = JOINED;
+    answers['GET /v1/obid/sphere/members'] = [{ owner: 'dana' }];
+    Object.assign((window as unknown as { app: Record<string, unknown> }).app, {
+      onSphere: () => () => {}, spherePolicy: vi.fn(async () => policyOf(['wellington'])),
+      sphereInvitations: vi.fn(async () => ({ invitations: [], link: null, refused: null, why: null })),
+    });
+    const { SphereJoinPage } = await import('../SphereSettings');
+    await act(async () => root.render(<SphereJoinPage />));
+    await settle();
+    expect(host.textContent).toContain('You’re the only admin of demo.');
+  });
+});

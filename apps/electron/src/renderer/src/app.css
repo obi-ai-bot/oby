@@ -2539,3 +2539,5 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 
 /* an Obysphere's new invite link (InviteTeammates.tsx): the whole link, selectable, wrapping */
 .invite-made { display: block; font: 400 var(--text-sm)/1.4 ui-monospace, "SF Mono", Menlo, monospace; color: var(--ink); user-select: all; overflow-wrap: anywhere; }
+/* the sole-admin notice (SphereAdmins.tsx): a quiet line, never a warning colour */
+.set-notice { color: var(--text); font-size: var(--text-md); line-height: 1.45; white-space: normal; }

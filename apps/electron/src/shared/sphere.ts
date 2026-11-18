@@ -193,9 +193,11 @@ export async function leave(call: Call, ownerKey: () => KeyObject, http: typeof 
 // throws: a failure is an answer, in words.
 export type Rule = { id: string } & Record<string, unknown>;
 export type Policy = { version: number; updated_at: string; rules: Rule[] };
+// admins: who administers the Sphere now, sorted (its `admins`), on a read; me: this Oby's owner id
 export type PolicyAnswer = {
   sphere: string | null; policy: Policy | null; admin: boolean;
   refused: null | 'not_joined' | 'not_admin' | 'changed' | 'failed'; why: string | null;
+  admins?: string[]; me?: string;
 };
 
 // the members rule, with its id, is shared/policy.ts's
@@ -236,8 +238,8 @@ export async function readPolicy(call: Call, ownerKey: () => KeyObject, http: ty
     const { token } = await ownerToken(http, m, ownerKey(), 'directory:read');
     const about = (await read(http, sphereAt(m), token)) as { admins?: unknown } | null;
     const policy = asPolicy(await read(http, `${sphereAt(m)}/policy`, token));
-    const admin = Array.isArray(about?.admins) && about.admins.includes(String(m.owner));
-    return { sphere, policy, admin, refused: null, why: null };
+    const admins = Array.isArray(about?.admins) ? about.admins.filter((a): a is string => typeof a === 'string') : [];
+    return { sphere, policy, admin: admins.includes(String(m.owner)), refused: null, why: null, admins, me: String(m.owner) };
   } catch (e) {
     return failed(sphere, e);
   }
@@ -361,3 +363,21 @@ export async function withdrawInvitation(call: Call, ownerKey: () => KeyObject, 
     return invites(await listed(http, a.m, a.token));
   } catch (e) { return asked(e); }
 }
+
+// Make admin and Remove admin (SPHEREAPP-11): PUT or DELETE …/admins/{owner} with the owner's own
+// `admin` token, as the rules' write. The Sphere answers with itself, whose `admins` come back; it
+// keeps at least one admin, and makes admin only an owner who has joined. Nothing here throws.
+export type AdminsAnswer = { admins: string[] | null; refused: PolicyAnswer['refused']; why: string | null };
+export async function setAdmin(call: Call, ownerKey: () => KeyObject, owner: string, on: boolean, http: typeof fetch = fetch): Promise<AdminsAnswer> {
+  try {
+    const a = await asAdmin(call, ownerKey, http);
+    if ('refused' in a) return { admins: null, refused: a.refused!.refused, why: a.refused!.why === ONLY_ADMINS_INVITE ? ONLY_ADMINS_CHANGE : a.refused!.why };
+    const r = await http(`${sphereAt(a.m)}/admins/${encodeURIComponent(owner)}`, { method: on ? 'PUT' : 'DELETE', redirect: 'error', headers: { authorization: `Bearer ${a.token}` } });
+    if (r.status === 409) return { admins: null, refused: 'failed', why: on ? `${plainLine(owner)} hasn’t joined with their own key yet.` : 'An Obysphere keeps at least one admin.' };
+    if (r.status === 403) return { admins: null, refused: 'not_admin', why: ONLY_ADMINS_CHANGE };
+    if (!r.ok) throw new Error(`the Obysphere answered ${r.status}`);
+    const about = (await r.json()) as { admins?: unknown } | null;
+    return { admins: Array.isArray(about?.admins) ? about.admins.filter((x): x is string => typeof x === 'string') : null, refused: null, why: null };
+  } catch (e) { return { admins: null, refused: 'failed', why: e instanceof Error ? e.message : String(e) }; }
+}
+const ONLY_ADMINS_CHANGE = 'Only the Obysphere’s admins can change who’s admin.';

@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { WITHIN_MS, owners } from '../shared/words';
-import type { InvitesAnswer, PolicyAnswer } from '../shared/sphere';
+import type { AdminsAnswer, InvitesAnswer, PolicyAnswer } from '../shared/sphere';
 import type { HandoffAsk } from '../shared/handoff';
 import type { Joined } from '../shared/invite';
 import type { LoadWhat } from '../shared/decode';
@@ -163,6 +163,8 @@ contextBridge.exposeInMainWorld('app', {
   sphereInvitations: () => ipcRenderer.invoke('sphere-invitations') as Promise<InvitesAnswer | null>,
   sphereInvite: () => ipcRenderer.invoke('sphere-invite') as Promise<InvitesAnswer | null>,
   sphereWithdraw: (id: string) => ipcRenderer.invoke('sphere-withdraw', id) as Promise<InvitesAnswer | null>,
+  // Make admin (on) or Remove admin, right after the owner's click (main/sphere.ts, SPHEREAPP-11)
+  sphereAdmin: (owner: string, on: boolean) => ipcRenderer.invoke('sphere-admin', owner, on) as Promise<AdminsAnswer | null>,
   // obid, through main, which holds its token (main/obid.ts): one call; and what main's one follower
   // of obid's events holds (main/live.ts), then each message it sends, and what it reads for the page
   obid: {

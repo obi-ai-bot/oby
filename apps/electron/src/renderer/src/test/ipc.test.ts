@@ -93,6 +93,7 @@ vi.mock('../../../shared/sphere', async (original) => ({
   listInvitations: async () => ({ invitations: [], link: null, refused: null, why: null }),
   makeInvitation: async () => { the.invites++; return { invitations: [], link: 'oby://join/x#…', refused: null, why: null }; },
   withdrawInvitation: async () => { the.invites++; return { invitations: [], link: null, refused: null, why: null }; },
+  setAdmin: async () => { the.invites++; return { admins: ['dana', 'wellington'], refused: null, why: null }; },
 }));
 
 const FORBIDDEN = { status: 403, text: '' };
@@ -133,6 +134,7 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'sphere-invitations': { args: [], refusal: null },
   'sphere-invite': { args: [], refusal: null },
   'sphere-withdraw': { args: ['9187a87a-3126-424c-8861-8811bba1a5ec'], refusal: null },
+  'sphere-admin': { args: ['dana', true], refusal: null },
   'sphere-join': { args: [LINK], refusal: { kind: 'failed', name: '', why: 'Not this app’s page.' } },
   'sphere-handoff': { args: [{ to: 'dana', goal: 'Add a name option', repo: 'acme/app', base: 'main' }], refusal: 'Not this app’s page.' },
   'render-error': { args: ['TypeError', 'm', ''], refusal: undefined },
@@ -452,5 +454,19 @@ describe('SPHEREAPP-10', () => {
     // the list takes none
     expect(await call('sphere-invitations', own())).toMatchObject({ refused: null });
     expect(the.invites).toBe(before + 2);
+  });
+});
+
+describe('SPHEREAPP-11', () => {
+  it('sphereapp_11_who_is_admin_changes_only_right_after_a_click_main_saw', async () => {
+    while (takeInput()) { /* other tests' */ }
+    const before = the.invites;
+    expect(await call('sphere-admin', own(), 'dana', true)).toEqual({ admins: null, refused: 'failed', why: 'Changing who’s admin takes your own click.' });
+    expect(the.invites).toBe(before);
+    input();
+    expect(await call('sphere-admin', own(), 'dana', true)).toMatchObject({ admins: ['dana', 'wellington'], refused: null });
+    expect(the.invites).toBe(before + 1);
+    // the page's owner and choice are read as a string and a boolean, nothing else
+    expect(await call('sphere-admin', own(), 'dana', 'yes')).toBeNull();
   });
 });

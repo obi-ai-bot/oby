@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Check } from 'lucide-react';
 import { Group, Row } from './SettingsView';
+import { SoleAdmin, isSoleAdmin } from './SphereAdmins';
+import { useSpheres } from './spheres';
 import { withStarterRule } from '../../shared/policy';
 import { INVITE_DAYS, INVITE_USES } from '../../shared/invite';
 import type { Invitation, InvitesAnswer } from '../../shared/sphere';
@@ -20,6 +22,8 @@ const HANDOFFS = 'Members can ask, request reviews and hand off tasks.';
 
 export default function InviteTeammates() {
   const [admin, setAdmin] = useState(false);
+  const [sole, setSole] = useState(false);
+  const name = useSpheres().find((s) => s.live)?.name;
   const [handoffs, setHandoffs] = useState(false);
   const [open, setOpen] = useState<Invitation[]>([]);
   const [made, setMade] = useState<string | null>(null);
@@ -39,6 +43,7 @@ export default function InviteTeammates() {
     void window.app?.spherePolicy?.().then((p) => {
       if (gone || !p?.admin) return;
       setAdmin(true);
+      setSole(isSoleAdmin(p.admins, p.me));
       setHandoffs(!!p.policy && !withStarterRule(p.policy.rules));
       void window.app?.sphereInvitations?.().then((a) => { if (!gone) take(a); }, () => {});
     }, () => {});
@@ -59,6 +64,8 @@ export default function InviteTeammates() {
   const withdraw = (id: string) => void window.app!.sphereWithdraw!(id).then(take, () => take(null));
   return (
     <Group i={2} title="Invite teammates" footer={`Anyone with a link can join until it runs out.${handoffs ? ` ${HANDOFFS}` : ''}`}>
+      {/* only this owner administers it (SPHEREAPP-11): said, never a block */}
+      {sole && <SoleAdmin sphere={name ?? 'this Obysphere'} />}
       <Row label="New link" about={`For ${INVITE_USES} people, ${INVITE_DAYS} days`}>
         <button className="set-button set-member-action" disabled={busy} onClick={() => void make()}>{busy ? 'Making…' : 'Make a link'}</button>
       </Row>

@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join as path } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
-  ACCEPTS, NotThisKey, SCOPES, addStarterRule, inviteLink, listInvitations, makeInvitation, withdrawInvitation, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, readPolicy,
+  ACCEPTS, NotThisKey, SCOPES, addStarterRule, inviteLink, setAdmin, listInvitations, makeInvitation, withdrawInvitation, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, readPolicy,
   starterRule, writePolicy, type Answer, type Call, type PolicyAnswer, type Rule,
 } from '../../../shared/sphere';
 import { withStarterRule } from '../../../shared/policy';
@@ -220,6 +220,21 @@ function fakeSphere(o: { admins?: string[]; version?: number; rules?: Rule[]; on
     }
     const scope = granted.get(String((init.headers as Record<string, string>).authorization).replace('Bearer ', '')) ?? '';
     if (url === `${BASE}/spheres/demo`) return answer({ sphere: 'demo', admin_owner: 'dmytro', admins });
+    // its admins (sphere-api.md section 2): an admin token; only a joined owner; at least one kept
+    const adminOf = /\/spheres\/demo\/admins\/([^/]+)$/.exec(url);
+    if (adminOf) {
+      if (!scope.split(' ').includes('admin')) return answer({ error: { code: 'insufficient_scope' } }, 403);
+      const who = decodeURIComponent(adminOf[1]);
+      if (init.method === 'PUT') {
+        if (!JOINED_OWNERS.includes(who)) return answer({ error: { code: 'conflict' } }, 409);
+        if (!admins.includes(who)) admins.push(who);
+      } else if (admins.includes(who)) {
+        if (admins.length === 1) return answer({ error: { code: 'conflict' } }, 409);
+        admins.splice(admins.indexOf(who), 1);
+      }
+      admins.sort();
+      return answer({ sphere: 'demo', admin_owner: 'dmytro', admins });
+    }
     // invitations (sphere-api.md section 4): an admin token only, as the Sphere's own check
     if (url.startsWith(`${BASE}/spheres/demo/invitations`)) {
       if (!scope.split(' ').includes('admin')) return answer({ error: { code: 'insufficient_scope', message: 'this call needs the scope admin' } }, 403);
@@ -252,6 +267,7 @@ function fakeSphere(o: { admins?: string[]; version?: number; rules?: Rule[]; on
   const asked = () => requests.filter((r) => r.url.endsWith('/oauth/token')).map((r) => part(new URLSearchParams(String(r.init.body)).get('subject_token')!.split('.')[1]));
   return { http: http as unknown as typeof fetch, calls: http, requests, policy, granted, puts, asked, invitations };
 }
+const JOINED_OWNERS = ['dana', 'dmytro', 'wellington'];
 const OTHER: Rule = { id: 'dmytro-reviews', from_owner: 'dmytro', to_owner: '*', actions: ['review_request'], repos: ['acme/app'] };
 const THIRD: Rule = { id: 'ernesto-asks', from_owner: 'ernesto', to_owner: 'dmytro', actions: ['question'], repos: ['*'], note: { kept: true } };
 
@@ -550,6 +566,26 @@ describe('the app’s Obysphere (sphere-app.md)', () => {
     expect(never).not.toHaveBeenCalled();
     // a link that wouldn't read back is never handed out
     expect(inviteLink('https://sphere.example.com', 'demo', 'wellington', 'not-a-uuid', 'S'.repeat(43))).toBeNull();
+  });
+
+  it('sphereapp_11_an_admin_makes_and_removes_admins_with_the_owners_own_token', async () => {
+    const sphere = fakeSphere({ admins: ['wellington'] });
+    const obid = () => fakeObid('wellington', 'joined').call;
+    // the rules' read says who administers it, and who this Oby acts for
+    expect(await readPolicy(obid(), () => key, sphere.http)).toMatchObject({ admin: true, admins: ['wellington'], me: 'wellington' });
+    // Make admin: PUT …/admins/dana with an admin token; the Sphere's admins come back
+    expect(await setAdmin(obid(), () => key, 'dana', true, sphere.http)).toEqual({ admins: ['dana', 'wellington'], refused: null, why: null });
+    expect(sphere.requests.some((r) => r.init.method === 'PUT' && r.url.endsWith('/admins/dana'))).toBe(true);
+    expect(sphere.asked().at(-1)!.scope).toBe('admin');
+    // Remove admin
+    expect(await setAdmin(obid(), () => key, 'dana', false, sphere.http)).toMatchObject({ admins: ['wellington'], refused: null });
+    // the last admin stays; someone who hasn't joined can't be made one: words, no change
+    expect(await setAdmin(obid(), () => key, 'wellington', false, sphere.http)).toEqual({ admins: null, refused: 'failed', why: 'An Obysphere keeps at least one admin.' });
+    expect(await setAdmin(obid(), () => key, 'ernesto', true, sphere.http)).toEqual({ admins: null, refused: 'failed', why: 'ernesto hasn’t joined with their own key yet.' });
+    // a member who isn't admin changes nothing
+    const member = fakeSphere({ admins: ['dmytro'] });
+    expect(await setAdmin(obid(), () => key, 'dana', true, member.http)).toEqual({ admins: null, refused: 'not_admin', why: 'Only the Obysphere’s admins can change who’s admin.' });
+    expect(member.requests.some((r) => r.url.includes('/admins/'))).toBe(false);
   });
 
   it('sphereapp_2_a_membership_from_before_handoffs_renews_its_card_and_delegation_once', async () => {
