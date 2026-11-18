@@ -247,9 +247,9 @@ pub async fn plan(
         shared.conversations.begin(
             &scope,
             target,
-            said.clone(),
-            jobs.clone(),
-            attachments.clone(),
+            said,
+            jobs,
+            attachments,
             id,
             foreign,
             folders,
@@ -280,71 +280,156 @@ pub async fn plan(
         )
             .into_response());
     }
-    let words = turn::Words {
-        turn: begun.turn,
-        said,
-        attachments,
-        jobs,
-        signed,
+    // The words are queued on the conversation's file: its drain answers them, with whatever else
+    // waits there (CONVERSATION-AGENT-49). The request only listens for their answer: a client
+    // that stops waiting can't be told from a slow one, so what the turn does still happens, and
+    // is kept (docs/runner-api.md, `POST /v1/plans`).
+    let asking = turn::Asking {
         defaults,
+        turns,
+        back,
+        now,
     };
-    // The turn goes on by itself: a client that stops waiting can't be told from a slow one, so
-    // what the plan does still happens, and is kept (docs/runner-api.md, `POST /v1/plans`).
-    let turn = tokio::spawn(answer(shared, begun.conversation, words, turns, back, now));
-    turn.await.map_err(|_| {
-        ApiError::new(
+    let heard = shared.turns.ask(&begun.turn, asking);
+    drain(&shared, &begun.conversation);
+    match heard.await {
+        Ok(turn::Heard::Answer(body)) => Ok((StatusCode::OK, axum::Json(body)).into_response()),
+        Ok(turn::Heard::Failed(status, why)) => Err(ApiError::new(status, why)),
+        Err(_) => Err(ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Oby's brain stopped before it answered.",
-        )
-    })?
+        )),
+    }
 }
 
-/// The owner's `words` in `conversation` get their turn, once the one under way there ends: the
-/// answer to their `POST /v1/plans`, or to the words obid answers after a restart ([`recover`]).
-/// `turns`: what the client says the conversation holds, when it sends it; `back`: since when the
-/// owner was away, for a recap (#594).
-async fn answer(
-    shared: Arc<Shared>,
-    conversation: String,
-    words: turn::Words,
-    turns: Option<Vec<Turn>>,
-    back: Option<i64>,
-    now: i64,
-) -> Result<Response, ApiError> {
-    let own = words.turn.clone();
-    // One answer at a time in a conversation: words said while Oby answers wait for that turn
-    // to end, and the next turn answers all that came meanwhile, as the latest's. The others',
-    // and words a cancel dropped, answer nothing.
-    let Some(next) = shared.turns.wait_turn(&conversation, words).await else {
-        if let Some(since) = back {
-            recap::keep(shared.clone(), since, now);
+/// The answer's body for words a later turn's words carried, or that were cancelled: `none`, the
+/// answer in the conversation.
+fn none_body(conversation: &str) -> Value {
+    json!({"kind": "none", "jobs": [], "drafts": [], "conversation": conversation})
+}
+
+/// The conversation's one drain (CONVERSATION-AGENT-49, R05-04): while words wait there, queued on
+/// its file, one turn answers all of them at once, then the next. Asked for when the owner's words
+/// come, at start, and after a cancel; a turn's end takes the next itself. One runs at a time in a
+/// conversation, so turns there never overlap and nothing waits on a lock.
+pub fn drain(shared: &Arc<Shared>, conversation: &str) {
+    if !shared.turns.start_draining(conversation) {
+        return;
+    }
+    /// Lets another drain start when this one ended without saying it's done (it panicked).
+    struct Draining(Arc<Shared>, String, std::cell::Cell<bool>);
+    impl Drop for Draining {
+        fn drop(&mut self) {
+            if !self.2.get() {
+                self.0.turns.abandon_draining(&self.1);
+            }
         }
-        return respond(&shared, &conversation, Talk::None, None, None, vec![]);
-    };
-    // Every word this turn answers moves with it (crate::delivery).
+    }
+    let guard = Draining(shared.clone(), conversation.to_owned(), Default::default());
+    tokio::spawn(async move {
+        let (shared, conversation) = (guard.0.clone(), guard.1.clone());
+        loop {
+            let queued = shared.conversations.queued(&conversation);
+            if queued.is_empty() {
+                let empty = || shared.conversations.queued(&conversation).is_empty();
+                if shared.turns.done_draining(&conversation, empty) {
+                    guard.2.set(true);
+                    return;
+                }
+                continue;
+            }
+            take_turn(&shared, &conversation, queued).await;
+        }
+    });
+}
+
+/// One turn answers the owner's words `queued` in `conversation`, those a cancel didn't take
+/// first: their words one after another, every attachment and job, the latest request's chips,
+/// client turns and recap, and the owner's own only when each was signed. The latest words'
+/// request hears the answer; the earlier ones' hear `none`.
+async fn take_turn(
+    shared: &Arc<Shared>,
+    conversation: &str,
+    queued: Vec<(Turn, crate::delivery::Replay)>,
+) {
     let conversations = &shared.conversations;
-    let deliver = |change| conversations.deliver(&conversation, &next.turns, &change);
-    deliver(Move::Start);
-    let said = &next.words.said;
-    // The conversation as it is now, Oby's answer to the turn they waited for included.
-    let given = turns.unwrap_or_else(|| conversations.turns_but(&conversation, &next.turns));
-    let control = shared.turns.begin(&next.words.turn, &conversation);
-    deliver(Move::Confirm(next.words.turn.clone()));
-    control.set_signed(next.words.signed);
+    let ids: Vec<String> = queued.iter().map(|(t, _)| t.id.clone()).collect();
+    // Every word this turn answers moves with it (crate::delivery): those still queued now.
+    let started = conversations.deliver(conversation, &ids, &Move::Start);
+    let taken: Vec<_> = queued
+        .into_iter()
+        .filter(|(t, _)| started.contains(&t.id))
+        .collect();
+    let Some(last) = taken.last().map(|(t, _)| t.id.clone()) else {
+        return;
+    };
+    let now = obi_protocol::time::now();
+    // What each request asked with: the latest's goes with the turn; an earlier one's recap waits
+    // for the next answer with words.
+    let mut asking = turn::Asking {
+        now,
+        ..Default::default()
+    };
+    for (turn, _) in &taken {
+        let Some(asked) = shared.turns.take_asking(&turn.id) else {
+            continue;
+        };
+        if turn.id == last {
+            asking = asked;
+        } else if let Some(since) = asked.back {
+            recap::keep(shared.clone(), since, asked.now);
+        }
+    }
+    let Some(words) = turn::Words::together(&taken, asking.defaults.clone()) else {
+        return;
+    };
+    let turns: Vec<String> = taken.iter().map(|(t, _)| t.id.clone()).collect();
+    let heard = match answer(shared, conversation, &turns, words, asking).await {
+        Ok(body) => turn::Heard::Answer(body),
+        Err(e) => turn::Heard::Failed(e.status, e.message),
+    };
+    for turn in &turns {
+        let heard = match turn == &last {
+            true => heard.clone(),
+            false => turn::Heard::Answer(none_body(conversation)),
+        };
+        shared.turns.tell(turn, heard);
+    }
+}
+
+/// The turn that answers the owner's `words`, the latest of `turns` (their user turns, oldest
+/// first, `starting`), in `conversation`: what it answers with, as `POST /v1/plans` sends it.
+/// `asking`: what the latest words' request asked with.
+async fn answer(
+    shared: &Arc<Shared>,
+    conversation: &str,
+    turns: &[String],
+    words: turn::Words,
+    asking: turn::Asking,
+) -> Result<Value, ApiError> {
+    let conversations = &shared.conversations;
+    let deliver = |change| conversations.deliver(conversation, turns, &change);
+    let said = &words.said;
+    // The conversation as it is now, Oby's answer to the turn before included.
+    let given = (asking.turns).unwrap_or_else(|| conversations.turns_but(conversation, turns));
+    let control = shared.turns.begin(&words.turn, conversation);
+    deliver(Move::Confirm(words.turn.clone()));
+    conversations.begin_underway(conversation, &words.turn, "Thinking");
+    control.set_signed(words.signed);
     let asked = Asked {
         said,
-        attachments: &next.words.attachments,
-        jobs: &next.words.jobs,
-        conversation: &conversation,
+        attachments: &words.attachments,
+        jobs: &words.jobs,
+        conversation,
         turn: &control.turn,
-        signed: next.words.signed,
-        defaults: next.words.defaults.as_ref(),
+        signed: words.signed,
+        defaults: words.defaults.as_ref(),
     };
     // The recap is written while the brain thinks; a background call is bounded and
     // tried once, and when it fails the answer is the same as without it.
     let (answered, recap) = tokio::join!(
-        harness::run(&shared, said, &given, &asked, &control),
-        recap::back(&shared, back, now)
+        harness::run(shared, said, &given, &asked, &control),
+        recap::back(shared, asking.back, asking.now)
     );
     shared.turns.end(&control);
     let change = match &answered.talk {
@@ -356,22 +441,12 @@ async fn answer(
     };
     let recap = recap.or_else(|| shared.presence.take());
     let made = shared.harness.take_made(&control.turn);
+    let end = answered.end.as_str();
     let (talk, details) = (answered.talk, answered.details);
-    let answer = respond(&shared, &conversation, talk, details, recap, made);
+    let body = respond(shared, conversation, talk, details, recap, made);
     deliver(change);
-    // These words were cancelled on their own while they waited (COMPOSER-11): their waiter
-    // still answers the words before them, whose own requests answered none, but its request
-    // answers none too; the answer is Oby's turn in the conversation.
-    if !next.turns.contains(&own) {
-        return Ok((
-            StatusCode::OK,
-            axum::Json(
-                json!({"kind": "none", "jobs": [], "drafts": [], "conversation": conversation}),
-            ),
-        )
-            .into_response());
-    }
-    answer
+    conversations.end_underway(conversation, &control.turn, end);
+    body
 }
 
 /// At start (DELIVERY-7 to 10, R05-03): the words a stop cut get obid's line and read
@@ -379,28 +454,33 @@ async fn answer(
 /// that only waited behind them get one turn per conversation, oldest first, as the owner's own
 /// only when each was signed.
 pub fn recover(shared: &Arc<Shared>) {
-    let queued = shared.conversations.recover(shared.jobs.stopped_cleanly);
-    for (conversation, waiting) in queued {
-        let mut words: Vec<turn::Words> = waiting
-            .into_iter()
-            .map(|(said, replay)| turn::Words {
-                turn: said.id,
-                said: said.text,
-                attachments: replay.attachments,
-                jobs: said.jobs,
-                signed: replay.signed,
-                // The chips aren't kept on the file (COMPOSER-4): words sent again after a
-                // restart take the owner's usual mode, tool, model and effort.
-                defaults: None,
-            })
-            .collect();
-        let Some(last) = words.pop() else { continue };
-        for earlier in words {
-            shared.turns.hold(&conversation, earlier);
-        }
-        let now = obi_protocol::time::now();
-        tokio::spawn(answer(shared.clone(), conversation, last, None, None, now));
+    // The chips aren't kept on the file (COMPOSER-4): words answered after a restart take the
+    // owner's usual mode, tool, model and effort.
+    for conversation in shared.conversations.recover(shared.jobs.stopped_cleanly) {
+        drain(shared, &conversation);
     }
+}
+
+/// The owner's words of `turns` waiting in `conversation` are cancelled, while they still wait:
+/// they read `cancelled`, their requests hear `none`, and an earlier one's recap waits for the
+/// next answer. The user's turns cancelled.
+fn cancel_waiting(shared: &Arc<Shared>, conversation: &str, turns: &[String]) -> Vec<String> {
+    let waiting: Vec<String> = (shared.conversations.queued(conversation).into_iter())
+        .map(|(t, _)| t.id)
+        .filter(|id| turns.is_empty() || turns.contains(id))
+        .collect();
+    let dropped = shared
+        .conversations
+        .deliver(conversation, &waiting, &Move::Cancel);
+    for turn in &dropped {
+        if let Some(since) = shared.turns.take_asking(turn).and_then(|a| a.back) {
+            recap::keep(shared.clone(), since, obi_protocol::time::now());
+        }
+        shared
+            .turns
+            .tell(turn, turn::Heard::Answer(none_body(conversation)));
+    }
+    dropped
 }
 
 /// Why words Oby's brain wrote in `conversation` aren't on obid's allowlist (crate::secretspec):
@@ -498,8 +578,7 @@ pub async fn cancel(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Re
                 "Name the conversation the words are waiting in.",
             ));
         };
-        let dropped = shared.turns.drop_waiting(&id, &turn);
-        shared.conversations.deliver(&id, &dropped, &Move::Cancel);
+        let dropped = cancel_waiting(&shared, &id, std::slice::from_ref(&turn));
         return Ok((
             StatusCode::OK,
             axum::Json(json!({"cancelled": true, "dropped": dropped})),
@@ -507,8 +586,8 @@ pub async fn cancel(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Re
             .into_response());
     }
     if let Some(id) = underway(&shared, &body)? {
-        let dropped = shared.turns.cancel(Some(&id));
-        shared.conversations.deliver(&id, &dropped, &Move::Cancel);
+        shared.turns.cancel(Some(&id));
+        cancel_waiting(&shared, &id, &[]);
     }
     Ok((StatusCode::OK, axum::Json(json!({"cancelled": true}))).into_response())
 }
@@ -521,7 +600,7 @@ fn respond(
     details: Option<String>,
     recap: Option<String>,
     artifacts: Vec<Value>,
-) -> Result<Response, ApiError> {
+) -> Result<Value, ApiError> {
     if let Talk::Reply { text, jobs } = &mut talk
         && jobs.is_empty()
         && briefing::contradicts(text)
@@ -604,7 +683,7 @@ fn respond(
         body["artifacts"] = json!(artifacts);
     }
     body["conversation"] = json!(conversation);
-    Ok((StatusCode::OK, axum::Json(body)).into_response())
+    Ok(body)
 }
 
 /// A `thinking` event (#592): one call to the brain, as it begins and as its plan comes (`done`),
@@ -617,6 +696,10 @@ pub(super) fn thinking(
     text: &str,
     state: turn::State,
 ) {
+    // The conversation's turn under way is at this step while it runs (CONVERSATION-AGENT-50).
+    if state == turn::State::Running {
+        (shared.conversations).underway_step(&control.conversation, &control.turn, text);
+    }
     shared.events.send(
         "thinking",
         json!({"turn": control.turn, "conversation": control.conversation, "index": index,
