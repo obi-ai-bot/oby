@@ -1019,8 +1019,8 @@ impl Jobs {
                 // Read just before the run, so only its agent's commits count, never obid's own
                 // rebase between rounds: a run that moved it got somewhere (RECOVERY-1).
                 let head_before = self.worktree_head(id).await;
-                // A Claude Code turn takes the owner's words as they come (TASKCONV-33).
-                let steer = (tool == Tool::Claude).then(|| self.steer_open(id));
+                // A Claude Code or Codex turn takes the owner's words as they come (TASKCONV-33, 36).
+                let steer = matches!(tool, Tool::Claude | Tool::Codex).then(|| self.steer_open(id));
                 let turn = self
                     .turn(
                         id,

@@ -1063,12 +1063,17 @@ impl Jobs {
                             },
                             chatgpt,
                         };
-                    codex::run_turn(
+                    // The owner's words go into its turn as they come, as `turn/steer`, and those
+                    // that come as it ends are its thread's next turn, in the same server
+                    // (crate::steer, TASKCONV-36, 37).
+                    let steer = self.lock().steers.get(id).cloned();
+                    codex::run_turn_steered(
                         launch,
                         prompt,
                         &options,
                         limit.clone(),
                         signal.clone(),
+                        steer,
                         decide,
                         on_event,
                     )

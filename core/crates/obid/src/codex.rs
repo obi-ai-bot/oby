@@ -102,7 +102,26 @@ pub async fn run_turn(
     decide: impl Fn(&str, &Value) -> Ruling,
     on_event: impl FnMut(Event),
 ) -> std::io::Result<Turn> {
-    let conn = Conn::spawn(&launch, limit, stop, false).await?;
+    run_turn_steered(launch, prompt, options, limit, stop, None, decide, on_event).await
+}
+
+/// [`run_turn`], the owner's words going into its turn as they come (`steer`, crate::steer,
+/// TASKCONV-36): `turn/steer` on the turn under way, and words that come as it ends start the
+/// thread's next turn in this same server (TASKCONV-37).
+#[allow(clippy::too_many_arguments)]
+pub async fn run_turn_steered(
+    launch: Launch,
+    prompt: &str,
+    options: &Options,
+    limit: impl Into<crate::conn::Limit>,
+    stop: watch::Receiver<process::Signal>,
+    steer: Option<std::sync::Arc<crate::steer::Steer>>,
+    decide: impl Fn(&str, &Value) -> Ruling,
+    on_event: impl FnMut(Event),
+) -> std::io::Result<Turn> {
+    let mut conn = Conn::spawn(&launch, limit, stop, false).await?;
+    conn.steer = steer;
+    conn.steer_into = conn::SteerInto::Held;
     let mut run = Run {
         conn,
         decide,
@@ -402,11 +421,71 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
         if let Some(id) = started["turn"]["id"].as_str() {
             self.turn = Some(id.to_owned());
         }
-        while self.ended.is_none() {
+        self.steer_into(&thread);
+        loop {
+            while self.ended.is_none() {
+                let message = self.conn.next().await?;
+                self.handle(message).await;
+            }
+            if !self.next_turn(&thread, options).await? {
+                return Ok(());
+            }
+        }
+    }
+
+    /// The owner's words go into the turn under way from now on, as `turn/steer` (TASKCONV-36).
+    fn steer_into(&mut self, thread: &str) {
+        let (Some(steer), Some(turn)) = (&self.conn.steer, &self.turn) else {
+            return;
+        };
+        self.conn.steer_into = conn::SteerInto::Turn(thread.to_owned(), turn.clone());
+        steer.opened();
+    }
+
+    /// The turn ended: the owner's words it didn't take, once Codex answered every one written,
+    /// start the thread's next turn in this same server (TASKCONV-37), true then. Only after a
+    /// turn that didn't fail, nor one obid ended for good: those leave the words to the job.
+    async fn next_turn(&mut self, thread: &str, options: &Options) -> Result<bool, Stop> {
+        let Some(steer) = self.conn.steer.clone() else {
+            return Ok(false);
+        };
+        // Written to the turn that ended, Codex refuses them: they wait for the next.
+        self.conn.steer_into = conn::SteerInto::Held;
+        while !self.conn.steering.is_empty() {
             let message = self.conn.next().await?;
             self.handle(message).await;
         }
-        Ok(())
+        if self.fatal.is_some() || self.ended.as_ref().is_none_or(|(_, failed)| *failed) {
+            return Ok(false);
+        }
+        let words = steer.next_turn();
+        if words.is_empty() {
+            return Ok(false);
+        }
+        let mut params =
+            json!({"threadId": thread, "input": words.iter().map(|w| text(w)).collect::<Vec<_>>()});
+        if let Some(model) = options.model.as_deref().filter(|m| !m.is_empty()) {
+            params["model"] = json!(model);
+        }
+        if let Some(effort) = &options.effort {
+            params["effort"] = json!(effort);
+        }
+        let started = self.call("turn/start", params).await?;
+        for _ in &words {
+            steer.answered(started.is_ok());
+        }
+        let Some(id) = started
+            .ok()
+            .and_then(|s| s["turn"]["id"].as_str().map(str::to_owned))
+        else {
+            return Ok(false);
+        };
+        self.turn = Some(id);
+        self.ended = None;
+        self.said = None;
+        self.failure = None;
+        self.steer_into(thread);
+        Ok(true)
     }
 
     /// Sends a request and reads until its answer comes, handling everything else on the way.
@@ -422,6 +501,17 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
     }
 
     async fn handle(&mut self, message: Value) {
+        // Codex's answer to the owner's words written into its turn (crate::steer): taken unless
+        // it's an error (its turn was over).
+        if let Some(&id) = self.conn.steering.front()
+            && let Some(answer) = conn::answer_to(&message, id)
+        {
+            self.conn.steering.pop_front();
+            if let Some(steer) = &self.conn.steer {
+                steer.answered(answer.is_ok());
+            }
+            return;
+        }
         if let Some(answer) = self
             .limits_read
             .and_then(|id| conn::answer_to(&message, id))
@@ -835,8 +925,7 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
             self.conn
                 .request(
                     "turn/steer",
-                    json!({"threadId": thread, "expectedTurnId": turn,
-                           "input": [text(&format!("obid declined that: {why}"))]}),
+                    steer_params(thread, turn, &format!("obid declined that: {why}")),
                 )
                 .await;
         }
@@ -913,6 +1002,11 @@ fn thread_params(cwd: &str, own: bool) -> Value {
 }
 
 /// A text input item.
+/// What `turn/steer` takes to add `words` to `thread`'s turn `turn` under way.
+pub fn steer_params(thread: &str, turn: &str, words: &str) -> Value {
+    json!({"threadId": thread, "expectedTurnId": turn, "input": [text(words)]})
+}
+
 fn text(text: &str) -> Value {
     json!({"type": "text", "text": text, "text_elements": []})
 }
