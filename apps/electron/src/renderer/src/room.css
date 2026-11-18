@@ -26,3 +26,10 @@
 .ask-card-said { position: relative; padding-left: 12px; color: var(--text); font-size: var(--text-base); line-height: 20px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ask-card-said::before { content: ''; position: absolute; top: 2px; bottom: 2px; left: 0; width: 3px; border-radius: 1.5px; background: var(--line); }
 .ask-card-line { color: var(--muted); font-size: var(--text-sm); line-height: 16px; overflow-wrap: anywhere; }
+
+/* a member's thread: handing their Oby a task (HandOff.tsx), a quiet line over the box */
+.room-handoff { display: block; margin: 0 auto 6px; padding: 2px 8px; color: var(--muted); font-size: var(--text-sm); line-height: 18px; border-radius: 6px; transition: color var(--fade); }
+.room-handoff:hover { color: var(--ink); }
+.handoff-two { display: grid; grid-template-columns: 1.6fr 1fr; gap: 12px; margin-top: 16px; }
+.handoff-two > span { min-width: 0; }
+.handoff-note { margin: 10px 0 0; color: var(--muted); font-size: var(--text-sm); }

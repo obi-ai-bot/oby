@@ -6,7 +6,7 @@ The business behavior contract for a task one member's Oby hands to another's ac
 
 - **Outcome:** Ana's Oby asks Ben's to do a piece of work in one of Ben's repositories. Ben sees it on Home, quoted, and says yes or no. On yes, Ben's Oby runs it as a task in Oby's box, the way any work from outside runs, and Ana's Oby gets the result: done or failed, the branch and commit it made, and what its agent said it did.
 - **Status:** **Implemented** in obid (receiving, the job, the result, sending) and in the Electron app (Home's card, a card and delegation that take and send `handoff`).
-- **Scope:** receiving and running a `handoff`, its result, and sending one from obid's API. **Out of scope:** a screen for sending one (Sangam's: until then the API sends it, `POST /v1/obid/sphere/requests`), pulling the receiver's branch into the sender's repository, and handoffs between an owner's own Obys.
+- **Scope:** receiving and running a `handoff`, its result, and sending one from obid's API and from a member's thread in the Electron app ([sphere-app.md](sphere-app.md), SPHEREAPP-6 and 7). **Out of scope:** handing one over by talking to Oby (#2428's `oby_handoff`), pulling the receiver's branch into the sender's repository, and handoffs between an owner's own Obys.
 
 ## Behavior
 

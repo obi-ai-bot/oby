@@ -7,12 +7,13 @@ import { OwnerAvatar } from './ObyFace';
 import { api } from './obid';
 import { keyed } from './live';
 import type { InboxItem } from '../../shared/obid-wire';
-import { STARTER_RULE_ID } from '../../shared/policy';
+import { withStarterRule } from '../../shared/policy';
 import type { Policy, PolicyAnswer } from '../../shared/sphere';
 import RepoTicks from './RepoTicks';
 import { canAddProgress, canChangeRepos, canOpenRoom, confirmIsOff, repoTicks, whatItTells, type SharingRule } from './sharing';
 import { roomOpens, useRoom } from './room';
-import { ME, SUFFIX, cancelInvite, deleteSphere, memberCount, removeMember, ruleWords, trimSlug, slugOf, slugProblem, updateSphere, urlOf, useSpheres, type Sphere } from './spheres';
+import { ME, SUFFIX, cancelInvite, deleteSphere, memberCount, removeMember, revokedLine, ruleWords, trimSlug, slugOf, slugProblem, updateSphere, urlOf, useSpheres, type Sphere } from './spheres';
+import { JoinLink, useJoinLink } from './JoinLink';
 
 export const sphereSettingsLabel = (id: string, spheres: Sphere[]) => `${spheres.find((s) => s.id === id)?.name ?? ''} settings`;
 
@@ -82,6 +83,7 @@ function Settings({ sphere }: { sphere: Sphere }) {
   const [confirming, setConfirming] = useState(false);
 
   return <>
+    {sphere.revoked && <Revoked sphere={sphere} />}
     <Group
       i={1}
       footer={admin ? 'Its URL is in every invite link: a new one stops the old links working.' : 'Only its admins can change these.'}
@@ -150,8 +152,8 @@ function Settings({ sphere }: { sphere: Sphere }) {
         </div>
       ))}
     </Group>
-    {sphere.live && window.app?.spherePolicy && <SphereRules />}
-    {sphere.live && <WhatItTells sphere={sphere} />}
+    {sphere.live && !sphere.revoked && window.app?.spherePolicy && <SphereRules />}
+    {sphere.live && !sphere.revoked && <WhatItTells sphere={sphere} />}
     {/* last, set apart: what it does, then its button under it at the left */}
     <Group i={5}>
       <div className="set-row set-danger">
@@ -164,6 +166,39 @@ function Settings({ sphere }: { sphere: Sphere }) {
     </Group>
     {confirming && <ConfirmModal sphere={sphere} onClose={() => setConfirming(false)} />}
   </>;
+}
+
+// A live Obysphere whose admin took this Oby out (SPHEREAPP-5): said where it is, with a new link's
+// field to come back; Leave, at the foot, lets it go
+function Revoked({ sphere }: { sphere: Sphere }) {
+  const link = useJoinLink();
+  return (
+    <Group i={0} title="You’re not in it any more" footer="To come back, ask its admin for a new invite link.">
+      <Row label={<span className="set-problem" role="status">{revokedLine(sphere)}</span>} />
+      <div className="set-row"><JoinLink link={link} /></div>
+    </Group>
+  );
+}
+
+// Settings › Obysphere (SPHEREAPP-4): the one you're in, by name and who you are in it, or the
+// field for an invite link. A revoked one says so (SPHEREAPP-5), with the field to come back.
+export function SphereJoinPage() {
+  const live = useSpheres().find((s) => s.live);
+  const link = useJoinLink();
+  if (live && !live.revoked) {
+    return (
+      <Group i={1} footer="Its settings are under its ⋮ in the side panel.">
+        <Row label="Your Obysphere"><Value>{live.name}</Value></Row>
+        {live.me && <Row label="You’re in it as"><Value>{live.me}</Value></Row>}
+      </Group>
+    );
+  }
+  return (
+    <Group i={1} title="Join an Obysphere" footer="Your Oby can talk to your team’s Obys there. Ask its admin for the invite link.">
+      {live?.revoked && <Row label={<span className="set-problem" role="status">{revokedLine(live)}</span>} />}
+      <div className="set-row"><JoinLink link={link} /></div>
+    </Group>
+  );
 }
 
 // What your Oby tells the others by itself, from obid's rules, each with Remove. With nothing shared,
@@ -238,8 +273,8 @@ export function SphereRules() {
         return <Row key={n} label={label} about={about} />;
       })}
       {rules?.length === 0 && <Row label="Nobody may ask yet" about="Every question to another member’s Oby is refused." />}
-      {shown?.admin && !shown.policy.rules.some((r) => r.id === STARTER_RULE_ID) && (
-        <Row label="Members may ask each other’s Obys" about="Questions and reviews, in every repository.">
+      {shown?.admin && withStarterRule(shown.policy.rules) && (
+        <Row label="Members may ask each other’s Obys" about="Questions, reviews and handoffs, in every repository.">
           <button className="set-button set-member-action" onClick={() => letAsk(shown.policy.version)}>Let members ask</button>
         </Row>
       )}
