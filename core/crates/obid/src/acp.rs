@@ -1110,10 +1110,11 @@ pub mod cursor {
     /// See [`data_dir`].
     pub const SHORT_DATA: &str = "d";
 
-    /// The longest data folder Cursor keeps its sockets in (cursor-agent 2026.10.01, `CURSOR_DATA_DIR`
-    /// or `~/.cursor`: a socket's name has room for about 84 characters of folder); past it, Cursor
-    /// uses `/tmp/.cursor`, which the job sandbox doesn't let it write, and it stops.
-    pub const SOCKET_ROOM: usize = 84;
+    /// The longest data folder Cursor keeps its sockets in (cursor-agent 2026.11.13: `$CURSOR_DATA_DIR/
+    /// projects`, else `$CURSOR_DATA_DIR`, else `$TMPDIR/.cursor`, the first of 83 characters or
+    /// fewer); past them, Cursor uses `/tmp/.cursor`, which the job sandbox doesn't let it write,
+    /// and it stops as it starts (CONVERSATION-AGENT-41).
+    pub const SOCKET_ROOM: usize = 83;
 
     /// Says in obid's log when a Cursor job's folder (its own login folder, under obid's home) is too
     /// long for Cursor's sockets.
@@ -1123,7 +1124,7 @@ pub mod cursor {
         let length = real.as_os_str().len();
         if length > SOCKET_ROOM {
             tracing::warn!(
-                "Cursor's folder {} is {length} characters: past {SOCKET_ROOM}, Cursor puts its sockets in /tmp/.cursor, which the job sandbox doesn't let it write. Give obid a shorter home.",
+                "Cursor's folder {} is {length} characters: past {SOCKET_ROOM}, Cursor puts its sockets in its TMPDIR's .cursor, else /tmp/.cursor, which the job sandbox doesn't let it write. Give obid a shorter home.",
                 real.display()
             );
         }
@@ -1297,11 +1298,12 @@ mod cursor_folder_tests {
     use std::path::Path;
 
     // CONVERSATION-AGENT-6: a long user name is no reason for Cursor not to start (its sockets past
-    // the room go to /tmp/.cursor, which its box denies, and it dies at once).
+    // the room go to /tmp/.cursor, which its box denies, and it dies at once). Up to 17 characters
+    // under the default home; past them a conversation says why it doesn't run (CONVERSATION-AGENT-41).
     #[test]
     fn conversation_agent_6_cursors_data_folder_fits_a_long_user_name() {
         let runner = |user: &str| format!("/Users/{user}/Library/Application Support/Oby/Runner");
-        for user in ["wellprado", "wellingtonprado", "an-18-char-name-xx"] {
+        for user in ["someone", "a-15-char-namex", "a-17-char-name-xx"] {
             let home = crate::conversation::cursor_folder(
                 Path::new(&runner(user)),
                 "c4756325-6b41-4471-a95e-b5acb16cd325",
@@ -1310,6 +1312,17 @@ mod cursor_folder_tests {
             assert!(data.as_os_str().len() <= SOCKET_ROOM, "{}", data.display());
             assert!(environment(&home).contains(&("CURSOR_DATA_DIR", data.into_os_string())));
         }
+    }
+
+    // CONVERSATION-AGENT-41: Cursor takes a data folder of 83 characters at most for its sockets
+    // (`length > 83` in cursor-agent 2026.11.13): one of 84 is past it, so obid's is the short one.
+    #[test]
+    fn conversation_agent_41_cursors_data_folder_is_83_characters_at_most() {
+        let home = format!("/{}", "h".repeat(84 - "/.cursor".len() - 1));
+        assert_eq!(Path::new(&home).join(".cursor").as_os_str().len(), 84);
+        assert_eq!(data_dir(Path::new(&home)), Path::new(&home).join("d"));
+        let fits = &home[..home.len() - 1];
+        assert_eq!(data_dir(Path::new(fits)), Path::new(fits).join(".cursor"));
     }
 
     #[test]

@@ -51,8 +51,16 @@ Measured the same way, back to back with #726's code, at load 290–350. The sec
 
 ## What's left
 
-- **Codex conversations** still start `codex app-server` every turn. One app-server for all of a conversation's turns, or all conversations' threads, would do for Codex what the change above does for Claude Code.
+- **A new Codex conversation's `app-server` started ahead**, as a new conversation's Claude Code is. Its follow-ups no longer start Codex (below); its first turn still does.
 - Show the model's thinking (`thinking_delta`) and a tool's start (`content_block_start`) as they stream, instead of waiting for the whole tool-use block.
+
+## Codex follow-ups (2026-11-18)
+
+A Codex conversation started `codex app-server` again for every turn (#2490): its `features list` check, the start, `initialize` and `thread/resume` before the turn's `turn/start`. Measured on a scratch obid on 2026-11-17 at load 10 to 19, its follow-ups took 5.2 to 12.7 s where Claude Code's took 1.3 to 3.3 s.
+
+What changed (CONVERSATION-AGENT-44, 45): a Codex turn that answered keeps its `app-server` running, its thread loaded, as a conversation's Claude Code waits (`Warm`, the same 30 minutes and three conversations at most, ended the same ways). The next turn is a `turn/start` written to it: no start, no `features list`, no `initialize`, no thread read again. That turn's model is its own (`turn/start` names it). It's given the turn only when it was started as the turn would start one now (its `-c` settings, its lane, its account and what its thread is told: `harness_codex::key`), its login copy isn't near its end, and it wrote nothing while it waited but its housekeeping (`codex::between_turns`: a notification that isn't an item's or a turn's). Else it ends, and the turn starts Codex and picks the thread up as before. An own Codex (LANES-13) is asked for its settings again before each turn, as before each thread. That is also what happens after it died. T3 Code does the same: one `app-server` per session, each turn a `turn/start` on its thread, and a failed one retired so the next turn starts a fresh one (its `CodexAdapterV2`).
+
+Not measured on a real Codex: the follow-up's time is now the model's, as Claude Code's is.
 
 ## The own lane's first turn (2026-11-16)
 
