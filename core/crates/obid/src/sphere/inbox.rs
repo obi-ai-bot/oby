@@ -159,20 +159,50 @@ pub mod action {
     pub const TRUST_KEY: &str = "trust_key";
 }
 
+/// A `trust_key` card's `reason` (SPHERE-23): what the Obysphere's owner event says changed the
+/// owner's key. A closed set, each with obid's own words; the Sphere's `rotated` (reserved, never
+/// sent in obi/0.1) and any value obid doesn't know are no reason.
+/// The owner signed in again and the Sphere bound their new key.
+pub const SIGNED_IN_AGAIN: &str = "signed_in_again";
+/// An admin of the Sphere reset the owner's key.
+pub const ADMIN_RESET: &str = "admin_reset";
+/// The Sphere's operator reset the owner's key.
+pub const OPERATOR_RESET: &str = "operator_reset";
+
+/// obid's own words for each reason it knows, as the Obysphere's claim (SPHERE-23).
+fn reason_words(owner: &str, reason: &str) -> Option<String> {
+    let what = match reason {
+        SIGNED_IN_AGAIN => format!("{owner} signed in again"),
+        ADMIN_RESET => "an admin reset their key".to_owned(),
+        OPERATOR_RESET => "the Obysphere's operator reset their key".to_owned(),
+        _ => return None,
+    };
+    Some(format!("The Obysphere says {what}. "))
+}
+
 /// Oby's ask to trust `owner`'s changed owner key (SPHERE-8): obid's own fixed words with only the
 /// owner id and the new key's fingerprint, so nothing the Sphere or a card says goes on the card.
-pub fn trust_key_item(owner: &str, fingerprint: &str, now: i64) -> Item {
+/// With a `reason` (SPHERE-23), its own fixed sentence for that code says what the Obysphere claims
+/// happened: a claim, never a fact, since the Sphere is who could swap a key, and the ask to
+/// compare stays.
+pub fn trust_key_item(owner: &str, fingerprint: &str, reason: Option<&str>, now: i64) -> Item {
+    let said = reason.and_then(|r| reason_words(owner, r));
+    let mut payload = json!({"owner": owner, "fingerprint": fingerprint});
+    if let (Some(reason), Some(_)) = (reason, &said) {
+        payload["reason"] = json!(reason);
+    }
+    let said = said.unwrap_or_default();
     let mut item = confirm_item(
         "",
         format!("New key for {owner}: compare with them ({fingerprint})"),
         // Home's card shows the title on one line: the fingerprint shows whole here.
         format!(
-            "{owner}'s owner key changed. Compare its fingerprint with them before you trust it: {fingerprint}."
+            "{said}{owner}'s owner key changed. Compare its fingerprint with them before you trust it: {fingerprint}."
         ),
         Confirmed {
             action: action::TRUST_KEY.into(),
             target: owner.into(),
-            payload: json!({"owner": owner, "fingerprint": fingerprint}),
+            payload,
         },
         now,
     );
