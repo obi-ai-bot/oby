@@ -184,6 +184,15 @@ async function joinByOpenUrl(link) {
   }, link);
 }
 
+// Each scenario starts with the whole rig up: one that took the Sphere or Dana's obid down (L7) and
+// ended red before bringing it back leaves the next one nothing to talk to ("fetch failed")
+async function stackUp() {
+  const answers = async (url) => { try { return (await fetch(url, { signal: AbortSignal.timeout(5000) })).status > 0; } catch { return false; } };
+  if (!(await answers(`http://127.0.0.1:${rigState().spherePort}/v0.1/health`))) { say("  (the Sphere was down: started again)"); rig("sphere", "start"); }
+  if ((await dana.call("GET", "/v1/status")).status !== 200) { say("  (Dana's obid was down: started again)"); rig("dana", "start"); }
+  if ((await you.call("GET", "/v1/status")).status !== 200) throw new Error("your obid is down: nothing after this can run");
+}
+
 // Everything after L1 needs you joined and the rule written: by the app's field if L1 joined, else
 // by the app's oby:// path (main's own join and key; its dialog answered by the rig), said so.
 async function joinedForTheRest() {
@@ -377,6 +386,36 @@ const SCENARIOS = [
     check(result.branch ?? result.head_branch, "the result has no branch");
     ok(`the result came back: ${result.branch ?? result.head_branch} at ${(result.sha ?? result.head_sha).slice(0, 7)}`);
   } },
+  { id: "L9", rig: "RIG-36", title: "@ in Home's box asks a member's Oby: picked from the joined Sphere's members, sent with a click, signed", run: async () => {
+    await writePolicy(RULES);
+    if ((await dana.get("/v1/obid/sphere")).state !== "joined") red("Dana isn't in the Sphere: L9 runs before L8");
+    // a new conversation, as a person starts one: an earlier one (L2's) may be open on Home
+    await goHome();
+    await showSidebar(ctx.page);
+    const fresh = await firstVisible([ctx.page.getByRole("button", { name: "New conversation", exact: true }), ctx.page.getByText("New conversation", { exact: true })], 3000);
+    if (fresh) await fresh.click({ timeout: 5000 });
+    const box = homeBox();
+    await box.click({ timeout: 10_000 });
+    await ctx.page.keyboard.insertText("@dan");
+    const option = await until("dana in the @ list", async () => {
+      const o = ctx.page.locator(".mention-panel [role=\"option\"]").filter({ hasText: /dana/ });
+      return (await o.count()) ? o.first() : null;
+    }, 30_000).catch(async () => red(`the @ list shows no dana, a member of the joined Sphere (it shows: ${JSON.stringify(await ctx.page.locator(".mention-panel [role=\"option\"]").allInnerTexts().catch(() => []))}): the @ list reads no live members (the @ ask, ASK-37 to 41)`));
+    await option.click();
+    const question = `Which branch are you on? ${randomBytes(3).toString("hex")}`;
+    await ctx.page.keyboard.insertText(` ${question}`);
+    const before = new Set((await exchangesOf(you)).map((e) => e.correlationId));
+    await sendFromHome();
+    const sent = await until("the ask the @ made", async () => (await exchangesOf(you)).find((e) => !before.has(e.correlationId) && textOf(e).includes(question)), 60_000)
+      .catch(async () => red(`no ask went to dana within 60 s of Send (your inbox: ${JSON.stringify((await you.get("/v1/inbox")).filter((i) => i.state === "open").map((i) => [i.kind, i.title]))})`));
+    check(sent.type === "question" || sent.messages?.[0]?.envelope?.type === "question", `the ask went as ${sent.type ?? sent.messages?.[0]?.envelope?.type}, not a question`);
+    check(!textOf(sent).includes("@dana"), "the question carries the @dana mention");
+    check(!(await you.get("/v1/inbox")).some((i) => i.kind === "confirm" && i.state === "open" && i.title.includes(question.slice(0, 20))), "the ask waited on a Confirm: your words weren't taken as signed");
+    ok(`your @dana and click on Send asked Dana's Oby at once, signed (${sent.correlationId})`);
+    await until("the answer on the ask's card", async () => /wasn’t bothered|wasn't bothered/.test(await ctx.page.locator(".ask-card").filter({ hasText: question.slice(0, 20) }).last().innerText().catch(() => "")), 120_000)
+      .catch(async () => red(`the ask's card in the conversation doesn't show Dana's answer within 2 minutes: ${JSON.stringify(await ctx.page.locator(".ask-card").allInnerTexts().catch(() => []))}`));
+    ok("its card in the conversation shows Dana's Oby's answer");
+  } },
   { id: "L7", rig: "RIG-33", title: "A peer offline says so at 20 s and answers later; an ask sent while the Sphere is down goes once it is back, one answer", run: async () => {
     await writePolicy(RULES);
     rig("dana", "stop");
@@ -418,36 +457,6 @@ const SCENARIOS = [
     const shown = (await threadText(ctx.page)).split(again).length - 1;
     check(shown === 1, `your thread shows the ask ${shown} times`);
     ok("exactly one exchange each side and one answer");
-  } },
-  { id: "L9", rig: "RIG-36", title: "@ in Home's box asks a member's Oby: picked from the joined Sphere's members, sent with a click, signed", run: async () => {
-    await writePolicy(RULES);
-    if ((await dana.get("/v1/obid/sphere")).state !== "joined") red("Dana isn't in the Sphere: L9 runs before L8");
-    // a new conversation, as a person starts one: an earlier one (L2's) may be open on Home
-    await goHome();
-    await showSidebar(ctx.page);
-    const fresh = await firstVisible([ctx.page.getByRole("button", { name: "New conversation", exact: true }), ctx.page.getByText("New conversation", { exact: true })], 3000);
-    if (fresh) await fresh.click({ timeout: 5000 });
-    const box = homeBox();
-    await box.click({ timeout: 10_000 });
-    await ctx.page.keyboard.insertText("@dan");
-    const option = await until("dana in the @ list", async () => {
-      const o = ctx.page.locator(".mention-panel [role=\"option\"]").filter({ hasText: /dana/ });
-      return (await o.count()) ? o.first() : null;
-    }, 30_000).catch(async () => red(`the @ list shows no dana, a member of the joined Sphere (it shows: ${JSON.stringify(await ctx.page.locator(".mention-panel [role=\"option\"]").allInnerTexts().catch(() => []))}): the @ list reads no live members (the @ ask, ASK-37 to 41)`));
-    await option.click();
-    const question = `Which branch are you on? ${randomBytes(3).toString("hex")}`;
-    await ctx.page.keyboard.insertText(` ${question}`);
-    const before = new Set((await exchangesOf(you)).map((e) => e.correlationId));
-    await sendFromHome();
-    const sent = await until("the ask the @ made", async () => (await exchangesOf(you)).find((e) => !before.has(e.correlationId) && textOf(e).includes(question)), 60_000)
-      .catch(async () => red(`no ask went to dana within 60 s of Send (your inbox: ${JSON.stringify((await you.get("/v1/inbox")).filter((i) => i.state === "open").map((i) => [i.kind, i.title]))})`));
-    check(sent.type === "question" || sent.messages?.[0]?.envelope?.type === "question", `the ask went as ${sent.type ?? sent.messages?.[0]?.envelope?.type}, not a question`);
-    check(!textOf(sent).includes("@dana"), "the question carries the @dana mention");
-    check(!(await you.get("/v1/inbox")).some((i) => i.kind === "confirm" && i.state === "open" && i.title.includes(question.slice(0, 20))), "the ask waited on a Confirm: your words weren't taken as signed");
-    ok(`your @dana and click on Send asked Dana's Oby at once, signed (${sent.correlationId})`);
-    await until("the answer on the ask's card", async () => /wasn’t bothered|wasn't bothered/.test(await ctx.page.locator(".ask-card").filter({ hasText: question.slice(0, 20) }).last().innerText().catch(() => "")), 120_000)
-      .catch(async () => red(`the ask's card in the conversation doesn't show Dana's answer within 2 minutes: ${JSON.stringify(await ctx.page.locator(".ask-card").allInnerTexts().catch(() => []))}`));
-    ok("its card in the conversation shows Dana's Oby's answer");
   } },
   { id: "L8", rig: "RIG-34", title: "Leave drops Dana and an ask says so; a revoke shows a line; a new link rejoins", run: async () => {
     const danaKey = () => createPrivateKey(rigState().ownerKeys.dana);
@@ -613,7 +622,7 @@ try {
   say(`The dev app on you: pid ${ctx.pid}`);
   for (const s of SCENARIOS) {
     if (only.size && !only.has(s.id)) continue;
-    if (s.id !== "L1") await joinedForTheRest();
+    if (s.id !== "L1") { await stackUp(); await joinedForTheRest(); }
     say(`\n${s.id} (${s.rig}) ${s.title}`);
     let outcome = { id: s.id, rig: s.rig, green: true, why: "" };
     try { await s.run(); }
