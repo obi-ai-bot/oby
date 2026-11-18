@@ -175,6 +175,18 @@ pub fn config(folder: &Path, remote: &Path, agent: &Path) -> Value {
     })
 }
 
+/// `config`'s first Claude Code account signed in, as a person's is, with a login file: a task the
+/// owner names a signed-out account for is refused (ACCOUNTS-35).
+pub fn signed_in(config: &Value) {
+    let dir = Path::new(
+        config["agents"]["claude"]["accounts"][0]["configDir"]
+            .as_str()
+            .unwrap(),
+    );
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join(".credentials.json"), "{}").unwrap();
+}
+
 /// Puts `token` in obid's `home/api-token` (0600, in a 0700 `home`), where obid takes its token
 /// from: never from its environment (docs/runner-api.md, "obid only: configuration").
 pub fn put_token(config: &Value, token: &str) {

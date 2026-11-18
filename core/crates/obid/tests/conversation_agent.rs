@@ -741,14 +741,12 @@ fn accounts_31_a_task_asked_of_a_full_agent_runs_elsewhere_and_says_why() {
 }
 
 /// ACCOUNTS-32: a task named to an account whose CLI isn't on this Mac is refused before anything
-/// starts, saying why and what to do in plain words; one named to a signed-out account still goes
-/// there (ACCOUNTS-20), routed nowhere else; an agent asked for that isn't installed hands it to
-/// one that is, saying so.
+/// starts, saying why and what to do in plain words; an agent asked for that isn't installed hands
+/// it to one that is, saying so.
 #[test]
 fn accounts_32_a_task_named_to_an_account_that_cant_run_is_refused() {
     let folder = Folder::new("route-cant-run");
     let mut config = configured(&folder);
-    std::fs::remove_file(folder.0.join("home/accounts").join(CODEX).join("auth.json")).unwrap();
     config["agents"]["cursor"]["bin"] = json!(folder.0.join("nowhere/cursor-agent"));
     let obid = start(&folder.0, &config, None);
     let post = |extra: Value| {
@@ -769,17 +767,86 @@ fn accounts_32_a_task_named_to_an_account_that_cant_run_is_refused() {
     assert!(!missing.text.contains("/nowhere"), "{}", missing.text);
     let jobs = call(&obid, "GET", "/v1/jobs", None).body;
     assert_eq!(jobs.as_array().unwrap().len(), 0, "nothing started: {jobs}");
-    let signed_out = post(json!({"account": CODEX}));
-    assert_eq!(signed_out.status, 201, "{}", signed_out.text);
-    assert_eq!(
-        (&signed_out.body["account"], &signed_out.body["routed"]),
-        (&json!(CODEX), &Value::Null),
-        "{}",
-        signed_out.text
-    );
     let asked = post(json!({"agent": "cursor"}));
     assert_eq!(asked.status, 201, "{}", asked.text);
     assert_eq!(asked.body["account"], CLAUDE);
+    assert_eq!(
+        asked.body["routed"],
+        "Cursor isn't installed on this Mac, so this runs on Claude Code · Stub.",
+        "{}",
+        asked.text
+    );
+}
+
+/// A new task, its job body's `extra` added.
+fn post_task(obid: &Obid, extra: Value) -> Answer {
+    let mut job =
+        json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Nothing to do"});
+    job.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    call(obid, "POST", "/v1/jobs", Some(&json!({ "job": job })))
+}
+
+/// ACCOUNTS-35, the owner's word of 2026-11-18: a task named to an account that isn't signed in is
+/// refused before anything starts, saying why and what to do; the owner's words to that task,
+/// whose follow-up keeps its account, are refused the same way once it is signed out.
+#[test]
+fn accounts_35_a_task_named_to_a_signed_out_account_is_refused() {
+    let folder = Folder::new("route-signed-out");
+    let config = configured(&folder);
+    let obid = start(&folder.0, &config, None);
+    let first = post_task(&obid, json!({"account": CLAUDE}));
+    assert_eq!(first.status, 201, "{}", first.text);
+    let id = first.body["id"].as_str().unwrap().to_owned();
+    let done = ended_within(&obid, &id, 60);
+    assert!(!done["status"].as_str().unwrap().is_empty(), "{done}");
+    std::fs::remove_file(
+        folder
+            .0
+            .join("home/accounts")
+            .join(CLAUDE)
+            .join(".credentials.json"),
+    )
+    .unwrap();
+    let why = "Claude Code isn't signed in, so this task didn't start: sign it in from Settings › Agents, or ask for another account.";
+    let named = post_task(&obid, json!({"account": CLAUDE}));
+    assert_eq!(named.status, 422, "{}", named.text);
+    assert!(named.text.contains(why), "{}", named.text);
+    let messages = format!("/v1/jobs/{id}/messages");
+    let followed = call(
+        &obid,
+        "POST",
+        &messages,
+        Some(&json!({"text": "Once more"})),
+    );
+    assert_eq!(followed.status, 422, "{}", followed.text);
+    assert!(followed.text.contains(why), "{}", followed.text);
+    let jobs = call(&obid, "GET", "/v1/jobs", None).body;
+    assert_eq!(
+        jobs.as_array().unwrap().len(),
+        1,
+        "nothing else started: {jobs}"
+    );
+}
+
+/// ACCOUNTS-36: a reason two accounts of a tool share is said once in a routed line (#2508).
+#[test]
+fn accounts_36_a_reason_two_accounts_share_is_said_once() {
+    let folder = Folder::new("route-said-once");
+    let mut config = configured(&folder);
+    config["agents"]["cursor"]["bin"] = json!(folder.0.join("nowhere/cursor-agent"));
+    let second = config["agents"]["cursor"]["accounts"][0].clone();
+    let mut second = second.as_object().unwrap().clone();
+    second.insert("id".into(), json!("ustub2"));
+    second.insert("name".into(), json!("Cursor two"));
+    (config["agents"]["cursor"]["accounts"]
+        .as_array_mut()
+        .unwrap())
+    .push(Value::Object(second));
+    let obid = start(&folder.0, &config, None);
+    let asked = post_task(&obid, json!({"agent": "cursor"}));
+    assert_eq!(asked.status, 201, "{}", asked.text);
     assert_eq!(
         asked.body["routed"],
         "Cursor isn't installed on this Mac, so this runs on Claude Code · Stub.",

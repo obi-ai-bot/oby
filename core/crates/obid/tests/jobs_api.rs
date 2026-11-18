@@ -3066,7 +3066,9 @@ fn recovery_9_a_changing_failure_goes_on_to_the_ceiling() {
 fn usage_limit_jobs_wait_for_room_and_ask_no_one() {
     let folder = Folder::new("limit-owner-decision");
     let remote = fixture(&folder.0.join("fixture"));
-    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let config = config(&folder.0, &remote);
+    support::signed_in(&config);
+    let obid = start(&folder.0, &config);
     let post = || {
         post_job(&obid, json!({"repo":"obi-e2e/fixture-app", "kind":"research", "task":"LIMITED WEEK: 86400", "account":"Stub"})).body["id"].as_str().unwrap().to_owned()
     };
@@ -6942,6 +6944,8 @@ fn lanes_23_an_own_job_loads_every_settings_source_as_the_terminal_does() {
     let repos = r#"{"mcpServers":{"repos-server":{"type":"http","url":"http://127.0.0.1:9/"}}}"#;
     for (file, text) in [
         (account.join("skills/owners-skill/SKILL.md"), "# Mine\n"),
+        // Signed in: its follow-up is named to it (ACCOUNTS-35).
+        (account.join(".credentials.json"), "{}"),
         (account.join("settings.json"), off),
         (account.join(".claude.json"), server),
         (work.join(".claude/settings.json"), hook),
