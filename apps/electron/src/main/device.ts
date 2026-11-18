@@ -59,6 +59,15 @@ export function keptKey(file: string, make: () => KeyObject): KeyObject {
   return kept;
 }
 
+// A key made anew in main replacing `<file>.pem` (an owner key the Obysphere has just bound,
+// SPHEREAPP-12): written beside it 0600, never through a link, then renamed over it in one step
+export function replaceKey(file: string, key: KeyObject) {
+  const path = join(app.getPath('userData'), `${file}.pem`), next = `${path}.next`;
+  rmSync(next, { force: true });
+  writeOwn(next, key.export({ type: 'pkcs8', format: 'pem' }) as string, O.O_EXCL);
+  renameSync(next, path);
+}
+
 // An older Oby's key, sealed by safeStorage, opened once to be moved (KEYCHAIN-13). One that can't
 // be opened (another signature denied, a Keychain reset) is set aside, and a new key made
 function movedOnce(sealed: string): KeyObject | null {

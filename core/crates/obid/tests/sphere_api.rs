@@ -4189,5 +4189,111 @@ async fn sphere_23_a_key_rebound_by_sign_in_says_so_and_still_asks() {
             ernestos_pin(&obid)["fingerprint"],
             ernesto.owner.key.key_id()
         );
+/// What the Sphere's directory holds for obid's own card after its owner signed in again and the
+/// Sphere bound it with no invitation (SPHERE-24): the owner's key bound, and the member `status`
+/// with its current key `public_key` (obid's own, unless a test says otherwise).
+fn listed_in_sphere(
+    sphere: &FakeSphere,
+    card: &Value,
+    owner: &Owner,
+    status: &str,
+    public_key: &str,
+) {
+    let params = obi_protocol::card::params(card).unwrap().clone();
+    let mut state = sphere.lock();
+    state.bound.insert(owner.id.clone(), owner.key.public_key());
+    state.members.retain(|m| m["obi"] != params["obi_id"]);
+    let seq = state.entries.len() + 1;
+    state.members.push(json!({
+        "obi": params["obi_id"], "owner": owner.id, "owner_key": owner.key.public_key(),
+        "owner_key_id": owner.key.key_id(), "status": status,
+        "joined_at": obi_protocol::time::format(obi_protocol::time::now()), "card": card,
+        "keys": [{"key_id": obi_protocol::keys::key_id_of(public_key), "public_key": public_key,
+                  "valid_from_seq": seq, "valid_until_seq": null}]
+    }));
+}
+
+/// SPHERE-24: after a sign-in re-bind the Sphere already lists this Oby's card, so `POST
+/// /v1/obid/sphere/join` with `"rebound": true` in place of `invitation` redeems nothing: it
+/// exchanges the delegation, checks the directory lists obid's own card, active, under that owner
+/// and owner key, then follows as a join does. Not listed, removed, or listed with another Obi key:
+/// `409`, saying why, and nothing is joined. Both an invitation and `rebound`, or a `rebound` that
+/// isn't `true`, is `422`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sphere_24_a_rebound_join_takes_the_membership_the_sphere_lists() {
+    let folder = Folder::new("sphere-24");
+    let sphere = FakeSphere::start().await;
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+    let owner = Owner::new("wellington");
+    tokio::task::block_in_place(|| {
+        let key = call(&obid, "POST", "/v1/obid/sphere/key", None);
+        assert_eq!(key.status, 200, "{}", key.text);
+        let made = call(
+            &obid,
+            "POST",
+            "/v1/obid/sphere/card",
+            Some(
+                &json!({"url": sphere.url, "sphere": SPHERE, "obiId": "obi-wellington",
+                         "name": "Wellington's Obi", "ownerKey": owner.key.public_key(),
+                         "accepts": ["review_request"]}),
+            ),
+        );
+        assert_eq!(made.status, 200, "{}", made.text);
+        let unsigned = made.body["card"].as_object().unwrap().clone();
+        let card = obi_protocol::card::sign(&unsigned, &owner.key).unwrap();
+        let own_key = key.body["publicKey"].as_str().unwrap().to_owned();
+        let delegation = owner.delegation("obi-wellington", OBI_SCOPES);
+        let join = |extra: Value| {
+            let mut body = json!({"url": sphere.url, "sphere": SPHERE, "card": card,
+                                  "delegation": delegation});
+            for (k, v) in extra.as_object().unwrap() {
+                body[k] = v.clone();
+            }
+            call(&obid, "POST", "/v1/obid/sphere/join", Some(&body))
+        };
+        let not_joined = || assert_eq!(get(&obid, "/v1/obid/sphere")["state"], "none");
+
+        // Shapes that aren't a rebound join.
+        let both = join(json!({"rebound": true, "invitation": {"id": "x", "secret": "y"}}));
+        assert_eq!(both.status, 422, "{}", both.text);
+        let odd = join(json!({"rebound": "yes"}));
+        assert_eq!(odd.status, 422, "{}", odd.text);
+        not_joined();
+
+        // Not listed at all.
+        let absent = join(json!({"rebound": true}));
+        assert_eq!(absent.status, 409, "{}", absent.text);
+        assert!(
+            absent.text.contains("nothing was joined"),
+            "{}",
+            absent.text
+        );
+        not_joined();
+
+        // Listed, but removed.
+        listed_in_sphere(&sphere, &card, &owner, "revoked", &own_key);
+        let removed = join(json!({"rebound": true}));
+        assert_eq!(removed.status, 409, "{}", removed.text);
+        not_joined();
+
+        // Listed with an Obi key that isn't obid's.
+        let other = obi_protocol::keys::Keypair::from_seed_string("someone else's Obi key");
+        listed_in_sphere(&sphere, &card, &owner, "active", &other.public_key());
+        let not_mine = join(json!({"rebound": true}));
+        assert_eq!(not_mine.status, 409, "{}", not_mine.text);
+        not_joined();
+
+        // Listed as the Sphere binds it after a re-bind: joined, with no invitation redeemed.
+        let redeemed_before = sphere.lock().invitations.len();
+        listed_in_sphere(&sphere, &card, &owner, "active", &own_key);
+        let joined = join(json!({"rebound": true}));
+        assert_eq!(joined.status, 200, "{}", joined.text);
+        assert_eq!(joined.body["state"], "joined");
+        assert_eq!(joined.body["obiId"], "obi-wellington");
+        assert_eq!(sphere.lock().invitations.len(), redeemed_before);
+        // It follows as after a join: the directory reads with its own token.
+        let members = call(&obid, "GET", "/v1/obid/sphere/members", None);
+        assert_eq!(members.status, 200, "{}", members.text);
     });
 }

@@ -70,6 +70,14 @@ A decoder answers `{ value }` or `undefined` when it can't read the value, so `o
 | `sphere.ts` | `sphere-set-policy` | `handle` | `safeInteger` | `null` (with no click main saw: a `failed` answer, [sphere-policy.md](sphere-policy.md) POLICY-4) |
 | `sphere.ts` | `sphere-join` | `handle` | `string` | `{ kind: 'failed', name: '', why: 'Not this app’s page.' }` (with no click main saw: `why` `Joining takes your own click.`, [sphere-app.md](sphere-app.md) SPHEREAPP-4) |
 | `sphere.ts` | `sphere-handoff` | `handle` | `handoffAsk`: an object of four strings, `to`, `goal`, `repo` and `base` | `'Not this app’s page.'` (with no click main saw: `Handing a task over takes your own click.`, SPHEREAPP-6) |
+| `sphere.ts` | `sphere-invitations` | `handle` | none | `null` |
+| `sphere.ts` | `sphere-invite` | `handle` | none | `null` (with no click main saw: a `failed` answer, `Making a link takes your own click.`, [sphere-app.md](sphere-app.md) SPHEREAPP-10) |
+| `sphere.ts` | `sphere-withdraw` | `handle` | `string` | `null` (with no click main saw: a `failed` answer, `Withdrawing a link takes your own click.`) |
+| `sphere.ts` | `sphere-admin` | `handle` | `string`, `boolean` | `null` (with no click main saw: a `failed` answer, `Changing who’s admin takes your own click.`, [sphere-app.md](sphere-app.md) SPHEREAPP-11) |
+| `sphere.ts` | `sphere-rebind-offer` | `handle` | `string` | `null` |
+| `sphere.ts` | `sphere-rebind` | `handle` | `string`, `string` | `'Not this app’s page.'` (with no click main saw: `Getting back in takes your own click.`, [sphere-app.md](sphere-app.md) SPHEREAPP-12) |
+| `sphere.ts` | `sphere-signin-status` | `handle` | none | `null` |
+| `sphere.ts` | `sphere-add-signin` | `handle` | `string` | `'Not this app’s page.'` (with no click main saw: `Adding sign-in takes your own click.`, [sphere-app.md](sphere-app.md) SPHEREAPP-13) |
 
 ### Failures and recovery
 
@@ -84,7 +92,7 @@ A decoder answers `{ value }` or `undefined` when it can't read the value, so `o
 
 ## Interfaces and dependencies
 
-- **Renderer ↔ main:** the preload's `window.app` (`src/preload/index.ts`), unchanged: the same channel names, arguments and answers. Since R06-13 it also has `settings` (`local()`, `keep(key, value)`) for `local-settings` and `local-setting` ([live-state.md](live-state.md)), since A00-90 `loginItem(on?)` for `login-item` ([live-state.md](live-state.md)), since R10-06 `spherePolicy()` and `sphereSetPolicy(version)` for `sphere-policy` and `sphere-set-policy` ([sphere-policy.md](sphere-policy.md)), `sphereJoin(link)` and `sphereHandoff(ask)` for `sphere-join` and `sphere-handoff` ([sphere-app.md](sphere-app.md)), since R06-08 `obid.live` and `obid.load` for `obid-snapshot` and `obid-load` ([live-state.md](live-state.md), LIVE-10), since A00-91 `renderError(name, message, componentStack)` for `render-error` ([engine.md](engine.md), ENGINE-20), and since B00-40 `obid.profile(id)` for `obid-profile` ([profiles.md](profiles.md)).
+- **Renderer ↔ main:** the preload's `window.app` (`src/preload/index.ts`), unchanged: the same channel names, arguments and answers. Since R06-13 it also has `settings` (`local()`, `keep(key, value)`) for `local-settings` and `local-setting` ([live-state.md](live-state.md)), since A00-90 `loginItem(on?)` for `login-item` ([live-state.md](live-state.md)), since R10-06 `spherePolicy()` and `sphereSetPolicy(version)` for `sphere-policy` and `sphere-set-policy` ([sphere-policy.md](sphere-policy.md)), `sphereJoin(link)` and `sphereHandoff(ask)` for `sphere-join` and `sphere-handoff`, and `sphereInvitations()`, `sphereInvite()`, `sphereWithdraw(id)`, `sphereAdmin(owner, on)`, `sphereRebindOffer(address)`, `sphereRebind(address, provider)`, `sphereSigninStatus()` and `sphereAddSignin(provider)` for `sphere-invitations`, `sphere-invite`, `sphere-withdraw`, `sphere-admin`, `sphere-rebind-offer`, `sphere-rebind`, `sphere-signin-status` and `sphere-add-signin` ([sphere-app.md](sphere-app.md)), since R06-08 `obid.live` and `obid.load` for `obid-snapshot` and `obid-load` ([live-state.md](live-state.md), LIVE-10), since A00-91 `renderError(name, message, componentStack)` for `render-error` ([engine.md](engine.md), ENGINE-20), and since B00-40 `obid.profile(id)` for `obid-profile` ([profiles.md](profiles.md)).
 - No runner API change (`docs/runner-api.md` is unchanged).
 
 ## Acceptance scenarios

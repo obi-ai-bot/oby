@@ -269,3 +269,224 @@ describe('SPHEREAPP-8: hidden for launch', () => {
     expect(OBYS).toEqual([]);
   });
 });
+
+describe('SPHEREAPP-10: an admin invites teammates from Settings › Obysphere', () => {
+  const JOINED = { state: 'joined', url: 'https://sphere.example.com', sphere: 'demo', owner: 'wellington', obiId: 'obi-1' };
+  const MADE = `oby://join/sphere.example.com#sphere=demo&by=wellington&id=9187a87a-3126-424c-8861-8811bba1a5ec&secret=${'S'.repeat(43)}`;
+  const OPEN = { id: 'inv-1', uses: 2, maxUses: 5, expiresAt: '2026-12-02T12:00:00Z' };
+  const writeText = vi.fn(async () => {});
+  const rules = (actions: string[]) => [{ id: 'members-ask', from_owner: '*', to_owner: '*', actions, repos: ['*'] }];
+  const bridge = { spherePolicy: vi.fn(), sphereInvitations: vi.fn(), sphereInvite: vi.fn(), sphereWithdraw: vi.fn() };
+  async function page(admin: boolean, actions = ['question', 'review_request']) {
+    answers['GET /v1/obid/sphere'] = JOINED;
+    answers['GET /v1/obid/sphere/members'] = [{ owner: 'dana' }];
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    for (const f of Object.values(bridge)) f.mockReset();
+    bridge.spherePolicy.mockResolvedValue({ sphere: 'demo', policy: { version: 1, updated_at: '', rules: rules(actions) }, admin, refused: null, why: null });
+    bridge.sphereInvitations.mockResolvedValue({ invitations: [OPEN], link: null, refused: null, why: null });
+    Object.assign((window as unknown as { app: Record<string, unknown> }).app, { onSphere: () => () => {}, ...bridge });
+    const { SphereJoinPage } = await import('../SphereSettings');
+    await act(async () => root.render(<SphereJoinPage />));
+    await settle();
+  }
+
+  it('sphereapp_10_a_member_who_isnt_admin_sees_no_invites', async () => {
+    await page(false);
+    expect(host.textContent).not.toContain('Invite teammates');
+    expect(bridge.sphereInvitations).not.toHaveBeenCalled();
+  });
+
+  it('sphereapp_10_the_admin_makes_a_link_copies_it_and_withdraws_an_open_one', async () => {
+    await page(true);
+    expect(host.textContent).toContain('Invite teammates');
+    // the open links: what's left of each, and until when
+    expect(host.textContent).toContain('3 of 5 uses left');
+    expect(host.textContent).toContain('Until Dec 2');
+    // the members rule lacks handoff: nothing promised yet
+    expect(host.textContent).not.toContain('hand off tasks');
+    // Make a link: main makes it (and adds handoff to the members rule), the link shows with Copy
+    bridge.sphereInvite.mockResolvedValueOnce({ invitations: [{ ...OPEN, id: 'inv-2', uses: 0 }, OPEN], link: MADE, refused: null, why: null, handoffs: true });
+    await act(async () => button('Make a link')!.click());
+    await settle();
+    expect(bridge.sphereInvite).toHaveBeenCalledTimes(1);
+    expect(host.querySelector('.invite-made')!.textContent).toBe(MADE);
+    expect(host.textContent).toContain('Members can ask, request reviews and hand off tasks.');
+    await act(async () => (host.querySelector('[aria-label="Copy the link"]') as HTMLButtonElement).click());
+    expect(writeText).toHaveBeenCalledWith(MADE);
+    // Withdraw: main withdraws that one, and the list it answers shows
+    bridge.sphereWithdraw.mockResolvedValueOnce({ invitations: [{ ...OPEN, id: 'inv-2', uses: 0 }], link: null, refused: null, why: null });
+    await act(async () => (host.querySelector('[aria-label="Withdraw the link with 3 of 5 uses left"]') as HTMLButtonElement).click());
+    await settle();
+    expect(bridge.sphereWithdraw).toHaveBeenCalledWith('inv-1');
+    expect(host.textContent).not.toContain('3 of 5 uses left');
+    expect(host.textContent).toContain('5 of 5 uses left');
+  });
+
+  it('sphereapp_10: a members rule with handoff already says so; a refusal says why and shows no link', async () => {
+    await page(true, ['question', 'review_request', 'handoff']);
+    expect(host.textContent).toContain('Members can ask, request reviews and hand off tasks.');
+    bridge.sphereInvite.mockResolvedValueOnce({ invitations: [], link: null, refused: 'failed', why: 'Making a link takes your own click.' });
+    await act(async () => button('Make a link')!.click());
+    await settle();
+    expect(host.querySelector('[role="alert"]')!.textContent).toBe('Making a link takes your own click.');
+    expect(host.querySelector('.invite-made')).toBeNull();
+  });
+});
+
+describe('SPHEREAPP-11: Make admin, Remove admin, and the sole-admin notice', () => {
+  const JOINED = { state: 'joined', url: 'https://sphere.example.com', sphere: 'demo', owner: 'wellington', obiId: 'obi-1' };
+  const policyOf = (admins: string[]) => ({ sphere: 'demo', policy: { version: 1, updated_at: '', rules: [] }, admin: admins.includes('wellington'), refused: null, why: null, admins, me: 'wellington' });
+  const sphereAdmin = vi.fn();
+  async function settings(admins: string[]) {
+    answers['GET /v1/obid/sphere'] = JOINED;
+    answers['GET /v1/obid/sphere/members'] = [{ owner: 'dana' }, { owner: 'ernesto' }];
+    sphereAdmin.mockReset();
+    Object.assign((window as unknown as { app: Record<string, unknown> }).app, {
+      onSphere: () => () => {}, spherePolicy: vi.fn(async () => policyOf(admins)), sphereAdmin,
+      sphereInvitations: vi.fn(async () => ({ invitations: [], link: null, refused: null, why: null })),
+    });
+    await import('../spheres');
+    await settle();
+    const { default: SphereSettings } = await import('../SphereSettings');
+    await act(async () => root.render(<SphereSettings id="live:demo" leaving={false} onClose={() => {}} onGone={() => {}} />));
+    await settle();
+  }
+  const roleOf = (owner: string) => [...host.querySelectorAll('.set-member')].find((r) => r.querySelector('.set-label')?.textContent?.startsWith(owner))?.querySelector('.set-role')?.textContent;
+
+  it('sphereapp_11_a_sole_admin_is_told_and_makes_a_member_admin', async () => {
+    await settings(['wellington']);
+    expect(host.textContent).toContain('You’re the only admin of demo. Make someone else an admin so it never hangs on one Mac.');
+    expect(roleOf('wellington')).toBe('Admin');
+    expect(roleOf('dana')).toBe('Member');
+    sphereAdmin.mockResolvedValueOnce({ admins: ['dana', 'wellington'], refused: null, why: null });
+    await act(async () => (host.querySelector('[aria-label="Make dana an admin"]') as HTMLButtonElement).click());
+    await settle();
+    expect(sphereAdmin).toHaveBeenCalledWith('dana', true);
+    expect(roleOf('dana')).toBe('Admin');
+    // no longer the only one: the notice goes, and dana's row offers Remove admin
+    expect(host.textContent).not.toContain('only admin');
+    sphereAdmin.mockResolvedValueOnce({ admins: ['wellington'], refused: null, why: null });
+    await act(async () => (host.querySelector('[aria-label="Remove dana as admin"]') as HTMLButtonElement).click());
+    await settle();
+    expect(sphereAdmin).toHaveBeenLastCalledWith('dana', false);
+    expect(roleOf('dana')).toBe('Member');
+  });
+
+  it('sphereapp_11: a refusal says why; a member who isn’t admin gets no buttons and no notice', async () => {
+    await settings(['wellington']);
+    sphereAdmin.mockResolvedValueOnce({ admins: null, refused: 'failed', why: 'ernesto hasn’t joined with their own key yet.' });
+    await act(async () => (host.querySelector('[aria-label="Make ernesto an admin"]') as HTMLButtonElement).click());
+    await settle();
+    expect(host.querySelector('[role="alert"]')!.textContent).toBe('ernesto hasn’t joined with their own key yet.');
+    expect(roleOf('ernesto')).toBe('Member');
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    vi.resetModules();
+    await settings(['dana']);
+    expect(host.querySelector('[aria-label="Make ernesto an admin"]')).toBeNull();
+    expect(host.textContent).not.toContain('only admin');
+    expect(roleOf('dana')).toBe('Admin');
+    expect(roleOf('wellington')).toBe('Member');
+  });
+
+  it('sphereapp_11: Settings › Obysphere tells a sole admin too, above Invite teammates', async () => {
+    answers['GET /v1/obid/sphere'] = JOINED;
+    answers['GET /v1/obid/sphere/members'] = [{ owner: 'dana' }];
+    Object.assign((window as unknown as { app: Record<string, unknown> }).app, {
+      onSphere: () => () => {}, spherePolicy: vi.fn(async () => policyOf(['wellington'])),
+      sphereInvitations: vi.fn(async () => ({ invitations: [], link: null, refused: null, why: null })),
+    });
+    const { SphereJoinPage } = await import('../SphereSettings');
+    await act(async () => root.render(<SphereJoinPage />));
+    await settle();
+    expect(host.textContent).toContain('You’re the only admin of demo.');
+  });
+});
+
+describe('SPHEREAPP-12: Sign in to get back in, beside the invite link', () => {
+  const sphereRebindOffer = vi.fn();
+  const sphereRebind = vi.fn();
+  async function step(offered: boolean) {
+    sphereRebindOffer.mockReset(); sphereRebind.mockReset();
+    sphereRebindOffer.mockImplementation(async (a: string) => (a.includes('demo') ? { sphere: 'demo', host: 'sphere.example.com', providers: offered ? [{ id: 'google', name: 'Google' }] : null } : null));
+    Object.assign((window as unknown as { app: Record<string, unknown> }).app, { sphereRebindOffer, sphereRebind });
+    vi.stubGlobal('location', { search: '?onboarding=sphere' });
+    const { default: FirstRun } = await import('../FirstRun');
+    await act(async () => root.render(<FirstRun />));
+    await settle();
+  }
+
+  it('sphereapp_12_an_address_whose_obysphere_offers_it_shows_sign_in_and_gets_back_in', async () => {
+    await step(true);
+    // its address, not a link: no Join, no problem, and the way back in
+    await type(field('Invite link'), 'sphere.example.com/demo');
+    await settle();
+    expect(button('Join')!.disabled).toBe(true);
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    expect(host.querySelector('.join-link-back')!.textContent).toBe('Lost the Mac you joined from? Sign in with Google to get back in.');
+    sphereRebind.mockResolvedValueOnce(null);
+    await act(async () => button('Sign in with Google')!.click());
+    await settle();
+    expect(sphereRebind).toHaveBeenCalledWith('sphere.example.com/demo', 'google');
+    expect(host.querySelector('[role="status"]')!.textContent).toBe('You’re back in demo.');
+  });
+
+  it('sphereapp_12: an Obysphere that doesn’t offer it shows no sign-in; a refusal says why', async () => {
+    await step(false);
+    await type(field('Invite link'), LINK);
+    await settle();
+    expect(host.querySelector('.join-link-back')).toBeNull();
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    vi.resetModules();
+    await step(true);
+    await type(field('Invite link'), LINK);
+    await settle();
+    sphereRebind.mockResolvedValueOnce('That sign-in can’t get you back in. Use the account you joined with, or one from a domain this Obysphere allows.');
+    await act(async () => button('Sign in with Google')!.click());
+    await settle();
+    expect(host.querySelector('[role="alert"]')!.textContent).toContain('That sign-in can’t get you back in.');
+  });
+});
+
+describe('SPHEREAPP-13: Add sign-in in Settings › Obysphere', () => {
+  const JOINED = { state: 'joined', url: 'https://sphere.example.com', sphere: 'demo', owner: 'wellington', obiId: 'obi-1' };
+  const sphereAddSignin = vi.fn();
+  async function page(status: unknown, admins = ['dana', 'wellington']) {
+    answers['GET /v1/obid/sphere'] = JOINED;
+    answers['GET /v1/obid/sphere/members'] = [{ owner: 'dana' }];
+    sphereAddSignin.mockReset();
+    Object.assign((window as unknown as { app: Record<string, unknown> }).app, {
+      onSphere: () => () => {}, sphereSigninStatus: vi.fn(async () => status), sphereAddSignin,
+      spherePolicy: vi.fn(async () => ({ sphere: 'demo', policy: { version: 1, updated_at: '', rules: [] }, admin: admins.includes('wellington'), refused: null, why: null, admins, me: 'wellington' })),
+      sphereInvitations: vi.fn(async () => ({ invitations: [], link: null, refused: null, why: null })),
+    });
+    const { SphereJoinPage } = await import('../SphereSettings');
+    await act(async () => root.render(<SphereJoinPage />));
+    await settle();
+  }
+
+  it('sphereapp_13_an_owner_without_sign_in_is_told_plainly_and_adds_it', async () => {
+    await page({ providers: [{ id: 'google', name: 'Google' }], linked: false });
+    expect(host.textContent).toContain('Add sign-in');
+    expect(host.textContent).toContain('Without it, you can’t get back in by yourself if you lose this Mac.');
+    sphereAddSignin.mockResolvedValueOnce(null);
+    await act(async () => button('Sign in with Google')!.click());
+    await settle();
+    expect(sphereAddSignin).toHaveBeenCalledWith('google');
+    expect(host.textContent).toContain('Signed in as you');
+    expect(host.textContent).not.toMatch(/@/);
+  });
+
+  it('sphereapp_13: linked reads Signed in as you; not offered, nothing; a sole admin is pointed at it', async () => {
+    await page({ providers: [{ id: 'google', name: 'Google' }], linked: true });
+    expect(host.textContent).toContain('Signed in as you');
+    expect(button('Sign in with Google')).toBeUndefined();
+    await act(async () => root.unmount()); root = createRoot(host); vi.resetModules();
+    await page({ providers: null, linked: null });
+    expect(host.textContent).not.toContain('Sign-in');
+    await act(async () => root.unmount()); root = createRoot(host); vi.resetModules();
+    await page({ providers: [{ id: 'google', name: 'Google' }], linked: false }, ['wellington']);
+    expect(host.textContent).toContain('You’re the only admin of demo. Make someone else an admin so it never hangs on one Mac. Add sign-in too, so you can get back in yourself.');
+  });
+});

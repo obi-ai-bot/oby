@@ -612,6 +612,78 @@ fn from_client(error: &ClientError) -> ApiError {
 
 /// What the app needs of the delegation obid holds to sign the next one before it ends (#1215): its
 /// scope and when it ends. Never the JWT itself.
+/// Who a rebound join says this Oby already is on its Sphere (SPHERE-24).
+struct RejoinedAs<'a> {
+    sphere: &'a str,
+    obi_id: &'a str,
+    owner: &'a str,
+    owner_key: &'a str,
+}
+
+/// A rebound join's check (SPHERE-24): with no invitation to redeem, the Sphere must already list
+/// this Oby's own card, active, under the body's owner and owner key, with obid's own Obi key.
+/// The delegation is exchanged as it will be from then on (the Sphere takes it only for an active
+/// member whose current key signs the actor assertion), then the directory is read and checked.
+/// Each refusal says plainly why, and nothing is kept.
+async fn rebound_member(
+    client: &Client,
+    delegation: &str,
+    key: &Keypair,
+    member: &RejoinedAs<'_>,
+    now: i64,
+) -> Result<(), ApiError> {
+    let RejoinedAs {
+        sphere,
+        obi_id,
+        owner,
+        owner_key,
+    } = *member;
+    let refused = |why: String| api(StatusCode::CONFLICT, format!("{why}: nothing was joined."));
+    let actor = obi_protocol::identity::actor_assertion_for(
+        obi_id,
+        &obi_protocol::identity::audience(sphere),
+        key,
+        now,
+        &new_uuid(),
+    )
+    .map_err(|e| api(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let token = match client.token(delegation, &actor).await {
+        Ok(token) => token,
+        Err(ClientError::Refused { code, .. }) if code == "invalid_grant" => {
+            return Err(refused(format!(
+                "{sphere} doesn't take this Oby as an active member of yours"
+            )));
+        }
+        Err(e) => return Err(from_client(&e)),
+    };
+    crate::secrets::known().learn(SPHERE_TOKEN_SECRET, &token.access_token);
+    let members = client
+        .members(&token.access_token)
+        .await
+        .map_err(|e| from_client(&e))?;
+    let Some(listed) = members.iter().find(|m| m["obi"] == obi_id) else {
+        return Err(refused(format!("{sphere} doesn't list this Oby")));
+    };
+    if listed["status"] != "active" {
+        return Err(refused(format!("{sphere} lists this Oby as removed")));
+    }
+    if listed["owner"] != owner || listed["owner_key"] != owner_key {
+        return Err(refused(format!(
+            "{sphere} lists this Oby under another owner or owner key"
+        )));
+    }
+    let params = obi_protocol::card::params(&listed["card"]);
+    let carries = |k: &str| params.and_then(|p| p.get(k)).and_then(Value::as_str);
+    if carries("key_id") != Some(key.key_id().as_str())
+        || carries("public_key") != Some(key.public_key().as_str())
+    {
+        return Err(refused(format!(
+            "{sphere} lists this Oby with a card that isn't this Oby's key"
+        )));
+    }
+    Ok(())
+}
+
 /// Why the Sphere's refusal of a token exchange ends this Obi's membership, or none (SPHERE-22).
 /// The real Sphere stops exchanging a removed member's delegation (`invalid_grant`, "the actor is
 /// not an active member owned by the subject"), and its directory then can't be read either, so
@@ -2320,8 +2392,30 @@ impl Link {
     /// invitation, exchanges a token, reads the directory and starts following.
     pub async fn join(self: &Arc<Self>, body: &[u8]) -> Result<Value, ApiError> {
         let _one = self.joining.lock().await;
-        let map = object(body, &["url", "sphere", "invitation", "card", "delegation"])?;
+        let map = object(
+            body,
+            &[
+                "url",
+                "sphere",
+                "invitation",
+                "card",
+                "delegation",
+                "rebound",
+            ],
+        )?;
         let invalid = |m: String| api(StatusCode::UNPROCESSABLE_ENTITY, m);
+        // `rebound`: the Sphere already lists this Oby's card, bound when its owner signed in again
+        // (SPHERE-24), so there's no invitation to redeem; obid checks the directory instead.
+        let rebound = match map.get("rebound") {
+            None | Some(Value::Bool(false)) => false,
+            Some(Value::Bool(true)) if !map.contains_key("invitation") => true,
+            Some(Value::Bool(true)) => {
+                return Err(invalid(
+                    "A join is by an invitation or rebound, not both.".into(),
+                ));
+            }
+            Some(_) => return Err(invalid("rebound is true, or left out.".into())),
+        };
         let key = {
             let state = self.lock();
             if let Some(m) = &state.membership {
@@ -2347,36 +2441,41 @@ impl Link {
         if !is_slug(&sphere) {
             return Err(invalid(format!("{sphere:?} isn't a Sphere id.")));
         }
-        let invitation = map
-            .get("invitation")
-            .and_then(Value::as_object)
-            .ok_or_else(|| invalid(INVITATION_SHAPE.into()))?;
-        if invitation
-            .keys()
-            .any(|k| !matches!(k.as_str(), "id" | "secret" | "signin"))
-        {
-            return Err(invalid(INVITATION_SHAPE.into()));
-        }
-        let invitation_id = text_field(invitation, "id")?;
-        let secret = text_field(invitation, "secret")?;
-        if !is_token_text(invitation_id) || !is_token_text(secret) {
-            return Err(invalid(
-                "The invitation's id and secret are what the Sphere gave, unchanged.".into(),
-            ));
-        }
-        // The owner's sign-in with the Sphere, for an invitation limited to a domain: passed on
-        // to the redeem as it is, and kept nowhere.
-        let signin = match invitation.get("signin") {
-            None => None,
-            Some(Value::Object(s))
-                if s.len() == 2
-                    && ["state", "code"]
-                        .iter()
-                        .all(|k| s.get(*k).and_then(Value::as_str).is_some_and(is_token_text)) =>
+        let redeem = if rebound {
+            None
+        } else {
+            let invitation = map
+                .get("invitation")
+                .and_then(Value::as_object)
+                .ok_or_else(|| invalid(INVITATION_SHAPE.into()))?;
+            if invitation
+                .keys()
+                .any(|k| !matches!(k.as_str(), "id" | "secret" | "signin"))
             {
-                invitation.get("signin")
+                return Err(invalid(INVITATION_SHAPE.into()));
             }
-            Some(_) => return Err(invalid(INVITATION_SHAPE.into())),
+            let invitation_id = text_field(invitation, "id")?;
+            let secret = text_field(invitation, "secret")?;
+            if !is_token_text(invitation_id) || !is_token_text(secret) {
+                return Err(invalid(
+                    "The invitation's id and secret are what the Sphere gave, unchanged.".into(),
+                ));
+            }
+            // The owner's sign-in with the Sphere, for an invitation limited to a domain: passed
+            // on to the redeem as it is, and kept nowhere.
+            let signin = match invitation.get("signin") {
+                None => None,
+                Some(Value::Object(s))
+                    if s.len() == 2
+                        && ["state", "code"].iter().all(|k| {
+                            s.get(*k).and_then(Value::as_str).is_some_and(is_token_text)
+                        }) =>
+                {
+                    invitation.get("signin")
+                }
+                Some(_) => return Err(invalid(INVITATION_SHAPE.into())),
+            };
+            Some((invitation_id, secret, signin))
         };
         let card = map
             .get("card")
@@ -2437,10 +2536,23 @@ impl Link {
         .map_err(|why| invalid(format!("The delegation doesn't pass: {why}.")))?;
 
         let client = Client::new(&url, &sphere).map_err(|e| from_client(&e))?;
-        client
-            .redeem(invitation_id, secret, &owner_key, &card, signin)
-            .await
-            .map_err(|e| from_client(&e))?;
+        match redeem {
+            Some((invitation_id, secret, signin)) => {
+                client
+                    .redeem(invitation_id, secret, &owner_key, &card, signin)
+                    .await
+                    .map_err(|e| from_client(&e))?;
+            }
+            None => {
+                let member = RejoinedAs {
+                    sphere: &sphere,
+                    obi_id: &obi_id,
+                    owner: &owner,
+                    owner_key: &owner_key,
+                };
+                rebound_member(&client, &delegation, &key, &member, now).await?;
+            }
+        }
         let membership = Membership {
             state: "joined".into(),
             url,

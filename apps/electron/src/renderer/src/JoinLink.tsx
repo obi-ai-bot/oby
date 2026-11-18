@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from 'react';
-import { parseInvite, type Joined } from '../../shared/invite';
+import { parseInvite, sphereAddress, type Joined } from '../../shared/invite';
 import { onObid } from './lean';
 import { ME } from './spheres';
 
@@ -85,11 +85,24 @@ const NOT_A_LINK = 'This isn’t an Obysphere invite link.';
 
 export function useJoinLink() {
   const [text, setText] = useState('');
-  const [said, setSaid] = useState<{ joined?: string; problem?: string }>({});
+  const [said, setSaid] = useState<{ joined?: string; back?: string; problem?: string }>({});
   const [busy, setBusy] = useState(false);
   const who = useOwnerId();
   const invite = parseInvite(text);
-  const problem = said.problem ?? (text.trim() && !invite ? NOT_A_LINK : null);
+  // an Obysphere's address (an invite link, used up or not, or <host>/<sphere>), for getting back in (SPHEREAPP-12)
+  const address = sphereAddress(text);
+  const [offer, setOffer] = useState<{ for: string; sphere: string; host: string; provider: { id: string; name: string } } | null>(null);
+  useEffect(() => {
+    const t = text.trim();
+    if (!address || !window.app?.sphereRebindOffer) return setOffer(null);
+    let gone = false;
+    void window.app.sphereRebindOffer(t).then((o) => {
+      if (!gone) setOffer(o?.providers?.length ? { for: t, sphere: o.sphere, host: o.host, provider: o.providers[0] } : null);
+    }, () => { if (!gone) setOffer(null); });
+    return () => { gone = true; };
+  }, [address?.url, address?.sphere]);
+  // an address counts once its Obysphere offers the sign-in; until then, or never, it isn't a link
+  const problem = said.problem ?? (text.trim() && !invite && !(address && offer) ? NOT_A_LINK : null);
   const join = async () => {
     if (!invite || busy) return;
     setBusy(true);
@@ -102,14 +115,23 @@ export function useJoinLink() {
     else if (r.kind === 'not_a_link') setSaid({ problem: NOT_A_LINK });
     else setSaid({});
   };
+  // Sign in to get back in: main's own dialog, the browser, the rebind; null once back in
+  const signIn = async () => {
+    if (!offer || busy || !window.app?.sphereRebind) return;
+    setBusy(true);
+    const why = await window.app.sphereRebind(offer.for, offer.provider.id).catch((e: Error) => e.message);
+    setBusy(false);
+    if (why) setSaid({ problem: why }); else { setSaid({ back: offer.sphere }); setText(''); }
+  };
   const change = (t: string) => { setText(t); setSaid({}); };
-  return { text, setText: change, invite, who, problem, joined: said.joined ?? null, busy, join };
+  return { text, setText: change, invite, address, offer, who, problem, joined: said.joined ?? null, back: said.back ?? null, busy, join, signIn };
 }
 
 // The field and its Join, then what's true: who it joins as, why not, or that it's in
 export function JoinLink({ link, onb = false }: { link: ReturnType<typeof useJoinLink>; onb?: boolean }) {
   const why = useId();
-  const { text, setText, invite, who, problem, joined, busy, join } = link;
+  const { text, setText, invite, address, offer, who, problem, joined, back, busy, join, signIn } = link;
+  const named = invite ? { name: invite.name, host: invite.host } : address ? { name: address.sphere, host: address.host } : null;
   return (
     <div className={`join-link${onb ? ' is-onb' : ''}`}>
       <div className="join-link-line">
@@ -121,8 +143,15 @@ export function JoinLink({ link, onb = false }: { link: ReturnType<typeof useJoi
       </div>
       {problem ? <span id={why} className="wl-sub is-problem join-link-under" role="alert">{problem}</span>
         : joined ? <span className="wl-sub join-link-under" role="status">You’re in {joined}.</span>
-          : invite && who.owner ? <OwnerLine who={who} invite={invite} />
-            : null}
+          : back ? <span className="wl-sub join-link-under" role="status">You’re back in {back}.</span>
+            : named && who.owner ? <OwnerLine who={who} invite={named} />
+              : null}
+      {/* lost the Mac you joined from: the Obysphere at this address lets you back in with a sign-in (SPHEREAPP-12) */}
+      {offer && !joined && !back && (
+        <span className="wl-sub join-link-under join-link-back">
+          Lost the Mac you joined from? <button type="button" className="join-link-change" disabled={busy} onClick={() => void signIn()}>Sign in with {offer.provider.name}</button> to get back in.
+        </span>
+      )}
     </div>
   );
 }
