@@ -50,6 +50,8 @@ export type Page = {
   groups?: ToolGroup[];
   // this job's tokens and value, and its share of the account's windows
   usage?: { tokens: string; cost: string; fiveHour: number; job5: string; week: number; jobWeek: string };
+  // how full its agent's context window is (USAGE-15): tokens in use, of the window's size when known
+  context?: { used: number; size: number | null };
   outgoing?: { text: string; at: string }[];  // what went out, every outgoing action
 };
 

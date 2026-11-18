@@ -743,6 +743,10 @@ pub struct Job {
     /// What its turns used, in tokens and cost, as its tool reported them (#731).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<crate::usage::Tokens>,
+    /// How full its agent's context window is, as its tool last said (USAGE-15): none until it
+    /// said, or for a tool that says nothing of it (Cursor).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<crate::usage::ContextWindow>,
     /// The most resident memory its processes (agent, check and what they started) held at
     /// once, in bytes, as obid's meter read it while it ran (crate::meter); none before a reading.
     #[serde(default, skip_serializing_if = "Option::is_none")]

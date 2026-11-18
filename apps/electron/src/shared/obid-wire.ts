@@ -119,6 +119,9 @@ export type Job = {
   activity?: Activity;
   context?: string;
   usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; costUsd?: number; priced?: 'plan' | 'api' | (string & {}) };
+  // obid only: how full its agent's context window is, as its tool last said: tokens in use, and
+  // the window's size when the tool names it (docs/contracts/usage.md, USAGE-15); none until then
+  contextWindow?: { used: number; size?: number };
   windowShare?: { fiveHour: number | null; sevenDay: number | null; estimate: true };
   estimate?: { low: number; high: number; basis: string; samples: number; firstGiven?: { low: number; high: number } };
   // obid only: its worktree, an absolute path, once it exists (a task's Changes and Open in, CHANGES-4, 6)
@@ -292,8 +295,9 @@ export type Status = {
   // (docs/contracts/profiles.md, PROFILES-43); an older obid sends none
   otherProfileLogins?: { agent: Agent; id: string; profile: string; profileName: string }[];
   // obid only: each tool's binary (path null when it isn't found) and its version (CLIVERSIONS);
-  // an older obid sends none
-  tools?: { agent: string; path: string | null; version: string | null; versionStatus: string; knownBadReason?: string }[];
+  // an older obid sends none. bin: what obid runs it as, binSet: the owner set it in Settings
+  // (ACCOUNTS-26); an older obid sends neither
+  tools?: { agent: string; bin?: string; binSet?: boolean; path: string | null; version: string | null; versionStatus: string; knownBadReason?: string }[];
   models: Record<string, { model: string }>;
   maxRunning: number;
   running: number;

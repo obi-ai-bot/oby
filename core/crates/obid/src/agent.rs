@@ -152,6 +152,9 @@ pub enum Event {
     /// The MCP servers and claude.ai connectors its session has, but obid's own, by name and status,
     /// from Claude Code's `init` line (crate::connectors, CONNECTORS-1).
     Connectors(Vec<crate::connectors::Server>),
+    /// How full its session's context window is now, as its tool said (USAGE-15): each one
+    /// replaces the last.
+    Context(crate::usage::ContextWindow),
 }
 
 /// How a turn ended, for every adapter.
@@ -574,6 +577,8 @@ pub async fn turn_on(
     let mut thinking: Option<u64> = None;
     // Claude Code said it's retrying an API call, and hasn't been heard from since.
     let mut retrying = false;
+    // The usage of its own last message: what its context holds now (USAGE-15).
+    let mut last_usage: Option<Value> = None;
     loop {
         conn.holding = idle && !background.is_empty();
         let message = match conn.next().await {
@@ -678,6 +683,9 @@ pub async fn turn_on(
                 // A subagent's (Task's) messages carry the tool call they answer: their words are
                 // never the agent's own last ones.
                 let own = message.get("parent_tool_use_id").is_none_or(Value::is_null);
+                if own && message["message"]["usage"].is_object() {
+                    last_usage = Some(message["message"]["usage"].clone());
+                }
                 for block in message["message"]["content"]
                     .as_array()
                     .into_iter()
@@ -816,6 +824,9 @@ pub async fn turn_on(
                     &message,
                     api_key_source.as_deref(),
                 )));
+                if let Some(context) = crate::usage::claude_context(last_usage.as_ref(), &message) {
+                    on_event(Event::Context(context));
+                }
                 turn.result = Some(message);
                 turn.failure = match turn.succeeded() {
                     true => None,

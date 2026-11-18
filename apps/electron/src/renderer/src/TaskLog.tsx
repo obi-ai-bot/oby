@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { Check } from 'lucide-react';
 import { waitSays } from './chatgpt';
+import ContextMeter from './ContextMeter';
 import Said from './Said';
 import { BrandMark } from './brands';
 import { Line, liveFor, useEntries, useLiveLines } from './SessionView';
@@ -39,7 +40,9 @@ export default function TaskLog({ task }: { task: Task }) {
   const own = j.step && j.step !== 'Working' && j.step !== 'Thinking' && !entries.some((e) => e.kind === 'tool' && e.summary === j.step);
   const says = task.status !== 'running' ? null : stage ? stage.title : !lines.length && !plan ? waitSays(j) : own ? j.step : null;
   const answered = task.status !== 'needs' && j.ask && task.answer && task.answer !== 'Later';
-  if (!plan && !lines.length && !says && !answered) return null;
+  // how full its agent's context is while it works, as its tool said (docs/contracts/usage.md, USAGE-17)
+  const context = atWork ? j.page?.context : undefined;
+  if (!plan && !lines.length && !says && !answered && !context) return null;
   return (
     <div className="lt-log" role="group" aria-label={`What ${agent.name} did`}>
       {plan && <ol className="ss-entries"><Line entry={plan} job={task.id} brand={agent.brand} live={liveFor(plan, live)} /></ol>}
@@ -55,6 +58,7 @@ export default function TaskLog({ task }: { task: Task }) {
       {result && <ol className="ss-entries"><Words text={result.text} brand={agent.brand} /></ol>}
       {/* a decision answered: one line where it was asked, until obid asks something else (LIVETASK-27) */}
       {answered && <p className="lt-answered"><Check size={12} strokeWidth={2} />{j.ask!.label ?? ASK_LABEL[j.ask!.kind] ?? j.ask!.kind} · {task.answer}</p>}
+      {context && <ContextMeter used={context.used} size={context.size} />}
     </div>
   );
 }

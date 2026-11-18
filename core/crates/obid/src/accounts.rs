@@ -34,6 +34,9 @@ use crate::agent::Tool;
 use crate::api::{AccountJson, ApiError, Shared, answer};
 use crate::config::{Account, Agent, Agents};
 
+pub(crate) mod bins;
+pub(crate) mod sign_out;
+
 /// Where obid keeps what the API changed, under its home.
 const FILE: &str = "accounts.json";
 
@@ -118,6 +121,10 @@ struct Saved {
     /// Who each account is, as its tool last said, by id ([`Live::learn`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     identities: BTreeMap<String, Identity>,
+    /// The binary each tool runs as, by tool, as the owner set it in Settings (ACCOUNTS-26): laid
+    /// over the configuration's `bin` ([`bins`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    bins: BTreeMap<String, String>,
 }
 
 /// What a tool says of the account it's signed in to, and all obid keeps of what it says: each
@@ -437,6 +444,7 @@ fn checked(seed: &Agents, saved: Saved, home: &Path) -> Saved {
     }
     let mut kept = Saved {
         own,
+        bins: bins::checked(saved.bins, home),
         removed: saved.removed,
         retired: saved
             .retired
@@ -595,6 +603,7 @@ fn merged(seed: &Agents, saved: &Saved) -> Agents {
             *slot = None;
         }
     }
+    bins::lay(&mut agents, &saved.bins);
     agents
 }
 
@@ -2575,6 +2584,7 @@ mod tests {
             )]),
             removed: vec!["work".into()],
             identities: BTreeMap::new(),
+            bins: BTreeMap::new(),
         };
         let agents = merged(&seed, &saved);
         let claude = agents.claude.unwrap().accounts;

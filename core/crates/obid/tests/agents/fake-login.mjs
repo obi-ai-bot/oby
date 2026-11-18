@@ -17,7 +17,7 @@
 // must never repeat, and refuses to run with a Claude Code, Anthropic or GitHub variable.
 
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -59,6 +59,23 @@ export function status(tool) {
     const { email, org } = who(process.env.CURSOR_CONFIG_DIR ?? process.env.HOME);
     process.stdout.write(JSON.stringify({ status: "authenticated", isAuthenticated: true, hasAccessToken: true, userInfo: email ? { email, userId: SECRET, teamName: org } : undefined }));
   }
+  process.exit(0);
+}
+
+// The tool's own logout (ACCOUNTS-23): its login file goes, and what it saw is kept beside it
+// (logout-saw.json) so the tests can check how obid ran it.
+export function logout(tool) {
+  if (leaked.length) {
+    process.stderr.write(`leaked: ${leaked.join(", ")}\n`);
+    process.exit(3);
+  }
+  const folder = tool === "claude" ? process.env.CLAUDE_CONFIG_DIR : tool === "codex" ? process.env.CODEX_HOME : process.env.HOME;
+  const file = tool === "claude" ? join(folder, ".credentials.json")
+    : tool === "codex" ? join(folder, "auth.json")
+    : process.platform === "darwin" ? join(folder, ".cursor", "auth.json") : join(process.env.XDG_CONFIG_HOME, "cursor", "auth.json");
+  rmSync(file, { force: true });
+  writeFileSync(join(folder, "logout-saw.json"), JSON.stringify(saw()));
+  process.stdout.write(`Logged out (${SECRET})\n`);
   process.exit(0);
 }
 
