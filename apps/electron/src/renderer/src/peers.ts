@@ -122,12 +122,37 @@ export const askCardLine = (c: AskMark, now: number) => {
   // the promise is the card's: this conversation's turn is what alerts when the answer comes (pingOf)
   return state === 'quiet' ? `${line} I’ll ping you as soon as it does.` : line;
 };
+// Where a task you handed their Oby stands (SPHEREAPP-6 and 7): taken, done, or why it wasn't, in
+// words; `reason` is what their side says of itself, never shown as it is
+export function handedLine(state: string, t: Pick<PeerThread, 'name' | 'owner'>, reason?: string | null, result = false): string | null {
+  const { person, oby } = named(t);
+  if (result) return `${oby} sent back its result.`;
+  switch (state) {
+    case 'sent': return `Handed over. It’s waiting on ${person}.`;
+    case 'accepted': return `${person} said yes. Their Oby is on it.`;
+    case 'expired': return `${person} never answered: the task expired.`;
+    case 'cancelled': return 'Called off';
+    case 'declined':
+      switch (reason) {
+        case 'owner_declined': return `${person} said no to this task.`;
+        case 'unavailable': return `${oby} couldn’t start it.`;
+        case 'out_of_scope': return `${oby} doesn’t take tasks.`;
+        case 'policy': return `This Obysphere’s rules stopped ${oby} taking it. An admin can change them.`;
+        case 'busy': return `${oby} is busy and didn’t take this one. Try again later.`;
+        case 'expired': return `${person} never answered: the task expired.`;
+        default: return `${oby} declined without saying why.`;
+      }
+    default: return null;
+  }
+}
+
 // Where an exchange stands. The clock decides `quietAt`, so no event says it. Past waiting, a question
 // of theirs or a review has only its plain state.
 export function standing(x: PeerExchange, t: Pick<PeerThread, 'name' | 'owner' | 'posts'>, now: number): string | null {
   if (x.waitingOnThem) return askedLine('waiting', t);
   if (x.quietAt) return askedLine(Date.parse(x.quietAt) <= now ? 'quiet' : 'asking', t);
   const said = t.posts.filter((p) => p.exchange.id === x.id);
+  if (x.direction === 'outgoing' && x.type === 'handoff') return handedLine(x.state, t, said.find((p) => p.kind === 'decline')?.reason, said.some((p) => p.kind === 'result'));
   if (x.direction === 'outgoing' && x.type === 'question') {
     const answer = said.find((p) => p.kind === 'answer');
     if (x.state === 'done' && answer) return askedLine('answered', t, answer.by);

@@ -1,5 +1,6 @@
 import { createHash, createPublicKey, randomUUID, sign, type KeyObject } from 'node:crypto';
-import { STARTER_RULE_ID, starterRule } from './policy';
+import { starterRule, withStarterRule } from './policy';
+import type { Invite } from './invite';
 
 // The owner's side of joining an Obysphere (docs/contracts/obysphere.md; obi-sphere's spec
 // identity.md): what the owner key signs (the Oby's card, its delegation, the owner's own short
@@ -52,73 +53,8 @@ export function signCard(card: Record<string, unknown>, key: KeyObject) {
   return { ...rest, signatures: [{ protected: protectedHeader, signature: signed(`${protectedHeader}.${b64url(Buffer.from(canonical(rest)))}`, key) }] };
 }
 
-// An invitation as a link, read exactly as obi-sphere's spec sphere-api.md section 2.1 says
-// (https://<host>/join#sphere=…&id=…&secret=…, a named one with for=<owner>&obi=<id>, one for a
-// Google Workspace with domain=…), a port of its reference reader (spec/conformance/invite-links.mjs,
-// Apache-2.0) checked against its known answers (test/fixtures/invite-link-vectors.json). The secret
-// is after #, so it never reaches a server in a request. Oby's own scheme, oby://join/<host>#…, is
-// the join page's Open in Oby, and always stands for https.
-export type Invite = { url: string; host: string; sphere: string; name: string; by: string; owner?: string; obi?: string; domain?: string; id: string; secret: string };
-
-const SLUG = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const SECRET = /^[A-Za-z0-9_-]{43}$/;
-const DOMAIN = /^(?=.{4,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
-// eslint-disable-next-line no-control-regex
-const LINE = /^[^\u0000-\u001F\u007F\u202A-\u202E\u2066-\u2069]*$/;
-const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
-const KEYS = ['sphere', 'name', 'by', 'for', 'obi', 'domain', 'id', 'secret'];
-// percent-decoded as UTF-8 (+ stays a plus), or null for a bad escape or bytes that aren't UTF-8
-const decode = (t: string) => { try { return decodeURIComponent(t); } catch { return null; } };
-
-// The link's fields as the spec names them (base, sphere, id, secret, and what else it says), or null
-export function readInviteLink(text: string): Record<string, string> | null {
-  // as written, not as a URL parser would tidy it: an ASCII host, the path exactly /join, no query
-  const m = /^([hH][tT][tT][pP][sS]?):\/\/([A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?\/join#(.*)$/s.exec(text.trim());
-  if (!m) return null;
-  let u: URL;
-  try { u = new URL(`${m[1]}://${m[2]}${m[3] ?? ''}`); } catch { return null; }
-  if (u.protocol !== 'https:' && !(u.protocol === 'http:' && LOOPBACK.has(u.hostname))) return null;
-  const written = `${m[2]}${m[3] ?? ''}`.toLowerCase().replace(/:(80|443)$/, (p) => (p === `:${u.protocol === 'https:' ? 443 : 80}` ? '' : p));
-  if (u.username || u.password || u.pathname !== '/' || u.host !== written || !m[4]) return null;
-  const said: Record<string, string> = {};
-  for (const part of m[4].split('&')) {
-    if (!part) continue;
-    const at = part.indexOf('=');
-    const key = decode(at < 0 ? part : part.slice(0, at)), value = decode(at < 0 ? '' : part.slice(at + 1));
-    if (key === null || value === null) return null;
-    if (KEYS.includes(key) && !(key in said)) said[key] = value;
-  }
-  // an empty value is as if left out; so are a name or a by that aren't one line of 1 to 100 characters
-  const f: Record<string, string> = { base: u.origin };
-  for (const [k, v] of Object.entries(said)) {
-    if (v === '' || ((k === 'name' || k === 'by') && (!LINE.test(v) || [...v].length > 100))) continue;
-    f[k] = v;
-  }
-  if (!SLUG.test(f.sphere ?? '') || !UUID.test(f.id ?? '') || !SECRET.test(f.secret ?? '')) return null;
-  if (('for' in f) !== ('obi' in f) || ('for' in f && (!SLUG.test(f.for) || !SLUG.test(f.obi)))) return null;
-  if ('domain' in f && !DOMAIN.test(f.domain)) return null;
-  return f;
-}
-
-// <scheme>://join/<host>[:<port>]#<fragment> as the https link it stands for, or null
-export function openedInviteLink(text: string, scheme = 'oby'): string | null {
-  const m = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/join\/([A-Za-z0-9.-]+(?::[0-9]{1,5})?)#(.+)$/.exec(text.trim());
-  if (!m || m[1].toLowerCase() !== scheme.toLowerCase()) return null;
-  const link = `https://${m[2]}/join#${m[3]}`;
-  return readInviteLink(link) ? link : null;
-}
-
-// An https link or an oby:// one, as what joining needs
-export function parseInvite(text: string): Invite | null {
-  const f = readInviteLink(openedInviteLink(text) ?? text);
-  if (!f) return null;
-  return { url: f.base, host: new URL(f.base).host, sphere: f.sphere, name: f.name ?? f.sphere, by: f.by ?? '', owner: f.for, obi: f.obi, domain: f.domain, id: f.id, secret: f.secret };
-}
-
-// What the confirm before joining warns of: the server is the link's, and it acts for the Oby for 30 days
-export const joinWarning = (i: Invite) =>
-  `Joining lets ${i.host} act for your Oby for 30 days. Join only if you trust ${i.host}.`;
+// An invitation as a link: shared/invite.ts, which the page reads links with too
+export { joinWarning, openedInviteLink, parseInvite, readInviteLink, type Invite } from './invite';
 
 const error = (a: Answer) => { try { return (JSON.parse(a.text) as { error?: string }).error ?? a.text; } catch { return a.text; } };
 const ok = (a: Answer) => a.status >= 200 && a.status < 300;
@@ -175,7 +111,8 @@ export async function join(call: Call, ownerKey: () => KeyObject, invite: Invite
 // What keeps a member's words sealed and its membership alive (SPHERE-6), signed with no click as
 // the Swift app's were: a new card when obid says `card_needed` (its first card has no seal key;
 // once the Obysphere and every teammate can read one, the next carries it), and a new delegation
-// with the same scope once 5 days or fewer are left of the 30. ownerKey: asked for only while
+// with the same scope once 5 days or fewer are left of the 30. Both also renew at once, once, when
+// the membership lacks what this app's card takes or its delegation may send (SPHEREAPP-2). ownerKey: asked for only while
 // joined (an owner who never joins gets none). Answers what it signed.
 // A membership whose card another owner key signed (the Swift app's, or this app's before a
 // Keychain reset) can't be kept: it throws NotThisKey, whose words say what to do.
@@ -194,14 +131,21 @@ export async function keepMembership(call: Call, ownerKey: () => KeyObject, now 
     throw new NotThisKey(`Your Oby joined ${sphere} with a key this app doesn’t have. If another Oby app on this Mac joined it, open that one: it keeps your membership going. If there’s no such app, leave ${sphere} in its settings, then open its link again.`);
   }
   const body: Record<string, unknown> = {};
-  if (m.sealing === 'card_needed') {
+  // what this app's card takes and its delegation may do, added to what the membership has (#2429,
+  // SPHEREAPP-2): an Oby that joined before handoffs gains them, keeping anything else it holds
+  const had = Array.isArray(m.accepts) ? (m.accepts as string[]) : [];
+  const accepts = [...had, ...ACCEPTS.filter((a) => !had.includes(a))];
+  const held = m.delegation as { scope?: string; expiresAt?: string } | null;
+  const scopes = held?.scope ? held.scope.split(' ') : [];
+  const scope = [...scopes, ...SCOPES.split(' ').filter((s) => !scopes.includes(s))].join(' ');
+  if (m.sealing === 'card_needed' || accepts.length > had.length) {
     const made = await must(call, 'POST', '/v1/obid/sphere/card', {
-      url: m.url, sphere, obiId: obi, name: (m.card as { name?: string } | null)?.name ?? `${owner}’s Oby`, ownerKey: publicOf(ownerKey()), accepts: m.accepts,
+      url: m.url, sphere, obiId: obi, name: (m.card as { name?: string } | null)?.name ?? `${owner}’s Oby`, ownerKey: publicOf(ownerKey()), accepts,
     });
     body.card = signCard(made.card as Record<string, unknown>, ownerKey());
   }
-  const held = m.delegation as { scope?: string; expiresAt?: string } | null;
-  if (held?.scope && held.expiresAt && Date.parse(held.expiresAt) - now <= RENEW_WITHIN) body.delegation = assertion(ownerKey(), owner, sphere, held.scope, obi, now);
+  const ending = !!held?.expiresAt && Date.parse(held.expiresAt) - now <= RENEW_WITHIN;
+  if (held?.scope && (ending || scope !== held.scope)) body.delegation = assertion(ownerKey(), owner, sphere, scope, obi, now);
   if (Object.keys(body).length) await must(call, 'PUT', '/v1/obid/sphere/membership', body);
   return Object.keys(body);
 }
@@ -328,12 +272,13 @@ export async function writePolicy(call: Call, ownerKey: () => KeyObject, rules: 
 }
 
 // The members rule added to the rules as they are at seenVersion, the version the page read
-// (POLICY-1): every rule there kept, in order; nothing written when it's there already.
+// (POLICY-1): every rule there kept, in order; a members rule already there gains only the actions
+// it lacks (SPHEREAPP-1); nothing written when nothing is missing.
 export async function addStarterRule(call: Call, ownerKey: () => KeyObject, seenVersion: number, http: typeof fetch = fetch): Promise<PolicyAnswer> {
   const now = await readPolicy(call, ownerKey, http);
   if (now.refused || !now.policy) return now;
   if (now.policy.version !== seenVersion) return { ...now, refused: 'changed', why: CHANGED };
   if (!now.admin) return { ...now, refused: 'not_admin', why: ONLY_ADMINS };
-  if (now.policy.rules.some((r) => r.id === STARTER_RULE_ID)) return now;
-  return writePolicy(call, ownerKey, [...now.policy.rules, starterRule()], seenVersion, http);
+  const rules = withStarterRule(now.policy.rules);
+  return rules ? writePolicy(call, ownerKey, rules, seenVersion, http) : now;
 }

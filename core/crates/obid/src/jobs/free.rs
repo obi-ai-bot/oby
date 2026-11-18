@@ -47,9 +47,20 @@ fn free_at_once(job: &Job) -> bool {
 /// nothing, its pull request isn't open, and no follow-up still at work carries its branch on.
 fn done_with(state: &State, job: &Job) -> bool {
     at_rest(state, job)
-        && !job.needs_you()
+        && nothing_waits(job)
         && !pull_request_open(job)
         && chain::branch_carrier(&state.jobs, job, Holds::Open).is_none()
+}
+
+/// Nothing of `job` waits on the owner: it doesn't need them, or it's archived with no decision
+/// open. An archived failed or interrupted job (TASKS-31) is put away as a dismissed one is, so it
+/// goes on the next pass (CLEANUP-5).
+fn nothing_waits(job: &Job) -> bool {
+    if job.archived.is_some() {
+        !job.decision()
+    } else {
+        !job.needs_you()
+    }
 }
 
 /// Whether `job` ended (done, failed, stopped or interrupted) and no worker or publish holds it.
@@ -183,5 +194,40 @@ mod proofs {
     fn may_free_never_with_uncommitted_work() {
         let (settled, running, unpublished) = (kani::any(), kani::any(), kani::any());
         assert!(!may_free(settled, running, unpublished, true));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn failed() -> Job {
+        let mut job = Job::new(
+            "aaaa0031".into(),
+            "o/r".into(),
+            "build".into(),
+            "Do it".into(),
+            "claude".into(),
+            "stub".into(),
+        );
+        job.status = Status::Failed;
+        job.finished = Some(1);
+        job
+    }
+
+    /// TASKS-31, CLEANUP-5: a failed job archived (not dismissed) is let go, as a dismissed one is;
+    /// one neither archived nor dismissed, or archived with its merge waiting on the owner, isn't.
+    #[test]
+    fn tasks_31_an_archived_failed_job_is_put_away() {
+        let mut job = failed();
+        assert!(!nothing_waits(&job), "failed, not put away");
+        job.archived = Some(2);
+        assert!(nothing_waits(&job), "archived");
+        job.merge_needs_you = true;
+        assert!(!nothing_waits(&job), "a decision open");
+        job.archived = None;
+        job.merge_needs_you = false;
+        job.dismissed = Some(2);
+        assert!(nothing_waits(&job), "dismissed, as before");
     }
 }

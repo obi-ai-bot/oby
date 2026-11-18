@@ -7,6 +7,7 @@ import { useLive } from './live';
 import { resetSettingsTip } from './SettingsTip';
 import { onObid } from './lean';
 import { CAN_CREATE } from './spheres';
+import { JoinLink, useJoinLink } from './JoinLink';
 
 // Setting up, Sangam's way (2026-10-27): a window of its own, not the chat. Oby
 // hops up out of the bottom edge (as the Obys of a conversation do), half of it
@@ -282,11 +283,15 @@ function Knowledge() {
   </>;
 }
 
-// One more thing: Obyspheres. Nothing to do here; the other Obys come in round yours (useScene)
+// One more thing: Obyspheres; the other Obys come in round yours (useScene). Where Oby can't make
+// one, the field for the team's invite link, joined through main's one join path (SPHEREAPP-3);
+// Let's go goes on either way
 function Sphere() {
+  const link = useJoinLink();
   return <>
     <In d={0} soft as="h1" className="onb-title">One more thing.</In>
     <In d={500} soft as="p" className="onb-text">Your Oby can talk to other Obys.<br />{CAN_CREATE ? 'Create an Obysphere for your team and bring them together.' : 'Join your team’s Obysphere from its invite link.'}</In>
+    {!CAN_CREATE && <In d={560} soft className="onb-hit onb-join"><JoinLink link={link} onb /></In>}
     <In d={620} soft className="onb-hit"><button type="button" className="onb-go" onClick={finishOnboarding}>Let’s go<ArrowRight size={16} strokeWidth={ARROW_STROKE} /></button></In>
   </>;
 }
