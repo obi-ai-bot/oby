@@ -1,0 +1,77 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/limit-decisions/{id}/answer",
+  "version": "1.0.0",
+  "description": "The owner's signed choice on a limit decision: 422 for a body without revision, choice and approval; 409 for a decision that isn't pending.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/limit-decisions/{id}/answer"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/limit-decisions/x/answer",
+        "body": {},
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "not-a-decision-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/limit-decisions/x/answer",
+        "body": {
+          "choice": "resume"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "not-pending-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/limit-decisions/x/answer",
+        "body": {
+          "revision": 1,
+          "choice": "resume",
+          "approval": {
+            "device": "d",
+            "action": "a",
+            "signedAt": "2026-11-18T00:00:00Z",
+            "signature": "AAAA"
+          }
+        },
+        "expect": {
+          "status": [
+            403,
+            409
+          ]
+        }
+      }
+    }
+  ]
+}

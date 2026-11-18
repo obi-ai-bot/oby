@@ -1,0 +1,104 @@
+{
+  "schemaVersion": "2",
+  "name": "DELETE /v1/routines/{id}",
+  "version": "1.0.0",
+  "description": "Deletes a routine: 204, then 404, with a deleted event.",
+  "trigger": {
+    "http": {
+      "method": "DELETE",
+      "path": "/v1/routines/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "made",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Nightly check",
+          "repo": "obi-e2e/fixture-app",
+          "kind": "investigate",
+          "task": "Say what the README covers.",
+          "schedule": {
+            "every": "daily",
+            "at": "03:00"
+          },
+          "zone": "UTC"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/routines/${state.made.body.id}",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "deleted-204",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/routines/${state.made.body.id}",
+        "expect": {
+          "status": 204
+        }
+      }
+    },
+    {
+      "id": "a-deleted-event",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "routine",
+        "expect": {
+          "body": {
+            "id": "${state.made.body.id}",
+            "deleted": true
+          }
+        }
+      }
+    },
+    {
+      "id": "again-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/routines/${state.made.body.id}",
+        "expect": {
+          "status": 404
+        }
+      }
+    }
+  ]
+}

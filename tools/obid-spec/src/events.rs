@@ -25,11 +25,20 @@ fn log_of(base: &str) -> Option<Log> {
 
 /// Follows `base`'s events with `token` from now on; once per obid (again after its restart).
 pub async fn follow(base: &str, token: &str) -> Result<Value> {
+    follow_as(base, token, None, base).await
+}
+
+/// [`follow`], from `after` (an event id: obid replays what came after it) and kept as `key`, so a
+/// second stream of the same obid can be followed apart from the first.
+pub async fn follow_as(base: &str, token: &str, after: Option<&str>, key: &str) -> Result<Value> {
     let host = crate::http::loopback(base)?;
     let mut stream = tokio::net::TcpStream::connect(&host).await?;
     stream
         .write_all(
-            format!("GET /v1/events HTTP/1.0\r\nHost: {host}\r\nAuthorization: Bearer {token}\r\nAccept: text/event-stream\r\n\r\n")
+            format!(
+                "GET /v1/events{} HTTP/1.0\r\nHost: {host}\r\nAuthorization: Bearer {token}\r\nAccept: text/event-stream\r\n\r\n",
+                after.map(|a| format!("?after={a}")).unwrap_or_default()
+            )
                 .as_bytes(),
         )
         .await?;
@@ -56,7 +65,7 @@ pub async fn follow(base: &str, token: &str) -> Result<Value> {
         .lock()
         .unwrap()
         .get_or_insert_with(HashMap::new)
-        .insert(base.to_string(), log.clone());
+        .insert(key.to_string(), log.clone());
     tokio::spawn(async move {
         let (mut name, mut data, mut id) = (String::new(), String::new(), None);
         let mut line = String::new();
@@ -90,7 +99,7 @@ pub async fn follow(base: &str, token: &str) -> Result<Value> {
             line.clear();
         }
     });
-    Ok(json!({"following": base}))
+    Ok(json!({"following": key}))
 }
 
 /// The first event named `name` whose data matches `expect` (crate::expect), waiting up to

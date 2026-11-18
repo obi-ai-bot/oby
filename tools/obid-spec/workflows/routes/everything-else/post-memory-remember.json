@@ -1,0 +1,161 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/memory/suggestions/{id}/remember",
+  "version": "1.0.0",
+  "description": "Remembers a suggestion: 404 for one obid doesn't have, 422 for one that would change a fixed rule; 201 the memory, kept 0600, the suggestion gone.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/memory/suggestions/{id}/remember"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "seeded",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "memory/suggestions.json",
+        "content": [
+          {
+            "id": "s0000000a",
+            "scope": "user",
+            "repo": null,
+            "kind": "preference",
+            "title": "Tests with every fix",
+            "text": "Write tests with every fix.",
+            "from": "You said it in 2 conversations",
+            "sources": [
+              {
+                "quote": "Write tests with every fix.",
+                "place": "You, in a conversation",
+                "link": null
+              }
+            ]
+          },
+          {
+            "id": "s0000000b",
+            "scope": "user",
+            "repo": null,
+            "kind": "preference",
+            "title": "Straight to main",
+            "text": "Push straight to main when it's green.",
+            "from": "You said it in 2 conversations",
+            "sources": [
+              {
+                "quote": "Push straight to main when it's green.",
+                "place": "You, in a conversation",
+                "link": null
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/memory/suggestions/s0000000a/remember",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/memory/suggestions/s000000ff/remember",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "a-fixed-rule-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/memory/suggestions/s0000000b/remember",
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "remembered",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/memory/suggestions/s0000000a/remember",
+        "expect": {
+          "status": 201,
+          "body": {
+            "id": {
+              "$matches": "^m[0-9a-f]{8}$"
+            },
+            "title": "Tests with every fix",
+            "scope": "user"
+          }
+        }
+      }
+    },
+    {
+      "id": "kept-0600",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "memory/user/${state.remembered.body.id}.md",
+        "expect": {
+          "exists": true,
+          "mode": "0600",
+          "text": {
+            "$contains": "Write tests with every fix."
+          }
+        }
+      }
+    },
+    {
+      "id": "listed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/memory",
+        "expect": {
+          "status": 200,
+          "body": {
+            "memories": [
+              {
+                "id": "${state.remembered.body.id}"
+              }
+            ],
+            "suggestions": [
+              {
+                "id": "s0000000b"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

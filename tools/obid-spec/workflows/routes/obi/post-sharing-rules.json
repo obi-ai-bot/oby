@@ -1,0 +1,188 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/obid/sharing/rules",
+  "version": "1.0.0",
+  "description": "A sharing rule widens what's told, so it takes the owner's signed word: the token alone is 403; signed, 422 for one that isn't a rule (jobProgress without jobStatus among them); 201 with its id, not a starter.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/obid/sharing/rules"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/obid/sharing/rules",
+        "body": {
+          "for": [
+            "dana"
+          ],
+          "repos": [
+            "obi-e2e/fixture-app"
+          ],
+          "tells": [
+            "jobStatus"
+          ]
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "the-token-alone-403",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/obid/sharing/rules",
+        "body": {
+          "for": [
+            "dana"
+          ],
+          "repos": [
+            "obi-e2e/fixture-app"
+          ],
+          "tells": [
+            "jobStatus"
+          ]
+        },
+        "expect": {
+          "status": 403
+        }
+      }
+    },
+    {
+      "id": "progress-without-status-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/obid/sharing/rules",
+        "body": {
+          "for": [
+            "dana"
+          ],
+          "repos": [
+            "obi-e2e/fixture-app"
+          ],
+          "tells": [
+            "jobProgress"
+          ]
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "another-key-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/obid/sharing/rules",
+        "body": {
+          "for": [
+            "dana"
+          ],
+          "repos": [
+            "obi-e2e/fixture-app"
+          ],
+          "tells": [
+            "jobStatus"
+          ],
+          "x": 1
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "made",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/obid/sharing/rules",
+        "body": {
+          "for": [
+            "dana"
+          ],
+          "repos": [
+            "obi-e2e/fixture-app"
+          ],
+          "tells": [
+            "jobStatus"
+          ]
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 201,
+          "body": {
+            "id": {
+              "$matches": "^s-[0-9a-f]{12}$"
+            },
+            "for": [
+              "dana"
+            ],
+            "repos": [
+              "obi-e2e/fixture-app"
+            ],
+            "tells": [
+              "jobStatus"
+            ],
+            "starter": false,
+            "uses": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "listed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/obid/sharing",
+        "expect": {
+          "status": 200,
+          "body": {
+            "rules": [
+              {
+                "id": "${state.made.body.id}"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

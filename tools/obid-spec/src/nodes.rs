@@ -17,10 +17,12 @@ pub const NODES: &[(&str, &str)] = &[
     ("obid-start", "Starts a scratch obid on its own home and port, with stand-in agents (again with the same name: a restart on the same home)."),
     ("obid-stop", "Stops a scratch obid this suite started, by PID: SIGTERM, then SIGKILL."),
     ("call", "Calls an obid endpoint as the owner, a paired device's signed words, another token or none; optionally waits until it answers as expected."),
+    ("call-wait", "Waits for the answer of a call sent in the background, and asserts it."),
     ("check", "Asserts a value (a former step's output) against an expectation."),
     ("events-follow", "Follows GET /v1/events from now on."),
     ("events-wait", "Waits for an event on /v1/events matching an expectation, or that none comes."),
     ("home-file", "Checks a file in obid's home: there or not, its mode, its JSON or text."),
+    ("write-file", "Writes a file in a scratch obid's home or its person's home (what a stand-in reads next: the fake gh's answers)."),
     ("device-pair", "Registers a device of the owner's (P-256), as the Mac app adds its own."),
     ("device-sign", "Signs as the device: X-Oby-Words for a request, or a Confirm tap's approval."),
     ("owner-key", "Makes an owner key (Ed25519), as the Electron app's main makes one."),
@@ -33,19 +35,83 @@ pub const NODES: &[(&str, &str)] = &[
     ("sphere-owner", "Calls the Sphere's own API with an owner's own token."),
     ("sphere-join", "Joins an obid as the owner's app does: its key, its card signed by the owner key, a delegation, the redeem."),
     ("sphere-seal", "Keeps each member's card signed until every one says sealing on."),
+    ("fixture-git", "Runs git in the workflow's fixture remote (a branch, a pull request's ref), answering what it printed."),
+    ("clock", "The time now, in seconds since the epoch, with today's and yesterday's UTC midnight, for a file a step seeds."),
     ("next-second", "Waits until the clock enters its next second, so what obid stamps to the second after it is later than what it stamped before."),
     ("sphere-liar", "Puts a Sphere that lies in front of an Obysphere: every call passes through, but the directory can serve a member's card re-signed with another owner key."),
     ("sphere-lie", "Has the lying Sphere serve an owner's cards signed by a new owner key from now on."),
 ];
+
+type Pending =
+    std::collections::HashMap<String, tokio::task::JoinHandle<std::result::Result<Value, String>>>;
+static PENDING: std::sync::Mutex<Option<Pending>> = std::sync::Mutex::new(None);
 
 pub async fn run_node(run: &Run, name: &str, input: Value) -> Result<Value> {
     match name {
         "obid-start" => obid::start(run, serde_json::from_value(input)?).await,
         "obid-stop" => {
             let pid = input["obid"]["pid"].as_u64().context("obid.pid")? as u32;
+            // `kill`: SIGKILL, obid ending with no chance to save anything (a crash, a power cut).
+            if input["kill"] == true {
+                anyhow::ensure!(
+                    crate::procs::ours(pid),
+                    "process {pid} isn't one this suite started"
+                );
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGKILL);
+                }
+            }
             obid::stop(pid, Duration::from_secs(10)).await
         }
+        // `background`: the request goes now and the step answers its handle at once; a
+        // `call-wait` step later waits for its answer (a turn's words, which block until it ends,
+        // while a later step stops or cancels it).
+        "call" if input["background"] == true => {
+            let handle = uuid::Uuid::new_v4().to_string();
+            let mut request = input.clone();
+            request.as_object_mut().unwrap().remove("background");
+            let task =
+                tokio::spawn(async move { call(&request).await.map_err(|e| format!("{e:#}")) });
+            PENDING
+                .lock()
+                .unwrap()
+                .get_or_insert_with(Default::default)
+                .insert(handle.clone(), task);
+            Ok(json!({"handle": handle}))
+        }
         "call" => call(&input).await,
+        "call-wait" => {
+            let handle = sphere::str_of(&input["call"], "handle")?;
+            let task = PENDING
+                .lock()
+                .unwrap()
+                .as_mut()
+                .and_then(|p| p.remove(handle))
+                .context("no background call with that handle (or it was waited for already)")?;
+            let seconds = input["seconds"].as_u64().unwrap_or(120);
+            let answer = tokio::time::timeout(Duration::from_secs(seconds), task)
+                .await
+                .with_context(|| {
+                    format!("the background call answered nothing within {seconds} s")
+                })??
+                .map_err(|e| anyhow::anyhow!(e))?;
+            let want = input.get("expect");
+            let text = answer["text"].as_str().unwrap_or_default().to_string();
+            let status = answer["status"].as_u64().unwrap_or(0) as u16;
+            if let Some(w) = want {
+                let failures = answer_failures(w, status, &answer["body"], &text);
+                if !failures.is_empty() {
+                    bail!(
+                        "{}: {}",
+                        failures.join("; "),
+                        text.chars().take(600).collect::<String>()
+                    );
+                }
+            }
+            let mut out = answer.clone();
+            out["red"] = red_proof(want, status, &answer["body"], &text);
+            Ok(out)
+        }
         "check" => {
             let failures = expect::check(&input["expect"], &input["value"], "");
             if failures.is_empty() {
@@ -56,16 +122,23 @@ pub async fn run_node(run: &Run, name: &str, input: Value) -> Result<Value> {
             }
         }
         "events-follow" => {
-            events::follow(
-                sphere::str_of(&input["obid"], "base")?,
+            let base = sphere::str_of(&input["obid"], "base")?;
+            let key = input["name"].as_str().unwrap_or(base).to_string();
+            events::follow_as(
+                base,
                 sphere::str_of(&input["obid"], "token")?,
+                input["after"].as_str(),
+                &key,
             )
             .await
         }
         "events-wait" => {
             let none = input["none"].as_bool().unwrap_or(false);
             let mut found = events::wait(
-                sphere::str_of(&input["obid"], "base")?,
+                input["name"]
+                    .as_str()
+                    .map(Ok)
+                    .unwrap_or_else(|| sphere::str_of(&input["obid"], "base"))?,
                 sphere::str_of(&input, "event")?,
                 input.get("expect").unwrap_or(&json!({})),
                 input["seconds"].as_u64().unwrap_or(30),
@@ -79,8 +152,39 @@ pub async fn run_node(run: &Run, name: &str, input: Value) -> Result<Value> {
             Ok(found)
         }
         "cleanup" => Ok(json!({"stopped": crate::procs::stop_all().await})),
-        "home-file" => home_file(&input),
+        // `within`: asked again until it holds, for a file obid writes a moment later.
+        "home-file" => {
+            let until = std::time::Instant::now()
+                + Duration::from_secs(input["within"].as_u64().unwrap_or(0));
+            loop {
+                match home_file(&input) {
+                    Ok(v) => break Ok(v),
+                    Err(e) if std::time::Instant::now() >= until => break Err(e),
+                    Err(_) => tokio::time::sleep(Duration::from_millis(250)).await,
+                }
+            }
+        }
         "device-pair" => device_pair(&input).await,
+        "write-file" => {
+            let base = match input["in"].as_str().unwrap_or("person") {
+                "person" => sphere::str_of(&input["obid"], "person")?,
+                "home" => sphere::str_of(&input["obid"], "home")?,
+                other => bail!("in: {other}? person or home"),
+            };
+            let rel = sphere::str_of(&input, "path")?;
+            anyhow::ensure!(
+                !rel.starts_with('/') && !rel.split('/').any(|p| p == ".."),
+                "{rel} isn't a path inside that folder"
+            );
+            let path = std::path::Path::new(base).join(rel);
+            obid::private_dir(path.parent().context("no folder")?)?;
+            let text = match &input["content"] {
+                Value::String(t) => t.clone(),
+                other => other.to_string(),
+            };
+            obid::private_file(&path, &text)?;
+            Ok(json!({"written": rel}))
+        }
         "device-sign" => device_sign(&input),
         "owner-key" => {
             let key = OwnerKey::generate();
@@ -171,6 +275,40 @@ pub async fn run_node(run: &Run, name: &str, input: Value) -> Result<Value> {
                 members.push((m["obid"].clone(), owner_key(m)?));
             }
             sphere::seal_all(&members, input["seconds"].as_u64().unwrap_or(120)).await
+        }
+        "fixture-git" => {
+            let args: Vec<String> = input["args"]
+                .as_array()
+                .context("args")?
+                .iter()
+                .map(|a| a.as_str().unwrap_or_default().to_string())
+                .collect();
+            let remote = run.scratch.join("fixture/remote.git");
+            anyhow::ensure!(
+                remote.is_dir(),
+                "no fixture remote yet: an obid-start step first"
+            );
+            let out = std::process::Command::new("/usr/bin/git")
+                .arg("-C")
+                .arg(&remote)
+                .args(&args)
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", &run.scratch)
+                .output()?;
+            anyhow::ensure!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            Ok(json!({"out": String::from_utf8_lossy(&out.stdout).trim()}))
+        }
+        "clock" => {
+            let now = chrono::Utc::now().timestamp();
+            let midnight = now - now.rem_euclid(86_400);
+            Ok(
+                json!({"now": now, "midnight": midnight, "yesterday": midnight - 86_400, "tenDaysAgo": now - 10 * 86_400}),
+            )
         }
         "next-second" => {
             let now = chrono::Utc::now().timestamp();
@@ -533,6 +671,19 @@ async fn device_pair(input: &Value) -> Result<Value> {
 
 fn device_sign(input: &Value) -> Result<Value> {
     let (id, key) = device_of(&input["device"])?;
+    // `lines`: any of the owner's device approvals, the lines given and then the time it's signed
+    // at, joined by newlines (`oby-revoke-device`, `<id>` → `oby-revoke-device\n<id>\n<signedAt>`).
+    if let Some(lines) = input.get("lines").and_then(Value::as_array) {
+        let at = keys::now_seconds();
+        let mut text: Vec<String> = lines
+            .iter()
+            .map(|l| l.as_str().unwrap_or_default().to_string())
+            .collect();
+        text.push(at.clone());
+        return Ok(
+            json!({"approval": {"device": id, "signedAt": at, "signature": key.sign(&text.join("\n"))}}),
+        );
+    }
     if let Some(confirm) = input.get("confirm") {
         return Ok(json!({"approval": keys::confirm_approval(
             &id, &key, sphere::str_of(confirm, "id")?, sphere::str_of(confirm, "title")?)}));

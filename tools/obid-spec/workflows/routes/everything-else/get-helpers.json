@@ -1,0 +1,92 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/helpers",
+  "version": "1.0.0",
+  "description": "The helpers, oldest first: none, then the one made (HELPERS-1).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/helpers"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/helpers",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "none",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/helpers",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "made",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/helpers",
+        "body": {
+          "name": "Reviewer",
+          "color": "#3a5a8c",
+          "instructions": "Review pull requests carefully.",
+          "tool": "claude"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "helpers-1-listed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/helpers",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.made.body.id}",
+              "name": "Reviewer",
+              "tool": "claude",
+              "connectors": []
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "HELPERS-1"
+        ]
+      }
+    }
+  ]
+}

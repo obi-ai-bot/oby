@@ -1,0 +1,121 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/memory",
+  "version": "1.0.0",
+  "description": "What Oby remembers and what it suggests: none, then the suggestions it holds, asked as a question.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/memory"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/memory",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "none",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/memory",
+        "expect": {
+          "status": 200,
+          "body": {
+            "memories": [],
+            "suggestions": [],
+            "question": "Can I remember that?"
+          }
+        }
+      }
+    },
+    {
+      "id": "seeded",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "memory/suggestions.json",
+        "content": [
+          {
+            "id": "s0000000a",
+            "scope": "user",
+            "repo": null,
+            "kind": "preference",
+            "title": "Tests with every fix",
+            "text": "Write tests with every fix.",
+            "from": "You said it in 2 conversations",
+            "sources": [
+              {
+                "quote": "Write tests with every fix.",
+                "place": "You, in a conversation",
+                "link": null
+              }
+            ]
+          },
+          {
+            "id": "s0000000b",
+            "scope": "user",
+            "repo": null,
+            "kind": "preference",
+            "title": "Straight to main",
+            "text": "Push straight to main when it's green.",
+            "from": "You said it in 2 conversations",
+            "sources": [
+              {
+                "quote": "Push straight to main when it's green.",
+                "place": "You, in a conversation",
+                "link": null
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "suggested",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/memory",
+        "expect": {
+          "status": 200,
+          "body": {
+            "suggestions": {
+              "$len": 2
+            }
+          },
+          "paths": {
+            "suggestions": {
+              "$any": {
+                "id": "s0000000a",
+                "title": "Tests with every fix"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

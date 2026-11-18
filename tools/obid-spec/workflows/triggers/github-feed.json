@@ -1,0 +1,333 @@
+{
+  "schemaVersion": "2",
+  "name": "The GitHub feed",
+  "version": "1.0.0",
+  "description": "obid reads the owner's GitHub work by itself, at start and on every refresh: a first read lists the work and offers nothing; a later read offers a new review request in the inbox with a github event, and the item it offers starts a review job in a conversation of its own.",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "person": {
+          "github/work.json": {
+            "data": {
+              "reviews": {
+                "issueCount": 1,
+                "nodes": [
+                  {
+                    "number": 702,
+                    "title": "Thing 702",
+                    "updatedAt": "2026-10-18T08:42:00Z",
+                    "state": "OPEN",
+                    "author": {
+                      "login": "sangam"
+                    },
+                    "repository": {
+                      "nameWithOwner": "obi-e2e/fixture-app"
+                    },
+                    "labels": {
+                      "nodes": [
+                        {
+                          "name": "bug"
+                        }
+                      ]
+                    },
+                    "isDraft": false,
+                    "reviewDecision": "REVIEW_REQUIRED",
+                    "commits": {
+                      "nodes": [
+                        {
+                          "commit": {
+                            "statusCheckRollup": {
+                              "state": "PENDING"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              "assigned": {
+                "issueCount": 0,
+                "nodes": []
+              },
+              "mine": {
+                "issueCount": 0,
+                "nodes": []
+              },
+              "rateLimit": {
+                "remaining": 4900,
+                "resetAt": "2030-10-18T10:00:00Z"
+              },
+              "viewer": {
+                "login": "alex"
+              }
+            }
+          },
+          "github/view.json": {
+            "title": "Thing 702",
+            "body": "Please look at the average helper.",
+            "author": {
+              "login": "sangam"
+            },
+            "labels": [],
+            "comments": []
+          }
+        }
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "read-at-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/github/work",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "login": "alex",
+            "counts": {
+              "reviews": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "new-work",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "github/work.json",
+        "content": {
+          "data": {
+            "reviews": {
+              "issueCount": 2,
+              "nodes": [
+                {
+                  "number": 702,
+                  "title": "Thing 702",
+                  "updatedAt": "2026-10-18T08:42:00Z",
+                  "state": "OPEN",
+                  "author": {
+                    "login": "sangam"
+                  },
+                  "repository": {
+                    "nameWithOwner": "obi-e2e/fixture-app"
+                  },
+                  "labels": {
+                    "nodes": [
+                      {
+                        "name": "bug"
+                      }
+                    ]
+                  },
+                  "isDraft": false,
+                  "reviewDecision": "REVIEW_REQUIRED",
+                  "commits": {
+                    "nodes": [
+                      {
+                        "commit": {
+                          "statusCheckRollup": {
+                            "state": "PENDING"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "number": 703,
+                  "title": "Thing 703",
+                  "updatedAt": "2026-10-18T08:43:00Z",
+                  "state": "OPEN",
+                  "author": {
+                    "login": "sangam"
+                  },
+                  "repository": {
+                    "nameWithOwner": "obi-e2e/fixture-app"
+                  },
+                  "labels": {
+                    "nodes": [
+                      {
+                        "name": "bug"
+                      }
+                    ]
+                  },
+                  "isDraft": false,
+                  "reviewDecision": "REVIEW_REQUIRED",
+                  "commits": {
+                    "nodes": [
+                      {
+                        "commit": {
+                          "statusCheckRollup": {
+                            "state": "PENDING"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "assigned": {
+              "issueCount": 1,
+              "nodes": [
+                {
+                  "number": 11,
+                  "title": "Thing 11",
+                  "updatedAt": "2026-10-18T08:11:00Z",
+                  "state": "OPEN",
+                  "author": {
+                    "login": "sangam"
+                  },
+                  "repository": {
+                    "nameWithOwner": "obi-e2e/fixture-app"
+                  },
+                  "labels": {
+                    "nodes": [
+                      {
+                        "name": "bug"
+                      }
+                    ]
+                  },
+                  "isDraft": false,
+                  "reviewDecision": "REVIEW_REQUIRED",
+                  "commits": {
+                    "nodes": [
+                      {
+                        "commit": {
+                          "statusCheckRollup": {
+                            "state": "PENDING"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "mine": {
+              "issueCount": 0,
+              "nodes": []
+            },
+            "rateLimit": {
+              "remaining": 4900,
+              "resetAt": "2030-10-18T10:00:00Z"
+            },
+            "viewer": {
+              "login": "alex"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/refresh",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-github-event",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "github",
+        "expect": {
+          "body": {
+            "counts": {
+              "reviews": 2
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "offered",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "pick": {
+          "where": {
+            "kind": "github"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "github",
+                "title": "Review requested: fixture-app #703"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "started-from-the-offer",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.offered.picked.id}/answer",
+        "body": {
+          "answer": "Review it"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-review-job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "review",
+                "pr": 703,
+                "conversation": {
+                  "$type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

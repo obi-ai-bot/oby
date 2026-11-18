@@ -1,0 +1,119 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/clear",
+  "version": "1.0.0",
+  "description": "Clear: answers clearedAt, keeps it 0600 in home/cleared.json, sends a clear event, and GET /v1/status says it, across a restart.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/clear"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/clear",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "cleared",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/clear",
+        "expect": {
+          "status": 200,
+          "body": {
+            "clearedAt": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a-clear-event",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "clear",
+        "expect": {
+          "body": {
+            "clearedAt": "${state.cleared.body.clearedAt}"
+          }
+        }
+      }
+    },
+    {
+      "id": "kept-0600",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "cleared.json",
+        "expect": {
+          "exists": true,
+          "mode": "0600",
+          "json": {
+            "clearedAt": "${state.cleared.body.clearedAt}"
+          }
+        }
+      }
+    },
+    {
+      "id": "stop",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "status-says-it-after-a-restart",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "body": {
+            "clearedAt": "${state.cleared.body.clearedAt}"
+          }
+        }
+      }
+    }
+  ]
+}

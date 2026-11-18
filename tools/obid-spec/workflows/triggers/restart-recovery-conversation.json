@@ -1,0 +1,203 @@
+{
+  "schemaVersion": "2",
+  "name": "Restart recovery: a conversation's turn cut by obid going down",
+  "version": "1.0.0",
+  "description": "obid killed mid-turn (DELIVERY-7): after it starts again the cut words say interrupted, one Oby line says what happened, the same words again are answered as repeated, and the first new words get their answer (CONVERSATION-AGENT-46).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Ready.",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Ready."
+          }
+        }
+      }
+    },
+    {
+      "id": "lingering",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "LINGER 60000",
+          "conversation": "${state.said.body.conversation}",
+          "id": "7c1d2e3f-0000-4000-8000-0000000000a7"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "under-way",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "7c1d2e3f-0000-4000-8000-0000000000a7",
+                "delivery": {
+                  "status": "running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "killed",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}",
+        "kill": true
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "delivery-7-the-cut-words-say-interrupted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "7c1d2e3f-0000-4000-8000-0000000000a7",
+                "delivery": {
+                  "status": "interrupted"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-7"
+        ]
+      }
+    },
+    {
+      "id": "delivery-7-one-oby-line-after-them",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "who": "oby",
+                  "text": {
+                    "$ne": "Ready."
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-7"
+        ]
+      }
+    },
+    {
+      "id": "delivery-7-the-same-words-again-repeated",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "LINGER 60000",
+          "conversation": "${state.said.body.conversation}",
+          "id": "7c1d2e3f-0000-4000-8000-0000000000a7"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "repeated": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-7"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-46-the-first-new-words-answered",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Back.",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Back."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-46"
+        ]
+      }
+    }
+  ]
+}

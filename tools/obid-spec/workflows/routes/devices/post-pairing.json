@@ -1,0 +1,234 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/pairing",
+  "version": "1.0.0",
+  "description": "A phone redeems its invitation on the gateway: a wrong code is 401, the secret answers its device token once (410 again); the token reaches routes on the gateway's list and only those, and is 401 once revoked (PAIRING-5's obid half).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/pairing"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "gateway": "127.0.0.1:0"
+        }
+      }
+    },
+    {
+      "id": "invite",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/pairing/invite",
+        "body": {
+          "url": "https://mac.example.invalid",
+          "name": "Test Mac"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "code": {
+              "$matches": "^[0-9]{6}$"
+            },
+            "secret": {
+              "$type": "string"
+            },
+            "url": "https://mac.example.invalid"
+          }
+        }
+      }
+    },
+    {
+      "id": "a-wrong-code-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "x"
+        },
+        "method": "POST",
+        "path": "/v1/pairing",
+        "as": "token",
+        "token": "x",
+        "body": {
+          "credential": "000000"
+        },
+        "expect": {
+          "status": [
+            401,
+            410
+          ]
+        }
+      }
+    },
+    {
+      "id": "paired",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "x"
+        },
+        "method": "POST",
+        "path": "/v1/pairing",
+        "as": "token",
+        "token": "x",
+        "body": {
+          "credential": "${state.invite.body.secret}",
+          "name": "Test phone"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "token": {
+              "$type": "string"
+            },
+            "deviceID": {
+              "$type": "string"
+            },
+            "link": {
+              "name": "Test Mac"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "used-once-410",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "x"
+        },
+        "method": "POST",
+        "path": "/v1/pairing",
+        "as": "token",
+        "token": "x",
+        "body": {
+          "credential": "${state.invite.body.secret}"
+        },
+        "expect": {
+          "status": 410
+        }
+      }
+    },
+    {
+      "id": "its-token-reaches-a-listed-route",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.paired.body.token}"
+        },
+        "method": "GET",
+        "path": "/v1/repos",
+        "as": "token",
+        "token": "${state.paired.body.token}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "repos": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "not-a-listed-route-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.paired.body.token}"
+        },
+        "method": "GET",
+        "path": "/v1/projects",
+        "as": "token",
+        "token": "${state.paired.body.token}",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "a-wrong-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "nope"
+        },
+        "method": "GET",
+        "path": "/v1/repos",
+        "as": "token",
+        "token": "nope",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "listed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/pairing/devices",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.paired.body.deviceID}",
+              "name": "Test phone"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "revoked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/pairing/devices/${state.paired.body.deviceID}",
+        "expect": {
+          "status": 204
+        }
+      }
+    },
+    {
+      "id": "pairing-5-revoked-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.paired.body.token}"
+        },
+        "method": "GET",
+        "path": "/v1/repos",
+        "as": "token",
+        "token": "${state.paired.body.token}",
+        "expect": {
+          "status": 401
+        }
+      },
+      "ui": {
+        "proves": [
+          "PAIRING-5"
+        ]
+      }
+    }
+  ]
+}

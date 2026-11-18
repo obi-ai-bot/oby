@@ -1,0 +1,78 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/settings/models/options",
+  "version": "1.0.0",
+  "description": "The models and efforts each tool offers (PROVIDERS-3): Claude Code's efforts low to max, Codex's to xhigh, none for Cursor.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/settings/models/options"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/models/options",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "providers-3-efforts",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/models/options",
+        "expect": {
+          "status": 200,
+          "body": {
+            "claude": {
+              "efforts": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "models": {
+                "$type": "array"
+              }
+            },
+            "codex": {
+              "efforts": [
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ]
+            },
+            "cursor": {
+              "efforts": []
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROVIDERS-3"
+        ]
+      }
+    }
+  ]
+}

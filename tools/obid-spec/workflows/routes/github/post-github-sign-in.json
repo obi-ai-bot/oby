@@ -1,0 +1,72 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/github/sign-in",
+  "version": "1.0.0",
+  "description": "Starts gh's own sign-in: a gh that gives no code to type is 502 didNotStart (SIGN-IN-6), and nothing is left under way.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/github/sign-in"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/sign-in",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "sign-in-6-no-code-502",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/sign-in",
+        "expect": {
+          "status": 502,
+          "body": {
+            "reason": "didNotStart"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SIGN-IN-6"
+        ]
+      }
+    },
+    {
+      "id": "nothing-under-way",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/github",
+        "expect": {
+          "status": 200,
+          "body": {
+            "signedIn": false,
+            "signIn": null
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,460 @@
+{
+  "schemaVersion": "2",
+  "name": "Conversations: words that wait, restarts, what's under way",
+  "version": "1.0.0",
+  "description": "Two messages sent while a turn runs both wait queued, then one turn answers them together by the latest (DELIVERY-2); while a turn runs the conversation lists what's under way, with underway events to its end (CONVERSATION-AGENT-50); a new conversation is titled in a few words (CHATFIRST-36); obid stopped cleanly mid-turn says it restarted (DELIVERY-9), and answered conversations get nothing at start (DELIVERY-10).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "Please help with billing\nSAY Fine.",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Fine."
+          }
+        }
+      }
+    },
+    {
+      "id": "chatfirst-36-titled-in-a-few-words",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.said.body.conversation}",
+              "title": "Help with billing"
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATFIRST-36"
+        ]
+      }
+    },
+    {
+      "id": "lingering",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "background": true,
+        "body": {
+          "said": "LINGER 12000",
+          "conversation": "${state.said.body.conversation}"
+        }
+      }
+    },
+    {
+      "id": "under-way",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "text": "LINGER 12000",
+                "delivery": {
+                  "status": "running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-50-underway-listed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.said.body.conversation}",
+              "underway": {
+                "turn": {
+                  "$type": "string"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-50"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-50-an-underway-event",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "underway",
+        "expect": {
+          "paths": {
+            "conversation": "${state.said.body.conversation}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-50"
+        ]
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "background": true,
+        "body": {
+          "said": "SAY first",
+          "conversation": "${state.said.body.conversation}",
+          "id": "1b2c3d4e-0000-4000-8000-0000000000aa"
+        }
+      }
+    },
+    {
+      "id": "latest",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "background": true,
+        "body": {
+          "said": "SAY both",
+          "conversation": "${state.said.body.conversation}",
+          "id": "1b2c3d4e-0000-4000-8000-0000000000bb"
+        }
+      }
+    },
+    {
+      "id": "delivery-2-both-wait-queued",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "delivery": {
+                    "status": "queued"
+                  }
+                },
+                2
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-2"
+        ]
+      }
+    },
+    {
+      "id": "lingering-answered",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.lingering}",
+        "seconds": 60,
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "delivery-2-the-earlier-answers-none",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.first}",
+        "seconds": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "none"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-2"
+        ]
+      }
+    },
+    {
+      "id": "delivery-2-the-latest-carries-the-reply",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.latest}",
+        "seconds": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "both"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-2"
+        ]
+      }
+    },
+    {
+      "id": "delivery-2-both-answered-by-the-latest",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "delivery": {
+                    "status": "answered",
+                    "by": "1b2c3d4e-0000-4000-8000-0000000000bb"
+                  }
+                },
+                2
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-2"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-50-its-end",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "underway",
+        "expect": {
+          "paths": {
+            "conversation": "${state.said.body.conversation}",
+            "ended": {
+              "$exists": true
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-50"
+        ]
+      }
+    },
+    {
+      "id": "before-the-stop",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "other",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Done here.",
+          "new": true
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "other-before",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.other.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 2
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cut",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "background": true,
+        "body": {
+          "said": "LINGER 60000",
+          "conversation": "${state.said.body.conversation}"
+        }
+      }
+    },
+    {
+      "id": "cut-under-way",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "text": "LINGER 60000",
+                "delivery": {
+                  "status": "running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "stopped-cleanly",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "delivery-9-it-says-it-restarted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "oby",
+                "text": {
+                  "$contains": "restart"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-9"
+        ]
+      }
+    },
+    {
+      "id": "delivery-10-an-answered-conversation-gets-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.other.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 2
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-10"
+        ]
+      }
+    }
+  ]
+}

@@ -60,12 +60,21 @@ its trigger `http` naming the method and path as routes.txt lists them) and `wor
 - `ui.proves`: the scenarios the step's assertion proves; coverage counts them.
 - `ui.expectedRed`: a known bug's issue. The step is expected to fail until it's fixed: its failure
   is listed with the issue and doesn't fail the run; its pass does, so the mark comes off.
+- `ui.flaky`: a known intermittent bug's issue. Its failure is listed with the issue and doesn't fail
+  the run; its pass is a pass.
 - `expect`: `status` (one or a list), `body` (a subset), `paths` (dotted paths), `text`, with
   matchers `$exists`, `$ne`, `$type`, `$len`, `$contains`, `$matches`, `$any`, `$none`, `$count`,
   `$oneOf`, `$not` (src/expect.rs).
 - `call` takes `as`: `owner` (obid's token, the default), `device` (and the device's
   `X-Oby-Words` over the exact body), `none`, `wrong`, `token`; `confirm` for a Confirm tap signed by
-  the device; `within` to wait for state; `pick` to keep an array element for later steps.
+  the device; `within` to wait for state; `pick` to keep an array element for later steps;
+  `background` to send a request that blocks (a turn's words) while later steps act, its answer
+  read by a `call-wait` step.
+- Stand-ins: `obid-start`'s `agent` picks Claude Code's stand-in (`fake-harness-jobs` routes a
+  conversation to `fake-harness`, a task to `fake-claude`, a side call to `fake-planner`; a sign-in
+  needs `fake-claude` itself, whose `node` obid finds). The task's or the words' text drives it
+  (`SAY <words>`, `LINGER <ms>`, `ASK …`, `OBY oby_dispatch {…}`; `COMMIT: <file>`, `SLEEP`, `FAIL`,
+  `LIMITED: <s>`, `KEEP PROMPTS`): the stand-ins' own headers list them.
 
 **Every assertion can fail** (OBIDSPEC-6): the host changes the answer each assertion passed on at
 each place it looks, and each change must fail it; one that passes anyway is a vacuous assertion

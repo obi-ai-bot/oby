@@ -1,0 +1,178 @@
+{
+  "schemaVersion": "2",
+  "name": "Sphere directory: owner ids that look alike",
+  "version": "1.0.0",
+  "description": "The members list gives each member with look-alikes their owner ids under lookalike, and none for one without (ASK-35).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "dano",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dano",
+        "owner": "dano"
+      }
+    },
+    {
+      "id": "dano-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dano-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dano}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dano-key}"
+      }
+    },
+    {
+      "id": "ask-35-dana-looks-like-dano",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "owner": "dana",
+                "lookalike": [
+                  "dano"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-35"
+        ]
+      }
+    },
+    {
+      "id": "ask-35-and-dano-like-dana",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "owner": "dano",
+                "lookalike": [
+                  "dana"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-35"
+        ]
+      }
+    },
+    {
+      "id": "ask-35-none-for-one-without",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "owner": "alex",
+                "lookalike": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-35"
+        ]
+      }
+    }
+  ]
+}

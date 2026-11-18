@@ -1,0 +1,106 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/obid/vault",
+  "version": "1.0.0",
+  "description": "The vault's names, never a value: none, then the one kept (VAULT-1).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/obid/vault"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "secret",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/obid/vault",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "none",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/obid/vault",
+        "expect": {
+          "status": 200,
+          "body": {
+            "names": []
+          }
+        }
+      }
+    },
+    {
+      "id": "kept",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/obid/vault/test.token",
+        "body": {
+          "value": "${state.secret.seed}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 204
+        }
+      }
+    },
+    {
+      "id": "vault-1-its-name-only",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/obid/vault",
+        "expect": {
+          "status": 200,
+          "body": {
+            "names": [
+              "test.token"
+            ]
+          },
+          "text": {
+            "$not": {
+              "$contains": "${state.secret.seed}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "VAULT-1"
+        ]
+      }
+    }
+  ]
+}

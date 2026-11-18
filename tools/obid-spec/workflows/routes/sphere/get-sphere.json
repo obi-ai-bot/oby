@@ -180,6 +180,28 @@
       }
     },
     {
+      "id": "sphere-20-a-joined-membership-has-no-revoke",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere",
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "joined",
+            "revokedAt": null,
+            "revokedReason": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-20"
+        ]
+      }
+    },
+    {
       "id": "the-delegation-itself-never-shows",
       "use": "runtime.rust:call",
       "inputs": {

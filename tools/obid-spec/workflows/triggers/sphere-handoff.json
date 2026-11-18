@@ -1,0 +1,512 @@
+{
+  "schemaVersion": "2",
+  "name": "Sphere deliveries: a handoff from another Oby",
+  "version": "1.0.0",
+  "description": "A member's task for this Oby waits as Task from <owner> with its goal quoted and starts nothing (HANDOFF-1); the owner's signed Accept starts one build job and the exchange is accepted with it (HANDOFF-2); Decline sends owner_declined and starts nothing (HANDOFF-4); a handoff for a repository obid doesn't know is declined unavailable, never accepted (HANDOFF-5).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.alex}"
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.alex-joined.obiId}",
+          "type": "handoff",
+          "body": {
+            "goal": "Add an average helper",
+            "repo": "obi-e2e/fixture-app",
+            "base_branch": "main",
+            "acceptance": [
+              {
+                "kind": "tests_pass"
+              }
+            ],
+            "summary": "Adds src/average.js."
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 202,
+          "body": {
+            "type": "handoff",
+            "state": "sent"
+          }
+        }
+      }
+    },
+    {
+      "id": "handoff-1-a-task-from-dana-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "obi-${state.first.body.correlationId}",
+                "kind": "obiRequest",
+                "title": "Task from dana",
+                "obi": {
+                  "type": "handoff",
+                  "repo": "obi-e2e/fixture-app",
+                  "baseBranch": "main",
+                  "quoted": {
+                    "goal": "Add an average helper",
+                    "summary": "Adds src/average.js."
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "HANDOFF-1"
+        ]
+      }
+    },
+    {
+      "id": "handoff-1-no-job-yet",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "HANDOFF-1"
+        ]
+      }
+    },
+    {
+      "id": "handoff-2-accepted-signed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/inbox/obi-${state.first.body.correlationId}/answer",
+        "body": {
+          "answer": "Accept"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200
+        }
+      },
+      "ui": {
+        "proves": [
+          "HANDOFF-2"
+        ]
+      }
+    },
+    {
+      "id": "handoff-2-one-build-job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "kind": "build",
+              "repo": "obi-e2e/fixture-app",
+              "task": {
+                "$not": {
+                  "$contains": "Add an average helper"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "HANDOFF-2"
+        ]
+      }
+    },
+    {
+      "id": "handoff-2-accepted-with-that-job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.first.body.correlationId}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": {
+              "$oneOf": [
+                "accepted",
+                "done",
+                "failed"
+              ]
+            },
+            "job": "${state.handoff-2-one-build-job.body.0.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "HANDOFF-2"
+        ]
+      }
+    },
+    {
+      "id": "second",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.alex-joined.obiId}",
+          "type": "handoff",
+          "body": {
+            "goal": "Rename the helper",
+            "repo": "obi-e2e/fixture-app",
+            "base_branch": "main",
+            "acceptance": [
+              {
+                "kind": "tests_pass"
+              }
+            ],
+            "summary": "Adds src/average.js."
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 202,
+          "body": {
+            "type": "handoff",
+            "state": "sent"
+          }
+        }
+      }
+    },
+    {
+      "id": "second-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "obi-${state.second.body.correlationId}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "handoff-4-declined",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/inbox/obi-${state.second.body.correlationId}/answer",
+        "body": {
+          "answer": "Decline"
+        },
+        "expect": {
+          "status": 200
+        }
+      },
+      "ui": {
+        "proves": [
+          "HANDOFF-4"
+        ]
+      }
+    },
+    {
+      "id": "handoff-4-dana-hears-owner-declined",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.second.body.correlationId}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "declined",
+            "messages": {
+              "$any": {
+                "direction": "received",
+                "envelope": {
+                  "type": "decline",
+                  "body": {
+                    "reason": "owner_declined"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "HANDOFF-4"
+        ]
+      }
+    },
+    {
+      "id": "handoff-4-no-second-job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "HANDOFF-4"
+        ]
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.alex-joined.obiId}",
+          "type": "handoff",
+          "body": {
+            "goal": "Fix their thing",
+            "repo": "someone/elsewhere",
+            "base_branch": "main",
+            "acceptance": [
+              {
+                "kind": "tests_pass"
+              }
+            ],
+            "summary": "Adds src/average.js."
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 202,
+          "body": {
+            "type": "handoff",
+            "state": "sent"
+          }
+        }
+      }
+    },
+    {
+      "id": "unknown-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "obi-${state.unknown.body.correlationId}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "handoff-5-accepted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/inbox/obi-${state.unknown.body.correlationId}/answer",
+        "body": {
+          "answer": "Accept"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200
+        }
+      },
+      "ui": {
+        "proves": [
+          "HANDOFF-5"
+        ]
+      }
+    },
+    {
+      "id": "handoff-5-declined-unavailable",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.unknown.body.correlationId}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "declined",
+            "messages": {
+              "$any": {
+                "direction": "received",
+                "envelope": {
+                  "type": "decline",
+                  "body": {
+                    "reason": "unavailable"
+                  }
+                }
+              }
+            }
+          },
+          "paths": {
+            "messages": {
+              "$none": {
+                "envelope": {
+                  "type": "accept"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "HANDOFF-5"
+        ]
+      }
+    },
+    {
+      "id": "handoff-5-no-job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "HANDOFF-5"
+        ]
+      }
+    }
+  ]
+}

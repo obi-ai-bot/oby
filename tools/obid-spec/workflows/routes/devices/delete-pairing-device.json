@@ -1,0 +1,133 @@
+{
+  "schemaVersion": "2",
+  "name": "DELETE /v1/pairing/devices/{id}",
+  "version": "1.0.0",
+  "description": "Forgets a paired phone: 404 for one obid doesn't have; 204, then it's not listed.",
+  "trigger": {
+    "http": {
+      "method": "DELETE",
+      "path": "/v1/pairing/devices/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "gateway": "127.0.0.1:0"
+        }
+      }
+    },
+    {
+      "id": "invite",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/pairing/invite",
+        "body": {
+          "url": "https://mac.example.invalid",
+          "name": "Test Mac"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "code": {
+              "$matches": "^[0-9]{6}$"
+            },
+            "secret": {
+              "$type": "string"
+            },
+            "url": "https://mac.example.invalid"
+          }
+        }
+      }
+    },
+    {
+      "id": "paired",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "x"
+        },
+        "method": "POST",
+        "path": "/v1/pairing",
+        "as": "token",
+        "token": "x",
+        "body": {
+          "credential": "${state.invite.body.secret}",
+          "name": "Test phone"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "token": {
+              "$type": "string"
+            },
+            "deviceID": {
+              "$type": "string"
+            },
+            "link": {
+              "name": "Test Mac"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/pairing/devices/${state.paired.body.deviceID}",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/pairing/devices/nope",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "forgotten-204",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/pairing/devices/${state.paired.body.deviceID}",
+        "expect": {
+          "status": 204
+        }
+      }
+    },
+    {
+      "id": "not-listed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/pairing/devices",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    }
+  ]
+}

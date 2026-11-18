@@ -1,0 +1,289 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/inbox/{id}/answer",
+  "version": "1.0.0",
+  "description": "The owner's answer to an inbox item: 404 for one obid doesn't have, 400 and 422 for a body that isn't exactly one answer, done or later; a Confirm takes the device's tap (403 without it, 422 for an approval that isn't one); signed, it's carried out and the item is done, and answering again is 409.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/inbox/{id}/answer"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "asked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/obid/decisions",
+        "body": {
+          "type": "host_approval",
+          "fromOwner": "dana",
+          "repo": "obi-e2e/fixture-app"
+        },
+        "expect": {
+          "status": 202,
+          "body": {
+            "kind": "confirm",
+            "state": "open",
+            "confirm": {
+              "action": "remember_approval",
+              "payload": {
+                "fromOwner": "dana",
+                "repo": "obi-e2e/fixture-app"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.asked.body.id}/answer",
+        "body": {
+          "answer": "Cancel"
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/nope/answer",
+        "body": {
+          "answer": "x"
+        },
+        "expect": {
+          "status": 404,
+          "body": {
+            "error": "There's no such inbox item."
+          }
+        }
+      }
+    },
+    {
+      "id": "not-json-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.asked.body.id}/answer",
+        "raw": "{",
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "two-at-once-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.asked.body.id}/answer",
+        "body": {
+          "answer": "Cancel",
+          "done": true
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "blank-answer-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.asked.body.id}/answer",
+        "body": {
+          "answer": "  "
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "An answer is 1 to 2,000 characters."
+          }
+        }
+      }
+    },
+    {
+      "id": "later-not-a-date-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.asked.body.id}/answer",
+        "body": {
+          "later": "soon"
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "later is a date, like 2026-10-10T10:12:00Z."
+          }
+        }
+      }
+    },
+    {
+      "id": "confirm-without-the-tap-403",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.asked.body.id}/answer",
+        "body": {
+          "answer": "Confirm"
+        },
+        "expect": {
+          "status": 403,
+          "body": {
+            "action": {
+              "$contains": "From now on, approve on GitHub"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "an-approval-that-isnt-one-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.asked.body.id}/answer",
+        "body": {
+          "answer": "Confirm",
+          "approval": {
+            "device": "x"
+          }
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "still-open",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.asked.body.id}",
+              "state": "open"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "confirmed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.asked.body.id}/answer",
+        "confirm": {
+          "device": "${state.device}",
+          "item": "${state.asked.body.id}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.asked.body.id}",
+            "state": "done",
+            "answer": "Confirm"
+          }
+        }
+      }
+    },
+    {
+      "id": "carried-out",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/obid/decisions",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "type": "host_approval",
+              "fromOwner": "dana",
+              "repo": "obi-e2e/fixture-app",
+              "decision": "accept"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "again-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.asked.body.id}/answer",
+        "body": {
+          "answer": "Cancel"
+        },
+        "expect": {
+          "status": 409,
+          "body": {
+            "error": "That item is done already."
+          }
+        }
+      }
+    },
+    {
+      "id": "listed-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox?state=done",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.asked.body.id}"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

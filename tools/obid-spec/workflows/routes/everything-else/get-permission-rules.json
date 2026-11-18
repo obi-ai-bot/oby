@@ -1,0 +1,149 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/permissions/rules",
+  "version": "1.0.0",
+  "description": "The owner's Always rules: none, then the one an Always answer kept.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/permissions/rules"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/permissions/rules",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "none",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/permissions/rules",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "mode": "ask",
+            "task": "ASKS: [{\"tool\":\"Bash\",\"input\":{\"command\":\"swift test\"}}]"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "waiting",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.asks.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "permission": {
+              "id": {
+                "$type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "always",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.asks.body.id}/permission",
+        "body": {
+          "id": "${state.waiting.body.permission.id}",
+          "decision": "always"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.asks.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "one",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/permissions/rules",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": {
+                "$matches": "^r[0-9a-f]{8}$"
+              },
+              "rule": {
+                "$contains": "swift test"
+              },
+              "decision": "allow"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

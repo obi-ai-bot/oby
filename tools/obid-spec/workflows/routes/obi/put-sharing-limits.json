@@ -1,0 +1,149 @@
+{
+  "schemaVersion": "2",
+  "name": "PUT /v1/obid/sharing/limits",
+  "version": "1.0.0",
+  "description": "How much the owner's account may answer by itself (PEER-41): the token alone is 403; signed, 422 for a body that isn't exactly the three limits in range; 200, kept 0600.",
+  "trigger": {
+    "http": {
+      "method": "PUT",
+      "path": "/v1/obid/sharing/limits"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/obid/sharing/limits",
+        "body": {
+          "selfAnswersPerHour": 10,
+          "selfAnswersPerHourTotal": 20,
+          "inboxPerOwner": 3
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "peer-41-the-token-alone-403",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/obid/sharing/limits",
+        "body": {
+          "selfAnswersPerHour": 10,
+          "selfAnswersPerHourTotal": 20,
+          "inboxPerOwner": 3
+        },
+        "expect": {
+          "status": 403
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-41"
+        ]
+      }
+    },
+    {
+      "id": "out-of-range-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/obid/sharing/limits",
+        "body": {
+          "selfAnswersPerHour": 10,
+          "selfAnswersPerHourTotal": 20,
+          "inboxPerOwner": 101
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "peer-41-signed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/obid/sharing/limits",
+        "body": {
+          "selfAnswersPerHour": 10,
+          "selfAnswersPerHourTotal": 20,
+          "inboxPerOwner": 3
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "selfAnswersPerHour": 10,
+            "selfAnswersPerHourTotal": 20,
+            "inboxPerOwner": 3
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-41"
+        ]
+      }
+    },
+    {
+      "id": "read-back",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/obid/sharing",
+        "expect": {
+          "status": 200,
+          "body": {
+            "limits": {
+              "selfAnswersPerHour": 10,
+              "selfAnswersPerHourTotal": 20,
+              "inboxPerOwner": 3
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "kept-0600",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "sharing.json",
+        "expect": {
+          "exists": true,
+          "mode": "0600"
+        }
+      }
+    }
+  ]
+}

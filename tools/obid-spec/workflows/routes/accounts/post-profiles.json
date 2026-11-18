@@ -1,0 +1,143 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/profiles",
+  "version": "1.0.0",
+  "description": "A new profile: 400 for another key, a name that isn't 1 to 40 characters or a colour that isn't six hex digits; 201, listed after the default, its folder made.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/profiles"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/profiles",
+        "body": {
+          "name": "W",
+          "color": "#000000"
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "another-key-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/profiles",
+        "body": {
+          "name": "W",
+          "color": "#000000",
+          "x": 1
+        },
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "name-too-long-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/profiles",
+        "body": {
+          "name": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+          "color": "#000000"
+        },
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "bad-colour-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/profiles",
+        "body": {
+          "name": "Work",
+          "color": "red"
+        },
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "made",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/profiles",
+        "body": {
+          "name": "Work",
+          "color": "#AA00ff"
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "name": "Work",
+            "color": "#AA00ff",
+            "default": false
+          }
+        }
+      }
+    },
+    {
+      "id": "listed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/profiles",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "default": true
+            },
+            {
+              "id": "${state.made.body.id}",
+              "name": "Work"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "its-folder",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "profiles/${state.made.body.id}",
+        "expect": {
+          "exists": true,
+          "mode": "0700"
+        }
+      }
+    }
+  ]
+}
