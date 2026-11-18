@@ -3475,7 +3475,7 @@ impl Jobs {
         Some(Ok(dismissed))
     }
 
-    /// Archives a job that ended and needs nothing, or unarchives it (`archived` false), adding
+    /// Archives a job that ended with no decision open, or unarchives it (`archived` false), adding
     /// `by` ("by you", "by Oby, in a conversation") to its changes. `Err` when it can't be.
     pub fn archive(&self, id: &str, archived: bool, by: &str) -> Option<Result<Job, Refused>> {
         let job = self.get(id)?;
@@ -3488,7 +3488,7 @@ impl Jobs {
                     "It's still running: stop it first, or archive it once it ends.".into(),
                 )));
             }
-            if job.needs_you() {
+            if job.decision() {
                 return Some(Err(Refused(
                     "It still needs you: dismiss it first, or publish it.".into(),
                 )));
