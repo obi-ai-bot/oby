@@ -5,8 +5,8 @@ The business behavior contract for a durable delivery status on each message the
 ## Feature and status
 
 - **Outcome:** obid knows, on disk and in its API, whether each message the owner sent in a conversation still waits, is being answered, was answered, failed or was cancelled. Before this, words waiting behind a turn lived only in obid's memory (`Turns.waiting`), and a cancel left them with nothing recorded. This is the record the next tasks build on: recovery after a restart (R05-03), a durable queue in place of `Turns.waiting` (R05-04), cancelling one queued message (R05-08) and showing it (R05-09).
-- **Status:** **Implemented** (R05-02, R05-03: recovery at start). The `restore` move is defined but no code path uses it yet: it is R05-04's.
-- **Scope:** the owner's words sent by `POST /v1/plans`, and what becomes of them when obid stops and starts again. **Out of scope:** a drain in place of `Turns.waiting`, cancelling one queued message, words to a job (`POST /v1/jobs/{id}/tell`, R05-06), steering a running turn (R05-05, R05-07), and any app change.
+- **Status:** **Implemented** (R05-02, R05-03: recovery at start; R05-04: the `queued` deliveries are the conversation's one queue, and one drain per conversation answers them, docs/contracts/conversation-agent.md CONVERSATION-AGENT-49). The `restore` move is defined but no code path uses it yet.
+- **Scope:** the owner's words sent by `POST /v1/plans`, and what becomes of them when obid stops and starts again. **Out of scope:** words to a job (`POST /v1/jobs/{id}/tell`, R05-06), steering a running turn (R05-05, R05-07), and any app change.
 
 ## Behavior
 
@@ -33,7 +33,7 @@ The only moves, and which code path makes each today:
 
 | Move | From → to | Made by |
 |---|---|---|
-| start | `queued` → `starting` | `POST /v1/plans`, when `Turns::wait_turn` gives the words to a turn: every message that turn answers |
+| start | `queued` → `starting` | the conversation's drain (`brain::drain`), as it takes the words for a turn: every message still `queued` there, which that turn answers |
 | confirm(`by`) | `starting` → `running` | right after the turn begins, before the agent runs; `by` is the latest message's turn id |
 | restore(`why`) | `starting` → `queued` | nothing yet (R05-04) |
 | finish | `running` → `answered`, `failed` (with `error`) or `interrupted` | when the turn ends, after Oby's answer is kept and before the request answers: `failed` when no session could answer (`End::BrainFailed`), else `answered`; `interrupted` at start, for a turn a stop cut |
@@ -43,7 +43,7 @@ The only moves, and which code path makes each today:
 Any other move is refused, logged, and changes nothing. A terminal status never changes. A status obid doesn't know (a newer obid's) is kept as written and never moves.
 
 - The owner's turn is written `queued` in the same file write that adds it (`Conversations::begin`). No other turn gets a delivery: Oby's turns, a job's end, a routine's turn, a task conversation's words. Words sent again with their `id` (`repeated`) add nothing and move nothing.
-- Words that wait behind a turn under way stay `queued` until the next turn takes them; that turn takes every message waiting there, and each gets `by` the latest message's turn id. The earlier messages' requests answer `none`, as before.
+- Words that wait behind a turn under way stay `queued` until the next turn takes them; that turn takes every message waiting there, and each gets `by` the latest message's turn id. The earlier messages' requests answer `none`, as before. The `queued` deliveries are the only place waiting words are kept: one drain per conversation, asked for when words come, at start and after a cancel, takes them one turn at a time (CONVERSATION-AGENT-49); a request only listens for its words' answer.
 - Each move after the first is written once (one write per move asked, never per streamed delta) and goes out on a `turnDelivery` event carrying the turn. It never goes out as a `turn` again: the Mac's notifications take back the alert of Oby's answer on every `turn` of the owner's (`notify.ts`, `heard()`).
 
 ### What a queued message keeps for a replay

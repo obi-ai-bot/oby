@@ -3280,11 +3280,10 @@ fn composer_9_one_waiting_message_is_cancelled_alone() {
         running["kind"], "none",
         "the turn under way went on: {running}"
     );
-    // The dropped words' request answers none; the words before them, which waited on it, are
-    // answered all the same, in the conversation (their own request answered none, as words
-    // answered together do).
+    // The dropped words' request answers none; the words before them are answered by a turn of
+    // their own, and their own request hears it (one queue, CONVERSATION-AGENT-49).
     assert_eq!(dropped["kind"], "none", "{dropped}");
-    assert_eq!(kept["kind"], "none", "{kept}");
+    assert_eq!(kept["text"], "kept", "{kept}");
     assert_eq!(
         user_turn(&obid, &id, "SAY dropped")["delivery"]["status"],
         "cancelled"
@@ -3479,6 +3478,155 @@ fn delivery_7_a_turn_cut_by_a_kill_reads_interrupted_and_is_not_sent_again() {
     assert_eq!(
         user_turn(&obid, &id, "SAY Back.")["delivery"]["status"],
         "answered"
+    );
+}
+
+/// CONVERSATION-AGENT-46: the owner's first new words after obid went down mid-turn get their
+/// answer. The resumed session answers its first prompt with nothing, no model turn and no word, as
+/// Claude Code did (#2504, which the stand-in follows): that isn't an answer, so the words go again
+/// to the same process, which takes them.
+#[test]
+fn conversation_agent_46_the_first_words_after_a_restart_get_their_answer() {
+    let folder = Folder::new("talk-46");
+    let obid = started_harness(&folder);
+    let id = said_anew(&obid, "SAY Ready.")["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    plan_cut_short(&obid, json!({"said": "LINGER 60000", "conversation": id}));
+    reads(&obid, &id, "LINGER 60000", "running");
+    within(15, "the agent's turn with the words", || {
+        (agent_turns_with(&obid, &id, "LINGER 60000") == 1).then_some(())
+    });
+    let obid = stopped_and_started(&folder, obid, false);
+    reads(&obid, &id, "LINGER 60000", "interrupted");
+    let banana = call(
+        &obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "SAY banana.", "conversation": id})),
+    );
+    assert_eq!(banana.status, 200, "{}", banana.text);
+    assert_eq!(banana.body["kind"], "reply", "{}", banana.text);
+    assert_eq!(banana.body["text"], "banana.", "{}", banana.text);
+    assert_eq!(
+        user_turn(&obid, &id, "SAY banana.")["delivery"]["status"],
+        "answered"
+    );
+    // Once to the process that answered nothing, once more to the same one.
+    assert_eq!(agent_turns_with(&obid, &id, "SAY banana."), 2);
+    let turns = conversation_turns(&obid, &id);
+    assert_eq!(turns.last().unwrap()["text"], "banana.", "{turns:?}");
+}
+
+/// CONVERSATION-AGENT-49: the owner's waiting words are the conversation's queued words on its
+/// file and nowhere else, and one drain per conversation answers them. After a restart the words
+/// that waited get one turn of their own, and words sent while it runs wait on the file too: one
+/// cancelled alone never runs, and the others are answered after it, in order.
+#[test]
+fn conversation_agent_49_one_queue_answers_waiting_words_in_order_after_a_restart() {
+    let folder = Folder::new("talk-49");
+    let obid = started_harness(&folder);
+    let id = said_anew(&obid, "SAY Ready.")["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    plan_cut_short(&obid, json!({"said": "LINGER 60000", "conversation": id}));
+    reads(&obid, &id, "LINGER 60000", "running");
+    plan_cut_short(&obid, json!({"said": "LINGER 4000", "conversation": id}));
+    reads(&obid, &id, "LINGER 4000", "queued");
+    let obid = stopped_and_started(&folder, obid, false);
+    reads(&obid, &id, "LINGER 60000", "interrupted");
+    // The words that waited run by themselves after the restart, with nobody asking.
+    reads(&obid, &id, "LINGER 4000", "running");
+    let dropped = "0b1e0c0a-0000-4000-8000-000000000049";
+    plan_cut_short(
+        &obid,
+        json!({"said": "SAY dropped", "conversation": id, "id": dropped}),
+    );
+    reads(&obid, &id, "SAY dropped", "queued");
+    let cancel = call(
+        &obid,
+        "POST",
+        "/v1/plans/cancel",
+        Some(&json!({"conversation": id, "turn": dropped})),
+    );
+    assert_eq!(cancel.body["dropped"], json!([dropped]), "{}", cancel.text);
+    let last = call(
+        &obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "SAY last", "conversation": id})),
+    );
+    assert_eq!(last.status, 200, "{}", last.text);
+    assert_eq!(last.body["text"], "last", "{}", last.text);
+    reads(&obid, &id, "LINGER 4000", "answered");
+    reads(&obid, &id, "SAY dropped", "cancelled");
+    assert_eq!(agent_turns_with(&obid, &id, "SAY dropped"), 0);
+    let turns = conversation_turns(&obid, &id);
+    let oby: Vec<&str> = turns
+        .iter()
+        .filter(|t| t["who"] == "oby")
+        .filter_map(|t| t["text"].as_str())
+        .collect();
+    let (waited, said) = (
+        oby.iter().position(|t| *t == "waited"),
+        oby.iter().position(|t| *t == "last"),
+    );
+    assert!(waited.is_some() && waited < said, "{oby:?}");
+}
+
+/// CONVERSATION-AGENT-50: obid says what's under way in a conversation: while a turn runs, the
+/// conversation lists `underway` with the words' user turn, its step and what it said so far, and
+/// an `underway` event sends each change; when it ends, an `underway` event says so (`ended`, and
+/// why) and the conversation lists none.
+#[test]
+fn conversation_agent_50_a_conversation_says_what_is_under_way_and_when_it_ends() {
+    let folder = Folder::new("talk-50");
+    let obid = started_harness(&folder);
+    let id = said_anew(&obid, "SAY Ready.")["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let events = follow_events(&obid);
+    let words = "0b1e0c0a-0000-4000-8000-000000000050";
+    plan_cut_short(
+        &obid,
+        json!({"said": "LINGER 3000", "conversation": id, "id": words}),
+    );
+    let listed = within(15, "the turn under way, listed", || {
+        let all = call(&obid, "GET", "/v1/conversations", None).body;
+        all.as_array()?
+            .iter()
+            .find(|c| c["id"] == id.as_str())
+            .filter(|c| c["underway"].is_object())
+            .cloned()
+    });
+    assert_eq!(listed["underway"]["turn"], words, "{listed}");
+    assert_eq!(listed["underway"]["step"], "Thinking", "{listed}");
+    assert!(listed["underway"]["text"].is_string(), "{listed}");
+    reads(&obid, &id, "LINGER 3000", "answered");
+    let all = call(&obid, "GET", "/v1/conversations", None).body;
+    let after = all
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == id.as_str())
+        .unwrap();
+    assert!(after.get("underway").is_none(), "{after}");
+    let seen = events_named(&events, "underway", 15, |got| {
+        got.iter().any(|d| d["turn"] == words && d["ended"] == true)
+    });
+    let began = seen
+        .iter()
+        .find(|d| d["turn"] == words && d["ended"].is_null())
+        .unwrap_or_else(|| panic!("no underway event as it began: {seen:?}"));
+    assert_eq!(began["conversation"], id.as_str(), "{began}");
+    assert_eq!(began["step"], "Thinking", "{began}");
+    let ended = seen.last().unwrap();
+    assert_eq!(
+        *ended,
+        json!({"conversation": id, "turn": words, "ended": true, "end": "answered"}),
     );
 }
 

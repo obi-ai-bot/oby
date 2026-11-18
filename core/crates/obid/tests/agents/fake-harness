@@ -35,6 +35,7 @@
 //   GREP <w>       searches the room with no path (repos/ in it, taints the turn), then does <w>
 //   TOOLSEARCH     makes a ToolSearch tool call (the deferred-tool lookup), then says "searched"
 //   LINGER <ms>    waits that long, then says "waited" (not WAIT: a bare "wait" is a cancel word)
+//   ASK <question> | <option> | <option>…  asks AskUserQuestion, then says "asked: <behavior>"
 //   PAUSE <ms> <w> waits that long, then does <w>
 //   FILES          says "files: <each attachments/<turn>/<name> in its room> named=<whether the
 //                  prompt names each, quoted>"
@@ -59,7 +60,7 @@
 // (a reach past the registries) and says "Reached.".
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
@@ -71,7 +72,12 @@ if (argv.includes("--json-schema")) {
   process.exit(ran.status ?? 1);
 }
 
-const emit = (line) => process.stdout.write(JSON.stringify(line) + "\n");
+const emit = (line) => {
+  if (line.type === "result") resulted();
+  process.stdout.write(JSON.stringify(line) + "\n");
+};
+// What a result ends besides the turn (its cut mark, below).
+let resulted = () => {};
 // Which process this is, for the tests: a random id, not its pid (under bubblewrap's --unshare-pid
 // on Linux the pid is the namespace's). While it runs it rewrites alive-<id> in its config folder.
 const procId = randomUUID();
@@ -123,6 +129,14 @@ const resumed = flag("--resume");
 let going = resumed;
 const session = resumed ?? "c0000000-0000-4000-8000-00000000000" + (Date.now() % 10);
 const partial = argv.includes("--include-partial-messages");
+// As Claude Code with obid 0.2.23 (#2504, measured 2026-11-18): a conversation's session cut
+// mid-turn, its process killed before its result, answers the first prompt of the next process that
+// resumes it with nothing: a `success` result of no turn and no tokens, the words not run. That same
+// process takes its next prompt as any other. `cut-<session>` in its records folder marks a turn
+// under way, and goes with the turn's result.
+const cutMark = join(records ?? ".", `cut-${session}`);
+let replaysCut = conversation && resumed !== null && existsSync(cutMark);
+resulted = () => rmSync(cutMark, { force: true });
 // As 2.1.302: an error of subtype error_* has `errors`, and no `result`.
 const result = (text, error = false) =>
   emit({ type: "result", subtype: error ? "error_during_execution" : "success", is_error: error, num_turns: 1, ...(error ? { errors: [text] } : { result: text }), session_id: session });
@@ -224,6 +238,11 @@ const handle = (line) => {
     return;
   }
   emit({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, tools: ["Read", "Bash"], mcp_servers: [{ name: "oby", status: "connected" }, ...namedServers()], model: flag("--model") ?? "fake" });
+  if (replaysCut) {
+    replaysCut = false;
+    return emit({ type: "result", subtype: "success", is_error: false, num_turns: 0, result: "", session_id: session, total_cost_usd: 0, usage: { input_tokens: 0, output_tokens: 0 } });
+  }
+  if (conversation) writeFileSync(cutMark, "");
   const before = going;
   going = session;
   if (!conversation && prompt.includes("write a handoff note")) return say(NOTE);
@@ -409,6 +428,16 @@ async function act(words, prompt = "", before = resumed) {
     const [, ms, ...rest] = words.split(" ");
     await new Promise((done) => setTimeout(done, Number(ms)));
     await act(rest.join(" "));
+  } else if (words.startsWith("ASK ")) {
+    // AskUserQuestion, as Claude Code asks it: obid's answer is the tool's result.
+    const [question, ...labels] = words.slice(4).split(" | ");
+    const questions = [{ question, header: "Choice", options: labels.map((label) => ({ label })), multiSelect: false }];
+    use("q1", "AskUserQuestion", { questions });
+    emit({ type: "control_request", request_id: "q1", request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", input: { questions } } });
+    then = (answer) => {
+      used("q1", answer.message ?? JSON.stringify(answer.updatedInput?.answers ?? null), answer.behavior !== "allow");
+      say(`asked: ${answer.behavior}`);
+    };
   } else if (words.startsWith("LINGER ")) {
     await new Promise((done) => setTimeout(done, Number(words.split(" ")[1])));
     say("waited");

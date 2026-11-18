@@ -119,6 +119,24 @@ async fn handoff_1_a_handoff_waits_in_the_inbox_quoted_and_starts_nothing() {
             jobs(&obid).is_empty(),
             "nothing starts before the owner's Accept"
         );
+        // SPHERE-17: an Accept obid's token alone sends starts nothing either: only the owner's
+        // signed one does.
+        let id = item["id"].as_str().unwrap();
+        for unsigned in ["Accept", ACCEPT_REMEMBER] {
+            let refused = call(
+                &obid,
+                "POST",
+                &format!("/v1/inbox/{id}/answer"),
+                Some(&json!({"answer": unsigned})),
+            );
+            assert_eq!(refused.status, 403, "{unsigned}: {}", refused.text);
+        }
+        assert_eq!(
+            get(&obid, &format!("/v1/obid/sphere/exchanges/{cid}"))["state"],
+            "inbox"
+        );
+        assert_eq!(get(&obid, "/v1/obid/decisions"), json!([]));
+        assert!(jobs(&obid).is_empty(), "an unsigned Accept starts nothing");
     });
 }
 

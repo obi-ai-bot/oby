@@ -1,0 +1,253 @@
+{
+  "schemaVersion": "2",
+  "name": "DELETE /v1/obid/sphere",
+  "version": "1.0.0",
+  "description": "Leaving (SPHERE-4): with nothing joined it answers none and calls no Sphere; joined, the app takes the Oby out with the owner's own token, then obid forgets it: its keys and home/sphere go, the owner it joined as stays, and it can join again.",
+  "trigger": {
+    "http": {
+      "method": "DELETE",
+      "path": "/v1/obid/sphere"
+    }
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "DELETE",
+        "path": "/v1/obid/sphere",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "sphere-4-nothing-to-leave",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "DELETE",
+        "path": "/v1/obid/sphere",
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "none",
+            "owner": "alex"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-4"
+        ]
+      }
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}"
+      }
+    },
+    {
+      "id": "sphere-4-the-obysphere-takes-it-out-with-the-owners-token",
+      "use": "runtime.rust:sphere-owner",
+      "inputs": {
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "owner": "alex",
+        "method": "DELETE",
+        "path": "/v0.1/spheres/${state.sphere.sphere}/members/${state.alex-joined.obiId}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "revoked"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-4"
+        ]
+      }
+    },
+    {
+      "id": "sphere-4-then-obid-forgets-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "DELETE",
+        "path": "/v1/obid/sphere",
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "none",
+            "owner": "alex",
+            "sphere": null,
+            "obiId": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-4"
+        ]
+      }
+    },
+    {
+      "id": "sphere-4-its-obi-key-goes",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.alex}",
+        "path": "keys/obi.key",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-4"
+        ]
+      }
+    },
+    {
+      "id": "sphere-4-its-seal-key-goes",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.alex}",
+        "path": "keys/seal.key",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-4"
+        ]
+      }
+    },
+    {
+      "id": "sphere-4-home-sphere-goes",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.alex}",
+        "path": "sphere",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-4"
+        ]
+      }
+    },
+    {
+      "id": "the-owner-it-joined-as-stays",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.alex}",
+        "path": "owner",
+        "expect": {
+          "exists": true,
+          "mode": "0600",
+          "text": {
+            "$contains": "alex"
+          }
+        }
+      }
+    },
+    {
+      "id": "sphere-4-the-obysphere-lists-it-revoked",
+      "use": "runtime.rust:sphere-admin",
+      "inputs": {
+        "sphere": "${state.sphere}",
+        "method": "GET",
+        "path": "/v0.1/spheres/${state.sphere.sphere}/members/${state.alex-joined.obiId}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "revoked"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-4"
+        ]
+      }
+    },
+    {
+      "id": "invitation",
+      "use": "runtime.rust:sphere-invite",
+      "inputs": {
+        "sphere": "${state.sphere}"
+      }
+    },
+    {
+      "id": "joins-again",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "invitation": "${state.invitation}"
+      }
+    },
+    {
+      "id": "a-new-obi-id-joins-again",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.joins-again}",
+        "expect": {
+          "body": {
+            "state": "joined",
+            "obiId": {
+              "$ne": "${state.alex-joined.obiId}"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "sphere-4-leaves-when-the-obysphere-cant-be-told",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "DELETE",
+        "path": "/v1/obid/sphere",
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "none"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-4"
+        ]
+      }
+    }
+  ]
+}

@@ -2320,6 +2320,19 @@ pub fn stopped_card(job: &Job, head: &str, why: &str) -> Item {
     )
 }
 
+/// What a card the owner's Merge lifts is titled (MERGING-55, #2507): what holds it first, in plain
+/// words, while its checks failed on GitHub or a review asks for changes, never "Ready to merge";
+/// else "Ready to merge", their word all it waits on.
+fn yours_title(why: &str) -> &'static str {
+    if why.contains(RED_CHECKS) {
+        "Checks failed"
+    } else if why.contains(CHANGES_ASKED) {
+        "Changes requested"
+    } else {
+        "Ready to merge"
+    }
+}
+
 /// "Ready to merge" where only the owner's own Merge is missing ([`Blocked::yours`]): why, and
 /// Merge, by `workflow`, into `into`, the pull request's own base (GitHub merges it there, the
 /// workflow's or not).
@@ -2341,7 +2354,7 @@ pub fn yours_card(job: &Job, head: &str, why: &str, workflow: &Workflow, into: &
     card(
         job,
         why_id(&job.id, head, why),
-        format!("Ready to merge: {}", job.short_title()),
+        format!("{}: {}", yours_title(why), job.short_title()),
         card_text(Some(asks), why),
         vec![
             (
@@ -3929,6 +3942,38 @@ mod tests {
         into_main.base = Some("main".into());
         let refused = check(&into_main, Some(&mac), &main).unwrap_err();
         assert!(refused.yours && refused.needs_you, "{}", refused.why);
+    }
+
+    /// MERGING-55 (#2507): a card whose head's checks failed on GitHub is never titled "Ready to
+    /// merge": it says what holds it first, red checks before a change request; one only the
+    /// owner's word waits on still is.
+    #[test]
+    fn merging_55_a_red_pull_request_is_never_called_ready_to_merge() {
+        let job = job();
+        let base = "Its base is main, which Oby merges into only on your word.";
+        let title = |why: &str| yours_card(&job, &head(), why, &obis(), "main").title;
+        let red = format!("{base}\n{RED_CHECKS}");
+        assert_eq!(title(&red), "Checks failed: Fix the thing");
+        assert_eq!(
+            title(&format!("{CHANGES_ASKED}\n{red}")),
+            "Checks failed: Fix the thing"
+        );
+        assert_eq!(
+            title(&format!("{base}\n{CHANGES_ASKED}")),
+            "Changes requested: Fix the thing"
+        );
+        assert_eq!(title(base), "Ready to merge: Fix the thing");
+        let card = yours_card(&job, &head(), &red, &obis(), "main");
+        assert!(
+            card.text.contains("Its checks failed on GitHub."),
+            "{}",
+            card.text
+        );
+        assert_eq!(
+            card.options,
+            vec![MERGE, LEAVE_OPEN],
+            "the owner's Merge still lifts it"
+        );
     }
 
     /// Where the job's own check can't stand for the Mac's, the owner's own Merge merges it, and

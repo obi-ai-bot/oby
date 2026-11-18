@@ -210,6 +210,20 @@ struct Thread {
     /// Keys this obid doesn't know (a newer one's), kept as they were when it saves. Never shown.
     #[serde(flatten)]
     extra: serde_json::Map<String, Value>,
+    /// The turn under way there, as it goes ([`Underway`], CONVERSATION-AGENT-50): obid's own
+    /// memory, never kept, since a restart cuts the turn.
+    #[serde(skip)]
+    underway: Option<Underway>,
+}
+
+/// A conversation's turn under way (CONVERSATION-AGENT-50): the owner's words it answers (their
+/// user turn), its step now and the words it has said so far, so an app shows "working" from
+/// obid's own word, never guessed from events it may have missed.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Underway {
+    pub turn: String,
+    pub step: String,
+    pub text: String,
 }
 
 /// Where conversation `id`'s Cursor keeps its login copy and sessions: short, under `logins/` as a
@@ -377,6 +391,9 @@ impl Thread {
         }
         if let Some(profile) = &self.profile {
             summary["profile"] = json!(profile);
+        }
+        if let Some(underway) = &self.underway {
+            summary["underway"] = json!(underway);
         }
         self.show_marks(&mut summary);
         summary
@@ -1018,18 +1035,20 @@ impl Conversations {
     /// `id` (crate::delivery), in one write; a refused move leaves its turn as it was, and a turn
     /// with none (kept before deliveries) is left alone. Each turn moved goes out on a
     /// `turnDelivery`, never a `turn` again, which would take back the answer's alert.
-    pub fn deliver(&self, id: &str, turns: &[String], change: &Move) {
+    pub fn deliver(&self, id: &str, turns: &[String], change: &Move) -> Vec<String> {
         let mut threads = self.lock();
         let Some(thread) = threads.iter_mut().find(|t| t.id == id) else {
-            return;
+            return vec![];
         };
         let kept = thread.clone();
         let mut moved = vec![];
+        let mut ids = vec![];
         for turn in thread.turns.iter_mut().filter(|t| turns.contains(&t.id)) {
             let Some(delivery) = turn.delivery.as_mut() else {
                 continue;
             };
             if delivery.apply(change) {
+                ids.push(turn.id.clone());
                 moved.push(serde_json::to_value(turn.revised()).unwrap_or_default());
             } else {
                 let (turn, status) = (&turn.id, &delivery.status);
@@ -1037,40 +1056,126 @@ impl Conversations {
             }
         }
         if moved.is_empty() {
-            return;
+            return vec![];
         }
         if let Err(e) = self.write(thread) {
             *thread = kept;
             tracing::warn!("conversation {id}: its words' delivery wasn't kept: {e}");
-            return;
+            return vec![];
         }
         for turn in moved {
             self.events.send("turnDelivery", turn);
         }
+        ids
+    }
+
+    /// The owner's words waiting in the conversation `id`, oldest first, each with what a turn
+    /// needs of it that the turn doesn't hold ([`Replay`]): those whose delivery reads `queued`,
+    /// the conversation's one queue (CONVERSATION-AGENT-49).
+    pub fn queued(&self, id: &str) -> Vec<(Turn, Replay)> {
+        let threads = self.lock();
+        let Some(thread) = threads.iter().find(|t| t.id == id) else {
+            return vec![];
+        };
+        (thread.turns.iter())
+            .filter(|t| t.delivery.as_ref().is_some_and(|d| d.status == "queued"))
+            .map(|t| {
+                let replay = thread.replays.get(&t.id).cloned().unwrap_or_default();
+                (t.clone(), replay)
+            })
+            .collect()
+    }
+
+    /// The conversation `id`'s turn for the owner's words of `turn` begins (CONVERSATION-AGENT-50):
+    /// it's under way at its first step.
+    pub fn begin_underway(&self, id: &str, turn: &str, step: &str) {
+        self.underway(id, |underway| {
+            *underway = Some(Underway {
+                turn: turn.to_owned(),
+                step: step.to_owned(),
+                text: String::new(),
+            });
+            true
+        });
+    }
+
+    /// The conversation `id`'s turn under way for `turn` is at `step` now.
+    pub fn underway_step(&self, id: &str, turn: &str, step: &str) {
+        self.underway(id, |underway| match underway {
+            Some(u) if u.turn == turn && u.step != step => {
+                u.step = step.to_owned();
+                true
+            }
+            _ => false,
+        });
+    }
+
+    /// The conversation `id`'s turn under way for `turn` said `words` more: kept, sent with its
+    /// `delta` and not again.
+    pub fn underway_words(&self, id: &str, turn: &str, words: &str) {
+        let mut threads = self.lock();
+        if let Some(Some(u)) = threads
+            .iter_mut()
+            .find(|t| t.id == id)
+            .map(|t| t.underway.as_mut())
+            && u.turn == turn
+        {
+            u.text.push_str(words);
+        }
+    }
+
+    /// The conversation `id`'s turn for `turn` ended, `end` saying why (`turn::End`): it's under way
+    /// no more, and an `underway` event with `ended` says so.
+    pub fn end_underway(&self, id: &str, turn: &str, end: &str) {
+        let mut threads = self.lock();
+        let Some(thread) = threads.iter_mut().find(|t| t.id == id) else {
+            return;
+        };
+        if thread.underway.as_ref().is_none_or(|u| u.turn != turn) {
+            return;
+        }
+        thread.underway = None;
+        drop(threads);
+        self.events.send(
+            "underway",
+            json!({"conversation": id, "turn": turn, "ended": true, "end": end}),
+        );
+    }
+
+    /// Changes the conversation `id`'s turn under way with `change`; when it says it changed, an
+    /// `underway` event sends it, never a `conversation` event: nothing of it is written, so no
+    /// revision moves (EVENTS-7).
+    fn underway(&self, id: &str, change: impl FnOnce(&mut Option<Underway>) -> bool) {
+        let mut threads = self.lock();
+        let Some(thread) = threads.iter_mut().find(|t| t.id == id) else {
+            return;
+        };
+        if !change(&mut thread.underway) {
+            return;
+        }
+        let Some(underway) = thread.underway.clone() else {
+            return;
+        };
+        drop(threads);
+        let mut event = json!(underway);
+        event["conversation"] = json!(id);
+        self.events.send("underway", event);
     }
 
     /// At start (DELIVERY-7 to 10): the owner's words a stop cut read `interrupted` (those that
     /// were `starting` or `running`), and each conversation with any gets one Oby turn in obid's
     /// words ([`cut_line`]: `clean` when obid was stopped, not gone down), in one write with them.
-    /// Words still `queued` come back by conversation, oldest first, with what a replay needs
-    /// ([`Replay`]), for one turn to answer (`crate::brain::recover`). A turn with no `delivery`
-    /// is left as it is.
-    pub fn recover(&self, clean: bool) -> Vec<(String, Vec<(Turn, Replay)>)> {
+    /// The conversations with words still `queued` come back, for their drains to answer
+    /// (`crate::brain::recover`, CONVERSATION-AGENT-49). A turn with no `delivery` is left as it is.
+    pub fn recover(&self, clean: bool) -> Vec<String> {
         let mut threads = self.lock();
         let mut queued = vec![];
         for index in 0..threads.len() {
             let thread = &mut threads[index];
-            let waiting: Vec<(Turn, Replay)> = (thread.turns.iter())
-                .filter(|t| t.delivery.as_ref().is_some_and(|d| d.status == "queued"))
-                .map(|t| {
-                    (
-                        t.clone(),
-                        thread.replays.get(&t.id).cloned().unwrap_or_default(),
-                    )
-                })
-                .collect();
-            if !waiting.is_empty() {
-                queued.push((thread.id.clone(), waiting));
+            if (thread.turns.iter())
+                .any(|t| t.delivery.as_ref().is_some_and(|d| d.status == "queued"))
+            {
+                queued.push(thread.id.clone());
             }
             let kept = thread.clone();
             let mut cut = vec![];
@@ -1808,6 +1913,10 @@ pub fn job_report(job: &Value) -> Option<(String, String)> {
     };
     let title = crate::brain::briefing::line(job["title"].as_str().unwrap_or("A job"), 80);
     let status = job["status"].as_str()?;
+    // Stopped only to move it (TASKS-32): it goes on there, and its move says so ([`move_report`]).
+    if status == "stopped" && job["stoppedBy"] == crate::jobs::moves::MOVING {
+        return None;
+    }
     let said = match (status, job["stalled"]["text"].as_str()) {
         // A stall says why in obid's words (`stalled.text`), whatever status it ended in.
         ("failed" | "interrupted", Some(why)) => format!(
@@ -1910,18 +2019,50 @@ fn whole_report(summary: &str) -> Option<String> {
     Some(format!("{cut}…"))
 }
 
+/// The line job `job`'s conversation hears when it moved to another tool or account (TASKS-32,
+/// #2485): its latest move, where it went and why, as a routed task's line says it (#2508), and
+/// never that it stopped. None for a job with no conversation or no move, a review or one put away.
+pub fn move_report(job: &Value) -> Option<(String, String)> {
+    let conversation = job["conversation"].as_str()?;
+    if !job["dismissed"].is_null() || !job["reviewOf"].is_null() {
+        return None;
+    }
+    let moved = job["moves"].as_array()?.last()?;
+    let title = crate::brain::briefing::line(job["title"].as_str().unwrap_or("A job"), 80);
+    let to = crate::brain::briefing::line(moved["to"].as_str()?, 80);
+    let why = moved["why"]
+        .as_str()
+        .map(|why| crate::brain::briefing::line(why.trim().trim_end_matches('.'), 200))
+        .filter(|why| !why.is_empty());
+    let text = match why.as_deref() {
+        None | Some("Moved by you") => format!("{title} moved to {to}, as you asked."),
+        Some(why) => format!("{title} moved to {to}: {why}."),
+    };
+    Some((
+        conversation.to_owned(),
+        crate::secrets::known().redact(&text),
+    ))
+}
+
 /// Follows obid's job events (#351): when a job a conversation's plan started goes from queued or
 /// running to an end, that conversation gets one Oby turn saying how ([`job_report`]), with the
 /// job's card, once ([`Job::told`](crate::job::Job::told)). What had ended before this obid first
 /// kept that mark says nothing, and neither does a dismissed job or one that no conversation
 /// started. What events missed (obid went down, or too far behind them) is found at start and when
 /// it falls behind (TASKCONV-18).
+/// A job that moves to another tool or account gets one Oby turn saying where and why
+/// ([`move_report`], TASKS-32), once per move: the moves made from this obid's start on.
 pub fn report_job_ends(shared: std::sync::Arc<Shared>) {
     let since = report_since(&shared.config.home);
     // Subscribed first: a job that ends from here on is an event, or found by the sweep, or both.
     let bus = shared.events.subscribe();
     let stopping = shared.stopping.clone();
-    let (jobs, told, reports) = (shared.clone(), shared.clone(), shared.clone());
+    let (jobs, told, reports, moves) = (
+        shared.clone(),
+        shared.clone(),
+        shared.clone(),
+        shared.clone(),
+    );
     tokio::spawn(follow_ends(
         bus,
         stopping,
@@ -1929,13 +2070,26 @@ pub fn report_job_ends(shared: std::sync::Arc<Shared>) {
             jobs.jobs
                 .list(usize::MAX)
                 .iter()
-                .map(|j| (j.id.clone(), j.status.is_active()))
+                .map(|j| (j.id.clone(), (j.status.is_active(), j.moves.len())))
                 .collect()
         },
         move || tell_unreported(&shared, since),
         move |id| told.jobs.get(id).is_some_and(|job| job.told_of_end()),
         move |id, data| tell(&reports, id, data),
+        move |id, data| tell_moved(&moves, id, data),
     ));
+}
+
+/// The conversation of job `id`, as `data` (its `job` event) says it is, hears that it moved
+/// ([`move_report`]).
+fn tell_moved(shared: &Shared, id: &str, data: &Value) {
+    let Some((conversation, text)) = move_report(data) else {
+        return;
+    };
+    let told = (shared.conversations).append(&conversation, "oby", text, vec![id.to_owned()], None);
+    if let Err(e) = told {
+        tracing::info!("job {id} moved; conversation {conversation} wasn't told: {e:?}");
+    }
 }
 
 /// Tells each job's end as `bus` says it, and `sweep`s at the start and whenever `bus` went on
@@ -1944,20 +2098,30 @@ pub fn report_job_ends(shared: std::sync::Arc<Shared>) {
 async fn follow_ends(
     mut bus: tokio::sync::broadcast::Receiver<crate::events::Event>,
     mut stopping: tokio::sync::watch::Receiver<bool>,
-    at_work: impl Fn() -> std::collections::HashMap<String, bool>,
+    at_work: impl Fn() -> std::collections::HashMap<String, (bool, usize)>,
     sweep: impl Fn(),
     told: impl Fn(&str) -> bool,
     tell: impl Fn(&str, &Value),
+    moved: impl Fn(&str, &Value),
 ) {
     use tokio::sync::broadcast::error::RecvError;
-    let mut active = at_work();
+    // Each job's moves, as its last event said: one more is a move to tell (TASKS-32).
+    let split = |all: std::collections::HashMap<String, (bool, usize)>| {
+        let moves = all.iter().map(|(id, (_, n))| (id.clone(), *n)).collect();
+        let active = all.into_iter().map(|(id, (at, _))| (id, at)).collect();
+        (active, moves)
+    };
+    let (mut active, mut moves): (
+        std::collections::HashMap<String, bool>,
+        std::collections::HashMap<String, usize>,
+    ) = split(at_work());
     sweep();
     loop {
         let event = tokio::select! {
             got = bus.recv() => match got {
                 Ok(event) => event,
                 Err(RecvError::Lagged(_)) => {
-                    active = at_work();
+                    (active, moves) = split(at_work());
                     sweep();
                     continue;
                 }
@@ -1968,6 +2132,13 @@ async fn follow_ends(
         let Some(id) = event.data["id"].as_str().filter(|_| event.name == "job") else {
             continue;
         };
+        let count = event.data["moves"].as_array().map_or(0, Vec::len);
+        if moves
+            .insert(id.to_owned(), count)
+            .is_some_and(|before| count > before)
+        {
+            moved(id, &event.data);
+        }
         let now = matches!(event.data["status"].as_str(), Some("queued" | "running"));
         if active.insert(id.to_owned(), now) != Some(true) || now || told(id) {
             continue;
@@ -2716,12 +2887,13 @@ mod tests {
             || {
                 ["a", "b"]
                     .into_iter()
-                    .map(|id| (id.to_owned(), true))
+                    .map(|id| (id.to_owned(), (true, 0)))
                     .collect()
             },
             || sweeps.set(sweeps.get() + 1),
             |id| told.contains(&id),
             |id, _| tells.borrow_mut().push(id.to_owned()),
+            |_, _| {},
         )
         .await;
         (sweeps.get(), tells.into_inner())
@@ -2733,6 +2905,71 @@ mod tests {
         let events = [("a", "running"), ("a", "running"), ("a", "running")];
         assert_eq!(followed(&events, 1, &[]).await.0, 2);
         assert_eq!(followed(&events, 8, &[]).await.0, 1);
+    }
+
+    /// TASKS-32: a job moved to another tool or account tells its conversation where and why, once
+    /// per move, as a routed task's line says it (#2508); the stop that moved it says nothing.
+    #[tokio::test]
+    async fn tasks_32_a_move_reads_as_a_move_never_a_stop() {
+        let moved = |to: &str, why: serde_json::Value| {
+            serde_json::json!({"id": "a", "title": "Fix CI oby #30", "conversation": "c1",
+                "status": "running", "moves": [{"from": "Claude Code · Default", "to": to, "why": why}]})
+        };
+        let limit = moved(
+            "Codex · Personal",
+            "Claude Code · Default hit its usage limit".into(),
+        );
+        assert_eq!(
+            super::move_report(&limit),
+            Some((
+                "c1".into(),
+                "Fix CI oby #30 moved to Codex · Personal: Claude Code · Default hit its usage limit."
+                    .into()
+            ))
+        );
+        let by_you = moved("Codex · Personal", "Moved by you".into());
+        assert_eq!(
+            super::move_report(&by_you).unwrap().1,
+            "Fix CI oby #30 moved to Codex · Personal, as you asked."
+        );
+        let stopped = serde_json::json!({"id": "a", "title": "Fix CI oby #30", "conversation": "c1",
+            "status": "stopped", "stoppedBy": crate::jobs::moves::MOVING});
+        assert_eq!(job_report(&stopped), None, "a move's stop says nothing");
+        let mut owner = stopped.clone();
+        owner["stoppedBy"] = "you".into();
+        assert_eq!(job_report(&owner).unwrap().1, "Fix CI oby #30 was stopped.");
+
+        // Once per move, from the events: none for the moves it had already.
+        let (sender, bus) = tokio::sync::broadcast::channel(8);
+        let (_stopping, stop) = tokio::sync::watch::channel(false);
+        let with = |n: usize| {
+            let all: Vec<_> = (0..n)
+                .map(|_| serde_json::json!({"to": "Codex · B"}))
+                .collect();
+            serde_json::json!({"id": "a", "status": "running", "moves": all})
+        };
+        for data in [with(1), with(1), with(2), with(2)] {
+            sender
+                .send(crate::events::Event {
+                    name: "job",
+                    data,
+                    id: None,
+                })
+                .unwrap();
+        }
+        drop(sender);
+        let told = std::cell::Cell::new(0);
+        follow_ends(
+            bus,
+            stop,
+            || [("a".to_owned(), (true, 0))].into_iter().collect(),
+            || {},
+            |_| false,
+            |_, _| {},
+            |_, _| told.set(told.get() + 1),
+        )
+        .await;
+        assert_eq!(told.get(), 2);
     }
 
     /// TASKCONV-18: an end told already, by a sweep after the bus went on without its reader, isn't

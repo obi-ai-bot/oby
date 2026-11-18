@@ -165,7 +165,16 @@ async fn a_question_a_sharing_rule_covers_is_answered_by_the_obi() {
             .as_str()
             .unwrap()
             .to_owned();
-    let jobs_before = tokio::task::block_in_place(|| get(&obid, "/v1/jobs"));
+    // What "nothing else happened" means for jobs: the same ones, none new, none changed state.
+    // Not their whole objects: an ended job's worktree is freed by itself in between (#2430).
+    let jobs_said = |jobs: Value| -> Vec<(Value, Value)> {
+        jobs.as_array()
+            .unwrap()
+            .iter()
+            .map(|j| (j["id"].clone(), j["status"].clone()))
+            .collect()
+    };
+    let jobs_before = jobs_said(tokio::task::block_in_place(|| get(&obid, "/v1/jobs")));
 
     let question = ernesto.request(
         "obi-wellington",
@@ -201,7 +210,7 @@ async fn a_question_a_sharing_rule_covers_is_answered_by_the_obi() {
         // Nothing else happened because of it.
         assert_eq!(get(&obid, "/v1/inbox"), json!([]));
         assert_eq!(get(&obid, "/v1/obid/decisions"), json!([]));
-        assert_eq!(get(&obid, "/v1/jobs"), jobs_before);
+        assert_eq!(jobs_said(get(&obid, "/v1/jobs")), jobs_before);
         let sharing = get(&obid, "/v1/obid/sharing");
         assert_eq!(sharing["rules"].as_array().unwrap().len(), 1);
         assert_eq!(sharing["rules"][0]["uses"], 1);
@@ -668,6 +677,16 @@ async fn a_decline_remembered_during_a_run_stops_its_answer() {
 async fn an_answer_ends_the_exchange_obid_asked_in() {
     let folder = Folder::new("q-ask");
     let (sphere, obid, ernesto) = setup(&folder).await;
+    tokio::task::block_in_place(|| {
+        // SPHERE-19: this member's card has no seal key; the owner lets obid ask unsealed.
+        let unsealed = call_typed(
+            &obid,
+            "PUT",
+            "/v1/obid/sphere/peers/ernesto/unsealed",
+            &json!({"allow": true}),
+        );
+        assert_eq!(unsealed.status, 200, "{}", unsealed.text);
+    });
     let sent = tokio::task::block_in_place(|| {
         post(
             &obid,

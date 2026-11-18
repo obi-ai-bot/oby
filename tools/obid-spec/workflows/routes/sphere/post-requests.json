@@ -1,0 +1,305 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/obid/sphere/requests",
+  "version": "1.0.0",
+  "description": "The owner's Obi asks another: 409 before joining, 422 for a type, recipient, expiry or body that isn't valid and for a secret the scan finds (nothing sent, the secret never repeated); a question crosses sealed to the other Oby as a typed request (SPHERE-5).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/obid/sphere/requests"
+    }
+  },
+  "steps": [
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {},
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "before-joining-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "obi-x",
+          "type": "question",
+          "body": {
+            "text": "hi"
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 409
+        }
+      }
+    },
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "an-introduction-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.dana-joined.obiId}",
+          "type": "introduction",
+          "body": {
+            "text": "hi"
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "not-a-member-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "obi-nobody",
+          "type": "question",
+          "body": {
+            "text": "hi"
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "expiry-under-60-s-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.dana-joined.obiId}",
+          "type": "question",
+          "body": {
+            "text": "hi"
+          },
+          "expiresIn": 30
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "a-body-without-its-text-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.dana-joined.obiId}",
+          "type": "question",
+          "body": {},
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "token-tail",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "a-secret-in-the-words-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.dana-joined.obiId}",
+          "type": "question",
+          "body": {
+            "text": "use ghp_${state.token-tail.seed}"
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 422,
+          "text": {
+            "$not": {
+              "$contains": "${state.token-tail.seed}"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "nothing-was-sent",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "sphere-5-a-question-goes-sealed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.dana-joined.obiId}",
+          "type": "question",
+          "body": {
+            "text": "What are you working on?"
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 202,
+          "body": {
+            "state": "sent",
+            "direction": "outgoing",
+            "type": "question",
+            "peer": "${state.dana-joined.obiId}",
+            "peerOwner": "dana"
+          },
+          "paths": {
+            "messages.0.envelope.seal.suite": "x25519-hkdf-sha256-chacha20poly1305",
+            "messages.0.envelope.type": "question",
+            "messages.0.body": {
+              "$exists": false
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-5"
+        ]
+      }
+    },
+    {
+      "id": "sphere-5-it-crosses-to-the-other-oby-as-a-typed-request",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "obiRequest",
+                "title": "Question from alex",
+                "obi": {
+                  "type": "question",
+                  "fromOwner": "alex",
+                  "correlationId": "${state.sphere-5-a-question-goes-sealed.body.correlationId}",
+                  "quoted": {
+                    "text": "What are you working on?"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-5"
+        ]
+      }
+    }
+  ]
+}

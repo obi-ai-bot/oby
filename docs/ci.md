@@ -13,7 +13,7 @@ Checks run in two places: GitHub's `CI` workflow (`.github/workflows/ci.yml`) an
 | `limits` | `OBY_CHECK_ONLY=limits scripts/oby-check.sh <base>` on the checked commit, with full history: it reports obid's production line count and its difference from the base (CI-49), and judges `jobs.rs`'s lines, the tests' sleeps, `AGENTS.md`'s bytes and the flaky list's guard by the script's own counting (docs/contracts/ci.md, CI-35). The base is `merge_group.base_sha` in the queue, `pull_request.base.sha` on a pull request, and the commit itself nightly and on demand. It installs nothing. |
 | `rust-build` | One `cargo nextest archive --workspace --locked` of `core/`, uploaded and kept 1 day. |
 | `rust-test` (1/4 to 4/4) | The archive's tests, a quarter each (`--partition slice:k/4`), with `--profile ci --no-fail-fast`, bubblewrap and gitleaks set up. Each uploads its JUnit report, pass or fail, kept 14 days. |
-| `e2e` | `make e2e`: stub agents, against the oby-sphere commit in `e2e/oby-sphere.ref`. |
+| `e2e` | `make e2e`: stub agents, against the oby-sphere commit in `e2e/sphere.ref`, the deployed Sphere's (the rig and `test:sphere` read the same one). |
 | `control-plane` | In `cloud/control-plane/`: `pnpm test` and `pnpm check`. |
 | `electron` | In `apps/electron/`: `npm ci`, `npm run typecheck`, `npm test`, `npm run build` (Node 22, with zsh installed: the ChatGPT gate's test runs `scripts/package.sh` with `/bin/zsh`). |
 | `tools` | `cargo test` in `tools/oby-check-blok/`, its own Cargo workspace, with the tool installed and gitleaks on `PATH`, since its tests run `scripts/oby-check.sh`. |

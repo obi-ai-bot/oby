@@ -40,6 +40,6 @@ async fn members_are_the_teammates_obys() {
     assert_eq!(
         members.body,
         json!([{"obi": "obi-ernesto", "owner": "ernesto", "accepts": ["question", "review_request"],
-                "sealed": false, "verified": false}])
+                "sealed": false, "verified": false, "unsealed": false}])
     );
 }

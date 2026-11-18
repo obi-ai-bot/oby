@@ -898,11 +898,14 @@ fn githubwork_7_a_repository_connected_later_is_offered_at_the_next_read() {
     assert_eq!(titles, [json!("Review requested: other #12")]);
 }
 
-/// Red checks on the owner's own pull request (#1119): one `CI failed` offer per red head, settled
-/// by itself when the head goes green or moves; Fix CI starts one fix job on that pull request's
-/// branch.
+/// GITHUBWORK-28 (docs/contracts/github-work.md): a red pull request of the owner's that no Oby
+/// task opened or pushed onto makes no `CI failed` card: it's someone's own to fix (a Claude Code
+/// session outside Oby, say), and Fix CI on it is the owner's to ask for, in words (GITHUBWORK-29)
+/// or with the feed's start. The feed still lists it, and two starts at once make one fix job on
+/// its branch. (A task's watcher that gave up still leaves its card: MERGING-21's, with One more
+/// round, `merge_api::autofix_9_the_same_failure_after_a_fix_gives_up_once_with_one_more_round`.)
 #[test]
-fn red_ci_on_your_own_pull_request_offers_fix_ci_once_per_head() {
+fn githubwork_28_a_red_pull_request_oby_didnt_open_makes_no_card() {
     let folder = Folder::new("github-work-ci");
     let remote = fixture(&folder.0.join("fixture"));
     let config = config(&folder.0, &remote, &agents().join("fake-claude"));
@@ -920,98 +923,37 @@ fn red_ci_on_your_own_pull_request_offers_fix_ci_once_per_head() {
     .unwrap();
     let (a, b) = ("a".repeat(40), "b".repeat(40));
     let serve_mine = |prs: Vec<Value>| write_work(&gh, "wellington", vec![], vec![], prs);
-    serve_mine(vec![
-        mine(5, &a, "SUCCESS"),
-        mine(6, &a, "PENDING"),
-        mine(7, &a, "SUCCESS"),
-    ]);
+    serve_mine(vec![mine(5, &a, "SUCCESS"), mine(7, &a, "SUCCESS")]);
     refresh(&obid);
-    assert!(github_items(&obid, "open").is_empty(), "a first read");
-
-    serve_mine(vec![
-        mine(5, &a, "FAILURE"),
-        mine(6, &a, "FAILURE"),
-        mine(7, &a, "ERROR"),
-    ]);
+    serve_mine(vec![mine(5, &a, "FAILURE"), mine(7, &a, "ERROR")]);
     let feed = refresh(&obid);
     assert_eq!(
         (&feed["mine"][0]["head"], &feed["mine"][0]["fork"]),
         (&json!(a), &json!(false)),
         "{feed}"
     );
-    let open = github_items(&obid, "open");
-    assert_eq!(open.len(), 3, "{open:?}");
-    let offer = open.iter().find(|i| i["github"]["number"] == 5).unwrap();
-    assert_eq!(offer["title"], "CI failed: fixture-app #5");
-    assert_eq!(
-        offer["text"],
-        "Checks failed on your pull request #5 in obi-e2e/fixture-app."
-    );
-    assert_eq!(offer["options"], json!(["Fix CI", "Dismiss"]));
-    assert_eq!(
-        (&offer["triage"], &offer["github"]["head"]),
-        (&json!("needs_you"), &json!(a))
-    );
-
-    // #6 goes green and #7's head moves: their offers are done by themselves; #7's new red head
-    // is a new offer, #5's same red head isn't.
-    serve_mine(vec![
-        mine(5, &a, "FAILURE"),
-        mine(6, &a, "SUCCESS"),
-        mine(7, &b, "FAILURE"),
-    ]);
+    assert!(github_items(&obid, "open").is_empty(), "no CI failed card");
+    serve_mine(vec![mine(5, &a, "FAILURE"), mine(7, &b, "FAILURE")]);
     refresh(&obid);
-    let mut open: Vec<(u64, String)> = github_items(&obid, "open")
-        .iter()
-        .map(|i| {
-            (
-                i["github"]["number"].as_u64().unwrap(),
-                i["github"]["head"].as_str().unwrap().to_owned(),
-            )
-        })
-        .collect();
-    open.sort();
-    assert_eq!(open, [(5, a.clone()), (7, b.clone())]);
-    let settled = github_items(&obid, "done");
-    assert_eq!(settled.len(), 2, "{settled:?}");
     assert!(
-        settled.iter().all(|i| i["answer"].is_null()),
-        "settled by themselves"
+        github_items(&obid, "open").is_empty() && github_items(&obid, "done").is_empty(),
+        "nor for a new red head"
     );
 
-    // A re-run's pending checks keep #5's offer, and its second failure on the same head is the
-    // same offer, never a second.
-    serve_mine(vec![
-        mine(5, &a, "PENDING"),
-        mine(6, &a, "SUCCESS"),
-        mine(7, &b, "FAILURE"),
-    ]);
-    refresh(&obid);
-    serve_mine(vec![
-        mine(5, &a, "FAILURE"),
-        mine(6, &a, "SUCCESS"),
-        mine(7, &b, "FAILURE"),
-    ]);
-    refresh(&obid);
-    assert_eq!(github_items(&obid, "open").len(), 2);
-    assert_eq!(github_items(&obid, "done").len(), 2);
-
-    // Fix CI, and a tap on the feed meanwhile: one fix job, on the pull request's branch.
+    // Two starts at once: one fix job, on the pull request's branch.
     std::fs::write(gh.join("slow"), "").unwrap();
-    let answer = format!("/v1/inbox/{}/answer", offer["id"].as_str().unwrap());
     let tap = format!("/v1/github/work/{}/start", id_of(&feed, "mine", 5));
-    let (answered, tapped) = std::thread::scope(|scope| {
-        let answered =
-            scope.spawn(|| call(&obid, "POST", &answer, Some(&json!({"answer": "Fix CI"}))));
+    let (first, second) = std::thread::scope(|scope| {
+        let first = scope.spawn(|| call(&obid, "POST", &tap, None));
         std::thread::sleep(Duration::from_millis(300));
-        let tapped = scope.spawn(|| call(&obid, "POST", &tap, None));
-        (answered.join().unwrap(), tapped.join().unwrap())
+        let second = scope.spawn(|| call(&obid, "POST", &tap, None));
+        (first.join().unwrap(), second.join().unwrap())
     });
     std::fs::remove_file(gh.join("slow")).unwrap();
-    assert_eq!(answered.status, 200, "{}", answered.text);
-    assert_eq!(tapped.status, 200, "{}", tapped.text);
-    assert_eq!(tapped.body["id"], answered.body["job"], "one job");
-    let job = &tapped.body;
+    assert_eq!(first.status, 201, "{}", first.text);
+    assert_eq!(second.status, 200, "{}", second.text);
+    assert_eq!(first.body["id"], second.body["id"], "one job");
+    let job = &first.body;
     assert_eq!(
         (&job["kind"], &job["pr"], &job["base"], &job["title"]),
         (
@@ -1091,12 +1033,12 @@ fn taskconv_2_a_task_from_github_gets_its_own_conversation() {
     assert_eq!(turns.last().unwrap()["jobs"], json!([id]));
 }
 
-/// TASKCONV-29 (docs/contracts/task-conversations.md): Fix CI on a `CI failed` card starts the fix
-/// job on the pull request's branch in a conversation of its own, as the feed's tap does
-/// (TASKCONV-2), so the app shows it at once; its quoted file holds each failed check's name and
+/// TASKCONV-29 (docs/contracts/task-conversations.md): Fix CI from the feed starts the fix job on
+/// the pull request's branch in a conversation of its own (TASKCONV-2), so the app shows it at
+/// once; its quoted file holds each failed check's name and
 /// the end of its log, as data.
 #[test]
-fn taskconv_29_fix_ci_on_its_card_starts_a_task_in_its_own_conversation() {
+fn taskconv_29_fix_ci_starts_a_task_in_its_own_conversation() {
     let folder = Folder::new("taskconv-29");
     let remote = fixture(&folder.0.join("fixture"));
     let config = config(&folder.0, &remote, &agents().join("fake-claude"));
@@ -1141,19 +1083,7 @@ fn taskconv_29_fix_ci_on_its_card_starts_a_task_in_its_own_conversation() {
         vec![mine(5, &a, "FAILURE")],
     );
     refresh(&obid);
-    let offer = github_items(&obid, "open")
-        .into_iter()
-        .find(|i| i["github"]["number"] == 5)
-        .expect("a CI failed card");
-
-    let answered = call(
-        &obid,
-        "POST",
-        &format!("/v1/inbox/{}/answer", offer["id"].as_str().unwrap()),
-        Some(&json!({"answer": "Fix CI"})),
-    );
-    assert_eq!(answered.status, 200, "{}", answered.text);
-    let id = answered.body["job"].as_str().unwrap().to_owned();
+    let id = fix_ci(&obid);
     let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
     assert_eq!(
         (&job["kind"], &job["pr"], &job["base"]),
@@ -1276,18 +1206,7 @@ fn accounts_34_fix_ci_is_routed_like_any_task() {
         vec![mine(5, &a, "FAILURE")],
     );
     refresh(&obid);
-    let offer = github_items(&obid, "open")
-        .into_iter()
-        .find(|i| i["github"]["number"] == 5)
-        .expect("a CI failed card");
-    let answered = call(
-        &obid,
-        "POST",
-        &format!("/v1/inbox/{}/answer", offer["id"].as_str().unwrap()),
-        Some(&json!({"answer": "Fix CI"})),
-    );
-    assert_eq!(answered.status, 200, "{}", answered.text);
-    let id = answered.body["job"].as_str().unwrap().to_owned();
+    let id = fix_ci(&obid);
     let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
     assert_eq!(
         (&job["agent"], &job["account"]),
@@ -1333,18 +1252,7 @@ fn taskconv_30_a_fix_ci_tasks_goal_is_the_fix_committed_not_githubs_checks() {
         vec![mine(5, &a, "FAILURE")],
     );
     refresh(&obid);
-    let offer = github_items(&obid, "open")
-        .into_iter()
-        .find(|i| i["github"]["number"] == 5)
-        .expect("a CI failed card");
-    let answered = call(
-        &obid,
-        "POST",
-        &format!("/v1/inbox/{}/answer", offer["id"].as_str().unwrap()),
-        Some(&json!({"answer": "Fix CI"})),
-    );
-    assert_eq!(answered.status, 200, "{}", answered.text);
-    let id = answered.body["job"].as_str().unwrap().to_owned();
+    let id = fix_ci(&obid);
     let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
     let task = job["task"].as_str().unwrap();
     assert!(
@@ -1415,18 +1323,7 @@ fn taskconv_31_fix_ci_pushes_onto_the_owners_own_pull_requests_branch() {
         vec![mine(5, &a, "FAILURE")],
     );
     refresh(&obid);
-    let offer = github_items(&obid, "open")
-        .into_iter()
-        .find(|i| i["github"]["number"] == 5)
-        .expect("a CI failed card");
-    let answered = call(
-        &obid,
-        "POST",
-        &format!("/v1/inbox/{}/answer", offer["id"].as_str().unwrap()),
-        Some(&json!({"answer": "Fix CI"})),
-    );
-    assert_eq!(answered.status, 200, "{}", answered.text);
-    let id = answered.body["job"].as_str().unwrap().to_owned();
+    let id = fix_ci(&obid);
     let job = ended_within(&obid, &id, 120);
     assert_eq!(job["status"], "done", "{}", job["summary"]);
     assert_eq!(
@@ -1793,18 +1690,7 @@ fn limits_25_fix_ci_reads_a_stale_usage_before_it_routes() {
         vec![mine(5, &a, "FAILURE")],
     );
     refresh(&obid);
-    let offer = github_items(&obid, "open")
-        .into_iter()
-        .find(|i| i["github"]["number"] == 5)
-        .expect("a CI failed card");
-    let answered = call(
-        &obid,
-        "POST",
-        &format!("/v1/inbox/{}/answer", offer["id"].as_str().unwrap()),
-        Some(&json!({"answer": "Fix CI"})),
-    );
-    assert_eq!(answered.status, 200, "{}", answered.text);
-    let id = answered.body["job"].as_str().unwrap().to_owned();
+    let id = fix_ci(&obid);
     let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
     assert_eq!(
         (&job["agent"], &job["account"]),
@@ -1864,18 +1750,7 @@ fn fix_ci_onto(folder: &Folder) -> (Obid, String, PathBuf, PathBuf) {
         vec![mine(5, &a, "FAILURE")],
     );
     refresh(&obid);
-    let offer = github_items(&obid, "open")
-        .into_iter()
-        .find(|i| i["github"]["number"] == 5)
-        .expect("a CI failed card");
-    let answered = call(
-        &obid,
-        "POST",
-        &format!("/v1/inbox/{}/answer", offer["id"].as_str().unwrap()),
-        Some(&json!({"answer": "Fix CI"})),
-    );
-    assert_eq!(answered.status, 200, "{}", answered.text);
-    let id = answered.body["job"].as_str().unwrap().to_owned();
+    let id = fix_ci(&obid);
     let job = ended_within(&obid, &id, 120);
     assert_eq!(job["status"], "done", "{}", job["summary"]);
     assert_eq!(job["pushed"], json!(1), "{job}");
@@ -2049,4 +1924,94 @@ fn autofix_18_a_conflicting_pull_request_it_pushed_onto_gets_main_merged_in() {
         1,
         "said once: {again:?}"
     );
+}
+
+/// Fix CI on the owner's red pull request #5, started from the feed (`POST /v1/github/work/{id}/start`,
+/// GITHUBWORK-28: no card offers it): the job's id.
+fn fix_ci(obid: &Obid) -> String {
+    let feed = call(obid, "GET", "/v1/github/work", None).body;
+    let started = call(
+        obid,
+        "POST",
+        &format!("/v1/github/work/{}/start", id_of(&feed, "mine", 5)),
+        None,
+    );
+    assert_eq!(started.status, 201, "{}", started.text);
+    started.body["id"].as_str().unwrap().to_owned()
+}
+
+/// GITHUBWORK-29 (docs/contracts/github-work.md): Fix CI asked for in words starts the task the
+/// `CI failed` card did, by the same path: on the pull request's branch, its checks quoted, in the
+/// conversation that asked, its card on the answer.
+#[test]
+fn githubwork_29_fix_ci_asked_for_in_words_starts_the_cards_task() {
+    let folder = Folder::new("githubwork-29");
+    let remote = fixture(&folder.0.join("fixture"));
+    let harness = agents().join("fake-harness");
+    let mut config = config(&folder.0, &remote, &harness);
+    config["conversation"] = json!({"agent": "claude"});
+    let account = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(account.join(".credentials.json"), "{}").unwrap();
+    let obid = start(&folder.0, &config, Some(&agents()));
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(
+        gh.join("view.json"),
+        json!({"title": "Login fix", "body": "", "author": {"login": "wellington"},
+               "labels": [], "comments": [], "headRefName": "fix-login", "isCrossRepository": false,
+               "statusCheckRollup": [{"__typename": "StatusContext", "context": "ci/test", "state": "FAILURE"}]})
+        .to_string(),
+    )
+    .unwrap();
+    let a = "a".repeat(40);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "SUCCESS")],
+    );
+    refresh(&obid);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "FAILURE")],
+    );
+    refresh(&obid);
+    let said = format!(
+        r#"OBY oby_dispatch {{"repo": "{REPO}", "task": "Fix CI on pull request 5", "kind": "fix", "pr": 5}}"#
+    );
+    let answer = call(
+        &obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": said, "new": true})),
+    );
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    let job = &answer.body["jobs"][0];
+    assert_eq!(
+        (&job["kind"], &job["pr"], &job["base"], &job["title"]),
+        (
+            &json!("fix"),
+            &json!(5),
+            &json!("fix-login"),
+            &json!("Fix CI fixture-app #5")
+        ),
+        "{job}"
+    );
+    assert!(
+        (job["task"].as_str().unwrap())
+            .starts_with("Fix what makes the failed checks on pull request #5"),
+        "{job}"
+    );
+    let conversation = answer.body["conversation"].as_str().unwrap_or_default();
+    assert!(!conversation.is_empty(), "{}", answer.text);
+    assert_eq!(
+        job["conversation"], conversation,
+        "in the conversation that asked"
+    );
+    assert!(github_items(&obid, "open").is_empty(), "no card on the way");
 }

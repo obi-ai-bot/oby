@@ -107,6 +107,7 @@ PUT /v1/obid/sphere/membership
 PUT /v1/obid/sphere/owner
 GET /v1/obid/sphere/peers/{owner}
 POST /v1/obid/sphere/peers/{owner}/ask
+PUT /v1/obid/sphere/peers/{owner}/unsealed
 GET /v1/obid/sphere/pins
 POST /v1/obid/sphere/pins/{owner}
 POST /v1/obid/sphere/requests

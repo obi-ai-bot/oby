@@ -977,6 +977,21 @@ pub fn github_item_id(work: &crate::github_work::Item) -> String {
     }
 }
 
+/// Whether the feed's `work` gets a `github` item: never the owner's own red pull request
+/// (GITHUBWORK-28). One an Oby task opened or pushed onto is that task's to fix, with no card
+/// (AUTOFIX); one Oby didn't open is someone's own (a Claude Code session outside Oby, say), and
+/// Fix CI on it is the owner's to ask for in words (GITHUBWORK-29). The card a task's watcher leaves
+/// when it gives up is its merge card (MERGING-21, AUTOFIX-10), never this one.
+pub fn offered(work: &crate::github_work::Item) -> bool {
+    work.list != "mine"
+}
+
+/// Whether `item` is a `CI failed` card ([`github_item`] for a red pull request), from before
+/// GITHUBWORK-28: settled at the next read of GitHub work.
+pub fn is_ci_item(item: &Item) -> bool {
+    item.kind == "github" && item.id.starts_with("github-ci-")
+}
+
 /// The `github` item offering to do `work` (`known`: whether obid works in its repository):
 /// obid's own words from its typed fields (its author's login only for sorting it,
 /// crate::triage), GitHub's title quoted under `github.quoted`.
@@ -1326,6 +1341,38 @@ mod tests {
     }
 
     use super::*;
+
+    /// GITHUBWORK-28: the owner's red pull request gets no `github` item; a review request and an
+    /// assigned issue still do. A `CI failed` card an older obid made is told apart, to settle it.
+    #[test]
+    fn githubwork_28_a_red_pull_request_gets_no_item() {
+        let work = |list: &str| crate::github_work::Item {
+            id: "0123456789abcdef".into(),
+            list: list.into(),
+            repo: "obi-ai-bot/oby".into(),
+            number: 7,
+            title: "Login fix".into(),
+            url: "https://github.com/obi-ai-bot/oby/pull/7".into(),
+            author: Some("wellington".into()),
+            association: Some("OWNER".into()),
+            trusted: true,
+            labels: vec![],
+            updated: String::new(),
+            state: "OPEN".into(),
+            draft: Some(false),
+            review_decision: None,
+            checks: Some("FAILURE".into()),
+            head: Some("a".repeat(40)),
+            fork: Some(false),
+            board: None,
+            milestone: None,
+            check_runs: Vec::new(),
+        };
+        assert!(!offered(&work("mine")));
+        assert!(offered(&work("reviews")) && offered(&work("assigned")));
+        assert!(is_ci_item(&github_item(&work("mine"), true, 0)));
+        assert!(!is_ci_item(&github_item(&work("reviews"), true, 0)));
+    }
 
     fn brief() -> Value {
         json!({

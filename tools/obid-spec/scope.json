@@ -1,0 +1,138 @@
+{
+  "about": "What obid-spec covers, area by area (docs/contracts/obid-spec.md, OBIDSPEC-3 and 4). routes: the path prefixes of docs/api/routes.txt an area's workflows prove. contracts: for each contract read so far, which scenarios are obid's (each must have an assertion naming it) and which are another surface's, with why. A contract not listed here isn't read yet: coverage counts it as unread. triggers: each background trigger, its area, and the workflow files under workflows/triggers that prove it.",
+  "areas": {
+    "sphere": {
+      "routes": [
+        "/v1/obid/sphere",
+        "/v1/spheres"
+      ],
+      "contracts": {
+        "obysphere.md": {
+          "obid": [
+            "SPHERE-1",
+            "SPHERE-2",
+            "SPHERE-4..6",
+            "SPHERE-8..10",
+            "SPHERE-21"
+          ],
+          "elsewhere": {
+            "SPHERE-3": "the Electron side panel showing the joined Obysphere (apps/electron sphere.test.ts)",
+            "SPHERE-7": "the Electron app's member rows and settings (apps/electron)",
+            "SPHERE-14..16": "the Electron side panel's Invite and Leave menu (apps/electron sphereMenu.test.tsx)"
+          }
+        }
+      }
+    },
+    "obi": {
+      "routes": [
+        "/v1/obid/decisions",
+        "/v1/obid/sharing",
+        "/v1/inbox"
+      ],
+      "contracts": {}
+    },
+    "conversations": {
+      "routes": [
+        "/v1/conversation",
+        "/v1/conversations",
+        "/v1/brain",
+        "/v1/attachments",
+        "/v1/plans",
+        "/v1/clear"
+      ],
+      "contracts": {}
+    },
+    "jobs": {
+      "routes": [
+        "/v1/jobs",
+        "/v1/limit-decisions",
+        "/v1/stop-all",
+        "/v1/failures"
+      ],
+      "contracts": {}
+    },
+    "accounts": {
+      "routes": [
+        "/v1/accounts",
+        "/v1/profiles",
+        "/v1/settings",
+        "/v1/agent"
+      ],
+      "contracts": {}
+    },
+    "github": {
+      "routes": [
+        "/v1/github",
+        "/v1/repos",
+        "/v1/projects"
+      ],
+      "contracts": {}
+    },
+    "devices": {
+      "routes": [
+        "/v1/devices",
+        "/v1/pairing",
+        "/v1/notifications"
+      ],
+      "contracts": {}
+    },
+    "everything-else": {
+      "routes": [
+        "/v1/status",
+        "/v1/events",
+        "/v1/alerts",
+        "/v1/artifacts",
+        "/v1/connectors",
+        "/v1/helpers",
+        "/v1/memory",
+        "/v1/obid/vault",
+        "/v1/permissions",
+        "/v1/routines",
+        "/v1/tetrix"
+      ],
+      "contracts": {}
+    }
+  },
+  "triggers": {
+    "the Sphere long-poll and its deliveries": {
+      "area": "sphere",
+      "workflows": [
+        "sphere-deliveries.json",
+        "sphere-revoked.json",
+        "sphere-accept-needs-the-owner.json"
+      ]
+    },
+    "the Sphere directory read (pinned owner keys)": {
+      "area": "sphere",
+      "workflows": [
+        "sphere-pinning.json",
+        "sphere-pinning-cancel.json",
+        "sphere-pinning-closes.json"
+      ]
+    },
+    "the GitHub feed": {
+      "area": "github",
+      "workflows": []
+    },
+    "CI autofix rounds": {
+      "area": "jobs",
+      "workflows": []
+    },
+    "account-limit moves and waits": {
+      "area": "jobs",
+      "workflows": []
+    },
+    "restart recovery of conversations and jobs": {
+      "area": "conversations",
+      "workflows": []
+    },
+    "cleanup": {
+      "area": "everything-else",
+      "workflows": []
+    },
+    "routines": {
+      "area": "everything-else",
+      "workflows": []
+    }
+  }
+}
