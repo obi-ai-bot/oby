@@ -43,7 +43,7 @@ const none = () => {};
 function shown(turns: Turn[]) {
   page.chats = [live.chatOf({ ...live.liveState(), turns: { c1: turns } } as never, convo) as Chat];
   page.effects = [];
-  return renderToStaticMarkup(<ChatView kind="oby" id="c1" leaving={false} onBack={none} onGone={none} onOpenTask={none} onOpenMember={onOpenMember} />).replaceAll('<!-- -->', '');
+  return renderToStaticMarkup(<ChatView kind="oby" id="c1" leaving={false} onBack={none} onGone={none} onOpenMember={onOpenMember} />).replaceAll('<!-- -->', '');
 }
 const cardsIn = (html: string) => html.split('class="ask-card"').length - 1;
 // what a person reads: Oby's words go word by word in spans, so raw HTML would never hold a sentence

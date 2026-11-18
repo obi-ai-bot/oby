@@ -204,6 +204,11 @@ export function stop(id: string) {
     job: { ...k.job, status: 'stopped', ask: undefined, step: 'Stopped', finished: 0, stages: k.job.stages.map((st) => (st.state === 'current' ? { ...st, state: 'skipped' } : st)) },
   }));
 }
+// Use another account (CHATSTATE-3): obid's move; on the mock, at once
+export function moveTask(id: string, account: { id: string; name: string }) {
+  if (onObid) return void live.moveJob(id, account.id);
+  update(id, (k) => ({ job: { ...k.job, account: account.name, accountId: account.id } }));
+}
 // A failed or interrupted task's menu (TASKS-25): Try again sends obid's Try-again words; Stop here
 // lets it go. On the mock, at once (TASKS-10)
 export function tryAgain(id: string) {

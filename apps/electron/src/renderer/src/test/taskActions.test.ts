@@ -274,15 +274,15 @@ describe('the task menu on obid', () => {
     expect(live.liveState().problem).toBeNull();
   });
 
-  it('LIVETASK-7: telling the agent is obid\'s own message; a finished one\'s follow-up is what the pane then follows', async () => {
+  it('LIVETASK-30: telling a task from its chip is obid\'s own message, kept in its conversation; a finished one\'s follow-up comes back', async () => {
     const { live } = await load(true);
     answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ status: 'running' }) };
-    expect(await live.tellAgent('j1', 'Use the other file.')).toBe(true);
+    expect((await live.tellJob('j1', 'Use the other file.', [], true))?.id).toBe('j1');
     expect(calls.map((c) => [c.method, c.path])).toEqual([['POST', '/v1/jobs/j1/messages']]);
-    expect(calls[0].body).toMatchObject({ text: 'Use the other file.' });
+    expect(calls[0].body).toMatchObject({ text: 'Use the other file.', conversation: true });
     answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ id: 'j2', followUpOf: 'j1', status: 'queued' }) };
     answers['GET /v1/jobs/j1'] = { status: 200, body: job() };
-    expect(await live.tellAgent('j1', 'Now the docs.')).toBe('j2');
+    expect((await live.tellJob('j1', 'Now the docs.', [], true))?.id).toBe('j2');
   });
 
   it('TASKS-10: on the mock (npm run web), the menu works in place and calls nothing', async () => {

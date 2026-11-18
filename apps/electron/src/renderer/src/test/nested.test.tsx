@@ -69,8 +69,8 @@ async function on({ jobs = [], inbox = [], conversations = [] }: { jobs?: unknow
   const opened = vi.fn();
   return {
     opened,
-    side: (more: { activeTalk?: string; activeAgent?: string } = {}) => renderToStaticMarkup(
-      <Sidebar open atHome={false} activeTalk={more.activeTalk} activeAgent={more.activeAgent} width={362} onResize={none} onClose={none} onNewChat={none} onHome={none} onOpenGroup={none}
+    side: (more: { activeTalk?: string } = {}) => renderToStaticMarkup(
+      <Sidebar open atHome={false} activeTalk={more.activeTalk} width={362} onResize={none} onClose={none} onNewChat={none} onHome={none} onOpenGroup={none}
         onOpenTask={none} onOpenAgent={opened} onOpenChat={none} onOpenOby={none} onOpenMember={none} onOpenTalk={none} onOpenArchive={none} onOpenSetting={none} onOpenSphereSetting={none} onOpenKnowledge={none} onOpenRoom={none} />,
     ).replaceAll('<!-- -->', ''),
   };
@@ -165,12 +165,13 @@ describe('a conversation\'s tasks, nested under it', () => {
     expect(nestOf(ended.side({ activeTalk: 'c1' }), 'Two fixes for today')).not.toContain('agents working');
   });
 
-  it('LIVETASK-22: a nested row opens that task\'s own thread over its conversation, and is lit while it shows', async () => {
+  it('LIVETASK-22: a nested row is a mark of its progress; a click opens its conversation at its card, the conversation\'s row lit', async () => {
     const { side, opened } = await on(TWO);
-    const html = side({ activeAgent: 'j2' });
-    expect(nestOf(html, 'Two fixes for today')).toMatch(/<button class="convo-kid is-active" aria-current="true" title="Fix iOS signing on Deskree Team"/);
+    const html = side({ activeTalk: 'c1' });
+    expect(nestOf(html, 'Two fixes for today')).toMatch(/<button class="convo-kid" title="Fix iOS signing on Deskree Team"/);
+    expect(html).not.toContain('convo-kid is-active');
     clicks['Fix iOS signing on Deskree Team']();
-    expect(opened).toHaveBeenCalledWith('j2', 'c1');
+    expect(opened).toHaveBeenCalledWith('j2');
   });
 });
 

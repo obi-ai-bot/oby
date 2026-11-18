@@ -7,7 +7,7 @@
  "maxRunning": 6, "running": 4, "defaultAgent": "auto", "defaultAccount": null,
  "clearedAt": "2026-10-10T08:12:00Z",
  "github": "app", "checks": "ok", "permissions": {"mode": "sandbox"},
- "scanner": {"gitleaks": true}, "receipts": true, "capabilities": ["events-replay-v1", "folders-v1", "profile-projects-v1", "project-jobs-v1", "projects-v1", "revisions-v1"],
+ "scanner": {"gitleaks": true}, "receipts": true, "capabilities": ["conversation-marks-v1", "events-replay-v1", "folders-v1", "profile-projects-v1", "project-jobs-v1", "projects-v1", "revisions-v1"],
  "tools": [{"agent": "claude", "path": "/Users/me/.local/bin/claude", "version": "2.1.317"},
            {"agent": "codex", "path": "/opt/homebrew/bin/codex", "version": "0.163.0"},
            {"agent": "cursor", "path": null, "version": null}],
@@ -46,6 +46,7 @@
 
 | Name | What it means | Since |
 |---|---|---|
+| `conversation-marks-v1` | A conversation carries `seen`, `unread` and `archived`, and `PATCH /v1/conversations/{id}` takes `seen` and `archived` ([conversations.md](conversations.md), [conversation-states.md](../contracts/conversation-states.md), CHATSTATE-6 to 10). An app sends them only to an obid that lists it. | CHATSTATE-6 |
 | `events-replay-v1` | `GET /v1/events` numbers its events with an `id: <epoch>-<seq>` line, and resumes a client that sends the last one it had (`?after=` or the `Last-Event-ID` header): it replays what the client missed, or sends one `resync` when it can't. | R06-02 |
 | `folders-v1` | obid takes working folders: `folders` on `POST /v1/plans`, on conversations and on `PATCH /v1/conversations/{id}`, the same behaviour `folders: true` announces. | The behaviour since #1572, listed since R06-01 |
 | `profile-scope-v1` | obid reads `Oby-Profile` on every `/v1` route and on `GET /v1/events`, and keeps conversations, jobs, helpers, accounts and vault secrets per profile ([profiles.md](profiles.md)). | B00-40 |

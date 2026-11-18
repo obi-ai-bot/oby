@@ -117,18 +117,9 @@ async function main() {
   await page.keyboard.press('Enter');
   await until('its conversation opens', async () => (await onTop(page)) !== null);
   const job = await until('a task from it', async () => (await s.call('GET', '/v1/jobs')).find((j) => j.title === 'Core flow'));
-  await until('its card', () => page.locator('.msg-task.is-link', { hasText: 'Core flow' }).count());
+  await until('its card', () => page.locator('.msg-task', { hasText: 'Core flow' }).count());
   ok('CHATFIRST-2 words on the empty chat open their conversation');
-
-  // CHATFIRST-6: a task from its card's menu in the conversation (View details), and back to it
   const talk = await onTop(page);
-  await page.locator('.msg-task.is-link', { hasText: 'Core flow' }).click({ button: 'right' });
-  await page.getByRole('menuitem', { name: 'View details' }).click();
-  await until('its page', () => page.locator('[aria-placeholder="Tell Oby about this task…"]').count());
-  await shot(page, '6-task-from-its-card');
-  await button(page, 'Back').click();
-  await until('back in the conversation', async () => (await onTop(page)) === talk);
-  ok('CHATFIRST-6 a task opens from its card’s menu, back returns to its conversation');
   await until('the task ends', async () => ['done', 'failed', 'interrupted', 'stopped'].includes((await s.call('GET', `/v1/jobs/${job.id}`)).status), 120_000);
   await close();
 
