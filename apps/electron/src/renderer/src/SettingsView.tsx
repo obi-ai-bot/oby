@@ -839,6 +839,22 @@ export async function moveKeptChoices(status: Status): Promise<boolean> {
   }
   return moved;
 }
+// Sign in from a conversation's line (CHATSTATE-2): Settings › Agents opens and starts that
+// account's own sign-in, as its Sign In does; one obid doesn't sign in (the tool's own login on this
+// Mac) opens at its row, which says how
+let signInNext: string | null = null;
+// what Sign in starts for an account, as its row's own button would: Continue with ChatGPT where it
+// offers that, else Sign In; none for the tool's own login (the tool signs it in) or one that can run
+export function signInAction(x: Account, chatgptOffered: boolean): 'signIn' | 'chatgpt' | null {
+  const out = x.signedIn === false, plan = x.agent === 'codex' && out && (!!x.chatgpt || (chatgptOffered && !x.label));
+  if (!isAgent(x.agent) || (ownLogin(x) && !plan) || !(out || x.cantRun)) return null;
+  return plan ? 'chatgpt' : 'signIn';
+}
+export function signInFromChat(id: string) {
+  signInNext = id;
+  dispatchEvent(new CustomEvent('oby:open-setting', { detail: everything ? 'accounts' : 'agents' }));
+}
+
 // a pop-up's choices, the one set kept even when the choices don't (yet) have it
 const choices = (list: { id: string; name: string }[], set: string | undefined) =>
   [...(set && !list.some((m) => m.id === set) ? [{ id: set, name: set }] : []), ...list].map((m) => [m.id, m.name] as const);
@@ -860,6 +876,14 @@ export function Agents() {
     ...elsewhere.map((l) => `${agentOf(l.agent).name}’s login on this Mac is in ${l.profileName}. Add another account to sign in with a different login here.`),
   ];
   const { status } = useLive();
+  useEffect(() => {
+    const x = signInNext ? accounts.find((a) => a.id === signInNext) : undefined;
+    if (!x) return;
+    signInNext = null;
+    document.querySelector(`[data-account="${CSS.escape(x.id)}"]`)?.scrollIntoView({ block: 'center' });
+    const how = signInAction(x, offersChatGpt(status));
+    if (how) void (how === 'chatgpt' ? signInChatGpt(x.id) : signIn(x.id));
+  }, [accounts]);
   // the question again, when its switch is turned on: only its own button's click says yes
   const [asking, setAsking] = useState<Account | null>(null);
   const background = (x: Account, given: boolean) => {
@@ -903,7 +927,7 @@ export function Agents() {
       const week = weekWords(x), bar = barOf(x);
       return (
         <Group key={x.id} i={3 + k} title={x.name}>
-          <div className="set-row set-usage">
+          <div className="set-row set-usage" data-account={x.id}>
             <BrandMark brand={agentOf(x.agent).brand} size={16} mono />
             <span className="set-label">
               <span className="set-usage-name">
