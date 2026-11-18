@@ -504,6 +504,11 @@ pub struct Job {
     /// (MERGING-39). Kept in its file, never in the API.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub checks_rounds: u32,
+    /// What obid did by itself about its own pull request's red checks, when it's the owner's
+    /// own work (crate::autofix, AUTOFIX-1 to 16): reruns, fix rounds, the merge queue again, the
+    /// lines its conversation hears. Kept in its file, never in the API.
+    #[serde(default, skip_serializing_if = "crate::autofix::AutoFix::is_empty")]
+    pub autofix: crate::autofix::AutoFix,
     /// The heads whose trusted change requests had obid's round by itself, oldest first: one per
     /// head, counted with Oby's own review rounds (MERGING-40). Kept in its file, never in the API.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

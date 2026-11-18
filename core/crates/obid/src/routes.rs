@@ -1144,6 +1144,7 @@ fn job_settings_json(shared: &Shared) -> Value {
         "maxRunning": shared.jobs.max_running(),
         "accountFailover": shared.jobs.account_failover(),
         "githubEveryRepo": crate::settings::load(&shared.config.home).github_every_repo(),
+        "autoFixChecks": shared.jobs.auto_fix_checks(),
         "defaultAccount": crate::settings::load(&shared.config.home).default_account,
         "talkAccount": crate::settings::load(&shared.config.home).talk_account,
         "limits": crate::settings::limits().to_json(),
@@ -1157,7 +1158,8 @@ pub async fn job_settings(State(shared): State<Arc<Shared>>) -> Response {
 }
 
 /// `PUT /v1/settings/jobs`: `{"maxRunning": 1…20, "accountFailover": true|false,
-/// "githubEveryRepo": true|false (docs/contracts/github-work.md), "defaultAccount":
+/// "githubEveryRepo": true|false (docs/contracts/github-work.md), "autoFixChecks": true|false
+/// (docs/contracts/autofix.md), "defaultAccount":
 /// "<account id>"|null, "talkAccount": "<account id>"|null (null is Auto), "limits": {"rounds", "maxRunning", "folders", "routines", "accounts"}}`,
 /// any of them, kept across restarts. Each limit is a whole number from 1, or null for its
 /// default (crate::settings::Limits); a lower `limits.maxRunning` lowers `maxRunning` with it.
@@ -1171,7 +1173,7 @@ pub async fn set_job_settings(
     let bad = || {
         ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
-            "The body is {\"maxRunning\": 1 to 20, \"accountFailover\": true or false, \"githubEveryRepo\": true or false, \"defaultAccount\": an account's id or null, \"talkAccount\": an account's id or null, \"limits\": {\"rounds\", \"maxRunning\", \"folders\", \"routines\", \"accounts\"}, each 1 or more, or null}, any of them.",
+            "The body is {\"maxRunning\": 1 to 20, \"accountFailover\": true or false, \"githubEveryRepo\": true or false, \"autoFixChecks\": true or false, \"defaultAccount\": an account's id or null, \"talkAccount\": an account's id or null, \"limits\": {\"rounds\", \"maxRunning\", \"folders\", \"routines\", \"accounts\"}, each 1 or more, or null}, any of them.",
         )
     };
     let max = match value.get("maxRunning") {
@@ -1187,6 +1189,10 @@ pub async fn set_job_settings(
         Some(on) => Some(on.as_bool().ok_or_else(bad)?),
     };
     let every_repo = match value.get("githubEveryRepo") {
+        None => None,
+        Some(on) => Some(on.as_bool().ok_or_else(bad)?),
+    };
+    let auto_fix = match value.get("autoFixChecks") {
         None => None,
         Some(on) => Some(on.as_bool().ok_or_else(bad)?),
     };
@@ -1256,6 +1262,7 @@ pub async fn set_job_settings(
     if max.is_none()
         && failover.is_none()
         && every_repo.is_none()
+        && auto_fix.is_none()
         && default_account.is_none()
         && talk_account.is_none()
         && limits.is_none()
@@ -1305,6 +1312,11 @@ pub async fn set_job_settings(
             crate::settings::update(&shared.config.home, |s| s.github_every_repo = Some(on))
                 .map_err(SettingsError::Unkept)
         }
+        None => Ok(()),
+    })
+    .and_then(|()| match auto_fix {
+        Some(on) => crate::settings::update(&shared.config.home, |s| s.auto_fix_checks = Some(on))
+            .map_err(SettingsError::Unkept),
         None => Ok(()),
     })
     .and_then(|()| match default_account {

@@ -2071,6 +2071,8 @@ pub fn note(job: &mut Job, outcome: &Result<Merged, Blocked>, by: MergedBy) {
 pub const MERGE: &str = "Merge";
 pub const MERGE_AND_REMEMBER: &str = "Merge, and remember";
 pub const LEAVE_OPEN: &str = "Leave it open";
+/// The option AUTOFIX adds to the card it leaves when it gave up (AUTOFIX-10).
+pub const ONE_MORE_ROUND: &str = "One more round";
 /// The options of the card that asks whether a teammate's Oby reviews a repository Oby hasn't
 /// learned, where GitHub requires another person's approval ([`teammate_card`]).
 pub const ASK_TEAMMATE: &str = "Ask a teammate, and remember";

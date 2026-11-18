@@ -2048,6 +2048,7 @@ pub fn report_merges_past_review(shared: std::sync::Arc<Shared>) {
     let sweep = |shared: &Shared| {
         for job in shared.jobs.list(usize::MAX) {
             tell_merged_past(shared, &job);
+            tell_autofix(shared, &job);
         }
     };
     tokio::spawn(async move {
@@ -2066,10 +2067,13 @@ pub fn report_merges_past_review(shared: std::sync::Arc<Shared>) {
             };
             let merged = event.data["pullRequest"]["state"] == "MERGED";
             if let Some(job) = (event.data["id"].as_str())
-                .filter(|_| event.name == "job" && merged)
+                .filter(|_| event.name == "job")
                 .and_then(|id| shared.jobs.get(id))
             {
-                tell_merged_past(&shared, &job);
+                if merged {
+                    tell_merged_past(&shared, &job);
+                }
+                tell_autofix(&shared, &job);
             }
         }
     });
@@ -2103,6 +2107,36 @@ fn tell_merged_past(shared: &Shared, job: &crate::job::Job) {
         Ok(_) => {}
     }
     shared.jobs.mark_told_merged_past(id, head);
+}
+
+/// Tells `job`'s conversation each AUTOFIX line it wasn't told yet (crate::autofix, AUTOFIX-1):
+/// Oby's own words, after the job's title, with no card and nothing of anyone else's, so it marks
+/// nothing. A line that couldn't be written is tried again at the job's next event; a conversation
+/// that's gone never will be.
+fn tell_autofix(shared: &Shared, job: &crate::job::Job) {
+    let Some(conversation) = job.conversation.as_deref() else {
+        return;
+    };
+    let title = crate::brain::briefing::line(&job.short_title(), 80);
+    let mut told = 0;
+    for line in job.autofix.untold() {
+        let text = format!("{title}: {line}");
+        match (shared.conversations).append(conversation, "oby", text, vec![], None) {
+            Err(Error::Io(e)) => {
+                tracing::warn!(
+                    "job {}: conversation {conversation} wasn't told: {e}",
+                    job.id
+                );
+                break;
+            }
+            Err(e) => tracing::info!("job {}: conversation {conversation}: {e:?}", job.id),
+            Ok(_) => {}
+        }
+        told += 1;
+    }
+    if told > 0 {
+        shared.jobs.mark_autofix_told(&job.id, told);
+    }
 }
 
 /// The conversations as the list orders them, after `after` (or from the first): the pinned
