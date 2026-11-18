@@ -201,8 +201,13 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   const foot: Box = toTask ? { card: toTask.id } : { foot: task ? { kind: 'task', id: task.id } : talk ? { kind: 'oby', id: talk.id } : { kind: 'peer', id: convo!.id } };
   const sendFoot = (text: string, att: Parameters<typeof tellChat>[2]) => {
     const at = replyTarget(foot);
-    // told, the box talks to Oby again
-    if (toTask) setTo(null);
+    // to a task's chip: once obid took the words the box talks to Oby again; refused, the chip and the
+    // words stay (ATTACH-20)
+    if (toTask && 'job' in at) {
+      const sent = tell(at.job, text, att);
+      if (!sent) { setTo(null); return; }
+      return sent.then((took) => { if (took) setTo(null); return took; });
+    }
     return 'job' in at ? tell(at.job, text, att) : 'oby' in at ? (at.oby === WELCOME && typedFirst(text)) || tellChat(at.oby, text, att) : say(at.peer, text, att);
   };
   // the box's words for a task: its agent's, or a follow-up once it has ended

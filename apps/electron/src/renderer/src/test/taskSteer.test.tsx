@@ -99,6 +99,15 @@ describe('a task in its conversation', () => {
     await click(button('Back to Oby'));
     expect(host.querySelector('.composer-to')).toBeNull();
     expect(tasks.tell).toHaveBeenCalledTimes(1);
+    // refused by obid, the chip stays with the words (ATTACH-20); taken, it goes
+    await click(button('More for Fix the login test'));
+    await click(button('Tell Claude Code…'));
+    vi.mocked(tasks.tell).mockReturnValueOnce(Promise.resolve(false));
+    await act(async () => { await boxes['Tell the agent about Fix the login test'].onSend('again', {}); });
+    expect(host.querySelector('.composer-to')).not.toBeNull();
+    vi.mocked(tasks.tell).mockReturnValueOnce(Promise.resolve(true));
+    await act(async () => { await boxes['Tell the agent about Fix the login test'].onSend('again', {}); });
+    expect(host.querySelector('.composer-to')).toBeNull();
   });
 
   it('LIVETASK-30: Stop task in the card\'s menu stops it', async () => {
