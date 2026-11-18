@@ -1124,12 +1124,13 @@ impl Link {
         let mut changed = Vec::new();
         {
             let mut state = self.lock();
-            if let Some(live) = live {
-                for item in state.inbox.values_mut() {
-                    if item.kind == "github" && item.done.is_none() && !live.contains(&item.id) {
-                        item.done = Some(now);
-                        changed.push(item.clone());
-                    }
+            for item in state.inbox.values_mut() {
+                // A `CI failed` card from before GITHUBWORK-28 goes with no answer too.
+                let gone = live.is_some_and(|live| !live.contains(&item.id));
+                if item.kind == "github" && item.done.is_none() && (gone || inbox::is_ci_item(item))
+                {
+                    item.done = Some(now);
+                    changed.push(item.clone());
                 }
             }
         }
@@ -1137,7 +1138,9 @@ impl Link {
             self.save_item(item);
         }
         for (work, known) in new.iter().zip(known) {
-            self.add_once(inbox::github_item(work, known, now));
+            if inbox::offered(work) {
+                self.add_once(inbox::github_item(work, known, now));
+            }
         }
     }
 
