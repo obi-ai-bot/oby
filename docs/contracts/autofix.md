@@ -59,7 +59,7 @@ The business behavior contract for what happens when the checks on GitHub fail o
   - Red there: AUTOFIX's reruns and fix rounds, as above, in the same task (AUTOFIX-14). With `autoFixChecks` off, its card at once.
   - It conflicts with its base (GitHub's `mergeable` `CONFLICTING`, or `mergeStateStatus` `DIRTY`), so GitHub runs none of its checks: obid fetches the base into the task's clone and the same task's next round merges it in (`git merge origin/<base>`), never a rebase, a reset or a force-push: the branch is the owner's, and obid only adds commits on top. One such round per head, 2 in all (AUTOFIX-18). Past them, or when none can start, one line, said once, and a card saying what to do (AUTOFIX-19).
   - Green there: said once per head (AUTOFIX-17).
-  - A head someone else pushed is theirs: nothing, and the feed's `CI failed` card is back for it. Closed or merged: nothing more. Nothing merges it: the owner's pull request is theirs to merge.
+  - A head someone else pushed is theirs: nothing, and no card (github-work.md GITHUBWORK-28). Closed or merged: nothing more. Nothing merges it: the owner's pull request is theirs to merge.
   - The feed offers no `CI failed` card for the head the task follows (AUTOFIX-14).
   - Its publish stage names the pull request it pushed onto (AUTOFIX-20).
 

@@ -309,6 +309,22 @@ async fn dispatch(
     // Jobs that would start in Bypass mode, waiting for the owner's Confirm.
     let mut waiting: Vec<String> = vec![];
     for (d, files) in plan.dispatches.iter().zip(files) {
+        // Fix CI asked for in words: the task its card started (GITHUBWORK-29).
+        if !researched && let Some(fixing) = fix_ci(shared, d, asked).await {
+            match fixing {
+                Ok(job) => {
+                    jobs.push(job.to_json());
+                    started.push(job);
+                    continue;
+                }
+                Err(refused) => {
+                    return Talk::Reply {
+                        text: refused,
+                        jobs,
+                    };
+                }
+            }
+        }
         let new = planned_job(shared, d, asked, files, researched);
         // A job that would never ask the owner anything widens trust: only their own Confirm
         // starts it (the owner's decision of 2026-10-16; review on #551), untrusted or not.
@@ -376,6 +392,42 @@ async fn dispatch(
         };
     }
     Talk::Reply { text, jobs }
+}
+
+/// A fix the owner asked for, in words, on their own pull request whose checks GitHub work last
+/// read red (not a fork's): the Fix CI task a `CI failed` card started before GITHUBWORK-28, by the
+/// same path (crate::github_work, TASKCONV-29 to 31: its checks' logs quoted, pushed onto its
+/// branch, followed by its watcher), on the agent and account the plan names, in this
+/// conversation (GITHUBWORK-29). None for any other dispatch, which starts as planned.
+async fn fix_ci(
+    shared: &Arc<Shared>,
+    d: &super::plan::Dispatch,
+    asked: &Asked<'_>,
+) -> Option<Result<Job, String>> {
+    let pr =
+        d.pr.filter(|_| d.kind == super::plan::Kind::Fix && d.issue.is_none())
+            .and_then(|pr| u64::try_from(pr).ok())?;
+    let feed = shared.github_work.to_json();
+    let item = (feed["mine"].as_array()?.iter())
+        .filter_map(|v| serde_json::from_value::<crate::github_work::Item>(v.clone()).ok())
+        .find(|i| i.repo.eq_ignore_ascii_case(&d.repo) && i.number == pr)
+        .filter(|i| crate::github_work::red(i) && i.fork == Some(false))?;
+    let routed = NewJob {
+        agent: Some(d.agent.clone()),
+        account: Some(d.account.clone()),
+        request: Some(asked.said.to_owned()),
+        ..NewJob::default()
+    };
+    let started =
+        crate::github_work::start_routine(&shared.github_work, "mine", &item, routed).await;
+    Some(match started {
+        Ok((job, _)) => {
+            let turn = (!asked.turn.is_empty()).then(|| asked.turn.to_owned());
+            let joined = (shared.jobs).join_conversation(&job.id, asked.conversation, turn);
+            Ok(joined.unwrap_or(job))
+        }
+        Err(refused) => Err(refused.message),
+    })
 }
 
 /// A planned job in obid's own words, for confirm and start items: what, where, how it asks,
