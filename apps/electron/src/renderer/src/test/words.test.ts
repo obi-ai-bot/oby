@@ -16,6 +16,17 @@ describe('signed words', () => {
     }
   });
 
+  it('ask_39_main_signs_ask_only_for_owners_the_words_name', () => {
+    const plan = (said: string, ask: unknown) => wordsOf('POST', '/v1/plans', { said, new: true, ask });
+    expect(plan('@dana are you on billing?', ['dana'])).toEqual(['@dana are you on billing?']);
+    expect(plan('@Dana and @dmitry-grechko, lunch?', ['dana', 'dmitry-grechko'])).toEqual(['@Dana and @dmitry-grechko, lunch?']);
+    // someone the words don't @-name, a name inside a word or another's, or not an owner id: nothing is signed
+    for (const [said, ask] of [
+      ['@dana are you on billing?', ['dana', 'dima']], ['are you on billing, dana?', ['dana']], ['@danat hi', ['dana']],
+      ['@dana-x hi', ['dana']], ['me@dana hi', ['dana']], ['@dana hi', []], ['@dana hi', 'dana'], ['@dana hi', [1]], ['@a.b hi', ['a.b']],
+    ] as const) expect(plan(said, ask), `${said} ${JSON.stringify(ask)}`).toBeNull();
+  });
+
   it('words_15_a_notifications_allow_and_deny_sign', () => {
     const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
     for (const [path, body] of [

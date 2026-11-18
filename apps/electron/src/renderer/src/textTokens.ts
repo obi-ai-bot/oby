@@ -1,6 +1,6 @@
 import { registerLexicalTextEntity } from '@lexical/text';
 import { $applyNodeReplacement, TextNode, type EditorConfig, type LexicalEditor } from 'lexical';
-import { OBYS } from './mock';
+import { askableNow, onAskable } from './askable';
 
 // What the message box recognises in plain text as you type, and the node it
 // keeps each in. Another Oby brought in (@Wellington) on a blue tint; links and
@@ -13,16 +13,20 @@ import { OBYS } from './mock';
 // a name as it's written, in a pattern (a dot in it is a dot)
 const escape = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 type Kind = 'mention' | 'url' | 'code' | 'ref' | 'path';
+// only the Obys there are (askable.ts: on obid, the Obysphere's members that take questions): an @
+// before anything else is just text
+const mentionOf = (names: string[]) => new RegExp(`(?<![\\w@])@(?:${names.map(escape).join('|') || '(?!)'})(?![\\w-])`, 'i');
 // in order: where two would start at the same place, the first wins
 const PATTERNS: [Kind, RegExp][] = [
-  // only the Obys there are: an @ before anything else is just text
-  ['mention', new RegExp(`(?<![\\w@])@(?:${OBYS.map((o) => escape(o.name)).join('|') || '(?!)'})(?!\\w)`, 'i')],
+  ['mention', mentionOf(askableNow().map((o) => o.name))],
   ['url', /\bhttps?:\/\/[^\s<>"'`]*[^\s<>"'`.,;:!?)\]}]/],
   ['code', /`[^`\n]+`/],
   ['ref', /(?<![\w#])(?:[\w.-]+\/)?(?:[\w.-]+)?#\d+(?!\w)/],
   // (not the full stop or dash after it)
   ['path', /(?<![\w.:/@-])(?:~\/|\.{1,2}\/|\/)?(?:[\w@.-]+\/)+[\w@.-]*[\w@]/],
 ];
+// members joining or leaving: who's set apart from the next keystroke on
+onAskable(() => { PATTERNS[0] = ['mention', mentionOf(askableNow().map((o) => o.name))]; });
 // the earliest thing in a stretch of text worth setting apart
 export function findToken(text: string) {
   let best: { start: number; end: number } | null = null;
@@ -100,5 +104,5 @@ if (import.meta.hot) import.meta.hot.accept(() => location.reload());
 
 // the Obys a message brings in: those it mentions, each once, as they're named
 export const mentioned = (text: string) => [
-  ...new Set(tokenize(text).filter((r) => r.kind === 'mention').flatMap((r) => OBYS.filter((o) => o.name.toLowerCase() === r.text.slice(1).toLowerCase()).map((o) => o.name))),
+  ...new Set(tokenize(text).filter((r) => r.kind === 'mention').flatMap((r) => askableNow().filter((o) => o.name.toLowerCase() === r.text.slice(1).toLowerCase()).map((o) => o.name))),
 ];

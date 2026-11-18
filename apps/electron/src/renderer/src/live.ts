@@ -857,7 +857,7 @@ export async function openConversation(shown: string) {
 // (POST /v1/attachments), and the words carry an id of their own: sent again while obid doesn't
 // answer, obid takes them once, files and tasks included.
 let made = 0;
-export function ask(said: string, shown?: string, repo?: string, folders?: string[], att?: Pick<Attachments, 'files' | 'jobs' | 'project' | 'defaults'>): string | undefined {
+export function ask(said: string, shown?: string, repo?: string, folders?: string[], att?: Pick<Attachments, 'files' | 'jobs' | 'project' | 'defaults' | 'obys'>): string | undefined {
   const files = att?.files?.filter((f) => f.path) ?? [], jobs = att?.jobs ?? [];
   if (!said.trim() && !files.length && !jobs.length) return;
   const id = shown ?? `new:${++made}`;
@@ -884,7 +884,10 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
       const a = await sent(() => api.plan(q ? q.said : words, q ? { question: q.text, option: words } : undefined, c ? { conversation: c } : { new: true },
         has(state.status, 'folders-v1') && !c ? folders : undefined, { id: turn, attachments: paths, jobs, project,
           // the box's chips, once obid takes them (COMPOSER-3); an answer to Oby's question starts no job of its own
-          ...(has(state.status, 'composer-v1') && !q ? { defaults: att?.defaults } : {}) }));
+          ...(has(state.status, 'composer-v1') && !q ? { defaults: att?.defaults } : {}),
+          // the members the words @-name, asked by obid as oby_ask asks (ASK-39); an answer to Oby's
+          // question asks no one
+          ...(has(state.status, 'ask-mentions-v1') && !q ? { ask: att?.obys } : {}) }));
       planned = true;
       const where = a.conversation ?? c;
       // Oby's turn is in a reply or a question (its event may land after this answer, and the card

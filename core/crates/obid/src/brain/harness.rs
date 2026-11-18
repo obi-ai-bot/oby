@@ -1656,6 +1656,9 @@ async fn session(
     if tool == Tool::Cursor {
         session.taint();
     }
+    // The members the owner's words `@`-name are asked before the model runs, as oby_ask asks,
+    // once a turn (ASK-40): the model hears what came of it.
+    super::ask::by_mention(shared, &session).await;
     // Its Claude Code or Codex still running from the turn before, on the same session and
     // account; one of another agent ends.
     let warm = shared.harness.take_warm(
@@ -1882,7 +1885,12 @@ async fn attempts(
             session.attached_jobs.join(", ")
         )
     });
+    let heard = session.control.asked_mentioned();
     let with = |prompt: String| {
+        let prompt = match &heard {
+            Some(heard) => format!("{heard}\n\n{prompt}"),
+            None => prompt,
+        };
         let prompt = match &session.repos_note {
             Some(note) => format!("{note}\n\n{prompt}"),
             None => prompt,

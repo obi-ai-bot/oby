@@ -79,6 +79,9 @@ struct Request {
     /// The message box's chips (docs/contracts/composer.md, COMPOSER-3 to 7): the mode, tool,
     /// model and effort of the jobs these words start. Never written to Settings or an account.
     defaults: Option<defaults::Defaults>,
+    /// The members the words `@`-name, by exact owner id (docs/contracts/ask-an-oby.md, ASK-40):
+    /// asked as `oby_ask` asks, before the model runs. Add-only (`ask-mentions-v1`).
+    ask: Option<Vec<String>>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -122,6 +125,7 @@ pub async fn plan(
     )?;
     let jobs = attached_jobs(&shared, req.jobs.unwrap_or_default())?;
     let defaults = req.defaults.map(defaults::Defaults::checked).transpose()?;
+    let ask = req.ask.map(|owners| mentioned(owners, words)).transpose()?;
     // No length of obid's own, as in Claude Code: the request's body is at most axum's 2 MB, and
     // the model says when words are more than it can read at once ([`TOO_LONG`]). Files or tasks
     // attached are a message without words too (Sangam's message box sends them alone).
@@ -286,6 +290,7 @@ pub async fn plan(
     // is kept (docs/runner-api.md, `POST /v1/plans`).
     let asking = turn::Asking {
         defaults,
+        ask,
         turns,
         back,
         now,
@@ -416,6 +421,7 @@ async fn answer(
     deliver(Move::Confirm(words.turn.clone()));
     conversations.begin_underway(conversation, &words.turn, "Thinking");
     control.set_signed(words.signed);
+    control.set_mentioned(asking.ask.clone());
     let asked = Asked {
         said,
         attachments: &words.attachments,
@@ -447,6 +453,56 @@ async fn answer(
     deliver(change);
     conversations.end_underway(conversation, &control.turn, end);
     body
+}
+
+/// At most this many members asked by one message's `@`s (ASK-41).
+const MOST_MENTIONED: usize = 10;
+
+/// `POST /v1/plans`'s `ask` (ASK-40, ASK-41): 1 to [`MOST_MENTIONED`] owner ids, each once, and the
+/// question, the words without the `@<owner>` mentions they start with. `422` for anything else.
+fn mentioned(owners: Vec<String>, words: &str) -> Result<turn::Mentioned, ApiError> {
+    let refused = |why: &str| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why);
+    let mut unique: Vec<String> = vec![];
+    for owner in owners {
+        if !obi_protocol::schema::is_valid("common#/$defs/slug", &json!(owner)) {
+            return Err(refused(
+                "ask is owner ids: 1 to 63 lower-case letters, digits and dashes, not starting or ending with a dash.",
+            ));
+        }
+        if !unique.contains(&owner) {
+            unique.push(owner);
+        }
+    }
+    if unique.is_empty() || unique.len() > MOST_MENTIONED {
+        return Err(refused("ask names 1 to 10 members."));
+    }
+    let question = without_leading_mentions(words, &unique);
+    if question.is_empty() {
+        return Err(refused(
+            "There's no question to ask: the words are only who to ask.",
+        ));
+    }
+    Ok(turn::Mentioned {
+        owners: unique,
+        question,
+    })
+}
+
+/// `words` without the `@<owner>` (case aside) they start with, for owners in `owners`, and the
+/// spaces and commas between them.
+fn without_leading_mentions(words: &str, owners: &[String]) -> String {
+    let mut rest = words.trim_start();
+    while let Some(after) = rest.strip_prefix('@') {
+        let name: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .collect();
+        if !owners.iter().any(|o| o.eq_ignore_ascii_case(&name)) {
+            break;
+        }
+        rest = after[name.len()..].trim_start_matches(|c: char| c.is_whitespace() || c == ',');
+    }
+    rest.trim().to_owned()
 }
 
 /// At start (DELIVERY-7 to 10, R05-03): the words a stop cut get obid's line and read
@@ -1223,4 +1279,46 @@ pub(crate) fn validate_attachments(home: &Path, paths: &[String]) -> Result<Vec<
         out.push(p.clone());
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod mention_tests {
+    use super::*;
+
+    #[test]
+    fn ask_41_ask_is_owner_ids_with_a_question() {
+        let owners = |list: &[&str]| list.iter().map(|o| (*o).to_owned()).collect::<Vec<_>>();
+        // The words without the mentions they start with, each member once.
+        let m = mentioned(
+            owners(&["dana", "dima", "dana"]),
+            "@Dana, @dima are you on billing? Ask @dana too",
+        )
+        .unwrap();
+        assert_eq!(m.owners, ["dana", "dima"]);
+        assert_eq!(m.question, "are you on billing? Ask @dana too");
+        // A mention of someone not in `ask` stays in the words.
+        let m = mentioned(owners(&["dana"]), "@sam and @dana, lunch?").unwrap();
+        assert_eq!(m.question, "@sam and @dana, lunch?");
+        let m = mentioned(owners(&["dana"]), "@danat hi").unwrap();
+        assert_eq!(m.question, "@danat hi");
+        // 422s: not owner ids, none, more than ten, and only the mentions.
+        for (list, said) in [
+            (owners(&["Dana"]), "@Dana hi"),
+            (owners(&["obi dana"]), "hi"),
+            (owners(&["-dana"]), "hi"),
+            (owners(&[]), "hi"),
+            ((0..11).map(|i| format!("m{i}")).collect(), "hi"),
+            (owners(&["dana"]), "@dana"),
+            (owners(&["dana"]), " @dana ,  "),
+        ] {
+            let refused = mentioned(list.clone(), said)
+                .err()
+                .unwrap_or_else(|| panic!("{list:?} {said:?}"));
+            assert_eq!(
+                refused.status,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{list:?} {said:?}"
+            );
+        }
+    }
 }
