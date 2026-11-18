@@ -1086,6 +1086,8 @@ fn owners_call(item: &Item, words: &str, job: Option<&Job>, owner: bool) -> Owne
             let Some(rule) = &permission.rule else {
                 return Owners::Refuse("it has no rule to save: allow it once instead.".into());
             };
+            // A chain's card holds one rule per line, each saved (PERMISSIONS-27).
+            let rule = &rule.replace('\n', ", ");
             Owners::Confirm(
                 format!("Always allow {rule} in {}", job.repo),
                 format!(

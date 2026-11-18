@@ -1960,7 +1960,9 @@ fn codex_and_cursor_park_and_resume_with_the_answer() {
 }
 
 /// Codex wraps each command in `/bin/zsh -lc "…"` (#634): the card asks about the command out of
-/// that shell, all of it, and offers Always with a rule when it's a single simple command.
+/// that shell, all of it, and offers Always with a rule when it's a single simple command, or a
+/// chain whose every command has one (PERMISSIONS-27): then its `rule` holds each, one per line,
+/// so it saves all that its `always` names.
 #[test]
 fn codex_cards_show_the_command_out_of_its_shell() {
     let folder = Folder::new("codex-cards");
@@ -2003,7 +2005,14 @@ fn codex_cards_show_the_command_out_of_its_shell() {
         r#"git add src/permissions.rs src/codex.rs && git commit -m "fix(obid): show it all""#;
     assert_eq!(second["title"], format!("Run {command}"), "{second}");
     assert_eq!(second["detail"], command, "{second}");
-    assert_eq!(second["rule"], Value::Null, "{second}");
+    assert_eq!(
+        second["rule"], "Bash(git add:*)\nBash(git commit:*)",
+        "{second}"
+    );
+    assert_eq!(
+        second["always"],
+        "Yes, and don't ask again for git add, git commit in obi-e2e/fixture-app"
+    );
     answer(&simple, &first);
     answer(&chained, &second);
     assert_eq!(summary(&ended(&obid, &simple)), "answer: accept");
