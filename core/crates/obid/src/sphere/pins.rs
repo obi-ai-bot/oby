@@ -9,6 +9,7 @@
 //! which Obis seal (spec protocol.md section 9.1), for good: once a trusted card had a seal key, or
 //! the Sphere said an Obi seals, obid never sends that Obi words in the clear again, whatever card
 //! or key list the Sphere serves later.
+//! (CI proof of CI-60, never merged: a one-file Sphere change.)
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
