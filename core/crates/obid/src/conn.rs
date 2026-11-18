@@ -109,6 +109,17 @@ pub struct RpcError {
     pub message: String,
 }
 
+/// How the owner's words reach an agent's turn under way (crate::steer).
+#[derive(Debug, Clone, PartialEq)]
+pub enum SteerInto {
+    /// Claude Code's stream-json `user` lines.
+    Lines,
+    /// Codex's `turn/steer` on this thread's turn under way (TASKCONV-36).
+    Turn(String, String),
+    /// Codex with no turn under way: the words wait (crate::steer, TASKCONV-37).
+    Held,
+}
+
 /// A running agent and its stdio.
 pub struct Conn {
     child: Child,
@@ -116,8 +127,13 @@ pub struct Conn {
     /// An own run's temp, working and `login` folders and its tag, to sweep it by (LANES-16).
     leftovers: Option<(PathBuf, PathBuf, PathBuf, PathBuf)>,
     stdin: Option<ChildStdin>,
-    /// Words written into its turn as they come (crate::steer, TASKCONV-33): a job's Claude Code.
+    /// Words written into its turn as they come (crate::steer, TASKCONV-33): a job's Claude Code
+    /// or Codex.
     pub steer: Option<std::sync::Arc<crate::steer::Steer>>,
+    /// How those words go in: Claude Code's `user` lines, or Codex's `turn/steer` (TASKCONV-36).
+    pub steer_into: SteerInto,
+    /// Those `turn/steer` requests not answered yet, in the order sent.
+    pub steering: std::collections::VecDeque<u64>,
     lines: BufReader<ChildStdout>,
     copying: Option<tokio::task::JoinHandle<()>>,
     stop: watch::Receiver<process::Signal>,
@@ -235,6 +251,8 @@ impl Conn {
             leftovers,
             stdin,
             steer: None,
+            steer_into: SteerInto::Lines,
+            steering: Default::default(),
             lines: BufReader::new(stdout),
             copying,
             stop,
@@ -419,9 +437,20 @@ impl Conn {
                     }
                 }
                 // The owner's words to it, written as they come (crate::steer).
-                () = async { if let Some(steer) = &steer { steer.came().await } }, if steer.is_some() => {
+                () = async { if let Some(steer) = &steer { steer.came().await } }, if steer.is_some() && self.steer_into != SteerInto::Held => {
                     for text in steer.as_ref().map(|s| s.to_write()).unwrap_or_default() {
-                        self.send(&crate::agent::user_message(&text)).await;
+                        match self.steer_into.clone() {
+                            SteerInto::Turn(thread, turn) => {
+                                let id = self
+                                    .request("turn/steer", crate::codex::steer_params(&thread, &turn, &text))
+                                    .await;
+                                self.steering.push_back(id);
+                            }
+                            // Never held here: this branch waits while it is.
+                            SteerInto::Lines | SteerInto::Held => {
+                                self.send(&crate::agent::user_message(&text)).await
+                            }
+                        }
                     }
                 }
             }
