@@ -2142,6 +2142,9 @@ fn merging_39_a_second_red_head_asks_the_owner() {
     assert_ne!(second, head);
     let card = red_card_on(&obid, Some(&second));
     assert!(card["id"].as_str().unwrap().contains(&second), "{card}");
+    // MERGING-55 (#2507): red on GitHub, it's never called ready to merge.
+    let title = card["title"].as_str().unwrap();
+    assert!(!title.starts_with("Ready to merge"), "{card}");
     let fixed = git(&remote, &["show", "refs/heads/oby/fix-7:checks.txt"]);
     assert!(
         fixed.contains("No log of the failed runs could be read. The checks that failed: test."),
