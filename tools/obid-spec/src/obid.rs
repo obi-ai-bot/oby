@@ -222,10 +222,17 @@ pub async fn start(run: &Run, input: StartInput) -> Result<Value> {
         "owner": input.owner.as_deref().unwrap_or("alex"),
         "telemetry": false,
         "allowFileRemotes": true,
-        "claudeKeychain": false,
+        // On macOS a sign-in needs it on (SIGN-IN-5); the Keychain obid asks is the stand-in
+        // `security` (OBID_SECURITY_BIN), never the person's.
+        "claudeKeychain": cfg!(target_os = "macos"),
         "cursorKeychain": false,
+        // Every tool pinned to a stand-in by absolute path: obid looks for a tool named bare on
+        // its PATH, its login shell's and the usual install folders (`/opt/homebrew/bin` among
+        // them), where the person's real CLIs live.
         "agents": {"claude": {"bin": agent,
-            "accounts": [{"id": "stand-in", "name": "Stand-in", "configDir": account}]}},
+            "accounts": [{"id": "stand-in", "name": "Stand-in", "configDir": account}]},
+            "codex": {"bin": run.agents().join("fake-codex"), "accounts": []},
+            "cursor": {"bin": run.agents().join("fake-cursor"), "accounts": []}},
         "repos": [{"repo": "obi-e2e/fixture-app", "remote": format!("file://{}", remote.display()),
                    "defaultBranch": "main", "check": "node --test", "pullRequests": false}],
     });
@@ -257,6 +264,17 @@ pub async fn start(run: &Run, input: StartInput) -> Result<Value> {
         "/usr/sbin".into(),
         "/sbin".into(),
     ])?;
+    // obid reads the owner's login shell's environment for the CLIs it runs (LANES-4): the real
+    // one's `/etc/zprofile` puts `/opt/homebrew/bin` and the like on `PATH`, where the person's own
+    // claude, codex and gh live. A stand-in shell answers this obid's own `PATH` and nothing else.
+    let shell = folder.join("login-shell");
+    let script = format!(
+        "#!/bin/sh\n# obid-spec's stand-in login shell: the scratch obid's own PATH, nothing of the person's.\nPATH='{}'\nexport PATH\nexec /usr/bin/env -0\n",
+        path.to_string_lossy().replace('\'', "")
+    );
+    let _ = std::fs::remove_file(&shell);
+    std::fs::write(&shell, script)?;
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700))?;
     let log = folder.join("obid.log");
     let stderr = std::fs::OpenOptions::new()
         .create(true)
@@ -273,6 +291,7 @@ pub async fn start(run: &Run, input: StartInput) -> Result<Value> {
         .env("LOGNAME", "obid-spec")
         .env("TMPDIR", folder.join("tmp"))
         .env("GH_CONFIG_DIR", folder.join("gh"))
+        .env("OBID_LOGIN_SHELL", &shell)
         .env("OBID_LOG", "info")
         .env("OBID_PERSON_HOMES", &person)
         .env("OBID_MEMORY_AVAILABLE", "1099511627776")
