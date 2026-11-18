@@ -1652,6 +1652,20 @@ fn bypass_9_a_repository_allowlist_asks_you_before_cursor_starts() {
         "{}",
         answer.text
     );
+    // A task named to an account must find it signed in (ACCOUNTS-35): a login with its token.
+    let login = folder
+        .0
+        .join("home/accounts/cursor")
+        .join(if cfg!(target_os = "macos") {
+            ".cursor/auth.json"
+        } else {
+            ".config/cursor/auth.json"
+        });
+    std::fs::write(
+        &login,
+        json!({"accessToken": "cursor-plain-test-login"}).to_string(),
+    )
+    .unwrap();
     let answer = call(
         &obid,
         "POST",

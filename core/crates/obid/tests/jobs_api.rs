@@ -161,6 +161,9 @@ fn start_checking(
 /// [`start_with`], with nothing saved in `permissions.json` that obid didn't find there: a new
 /// install's (#1570).
 fn start_fresh(folder: &Path, config: &Value, path_first: Option<&Path>, base_check: bool) -> Obid {
+    if let Some(dir) = config["agents"]["claude"]["accounts"][0]["configDir"].as_str() {
+        support::signed_in_unless_set_up(config, Path::new(dir));
+    }
     let mut search = std::env::var_os("PATH").unwrap_or_default();
     if let Some(first) = path_first {
         let mut dirs = vec![first.to_path_buf()];
@@ -6333,7 +6336,11 @@ fn events_follow_every_change() {
         } else if let Some(data) = text.strip_prefix("data: ") {
             // A job's transcript comes as events of its own (`transcript`), and so does the
             // conversation a task started on its own gets (TASKCONV-1).
-            if matches!(event.as_str(), "transcript" | "conversation" | "turn") {
+            // A signed-in account's usage, as its job reports it, comes as `accounts`.
+            if matches!(
+                event.as_str(),
+                "transcript" | "conversation" | "turn" | "accounts"
+            ) {
                 continue;
             }
             assert_eq!(event, "job");

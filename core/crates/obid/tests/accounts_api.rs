@@ -292,20 +292,15 @@ fn a_cursor_keychain_login_that_ended_says_run_cursor_agent_once() {
             &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "ENV", "account": "cursor"}}),
         ),
     );
-    assert_eq!(job.status, 201, "{}", job.text);
-    let id = job.body["id"].as_str().unwrap().to_owned();
-    let failed = within(30, "the job ended", || {
-        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
-        (job["status"] != "queued" && job["status"] != "running").then_some(job)
-    });
-    assert!(
-        failed.to_string().contains("run cursor-agent once"),
-        "{failed}"
-    );
+    // Named to a login that can't run, it's refused before it starts, saying why (ACCOUNTS-35).
+    assert_eq!(job.status, 422, "{}", job.text);
+    assert!(job.text.contains("run cursor-agent once"), "{}", job.text);
+    let jobs = call(&obid, "GET", "/v1/jobs", None).body;
+    assert_eq!(jobs.as_array().unwrap().len(), 0, "{jobs}");
 }
 
 /// KEYCHAIN-3: Cursor's own Keychain login macOS didn't give obid (Deny): it's signed out, its label
-/// says to sign in again and choose Always Allow, a job on it doesn't start, saying why, and its
+/// says to sign in again and choose Always Allow, a job named to it is refused, saying why, and its
 /// value is asked for once, not at every status.
 #[cfg(target_os = "macos")]
 #[test]
@@ -341,17 +336,12 @@ fn keychain_3_a_cursor_login_macos_refused_says_why() {
             &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "ENV", "account": "cursor"}}),
         ),
     );
-    assert_eq!(job.status, 201, "{}", job.text);
-    let id = job.body["id"].as_str().unwrap().to_owned();
-    let failed = within(30, "the job ended", || {
-        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
-        (job["status"] != "queued" && job["status"] != "running").then_some(job)
-    });
+    // Named to it, the job is refused before it starts, saying why (ACCOUNTS-35).
+    assert_eq!(job.status, 422, "{}", job.text);
     assert!(
-        failed
-            .to_string()
-            .contains("Cursor keeps its login in your Keychain"),
-        "{failed}"
+        job.text.contains("Cursor keeps its login in your Keychain"),
+        "{}",
+        job.text
     );
     call(&obid, "GET", "/v1/status", None);
     let asked = std::fs::read_to_string(folder.0.join("tmp/obid-test-security-calls")).unwrap();

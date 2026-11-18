@@ -175,6 +175,18 @@ pub fn config(folder: &Path, remote: &Path, agent: &Path) -> Value {
     })
 }
 
+/// The account folder `dir` of `config`'s first Claude Code account, signed in as a person's is,
+/// with a login file: a task named to one that isn't is refused (ACCOUNTS-35). Left alone when the
+/// test set that folder up itself (signed out, or with a login of its own) or reads Claude Code's
+/// login from the Keychain (`claudeKeychain`).
+pub fn signed_in_unless_set_up(config: &Value, dir: &Path) {
+    if dir.exists() || config["claudeKeychain"] == true {
+        return;
+    }
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join(".credentials.json"), "{}").unwrap();
+}
+
 /// Puts `token` in obid's `home/api-token` (0600, in a 0700 `home`), where obid takes its token
 /// from: never from its environment (docs/runner-api.md, "obid only: configuration").
 pub fn put_token(config: &Value, token: &str) {
@@ -266,13 +278,8 @@ pub fn start_with(
     // nothing that outlives its call (#655), so it asks the state server below, whose address it
     // finds in the test's folder.
     if let Some(dir) = config["agents"]["claude"]["accounts"][0]["configDir"].as_str() {
+        signed_in_unless_set_up(config, Path::new(dir));
         std::fs::create_dir_all(dir).unwrap();
-        // Signed in, as a person's account is: a task named to one that isn't is refused
-        // (ACCOUNTS-35). A test that wants it signed out removes the file, or writes its own.
-        let login = Path::new(dir).join(".credentials.json");
-        if !login.exists() {
-            std::fs::write(login, "{}").unwrap();
-        }
         let link = folder.join("env-home/.fake-planner");
         let _ = std::fs::remove_file(&link);
         std::os::unix::fs::symlink(dir, link).unwrap();

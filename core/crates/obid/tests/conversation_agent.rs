@@ -801,18 +801,33 @@ fn accounts_35_a_task_named_to_a_signed_out_account_is_refused() {
     let id = first.body["id"].as_str().unwrap().to_owned();
     let done = ended_within(&obid, &id, 60);
     assert!(!done["status"].as_str().unwrap().is_empty(), "{done}");
-    std::fs::remove_file(folder.0.join("home/accounts").join(CLAUDE).join(".credentials.json"))
-        .unwrap();
+    std::fs::remove_file(
+        folder
+            .0
+            .join("home/accounts")
+            .join(CLAUDE)
+            .join(".credentials.json"),
+    )
+    .unwrap();
     let why = "Claude Code isn't signed in, so this task didn't start: sign it in from Settings › Agents, or ask for another account.";
     let named = post_task(&obid, json!({"account": CLAUDE}));
     assert_eq!(named.status, 422, "{}", named.text);
     assert!(named.text.contains(why), "{}", named.text);
     let messages = format!("/v1/jobs/{id}/messages");
-    let followed = call(&obid, "POST", &messages, Some(&json!({"text": "Once more"})));
+    let followed = call(
+        &obid,
+        "POST",
+        &messages,
+        Some(&json!({"text": "Once more"})),
+    );
     assert_eq!(followed.status, 422, "{}", followed.text);
     assert!(followed.text.contains(why), "{}", followed.text);
     let jobs = call(&obid, "GET", "/v1/jobs", None).body;
-    assert_eq!(jobs.as_array().unwrap().len(), 1, "nothing else started: {jobs}");
+    assert_eq!(
+        jobs.as_array().unwrap().len(),
+        1,
+        "nothing else started: {jobs}"
+    );
 }
 
 /// ACCOUNTS-36: a reason two accounts of a tool share is said once in a routed line (#2508).
@@ -825,7 +840,10 @@ fn accounts_36_a_reason_two_accounts_share_is_said_once() {
     let mut second = second.as_object().unwrap().clone();
     second.insert("id".into(), json!("ustub2"));
     second.insert("name".into(), json!("Cursor two"));
-    (config["agents"]["cursor"]["accounts"].as_array_mut().unwrap()).push(Value::Object(second));
+    (config["agents"]["cursor"]["accounts"]
+        .as_array_mut()
+        .unwrap())
+    .push(Value::Object(second));
     let obid = start(&folder.0, &config, None);
     let asked = post_task(&obid, json!({"agent": "cursor"}));
     assert_eq!(asked.status, 201, "{}", asked.text);

@@ -7132,6 +7132,9 @@ mod tests {
             .to_string(),
         )
         .unwrap();
+        let login = root.join("home/accounts/a");
+        std::fs::create_dir_all(&login).unwrap();
+        std::fs::write(login.join(".credentials.json"), "{}").unwrap();
         let clone = crate::git::ensure_clone(&config.home, "o/r", &url, &[])
             .await
             .unwrap();
@@ -8832,7 +8835,8 @@ mod tests {
     }
 
     /// CHATGPT-20: a signed-out login has no yes to wait for: what's missing is its sign-in, and the
-    /// switch doesn't even show. The job goes on and says so, as any job on a signed-out account.
+    /// switch doesn't even show. Named, it's refused saying so (ACCOUNTS-35); in Auto, the job goes
+    /// on and says so, as any job on a signed-out account.
     #[tokio::test]
     async fn chatgpt_20_a_signed_out_login_gets_no_wait_for_the_yes() {
         let jobs = jobs_on_a_plan(false, &[]);
@@ -8845,8 +8849,11 @@ mod tests {
             unattended: true,
             ..NewJob::default()
         };
-        let (_, routed, _) = jobs.vetted(&new).unwrap();
-        assert_eq!((routed.account.id.as_str(), routed.waiting), ("plan", None));
+        let refused = jobs.vetted(&new).unwrap_err().0;
+        assert!(
+            refused.contains("isn't signed in, so this task didn't start"),
+            "{refused}"
+        );
         let auto = NewJob {
             account: None,
             ..new
