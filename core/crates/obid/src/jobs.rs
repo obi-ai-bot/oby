@@ -65,8 +65,8 @@ mod authors;
 mod budget;
 mod by_github;
 pub(crate) mod cant_run;
-pub(crate) mod changes;
 mod cant_take;
+pub(crate) mod changes;
 pub(crate) use cant_take::CantTake;
 mod routed;
 use routed::Routed;
@@ -8834,8 +8834,7 @@ mod tests {
     }
 
     /// CHATGPT-20: a signed-out login has no yes to wait for: what's missing is its sign-in, and the
-    /// switch doesn't even show. Named, it's refused saying so (ACCOUNTS-32); in Auto, the job goes
-    /// on and says so, as any job on a signed-out account.
+    /// switch doesn't even show. The job goes on and says so, as any job on a signed-out account.
     #[tokio::test]
     async fn chatgpt_20_a_signed_out_login_gets_no_wait_for_the_yes() {
         let jobs = jobs_on_a_plan(false, &[]);
@@ -8848,11 +8847,8 @@ mod tests {
             unattended: true,
             ..NewJob::default()
         };
-        let refused = jobs.vetted(&new).unwrap_err().0;
-        assert!(
-            refused.contains("isn't signed in, so this task didn't start"),
-            "{refused}"
-        );
+        let (_, routed, _) = jobs.vetted(&new).unwrap();
+        assert_eq!((routed.account.id.as_str(), routed.waiting), ("plan", None));
         let auto = NewJob {
             account: None,
             ..new

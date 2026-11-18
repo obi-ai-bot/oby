@@ -338,8 +338,9 @@ impl Jobs {
     /// the owner's words put it. Every way a task starts comes here (`Jobs::create`): the owner's
     /// words, a conversation's dispatch, Fix CI and the GitHub feed, a routine.
     /// - An account the owner named is where it goes. One named in this request (`asked_now`: not a
-    ///   follow-up's, which keeps its first task's) that can't take work ([`Jobs::cant_take`]) is
-    ///   refused before anything starts, saying why and what to do; one at its limit waits there
+    ///   follow-up's, which keeps its first task's) whose tool's CLI isn't on this Mac is refused
+    ///   before anything starts, saying why and what to do; one signed out or whose agent couldn't
+    ///   start goes there and its run says why (ACCOUNTS-19, 20); one at its limit waits there
     ///   (#871).
     /// - An agent the owner named whose accounts all can't take it, or have no room, hands it to
     ///   the account with the most room of any tool, saying why, while `accountFailover` is on.
@@ -393,11 +394,12 @@ impl Jobs {
         match self.pick_for(asked.as_deref(), named.as_deref(), work) {
             Ok((tool, account)) => {
                 if let Some(cant) = self.cant_take(tool, &account) {
-                    // An account the owner named in this request is theirs to change: refused,
-                    // saying why (ACCOUNTS-32). A follow-up keeps its first task's account, and an
-                    // agent can hand off; with nowhere to go, the task starts and its run says why
-                    // it couldn't, in plain words (ACCOUNTS-19 and 20).
-                    if named.is_some() && asked_now {
+                    // An account the owner named in this request whose tool's CLI isn't on this
+                    // Mac could never run it: refused, saying why (ACCOUNTS-32). One signed out or
+                    // whose agent couldn't start still goes there (ACCOUNTS-20), its run saying why
+                    // in plain words (ACCOUNTS-19): a login obid can't see may still work. A
+                    // follow-up keeps its first task's account, and an agent can hand off.
+                    if named.is_some() && asked_now && matches!(cant, CantTake::Missing(_)) {
                         return Err(Refused(cant.refusal()));
                     }
                     if let Some(moved) = asked.as_deref().and_then(elsewhere) {
