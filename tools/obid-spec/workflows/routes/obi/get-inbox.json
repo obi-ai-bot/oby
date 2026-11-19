@@ -1,0 +1,139 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/inbox",
+  "version": "1.0.0",
+  "description": "The owner's inbox: [] on a fresh home, 422 for a state or limit obid doesn't take; a new item open, not among the done.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/inbox"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "empty",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "state-other-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox?state=all",
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "state is open or done."
+          }
+        }
+      }
+    },
+    {
+      "id": "limit-not-a-number-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox?state=done&limit=x",
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "asked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/obid/decisions",
+        "body": {
+          "type": "host_approval",
+          "fromOwner": "dana",
+          "repo": "obi-e2e/fixture-app"
+        },
+        "expect": {
+          "status": 202,
+          "body": {
+            "kind": "confirm",
+            "state": "open",
+            "confirm": {
+              "action": "remember_approval",
+              "payload": {
+                "fromOwner": "dana",
+                "repo": "obi-e2e/fixture-app"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "listed-open",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.asked.body.id}",
+              "kind": "confirm",
+              "state": "open",
+              "triage": {
+                "$type": "string"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "not-among-the-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox?state=done",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    }
+  ]
+}

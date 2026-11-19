@@ -402,6 +402,32 @@ async fn obidspec_9_the_lying_sphere_resigns_only_the_named_owners_card() {
     assert_eq!(other.body, json!({"other": true}));
 }
 
+#[test]
+fn obidspec_10_a_flaky_step_fails_quietly_and_passes_as_a_pass() {
+    let flaky = check(
+        "f",
+        json!({"state": "joined"}),
+        json!({"body": {"state": "revoked"}}),
+        json!({"ui": {"flaky": "#2"}}),
+    );
+    let after = check("after", json!(1), json!({"body": 1}), json!({}));
+    let (code, out) = run_checks(&[("flaky", json!([flaky, after]))]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("flaky, failed this run: flaky › f: #2"),
+        "{out}"
+    );
+    let passing = check(
+        "f",
+        json!({"state": "revoked"}),
+        json!({"body": {"state": "revoked"}}),
+        json!({"ui": {"flaky": "#2"}}),
+    );
+    let (code, out) = run_checks(&[("passing", json!([passing]))]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("flaky, failed"), "{out}");
+}
+
 /// No shipped workflow ever has obid look for a tool by a bare name (a `bin` in `PUT
 /// /v1/settings/agents/{agent}` or an `obid-start` configuration): obid would search the person's
 /// install folders for it and run what it finds (OBIDSPEC-8).

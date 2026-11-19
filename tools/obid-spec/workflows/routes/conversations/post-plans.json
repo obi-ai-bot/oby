@@ -1,0 +1,438 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans",
+  "version": "1.0.0",
+  "description": "The owner's words into a conversation: 400 for a body that isn't a plan, 422 for an id, attachment, defaults or empty words obid refuses, 404 for a conversation it doesn't have; a turn on the stand-in answers its reply, keeps the conversation 0600 with the turn delivered, emits conversation, turn and reply, a repeated id is answered once (ATTACH-8), a question comes back as a question (CONVERSATION-AGENT-47), and a task it starts is the turn's (TASKCONV-5).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "hi"
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "not-a-plan-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "raw": "nope",
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "said-missing-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "new": true
+        },
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "id-not-a-uuid-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY x",
+          "id": "ABC"
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "id is a lower-case UUID."
+          }
+        }
+      }
+    },
+    {
+      "id": "nothing-to-send-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "   "
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "There's no message to send."
+          }
+        }
+      }
+    },
+    {
+      "id": "bad-defaults-mode-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY x",
+          "defaults": {
+            "mode": "yolo"
+          }
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "defaults.mode is ask, acceptEdits, plan or bypass."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPOSER-6"
+        ]
+      }
+    },
+    {
+      "id": "defaults-other-key-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY x",
+          "defaults": {
+            "colour": "red"
+          }
+        },
+        "expect": {
+          "status": 400
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPOSER-6"
+        ]
+      }
+    },
+    {
+      "id": "an-attachment-outside-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY x",
+          "attachments": [
+            "/etc/hosts"
+          ]
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-3"
+        ]
+      }
+    },
+    {
+      "id": "no-conversation-made-by-a-refusal",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-3"
+        ]
+      }
+    },
+    {
+      "id": "unknown-conversation-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY x",
+          "conversation": "00000000-0000-4000-8000-000000000000"
+        },
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "conversation-and-new-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY x",
+          "new": true,
+          "conversation": "x"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Fine.",
+          "new": true,
+          "id": "6f1d1a2e-0c3b-4c5d-8e9f-0a1b2c3d4e5f"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Fine.",
+            "jobs": [],
+            "conversation": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "delivery-1-a-turn-event-then-answered",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "turnDelivery",
+        "expect": {
+          "paths": {
+            "delivery.status": "answered",
+            "conversation": "${state.said.body.conversation}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-1"
+        ]
+      }
+    },
+    {
+      "id": "a-reply-event",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "reply",
+        "expect": {
+          "body": {
+            "conversation": "${state.said.body.conversation}",
+            "text": "Fine."
+          }
+        }
+      }
+    },
+    {
+      "id": "kept-0600",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}.json",
+        "expect": {
+          "exists": true,
+          "mode": "0600"
+        }
+      }
+    },
+    {
+      "id": "attach-8-the-same-id-again-is-answered-once",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Fine.",
+          "conversation": "${state.said.body.conversation}",
+          "id": "6f1d1a2e-0c3b-4c5d-8e9f-0a1b2c3d4e5f"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "none",
+            "repeated": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-8"
+        ]
+      }
+    },
+    {
+      "id": "attach-8-one-user-turn",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "who": "user"
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-8"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-47-a-question",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "ASK Which one? | Red | Blue",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "question",
+            "question": {
+              "text": "Which one?",
+              "options": [
+                "Red",
+                "Blue"
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-47"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-5-a-task-the-turn-starts-is-its",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"SLEEP\", \"kind\": \"build\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "jobs": [
+              {
+                "conversation": "${state.said.body.conversation}",
+                "task": "SLEEP"
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-5"
+        ]
+      }
+    },
+    {
+      "id": "cancel-words-stop-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "never mind",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "none",
+            "conversation": "${state.said.body.conversation}"
+          }
+        }
+      }
+    }
+  ]
+}

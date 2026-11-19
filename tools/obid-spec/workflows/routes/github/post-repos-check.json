@@ -1,0 +1,135 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/repos/check",
+  "version": "1.0.0",
+  "description": "A repository's check before publishing: 422 for a body, repository or check obid refuses; a new check asks the owner with a set_check Confirm, keeping nothing until it's confirmed.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/repos/check"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/repos/check",
+        "body": {
+          "repo": "obi-e2e/fixture-app",
+          "check": "x"
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "not-the-body-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/repos/check",
+        "raw": "{",
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "unknown-repo-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/repos/check",
+        "body": {
+          "repo": "someone/else",
+          "check": "npm test"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "two-lines-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/repos/check",
+        "body": {
+          "repo": "obi-e2e/fixture-app",
+          "check": "a\nb"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "asks-first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/repos/check",
+        "body": {
+          "repo": "obi-e2e/fixture-app",
+          "check": "npm test"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "repo": {
+              "repo": "obi-e2e/fixture-app",
+              "check": "node --test"
+            },
+            "ask": {
+              "kind": "confirm",
+              "confirm": {
+                "action": "set_check"
+              },
+              "title": {
+                "$contains": "npm test"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "unchanged-until-confirmed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/repos",
+        "expect": {
+          "status": 200,
+          "body": {
+            "repos": [
+              {
+                "check": "node --test"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

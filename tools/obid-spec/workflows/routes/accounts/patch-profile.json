@@ -1,0 +1,118 @@
+{
+  "schemaVersion": "2",
+  "name": "PATCH /v1/profiles/{id}",
+  "version": "1.0.0",
+  "description": "Renames or recolours a profile: 400 for neither or another key, 404 for one obid doesn't have; 200 changed.",
+  "trigger": {
+    "http": {
+      "method": "PATCH",
+      "path": "/v1/profiles/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "made",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/profiles",
+        "body": {
+          "name": "Work",
+          "color": "#000000"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/profiles/${state.made.body.id}",
+        "body": {
+          "name": "x"
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "neither-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/profiles/${state.made.body.id}",
+        "body": {},
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "default-key-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/profiles/${state.made.body.id}",
+        "body": {
+          "default": true
+        },
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/profiles/00000000-0000-4000-8000-000000000000",
+        "body": {
+          "name": "x"
+        },
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "renamed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/profiles/${state.made.body.id}",
+        "body": {
+          "name": "Side"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.made.body.id}",
+            "name": "Side",
+            "color": "#000000"
+          }
+        }
+      }
+    }
+  ]
+}

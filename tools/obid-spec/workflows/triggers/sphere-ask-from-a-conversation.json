@@ -1,0 +1,393 @@
+{
+  "schemaVersion": "2",
+  "name": "Asking another Oby from a conversation",
+  "version": "1.0.0",
+  "description": "On the owner's signed words oby_ask sends exactly the question (ASK-2); words no app signed make a Confirm card and send nothing until the click (ASK-4); a question with a possible secret sends nothing and makes no card (ASK-3); the other Oby's question waits on its owner and says so (ASK-12).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "alex-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.alex}"
+      }
+    },
+    {
+      "id": "ask-2-on-the-owners-word",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_ask {\"to\": \"dana\", \"question\": \"Which branch has the fix?\"}",
+          "new": true
+        },
+        "as": "device",
+        "device": "${state.alex-device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": {
+              "$matches": "^oby: "
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-2"
+        ]
+      }
+    },
+    {
+      "id": "ask-2-exactly-the-question-reaches-dana",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "obiRequest",
+                "obi": {
+                  "type": "question",
+                  "fromOwner": "alex",
+                  "quoted": {
+                    "text": "Which branch has the fix?"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-2"
+        ]
+      }
+    },
+    {
+      "id": "ask-12-waiting-on-owner-goes-back",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "messages": {
+                  "$any": {
+                    "direction": "received",
+                    "envelope": {
+                      "type": "status",
+                      "body": {
+                        "state": "waiting_on_owner"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-12"
+        ]
+      }
+    },
+    {
+      "id": "ask-4-unsigned-words",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_ask {\"to\": \"dana\", \"question\": \"Is the release today?\"}",
+          "conversation": "${state.ask-2-on-the-owners-word.body.conversation}"
+        },
+        "expect": {
+          "status": 200
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-4"
+        ]
+      }
+    },
+    {
+      "id": "ask-4-a-confirm-card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 20,
+        "pick": {
+          "where": {
+            "kind": "confirm",
+            "state": "open"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "confirm",
+                "state": "open",
+                "text": {
+                  "$contains": "Is the release today?"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-4"
+        ]
+      }
+    },
+    {
+      "id": "ask-4-nothing-went-yet",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "obi": {
+                  "quoted": {
+                    "text": "Is the release today?"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-4"
+        ]
+      }
+    },
+    {
+      "id": "ask-4-the-click-sends-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.ask-4-a-confirm-card.picked.id}/answer",
+        "confirm": {
+          "device": "${state.alex-device}",
+          "item": "${state.ask-4-a-confirm-card.picked.id}"
+        },
+        "expect": {
+          "status": 200
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-4"
+        ]
+      }
+    },
+    {
+      "id": "ask-4-sent-after-the-click",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "obi": {
+                  "quoted": {
+                    "text": "Is the release today?"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-4"
+        ]
+      }
+    },
+    {
+      "id": "token-tail",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "ask-3-a-secret-sends-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_ask {\"to\": \"dana\", \"question\": \"use ghp_${state.token-tail.seed}\"}",
+          "conversation": "${state.ask-2-on-the-owners-word.body.conversation}"
+        },
+        "as": "device",
+        "device": "${state.alex-device}",
+        "expect": {
+          "status": 200,
+          "text": {
+            "$not": {
+              "$contains": "${state.token-tail.seed}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-3"
+        ]
+      }
+    },
+    {
+      "id": "ask-3-no-card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "kind": "confirm",
+                "state": "open"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-3"
+        ]
+      }
+    },
+    {
+      "id": "ask-3-nothing-reached-dana",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 2
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-3"
+        ]
+      }
+    }
+  ]
+}

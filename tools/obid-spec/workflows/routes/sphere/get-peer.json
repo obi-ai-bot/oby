@@ -32,7 +32,7 @@
       }
     },
     {
-      "id": "before-joining-409",
+      "id": "peer-3-before-joining-409",
       "use": "runtime.rust:call",
       "inputs": {
         "obid": "${state.alex}",
@@ -41,6 +41,11 @@
         "expect": {
           "status": 409
         }
+      },
+      "ui": {
+        "proves": [
+          "PEER-3"
+        ]
       }
     },
     {
@@ -100,7 +105,7 @@
       }
     },
     {
-      "id": "not-a-member-404",
+      "id": "peer-3-not-a-member-404",
       "use": "runtime.rust:call",
       "inputs": {
         "obid": "${state.alex}",
@@ -109,6 +114,11 @@
         "expect": {
           "status": 404
         }
+      },
+      "ui": {
+        "proves": [
+          "PEER-3"
+        ]
       }
     },
     {

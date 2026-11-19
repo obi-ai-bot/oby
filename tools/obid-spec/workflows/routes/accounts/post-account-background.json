@@ -1,0 +1,111 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/accounts/{id}/background",
+  "version": "1.0.0",
+  "description": "Consent to run background work on a ChatGPT plan: 422 for another key or an account not signed in with ChatGPT, 404 for one obid doesn't have.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/accounts/{id}/background"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "added",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "claude",
+          "name": "Work"
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "claude",
+            "name": "Work",
+            "signedIn": false
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.added.body.id}/background",
+        "body": {
+          "given": false
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "another-key-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.added.body.id}/background",
+        "body": {
+          "given": false,
+          "x": 1
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "not-chatgpt-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.added.body.id}/background",
+        "body": {
+          "given": false
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": {
+              "$contains": "isn't signed in with ChatGPT"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/deadbeef/background",
+        "body": {
+          "given": false
+        },
+        "expect": {
+          "status": 404
+        }
+      }
+    }
+  ]
+}

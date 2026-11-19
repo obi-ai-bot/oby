@@ -1,0 +1,140 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/obid/decisions",
+  "version": "1.0.0",
+  "description": "Asks for a standing approval: 400 for a body that isn't JSON, 422 for another type, an owner id or repo that isn't one; 202 with a Confirm card, keeping nothing until its signed Confirm.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/obid/decisions"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/obid/decisions",
+        "body": {},
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "not-json-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/obid/decisions",
+        "raw": "{",
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "another-type-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/obid/decisions",
+        "body": {
+          "type": "review_request",
+          "fromOwner": "dana",
+          "repo": "*"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "not-an-owner-id-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/obid/decisions",
+        "body": {
+          "type": "host_approval",
+          "fromOwner": "Dana Smith",
+          "repo": "*"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "not-a-repo-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/obid/decisions",
+        "body": {
+          "type": "host_approval",
+          "fromOwner": "dana",
+          "repo": "fixture-app"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "asked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/obid/decisions",
+        "body": {
+          "type": "host_approval",
+          "fromOwner": "dana",
+          "repo": "*"
+        },
+        "expect": {
+          "status": 202,
+          "body": {
+            "kind": "confirm",
+            "title": {
+              "$contains": "on any repository"
+            },
+            "confirm": {
+              "action": "remember_approval"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "keeps-nothing-yet",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/obid/decisions",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    }
+  ]
+}

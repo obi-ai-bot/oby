@@ -1,0 +1,88 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/routines/{id}",
+  "version": "1.0.0",
+  "description": "One routine with its runs: 404 for one obid doesn't have; none run yet.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/routines/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "made",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Nightly check",
+          "repo": "obi-e2e/fixture-app",
+          "kind": "investigate",
+          "task": "Say what the README covers.",
+          "schedule": {
+            "every": "daily",
+            "at": "03:00"
+          },
+          "zone": "UTC"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/routines/${state.made.body.id}",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/routines/deadbeef",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "one",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/routines/${state.made.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.made.body.id}",
+            "runs": [],
+            "receipts": []
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,229 @@
+{
+  "schemaVersion": "2",
+  "name": "PUT /v1/obid/vault/{name}",
+  "version": "1.0.0",
+  "description": "Keeps a secret on the owner's signed word (VAULT-5): unsigned is 403 and nothing is kept; signed, 422 for a body, name or value obid refuses (VAULT-2); 204, the value never answered again, shown as [vault: name] (VAULT-1, 4).",
+  "trigger": {
+    "http": {
+      "method": "PUT",
+      "path": "/v1/obid/vault/{name}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "secret",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/obid/vault/test.token",
+        "body": {
+          "value": "${state.secret.seed}"
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "vault-5-unsigned-403",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/obid/vault/test.token",
+        "body": {
+          "value": "${state.secret.seed}"
+        },
+        "expect": {
+          "status": 403,
+          "text": {
+            "$not": {
+              "$contains": "${state.secret.seed}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "VAULT-5"
+        ]
+      }
+    },
+    {
+      "id": "vault-2-another-shape-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/obid/vault/test.token",
+        "body": {
+          "secret": "${state.secret.seed}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 422,
+          "text": {
+            "$not": {
+              "$contains": "${state.secret.seed}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "VAULT-2"
+        ]
+      }
+    },
+    {
+      "id": "vault-2-obys-own-name-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/obid/vault/oby.mine",
+        "body": {
+          "value": "${state.secret.seed}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "VAULT-2"
+        ]
+      }
+    },
+    {
+      "id": "vault-2-too-short-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/obid/vault/test.token",
+        "body": {
+          "value": "short"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "VAULT-2"
+        ]
+      }
+    },
+    {
+      "id": "vault-5-nothing-kept",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/obid/vault",
+        "expect": {
+          "status": 200,
+          "body": {
+            "names": []
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "VAULT-5"
+        ]
+      }
+    },
+    {
+      "id": "vault-1-kept",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/obid/vault/test.token",
+        "body": {
+          "value": "${state.secret.seed}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 204
+        }
+      },
+      "ui": {
+        "proves": [
+          "VAULT-1"
+        ]
+      }
+    },
+    {
+      "id": "kept-0600",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "vault/secrets.json",
+        "expect": {
+          "exists": true,
+          "mode": "0600"
+        }
+      }
+    },
+    {
+      "id": "vault-4-said-back-it-shows-as-its-name",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY ${state.secret.seed}",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "text": {
+            "$not": {
+              "$contains": "${state.secret.seed}"
+            }
+          },
+          "body": {
+            "text": "[vault: test.token]"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "VAULT-4"
+        ]
+      }
+    }
+  ]
+}

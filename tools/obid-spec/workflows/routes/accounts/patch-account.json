@@ -1,0 +1,138 @@
+{
+  "schemaVersion": "2",
+  "name": "PATCH /v1/accounts/{id}",
+  "version": "1.0.0",
+  "description": "Changes an account's name, model and effort: 400 for a body that isn't an object, 422 for another key or a model the tool doesn't have, 404 for an account obid doesn't have; 200 changed.",
+  "trigger": {
+    "http": {
+      "method": "PATCH",
+      "path": "/v1/accounts/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "added",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "claude",
+          "name": "Work"
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "claude",
+            "name": "Work",
+            "signedIn": false
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/accounts/${state.added.body.id}",
+        "body": {
+          "name": "x"
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "not-an-object-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/accounts/${state.added.body.id}",
+        "raw": "[]",
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "another-key-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/accounts/${state.added.body.id}",
+        "body": {
+          "colour": "red"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/accounts/deadbeef",
+        "body": {
+          "name": "x"
+        },
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "a-model-it-doesnt-have-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/accounts/${state.added.body.id}",
+        "body": {
+          "model": "gpt-1"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "renamed-with-an-effort",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/accounts/${state.added.body.id}",
+        "body": {
+          "name": "Side",
+          "effort": "high"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.added.body.id}",
+            "name": "Side"
+          }
+        }
+      }
+    }
+  ]
+}

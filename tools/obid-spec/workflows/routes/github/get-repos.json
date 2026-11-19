@@ -1,0 +1,59 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/repos",
+  "version": "1.0.0",
+  "description": "The repositories obid works in: its configuration's, with their check.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/repos"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/repos",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "the-configurations",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/repos",
+        "expect": {
+          "status": 200,
+          "body": {
+            "repos": [
+              {
+                "repo": "obi-e2e/fixture-app",
+                "defaultBranch": "main",
+                "listed": true,
+                "check": "node --test",
+                "noCheck": false
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

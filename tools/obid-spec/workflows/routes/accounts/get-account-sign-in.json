@@ -1,0 +1,138 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/accounts/{id}/sign-in",
+  "version": "1.0.0",
+  "description": "Starts the tool's own sign-in on an account's folder: 404 for one obid doesn't have; 200 with the sign-in page's link, the same answer while it lasts, and the account says it's signing in.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/accounts/{id}/sign-in"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "added",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "claude",
+          "name": "Work"
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "claude",
+            "name": "Work",
+            "signedIn": false
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.added.body.id}/sign-in",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/deadbeef/sign-in",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "started",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.added.body.id}/sign-in",
+        "expect": {
+          "status": 200,
+          "body": {
+            "account": "${state.added.body.id}",
+            "url": {
+              "$contains": "oauth"
+            },
+            "pasteCode": true,
+            "expiresAt": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "the-same-while-it-lasts",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.added.body.id}/sign-in",
+        "expect": {
+          "status": 200,
+          "body": {
+            "url": "${state.started.body.url}"
+          }
+        }
+      }
+    },
+    {
+      "id": "signing-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.added.body.id}",
+                "signingIn": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cancelled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/accounts/${state.added.body.id}/sign-in",
+        "expect": {
+          "status": 204
+        }
+      }
+    }
+  ]
+}

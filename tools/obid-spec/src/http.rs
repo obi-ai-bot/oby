@@ -40,6 +40,22 @@ pub fn loopback(base: &str) -> Result<String> {
 }
 
 pub async fn send(request: &Request, timeout: Duration) -> Result<Answer> {
+    // A server that answers before reading the body (obid's gate refusing a request with no
+    // token) can reset the connection before the answer is read: once, then the error stands.
+    match send_once(request, timeout).await {
+        Err(e) if is_reset(&e) => send_once(request, timeout).await,
+        other => other,
+    }
+}
+
+fn is_reset(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::ConnectionReset)
+    })
+}
+
+async fn send_once(request: &Request, timeout: Duration) -> Result<Answer> {
     tokio::time::timeout(timeout, send_inner(request))
         .await
         .with_context(|| {

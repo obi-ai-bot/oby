@@ -281,6 +281,105 @@
       }
     },
     {
+      "id": "sphere-24-invitation-and-rebound-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/join",
+        "body": {
+          "url": "${state.sphere.url}",
+          "sphere": "${state.sphere.sphere}",
+          "card": "${state.signed}",
+          "delegation": "${state.delegation.jwt}",
+          "invitation": {
+            "id": "${state.sphere.invitation.id}",
+            "secret": "${state.sphere.invitation.secret}"
+          },
+          "rebound": true
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-24"
+        ]
+      }
+    },
+    {
+      "id": "sphere-24-a-rebound-not-true-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/join",
+        "body": {
+          "url": "${state.sphere.url}",
+          "sphere": "${state.sphere.sphere}",
+          "card": "${state.signed}",
+          "delegation": "${state.delegation.jwt}",
+          "rebound": "yes"
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-24"
+        ]
+      }
+    },
+    {
+      "id": "sphere-24-not-listed-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/join",
+        "body": {
+          "url": "${state.sphere.url}",
+          "sphere": "${state.sphere.sphere}",
+          "card": "${state.signed}",
+          "delegation": "${state.delegation.jwt}",
+          "rebound": true
+        },
+        "expect": {
+          "status": 409,
+          "text": {
+            "$contains": "nothing was joined"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-24"
+        ]
+      }
+    },
+    {
+      "id": "sphere-24-nothing-kept",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere",
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "none"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-24"
+        ]
+      }
+    },
+    {
       "id": "sphere-2-the-obysphere-refuses-502",
       "use": "runtime.rust:call",
       "inputs": {

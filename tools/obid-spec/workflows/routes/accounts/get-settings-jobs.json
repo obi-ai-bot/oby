@@ -1,0 +1,63 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/settings/jobs",
+  "version": "1.0.0",
+  "description": "How jobs run, with obid's defaults on a fresh home.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/settings/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/jobs",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "defaults",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/jobs",
+        "expect": {
+          "status": 200,
+          "body": {
+            "maxRunning": 6,
+            "accountFailover": true,
+            "githubEveryRepo": false,
+            "autoFixChecks": true,
+            "defaultAccount": null,
+            "talkAccount": null,
+            "limits": {
+              "rounds": 10,
+              "maxRunning": 20,
+              "folders": 20,
+              "routines": 20,
+              "accounts": 32
+            }
+          }
+        }
+      }
+    }
+  ]
+}

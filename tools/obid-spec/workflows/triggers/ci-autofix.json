@@ -1,0 +1,666 @@
+{
+  "schemaVersion": "2",
+  "name": "CI autofix",
+  "version": "1.0.0",
+  "description": "Fix CI on the owner's own red pull request starts a task that pushes onto its branch; when GitHub says that head is red again, obid follows it with another round of the same task, no card (AUTOFIX-14), and says once when it's green (AUTOFIX-17).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_FOLLOW_SECONDS": "1",
+          "OBID_RERUN_SETTLE_SECONDS": "0"
+        },
+        "person": {
+          "github/work.json": {
+            "data": {
+              "reviews": {
+                "issueCount": 0,
+                "nodes": []
+              },
+              "assigned": {
+                "issueCount": 0,
+                "nodes": []
+              },
+              "mine": {
+                "issueCount": 1,
+                "nodes": [
+                  {
+                    "number": 5,
+                    "title": "Thing 5",
+                    "updatedAt": "2026-10-18T08:05:00Z",
+                    "state": "OPEN",
+                    "author": {
+                      "login": "sangam"
+                    },
+                    "repository": {
+                      "nameWithOwner": "obi-e2e/fixture-app"
+                    },
+                    "labels": {
+                      "nodes": [
+                        {
+                          "name": "bug"
+                        }
+                      ]
+                    },
+                    "isDraft": false,
+                    "reviewDecision": "REVIEW_REQUIRED",
+                    "commits": {
+                      "nodes": [
+                        {
+                          "commit": {
+                            "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            "statusCheckRollup": {
+                              "state": "SUCCESS"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isCrossRepository": false
+                  }
+                ]
+              },
+              "rateLimit": {
+                "remaining": 4900,
+                "resetAt": "2030-10-18T10:00:00Z"
+              },
+              "viewer": {
+                "login": "alex"
+              }
+            }
+          },
+          "github/view.json": {
+            "title": "Login fix",
+            "body": "COMMIT: fixed.txt",
+            "author": {
+              "login": "alex"
+            },
+            "labels": [],
+            "comments": [],
+            "headRefName": "fix-login",
+            "isCrossRepository": false,
+            "statusCheckRollup": [
+              {
+                "__typename": "StatusContext",
+                "context": "ci/test",
+                "state": "FAILURE"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "branch",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "branch",
+          "fix-login",
+          "main"
+        ]
+      }
+    },
+    {
+      "id": "pull-ref",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "update-ref",
+          "refs/pull/5/head",
+          "fix-login"
+        ]
+      }
+    },
+    {
+      "id": "green-first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/refresh",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "now-red",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "github/work.json",
+        "content": {
+          "data": {
+            "reviews": {
+              "issueCount": 0,
+              "nodes": []
+            },
+            "assigned": {
+              "issueCount": 0,
+              "nodes": []
+            },
+            "mine": {
+              "issueCount": 1,
+              "nodes": [
+                {
+                  "number": 5,
+                  "title": "Thing 5",
+                  "updatedAt": "2026-10-18T08:05:00Z",
+                  "state": "OPEN",
+                  "author": {
+                    "login": "sangam"
+                  },
+                  "repository": {
+                    "nameWithOwner": "obi-e2e/fixture-app"
+                  },
+                  "labels": {
+                    "nodes": [
+                      {
+                        "name": "bug"
+                      }
+                    ]
+                  },
+                  "isDraft": false,
+                  "reviewDecision": "REVIEW_REQUIRED",
+                  "commits": {
+                    "nodes": [
+                      {
+                        "commit": {
+                          "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                          "statusCheckRollup": {
+                            "state": "FAILURE"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "isCrossRepository": false
+                }
+              ]
+            },
+            "rateLimit": {
+              "remaining": 4900,
+              "resetAt": "2030-10-18T10:00:00Z"
+            },
+            "viewer": {
+              "login": "alex"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "red",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/refresh",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "work",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/github/work",
+        "pick": {
+          "from": "mine",
+          "where": {
+            "number": 5
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "started",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/${state.work.picked.id}/start",
+        "expect": {
+          "status": 201,
+          "body": {
+            "kind": "fix",
+            "pr": 5
+          }
+        }
+      }
+    },
+    {
+      "id": "pushed-onto-its-branch",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.started.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "pushed": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "head",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "rev-parse",
+          "fix-login"
+        ]
+      }
+    },
+    {
+      "id": "red-again-view",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "github/view.json",
+        "content": {
+          "state": "OPEN",
+          "baseRefName": "main",
+          "headRefOid": "${state.head.out}",
+          "headRefName": "fix-login",
+          "isCrossRepository": false,
+          "author": {
+            "login": "alex"
+          },
+          "mergeable": "MERGEABLE",
+          "mergeStateStatus": "UNSTABLE",
+          "title": "Login fix",
+          "body": "COMMIT: fixed.txt",
+          "labels": [],
+          "comments": [],
+          "statusCheckRollup": [
+            {
+              "__typename": "CheckRun",
+              "name": "test",
+              "status": "COMPLETED",
+              "conclusion": "FAILURE"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "red-again-work",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "github/work.json",
+        "content": {
+          "data": {
+            "reviews": {
+              "issueCount": 0,
+              "nodes": []
+            },
+            "assigned": {
+              "issueCount": 0,
+              "nodes": []
+            },
+            "mine": {
+              "issueCount": 1,
+              "nodes": [
+                {
+                  "number": 5,
+                  "title": "Thing 5",
+                  "updatedAt": "2026-10-18T08:05:00Z",
+                  "state": "OPEN",
+                  "author": {
+                    "login": "sangam"
+                  },
+                  "repository": {
+                    "nameWithOwner": "obi-e2e/fixture-app"
+                  },
+                  "labels": {
+                    "nodes": [
+                      {
+                        "name": "bug"
+                      }
+                    ]
+                  },
+                  "isDraft": false,
+                  "reviewDecision": "REVIEW_REQUIRED",
+                  "commits": {
+                    "nodes": [
+                      {
+                        "commit": {
+                          "oid": "${state.head.out}",
+                          "statusCheckRollup": {
+                            "state": "FAILURE"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "isCrossRepository": false
+                }
+              ]
+            },
+            "rateLimit": {
+              "remaining": 4900,
+              "resetAt": "2030-10-18T10:00:00Z"
+            },
+            "viewer": {
+              "login": "alex"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "read-red-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/refresh",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "autofix-14-another-round-of-the-same-task",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.started.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "round": {
+              "$ne": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AUTOFIX-14"
+        ]
+      }
+    },
+    {
+      "id": "autofix-14-it-says-so",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "jobs/${state.started.body.id}.json",
+        "within": 30,
+        "expect": {
+          "json": {
+            "paths": {
+              "autofix.lines": {
+                "$any": {
+                  "$contains": "Its checks failed on GitHub"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AUTOFIX-14"
+        ]
+      }
+    },
+    {
+      "id": "autofix-14-no-card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "kind": "github"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AUTOFIX-14"
+        ]
+      }
+    },
+    {
+      "id": "round-2-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.started.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "round": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "new-head",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "rev-parse",
+          "fix-login"
+        ]
+      }
+    },
+    {
+      "id": "green-view",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "github/view.json",
+        "content": {
+          "state": "OPEN",
+          "baseRefName": "main",
+          "headRefOid": "${state.new-head.out}",
+          "headRefName": "fix-login",
+          "isCrossRepository": false,
+          "author": {
+            "login": "alex"
+          },
+          "mergeable": "MERGEABLE",
+          "mergeStateStatus": "CLEAN",
+          "title": "Login fix",
+          "body": "COMMIT: fixed.txt",
+          "labels": [],
+          "comments": [],
+          "statusCheckRollup": [
+            {
+              "__typename": "CheckRun",
+              "name": "test",
+              "status": "COMPLETED",
+              "conclusion": "SUCCESS"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "green-work",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "github/work.json",
+        "content": {
+          "data": {
+            "reviews": {
+              "issueCount": 0,
+              "nodes": []
+            },
+            "assigned": {
+              "issueCount": 0,
+              "nodes": []
+            },
+            "mine": {
+              "issueCount": 1,
+              "nodes": [
+                {
+                  "number": 5,
+                  "title": "Thing 5",
+                  "updatedAt": "2026-10-18T08:05:00Z",
+                  "state": "OPEN",
+                  "author": {
+                    "login": "sangam"
+                  },
+                  "repository": {
+                    "nameWithOwner": "obi-e2e/fixture-app"
+                  },
+                  "labels": {
+                    "nodes": [
+                      {
+                        "name": "bug"
+                      }
+                    ]
+                  },
+                  "isDraft": false,
+                  "reviewDecision": "REVIEW_REQUIRED",
+                  "commits": {
+                    "nodes": [
+                      {
+                        "commit": {
+                          "oid": "${state.new-head.out}",
+                          "statusCheckRollup": {
+                            "state": "SUCCESS"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "isCrossRepository": false
+                }
+              ]
+            },
+            "rateLimit": {
+              "remaining": 4900,
+              "resetAt": "2030-10-18T10:00:00Z"
+            },
+            "viewer": {
+              "login": "alex"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "read-green",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/refresh",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "autofix-17-green-said",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "jobs/${state.started.body.id}.json",
+        "within": 60,
+        "expect": {
+          "json": {
+            "paths": {
+              "autofix.lines": {
+                "$any": {
+                  "$contains": "Its checks pass on GitHub now."
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AUTOFIX-17"
+        ]
+      }
+    },
+    {
+      "id": "read-green-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/refresh",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "tick",
+      "use": "runtime.rust:next-second"
+    },
+    {
+      "id": "tick-2",
+      "use": "runtime.rust:next-second"
+    },
+    {
+      "id": "autofix-17-said-once",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "jobs/${state.started.body.id}.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "autofix.lines": {
+                "$count": [
+                  {
+                    "$contains": "Its checks pass on GitHub now."
+                  },
+                  1
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AUTOFIX-17"
+        ]
+      }
+    }
+  ]
+}

@@ -101,8 +101,32 @@
       "ui": {
         "proves": [
           "SPHERE-5"
-        ],
-        "expectedRed": "#2524: the real Sphere refuses a removed member's token exchange, so obid never reads the directory and stays joined"
+        ]
+      }
+    },
+    {
+      "id": "sphere-20-revoked-says-when-and-why",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/obid/sphere",
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "revoked",
+            "revokedAt": {
+              "$type": "string"
+            },
+            "revokedReason": "removed"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-20",
+          "SPHERE-22"
+        ]
       }
     },
     {

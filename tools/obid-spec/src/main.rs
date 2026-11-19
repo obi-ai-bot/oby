@@ -415,11 +415,20 @@ async fn run_workflow(w: &Workflow, env: &RunEnv) -> WorkflowResult {
                     why.chars().take(400).collect::<String>()
                 ));
             }
-            (Err(why), None) => {
-                r.result = "failed".into();
-                r.why = Some(why);
-                broken = true;
-            }
+            (Err(why), None) => match &step.flaky {
+                Some(issue) => {
+                    r.result = "flaky".into();
+                    r.why = Some(format!(
+                        "{issue}: {}",
+                        why.chars().take(400).collect::<String>()
+                    ));
+                }
+                None => {
+                    r.result = "failed".into();
+                    r.why = Some(why);
+                    broken = true;
+                }
+            },
         }
         result.steps.push(r);
     }
@@ -552,6 +561,16 @@ fn print_table(results: &[WorkflowResult], took: Duration) {
         .collect();
     for line in reds {
         println!("{line}");
+    }
+    for r in results {
+        for s in r.steps.iter().filter(|s| s.result == "flaky") {
+            println!(
+                "  flaky, failed this run: {} › {}: {}",
+                r.name,
+                s.id,
+                s.why.as_deref().unwrap_or("")
+            );
+        }
     }
     println!(
         "\n{} workflows: {} passed, {failed} failed, in {:.0} s",

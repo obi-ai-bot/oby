@@ -1,0 +1,237 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/jobs/{id}/messages",
+  "version": "1.0.0",
+  "description": "Words to a task: 404 for one obid doesn't have, 400 without text, 422 for empty words; a running task hears them; a finished one starts a follow-up (JOBSTATE-12), once for a repeated key (RECEIPTS-8).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/messages"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": "queued",
+            "task": "SLEEP"
+          }
+        }
+      }
+    },
+    {
+      "id": "s-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/messages",
+        "body": {
+          "text": "x"
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/deadbeef/messages",
+        "body": {
+          "text": "x"
+        },
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "no-text-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/messages",
+        "body": {
+          "words": "x"
+        },
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "empty-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/messages",
+        "body": {
+          "text": "  "
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "heard-while-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/messages",
+        "body": {
+          "text": "Use the staging config"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.s.body.id}",
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "c",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: hello.txt"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": "queued",
+            "task": "COMMIT: hello.txt"
+          }
+        }
+      }
+    },
+    {
+      "id": "c-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "commits": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "jobstate-12-a-follow-up",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.c.body.id}/messages",
+        "body": {
+          "text": "COMMIT: second.txt",
+          "clientRequestId": "f-1"
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "followUpOf": "${state.c.body.id}",
+            "id": {
+              "$ne": "${state.c.body.id}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-12",
+          "RECEIPTS-8"
+        ]
+      }
+    },
+    {
+      "id": "receipts-8-once-for-the-same-key",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.c.body.id}/messages",
+        "body": {
+          "text": "COMMIT: second.txt",
+          "clientRequestId": "f-1"
+        },
+        "expect": {
+          "status": [
+            200,
+            201
+          ],
+          "body": {
+            "id": "${state.jobstate-12-a-follow-up.body.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECEIPTS-8"
+        ]
+      }
+    }
+  ]
+}
