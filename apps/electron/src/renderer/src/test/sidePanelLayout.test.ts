@@ -32,9 +32,15 @@ describe('the side panel, laid out', () => {
         const panel = await page.locator('.sidebar').boundingBox();
         // it docks at its narrowest here: the case this guards
         if (width === 892) expect(panel!.width).toBeLessThanOrEqual(256);
-        const rest = await label.evaluate((e) => ({ text: e.textContent, cut: e.scrollWidth - e.clientWidth }));
+        // at rest: its words cut only where the row has no more room for them, never beside an empty
+        // space the hidden tip holds (the row's flex gap, 10px, is all that may lie past the label). How
+        // wide the words are is the font's (a Mac's fits them whole at 252px; Linux's draws them wider)
+        const rest = await row.evaluate((e) => {
+          const l = e.querySelector('.sidebar-new-label')!, r = e.getBoundingClientRect(), s = getComputedStyle(e);
+          return { text: l.textContent, cut: l.scrollWidth - l.clientWidth, empty: r.right - parseFloat(s.paddingRight) - l.getBoundingClientRect().right };
+        });
         expect(rest.text).toBe('New conversation');
-        expect(rest.cut, 'its words cut short with nothing beside them').toBeLessThanOrEqual(0);
+        if (rest.cut > 0) expect(rest.empty, `its words cut short by ${rest.cut}px beside ${Math.round(rest.empty)}px of empty room`).toBeLessThanOrEqual(12);
         // with the pointer on it, the shortcut shows, in room of its own
         await row.hover();
         const hint = await row.evaluate((e) => { const s = getComputedStyle(e, '::after'); return { opacity: s.opacity, content: s.content, room: s.maxWidth }; });
