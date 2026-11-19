@@ -788,9 +788,7 @@ fn accounts_37_a_refused_dispatch_carries_install() {
     config["agents"]["cursor"]["bin"] = json!(folder.0.join("nowhere/cursor-agent"));
     let obid = start(&folder.0, &config, None);
     let id = conversation(&said(&obid, json!({"said": "HELLO", "new": true})));
-    let words = format!(
-        r#"OBY oby_dispatch {{"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build", "agent": "cursor", "account": "Cursor stub"}}"#
-    );
+    let words = r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build", "agent": "cursor", "account": "Cursor stub"}"#;
     let answer = said(&obid, json!({"said": words, "conversation": id}));
     let fix = json!([{"action": "install", "agent": "cursor", "account": CURSOR}]);
     assert_eq!(answer.body["fixes"], fix, "{}", answer.text);

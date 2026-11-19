@@ -189,7 +189,7 @@ mod tests {
         let input = &worktree.join(".obi/inputs/build.log");
         assert_eq!(std::fs::read_to_string(input).unwrap(), "all good");
         let outside = &worktree.join("elsewhere.txt");
-        std::fs::write(&outside, "x").unwrap();
+        std::fs::write(outside, "x").unwrap();
         let refused = copy_inputs(&home, &worktree, &[outside.to_string_lossy().into_owned()]);
         assert!(refused.unwrap_err().contains("isn't one of the files"));
         std::fs::remove_dir_all(&t).unwrap();
