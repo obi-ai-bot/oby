@@ -32,7 +32,7 @@ export const config: BrainConfig = {
   areas: [
     { id: 'planning', title: 'Planning', summary: 'The plan schema and its problems: what a turn may dispatch.', domain: true, modules: [] },
     { id: 'conversation', title: 'Conversation', summary: 'Conversations, the brain\'s turns, transcripts, artifacts and memory.', modules: ['brain', 'conversation', 'conversation_files', 'task_conversation', 'transcript', 'spill', 'activity', 'detail', 'artifacts', 'memory'] },
-    { id: 'jobs', title: 'Jobs', summary: 'Starting, scheduling and running jobs, their records and checks.', modules: ['jobs', 'job', 'store', 'groups', 'facts', 'failures', 'routines', 'obi_dir', 'clear', 'meter', 'power', 'receipts', 'delivery', 'helpers'] },
+    { id: 'jobs', title: 'Jobs', summary: 'Starting, scheduling and running jobs, their records and checks.', modules: ['jobs', 'job', 'store', 'groups', 'facts', 'failures', 'routines', 'obi_dir', 'clear', 'meter', 'listening', 'power', 'receipts', 'delivery', 'helpers'] },
     { id: 'agents', title: 'Agents', summary: 'The agent CLIs: Claude Code, Codex, Cursor, and how obid talks to them.', modules: ['agent', 'codex', 'acp', 'conn', 'steer', 'process', 'model_lists', 'cli_versions', 'providers'] },
     { id: 'accounts', title: 'Accounts and limits', summary: 'Accounts, sign-ins, usage, limits and the owner\'s limit decisions.', modules: ['accounts', 'usage', 'limits', 'account_limits', 'chatgpt', 'chatgpt_relay', 'cursor_usage'] },
     { id: 'workspace', title: 'Workspace', summary: 'Clones, worktrees, repositories and working folders.', modules: ['git', 'repos', 'folders', 'projects'] },
