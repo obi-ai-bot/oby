@@ -82,7 +82,7 @@ pub fn obids_doing(reason: &str) -> bool {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Recovery {
-    /// Turns cut by an error tried again: a passing one, or an unknown one (RECOVERY-1).
+    /// Turns cut tried again: a CLI that ended with no result, or an unknown error (RECOVERY-1).
     pub errors: usize,
     /// Runs gone quiet or at the turn limit (RECOVERY-3, RECOVERY-4).
     pub stalls: usize,
@@ -348,6 +348,16 @@ pub struct Unjudged {
     pub why: String,
 }
 
+/// One of a job's rounds that moved its branch (docs/contracts/task-changes.md, CHANGES-1): the
+/// commit its worktree's HEAD was at as an agent's turn started, the one it was at as the turn
+/// ended, and when the turn started, in seconds since the epoch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Checkpoint {
+    pub from: String,
+    pub to: String,
+    pub at: i64,
+}
+
 /// A job as obid keeps it (`home/jobs/<id>.json`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -445,6 +455,10 @@ pub struct Job {
     /// naming its own.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub model_from_account: bool,
+    /// The effort the owner's chip named for it (docs/contracts/composer.md, COMPOSER-5): it holds
+    /// over its account's on its own tool. Kept in its file, never in the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_named: Option<String>,
     /// Its plan called it complex: it runs at its account's complex-task effort (#1574). Kept in
     /// its file, never in the API.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -490,6 +504,11 @@ pub struct Job {
     /// (MERGING-39). Kept in its file, never in the API.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub checks_rounds: u32,
+    /// What obid did by itself about its own pull request's red checks, when it's the owner's
+    /// own work (crate::autofix, AUTOFIX-1 to 16): reruns, fix rounds, the merge queue again, the
+    /// lines its conversation hears. Kept in its file, never in the API.
+    #[serde(default, skip_serializing_if = "crate::autofix::AutoFix::is_empty")]
+    pub autofix: crate::autofix::AutoFix,
     /// The heads whose trusted change requests had obid's round by itself, oldest first: one per
     /// head, counted with Oby's own review rounds (MERGING-40). Kept in its file, never in the API.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -499,6 +518,15 @@ pub struct Job {
     /// ends.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub crash_resumes: Vec<i64>,
+    /// Its rounds that moved its branch, oldest first (CHANGES-1): what `GET /v1/jobs/{id}/changes`
+    /// lists as its rounds, and what Undo this round takes back (CHANGES-8). Kept in its file, never
+    /// in the API's job.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checkpoints: Vec<Checkpoint>,
+    /// The rounds the owner undid, oldest first (CHANGES-8): its follow-up's agent hears of them
+    /// (CHANGES-12). Kept in its file, never in the API's job.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub undone: Vec<Checkpoint>,
     /// What obid did by itself to carry it on (docs/contracts/recovery.md).
     #[serde(default, skip_serializing_if = "Recovery::is_unused")]
     pub recovery: Recovery,
@@ -510,6 +538,10 @@ pub struct Job {
     /// job's (TASKCONV-26). It keeps the id when that conversation is deleted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
+    /// The profile it was made in (crate::profile_scope, B00-40), set once ([`Job::start_in`]):
+    /// none is the default's, as is every job made before profiles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     /// The project its conversation was in when it started (crate::projects, PROJECTS-13), set
     /// once ([`Job::start_in`]) and never changed; none when that conversation was in no project,
     /// or there was none.
@@ -687,6 +719,11 @@ pub struct Job {
     /// for a follow-up of work that isn't merged. Never in the API's job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_from: Option<String>,
+    /// The owner's own pull request's branch, its base too, that a Fix CI job pushes its commits
+    /// onto by itself, as T3 Code does (TASKCONV-31): a fast-forward only, no pull request opened
+    /// or edited, nothing merged, rebased or deleted. Never from the API, never in the API's job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub onto: Option<String>,
     /// What the conversation supervisor (deleted, rules-delete-supervisor) did each time it
     /// stalled, oldest first: only a job kept from before it went has any. `supervised` in the API
     /// stays, empty from now on.
@@ -715,6 +752,10 @@ pub struct Job {
     /// What its turns used, in tokens and cost, as its tool reported them (#731).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<crate::usage::Tokens>,
+    /// How full its agent's context window is, as its tool last said (USAGE-15): none until it
+    /// said, or for a tool that says nothing of it (Cursor).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<crate::usage::ContextWindow>,
     /// The most resident memory its processes (agent, check and what they started) held at
     /// once, in bytes, as obid's meter read it while it ran (crate::meter); none before a reading.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -757,6 +798,11 @@ pub struct Job {
     /// Every time its tool or account was changed (`oby_change_job`), oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub moves: Vec<Move>,
+    /// Why it runs on another agent than the one the owner's words named, in a line made when it
+    /// was routed (ACCOUNTS-31): "Claude Code is at 97% of its week until Thu 9:00 AM, so this runs
+    /// on Codex · Personal." In the API as `routed`; none when it runs where they asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routed: Option<String>,
     /// The owner named its account (`POST /v1/jobs`, `oby_change_job`): it stays there past a
     /// usage limit, never moved by Oby (#871). Kept in its file, never in the API.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1005,6 +1051,28 @@ pub fn steered(summary: &str) -> (&str, Option<&str>) {
     }
 }
 
+/// An agent's words as a person reads them (TASKS-19): its `GOAL MET` line, a signal between the
+/// agent and obid, taken out, and a `GOAL NOT MET: <what's left>` line read as `Not done yet:
+/// <what's left>`. The job keeps the agent's own words; this is for what the owner reads (the
+/// API's `summary`, `summaries` and `reason`) and what goes to GitHub (crate::publish::body).
+pub fn readable(text: &str) -> String {
+    if !text.contains("GOAL MET") && !text.contains("GOAL NOT MET") {
+        return text.to_owned();
+    }
+    let lines: Vec<String> = text
+        .split('\n')
+        .filter(|l| l.trim() != "GOAL MET")
+        .map(|l| match l.trim().strip_prefix("GOAL NOT MET") {
+            Some(left) => match left.trim_start_matches([':', ' ']).trim() {
+                "" => "Not done yet.".to_owned(),
+                left => format!("Not done yet: {left}"),
+            },
+            None => l.to_owned(),
+        })
+        .collect();
+    lines.join("\n").trim_end().to_owned()
+}
+
 /// The first line of the last reply to the owner's words in `summary`, with [`STEERED`].
 pub fn last_steer(summary: &str) -> Option<&str> {
     let at = summary.rfind(&format!("\n\n{STEERED}"))?;
@@ -1025,8 +1093,16 @@ pub struct OwnersWords {
 
 impl Job {
     /// It starts in `conversation`, taking the project that conversation is in now, as kept in
-    /// `home` (PROJECTS-13): the only place a job's project is set.
-    pub fn start_in(&mut self, home: &std::path::Path, conversation: Option<String>) {
+    /// `home` (PROJECTS-13): the only place a job's project is set. It's made in `profile`, else
+    /// that conversation's (B00-40): the only place a job's profile is set.
+    pub fn start_in(
+        &mut self,
+        home: &std::path::Path,
+        profile: Option<String>,
+        conversation: Option<String>,
+    ) {
+        let kept = |id: &str| crate::conversation::kept_profile(home, id);
+        self.profile = profile.or_else(|| conversation.as_deref().and_then(kept));
         self.project = conversation
             .as_deref()
             .and_then(|id| crate::conversation::kept_project(home, id));
@@ -1441,6 +1517,42 @@ impl Job {
             && !self.pull_request_open()
     }
 
+    /// Takes its last round back (CHANGES-10, 12): kept in `undone`, and its summary opens with
+    /// what was undone, which its follow-up's agent hears with the rest of its report.
+    pub fn undo_round(&mut self) {
+        let Some(round) = self.checkpoints.pop() else {
+            return;
+        };
+        self.undone.push(round);
+        let report = match self.summary.split_once("\n\n") {
+            Some((note, rest)) if note.starts_with("The owner undid ") => rest.to_owned(),
+            _ if self.summary.starts_with("The owner undid ") => String::new(),
+            _ => self.summary.clone(),
+        };
+        let note = self.undone_note().unwrap_or_default();
+        self.summary = if report.is_empty() {
+            note
+        } else {
+            format!("{note}\n\n{report}")
+        };
+    }
+
+    /// What its follow-up's agent hears of the rounds the owner undid (CHANGES-12), or none.
+    pub fn undone_note(&self) -> Option<String> {
+        let last = self.undone.last()?;
+        let n = self.undone.len();
+        Some(format!(
+            "The owner undid {} of its rounds: its branch is back at {}, and what {} committed is gone from it.",
+            if n == 1 {
+                "one".to_owned()
+            } else {
+                n.to_string()
+            },
+            &last.from[..last.from.len().min(12)],
+            if n == 1 { "that round" } else { "those rounds" }
+        ))
+    }
+
     /// The last commit obid pushed to the job's branch: its pull request's head, as obid left it.
     pub fn pushed_head(&self) -> Option<&str> {
         self.last_push().map(|o| o.id.as_str())
@@ -1575,16 +1687,22 @@ impl Job {
             .is_none_or(|freed| self.finished.is_some_and(|end| end > freed.at))
     }
 
-    /// Waiting for Publish (its own publish failed), with commits its pull request won't take,
-    /// failed or interrupted, Oby's review left for the owner, or its merge stopped where only
-    /// the owner takes it on (crate::merge), and not dismissed.
+    /// Its [`Job::decision`] open, or failed or interrupted, and not dismissed.
     pub fn needs_you(&self) -> bool {
+        self.decision()
+            || self.dismissed.is_none()
+                && matches!(self.status, Status::Failed | Status::Interrupted)
+    }
+
+    /// A decision only the owner takes, open, and not dismissed: waiting for Publish (its own
+    /// publish failed), commits its pull request won't take, Oby's review left for the owner, or
+    /// its merge stopped where only the owner takes it on (crate::merge). What keeps a job that
+    /// ended out of Archived; failed or interrupted alone doesn't (TASKS-25, TASKS-31).
+    pub fn decision(&self) -> bool {
         // Publish kept after 24 hours of checks that judged nothing asks nothing (PUBLISHING-31).
         self.dismissed.is_none()
             && (self.can_publish() && self.unjudged.is_none()
                 || self.stranded()
-                || self.status == Status::Failed
-                || self.status == Status::Interrupted
                 || self.review_needs_you()
                 || self.merge_needs_you)
     }
@@ -1634,7 +1752,7 @@ impl Job {
             "task": self.task,
             "status": self.status.as_str(),
             "step": self.step,
-            "summary": self.summary,
+            "summary": readable(&self.summary),
             "session": self.session,
             "created": obi_protocol::time::format(self.created),
             "started": date(self.started),
@@ -1643,7 +1761,7 @@ impl Job {
             "published": self.published,
             "pushed": self.pushed,
             "publishError": self.publish_error,
-            "summaries": self.summaries,
+            "summaries": self.summaries.as_ref().map(|list| list.iter().map(|s| readable(s)).collect::<Vec<_>>()),
             "issue": self.issue,
             "fromPR": null,
             "rounds": self.max_rounds(),
@@ -1714,6 +1832,13 @@ impl Job {
             "revision": self.revision,
         });
         value["resumeCommand"] = json!(self.resume_command());
+        // Only for a profile that isn't the default (B00-40).
+        if let Some(line) = &self.routed {
+            value["routed"] = json!(line);
+        }
+        if let Some(profile) = &self.profile {
+            value["profile"] = json!(profile);
+        }
         if let Some(activity) = &self.activity {
             value["activity"] = activity.clone();
         }
@@ -2012,11 +2137,15 @@ impl Job {
                     self.publish_error.as_deref(),
                 );
             } else if self.pushed_only() {
+                // Onto the owner's own pull request's branch (TASKCONV-31): that one (AUTOFIX-20).
+                let onto = (self.onto.as_ref().zip(self.pr))
+                    .map(|(_, pr)| format!("Secret scan clean · pushed onto pull request #{pr}"));
+                let detail = "Secret scan clean · pushed · no pull request for this remote";
                 set(
                     &mut stages,
                     "publish",
                     "done",
-                    Some("Secret scan clean · pushed · no pull request for this remote"),
+                    Some(onto.as_deref().unwrap_or(detail)),
                     None,
                 );
                 for id in ["review", "merged"] {
@@ -2233,6 +2362,35 @@ fn mac_check_json(check: Option<Value>, kind: &str) -> Value {
 mod tests {
     use super::*;
 
+    /// TASKS-19: the `GOAL MET` line is obid's: a person reads the summary without it, and a
+    /// `GOAL NOT MET` line as what's left, in words.
+    #[test]
+    fn tasks_19_the_goal_line_is_not_for_a_person() {
+        assert_eq!(
+            readable("Fixed the parser.\n\nGOAL MET"),
+            "Fixed the parser."
+        );
+        assert_eq!(
+            readable("Added a.txt.\n\nGOAL NOT MET: the tests are left"),
+            "Added a.txt.\n\nNot done yet: the tests are left"
+        );
+        assert_eq!(readable("Half.\nGOAL NOT MET"), "Half.\nNot done yet.");
+        let plain = "Says GOAL MET in a sentence, which stays.";
+        assert_eq!(readable(plain), plain);
+        let mut job = Job {
+            summary: "Done.\n\nGOAL MET".into(),
+            summaries: Some(vec!["One.\nGOAL MET".into(), "Two.".into()]),
+            ..job()
+        };
+        let json = job.to_json();
+        assert_eq!(json["summary"], "Done.");
+        assert_eq!(json["summaries"], serde_json::json!(["One.", "Two."]));
+        // The job keeps the agent's own words, for obid's rounds.
+        assert!(job.summary.ends_with("GOAL MET"));
+        job.summaries = None;
+        assert!(job.to_json()["summaries"].is_null());
+    }
+
     /// MERGING-2: a job saved while `checkWithheld` was a bool keeps holding its merge once read
     /// by this obid, with a reason; one that wasn't held stays so.
     #[test]
@@ -2298,7 +2456,7 @@ mod tests {
         std::fs::write(home.join("x.json"), json!({"project": "p"}).to_string()).unwrap();
         let started = |conversation: Option<&str>| {
             let mut job = job();
-            job.start_in(&home, conversation.map(str::to_owned));
+            job.start_in(&home, None, conversation.map(str::to_owned));
             assert_eq!(job.conversation.as_deref(), conversation);
             job.project
         };

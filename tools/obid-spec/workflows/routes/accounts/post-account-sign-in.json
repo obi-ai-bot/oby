@@ -1,0 +1,156 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/accounts/{id}/sign-in",
+  "version": "1.0.0",
+  "description": "The code the sign-in page showed: 409 with no sign-in under way, 422 for a code that isn't one line; a code the tool refuses is 422 codeRefused (SIGN-IN-7); the right one signs the account in.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/accounts/{id}/sign-in"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "added",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "claude",
+          "name": "Work"
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "claude",
+            "name": "Work",
+            "signedIn": false
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.added.body.id}/sign-in",
+        "body": {
+          "code": "x"
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "none-under-way-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.added.body.id}/sign-in",
+        "body": {
+          "code": "good-code#fake"
+        },
+        "expect": {
+          "status": 409
+        }
+      }
+    },
+    {
+      "id": "start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.added.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "not-one-line-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.added.body.id}/sign-in",
+        "body": {
+          "code": "a\nb"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "sign-in-7-a-refused-code",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.added.body.id}/sign-in",
+        "body": {
+          "code": "bad-code"
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "reason": "codeRefused"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SIGN-IN-7"
+        ]
+      }
+    },
+    {
+      "id": "start-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.added.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "signed-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.added.body.id}/sign-in",
+        "body": {
+          "code": "good-code#fake"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.added.body.id}",
+            "signedIn": true
+          }
+        }
+      }
+    }
+  ]
+}

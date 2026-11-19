@@ -40,7 +40,7 @@ Measured with a throwaway obid (debug build, its own home, events followed over 
 
 Claude Code connects its MCP servers when it starts, before any prompt: with a test server that took 4 s per request and a prompt sent 25 s after the start, `init` came 41 ms after the prompt. So a Claude Code started ahead saves both its start and the connection, as the Agent SDK's `prewarm()` does.
 
-After each of the owner's turns, obid names the next new conversation's id and readies its room, box, login copy and MCP configuration, then starts its Claude Code with no prompt. Until a turn is under way, its token may only connect to Oby's tools and list them. The new conversation's first turn is written to it like a follow-up.
+After each of the owner's turns, obid names the next new conversation's id and readies its room, box, login copy and MCP configuration, then starts its Claude Code with no prompt. It does this for each profile (docs/contracts/profiles.md, PROFILES-46 and 47): the turn's profile first, then the others whose new conversation would talk on Claude Code through one of their own accounts, three profiles at most, one at a time. Until a turn is under way, its token may only connect to Oby's tools and list them. The new conversation's first turn is written to it like a follow-up.
 
 Measured the same way, back to back with #726's code, at load 290–350. The second new conversation in a run got:
 
@@ -51,5 +51,39 @@ Measured the same way, back to back with #726's code, at load 290–350. The sec
 
 ## What's left
 
-- **Codex conversations** still start `codex app-server` every turn. One app-server for all of a conversation's turns, or all conversations' threads, would do for Codex what the change above does for Claude Code.
+- **A new Codex conversation's `app-server` started ahead**, as a new conversation's Claude Code is. Its follow-ups no longer start Codex (below); its first turn still does.
 - Show the model's thinking (`thinking_delta`) and a tool's start (`content_block_start`) as they stream, instead of waiting for the whole tool-use block.
+
+## Codex follow-ups (2026-11-18)
+
+A Codex conversation started `codex app-server` again for every turn (#2490): its `features list` check, the start, `initialize` and `thread/resume` before the turn's `turn/start`. Measured on a scratch obid on 2026-11-17 at load 10 to 19, its follow-ups took 5.2 to 12.7 s where Claude Code's took 1.3 to 3.3 s.
+
+What changed (CONVERSATION-AGENT-44, 45): a Codex turn that answered keeps its `app-server` running, its thread loaded, as a conversation's Claude Code waits (`Warm`, the same 30 minutes and three conversations at most, ended the same ways). The next turn is a `turn/start` written to it: no start, no `features list`, no `initialize`, no thread read again. That turn's model is its own (`turn/start` names it). It's given the turn only when it was started as the turn would start one now (its `-c` settings, its lane, its account and what its thread is told: `harness_codex::key`), its login copy isn't near its end, and it wrote nothing while it waited but its housekeeping (`codex::between_turns`: a notification that isn't an item's or a turn's). Else it ends, and the turn starts Codex and picks the thread up as before. An own Codex (LANES-13) is asked for its settings again before each turn, as before each thread. That is also what happens after it died. T3 Code does the same: one `app-server` per session, each turn a `turn/start` on its thread, and a failed one retired so the next turn starts a fresh one (its `CodexAdapterV2`).
+
+Not measured on a real Codex: the follow-up's time is now the model's, as Claude Code's is.
+
+## The own lane's first turn (2026-11-16)
+
+It came back slow: a new conversation's "Hello" took 34 s again, its model call only 3–4 s of it (`brain-turns.jsonl`: `wall_ms` 34260, `duration_ms` 3696), and wrote 520,051 tokens to the cache. The stopwatch put all of it in `session` (POST until Claude Code's `init`): 30.5 s every time.
+
+- **Why.** Since LANES-12 (#2093) the owner's conversation loads their own MCP servers. Given any `--mcp-config` server, Claude Code 2.1.325 holds a headless session's first turn until every MCP server answers or its 30 s timeout passes (its `explicit_mcp_config` hold). One of the owner's servers is an `ssh` command that never answers, so every first turn waited 30 s. Without `--mcp-config` the same launch reached `init` in 3.6 s; with a server there, stdio or HTTP, working or not, 30.4–30.9 s. The prestarted Claude Code (above) hid this only when it had been running 30 s, and only for the conversation it was readied for.
+- **Why so many tokens.** `--tools` had no `ToolSearch`, so Claude Code put every tool of the owner's servers in the prompt: 707 tools, about 500k tokens, where their terminal defers them.
+- **What changed** (CONVERSATION-AGENT-24): an own session's environment sets `CLAUDE_CODE_MCP_STARTUP_WAIT_MS=0`, which lifts the hold; `oby-mcp.json` marks Oby's and Tetrix's servers `alwaysLoad`, so they're still connected before the first turn; `--tools` adds `ToolSearch`. All three are Claude Code's own switches: obid copies none of its work.
+
+Measured on the owner's Mac with a scratch obid (its own home, port 7881) on their real `~/.claude`, Claude Opus 5.5, "Hello" five times in one new conversation, then once in another. First on `dev` before #2433, then on `dev` with it (#2433 loads every settings source and runs the owner's hooks):
+
+| Turn | `wall_ms` before | after | `duration_ms` before | after |
+|---|---|---|---|---|
+| Before #2433: a new conversation, cold | 34174 | **4689** | 2996 | 3182 |
+| Before #2433: the same conversation, turns 2–5 | 1627–3154 | 2166–2539 | 1622–3148 | 2164–2537 |
+| Before #2433: a second new conversation (started ahead) | 13484 | **1525** | 2061 | 1513 |
+| With #2433: a new conversation, cold | 36178 | **10027** | 3186 | 3669 |
+| With #2433: the same conversation, turns 2–5 | 1816–2613 | 2426–6661 (turn 3 called a tool) | 1806–2607 | 2421–6647 |
+| With #2433: a second new conversation | 37669 | **6130** | 4133 | 3695 |
+
+The cold turn's `session` mark went from about 30,500 ms to 1,648–7,263 ms, Claude Code's own start at a load average near 30 (replays of the same launch reached `init` 2.6–3.1 s after the prompt; once its hooks started only 7.3 s in). It wrote 42,078–53,753 tokens to the cache instead of about 520,000. A first turn still calls Oby's tools (`oby_jobs`, 3.5 s), and `ToolSearch` finds one of the owner's tools (3.3 s).
+
+Two more, found while measuring that (CONVERSATION-AGENT-25, LANES-24):
+
+- **With #2433 the Claude Code started ahead was never used.** The owner's `SessionStart` hooks run since #2433, and Claude Code writes their `hook_started` and `hook_response` lines as it starts, before any prompt. A waiting Claude Code that wrote anything wasn't given the turn, so every new conversation started cold. obid now reads and drops a waiting one's hook lines (`Conn::quiet_but`) and still refuses one that wrote anything else. Measured on a scratch obid, `dev` before and after, a calm Mac (load 4 to 14): each new conversation after the first had its Claude Code started ahead taken (`its Claude Code was running`, `session` 88–90 ms) where before it started anew (`session` 483–534 ms; 3.8–7.3 s at a load near 30, above).
+- **An own Claude Code job waited the same 30 s** whenever Oby is signed in to Tetrix: obid then gives it an `--mcp-config` (Tetrix's server), and the job loads the owner's servers. Its environment now sets the same `CLAUDE_CODE_MCP_STARTUP_WAIT_MS=0` (obid's run environment lets that one `CLAUDE_CODE_*` name in) and its servers are `alwaysLoad`. A real own job's launch, captured on a scratch obid and replayed with a server like Tetrix's in its `--mcp-config`: `init` at 31.4 s as `dev` ran it, 1.7 s after, the server connected both times.

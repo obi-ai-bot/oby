@@ -14,14 +14,18 @@ mkdir -p "$helpers" "$resources"
 # Xcode's build variables would point cargo at the wrong SDK, so it builds in a clean environment.
 # OBY_CARGO_TARGET_DIR is a target directory kept between releases.
 target_dir="${OBY_CARGO_TARGET_DIR:-$root/core/target}"
+# OBY_BUILD_COMMIT: the commit obid says it's built from (GET /v1/status, runner.commit);
+# CARGO_BUILD_JOBS as the caller set it
 build=(env -i HOME="$HOME" PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+  OBY_BUILD_COMMIT="${OBY_BUILD_COMMIT:-}" ${CARGO_BUILD_JOBS:+CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS}
   cargo build --quiet --release -p obid --manifest-path "$root/core/Cargo.toml" --target-dir "$target_dir")
 
 # Both architectures when this Mac's Rust has both, in one cargo run so they compile side by side;
-# a release needs them.
+# a release needs them. OBY_OBID_TARGETS names others, for a build that stays on this Mac
+# (apps/electron/scripts/helpers.sh).
 targets=()
 slices=()
-for target in aarch64-apple-darwin x86_64-apple-darwin; do
+for target in ${=OBY_OBID_TARGETS:-aarch64-apple-darwin x86_64-apple-darwin}; do
   libdir=$(env -i HOME="$HOME" PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
     rustc --print target-libdir --target "$target" 2>/dev/null || true)
   if [[ -n "$libdir" ]] && ls "$libdir"/libstd-* > /dev/null 2>&1; then
@@ -35,7 +39,7 @@ if (( ${#slices} == 0 )); then
 else
   "${build[@]}" "${targets[@]}"
 fi
-if [[ "${CONFIGURATION:-Debug}" == Release ]] && (( ${#slices} < 2 )); then
+if [[ "${CONFIGURATION:-Debug}" == Release && -z "${OBY_OBID_TARGETS:-}" ]] && (( ${#slices} < 2 )); then
   echo "error: a release of Oby needs obid for arm64 and x86_64: rustup target add aarch64-apple-darwin x86_64-apple-darwin" >&2
   exit 1
 fi

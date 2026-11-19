@@ -1357,33 +1357,48 @@ pub fn fits(anchor: Anchor, fit: Fit) -> bool {
     }
 }
 
-/// The files of `changed` on a security path ([`SECURITY_PATHS`]), or that the check `command`
-/// runs.
+/// The files of `changed` on a security path ([`SECURITY_PATHS`], [`caught_by`]), or that the
+/// check `command` runs.
 pub fn security_paths(changed: &[String], command: Option<&str>) -> Vec<String> {
     let own = command.map(check_files).unwrap_or_default();
     changed
         .iter()
         .filter(|path| {
-            let lower = path.to_ascii_lowercase();
-            let name = lower.rsplit('/').next().unwrap_or(&lower);
             own.iter().any(|f| f.eq_ignore_ascii_case(path))
-                || SECURITY_PATHS.iter().any(|p| {
-                    let p = p.to_ascii_lowercase();
-                    let anchor = match (p.ends_with('/'), p.contains('/')) {
-                        (true, _) => Anchor::Folder,
-                        (false, true) => Anchor::Whole,
-                        (false, false) => Anchor::Name,
-                    };
-                    let fit = Fit {
-                        name: name == p,
-                        folder: lower.starts_with(&p) || lower.contains(&format!("/{p}")),
-                        whole: lower == p,
-                    };
-                    fits(anchor, fit)
-                })
+                || SECURITY_PATHS.iter().any(|entry| caught_by(path, entry))
         })
         .cloned()
         .collect()
+}
+
+/// Whether the changed `path` is on the [`SECURITY_PATHS`] `entry`, in any letter case: the same
+/// file name, inside the entry's folder at any depth, or the same whole path from the root, as the
+/// entry is anchored (docs/proofs.md: its proof is still to come).
+pub(crate) fn caught_by(path: &str, entry: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    let p = entry.to_ascii_lowercase();
+    let anchor = match (p.ends_with('/'), p.contains('/')) {
+        (true, _) => Anchor::Folder,
+        (false, true) => Anchor::Whole,
+        (false, false) => Anchor::Name,
+    };
+    // Only the anchor's own test runs, byte by byte: the same answers as `rsplit` and
+    // `match_indices`, without the character searches Kani can't get through.
+    let fit = Fit {
+        name: anchor == Anchor::Name && {
+            let start = lower.bytes().rposition(|b| b == b'/').map_or(0, |i| i + 1);
+            lower[start..] == p
+        },
+        // At the root, or after any `/`: `/` and the entry, with nothing built.
+        folder: anchor == Anchor::Folder
+            && (lower.starts_with(&p)
+                || lower
+                    .bytes()
+                    .enumerate()
+                    .any(|(i, b)| b == b'/' && lower[i + 1..].starts_with(&p))),
+        whole: anchor == Anchor::Whole && lower == p,
+    };
+    fits(anchor, fit)
 }
 
 /// Why `job`'s pull request merges only after two approving reviews of its head, each by a
@@ -1817,7 +1832,10 @@ async fn merging(
     let commits: Vec<Value> = serde_json::from_str::<Vec<Vec<Value>>>(&commits)
         .map(|pages| pages.into_iter().flatten().collect())
         .map_err(|_| wait("Not merged yet: GitHub said something else about its commits."))?;
+    // The Mac's own paths stay on it, before the scan reads the words (PUBLISHING-41).
+    let places = crate::local_paths::Places::of_job(job.worktree.as_deref());
     let (title, message) = squash(&pull.title, &commits, number);
+    let (title, message) = (places.rewrite(&title), places.rewrite(&message));
     // A merge or a rebase lands each commit as it is: one saying it closes an issue would. GitHub
     // lists at most 250 of them, so past that Oby can't tell.
     if workflow.method != Method::Squash && commits.len() >= GITHUB_LISTS {
@@ -2053,6 +2071,8 @@ pub fn note(job: &mut Job, outcome: &Result<Merged, Blocked>, by: MergedBy) {
 pub const MERGE: &str = "Merge";
 pub const MERGE_AND_REMEMBER: &str = "Merge, and remember";
 pub const LEAVE_OPEN: &str = "Leave it open";
+/// The option AUTOFIX adds to the card it leaves when it gave up (AUTOFIX-10).
+pub const ONE_MORE_ROUND: &str = "One more round";
 /// The options of the card that asks whether a teammate's Oby reviews a repository Oby hasn't
 /// learned, where GitHub requires another person's approval ([`teammate_card`]).
 pub const ASK_TEAMMATE: &str = "Ask a teammate, and remember";
@@ -2300,6 +2320,19 @@ pub fn stopped_card(job: &Job, head: &str, why: &str) -> Item {
     )
 }
 
+/// What a card the owner's Merge lifts is titled (MERGING-55, #2507): what holds it first, in plain
+/// words, while its checks failed on GitHub or a review asks for changes, never "Ready to merge";
+/// else "Ready to merge", their word all it waits on.
+fn yours_title(why: &str) -> &'static str {
+    if why.contains(RED_CHECKS) {
+        "Checks failed"
+    } else if why.contains(CHANGES_ASKED) {
+        "Changes requested"
+    } else {
+        "Ready to merge"
+    }
+}
+
 /// "Ready to merge" where only the owner's own Merge is missing ([`Blocked::yours`]): why, and
 /// Merge, by `workflow`, into `into`, the pull request's own base (GitHub merges it there, the
 /// workflow's or not).
@@ -2321,7 +2354,7 @@ pub fn yours_card(job: &Job, head: &str, why: &str, workflow: &Workflow, into: &
     card(
         job,
         why_id(&job.id, head, why),
-        format!("Ready to merge: {}", job.short_title()),
+        format!("{}: {}", yours_title(why), job.short_title()),
         card_text(Some(asks), why),
         vec![
             (
@@ -3909,6 +3942,38 @@ mod tests {
         into_main.base = Some("main".into());
         let refused = check(&into_main, Some(&mac), &main).unwrap_err();
         assert!(refused.yours && refused.needs_you, "{}", refused.why);
+    }
+
+    /// MERGING-55 (#2507): a card whose head's checks failed on GitHub is never titled "Ready to
+    /// merge": it says what holds it first, red checks before a change request; one only the
+    /// owner's word waits on still is.
+    #[test]
+    fn merging_55_a_red_pull_request_is_never_called_ready_to_merge() {
+        let job = job();
+        let base = "Its base is main, which Oby merges into only on your word.";
+        let title = |why: &str| yours_card(&job, &head(), why, &obis(), "main").title;
+        let red = format!("{base}\n{RED_CHECKS}");
+        assert_eq!(title(&red), "Checks failed: Fix the thing");
+        assert_eq!(
+            title(&format!("{CHANGES_ASKED}\n{red}")),
+            "Checks failed: Fix the thing"
+        );
+        assert_eq!(
+            title(&format!("{base}\n{CHANGES_ASKED}")),
+            "Changes requested: Fix the thing"
+        );
+        assert_eq!(title(base), "Ready to merge: Fix the thing");
+        let card = yours_card(&job, &head(), &red, &obis(), "main");
+        assert!(
+            card.text.contains("Its checks failed on GitHub."),
+            "{}",
+            card.text
+        );
+        assert_eq!(
+            card.options,
+            vec![MERGE, LEAVE_OPEN],
+            "the owner's Merge still lifts it"
+        );
     }
 
     /// Where the job's own check can't stand for the Mac's, the owner's own Merge merges it, and

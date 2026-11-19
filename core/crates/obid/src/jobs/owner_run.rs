@@ -788,6 +788,9 @@ impl Jobs {
                     "--verbose",
                     // The words as the agent writes them, for the transcript (Event::Delta).
                     "--include-partial-messages",
+                    // Each line obid writes, back as it's taken: the owner's words reach it mid-turn
+                    // (crate::steer, TASKCONV-33).
+                    "--replay-user-messages",
                     "--permission-prompt-tool",
                     "stdio",
                     "--permission-mode",
@@ -805,16 +808,14 @@ impl Jobs {
                 .iter()
                 .map(OsString::from)
                 .collect();
-                // The own lane loads the owner's user settings, skills and MCP servers, under
-                // obid's `--settings`, which outrank them (`own_sandbox_settings`), and never the
-                // repository's own `.claude/`, `.mcp.json` or `CLAUDE.md` (the owner's decision
-                // LANE-6a; `user` alone loads none of them, measured with 2.1.302); the foreign
-                // lane loads none (LANES-5).
+                // The own lane loads every settings source, the owner's and the repository's, as
+                // their terminal does (the owner's decision of 2026-11-16, LANES-23); the foreign
+                // lane loads none (LANES-5, LANES-10).
                 let own = Self::own_lane(&job, tool);
-                let sources = if own { "user" } else { "" };
-                flags.extend(["--setting-sources", sources].map(OsString::from));
                 if !own {
-                    flags.push("--strict-mcp-config".into());
+                    flags.extend(
+                        ["--setting-sources", "", "--strict-mcp-config"].map(OsString::from),
+                    );
                 }
                 // On every run: a resumed one without them has no rules.
                 if let Some(rules) = standing_rules(&job) {
@@ -879,6 +880,14 @@ impl Jobs {
                     }
                     if let Some((url, token)) = tetrix.as_ref().filter(|_| tool == Tool::Claude) {
                         config["mcpServers"]["tetrix"] = json!({"type":"http","url":url,"headers":{"Authorization":format!("Bearer {token}")}});
+                    }
+                    // An own run's first turn waits for none of the owner's servers, so obid's are
+                    // each `alwaysLoad`: connected before it (LANES-24, `agent::MCP_STARTUP_WAIT`).
+                    // A boxed run (`--strict-mcp-config`) has only obid's, and waits for them.
+                    if own && let Some(servers) = config["mcpServers"].as_object_mut() {
+                        for server in servers.values_mut() {
+                            server["alwaysLoad"] = json!(true);
+                        }
                     }
                     let text = serde_json::to_vec(&config).map_err(|e| e.to_string())?;
                     let _ = std::fs::remove_file(&file);
@@ -950,8 +959,19 @@ impl Jobs {
                     Some(rules) => format!("{rules}\n\n{told}"),
                     None => told,
                 };
-                let launch =
-                    self.launch(&job, &spec, tool, flags.clone(), &account, broker.as_ref())?;
+                // Why it couldn't start is kept on the account in plain words (ACCOUNTS-19).
+                let launch = self
+                    .launch(&job, &spec, tool, flags.clone(), &account, broker.as_ref())
+                    .map_err(|why| {
+                        let plain = self.cant_start(&account, &why);
+                        tracing::info!("job {id}: {} didn't start: {why}", tool.name());
+                        format!(
+                            "{} couldn't start on {}: {plain}.",
+                            tool.name(),
+                            account.name
+                        )
+                    })?;
+                self.started_on(&account.id);
                 if *signal.borrow() != Signal::Run {
                     return Ok(());
                 }
@@ -999,6 +1019,8 @@ impl Jobs {
                 // Read just before the run, so only its agent's commits count, never obid's own
                 // rebase between rounds: a run that moved it got somewhere (RECOVERY-1).
                 let head_before = self.worktree_head(id).await;
+                // A Claude Code or Codex turn takes the owner's words as they come (TASKCONV-33, 36).
+                let steer = matches!(tool, Tool::Claude | Tool::Codex).then(|| self.steer_open(id));
                 let turn = self
                     .turn(
                         id,
@@ -1019,7 +1041,11 @@ impl Jobs {
                         },
                         Some(&ran),
                     )
-                    .await?;
+                    .await;
+                if let Some(steer) = &steer {
+                    self.steer_close(id, steer);
+                }
+                let turn = turn?;
                 self.update(id, |job| job.ran_secs = Some(ran()));
                 if *signal.borrow() != Signal::Run {
                     return Ok(());
@@ -1102,8 +1128,8 @@ impl Jobs {
                     // and reason.
                     let error = crate::secrets::known().redact(turn.error());
                     let first = crate::detail::mask(error.lines().next().unwrap_or("").trim());
-                    // Claude Code and Codex retry these themselves first; one that still ends the
-                    // turn gets the round again in its session, after a wait.
+                    // A passing error that still ends the turn is the agent's: Claude Code and
+                    // Codex retried it themselves, so it isn't sent again (RECOVERY-19).
                     // As its windows are now: one past its reset is empty again.
                     let usage = self.usage.get(&job.account);
                     let at = obi_protocol::time::now();
@@ -1127,9 +1153,9 @@ impl Jobs {
                     // On a ChatGPT login only the relay's refusal says it's a limit: a usage read
                     // doesn't exist, and OpenAI's limit names no time (the contract).
                     let chatgpt = crate::chatgpt::marker_of(&account).is_some();
-                    // RECOVERY-1: one denylist, the tool's own fields first (RECOVERY-7).
+                    // RECOVERY-1: one denylist, the tool's own fields first (RECOVERY-7). OpenAI's
+                    // refusal through the relay went back to Codex, which retried it (RECOVERY-19).
                     let of = match &refusal {
-                        Some(refusal) if refusal.after == After::TryAgain => CUT_WAITS.len(),
                         Some(_) => 0,
                         None if !chatgpt && limit_said => 0,
                         None => {
@@ -1227,6 +1253,10 @@ impl Jobs {
                     if tries < of && recovery.spent() {
                         reason = crate::job::capped(&reason);
                     }
+                    // Its login was refused: the account can't run until that changes (ACCOUNTS-19).
+                    if cant_run::login_refused(turn.cause(), &reason) {
+                        self.cant_start(&account, &reason);
+                    }
                     let resumes = None;
                     return Err(End::NeedsYou {
                         reason,
@@ -1268,6 +1298,10 @@ impl Jobs {
                 // which starts its next turn, the owner's words that came meanwhile with it.
                 if let Some(call) = self.lock().asked.remove(id) {
                     return Err(End::Asked(Asked::Question(call)));
+                }
+                // Its answer came first and ended this run (PERMISSIONS-23): the next run hears it.
+                if *signal.borrow() != Signal::Run {
+                    return Ok(());
                 }
                 if self.ends_on_plan(id, round, &said) {
                     return Err(End::Asked(Asked::Plan(said)));
@@ -1501,10 +1535,15 @@ impl Jobs {
             if let Some(left) = goal.as_deref().filter(|l| l.starts_with("GOAL NOT MET"))
                 && commits > 0
             {
+                let left = one_line(&crate::job::readable(left), 300);
+                let stop = if left.ends_with(['.', '!', '?']) {
+                    ""
+                } else {
+                    "."
+                };
                 return Err(End::needs_you(
                     format!(
-                        "{} The branch is kept and nothing was pushed: tell it what's left, or Publish it as it is.",
-                        one_line(left, 300)
+                        "{left}{stop} The branch is kept and nothing was pushed: tell it what's left, or Publish it as it is."
                     ),
                     None,
                 ));

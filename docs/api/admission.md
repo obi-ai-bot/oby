@@ -1,5 +1,7 @@
 ### Start when
 
+**Proposed on obid, not yet supported.** obid refuses a non-empty `startWhen` with `422` (`obid doesn't wait for a start condition yet: leave startWhen out to start at once.`), so every job it has starts at once and its `startWhen` reads null. The rest of this section is how a job waits once obid supports it.
+
 A job can wait for something before it starts (#216): another job or a pull request to finish, an account to have room, or a time. Its `startWhen` lists what must all hold, each one of:
 
 - `{"job": "ab12cd34", "is": "done"}`: after another job, by id. `is` is `done` (it ended done), `merged` (its pull request was merged), `published` (its pull request is out) or `ended` (it ended in any way); left out, `done`.

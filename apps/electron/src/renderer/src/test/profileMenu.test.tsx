@@ -30,9 +30,12 @@ const DESKREE = { id: 'a1b2c3d4-0000-4000-8000-000000000002', name: 'Deskree', c
 const ACME = { id: 'a1b2c3d4-0000-4000-8000-000000000003', name: 'Acme', color: '#8c5a3a', default: false, waiting: false };
 type Answer = { status: number; text: string };
 
-// main's bridge, as obid answers: its profiles (or an answer for them), a create (made, it's listed); the rest 404
-function obid(profiles: unknown[] | Answer) {
-  const said = { profiles, create: undefined as Answer | undefined };
+// main's bridge, as obid answers: its profiles (or an answer for them), a create (made, it's listed); the rest 404.
+// The profile the page tells main is open (obid.profile) is kept in told; main answers changed
+function obid(profiles: unknown[] | Answer, changed = false) {
+  const said = { profiles, create: undefined as Answer | undefined, change: undefined as Answer | undefined, remove: undefined as Answer | undefined };
+  const told: (string | null)[] = [];
+  const profile = vi.fn(async (id: string | null) => { told.push(id); return changed; });
   const calls: { method: string; path: string; body?: unknown }[] = [];
   const call = vi.fn(async (method: string, path: string, body?: unknown) => {
     calls.push({ method, path, body });
@@ -43,9 +46,22 @@ function obid(profiles: unknown[] | Answer) {
       if (Array.isArray(said.profiles)) said.profiles = [...said.profiles, made];
       return { status: 201, text: JSON.stringify(made) };
     }
+    const one = path.match(/^\/v1\/profiles\/([^/]+)$/)?.[1];
+    if (one && method === 'PATCH') {
+      if (said.change) return said.change;
+      const list = said.profiles as typeof DEFAULT[];
+      const changed = { ...list.find((p) => p.id === one)!, ...(body as object) };
+      said.profiles = list.map((p) => (p.id === one ? changed : p));
+      return { status: 200, text: JSON.stringify(changed) };
+    }
+    if (one && method === 'DELETE') {
+      if (said.remove) return said.remove;
+      said.profiles = (said.profiles as typeof DEFAULT[]).filter((p) => p.id !== one);
+      return { status: 204, text: '' };
+    }
     return { status: 404, text: '{"error":"Not found."}' };
   });
-  return { app: { obid: { call }, onSphere: () => () => {}, sphereLeave: async () => null }, calls, said };
+  return { app: { obid: { call, profile }, onSphere: () => () => {}, sphereLeave: async () => null }, calls, said, told };
 }
 // obid's conversations, in the panel as live.ts puts them
 const TALKS = [{ id: 'c1', title: 'Talk one', said: [], at: 5 }, { id: 'c2', title: 'Talk two', said: [], at: 50 }, { id: 'c3', title: 'Talk three', said: [], at: 500 }];
@@ -102,11 +118,11 @@ describe('PROFILES-19', () => {
     expect(checked()).toEqual(['Default']);
     expect(row('Default').querySelector('.menu-check')).not.toBeNull();
     expect(row('Default').querySelector<HTMLElement>('.owner-avatar')!.style.background).toMatch(/#3a5a8c|rgb\(58, 90, 140\)/);
-    // the rows, a rule, then New profile…
+    // the rows, a rule, then Edit profile… and New profile…
     const items = [...menu()!.children];
-    expect(items.map((e) => e.tagName)).toEqual(['BUTTON', 'HR', 'BUTTON']);
-    expect(items[2].getAttribute('role')).toBe('menuitem');
-    expect(items[2].textContent).toBe('New profile…');
+    expect(items.map((e) => e.tagName)).toEqual(['BUTTON', 'HR', 'BUTTON', 'BUTTON']);
+    expect(items.slice(2).map((e) => e.getAttribute('role'))).toEqual(['menuitem', 'menuitem']);
+    expect(items.slice(2).map((e) => e.textContent)).toEqual(['Edit profile…', 'New profile…']);
   });
 });
 
@@ -129,10 +145,34 @@ describe('PROFILES-20', () => {
     expect(talks()).toEqual(before);
     await openMenu();
     expect(checked()).toEqual(['Acme']);
-    // nothing asked of obid but its list again, and nothing names the profile
+    // nothing asked of obid but its list again; main is told Acme is open (B00-40, PROFILES-41)
     const since = o.calls.slice(sent);
     expect(since.every((c) => c.method === 'GET' && c.path === '/v1/profiles' && c.body === undefined)).toBe(true);
     expect(JSON.stringify(o.calls)).not.toContain(ACME.id);
+    expect(o.told.at(-1)).toBe(ACME.id);
+  });
+});
+
+describe('PROFILES-41', () => {
+  it('PROFILES-41: profiles_41_main_is_told_the_open_profile', async () => {
+    // the app opens on its kept profile: main is told it, and changed to it, the page reads everything again
+    localStorage.setItem('oby.profile', DESKREE.id);
+    const o = obid([DEFAULT, DESKREE, ACME], true);
+    const reload = vi.fn();
+    (window as { app?: unknown }).app = o.app;
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    vi.stubGlobal('location', { search: '', reload });
+    // profiles.ts reads obid's list as it loads
+    await import('../profiles');
+    await until(() => expect(o.told).toEqual([DESKREE.id]));
+    await until(() => expect(reload).toHaveBeenCalledTimes(1));
+    // the same profile again: main doesn't change, nothing is read again
+    const same = obid([DEFAULT, DESKREE, ACME], false);
+    (window as { app?: unknown }).app = same.app;
+    const { chooseProfile } = await import('../profiles');
+    chooseProfile(DESKREE.id);
+    await until(() => expect(same.told).toEqual([DESKREE.id]));
+    expect(reload).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -166,10 +206,12 @@ describe('PROFILES-22', () => {
     expect(create().disabled).toBe(true);
     await type('   ');
     expect(create().disabled).toBe(true);
-    // the first colour no profile has is picked already
-    expect(host.querySelector('[role="radio"][aria-checked="true"]')!.getAttribute('aria-label')).toBe('#7a4a8c');
+    // the first colour no profile has is picked already, each named (screen 18)
+    expect(host.querySelector('[role="radio"][aria-checked="true"]')!.getAttribute('aria-label')).toBe('Green');
+    expect([...host.querySelectorAll('[role="radio"]')].map((r) => r.getAttribute('aria-label'))).toEqual(['Blue', 'Green', 'Brown', 'Purple', 'Grey']);
+    expect(host.querySelector('[role="dialog"] .modal-lede')!.textContent).toBe('A profile is a place of its own: its conversations, projects, agents, routines and vault. Nothing crosses from one profile to another.');
     await type('Acme');
-    await click(button('#8c5a3a')!);
+    await click(button('Brown')!);
     await click(create());
     await until(() => expect(host.querySelector('[role="dialog"]')).toBeNull());
     expect(o.calls.filter((c) => c.method === 'POST')).toEqual([{ method: 'POST', path: '/v1/profiles', body: { name: 'Acme', color: '#8c5a3a' } }]);
@@ -252,5 +294,85 @@ describe('PROFILES-25', () => {
     await openMenu();
     await click(row('Acme'));
     expect(talks()).toEqual(['Avenga contract renewal date', 'Draft reply to Avenga security']);
+  });
+});
+
+const dialog = () => host.querySelector('[role="dialog"]');
+async function edit(o: ReturnType<typeof obid>) {
+  await show('', o.app);
+  await until(() => expect(titleButton()).not.toBeNull());
+  await openMenu();
+  await click(button('Edit profile…')!);
+  expect(menu()).toBeNull();
+}
+
+describe('PROFILES-48', () => {
+  it('PROFILES-48: profiles_48_edit_renames_and_recolours', async () => {
+    localStorage.setItem('oby.profile', ACME.id);
+    const o = obid([DEFAULT, ACME]);
+    await edit(o);
+    expect(dialog()!.querySelector('h2')!.textContent).toBe('Edit profile');
+    expect(host.querySelector<HTMLInputElement>('#profile-name')!.value).toBe('Acme');
+    expect(host.querySelector('[role="radio"][aria-checked="true"]')!.getAttribute('aria-label')).toBe('Brown');
+    await type('Acme Corp');
+    await click(button('Save')!);
+    await until(() => expect(dialog()).toBeNull());
+    expect(o.calls.filter((c) => c.method === 'PATCH')).toEqual([{ method: 'PATCH', path: `/v1/profiles/${ACME.id}`, body: { name: 'Acme Corp' } }]);
+    expect(title()).toBe('Acme Corp');
+
+    await openMenu();
+    await click(button('Edit profile…')!);
+    await click(host.querySelector('[role="radio"][aria-label="Purple"]')!);
+    await click(button('Save')!);
+    await until(() => expect(dialog()).toBeNull());
+    expect(o.calls.filter((c) => c.method === 'PATCH').at(-1)).toEqual({ method: 'PATCH', path: `/v1/profiles/${ACME.id}`, body: { color: '#6a4f8c' } });
+
+    o.said.change = { status: 400, text: JSON.stringify({ error: 'A profile’s name is 1 to 40 characters.' }) };
+    await openMenu();
+    await click(button('Edit profile…')!);
+    await type('Elsewhere');
+    await click(button('Save')!);
+    await until(() => expect(dialog()!.querySelector('[role="alert"]')?.textContent).toBe('A profile’s name is 1 to 40 characters.'));
+    expect(title()).toBe('Acme Corp');
+  });
+});
+
+describe('PROFILES-49', () => {
+  it('PROFILES-49: profiles_49_delete_asks_first_and_says_where_its_work_goes', async () => {
+    const reload = vi.fn();
+    const o = obid([DEFAULT, ACME]);
+    await edit(o);
+    // the default profile has no Delete
+    expect(button('Delete profile…')).toBeUndefined();
+    await click(button('Cancel')!);
+
+    await openMenu();
+    await click(row('Acme'));
+    await openMenu();
+    await click(button('Edit profile…')!);
+    await click(button('Delete profile…')!);
+    expect(dialog()!.querySelector('h2')!.textContent).toBe('Delete Acme?');
+    expect(dialog()!.textContent).toContain('Its conversations, tasks, agents, projects and accounts move to Default. Nothing is deleted with it.');
+    await click(button('Cancel')!);
+    expect(o.calls.some((c) => c.method === 'DELETE')).toBe(false);
+
+    o.said.remove = { status: 409, text: JSON.stringify({ error: 'profiles.json couldn’t be read.' }) };
+    await openMenu();
+    await click(button('Edit profile…')!);
+    await click(button('Delete profile…')!);
+    await click(button('Delete')!);
+    await until(() => expect(dialog()!.querySelector('[role="alert"]')?.textContent).toBe('profiles.json couldn’t be read.'));
+    expect(title()).toBe('Acme');
+
+    o.said.remove = undefined;
+    vi.stubGlobal('location', { search: '', reload });
+    await click(button('Delete')!);
+    await until(() => expect(dialog()).toBeNull());
+    expect(o.calls.filter((c) => c.method === 'DELETE')).toHaveLength(2);
+    expect(o.calls.at(-2)?.path === `/v1/profiles/${ACME.id}` || o.calls.some((c) => c.method === 'DELETE' && c.path === `/v1/profiles/${ACME.id}`)).toBe(true);
+    expect(title()).toBe('Default');
+    await openMenu();
+    expect(rows().map(nameOf)).toEqual(['Default']);
+    expect(o.told.at(-1)).toBe(DEFAULT.id);
   });
 });

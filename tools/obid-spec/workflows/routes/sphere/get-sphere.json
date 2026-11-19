@@ -1,0 +1,293 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/obid/sphere",
+  "version": "1.0.0",
+  "description": "The membership: none before a join, its key once made, joined with what the owner's delegation and card allow (SPHERE-1), never the delegation itself; sealing on once the owner signs the card obid asks for (SPHERE-6).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/obid/sphere"
+    }
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "wrong-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere",
+        "as": "wrong",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "none-before-a-join",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere",
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "none",
+            "owner": "alex",
+            "sphere": null,
+            "obiId": null,
+            "sealing": null,
+            "delegation": null,
+            "card": null,
+            "keyId": null
+          }
+        }
+      }
+    },
+    {
+      "id": "key",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/key",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "its-key-once-made",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere",
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "none",
+            "keyId": "${state.key.body.keyId}",
+            "publicKey": "${state.key.body.publicKey}"
+          }
+        }
+      }
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}"
+      }
+    },
+    {
+      "id": "sphere-1-joined",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere",
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "joined",
+            "sphere": "${state.sphere.sphere}",
+            "url": "${state.sphere.url}",
+            "owner": "alex",
+            "obiId": {
+              "$matches": "^obi-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "accepts": [
+              "review_request",
+              "question",
+              "handoff"
+            ],
+            "lastError": null
+          },
+          "paths": {
+            "delegation.scope": {
+              "$contains": "send:handoff"
+            },
+            "card.capabilities.extensions.0.params.owner_key": "${state.alex-key.public}",
+            "card.capabilities.extensions.0.params.accepts": [
+              "review_request",
+              "question",
+              "handoff"
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-1"
+        ]
+      }
+    },
+    {
+      "id": "sphere-1-the-delegation-receives-and-replies",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere",
+        "expect": {
+          "paths": {
+            "delegation.scope": {
+              "$matches": "(^| )receive( |$)"
+            },
+            "delegation.expiresAt": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-1"
+        ]
+      }
+    },
+    {
+      "id": "sphere-20-a-joined-membership-has-no-revoke",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere",
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "joined",
+            "revokedAt": null,
+            "revokedReason": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-20"
+        ]
+      }
+    },
+    {
+      "id": "the-delegation-itself-never-shows",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere",
+        "expect": {
+          "paths": {
+            "delegation": {
+              "$len": 2
+            },
+            "delegation.jwt": {
+              "$exists": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          }
+        ],
+        "seconds": 60
+      }
+    },
+    {
+      "id": "sphere-6-sealing-on-once-the-card-is-signed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere",
+        "expect": {
+          "status": 200,
+          "body": {
+            "sealing": "on"
+          },
+          "paths": {
+            "sealKeyId": {
+              "$matches": "^x25519:"
+            },
+            "card.capabilities.extensions.0.params.seal_key_id": "${state.key.body.sealKeyId}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-6"
+        ]
+      }
+    },
+    {
+      "id": "card-features-as-the-api-doc-says",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "card.capabilities.extensions.0.params.features": [
+              "cancel",
+              "card_classes",
+              "card_runtime",
+              "card_topics",
+              "follow_up",
+              "introduction"
+            ],
+            "card.capabilities.extensions.0.params.runtime": {
+              "id": "oby",
+              "version": "0.3.0"
+            },
+            "card.version": "0.3.0+card-runtime"
+          }
+        }
+      },
+      "ui": {
+        "expectedRed": "#2525: the card carries policy_classes too, which docs/api/obysphere.md doesn't list"
+      }
+    }
+  ]
+}

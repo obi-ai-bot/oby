@@ -57,6 +57,19 @@ fn configured(folder: &Folder) -> Value {
     config
 }
 
+/// obid as the app starts it, its `TMPDIR` the Mac's per-user temporary folder (short), not the
+/// test's own (as long as its home): where a conversation's Cursor keeps its sockets when obid's
+/// home has no room for them (CONVERSATION-AGENT-41).
+fn start(folder: &Path, config: &Value, path_first: Option<&Path>) -> Obid {
+    let temp = std::env::temp_dir();
+    start_with(
+        folder,
+        config,
+        path_first,
+        &[("TMPDIR", temp.to_str().unwrap())],
+    )
+}
+
 fn obid(name: &str) -> (Folder, Obid) {
     let folder = Folder::new(name);
     let config = configured(&folder);
@@ -494,7 +507,7 @@ fn conversation_agent_3_a_chosen_account_that_cant_run_moves_too() {
     let second = said(&obid, json!({"said": "REMEMBER", "conversation": id}));
     assert_ne!(text(&second), "resume=none", "{}", second.text);
     assert!(
-        text(&second).ends_with("\nCodex stub couldn't run, so I moved to Claude Code · Stub."),
+        text(&second).ends_with("\nCodex · Codex stub couldn't start: it isn't signed in, so I moved to Claude Code · Stub."),
         "{}",
         second.text
     );
@@ -517,11 +530,356 @@ fn conversation_agent_3_a_chosen_account_that_cant_run_moves_too() {
     let new = said(&obid, json!({"said": "REMEMBER", "new": true}));
     assert_eq!(
         text(&new),
-        "resume=none\nCodex stub couldn't run, so I moved to Claude Code · Stub.",
+        "resume=none\nCodex · Codex stub couldn't start: it isn't signed in, so I moved to Claude Code · Stub.",
         "{}",
         new.text
     );
     assert_ne!(fresh, conversation(&new));
+}
+
+/// CONVERSATION-AGENT-26: a chosen account whose agent can't start: the turn moves, and its line
+/// says why in plain words, no path in them. ACCOUNTS-19: the reason stays on the account in
+/// `GET /v1/status` (`cantRun`) until it answers again.
+#[test]
+fn conversation_agent_26_a_move_says_why_the_account_couldnt_start() {
+    let folder = Folder::new("talk-cant-start");
+    let mut config = configured(&folder);
+    let nowhere = folder.0.join("nowhere/codex");
+    config["agents"]["codex"]["bin"] = json!(nowhere);
+    let obid = start(&folder.0, &config, None);
+    let id = conversation(&said(&obid, json!({"said": "HELLO", "new": true})));
+    choose(&obid, &id, json!(CODEX));
+    let moved = said(&obid, json!({"said": "HELLO", "conversation": id}));
+    let line = text(&moved);
+    let line = line.lines().last().unwrap_or_default();
+    assert!(
+        line.starts_with("Codex · Codex stub couldn't start: ")
+            && line.ends_with(", so I moved to Claude Code · Stub."),
+        "{}",
+        moved.text
+    );
+    let reason = line
+        .trim_start_matches("Codex · Codex stub couldn't start: ")
+        .trim_end_matches(", so I moved to Claude Code · Stub.");
+    assert!(!reason.is_empty() && !reason.contains('/'), "{line}");
+    let account = |id: &str| {
+        let status = call(&obid, "GET", "/v1/status", None).body;
+        status["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["id"] == id)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(
+        account(CODEX)["cantRun"],
+        reason,
+        "the same words on the account"
+    );
+    assert_eq!(account(CODEX)["signedIn"], true);
+    assert!(
+        account(CLAUDE).get("cantRun").is_none(),
+        "one that answered has none"
+    );
+}
+
+/// ACCOUNTS-19, ACCOUNTS-20: a job whose agent can't start fails saying why in plain words, the
+/// reason is kept on the account, and routing passes over that account for the next job while it's
+/// kept, even when it's where new tasks go. Its CLI went away while it waited for a slot: obid took
+/// it, and only its start could tell (ACCOUNTS-32 refuses one obid can tell before).
+#[test]
+fn accounts_19_a_job_that_cant_start_keeps_why_on_its_account() {
+    let folder = Folder::new("job-cant-start");
+    let mut config = configured(&folder);
+    let codex = folder.0.join("bin/codex");
+    std::fs::create_dir_all(codex.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(agent("fake-codex-harness"), &codex).unwrap();
+    config["agents"]["codex"]["bin"] = json!(codex);
+    std::fs::write(
+        folder.0.join("home/settings.json"),
+        json!({"maxRunning": 1, "defaultAccount": CODEX}).to_string(),
+    )
+    .unwrap();
+    let obid = start(&folder.0, &config, None);
+    let post = |account: Option<&str>, task: &str| {
+        let mut job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": task});
+        if let Some(account) = account {
+            job["account"] = json!(account);
+        }
+        call(&obid, "POST", "/v1/jobs", Some(&json!({ "job": job })))
+    };
+    let holding = post(Some(CLAUDE), "STALLS-ALWAYS");
+    assert_eq!(holding.status, 201, "{}", holding.text);
+    let holding = holding.body["id"].as_str().unwrap().to_owned();
+    within(30, "the first job holds the one slot", || {
+        let now = call(&obid, "GET", &format!("/v1/jobs/{holding}"), None).body;
+        (now["status"] == "running").then_some(())
+    });
+    let waits = post(Some(CODEX), "Nothing to do");
+    assert_eq!(waits.status, 201, "{}", waits.text);
+    let id = waits.body["id"].as_str().unwrap().to_owned();
+    std::fs::remove_file(&codex).unwrap();
+    let stop = call(&obid, "POST", &format!("/v1/jobs/{holding}/stop"), None);
+    assert!(stop.status < 300, "{}", stop.text);
+    let failed = within(60, "the job fails", || {
+        let now = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (now["status"] == "failed").then_some(now)
+    });
+    let reason = failed["reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.starts_with("Codex couldn't start on Codex stub: ") && !reason.contains('/'),
+        "{failed}"
+    );
+    let kept = within(10, "the account says why", || {
+        let status = call(&obid, "GET", "/v1/status", None).body;
+        status["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["id"] == CODEX)
+            .and_then(|a| a["cantRun"].as_str().map(str::to_owned))
+    });
+    assert!(reason.contains(&kept), "{reason} / {kept}");
+    assert!(!kept.contains('/'), "{kept}");
+    // Where new tasks go can't start: the next goes where one can.
+    let next = post(None, "Nothing to do");
+    assert_eq!(next.status, 201, "{}", next.text);
+    assert_eq!(next.body["account"], CLAUDE);
+}
+
+/// ACCOUNTS-30: routing passes over an agent whose CLI isn't on this Mac, as over a signed-out
+/// account, even when it's where new tasks go; nothing says it moved, since the owner named none.
+#[test]
+fn accounts_30_routing_passes_over_an_agent_that_isnt_installed() {
+    let folder = Folder::new("route-missing-cli");
+    let mut config = configured(&folder);
+    config["agents"]["codex"]["bin"] = json!(folder.0.join("nowhere/codex"));
+    let obid = start(&folder.0, &config, None);
+    let set = call(
+        &obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"defaultAccount": CODEX})),
+    );
+    assert_eq!(set.status, 200, "{}", set.text);
+    let job =
+        json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Nothing to do"});
+    let made = call(&obid, "POST", "/v1/jobs", Some(&json!({ "job": job })));
+    assert_eq!(made.status, 201, "{}", made.text);
+    assert_eq!(made.body["account"], CLAUDE);
+    assert!(made.body.get("routed").is_none(), "{}", made.text);
+}
+
+/// The usage file with Claude Code's account at 97% of its week, and Codex's at 5%.
+fn claude_at_97(folder: &Folder) {
+    let now = obi_protocol::time::now();
+    let window = |used: f64| {
+        json!({"fiveHour": 0.1, "sevenDay": used, "fiveHourResets": now + 3600,
+               "sevenDayResets": now + 86_400, "fiveHourObservedAt": now, "sevenDayObservedAt": now})
+    };
+    std::fs::create_dir_all(folder.0.join("home")).unwrap();
+    std::fs::write(
+        folder.0.join("home/usage.json"),
+        json!({CLAUDE: window(0.97), CODEX: window(0.05)}).to_string(),
+    )
+    .unwrap();
+}
+
+/// ACCOUNTS-31: a task asked of an agent with no room runs on the account with the most room of
+/// any tool at once, and the job says why, naming both; its step never says every account is at
+/// its limit while one has room.
+#[test]
+fn accounts_31_a_task_asked_of_a_full_agent_runs_elsewhere_and_says_why() {
+    let folder = Folder::new("route-full-agent");
+    let config = configured(&folder);
+    claude_at_97(&folder);
+    let obid = start(&folder.0, &config, None);
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Nothing to do",
+                     "agent": "claude"});
+    let made = call(&obid, "POST", "/v1/jobs", Some(&json!({ "job": job })));
+    assert_eq!(made.status, 201, "{}", made.text);
+    assert_eq!(
+        (&made.body["agent"], &made.body["account"]),
+        (&json!("codex"), &json!(CODEX))
+    );
+    let routed = made.body["routed"].as_str().unwrap_or_default();
+    assert!(
+        routed.starts_with("Claude Code is at 97% of its week until ")
+            && routed.ends_with(", so this runs on Codex · Codex stub."),
+        "{}",
+        made.text
+    );
+    assert!(
+        !made.body["step"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Every account"),
+        "{}",
+        made.text
+    );
+    // `accountFailover` off: it stays on the agent asked for, and its wait names that agent.
+    let off = call(
+        &obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"accountFailover": false})),
+    );
+    assert_eq!(off.status, 200, "{}", off.text);
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Nothing to do",
+                     "agent": "claude", "branch": "oby/another"});
+    let kept = call(&obid, "POST", "/v1/jobs", Some(&json!({ "job": job })));
+    assert_eq!(kept.status, 201, "{}", kept.text);
+    assert_eq!(kept.body["account"], CLAUDE);
+    assert!(kept.body.get("routed").is_none(), "{}", kept.text);
+    let step = kept.body["step"].as_str().unwrap_or_default();
+    assert!(
+        step.starts_with("Claude Code is at its limit: resuming when it has room, at the latest "),
+        "ACCOUNTS-33: {}",
+        kept.text
+    );
+}
+
+/// ACCOUNTS-32: a task named to an account whose CLI isn't on this Mac is refused before anything
+/// starts, saying why and what to do in plain words; an agent asked for that isn't installed hands
+/// it to one that is, saying so.
+#[test]
+fn accounts_32_a_task_named_to_an_account_that_cant_run_is_refused() {
+    let folder = Folder::new("route-cant-run");
+    let mut config = configured(&folder);
+    config["agents"]["cursor"]["bin"] = json!(folder.0.join("nowhere/cursor-agent"));
+    let obid = start(&folder.0, &config, None);
+    let post = |extra: Value| {
+        let mut job =
+            json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Nothing to do"});
+        job.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        call(&obid, "POST", "/v1/jobs", Some(&json!({ "job": job })))
+    };
+    let missing = post(json!({"account": CURSOR}));
+    assert_eq!(missing.status, 422, "{}", missing.text);
+    assert!(
+        missing.text.contains("Cursor isn't installed on this Mac, so this task didn't start: install it, or ask for another account."),
+        "{}",
+        missing.text
+    );
+    assert!(!missing.text.contains("/nowhere"), "{}", missing.text);
+    let jobs = call(&obid, "GET", "/v1/jobs", None).body;
+    assert_eq!(jobs.as_array().unwrap().len(), 0, "nothing started: {jobs}");
+    let asked = post(json!({"agent": "cursor"}));
+    assert_eq!(asked.status, 201, "{}", asked.text);
+    assert_eq!(asked.body["account"], CLAUDE);
+    assert_eq!(
+        asked.body["routed"],
+        "Cursor isn't installed on this Mac, so this runs on Claude Code · Stub.",
+        "{}",
+        asked.text
+    );
+}
+
+/// A new task, its job body's `extra` added.
+fn post_task(obid: &Obid, extra: Value) -> Answer {
+    let mut job =
+        json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Nothing to do"});
+    job.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    call(obid, "POST", "/v1/jobs", Some(&json!({ "job": job })))
+}
+
+/// ACCOUNTS-35, the owner's word of 2026-11-18: a task named to an account that isn't signed in is
+/// refused before anything starts, saying why and what to do; the owner's words to that task,
+/// whose follow-up keeps its account, are refused the same way once it is signed out.
+#[test]
+fn accounts_35_a_task_named_to_a_signed_out_account_is_refused() {
+    let folder = Folder::new("route-signed-out");
+    let config = configured(&folder);
+    let obid = start(&folder.0, &config, None);
+    let first = post_task(&obid, json!({"account": CLAUDE}));
+    assert_eq!(first.status, 201, "{}", first.text);
+    let id = first.body["id"].as_str().unwrap().to_owned();
+    let done = ended_within(&obid, &id, 60);
+    assert!(!done["status"].as_str().unwrap().is_empty(), "{done}");
+    std::fs::remove_file(
+        folder
+            .0
+            .join("home/accounts")
+            .join(CLAUDE)
+            .join(".credentials.json"),
+    )
+    .unwrap();
+    let why = "Claude Code isn't signed in, so this task didn't start: sign it in from Settings › Agents, or ask for another account.";
+    let named = post_task(&obid, json!({"account": CLAUDE}));
+    assert_eq!(named.status, 422, "{}", named.text);
+    assert!(named.text.contains(why), "{}", named.text);
+    let messages = format!("/v1/jobs/{id}/messages");
+    let followed = call(
+        &obid,
+        "POST",
+        &messages,
+        Some(&json!({"text": "Once more"})),
+    );
+    assert_eq!(followed.status, 422, "{}", followed.text);
+    assert!(followed.text.contains(why), "{}", followed.text);
+    let jobs = call(&obid, "GET", "/v1/jobs", None).body;
+    assert_eq!(
+        jobs.as_array().unwrap().len(),
+        1,
+        "nothing else started: {jobs}"
+    );
+}
+
+/// ACCOUNTS-36: a reason two accounts of a tool share is said once in a routed line (#2508).
+#[test]
+fn accounts_36_a_reason_two_accounts_share_is_said_once() {
+    let folder = Folder::new("route-said-once");
+    let mut config = configured(&folder);
+    config["agents"]["cursor"]["bin"] = json!(folder.0.join("nowhere/cursor-agent"));
+    let second = config["agents"]["cursor"]["accounts"][0].clone();
+    let mut second = second.as_object().unwrap().clone();
+    second.insert("id".into(), json!("ustub2"));
+    second.insert("name".into(), json!("Cursor two"));
+    (config["agents"]["cursor"]["accounts"]
+        .as_array_mut()
+        .unwrap())
+    .push(Value::Object(second));
+    let obid = start(&folder.0, &config, None);
+    let asked = post_task(&obid, json!({"agent": "cursor"}));
+    assert_eq!(asked.status, 201, "{}", asked.text);
+    assert_eq!(
+        asked.body["routed"],
+        "Cursor isn't installed on this Mac, so this runs on Claude Code · Stub.",
+        "{}",
+        asked.text
+    );
+}
+
+/// CONVERSATION-AGENT-40: a conversation's dispatch to an agent with no room tells the turn where
+/// the job went and why, in obid's words, and its card carries the same line.
+#[test]
+fn conversation_agent_40_a_dispatch_routed_elsewhere_says_why() {
+    let folder = Folder::new("talk-routed");
+    let config = configured(&folder);
+    claude_at_97(&folder);
+    let obid = start(&folder.0, &config, None);
+    let id = conversation(&said(&obid, json!({"said": "HELLO", "new": true})));
+    choose(&obid, &id, json!(CLAUDE));
+    let words = r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build", "agent": "claude"}"#;
+    let answer = said(&obid, json!({"said": words, "conversation": id}));
+    let words = text(&answer);
+    assert!(
+        words.contains("On it. Codex is building fixture-app on Codex stub. Claude Code is at 97% of its week until ")
+            && words.contains(", so this runs on Codex · Codex stub."),
+        "{}",
+        answer.text
+    );
+    let job = job(&obid, &answer);
+    assert_eq!(job["agent"], "codex");
+    assert!(
+        job["routed"].as_str().is_some_and(|r| words.contains(r)),
+        "{job}"
+    );
 }
 
 /// A chosen account full before the turn starts is said once too, while the session stays elsewhere;
@@ -771,6 +1129,89 @@ fn conversation_agent_7_a_cursor_that_never_started_leaves_no_mark() {
     let on = call_typed(&obid, "POST", "/v1/plans", &words);
     assert_eq!(listed(&obid, &id)["talkedOn"], CURSOR, "{}", on.text);
     assert!(foreign(&id).as_str().unwrap().contains("Cursor"));
+}
+
+/// CONVERSATION-AGENT-41: Cursor keeps its sockets in its data folder while that has room for them,
+/// else in its `TMPDIR`, else in `/tmp/.cursor`, which its box denies, and it stops as it starts
+/// (cursor-agent 2026.11.13, which the stand-in follows). A test's home is past that room, as a long
+/// user name's is: the conversation's Cursor still answers, turn after turn, its `TMPDIR` a short
+/// folder of its own that goes when the turn ends.
+#[cfg(target_os = "macos")]
+#[test]
+fn conversation_agent_41_a_cursor_conversation_answers_whatever_the_homes_length() {
+    let (_folder, obid) = obid("talk-cursor-sockets");
+    let first = said(&obid, json!({"said": "HELLO", "new": true}));
+    let id = conversation(&first);
+    choose(&obid, &id, json!(CURSOR));
+    let data = obid.home.join("logins").join(format!("t-{}", &id[..8]));
+    assert!(
+        data.join("d").as_os_str().len() > 83,
+        "a home with room for Cursor's sockets proves nothing: {}",
+        data.display()
+    );
+    for turn in 1..=3 {
+        let hello = said(&obid, json!({"said": "HELLO", "conversation": id}));
+        assert_eq!(text(&hello), "Hello there.", "turn {turn}: {}", hello.text);
+    }
+    assert_eq!(listed(&obid, &id)["talkedOn"], CURSOR);
+    assert_eq!(cursor_turns(&obid).len(), 3);
+    let temp = std::env::temp_dir().join(format!("oby-c-{}", &id[..8]));
+    assert!(!temp.exists(), "{} stays after the turn", temp.display());
+}
+
+/// CONVERSATION-AGENT-42: where Cursor would find no room for its sockets anywhere it may write, the
+/// conversation doesn't start it, and the turn that moves says why, never a bare "couldn't run".
+#[cfg(target_os = "macos")]
+#[test]
+fn conversation_agent_42_no_room_for_cursors_sockets_says_why() {
+    let folder = Folder::new("talk-cursor-no-room");
+    let config = configured(&folder);
+    // The test's own TMPDIR, as long as its home.
+    let obid = support::start(&folder.0, &config, None);
+    let first = said(&obid, json!({"said": "HELLO", "new": true}));
+    let id = conversation(&first);
+    choose(&obid, &id, json!(CURSOR));
+    let moved = said(&obid, json!({"said": "HELLO", "conversation": id}));
+    assert!(
+        text(&moved)
+            .contains("Cursor · Cursor stub couldn't start: Cursor has no room for its sockets")
+            && text(&moved).contains("give obid a shorter home, so I moved to Claude Code · Stub."),
+        "{}",
+        moved.text
+    );
+    assert!(cursor_turns(&obid).is_empty());
+}
+
+/// CONVERSATION-AGENT-43: an agent that stops as it starts, before a word, says why: the box's own
+/// end (`killed by signal 9`) isn't how it ended, its own exit is, with its last line on stderr; and
+/// the turn that moves says it (as CONVERSATION-AGENT-26).
+#[cfg(target_os = "macos")]
+#[test]
+fn conversation_agent_43_an_agent_that_stops_as_it_starts_says_why() {
+    let (_folder, obid) = obid("talk-cursor-stops");
+    let first = said(&obid, json!({"said": "HELLO", "new": true}));
+    let id = conversation(&first);
+    let room = obid.home.join("conversations").join(&id).join("room");
+    std::fs::write(room.join("stop-at-start"), "").unwrap();
+    choose(&obid, &id, json!(CURSOR));
+    let moved = said(&obid, json!({"said": "HELLO", "conversation": id}));
+    assert!(
+        text(&moved).ends_with(
+            "Cursor · Cursor stub couldn't start: Cursor stopped as it started: fake-cursor-harness: it stopped as it started, so I moved to Claude Code · Stub."
+        ),
+        "{}",
+        moved.text
+    );
+    let log = obid.log();
+    let failed = log
+        .lines()
+        .find(|l| l.contains("its session failed twice"))
+        .unwrap_or_else(|| panic!("no failure line: {log}"));
+    assert!(
+        failed.contains("attempt 1: exit status 3 (fake-cursor-harness: it stopped as it started)"),
+        "{failed}"
+    );
+    assert!(!failed.contains("signal 9"), "{failed}");
 }
 
 /// Moved onto Cursor with nobody choosing it: the line says what stays with the conversation.

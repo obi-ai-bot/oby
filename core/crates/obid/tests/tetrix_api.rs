@@ -272,10 +272,11 @@ fn obid_signs_in_to_tetrix_once_and_agents_use_it_without_its_login() {
     // The context Tetrix gave before the agent started, quoted as data, and the prompt.
     let context = std::fs::read_to_string(worktree.join(".obi/context/tetrix.md")).unwrap();
     // Byte for byte what obid gave before plug-ins went (the strip plan's step 3): the MCP config, the
-    // rules, the context file and the prompt's note.
+    // rules, the context file and the prompt's note. The MCP config's one addition since: an own job's
+    // servers are `alwaysLoad`, as its first turn waits for none of the owner's (LANES-24).
     assert_eq!(
         report["mcp"],
-        json!({"mcpServers": {"tetrix": {"type": "http", "url": server["url"],
+        json!({"mcpServers": {"tetrix": {"type": "http", "url": server["url"], "alwaysLoad": true,
                                          "headers": {"Authorization": job_token}}}})
     );
     assert_eq!(
@@ -1097,6 +1098,62 @@ fn a_connected_but_unusable_tetrix_gives_a_conversation_no_tetrix() {
     assert!(
         !turn["argv"].to_string().contains("the MCP server tetrix"),
         "{turn}"
+    );
+}
+
+/// LANES-24 (docs/contracts/lanes.md): an own Claude Code job given obid's Tetrix server doesn't
+/// wait for the owner's own MCP servers before its first turn: one of theirs that takes 20 s to
+/// answer doesn't hold it, and Tetrix's tools are there. The stand-in holds the first turn as
+/// Claude Code 2.1.325 does (tests/agents/fake-claude).
+// Own Claude Code jobs are macOS-only for now (LANES-1); elsewhere a job loads none of the
+// owner's servers.
+#[cfg(target_os = "macos")]
+#[test]
+fn lanes_24_an_own_job_with_tetrix_doesnt_wait_for_the_owners_mcp_servers() {
+    let folder = Folder::new("lanes-24");
+    let remote = fixture(&folder.0.join("fixture"));
+    let (base, seen) = fake_tetrix();
+    let mut config = config(&folder.0, &remote, &fake_claude());
+    config["repos"][0]["check"] = Value::Null;
+    let obid = start(&folder.0, &config, None);
+    sign_in(&obid, &base);
+    seen.lock().unwrap().mode = "quiet";
+    std::fs::write(obid.home.join("accounts/stub/slow-mcp-ms"), "20000").unwrap();
+    let began = std::time::Instant::now();
+    let made = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(&json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build", "task": "REPORT"}})),
+    );
+    assert_eq!(made.status, 201, "{}", made.text);
+    let id = made.body["id"].as_str().unwrap().to_owned();
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}/wait"), None).body;
+    let took = began.elapsed();
+    let report: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            obid.home
+                .join("worktrees")
+                .join(&id)
+                .join(".obi/report.json"),
+        )
+        .unwrap_or_else(|e| panic!("{e}: {job}")),
+    )
+    .unwrap();
+    let argv = report["argv"].to_string();
+    assert!(
+        argv.contains("--mcp-config") && !argv.contains("--strict-mcp-config"),
+        "an own job given Tetrix's server: {argv}"
+    );
+    assert!(
+        report["answers"]["tetrix"]["result"]["tools"]
+            .as_array()
+            .is_some_and(|tools| !tools.is_empty()),
+        "the agent has Tetrix's tools: {report}"
+    );
+    assert!(
+        took < std::time::Duration::from_secs(15),
+        "the job waited {took:?} for the owner's MCP servers: {job}"
     );
 }
 

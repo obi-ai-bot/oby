@@ -1,0 +1,114 @@
+{
+  "schemaVersion": "2",
+  "name": "PATCH /v1/helpers/{id}",
+  "version": "1.0.0",
+  "description": "Changes a helper (HELPERS-4): 422 for nothing to change, 404 for one obid doesn't have; 200 changed.",
+  "trigger": {
+    "http": {
+      "method": "PATCH",
+      "path": "/v1/helpers/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "made",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/helpers",
+        "body": {
+          "name": "Reviewer",
+          "color": "#3a5a8c",
+          "instructions": "Review pull requests carefully.",
+          "tool": "claude"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/helpers/${state.made.body.id}",
+        "body": {
+          "name": "x"
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "nothing-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/helpers/${state.made.body.id}",
+        "body": {},
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "HELPERS-4"
+        ]
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/helpers/00000000-0000-4000-8000-000000000000",
+        "body": {
+          "name": "x"
+        },
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "helpers-4-renamed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/helpers/${state.made.body.id}",
+        "body": {
+          "name": "Tester"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.made.body.id}",
+            "name": "Tester"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "HELPERS-4"
+        ]
+      }
+    }
+  ]
+}

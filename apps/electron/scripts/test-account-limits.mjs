@@ -1,10 +1,11 @@
 // Real Electron → preload → main/device → signed HTTP → real obid regression for #1563.
-// Uses only stand-in agents and an isolated runner home. Keep Electron's HOME: replacing it
-// makes macOS safeStorage unavailable even with a separate userData folder.
+// Uses only stand-in agents and an isolated runner home. The device key is a 0600 file in the app's
+// folder, and the Keychain is never asked (docs/contracts/keychain.md, KEYCHAIN-12).
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
+import { skipFirstRun } from './drive-lib.mjs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -104,11 +105,11 @@ async function setup(name, { seed = true, available = false, reset = now() + 360
 }
 
 async function openApp(s, unavailable = false) {
-  // Set userData before ready or any key read; retain the real HOME for the OS Keychain.
+  // Set userData before ready or any key read.
   const launcher = join(s.root, 'electron-launcher.cjs');
   writeFileSync(launcher, `const { app, safeStorage, ipcMain } = require('electron');
 app.setPath('userData', ${JSON.stringify(join(s.root, 'electron-data'))});
-${unavailable ? `safeStorage.isEncryptionAvailable = () => false;
+${unavailable ? `for (const f of ['isEncryptionAvailable', 'encryptString', 'decryptString']) safeStorage[f] = () => { throw new Error('the Keychain was asked'); };
 // Controlled IPC latency makes the pending UI observable. The actual registered handler,
 // preload, secure-storage error and response all still run; no API/bridge is substituted.
 const handle = ipcMain.handle.bind(ipcMain);
@@ -126,8 +127,7 @@ import(${JSON.stringify(pathToFileURL(join(appRoot, 'out/main/index.js')).href)}
   page.on('pageerror', (e) => errors.push(e.message));
   await page.waitForLoadState('domcontentloaded');
   // set up already (FirstRun.tsx), so Home shows rather than the first run's screens
-  await page.evaluate(() => { for (const k of ['oby.onboarded', 'oby.setUp', 'oby.welcomed']) localStorage.setItem(k, '1'); });
-  await page.reload();
+  await skipFirstRun(page);
   await page.waitForLoadState('domcontentloaded');
   await page.keyboard.press('Escape');
   const card = await limitCard(page);
@@ -178,19 +178,17 @@ try {
     const { app, page, card, errors } = await openApp(s, unavailable);
     try {
       if (unavailable) {
+        // KEYCHAIN-12: with every use of the Keychain failing, the owner's choice is still signed
         await card.getByRole('button', { name: 'Keep stopped' }).click();
-        await card.waitFor({ state: 'detached', timeout: 2000 });  // out of the stack while the answer is in flight
-        const back = await limitCard(page);
-        assert.match(await back.innerText(), /Keychain isn’t available/);
-        assert.ok(await back.getByRole('button', { name: 'Keep stopped' }).isEnabled(), 'failed signing can be retried');
-        assert.equal(read(join(s.home, 'limit-decisions.json'))[0].choice, 'pending');
-        assert.equal(existsSync(join(s.root, 'electron-data/device-key')), false, 'no plaintext fallback');
+        await card.waitFor({ state: 'detached' });
+        await until('the owner\'s choice is saved with no Keychain', () => read(join(s.home, 'limit-decisions.json'))[0].choice === 'stop');
+        assert.ok(existsSync(join(s.root, 'electron-data/device-key.pem')), 'the device key is a file in the isolated userData');
       } else {
         await card.getByRole('button', { name: 'Keep stopped' }).click();
         await card.waitFor({ state: 'detached' });
         // (the card leaves Home's stack as it's answered; obid saves the choice a moment later)
         await until('the owner\'s choice is saved', () => read(join(s.home, 'limit-decisions.json'))[0].choice === 'stop');
-        assert.ok(existsSync(join(s.root, 'electron-data/device-key')), 'encrypted device key created in isolated userData');
+        assert.ok(existsSync(join(s.root, 'electron-data/device-key.pem')), 'device key created in isolated userData');
         for (const id of ['aaaa0001', 'aaaa0002']) assert.equal((await s.call('GET', `/v1/jobs/${id}`)).status, 'interrupted');
         await noRepeatedInterruption(page);
         const unsigned = await fetch(`http://127.0.0.1:${s.port}/v1/jobs/aaaa0001/messages`, {
@@ -208,7 +206,7 @@ try {
         await until('signed manual continuation after Keep stopped', async () => (await s.call('GET', '/v1/jobs/aaaa0001')).status === 'done', 60_000);
       }
       assert.deepEqual(errors, []);
-      console.log(`PASS ${unavailable ? 'unavailable Keychain gives visible error without plaintext key' : 'real Electron signed Keep stopped for two jobs'}`);
+      console.log(`PASS ${unavailable ? 'no Keychain: the owner\'s choice is still signed (KEYCHAIN-12)' : 'real Electron signed Keep stopped for two jobs'}`);
     } finally { await close(s, app); }
   }
 
@@ -253,7 +251,7 @@ try {
       assert.equal(refused.status, 409);
       assert.match(JSON.parse(refused.text).error, /choice changed/);
       assert.equal(read(join(s.home, 'limit-decisions.json'))[0].choice, 'pending');
-      assert.equal(existsSync(join(s.root, 'electron-data/device-key')), false, 'a changed scope is refused before signing');
+      assert.equal(existsSync(join(s.root, 'electron-data/device-key.pem')), false, 'a changed scope is refused before signing');
       console.log('PASS real Electron IPC rejects an old revision after another job joins, before signing');
     } finally { await close(s, app); }
   }

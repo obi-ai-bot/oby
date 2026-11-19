@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { anything, boolean, flag, https, method, oneOf, optional, orUndefined, safeInteger, string, v1Path } from '../../../shared/decode';
+import { anything, boolean, flag, https, method, oneOf, optional, orUndefined, profileId, safeInteger, string, v1Path } from '../../../shared/decode';
 import { input, takeInput } from '../../../main/words';
 
 // docs/contracts/ipc.md: every channel the page reaches main on, through main's one helper
@@ -17,8 +17,11 @@ const the = vi.hoisted(() => ({
   calls: [] as unknown[][],
   dialogs: 0,
   opened: [] as string[],
+  refuseOpen: false,
   checks: 0,
   policies: 0,
+  joins: 0,
+  invites: 0,
 }));
 vi.mock('electron', async () => {
   const { EventEmitter } = await import('node:events');
@@ -62,7 +65,7 @@ vi.mock('electron', async () => {
     powerMonitor: { on() {} },
     safeStorage: { isEncryptionAvailable: () => true, encryptString: (s: string) => Buffer.from(s), decryptString: (b: Buffer) => b.toString() },
     screen: { getCursorScreenPoint: () => ({ x: 0, y: 0 }) },
-    shell: { openExternal: async (url: string) => { the.opened.push(url); } },
+    shell: { openExternal: async (url: string) => { if (the.refuseOpen) throw new Error('refused'); the.opened.push(url); } },
   };
 });
 // the native window style (index.ts's windowStyle): where it put the traffic lights
@@ -79,13 +82,26 @@ vi.mock('../../../main/obid', async (original) => ({
   obid: async (...a: unknown[]) => { the.calls.push(a); return { status: 200, text: '[]' }; },
   send: () => new Promise(() => {}),
   takesKeys: async () => false,
+  chooseProfile: () => false,
+  openedProfile: () => null,
 }));
-vi.mock('../../../shared/sphere', () => ({
-  NotThisKey: class extends Error {}, join() {}, joinWarning() {}, leave() {}, parseInvite() {}, keepMembership: async () => {},
+vi.mock('../../../shared/sphere', async (original) => ({
+  // links read as main reads them; nothing joins
+  parseInvite: (await original<typeof import('../../../shared/sphere')>()).parseInvite,
+  NotThisKey: class extends Error {}, join: async () => { the.joins++; }, joinWarning() {}, leave() {}, keepMembership: async () => {},
   readPolicy: async () => { the.policies++; }, addStarterRule: async () => { the.policies++; },
+  listInvitations: async () => ({ invitations: [], link: null, refused: null, why: null }),
+  makeInvitation: async () => { the.invites++; return { invitations: [], link: 'oby://join/x#…', refused: null, why: null }; },
+  withdrawInvitation: async () => { the.invites++; return { invitations: [], link: null, refused: null, why: null }; },
+  setAdmin: async () => { the.invites++; return { admins: ['dana', 'wellington'], refused: null, why: null }; },
+  rebindOffer: async () => [{ id: 'google', name: 'Google' }],
+  getBackIn: async () => { the.invites++; return { kind: 'back', owner: 'wellington', admin: false }; },
+  signinStatus: async () => ({ providers: [{ id: 'google', name: 'Google' }], linked: false }),
+  addSignin: async () => { the.invites++; return { linked: true }; },
 }));
 
 const FORBIDDEN = { status: 403, text: '' };
+const LINK = `https://sphere.example.com/join#sphere=demo&name=Demo%20team&id=9187a87a-3126-424c-8861-8811bba1a5ec&secret=${'A'.repeat(43)}`;
 const NOT_OBID = { status: 400, text: '{"error":"Not an obid call."}' };
 // every channel, with arguments its handler would act on, and what a sender that isn't the
 // window's own page gets (sync: its returnValue; undefined: nothing, as send gets)
@@ -99,10 +115,14 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'open-login-items': { args: [], refusal: undefined },
   'obid-snapshot': { args: [], refusal: null },
   'obid-load': { args: [{ conversation: 'c1' }], refusal: null },
+  'obid-profile': { args: ['bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'], refusal: null },
   'obid-confirm': { args: ['confirm-1', true], refusal: FORBIDDEN },
   'obid-pair-invite': { args: [], refusal: FORBIDDEN },
   'obid-publish': { args: ['j1', 'Publish this', {}], refusal: FORBIDDEN },
   'obid-limit-answer': { args: ['d1', 1, 'stop'], refusal: FORBIDDEN },
+  'obid-undo': { args: ['j1', 'Undo this'], refusal: FORBIDDEN },
+  'open-worktree': { args: ['j1', 'terminal'], refusal: false },
+  'worktree-editor': { args: [], refusal: null },
   showing: { args: [{ job: 'j1' }], refusal: undefined },
   opened: { args: [], refusal: null },
   notifications: { args: [false], refusal: null },
@@ -115,6 +135,16 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'sphere-leave': { args: [], refusal: 'Not this app’s page.' },
   'sphere-policy': { args: [], refusal: null },
   'sphere-set-policy': { args: [0], refusal: null },
+  'sphere-invitations': { args: [], refusal: null },
+  'sphere-invite': { args: [], refusal: null },
+  'sphere-withdraw': { args: ['9187a87a-3126-424c-8861-8811bba1a5ec'], refusal: null },
+  'sphere-admin': { args: ['dana', true], refusal: null },
+  'sphere-rebind-offer': { args: ['sphere.example.com/demo'], refusal: null },
+  'sphere-rebind': { args: ['sphere.example.com/demo', 'google'], refusal: 'Not this app’s page.' },
+  'sphere-signin-status': { args: [], refusal: null },
+  'sphere-add-signin': { args: ['google'], refusal: 'Not this app’s page.' },
+  'sphere-join': { args: [LINK], refusal: { kind: 'failed', name: '', why: 'Not this app’s page.' } },
+  'sphere-handoff': { args: [{ to: 'dana', goal: 'Add a name option', repo: 'acme/app', base: 'main' }], refusal: 'Not this app’s page.' },
   'render-error': { args: ['TypeError', 'm', ''], refusal: undefined },
 };
 
@@ -274,6 +304,11 @@ describe('IPC-3', () => {
     expect(method('get')).toBeUndefined();
     expect(v1Path('/v1/x')).toEqual({ value: '/v1/x' });
     expect(v1Path('/v1')).toBeUndefined();
+    // a profile's id as obid lists it, or none (B00-40)
+    const id = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    expect(profileId(id)).toEqual({ value: id });
+    expect(profileId(null)).toEqual({ value: null });
+    for (const v of [id.toUpperCase(), id.slice(1), '../x', '', 1, undefined]) expect(profileId(v)).toBeUndefined();
     // the lenient ones never fail
     for (const v of [undefined, null, 0, 'x', true, {}, []]) {
       expect(flag(v)).toEqual({ value: v === true });
@@ -309,5 +344,168 @@ describe('IPC-4', () => {
     expect(files).toContain('index.ts');
     const raw = files.filter((f) => /ipcMain\s*\.\s*(handle|on)\s*\(/.test(readFileSync(join(main, f), 'utf8')));
     expect(raw).toEqual([]);
+  });
+});
+
+describe('ALERTS-19', () => {
+  const PANE = 'x-apple.systempreferences:com.apple.Notifications-Settings.extension';
+  it('alerts_19_main_opens_only_the_notifications_pane_whatever_the_page_sends', async () => {
+    the.opened.length = 0;
+    // the page's click opens the pane; anything it sends along is ignored
+    await call('open-notification-settings', own());
+    await call('open-notification-settings', own(), 'x-apple.systempreferences:com.apple.Passwords-Settings.extension', 'https://example.com');
+    expect(the.opened).toEqual([PANE, PANE]);
+    // a sender that isn't the window's own page opens nothing
+    await call('open-notification-settings', stranger());
+    expect(the.opened).toHaveLength(2);
+    // the page's open-external still takes https only: no System Settings URL, no other scheme
+    for (const url of [PANE, `${PANE}?id=com.deskree.oby.electron`, 'x-apple.systempreferences:', 'file:///etc/passwd', 'http://example.com']) {
+      await call('open-external', own(), url);
+    }
+    expect(the.opened).toHaveLength(2);
+    the.opened.length = 0;
+  });
+
+  it('alerts_19_a_refused_open_is_logged_never_silent', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    the.refuseOpen = true;
+    try {
+      await call('open-notification-settings', own());
+      await vi.waitFor(() => expect(logged).toHaveBeenCalledWith(expect.stringContaining(`Oby: couldn’t open System Settings at ${PANE}`)));
+    } finally {
+      the.refuseOpen = false;
+      logged.mockRestore();
+    }
+  });
+});
+
+// docs/contracts/sphere-app.md: a link pasted in the app, and a task handed over, go only right after
+// a click or key main saw itself
+describe('SPHEREAPP-4 and 6', () => {
+  it('sphereapp_4_a_pasted_link_joins_through_main_s_own_dialog_only_after_a_click_main_saw', async () => {
+    while (takeInput()) { /* other tests' */ }
+    const before = { dialogs: the.dialogs, joins: the.joins };
+    // the page alone: refused, no dialog, nothing joined
+    expect(await call('sphere-join', own(), LINK)).toEqual({ kind: 'failed', name: '', why: 'Joining takes your own click.' });
+    expect(the.dialogs).toBe(before.dialogs);
+    // a click: main's own Join dialog, the oby:// link's; its Cancel joins nothing
+    input();
+    expect(await call('sphere-join', own(), LINK)).toEqual({ kind: 'cancelled' });
+    expect(the.dialogs).toBe(before.dialogs + 1);
+    expect(the.joins).toBe(before.joins);
+    // a text that isn't a link: said, no dialog
+    input();
+    expect(await call('sphere-join', own(), 'https://example.com/')).toEqual({ kind: 'not_a_link' });
+    expect(the.dialogs).toBe(before.dialogs + 1);
+  });
+
+  it('sphereapp_6_a_task_is_handed_over_only_right_after_a_click_main_saw', async () => {
+    while (takeInput()) { /* other tests' */ }
+    const ask = { to: 'dana', goal: 'Add a name option', repo: 'acme/app', base: 'main' };
+    const before = the.calls.length;
+    expect(await call('sphere-handoff', own(), ask)).toBe('Handing a task over takes your own click.');
+    expect(the.calls.length).toBe(before);
+    // a click: main asks obid who's in (no one here), and says so
+    input();
+    expect(await call('sphere-handoff', own(), ask)).toBe('dana isn’t in your Obysphere.');
+    expect(the.calls.slice(before).map((c) => `${c[0]} ${c[1]}`)).toEqual(['GET /v1/obid/sphere/members']);
+    // the page's object is read as four strings, nothing more
+    expect(await call('sphere-handoff', own(), { ...ask, goal: 7 })).toBe('Not this app’s page.');
+  });
+
+  it('sphereapp_6_main_sends_obid_one_handoff_to_their_oby_that_takes_tasks', async () => {
+    const { handOff } = await import('../../../main/sphere');
+    const sent: unknown[][] = [];
+    const members = [
+      { obi: 'obi-dana-old', owner: 'dana', accepts: ['question', 'review_request'], sealed: true },
+      { obi: 'obi-dana', owner: 'dana', accepts: ['question', 'review_request', 'handoff'], sealed: true },
+      { obi: 'obi-ben', owner: 'ben', accepts: ['question'], sealed: true },
+    ];
+    const fake = (answer: { status: number; text: string }) => async (method: string, path: string, body?: unknown) => {
+      sent.push([method, path, body]);
+      return method === 'GET' ? { status: 200, text: JSON.stringify(members) } : answer;
+    };
+    const ask = { to: 'dana', goal: '  Add a name option to the greeter ', repo: 'acme/app', base: 'main' };
+    expect(await handOff(ask, fake({ status: 202, text: '{}' }))).toBeNull();
+    expect(sent[1]).toEqual(['POST', '/v1/obid/sphere/requests', {
+      to: 'obi-dana', type: 'handoff', expiresIn: 604800,
+      body: { goal: 'Add a name option to the greeter', repo: 'acme/app', base_branch: 'main', acceptance: [{ kind: 'tests_pass' }] },
+    }]);
+    // a member whose Oby doesn't take tasks, the Sphere's rules, and a form that can't go: words, and nothing sent
+    sent.length = 0;
+    expect(await handOff({ ...ask, to: 'ben' }, fake({ status: 202, text: '{}' }))).toBe('ben’s Oby doesn’t take tasks yet.');
+    expect(await handOff(ask, fake({ status: 502, text: JSON.stringify({ error: 'The Sphere refused it: policy_denied: no rule' }) })))
+      .toBe('This Obysphere’s rules don’t allow handing over tasks yet. An admin can change that.');
+    expect(sent.filter((c) => c[0] === 'POST')).toHaveLength(1);
+    sent.length = 0;
+    expect(await handOff({ ...ask, repo: 'not a repo' }, fake({ status: 202, text: '{}' }))).toBe('That task can’t go as it is.');
+    expect(sent).toEqual([]);
+  });
+});
+
+describe('SPHEREAPP-10', () => {
+  it('sphereapp_10_a_link_is_made_or_withdrawn_only_right_after_a_click_main_saw', async () => {
+    while (takeInput()) { /* other tests' */ }
+    const before = the.invites;
+    expect(await call('sphere-invite', own())).toMatchObject({ refused: 'failed', why: 'Making a link takes your own click.', link: null });
+    expect(await call('sphere-withdraw', own(), 'inv-1')).toMatchObject({ refused: 'failed', why: 'Withdrawing a link takes your own click.' });
+    expect(the.invites).toBe(before);
+    // a click: one link, and only one
+    input();
+    await call('sphere-invite', own());
+    expect(the.invites).toBe(before + 1);
+    await call('sphere-invite', own());
+    expect(the.invites).toBe(before + 1);
+    input();
+    await call('sphere-withdraw', own(), 'inv-1');
+    expect(the.invites).toBe(before + 2);
+    // the list takes none
+    expect(await call('sphere-invitations', own())).toMatchObject({ refused: null });
+    expect(the.invites).toBe(before + 2);
+  });
+});
+
+describe('SPHEREAPP-11', () => {
+  it('sphereapp_11_who_is_admin_changes_only_right_after_a_click_main_saw', async () => {
+    while (takeInput()) { /* other tests' */ }
+    const before = the.invites;
+    expect(await call('sphere-admin', own(), 'dana', true)).toEqual({ admins: null, refused: 'failed', why: 'Changing who’s admin takes your own click.' });
+    expect(the.invites).toBe(before);
+    input();
+    expect(await call('sphere-admin', own(), 'dana', true)).toMatchObject({ admins: ['dana', 'wellington'], refused: null });
+    expect(the.invites).toBe(before + 1);
+    // the page's owner and choice are read as a string and a boolean, nothing else
+    expect(await call('sphere-admin', own(), 'dana', 'yes')).toBeNull();
+  });
+});
+
+describe('SPHEREAPP-12', () => {
+  it('sphereapp_12_getting_back_in_starts_only_right_after_a_click_main_saw_and_main_s_own_dialog', async () => {
+    while (takeInput()) { /* other tests' */ }
+    const before = { dialogs: the.dialogs, invites: the.invites };
+    // what an address offers takes no click
+    expect(await call('sphere-rebind-offer', own(), 'sphere.example.com/demo')).toEqual({ sphere: 'demo', host: 'sphere.example.com', providers: [{ id: 'google', name: 'Google' }] });
+    expect(await call('sphere-rebind-offer', own(), 'not an address')).toBeNull();
+    // the sign-in: refused without a click, no dialog
+    expect(await call('sphere-rebind', own(), 'sphere.example.com/demo', 'google')).toBe('Getting back in takes your own click.');
+    expect(the.dialogs).toBe(before.dialogs);
+    // a click: main's own dialog; its Cancel starts nothing
+    input();
+    expect(await call('sphere-rebind', own(), 'sphere.example.com/demo', 'google')).toBeNull();
+    expect(the.dialogs).toBe(before.dialogs + 1);
+    expect(the.invites).toBe(before.invites);
+  });
+});
+
+describe('SPHEREAPP-13', () => {
+  it('sphereapp_13_a_sign_in_is_added_only_right_after_a_click_main_saw', async () => {
+    while (takeInput()) { /* other tests' */ }
+    const before = the.invites;
+    expect(await call('sphere-signin-status', own())).toEqual({ providers: [{ id: 'google', name: 'Google' }], linked: false });
+    expect(await call('sphere-add-signin', own(), 'google')).toBe('Adding sign-in takes your own click.');
+    expect(the.invites).toBe(before);
+    input();
+    expect(await call('sphere-add-signin', own(), 'google')).toBeNull();
+    expect(the.invites).toBe(before + 1);
   });
 });

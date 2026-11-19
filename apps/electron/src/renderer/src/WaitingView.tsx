@@ -2,10 +2,11 @@ import { useEffect, useState } from 'react';
 import { BrandMark } from './brands';
 import { useScrollThumb } from './useScrollThumb';
 import { agentOf, ago } from './view';
-import { allowWaiting, answerWaiting, approvingTools, homeAsk, itemAsk, mergeWaiting, projectOf, questionOf, reviewOf, shownId, useLive, waitingOf } from './live';
+import { useChats } from './chats';
+import { allowWaiting, answerWaiting, approvingTools, homeAsk, itemAsk, mergeWaiting, prChecksOf, projectOf, questionOf, reviewOf, shownId, useLive, waitingOf } from './live';
 import { ReviewBlock } from './AskStack';
 import { QuestionBlock } from './QuestionCard';
-import { AskBlock } from './TaskCard';
+import { AskBlock, startsOnClick } from './TaskCard';
 import { ALLOW_ONCE } from '../../shared/words';
 import type { InboxItem } from './obid';
 
@@ -78,7 +79,7 @@ export default function WaitingView({ leaving, covered = false, onClose, onGone,
 function WaitingRow({ item: i, onOpenTask, onOpenTalk }: { item: InboxItem; onOpenTask: (id: string) => void; onOpenTalk: (id: string) => void }) {
   const s = useLive();
   const j = s.jobs[i.job];
-  const ask = itemAsk(i);
+  const ask = { ...itemAsk(i, undefined, j?.permission?.question), ...prChecksOf(s, i) };
   const kind = kindOf(i);
   const project = projectOf(s, i);
   const talk = i.conversation ?? j?.conversation;
@@ -87,7 +88,8 @@ function WaitingRow({ item: i, onOpenTask, onOpenTalk }: { item: InboxItem; onOp
   const stage = (id: string) => j?.pipeline?.stages.find((st) => st.id === id);
   const check = stage('check')?.state === 'done' ? 'Check passed' : stage('check')?.state === 'failed' ? 'Check failed' : undefined;
   const tools = j ? approvingTools(j) : [];
-  const review = tools.length ? undefined : stage('review')?.detail;
+  // a merge's only: a question or a permission is never tagged with the task's review
+  const review = kind !== 'merge' || tools.length ? undefined : stage('review')?.detail;
   const summary = kind === 'merge' ? j?.summary : undefined;
   const diff = kind === 'merge' ? j?.diff : undefined;
   // what it waits on with no task's permission and nowhere to open: its card, as Home's stack shows
@@ -101,9 +103,22 @@ function WaitingRow({ item: i, onOpenTask, onOpenTalk }: { item: InboxItem; onOp
   // another Oby's review request: all it quotes (goal, summary, conditions) before its answers
   const request = card ? reviewOf(i) : undefined;
   const answers = kind === 'merge' && !merges ? i.options : [];
-  const meta = [project ? name(project) : 'No project', ago((Date.now() - Date.parse(i.created)) / 60_000)].join(' · ');
+  // its project, then (screen 17) a merge's pull request and where it goes, else the conversation it
+  // waits in and, for a permission, what it asks; then how long it has waited, but for a permission
+  const chats = useChats();
+  const pr = kind === 'merge' && j?.published ? /\/pull\/(\d+)/.exec(j.published)?.[1] : undefined;
+  const where = pr ? `${name(j!.repo)}#${pr}${j!.base ? ` into ${j!.base}` : ''}` : talk ? chats.find((c) => c.id === shownId(talk))?.title : undefined;
+  // a GitHub offer's row starts its work when clicked, as Home's card does (GITHUBWORK-10)
+  const start = card && i.kind === 'github' ? i.options[0] : undefined;
+  const [shownAt] = useState(() => performance.now());
+  const onRow = (e: React.MouseEvent) => {
+    if (!start || !startsOnClick(e, shownAt)) return;
+    if (talk) return onOpenTalk(shownId(talk));
+    void answerWaiting(i, start);
+  };
+  const meta = [project ? name(project) : 'No project', where, kind === 'permission' ? (j?.permission?.detail ? 'asks to run a command' : 'asks for permission') : ago((Date.now() - Date.parse(i.created)) / 60_000)].filter(Boolean).join(' · ');
   return (
-    <li className="waiting-row" aria-label={j?.title ?? i.title}>
+    <li className={`waiting-row${start ? ' is-startable' : ''}`} aria-label={j?.title ?? i.title} onClick={onRow}>
       {j && <BrandMark brand={agentOf(j.agent).brand} size={16} mono />}
       <div className="waiting-text">
         <h2 className="waiting-title">{j?.title ?? i.title}</h2>

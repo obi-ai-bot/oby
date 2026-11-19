@@ -35,8 +35,9 @@ pub struct Shared {
     pub cleared: crate::clear::Cleared,
     /// The devices that may approve publishing (`POST /v1/devices`).
     pub devices: crate::devices::Devices,
-    /// Chrome-style profiles on this Mac (`/v1/profiles`); nothing else reads them yet.
-    pub profiles: crate::profiles::Profiles,
+    /// Chrome-style profiles on this Mac (`/v1/profiles`): crate::profiles::root_of reads them for
+    /// the profile a request names, and the start's reconcile for every profile's projects.
+    pub profiles: Arc<crate::profiles::Profiles>,
     /// The owner's helpers (`/v1/helpers`).
     pub helpers: crate::helpers::Helpers,
     /// The phones paired with the gateway, and the open invitation (crate::gateway).
@@ -145,6 +146,14 @@ pub fn router(shared: Arc<Shared>) -> Router {
         )
         .route("/v1/accounts/{id}/reserve", post(crate::accounts::reserve))
         .route(
+            "/v1/accounts/{id}/sign-out",
+            post(crate::accounts::sign_out::sign_out),
+        )
+        .route(
+            "/v1/settings/agents/{agent}",
+            axum::routing::put(crate::accounts::bins::set),
+        )
+        .route(
             "/v1/accounts/{id}/background",
             post(crate::accounts::background),
         )
@@ -179,6 +188,11 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/v1/jobs/{id}/archive", post(crate::routes::archive))
         .route("/v1/jobs/{id}/delete", post(crate::routes::delete_asked))
         .route("/v1/jobs/{id}/wait", get(crate::routes::wait))
+        .route("/v1/jobs/{id}/changes", get(crate::routes::changes))
+        .route(
+            "/v1/jobs/{id}/undo",
+            get(crate::routes::undo_sentence).post(crate::routes::undo),
+        )
         .route("/v1/jobs/{id}/report", get(crate::routes::report))
         .route("/v1/jobs/{id}/transcript", get(crate::routes::transcript))
         .route(
@@ -222,6 +236,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/v1/notifications", post(crate::push::register))
         .route("/v1/alerts", get(crate::routes::alerts))
         .merge(crate::connections::router())
+        .merge(crate::connectors::router())
         .merge(crate::tetrix::router())
         .merge(crate::chatgpt_relay::router())
         .merge(crate::vault::router())
@@ -241,6 +256,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route(
             "/v1/conversations/{id}",
             axum::routing::patch(crate::conversation::update).delete(crate::conversation::remove),
+        )
+        .route(
+            "/v1/conversations/{id}/files",
+            get(crate::conversation_files::search),
         )
         .route(
             "/v1/routines",
@@ -266,7 +285,8 @@ pub fn router(shared: Arc<Shared>) -> Router {
         )
         .route(
             "/v1/profiles/{id}",
-            axum::routing::patch(crate::profiles::change_route),
+            axum::routing::patch(crate::profiles::change_route)
+                .delete(crate::profiles::delete_route),
         )
         .route(
             "/v1/projects",
@@ -326,6 +346,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
             "/v1/obid/sphere/members",
             get(crate::sphere::routes::members),
         )
+        .route(
+            "/v1/obid/sphere/owner",
+            axum::routing::put(crate::sphere::routes::set_owner),
+        )
         .route("/v1/obid/sphere/pins", get(crate::sphere::routes::pins))
         .route(
             "/v1/obid/sphere/pins/{owner}",
@@ -353,6 +377,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route(
             "/v1/obid/sphere/peers/{owner}/ask",
             post(crate::sphere::routes::peer_ask),
+        )
+        .route(
+            "/v1/obid/sphere/peers/{owner}/unsealed",
+            axum::routing::put(crate::sphere::routes::allow_unsealed),
         )
         .route("/v1/memory", get(crate::memory::get))
         .route(
@@ -406,6 +434,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
         )
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
+        .layer(middleware::from_fn_with_state(
+            shared.clone(),
+            crate::profile_scope::scoped,
+        ))
         .layer(middleware::from_fn(crate::vault::answers))
         .layer(middleware::from_fn_with_state(shared.clone(), gate))
         .with_state(shared)
@@ -646,8 +678,13 @@ async fn method_not_allowed() -> ApiError {
 /// name one behaviour forever (a changed behaviour gets a new name, such as `-v2`). A new optional
 /// feature adds its name here and its row in docs/runner-api.md's Capabilities table together.
 pub const CAPABILITIES: &[&str] = &[
+    "ask-mentions-v1",
+    "composer-v1",
+    "conversation-marks-v1",
     "events-replay-v1",
     "folders-v1",
+    "profile-projects-v1",
+    "profile-scope-v1",
     "project-jobs-v1",
     "projects-v1",
     "revisions-v1",
@@ -661,6 +698,10 @@ pub struct Status {
     /// The tools' own logins obid found on this Mac that aren't accounts: `{agent, id, name}`, each
     /// listed on the owner's word (`POST /v1/accounts` `{"agent", "default": true}`).
     pub available_logins: Vec<serde_json::Value>,
+    /// The tools' own logins on this Mac another profile holds as an account (PROFILES-43):
+    /// `{agent, id, profile, profileName}`, by the holding profile's id and name. Older obids don't
+    /// send it.
+    pub other_profile_logins: Vec<serde_json::Value>,
     pub models: Models,
     pub max_running: u32,
     pub default_agent: String,
@@ -716,6 +757,11 @@ pub struct Status {
 #[serde(rename_all = "camelCase")]
 pub struct ToolJson {
     pub agent: &'static str,
+    /// What obid runs it as before it's found: the configuration's `bin`, or the one the owner
+    /// set (ACCOUNTS-26). Older obids don't send it.
+    pub bin: String,
+    /// Whether that's the one the owner set in Settings, not the configuration's.
+    pub bin_set: bool,
     pub path: Option<String>,
     pub version: Option<String>,
     pub version_status: &'static str,
@@ -753,6 +799,14 @@ pub struct RunnerJson {
     pub host: String,
     /// `obid`: what tells the apps and the e2e harness this runner is obid, not the Swift one.
     pub engine: &'static str,
+    /// The commit obid was built from (`OBY_BUILD_COMMIT` when it was compiled, as
+    /// scripts/run-dev.sh and the app's packaging set it), or null for a build that wasn't told.
+    pub commit: Option<&'static str>,
+}
+
+/// [`RunnerJson::commit`]: what the build was given, empty counting as none.
+pub fn build_commit() -> Option<&'static str> {
+    option_env!("OBY_BUILD_COMMIT").filter(|commit| !commit.is_empty())
 }
 
 /// An account (docs/runner-api.md, "Account"), as obid knows it before any job has run on it.
@@ -805,6 +859,10 @@ pub struct AccountJson {
     /// against it only then. Add-only; left out until then.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub models_read: bool,
+    /// Why its agent couldn't start, in plain words, while obid keeps it (ACCOUNTS-19); else left
+    /// out (add-only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cant_run: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -966,6 +1024,7 @@ pub fn account_json(
             &crate::model_lists::fallback(tool),
         ),
         models_read: shared.jobs.model_lists.read(tool, &account.id),
+        cant_run: shared.jobs.cant_run_why(&account.id),
     }
 }
 
@@ -1008,7 +1067,11 @@ async fn model_options(State(shared): State<Arc<Shared>>) -> axum::Json<serde_js
     axum::Json(serde_json::Value::Object(options.into_iter().collect()))
 }
 
-async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>, ApiError> {
+async fn status(
+    State(shared): State<Arc<Shared>>,
+    scope: Option<axum::Extension<crate::profiles::Scope>>,
+) -> Result<axum::Json<Status>, ApiError> {
+    let scope = crate::profile_scope::of(&shared, scope);
     // A tool installed or signed in since obid started (first launch on a fresh Mac) shows up here,
     // looked for at most every 2 seconds.
     let agents = shared.config.agents.clone();
@@ -1016,11 +1079,13 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
     // An app looks at the accounts: their usage is asked of their tools if it's stale, and comes
     // in the `accounts` event.
     shared.jobs.want_usage();
-    let accounts = crate::accounts::list_now(&shared).await;
+    let mut accounts = crate::accounts::list_now(&shared).await;
+    // Only the profile's own accounts (B00-40).
+    accounts.retain(|account| shared.profiles.accounts.holds(&scope, &account.id));
     // Off the runtime as the list is: whether an account can run can ask the macOS Keychain.
     let talk_next = {
-        let shared = shared.clone();
-        tokio::task::spawn_blocking(move || crate::brain::talk::next(&shared))
+        let (shared, scope) = (shared.clone(), scope.clone());
+        tokio::task::spawn_blocking(move || crate::brain::talk::next(&shared, &scope))
             .await
             .unwrap_or(None)
     };
@@ -1037,6 +1102,7 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
             version: API_VERSION,
             host: shared.host.clone(),
             engine: "obid",
+            commit: build_commit(),
         },
         accounts,
         available_logins: shared
@@ -1045,6 +1111,16 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
             .available()
             .into_iter()
             .map(|(tool, own)| serde_json::json!({"agent": tool.id(), "id": own.id, "name": own.name}))
+            .collect(),
+        other_profile_logins: (shared.config.agents.held().into_iter())
+            .filter_map(|(tool, id)| {
+                let tag = shared.profiles.accounts.of(&id);
+                if scope.holds(tag.as_deref()) {
+                    return None;
+                }
+                let (profile, name) = shared.profiles.named_by(tag.as_deref())?;
+                Some(serde_json::json!({"agent": tool.id(), "id": id, "profile": profile, "profileName": name}))
+            })
             .collect(),
         models: Models::defaults(),
         max_running: shared.jobs.max_running() as u32,
@@ -1107,6 +1183,8 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
                     crate::cli_versions::status(tool, version.as_deref());
                 ToolJson {
                     agent: tool.id(),
+                    bin: crate::accounts::bin_of(&agents, tool).to_owned(),
+                    bin_set: shared.config.agents.bin_set(tool),
                     path: read.and_then(|r| Some(r.path?.display().to_string())),
                     version,
                     version_status,

@@ -6,14 +6,14 @@ import { SAMPLE, memberCount } from './spheres';
 import { tetrixFor } from './knowledge';
 import { SAMPLE_TALK, Sphere, SphereHowTo, still } from './Welcome';
 import { AGENTS, type Agent, type SetupStep } from './view';
-import { FIRST_TASK, accountOf, cancelAgent, connectTetrix, pick, sceneDone, sceneReplayed, sendAgentCode, signInAgent, signInGitHub, tetrixFailed, useSetup, type Code } from './onboarding';
+import { FIRST_TASK, accountOf, cancelAgent, pick, sceneDone, sceneReplayed, sendAgentCode, signInAgent, signInGitHub, useSetup, type Code } from './onboarding';
 import { onObid } from './lean';
 import { PasteCode } from './SettingsView';
 import { useLive } from './live';
-import { api, type Tetrix } from './obid';
-import { TetrixWindow } from './Connectors';
+import { TetrixAddress, useTetrixAddress } from './TetrixAddress';
 import { CONTINUE, offersChatGpt } from './chatgpt';
 import { ChatGptLogo } from './ChatGptPlan';
+import { INSTALL, useMissing } from './install';
 
 // a sign-in's code to type on its page, after what the row says
 const typed = (c?: Code) => (c?.userCode ? ` · enter ${c.userCode}` : '');
@@ -118,8 +118,16 @@ const AGENT_SUB: Record<Agent, [ready: string, out: string]> = {
 export function AgentRows({ bare = false }: { bare?: boolean }) {
   const s = useSetup();
   const { status } = useLive();
+  // first run: an agent whose CLI obid doesn't find shows Install first, the vendor's command under
+  // it once clicked (FIRSTRUN-2)
+  const missing = useMissing(bare && onObid ? status : null);
+  const [installing, setInstalling] = useState<Agent | null>(null);
   return <>{(Object.keys(AGENTS) as Agent[]).map((a, i) => {
     const st = s.found <= i ? 'looking' : s.agents[a];
+    if (bare && st === 'out' && missing.has(a)) {
+      return <Row key={a} mark={<BrandMark brand={AGENTS[a].brand} size={22} />} name={AGENTS[a].name} state="out" act="Install" bare
+        onAct={() => setInstalling(installing === a ? null : a)} below={installing === a ? <Install agent={a} /> : undefined} />;
+    }
     // Codex with no login on this Mac: Continue with ChatGPT, its device code a way besides
     const chatgpt = a === 'codex' && offersChatGpt(status);
     // on obid: the account obid signed in, the code its page wants, Claude Code's code to paste
@@ -132,6 +140,20 @@ export function AgentRows({ bare = false }: { bare?: boolean }) {
       {st === 'waiting' && s.codes[a]?.paste ? <PasteCode onCode={(code) => sendAgentCode(a, code)} /> : undefined}
     </Row>;
   })}</>;
+}
+
+// An agent's install command, the vendor's own, to copy and run in Terminal: Oby runs nothing
+function Install({ agent }: { agent: Agent }) {
+  const [copied, setCopied] = useState(false);
+  const name = AGENTS[agent].name;
+  const copy = () => { void navigator.clipboard?.writeText(INSTALL[agent]).then(() => setCopied(true), () => { /* left to select by hand */ }); };
+  return <div className="setup-install">
+    <span className="setup-install-line">
+      <code className="setup-install-command">{INSTALL[agent]}</code>
+      <button type="button" className="set-button" aria-label={`Copy ${name}’s install command`} onClick={copy}>{copied ? 'Copied' : 'Copy'}</button>
+    </span>
+    <span className="wl-sub">Paste it in Terminal. Oby finds it once it’s installed.</span>
+  </div>;
 }
 
 const PLAYED = new Set<SetupStep>();
@@ -152,7 +174,9 @@ const busy = (name: string, state: 'looking' | 'waiting', code?: string) => <>
 // one thing to connect: its mark, its name and how it stands (and anything it needs from you
 // there, why its last try didn't take), and its button until it's ready (none: nothing to do
 // there); under way, its Cancel where the button was (on once there's something to cancel)
-const Row = ({ mark, name, sub, why, code, state, act, onAct, alt, onCancel, canCancel = true, bare = false, children }: { mark: ReactNode; name: string; sub?: string; why?: string; code?: string; state: 'out' | 'waiting' | 'in' | 'looking'; act?: ReactNode; onAct?: () => void; alt?: { label: string; onAct: () => void }; onCancel?: () => void; canCancel?: boolean; bare?: boolean; children?: ReactNode }) => (
+// below: what the person fills in first (Tetrix's address), a line of its own under the rest while it's out;
+// actOff: its button waits until they have
+const Row = ({ mark, name, sub, why, code, state, act, actOff, onAct, alt, below, onCancel, canCancel = true, bare = false, children }: { mark: ReactNode; name: string; sub?: string; why?: string; code?: string; state: 'out' | 'waiting' | 'in' | 'looking'; act?: ReactNode; actOff?: boolean; onAct?: () => void; alt?: { label: string; onAct: () => void }; below?: ReactNode; onCancel?: () => void; canCancel?: boolean; bare?: boolean; children?: ReactNode }) => (
   <li className="setup-row">
     {mark}
     <span className="wl-two">
@@ -161,6 +185,7 @@ const Row = ({ mark, name, sub, why, code, state, act, onAct, alt, onCancel, can
       {why && state === 'out' && <span className="wl-sub is-problem" role="alert">{why}</span>}
       {alt && <button type="button" className="chatgpt-link wl-alt" onClick={alt.onAct}>{alt.label}</button>}
       {!bare && children}
+      {!bare && state === 'out' && below}
     </span>
     {bare && (state === 'looking' || state === 'waiting') ? (onCancel
       // (Claude Code's field for its code: a line of its own under the rest)
@@ -170,7 +195,8 @@ const Row = ({ mark, name, sub, why, code, state, act, onAct, alt, onCancel, can
     : state === 'in' ? (bare
       ? <span className="wl-ready is-bare wl-slot" role="img" aria-label="Ready"><Check size={20} strokeWidth={2.25} /></span>
       : <span className="wl-ready"><Check size={14} strokeWidth={2} />Ready</span>)
-      : state !== 'looking' && act && <button className="set-button" disabled={state === 'waiting'} onClick={onAct}>{state === 'waiting' ? 'Waiting…' : act}</button>}
+      : state !== 'looking' && act && <button className="set-button" disabled={state === 'waiting' || actOff} onClick={onAct}>{state === 'waiting' ? 'Waiting…' : act}</button>}
+    {bare && state === 'out' && below && <div className="wl-below">{below}</div>}
   </li>
 );
 
@@ -183,17 +209,14 @@ export function GitHubRow() {
 }
 
 // Tetrix on the new onboarding's knowledge step, the same way: a spinner while it's under way, then
-// a check. On obid, Connect opens Settings' own Connect Tetrix window, where the person gives their
-// Tetrix's address (Oby has none built in); Continue in Browser signs in from the row
+// a check. Oby has no Tetrix of its own to offer (TETRIX-URL-1): under the row is a field for the
+// address of the person's own, and Connect waits until it's one obid would take; its page opens in the
+// browser from here, and why a try didn't take shows under the field
 export function TetrixRow({ sub, bare = true }: { sub?: string; bare?: boolean }) {
   const s = useSetup();
-  const [asking, setAsking] = useState<Tetrix | null>(null);
-  const connect = onObid ? () => void api.tetrix().then(setAsking, tetrixFailed) : () => void connectTetrix();
-  return <>
-    <Row mark={<BrandMark brand={BRANDS.tetrix} size={22} />} name="Tetrix" sub={sub} why={s.problems.tetrix} state={s.tetrix} act="Connect" onAct={connect} bare={bare} />
-    {asking && <TetrixWindow tetrix={asking} waiting={false} onConnect={(to) => { setAsking(null); void connectTetrix(to); }}
-      onCancel={() => setAsking(null)} onClose={() => setAsking(null)} />}
-  </>;
+  const address = useTetrixAddress(s.problems.tetrix);
+  return <Row mark={<BrandMark brand={BRANDS.tetrix} size={22} />} name="Tetrix" sub={sub} state={s.tetrix} act="Connect"
+    actOff={!address.ready} onAct={address.connect} bare={bare} below={<TetrixAddress {...address} />} />;
 }
 
 // something under way: a ring going round (still, with reduced motion: app.css)

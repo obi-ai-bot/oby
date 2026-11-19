@@ -1,0 +1,134 @@
+{
+  "schemaVersion": "2",
+  "name": "DELETE /v1/obid/vault/{name}",
+  "version": "1.0.0",
+  "description": "Forgets a secret on the owner's signed word: unsigned 403 (VAULT-5); 404 for a name obid doesn't keep; 204, then not listed (VAULT-1).",
+  "trigger": {
+    "http": {
+      "method": "DELETE",
+      "path": "/v1/obid/vault/{name}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "secret",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "kept",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/obid/vault/test.token",
+        "body": {
+          "value": "${state.secret.seed}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 204
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/obid/vault/test.token",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "vault-5-unsigned-403",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/obid/vault/test.token",
+        "expect": {
+          "status": 403
+        }
+      },
+      "ui": {
+        "proves": [
+          "VAULT-5"
+        ]
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/obid/vault/nope.token",
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "vault-1-forgotten-204",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/obid/vault/test.token",
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 204
+        }
+      },
+      "ui": {
+        "proves": [
+          "VAULT-1"
+        ]
+      }
+    },
+    {
+      "id": "vault-1-not-listed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/obid/vault",
+        "expect": {
+          "status": 200,
+          "body": {
+            "names": []
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "VAULT-1"
+        ]
+      }
+    }
+  ]
+}

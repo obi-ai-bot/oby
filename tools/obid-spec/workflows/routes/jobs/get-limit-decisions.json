@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/limit-decisions",
+  "version": "1.0.0",
+  "description": "Account-limit decisions waiting on the owner: none, since a job at a limit moves or waits by itself (LIMITS-15).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/limit-decisions"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/limit-decisions",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "none",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/limit-decisions",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    }
+  ]
+}

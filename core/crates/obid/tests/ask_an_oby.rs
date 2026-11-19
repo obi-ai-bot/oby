@@ -38,6 +38,14 @@ async fn setup_again(folder: &Folder) -> (FakeSphere, Obid, TestObi, Value) {
     // The directory obid read at joining had no Ernesto.
     let members = call(&obid, "GET", "/v1/obid/sphere/members", None);
     assert_eq!(members.status, 200, "{}", members.text);
+    // SPHERE-18: Ernesto's card has no seal key, so the owner lets obid ask him unsealed.
+    let unsealed = call_typed(
+        &obid,
+        "PUT",
+        "/v1/obid/sphere/peers/ernesto/unsealed",
+        &json!({"allow": true}),
+    );
+    assert_eq!(unsealed.status, 200, "{}", unsealed.text);
     (sphere, obid, ernesto, config)
 }
 
@@ -821,6 +829,16 @@ async fn ask_34_a_lookalike_waits_for_a_confirm_naming_both() {
     let (sphere, obid, _ernesto) = setup(&folder).await;
     let dima = TestObi::join_named(&sphere, "obi-dima", "dima", "dima's Oby").await;
     let dirna = TestObi::join_named(&sphere, "obi-dirna", "dirna", "dirna's Oby").await;
+    tokio::task::block_in_place(|| {
+        // SPHERE-19: this member's card has no seal key; the owner lets obid ask unsealed.
+        let unsealed = call_typed(
+            &obid,
+            "PUT",
+            "/v1/obid/sphere/peers/dirna/unsealed",
+            &json!({"allow": true}),
+        );
+        assert_eq!(unsealed.status, 200, "{}", unsealed.text);
+    });
     let (_, said) = tokio::task::block_in_place(|| {
         typed(
             &obid,
@@ -963,6 +981,16 @@ async fn ask_5_a_card_renamed_after_the_question_doesnt_change_who_answered() {
     let folder = Folder::new("ask-5-renamed");
     let (sphere, obid, _ernesto) = setup(&folder).await;
     let mal = TestObi::join_named(&sphere, "obi-mal", "malcolm", "Mal's Oby").await;
+    tokio::task::block_in_place(|| {
+        // SPHERE-19: this member's card has no seal key; the owner lets obid ask unsealed.
+        let unsealed = call_typed(
+            &obid,
+            "PUT",
+            "/v1/obid/sphere/peers/malcolm/unsealed",
+            &json!({"allow": true}),
+        );
+        assert_eq!(unsealed.status, 200, "{}", unsealed.text);
+    });
     let reread = |obid: &Obid| {
         tokio::task::block_in_place(|| call(obid, "GET", "/v1/obid/sphere/members", None));
     };
@@ -1596,4 +1624,95 @@ async fn ask_19_a_card_never_lands_on_another_questions_turn() {
         let turns = thread(&obid, &asks);
         assert_ne!(turns[all[0].0]["relayed"], true, "{turns:?}");
     });
+}
+
+/// Words the owner typed in the message box, `@`-naming members (`ask`, ASK-40): their
+/// conversation. `signed`: as the Mac app sends them, signed by main on the keystroke.
+fn mention(obid: &Obid, said: &str, owners: &[&str], signed: bool) -> String {
+    let body = json!({"said": said, "new": true, "ask": owners});
+    let answer = if signed {
+        call_typed(obid, "POST", "/v1/plans", &body)
+    } else {
+        call(obid, "POST", "/v1/plans", Some(&body))
+    };
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    answer.body["conversation"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ask_40_a_mention_asks_that_member() {
+    let folder = Folder::new("ask-40");
+    let (sphere, obid, ernesto) = setup(&folder).await;
+    // The owner's signed word: it goes at once, the words without the mention as the question,
+    // and its card shows in the conversation, though the stand-in calls no tool.
+    let conversation = tokio::task::block_in_place(|| {
+        mention(&obid, &format!("@Ernesto, {QUESTION}"), &["ernesto"], true)
+    });
+    let got = ernesto.receive(1, 20).await;
+    assert_eq!(got[0]["type"], "question");
+    assert_eq!(got[0]["body"], json!({"text": QUESTION}));
+    let cards = tokio::task::block_in_place(|| card_says(&obid, &conversation, "asking"));
+    assert_eq!(cards.len(), 1, "{cards:?}");
+    assert_eq!(cards[0].1["owner"], "ernesto");
+    // The model heard it asked, once, and not to ask again.
+    let heard = recorded(&obid, &conversation);
+    assert!(
+        heard.contains("Don't call oby_ask for this question again"),
+        "{heard}"
+    );
+    assert!(heard.contains("Asked ernesto's Oby"), "{heard}");
+
+    // A look-alike waits for the Confirm naming both (ASK-34), and nothing goes.
+    let _dima = TestObi::join_named(&sphere, "obi-dima", "dima", "dima's Oby").await;
+    let dirna = TestObi::join_named(&sphere, "obi-dirna", "dirna", "dirna's Oby").await;
+    tokio::task::block_in_place(|| mention(&obid, &format!("@dirna {QUESTION}"), &["dirna"], true));
+    let title = tokio::task::block_in_place(|| {
+        within(30, "the look-alike's Confirm", || {
+            let inbox = call(&obid, "GET", "/v1/inbox", None);
+            inbox.body.as_array().unwrap().iter().find_map(|i| {
+                (i["kind"] == "confirm").then(|| i["title"].as_str().unwrap_or_default().to_owned())
+            })
+        })
+    });
+    assert_eq!(title, "Ask dirna's Oby, not dima's");
+    assert_eq!(
+        questions_to(&sphere),
+        ["obi-ernesto"],
+        "nothing goes before the click"
+    );
+    drop(dirna);
+
+    // Words no app signed wait for a Confirm too (ASK-4).
+    tokio::task::block_in_place(|| {
+        mention(&obid, &format!("@ernesto {QUESTION}"), &["ernesto"], false)
+    });
+    tokio::task::block_in_place(|| {
+        within(30, "the unsigned words' Confirm", || {
+            let inbox = call(&obid, "GET", "/v1/inbox", None);
+            inbox
+                .body
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["kind"] == "confirm" && i["title"] == "Ask ernesto's Oby")
+                .then_some(())
+        })
+    });
+    assert_eq!(
+        questions_to(&sphere),
+        ["obi-ernesto"],
+        "nothing goes before the click"
+    );
+}
+
+/// Whom every question obid sent went to, in order.
+fn questions_to(sphere: &FakeSphere) -> Vec<String> {
+    sphere
+        .lock()
+        .sends
+        .iter()
+        .filter_map(|(_, text, _)| serde_json::from_str::<Value>(text).ok())
+        .filter(|send| send["type"] == "question")
+        .map(|send| send["to"].as_str().unwrap_or_default().to_owned())
+        .collect()
 }

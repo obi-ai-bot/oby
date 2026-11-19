@@ -64,10 +64,16 @@ const MAX_TURNS: &str = "50";
 /// The built-in tools a boxed conversation's session gets (`--restricted --tools`): read, search,
 /// the web, writes in the room, a to-do list and sub-agents. No Bash or other code-running tool, so
 /// nothing the session runs can read its login copy and send it out; it runs no commands (CONVO-2).
-const TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write,Edit,MultiEdit,NotebookEdit,Task,TodoWrite";
+/// And AskUserQuestion: a question with choices, which obid puts to the owner as the turn's answer
+/// ([`Session::put_question`], CONVERSATION-AGENT-47).
+const TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write,Edit,MultiEdit,NotebookEdit,Task,TodoWrite,AskUserQuestion";
 /// An own Claude Code session's (LANES-12): those, its own Bash, which runs in Claude Code's own
 /// sandbox and has no login copy to read, the owner's skills, and their MCP servers' resources.
-const OWN_TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write,Edit,MultiEdit,NotebookEdit,Task,TodoWrite,Bash,BashOutput,KillShell,Skill,ListMcpResourcesTool,ReadMcpResourceTool,ReadMcpResourceDirTool";
+/// And ToolSearch, Claude Code's own lookup of a deferred MCP tool (CONVERSATION-AGENT-24): with it
+/// the owner's MCP servers' tools load when a turn needs them, as in their terminal, instead of
+/// every one in every prompt (some 700 tools, half a million tokens, on the owner's Mac).
+const OWN_TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write,Edit,MultiEdit,NotebookEdit,Task,TodoWrite,AskUserQuestion,Bash,BashOutput,KillShell,Skill,ToolSearch,ListMcpResourcesTool,ReadMcpResourceTool,ReadMcpResourceDirTool";
+use crate::agent::MCP_STARTUP_WAIT;
 /// How long a call of Oby's tools waits for obid's reader to reach the line where the agent wrote
 /// it, counting only while the reader holds no line ([`Session::heard`]).
 pub const READ_WAIT: Duration = Duration::from_secs(5);
@@ -94,6 +100,8 @@ pub struct Session {
     pub attachments: Vec<String>,
     /// The jobs the owner attached to their words, by obid's own ids.
     pub attached_jobs: Vec<String>,
+    /// The message box's chips sent with the words (super::defaults, COMPOSER-4 and 5).
+    pub defaults: Option<super::defaults::Defaults>,
     /// obid's word on repositories the owner named that repos/ doesn't hold yet
     /// ([`named_checkouts`]), put before their words.
     pub repos_note: Option<String>,
@@ -129,6 +137,9 @@ pub struct Session {
     pub written: Mutex<Vec<(String, String, Value)>>,
     /// obid's reader of the agent's output, as a call waits on it ([`Session::heard`]).
     pub reader: Reader,
+    /// The question with choices the agent asked the owner this turn ([`Session::put_question`]):
+    /// the turn's answer.
+    pub question: Mutex<Option<super::plan::Question>>,
 }
 
 /// Where obid's reader is: the lines it holds, how long it has held none, and a wake-up for a
@@ -188,7 +199,36 @@ impl Drop for Reading<'_> {
     }
 }
 
+/// What the agent hears when obid puts its question to the owner (CONVERSATION-AGENT-47).
+const QUESTION_PUT: &str = "Oby has put this question to the owner, with its choices, over the message box. End your turn now without asking it again or answering it yourself: their answer comes as their next words.";
+
 impl Session {
+    /// The agent asks the owner a question with choices (Claude Code's AskUserQuestion, Codex's
+    /// request_user_input; CONVERSATION-AGENT-47): obid keeps its first question, which ends the
+    /// turn as a question the apps show with its choices, and tells the agent so. The owner's pick,
+    /// or their own words, comes back as their next words. What the agent wrote there is data for
+    /// the owner to read: the question and its options' labels, cut as a job's question card's.
+    fn put_question(&self, input: &Value) -> Answer {
+        let call = Call::new(crate::permissions::ASK_USER_QUESTION, input);
+        let Some(asked) = call.questions.first() else {
+            return Answer::Deny("obid couldn't read that question: ask it in your answer.".into());
+        };
+        let details: Vec<String> = asked
+            .options
+            .iter()
+            .map(|o| o.description.clone())
+            .collect();
+        let question = super::plan::Question {
+            text: asked.question.clone(),
+            options: asked.options.iter().map(|o| o.label.clone()).collect(),
+            details: details.iter().any(|d| !d.is_empty()).then_some(details),
+            recommended: None,
+            plan: None,
+        };
+        *self.question.lock().unwrap_or_else(|e| e.into_inner()) = Some(question);
+        Answer::Deny(QUESTION_PUT.into())
+    }
+
     /// obid's reader has a line of the agent's in hand, until the guard drops.
     pub fn reading(&self) -> Reading<'_> {
         {
@@ -301,7 +341,8 @@ pub struct Sessions {
     made: Mutex<HashMap<String, Vec<Value>>>,
     /// One lock per conversation, so its turns run one at a time (N9).
     busy: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-    /// Each conversation's Claude Code still running after its turn, waiting for the next one.
+    /// Each conversation's Claude Code or Codex still running after its turn, waiting for the next
+    /// one.
     warm: Mutex<HashMap<String, Warm>>,
 }
 
@@ -310,14 +351,18 @@ pub struct Sessions {
 const WARM_FOR: Duration = Duration::from_secs(30 * 60);
 /// The most conversations whose Claude Code waits at once: each holds a few hundred MB.
 const WARM_MOST: usize = 3;
+/// The most profiles whose next new conversation has a Claude Code started ahead at once
+/// (PROFILES-47), apart from [`WARM_MOST`].
+const AHEAD_MOST: usize = 3;
 
 /// A conversation's Claude Code, running after its turn and waiting on its stdin for the next one,
 /// which writes to it instead of starting another (docs/fast-replies.md): no start, no MCP
 /// connection, no reading its session again. It runs in the same box, with the same login copy
 /// (good while it lasts, `login_copy_lasts`, taken out when it ends) and the same MCP token,
-/// which is good again only while a turn of the conversation is under way.
+/// which is good again only while a turn of the conversation is under way. A conversation's Codex
+/// waits the same way, its `app-server` with its thread loaded (CONVERSATION-AGENT-44).
 struct Warm {
-    conn: crate::conn::Conn,
+    waiting: Waiting,
     token: String,
     account: String,
     /// Where its account's login came from: a turn on the account's folder as it is now only.
@@ -333,16 +378,65 @@ struct Warm {
 
 impl Warm {
     /// Its login copy goes now, an own session's Claude Code stops (its drop sweeps, LANES-16).
-    fn end(mut self) {
+    fn end(self) {
         self.place.forget_login();
-        self.conn.stop_own();
-        tokio::spawn(self.conn.finish());
+        let mut conn = self.waiting.into_conn();
+        conn.stop_own();
+        tokio::spawn(conn.finish());
     }
 
     /// [`Warm::end`], its sweep done before it returns: never under the sessions' lock.
     fn end_now(mut self) {
-        self.conn.end_own_now();
+        self.waiting.conn().end_own_now();
         self.end();
+    }
+}
+
+/// What waits for a conversation's next turn: its Claude Code, or its Codex's `app-server` with
+/// its thread loaded (CONVERSATION-AGENT-44).
+enum Waiting {
+    Claude(crate::conn::Conn),
+    Codex(crate::codex::Kept),
+}
+
+impl Waiting {
+    fn tool(&self) -> Tool {
+        match self {
+            Waiting::Claude(_) => Tool::Claude,
+            Waiting::Codex(_) => Tool::Codex,
+        }
+    }
+
+    fn conn(&mut self) -> &mut crate::conn::Conn {
+        match self {
+            Waiting::Claude(conn) => conn,
+            Waiting::Codex(kept) => &mut kept.conn,
+        }
+    }
+
+    #[cfg(test)]
+    fn pid(&self) -> u32 {
+        match self {
+            Waiting::Claude(conn) => conn.pid(),
+            Waiting::Codex(kept) => kept.conn.pid(),
+        }
+    }
+
+    fn into_conn(self) -> crate::conn::Conn {
+        match self {
+            Waiting::Claude(conn) => conn,
+            Waiting::Codex(kept) => kept.conn,
+        }
+    }
+
+    /// What it may have written while it waited, read and dropped before it's given the turn: a
+    /// Claude Code's hook lines ([`hook_line`]), a Codex's housekeeping
+    /// ([`crate::codex::between_turns`]).
+    async fn quiet(&mut self) -> bool {
+        match self {
+            Waiting::Claude(conn) => conn.quiet_but(hook_line).await,
+            Waiting::Codex(kept) => kept.conn.quiet_but(crate::codex::between_turns).await,
+        }
     }
 }
 
@@ -414,17 +508,19 @@ impl Sessions {
         all.into_iter().for_each(Warm::end_now);
     }
 
-    /// `conversation`'s waiting Claude Code, when it runs `session` on `account`'s login as it is
-    /// now; one that runs another ends.
+    /// `conversation`'s waiting Claude Code or Codex, when it's `tool` and runs `session` on
+    /// `account`'s login as it is now; one that runs another ends.
     fn take_warm(
         &self,
         conversation: &str,
+        tool: Tool,
         account: &crate::config::Account,
         session: Option<&str>,
     ) -> Option<Warm> {
         let mut all = self.warm();
         let warm = all.remove(conversation)?;
-        if warm.account == account.id
+        if warm.waiting.tool() == tool
+            && warm.account == account.id
             && warm.config_dir == account.config_dir
             && session == warm.session.as_deref()
         {
@@ -437,13 +533,14 @@ impl Sessions {
     /// Keeps `warm` for `conversation`'s next turn when `admit` says it may wait, judged under
     /// the same lock that [`Sessions::end_warm_on`] and [`Sessions::end_warm`] take, so an account
     /// change or a deletion that comes after the look ends it: whether it was kept. The one
-    /// waiting longest ends when [`WARM_MOST`] conversations' already wait; the next new
-    /// conversation's (`next`, [`prestart`]) isn't one of them.
+    /// waiting longest ends when [`WARM_MOST`] conversations' already wait; the profiles' next new
+    /// conversations' (`nexts`, [`prestart`]) aren't among them, and of those the one waiting
+    /// longest ends when [`AHEAD_MOST`] already wait.
     fn keep(
         &self,
         conversation: &str,
         warm: Warm,
-        next: Option<&str>,
+        nexts: &[String],
         admit: impl FnOnce(&Warm) -> bool,
     ) -> bool {
         let mut all = self.warm();
@@ -454,18 +551,21 @@ impl Sessions {
         if let Some(old) = all.insert(conversation.to_owned(), warm) {
             old.end();
         }
-        let counted = |c: &String| Some(c.as_str()) != next;
-        while all.keys().filter(|c| counted(c)).count() > WARM_MOST {
-            let Some(oldest) = all
-                .iter()
-                .filter(|(c, _)| counted(c))
-                .min_by_key(|(_, w)| w.since)
-                .map(|(c, _)| c.clone())
-            else {
-                break;
-            };
-            if let Some(old) = all.remove(&oldest) {
-                old.end();
+        let ahead = |c: &String| nexts.contains(c);
+        for (counted, most) in [(false, WARM_MOST), (true, AHEAD_MOST)] {
+            let counted = |c: &String| ahead(c) == counted;
+            while all.keys().filter(|c| counted(c)).count() > most {
+                let Some(oldest) = all
+                    .iter()
+                    .filter(|(c, _)| counted(c) && c.as_str() != conversation)
+                    .min_by_key(|(_, w)| w.since)
+                    .map(|(c, _)| c.clone())
+                else {
+                    break;
+                };
+                if let Some(old) = all.remove(&oldest) {
+                    old.end();
+                }
             }
         }
         true
@@ -533,12 +633,10 @@ impl Sessions {
 /// with the same folder any more, while the turn ran.
 fn keep_warm(shared: &Arc<Shared>, conversation: &str, warm: Warm) {
     let since = warm.since;
-    let next = shared.conversations.peek_next();
-    let kept = shared
-        .harness
-        .keep(conversation, warm, next.as_deref(), |warm| {
-            shared.conversations.exists(conversation) && may_wait(shared, warm)
-        });
+    let nexts = shared.conversations.nexts();
+    let kept = shared.harness.keep(conversation, warm, &nexts, |warm| {
+        shared.conversations.exists(conversation) && may_wait(shared, warm)
+    });
     if !kept {
         return;
     }
@@ -559,41 +657,66 @@ fn may_wait(shared: &Shared, warm: &Warm) -> bool {
 
 /// Starts the next new conversation's Claude Code now, so its first turn finds it waiting as a
 /// later turn does, connected to Oby's tools already (docs/fast-replies.md; the Agent SDK's
-/// `prewarm()`). obid names that conversation's id ahead ([`crate::conversation::Conversations::next_id`])
-/// and readies its place as a turn would: the room with its checkouts, the box, a login copy and
-/// its MCP configuration, under the conversation's lock. It waits like any other ([`WARM_FOR`], one
-/// of [`WARM_MOST`]), with no session until its first turn, and its token connects to Oby's tools
-/// but calls none before a turn is under way. Started after each of the owner's turns, so a
-/// Claude Code waits only while the owner is talking to Oby; one at a time.
+/// `prewarm()`). obid names each profile's next conversation's id ahead
+/// ([`crate::conversation::Conversations::next_id`]) and readies its place as a turn would: the
+/// room with its checkouts, the box, a login copy and its MCP configuration, under the
+/// conversation's lock. It waits like any other ([`WARM_FOR`]), with no session until its first
+/// turn, and its token connects to Oby's tools but calls none before a turn is under way. Started
+/// after each of the owner's turns, so a Claude Code waits only while the owner is talking to Oby:
+/// for the turn's profile first, then the others ([`ahead`], PROFILES-47), one at a time.
 /// `OBID_PRESTART=off` (obid's tests set it, but in the tests of this) starts none.
-fn prestart(shared: &Arc<Shared>) {
+fn prestart(shared: &Arc<Shared>, turn: &crate::profiles::Scope) {
     static STARTING: AtomicBool = AtomicBool::new(false);
     if std::env::var_os("OBID_PRESTART").is_some_and(|v| v == "off") {
         return;
     }
-    let id = shared.conversations.next_id();
-    if shared.harness.warm().contains_key(&id) || STARTING.swap(true, Ordering::SeqCst) {
+    if STARTING.swap(true, Ordering::SeqCst) {
         return;
     }
-    let shared = shared.clone();
+    let (shared, turn) = (shared.clone(), turn.clone());
     tokio::spawn(async move {
-        if let Err(why) = start_next(&shared, &id).await {
-            let why = placed(&crate::secrets::known().redact(&why), &homes(&shared));
-            tracing::info!("the next conversation's Claude Code isn't started: {why}");
+        let profiles = shared.profiles.scopes();
+        // Only where a new conversation's first turn would talk on Claude Code, on one of the
+        // profile's own accounts (B00-40): another agent has none to wait.
+        let claude = |scope: &crate::profiles::Scope| {
+            matches!(
+                super::talk::next_with(&shared, scope),
+                Some((Tool::Claude, _))
+            )
+        };
+        for scope in ahead(&profiles, &turn, claude) {
+            let id = shared.conversations.next_id(scope.tag().as_deref());
+            if shared.harness.warm().contains_key(&id) {
+                continue;
+            }
+            if let Err(why) = start_next(&shared, &id, &scope).await {
+                let why = placed(&crate::secrets::known().redact(&why), &homes(&shared));
+                tracing::info!("the next conversation's Claude Code isn't started: {why}");
+            }
         }
         STARTING.store(false, Ordering::SeqCst);
     });
 }
 
-async fn start_next(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
-    // Only when its first turn would talk on Claude Code: another agent has none to wait.
-    let chosen = crate::settings::load(&shared.config.home)
-        .talk_account
-        .filter(|id| id != super::talk::AUTO);
-    let account = match super::talk::accounts(shared, chosen.as_deref(), None, None)
-        .into_iter()
-        .next()
-    {
+/// The profiles whose next new conversation gets a Claude Code ahead, in order (PROFILES-47): the
+/// turn's first, then the others in the registry's order, only those `claude` says would talk on
+/// Claude Code, at most [`AHEAD_MOST`]. One already waiting counts toward them.
+fn ahead<P: PartialEq + Clone>(profiles: &[P], turn: &P, claude: impl Fn(&P) -> bool) -> Vec<P> {
+    let others = profiles.iter().filter(|p| *p != turn);
+    (std::iter::once(turn).chain(others))
+        .filter(|p| claude(p))
+        .take(AHEAD_MOST)
+        .cloned()
+        .collect()
+}
+
+async fn start_next(
+    shared: &Arc<Shared>,
+    id: &str,
+    scope: &crate::profiles::Scope,
+) -> Result<(), String> {
+    // Readied for a conversation of `scope`'s profile, on one of its accounts (B00-40).
+    let account = match super::talk::next_with(shared, scope) {
         Some((Tool::Claude, account)) => account,
         _ => return Ok(()),
     };
@@ -629,7 +752,7 @@ async fn start_next(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
         }
     };
     let warm = Warm {
-        conn,
+        waiting: Waiting::Claude(conn),
         token,
         account: account.id.clone(),
         config_dir: account.config_dir.clone(),
@@ -640,7 +763,8 @@ async fn start_next(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
     };
     // Not kept when its account changed while it started, or the conversation went.
     let since = warm.since;
-    let kept = shared.harness.keep(id, warm, Some(id), |warm| {
+    let nexts = shared.conversations.nexts();
+    let kept = shared.harness.keep(id, warm, &nexts, |warm| {
         (shared.conversations.is_next(id) || shared.conversations.exists(id))
             && may_wait(shared, warm)
     });
@@ -754,15 +878,14 @@ fn claude_flags(
     if own {
         orientation = orientation.replacen(NO_SHELL, OWN_SHELL, 1);
     }
-    // An own session loads the owner's user settings, skills and MCP servers (CONVO-4), never the
-    // room's, which it can't write either (`Jobs::ROOM_CONFIG`). No `--restricted` there:
-    // it drops user settings, skills and MCP servers (Claude Code 2.1.302). [`rule`] answers only
-    // what Claude Code asks, and an allow rule of the owner's skips that: so its `--settings` deny
-    // the file tools obid's secret places and the accounts' settings and hooks, and a user settings
-    // file that lets a file tool past the room is refused before it starts
+    // An own session loads every settings source, skills and MCP servers, as the owner's terminal
+    // does (CONVO-4, the owner's decision of 2026-11-16, LANES-23). No `--restricted` there: it
+    // drops user settings, skills and MCP servers (Claude Code 2.1.302). [`rule`] answers only what
+    // Claude Code asks, and an allow rule of the owner's skips that: so its `--settings` deny the
+    // file tools obid's secret places and the accounts' settings and hooks
     // (`Jobs::conversation_own_launch`).
     let lane: &[&str] = match own {
-        true => &["--setting-sources", "user"],
+        true => &[],
         false => &[
             "--setting-sources",
             "",
@@ -814,7 +937,7 @@ fn claude_launch(
 ) -> Result<agent::Launch, String> {
     let (frozen, stderr) = (vec![place.repos.clone()], place.folder.join("agent.log"));
     if own {
-        return shared.jobs.conversation_own_launch(
+        let mut launch = shared.jobs.conversation_own_launch(
             account,
             &place.room,
             &place.temp,
@@ -822,7 +945,9 @@ fn claude_launch(
             frozen,
             flags,
             stderr,
-        );
+        )?;
+        lift_mcp_hold(&mut launch.env);
+        return Ok(launch);
     }
     shared.jobs.conversation_launch(
         Tool::Claude,
@@ -834,6 +959,24 @@ fn claude_launch(
         flags,
         stderr,
     )
+}
+
+/// Whether `line` is one Claude Code writes of a hook it runs (`hook_started`, `hook_progress`,
+/// `hook_response`), which a waiting one may write before any prompt, its `SessionStart` hooks'
+/// as it starts (CONVERSATION-AGENT-25): never a turn's words, steps or end.
+fn hook_line(line: &Value) -> bool {
+    line["type"] == "system"
+        && matches!(
+            line["subtype"].as_str(),
+            Some("hook_started" | "hook_progress" | "hook_response")
+        )
+}
+
+/// Sets [`MCP_STARTUP_WAIT`] in an own session's environment, in place of any value it had.
+fn lift_mcp_hold(env: &mut Vec<(OsString, OsString)>) {
+    let (name, value) = MCP_STARTUP_WAIT;
+    env.retain(|(set, _)| set != name);
+    env.push((name.into(), value.into()));
 }
 
 /// Where a conversation's MCP configuration is ([`mcp_file`]), the URL of Oby's tools for it, and
@@ -866,11 +1009,12 @@ fn mcp_file(place: &Place, own: bool) -> Result<PathBuf, String> {
 }
 
 /// Writes the MCP configuration that gives the agent Oby's tools, and Tetrix when it's given,
-/// with `token`. The agent writes in its HOME: never through a link it left there (O_NOFOLLOW,
-/// O_EXCL).
+/// with `token`. Each is `alwaysLoad`: Claude Code connects it before the first turn and never
+/// defers its tools, even when it holds that turn for no other server (CONVERSATION-AGENT-24). The
+/// agent writes in its HOME: never through a link it left there (O_NOFOLLOW, O_EXCL).
 fn write_mcp(mcp: &Path, url: &str, tetrix: Option<&str>, token: &str) -> Result<(), String> {
     let server = |url: &str| {
-        json!({"type": "http", "url": url,
+        json!({"type": "http", "url": url, "alwaysLoad": true,
                "headers": {"Authorization": format!("Bearer {token}")}})
     };
     let mut servers = json!({"oby": server(url)});
@@ -884,7 +1028,7 @@ fn write_mcp(mcp: &Path, url: &str, tetrix: Option<&str>, token: &str) -> Result
 
 /// What a run's command line says, in one number: a waiting Claude Code started with other flags
 /// (another model, other repositories in its orientation) isn't given the turn.
-fn flags_key(flags: &[OsString]) -> u64 {
+pub(super) fn flags_key(flags: &[OsString]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     flags.hash(&mut hasher);
@@ -921,16 +1065,22 @@ pub async fn run(
     let chosen = super::talk::chosen(shared, &control.conversation)
         .filter(|id| only.is_none_or(|only| tool_of(id) == Some(only)));
     let on = kept_on(&place);
-    let accounts = super::talk::accounts(shared, chosen.as_deref(), on.as_deref(), only);
+    // Only the accounts of the conversation's profile (B00-40), the owner's choice too.
+    let scope = crate::profile_scope::of_conversation(shared, &control.conversation);
+    let mine = |id: &str| shared.profiles.accounts.holds(&scope, id);
+    let chosen = chosen.filter(|id| mine(id));
+    let mut accounts = super::talk::accounts(shared, chosen.as_deref(), on.as_deref(), only);
+    accounts.retain(|(_, account)| mine(&account.id));
     let mut full = Vec::new();
     let mut failed: Option<String> = None;
     let mut why = String::new();
     if accounts.is_empty() {
-        why = super::talk::why_none(shared, chosen.as_deref(), only);
+        why = super::talk::why_none(shared, chosen.as_deref(), only, mine);
     }
     for (tool, account) in &accounts {
         match session(shared, *tool, account, said, given, asked, control).await {
             Ok(mut answered) => {
+                shared.jobs.started_on(&account.id);
                 shared
                     .conversations
                     .talked_on(&control.conversation, &account.id);
@@ -957,6 +1107,9 @@ pub async fn run(
                 return answered;
             }
             Err(unanswered) => {
+                if let Some(reason) = &unanswered.cant_start {
+                    shared.jobs.cant_start(account, reason);
+                }
                 why = unanswered.why;
                 // An account its turn found full is another's to take over, and so is one that
                 // couldn't run at all; a turn that failed for what it was asked isn't.
@@ -1030,6 +1183,9 @@ fn said_why(talk: Talk, line: &str) -> Talk {
 pub(super) struct Unanswered {
     pub(super) why: String,
     moves: bool,
+    /// Why the account itself couldn't start the turn, kept on it (ACCOUNTS-19): its launch was
+    /// refused, its agent didn't start, or its login was refused.
+    cant_start: Option<String>,
 }
 
 impl Unanswered {
@@ -1037,13 +1193,27 @@ impl Unanswered {
         Unanswered {
             why: why.into(),
             moves: true,
+            cant_start: None,
+        }
+    }
+
+    /// The account couldn't start the turn, for `why`: another may take it.
+    fn cant_start(why: impl Into<String>) -> Unanswered {
+        let why = why.into();
+        Unanswered {
+            cant_start: Some(why.clone()),
+            ..Unanswered::moves(why)
         }
     }
 }
 
 impl From<String> for Unanswered {
     fn from(why: String) -> Unanswered {
-        Unanswered { why, moves: false }
+        Unanswered {
+            why,
+            moves: false,
+            cant_start: None,
+        }
     }
 }
 
@@ -1436,9 +1606,9 @@ async fn session(
         return Err("the turn was cancelled before it started".into());
     }
     // A session belongs to one agent and one account: on another, the turn starts a new one with
-    // the earlier turns handed over (`first_prompt`), as after a lost session. A Claude Code left
-    // waiting from a turn before goes, with its login copy and token.
-    if tool != Tool::Claude {
+    // the earlier turns handed over (`first_prompt`), as after a lost session. A Claude Code or
+    // Codex left waiting from a turn before goes, with its login copy and token.
+    if tool == Tool::Cursor {
         shared.harness.end_warm(&control.conversation);
     }
     watch.mark("its turn");
@@ -1452,6 +1622,7 @@ async fn session(
         said: said.to_owned(),
         attachments: asked.attachments.to_vec(),
         attached_jobs: asked.jobs.to_vec(),
+        defaults: asked.defaults.cloned(),
         repos_note,
         control: control.clone(),
         jobs: Mutex::new(vec![]),
@@ -1473,6 +1644,7 @@ async fn session(
         artifacts: Mutex::new(vec![]),
         written: Mutex::default(),
         reader: Reader::default(),
+        question: Mutex::default(),
     });
     // One that read something before the conversation kept that too.
     if session.web.load(Ordering::SeqCst) {
@@ -1484,16 +1656,17 @@ async fn session(
     if tool == Tool::Cursor {
         session.taint();
     }
-    // Its Claude Code still running from the turn before, on the same session and account.
-    let warm = (tool == Tool::Claude)
-        .then(|| {
-            shared.harness.take_warm(
-                &control.conversation,
-                account,
-                resumed.as_ref().map(|k| k.session.as_str()),
-            )
-        })
-        .flatten();
+    // The members the owner's words `@`-name are asked before the model runs, as oby_ask asks,
+    // once a turn (ASK-40): the model hears what came of it.
+    super::ask::by_mention(shared, &session).await;
+    // Its Claude Code or Codex still running from the turn before, on the same session and
+    // account; one of another agent ends.
+    let warm = shared.harness.take_warm(
+        &control.conversation,
+        tool,
+        account,
+        resumed.as_ref().map(|k| k.session.as_str()),
+    );
     let token = match &warm {
         Some(warm) => shared.harness.reopen(&warm.token, session.clone()),
         None => shared.harness.open(session.clone()),
@@ -1530,6 +1703,7 @@ async fn session(
         shared
             .jobs
             .close_door(&super::harness_cursor::door(&control.conversation));
+        super::harness_cursor::forget_temp(&control.conversation);
     }
     // A turn that did something stays where it is: on another account, given the same words, it
     // would do it again.
@@ -1540,7 +1714,10 @@ async fn session(
         unanswered
     });
     // The owner is talking to Oby: the next new conversation's Claude Code starts meanwhile.
-    prestart(shared);
+    prestart(
+        shared,
+        &crate::profile_scope::of_conversation(shared, &control.conversation),
+    );
     let state = if ran.is_ok() && control.live() {
         State::Done
     } else {
@@ -1568,6 +1745,19 @@ async fn session(
             end: End::Cancelled,
         });
     }
+    // A question the agent asked with choices is the turn's answer (CONVERSATION-AGENT-47), said
+    // in its own words, not the agent's after it; with jobs started, their cards stay on a reply
+    // that asks it in words.
+    let question = session
+        .question
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    let text = match &question {
+        Some(question) if jobs.is_empty() => question.text.clone(),
+        Some(question) => format!("{text}\n\n{}", question.text).trim().to_owned(),
+        None => text,
+    };
     super::acknowledge(shared, control, &text);
     let end = match end {
         End::Answered if !jobs.is_empty() => End::StartedJobs(
@@ -1583,12 +1773,16 @@ async fn session(
         end.as_str(),
         watch.line()
     );
-    Ok(Answered {
-        talk: if text.is_empty() && jobs.is_empty() && !published {
-            Talk::None
-        } else {
-            Talk::Reply { text, jobs }
+    let talk = match question {
+        Some(question) if jobs.is_empty() => Talk::Question {
+            said: said.to_owned(),
+            question,
         },
+        None if text.is_empty() && jobs.is_empty() && !published => Talk::None,
+        _ => Talk::Reply { text, jobs },
+    };
+    Ok(Answered {
+        talk,
         details: None,
         end,
     })
@@ -1691,7 +1885,12 @@ async fn attempts(
             session.attached_jobs.join(", ")
         )
     });
+    let heard = session.control.asked_mentioned();
     let with = |prompt: String| {
+        let prompt = match &heard {
+            Some(heard) => format!("{heard}\n\n{prompt}"),
+            None => prompt,
+        };
         let prompt = match &session.repos_note {
             Some(note) => format!("{note}\n\n{prompt}"),
             None => prompt,
@@ -1722,11 +1921,15 @@ async fn attempts(
         first
     };
     let mut failures = vec![];
+    // Why the last attempt couldn't start, or its login was refused: the account's (ACCOUNTS-19).
+    let mut cant_start: Option<String> = None;
     // What a try after a cut says first, and all it was sent (CONVERSATION-AGENT-15).
     let mut sent = &words;
     let mut cut: Option<String> = None;
     // The one new session a turn gets when the one it's on won't do (CONVERSATION-AGENT-15, 16).
     let mut renewed = resume.is_none();
+    // The words went again to an agent that answered nothing (CONVERSATION-AGENT-46).
+    let mut again = false;
     let mut attempt = 0;
     while attempt < 2 {
         attempt += 1;
@@ -1749,7 +1952,12 @@ async fn attempts(
             (None, _) => first.clone(),
         };
         let mut flags = claude_flags(shared, &account.id, tetrix.is_some(), own, helper);
-        let key = flags_key(&flags);
+        let key = match tool {
+            Tool::Codex => {
+                super::harness_codex::key(shared, account, &url, tetrix.as_deref(), own, helper)
+            }
+            _ => flags_key(&flags),
+        };
         if let Some(session) = &resume {
             flags.extend(["--resume".into(), session.into()]);
         }
@@ -1762,20 +1970,18 @@ async fn attempts(
                 .jobs
                 .claude_login_ready(Some(account))
                 .await
-                .map_err(Unanswered::moves)?;
+                .map_err(Unanswered::cant_start)?;
         }
         // What the agent planted for the next Claude Code goes before every turn, a waiting one's
         // too (it loads nothing again, but the rule is the turn's).
         place.scrub();
-        // Its Claude Code is given the turn when it was started as this run would be, its login
-        // copy is good for the turn, and it wrote nothing while it waited (a line read now would be
-        // taken for this turn's); else it ends, and the turn starts one.
-        let warm = match warm.take() {
-            Some(mut warm)
-                if warm.key == key
-                    && (own || crate::jobs::login_copy_lasts(place.login_for(account))) =>
-            {
-                if warm.conn.quiet().await {
+        // Its Claude Code or Codex is given the turn when it was started as this run would be, its
+        // login copy is good for the turn, and it wrote nothing while it waited but its
+        // housekeeping (a line read now would be taken for this turn's); else it ends, and the
+        // turn starts one.
+        let waiting = match warm.take() {
+            Some(mut warm) if warm.key == key && (own || login_lasts(tool, place, account)) => {
+                if warm.waiting.quiet().await {
                     Some(warm)
                 } else {
                     warm.end();
@@ -1788,10 +1994,30 @@ async fn attempts(
             }
             None => None,
         };
-        let (run, protocol) = match warm {
+        let (run, protocol) = match waiting {
+            Some(Warm {
+                waiting: Waiting::Codex(kept),
+                ..
+            }) => {
+                watch.mark("its Codex was running");
+                let options = super::harness_codex::options(
+                    shared,
+                    account,
+                    &url,
+                    tetrix.as_deref(),
+                    &resume,
+                    own,
+                    helper,
+                )
+                .await;
+                (
+                    Run::Warm(Box::new(Waiting::Codex(kept))),
+                    Protocol::Codex(options),
+                )
+            }
             Some(warm) => {
                 watch.mark("its Claude Code was running");
-                (Run::Warm(Box::new(warm.conn)), Protocol::Claude)
+                (Run::Warm(Box::new(warm.waiting)), Protocol::Claude)
             }
             None => match tool {
                 Tool::Codex => {
@@ -1807,7 +2033,7 @@ async fn attempts(
                         helper,
                     )
                     .await
-                    .map_err(Unanswered::moves)?;
+                    .map_err(Unanswered::cant_start)?;
                     (
                         Run::Cold(launch),
                         codex.map_or(Protocol::Claude, Protocol::Codex),
@@ -1824,7 +2050,7 @@ async fn attempts(
                         token,
                         &resume,
                     )
-                    .map_err(Unanswered::moves)?;
+                    .map_err(Unanswered::cant_start)?;
                     (Run::Cold(launch), Protocol::Cursor(options))
                 }
                 Tool::Claude => {
@@ -1833,13 +2059,18 @@ async fn attempts(
                     // arguments instead.
                     write_mcp(&mcp, &url, tetrix.as_deref(), token)?;
                     let launch = claude_launch(shared, account, place, flags, own)
-                        .map_err(Unanswered::moves)?;
+                        .map_err(Unanswered::cant_start)?;
                     (Run::Cold(launch), Protocol::Claude)
                 }
             },
         };
         watch.mark("starting");
         let began = Instant::now();
+        // Where this attempt's own words on stderr start, and no exit recorded from one before.
+        let said_from = std::fs::metadata(place.folder.join("agent.log")).map_or(0, |m| m.len());
+        for temp in temps(place, &control.conversation) {
+            let _ = std::fs::remove_file(temp.join(EXIT_RECORD));
+        }
         let turn = one(
             shared, place, session, run, &prompt, limit, &protocol, watch, own,
         )
@@ -1851,6 +2082,7 @@ async fn attempts(
                     "attempt {attempt}: {} couldn't start: {e}",
                     tool.name()
                 ));
+                cant_start = Some(e.to_string());
                 continue;
             }
         };
@@ -1904,10 +2136,42 @@ async fn attempts(
                 &serde_json::to_vec(&kept).unwrap_or_default(),
             );
         }
+        // An answer of no model turn and no words isn't one (CONVERSATION-AGENT-46): a session cut
+        // mid-turn by obid's end answers the first prompt of the next process that resumes it so
+        // (Claude Code, #2504), and that same process takes the words when they come again. Once.
+        if !again
+            && answered_nothing(&turn, &streamed)
+            && session
+                .jobs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty()
+            && control.live()
+        {
+            again = true;
+            failures.push(format!(
+                "attempt {attempt}: answered nothing, no model turn"
+            ));
+            if let (Some(waiting), Some(id)) = (running, &turn.session) {
+                warm = Some(Warm {
+                    waiting,
+                    token: token.to_owned(),
+                    account: account.id.clone(),
+                    config_dir: account.config_dir.clone(),
+                    session: Some(id.clone()),
+                    key,
+                    place: place.clone(),
+                    since: Instant::now(),
+                });
+            }
+            resume = turn.session.clone().or(resume.take());
+            attempt -= 1;
+            continue;
+        }
         // Kept for the conversation's next turn when this one answered; else it ends.
         let kept_for = match (running, &turn.session) {
-            (Some(conn), Some(id)) if turn.succeeded() && control.live() => Some(Warm {
-                conn,
+            (Some(waiting), Some(id)) if turn.succeeded() && control.live() => Some(Warm {
+                waiting,
                 token: token.to_owned(),
                 account: account.id.clone(),
                 config_dir: account.config_dir.clone(),
@@ -1917,7 +2181,8 @@ async fn attempts(
                 since: Instant::now(),
             }),
             // As before: it may take a few seconds to finish the session file a `--resume` reads.
-            (Some(mut conn), _) => {
+            (Some(waiting), _) => {
+                let mut conn = waiting.into_conn();
                 let until = Instant::now() + agent::AFTER_RESULT;
                 conn.close_input();
                 conn.drain_within(agent::AFTER_RESULT).await;
@@ -1950,8 +2215,18 @@ async fn attempts(
         if turn.succeeded() {
             return Ok((text, End::Answered));
         }
-        // What the tool said ended it, never the agent's own words (RECOVERY-7).
+        // What the tool said ended it, never the agent's own words (RECOVERY-7); for one that
+        // stopped before it said anything, its own last line on stderr (CONVERSATION-AGENT-43).
         let why = turn.error().lines().next().unwrap_or("").trim().to_owned();
+        let stopped_starting = turn.result.is_none()
+            && turn.session.is_none()
+            && !turn.stopped
+            && !turn.timed_out
+            && control.live();
+        let why = match why.is_empty() && stopped_starting {
+            true => last_words(shared, place, said_from),
+            false => why,
+        };
         // More than the model can read at once: a session grown that long goes on in a new one,
         // once, if nothing but reading happened yet; a turn that did something would do it again.
         if turn.cause() == Some(agent::Cause::TooLong) {
@@ -2002,7 +2277,14 @@ async fn attempts(
                 account.name
             )));
         }
-        failures.push(format!("attempt {attempt}: {} ({why})", turn.exit));
+        let exit = exited(&temps(place, &control.conversation), &turn.exit);
+        failures.push(format!("attempt {attempt}: {exit} ({why})"));
+        cant_start = crate::jobs::cant_run::login_refused(turn.cause(), &why)
+            .then(|| why.clone())
+            .or_else(|| {
+                (stopped_starting && !why.is_empty())
+                    .then(|| format!("{} stopped as it started: {why}", tool.name()))
+            });
         // A session the tool says can't be picked up: a new one, the earlier turns handed over.
         // Any other stays on its session, which holds what its tools did, and hears what happened.
         resume = match turn.cause() {
@@ -2037,7 +2319,70 @@ async fn attempts(
         control.conversation,
         crate::secrets::known().redact(&failures.join("; "))
     );
-    Err(Unanswered::moves(FAILED_TWICE))
+    Err(Unanswered {
+        cant_start,
+        ..Unanswered::moves(FAILED_TWICE)
+    })
+}
+
+/// Whether a turn that succeeded answered nothing at all: its result says no model turn ran
+/// (`num_turns` 0, as Claude Code's does), and it said no word.
+fn answered_nothing(turn: &agent::Turn, streamed: &str) -> bool {
+    turn.succeeded()
+        && turn
+            .result
+            .as_ref()
+            .and_then(|r| r.get("num_turns"))
+            .and_then(Value::as_u64)
+            == Some(0)
+        && turn.text().trim().is_empty()
+        && streamed.trim().is_empty()
+}
+
+/// What the macOS box's first process writes in its `TMPDIR` before it ends everything in the box,
+/// itself included ([`crate::sandbox`], its watcher): the program's own exit code.
+const EXIT_RECORD: &str = ".obid-status";
+
+/// The `TMPDIR`s a conversation's agent may have: the conversation's own `home`, its Cursor's.
+fn temps(place: &Place, conversation: &str) -> [PathBuf; 2] {
+    [
+        place.temp.clone(),
+        super::harness_cursor::temp_of(conversation),
+    ]
+}
+
+/// How the attempt's agent ended (CONVERSATION-AGENT-43): its own exit code, as the box recorded it
+/// in its `TMPDIR` (one of `temps`: `exit status 1`), where `exit` is only the box's end
+/// (`killed by signal 9`).
+fn exited(temps: &[PathBuf], exit: &str) -> String {
+    let recorded = temps
+        .iter()
+        .find_map(|temp| std::fs::read_to_string(temp.join(EXIT_RECORD)).ok());
+    match recorded.and_then(|code| code.trim().parse::<i32>().ok()) {
+        Some(code) if exit == "killed by signal 9" => format!("exit status {code}"),
+        _ => exit.to_owned(),
+    }
+}
+
+/// The last line the attempt's agent wrote on stderr (its `agent.log` from `from`), every secret
+/// obid knows and the homes taken out: why one that stopped as it started did (CONVERSATION-AGENT-43).
+fn last_words(shared: &Shared, place: &Place, from: u64) -> String {
+    use std::io::{Read, Seek};
+    const TAIL: u64 = 64 * 1024;
+    let mut said = Vec::new();
+    if let Ok(mut log) = std::fs::File::open(place.folder.join("agent.log")) {
+        let end = log.metadata().map_or(0, |m| m.len());
+        if log
+            .seek(std::io::SeekFrom::Start(from.max(end.saturating_sub(TAIL))))
+            .is_ok()
+        {
+            let _ = log.take(TAIL).read_to_end(&mut said);
+        }
+    }
+    let said = String::from_utf8_lossy(&said);
+    let line = said.lines().rfind(|l| !l.trim().is_empty()).unwrap_or("");
+    let line: String = line.trim().chars().take(300).collect();
+    placed(&crate::secrets::known().redact(&line), &homes(shared))
 }
 
 /// Copies the turn's attachments (already checked to be in obid's attachments folder) into the
@@ -2351,7 +2696,7 @@ async fn one(
 ) -> std::io::Result<(
     agent::Turn,
     String,
-    Option<crate::conn::Conn>,
+    Option<Waiting>,
     Option<crate::usage::Tokens>,
 )> {
     let control = &session.control;
@@ -2375,6 +2720,8 @@ async fn one(
     let homes = homes(shared);
     let delta = |text: String| {
         if !text.is_empty() && control.live() {
+            // What the turn under way has said so far (CONVERSATION-AGENT-50), redacted as sent.
+            (shared.conversations).underway_words(&control.conversation, &control.turn, &text);
             shared.events.send(
                 "delta",
                 json!({"conversation": control.conversation, "turn": control.turn, "text": text}),
@@ -2468,11 +2815,22 @@ async fn one(
             Event::Step(_)
             | Event::Denied(_)
             | Event::Said(_)
+            | Event::Output { .. }
+            | Event::Spilled { .. }
             | Event::Thought { .. }
             | Event::Thinking { .. }
             | Event::Plan(_)
             | Event::Usage(_)
-            | Event::Tokens(_) => {}
+            | Event::Tokens(_)
+            | Event::Context(_) => {}
+            // An own Claude Code session has the owner's own MCP servers and claude.ai connectors,
+            // as their terminal does (LANES-12): Settings › Connectors shows them (CONNECTORS-1).
+            // A boxed one's are obid's only, never theirs (CONNECTORS-3).
+            Event::Connectors(servers) => {
+                if own && matches!(protocol, Protocol::Claude) {
+                    crate::connectors::saw(&shared.config.home, servers);
+                }
+            }
         }
     };
     // An own session asks obid about every call (LANES-14): what reaches nothing past the session
@@ -2483,6 +2841,9 @@ async fn one(
         false => Vec::new(),
     };
     let decide = |tool: &str, input: &Value| {
+        if tool == crate::permissions::ASK_USER_QUESTION {
+            return Ruling::Now(session.put_question(input));
+        }
         let quiet = crate::jobs::Jobs::OWN_QUIET.contains(&tool);
         if own
             && (quiet || crate::jobs::claude_place(tool, input, &place.room, None, &folders, false))
@@ -2494,10 +2855,11 @@ async fn one(
         }))
     };
     let ran = match (run, protocol) {
+        // Kept running for the next turn when it answered (CONVERSATION-AGENT-44).
         (Run::Cold(launch), Protocol::Codex(options)) => {
-            crate::codex::run_turn(launch, prompt, options, limit, stop, decide, on_event)
+            crate::codex::start_kept(launch, prompt, options, limit, stop, decide, on_event)
                 .await
-                .map(|turn| (turn, None))
+                .map(|(turn, kept)| (turn, kept.map(Waiting::Codex)))
         }
         (Run::Cold(launch), Protocol::Cursor(options)) => {
             crate::acp::run_turn(launch, prompt, options, limit, stop, decide, on_event)
@@ -2506,14 +2868,27 @@ async fn one(
         }
         (Run::Cold(launch), Protocol::Claude) => {
             match crate::conn::Conn::spawn(&launch, limit, stop, false).await {
-                Ok(conn) => Ok(agent::turn_on(conn, prompt, decide, on_event, true).await),
+                Ok(conn) => Ok(agent::turn_on(conn, prompt, decide, on_event, true).await)
+                    .map(|(turn, conn)| (turn, conn.map(Waiting::Claude))),
                 Err(e) => Err(e),
             }
         }
-        (Run::Warm(mut conn), _) => {
-            conn.renew(limit, stop);
-            Ok(agent::turn_on(*conn, prompt, decide, on_event, true).await)
-        }
+        (Run::Warm(waiting), protocol) => match (*waiting, protocol) {
+            (Waiting::Codex(kept), Protocol::Codex(options)) => Ok(crate::codex::next_turn(
+                kept, prompt, options, limit, stop, decide, on_event,
+            )
+            .await)
+            .map(|(turn, kept)| (turn, kept.map(Waiting::Codex))),
+            (Waiting::Claude(mut conn), Protocol::Claude) => {
+                conn.renew(limit, stop);
+                Ok(agent::turn_on(conn, prompt, decide, on_event, true).await)
+                    .map(|(turn, conn)| (turn, conn.map(Waiting::Claude)))
+            }
+            (waiting, _) => {
+                tokio::spawn(waiting.into_conn().finish());
+                Err(std::io::Error::other("its waiting agent isn't this turn's"))
+            }
+        },
     };
     watching.abort();
     delta(streamed.finish(&secrets));
@@ -2528,10 +2903,23 @@ enum Protocol {
     Cursor(crate::acp::Options),
 }
 
-/// What a turn's attempt runs on: an agent it starts, or its conversation's waiting Claude Code.
+/// What a turn's attempt runs on: an agent it starts, or its conversation's waiting Claude Code or
+/// Codex.
 enum Run {
     Cold(agent::Launch),
-    Warm(Box<crate::conn::Conn>),
+    Warm(Box<Waiting>),
+}
+
+/// Whether a waiting agent's login copy is good for one more turn: Claude Code's
+/// ([`crate::jobs::login_copy_lasts`]), Codex's `auth.json` in its `CODEX_HOME`
+/// ([`crate::jobs::codex_copy_ready`]). A copy near its end starts a new one, with a new copy.
+fn login_lasts(tool: Tool, place: &Place, account: &crate::config::Account) -> bool {
+    match tool {
+        Tool::Codex => {
+            crate::jobs::codex_copy_ready(&place.config.join("auth.json"), &account.name).is_ok()
+        }
+        _ => crate::jobs::login_copy_lasts(place.login_for(account)),
+    }
 }
 
 /// A tool call's arguments as the agent wrote them and as they reach Oby's tools: none is `{}`.
@@ -2716,8 +3104,13 @@ fn step(
     state: State,
 ) {
     let secrets = crate::secrets::known();
+    let text = secrets.redact(text);
+    // The conversation's turn under way is at the step that runs (CONVERSATION-AGENT-50).
+    if state == State::Running {
+        (shared.conversations).underway_step(&control.conversation, &control.turn, &text);
+    }
     let event = json!({"turn": control.turn, "conversation": control.conversation,
-           "index": index, "action": "tool", "text": secrets.redact(text), "tool": tool,
+           "index": index, "action": "tool", "text": text, "tool": tool,
            "detail": secrets.redact(detail), "state": state.as_str(),
            "at": obi_protocol::time::format(obi_protocol::time::now())});
     shared.events.send("step", event);
@@ -2742,6 +3135,11 @@ fn rule(
         || tool.starts_with("mcp__tetrix__")
         || (own && (tool.starts_with("mcp__") || crate::jobs::MCP_RESOURCE_TOOLS.contains(&tool)))
     {
+        return Answer::Allow;
+    }
+    // An own session's lookup of a deferred tool of its MCP servers (CONVERSATION-AGENT-24): it
+    // brings what the prompt held of them before, the tools' names and descriptions, no more.
+    if own && tool == "ToolSearch" {
         return Answer::Allow;
     }
     if let Some(why) = crate::policy::fixed_denial(tool, input, &bounds.worktree, &[]) {
@@ -2934,8 +3332,7 @@ fn step_text(name: &str, input: &Value) -> String {
             Some(path) => format!("Listing {path}"),
             None => "Listing the room".into(),
         },
-        Some(other) => format!("Using {other}"),
-        None => agent::step(name, input),
+        Some(_) | None => agent::step(name, input),
     }
 }
 
@@ -3399,7 +3796,7 @@ mod tests {
             .await
             .unwrap();
         Warm {
-            conn,
+            waiting: Waiting::Claude(conn),
             token: "t".into(),
             account: account.into(),
             config_dir: config_dir.map(PathBuf::from),
@@ -3464,17 +3861,17 @@ mod tests {
             ("a", Some("/a"), "s2"),
         ] {
             let warm = waiting("a", Some("/a"), "s1").await;
-            let pid = warm.conn.pid();
-            sessions.keep("c", warm, None, |_| true);
+            let pid = warm.waiting.pid();
+            sessions.keep("c", warm, &[], |_| true);
             assert!(
                 sessions
-                    .take_warm("c", &account(who, folder), Some(session))
+                    .take_warm("c", Tool::Claude, &account(who, folder), Some(session))
                     .is_none()
             );
             assert!(ends(pid).await, "{who} {folder:?} {session}");
         }
-        sessions.keep("c", waiting("a", Some("/a"), "s1").await, None, |_| true);
-        let mine = sessions.take_warm("c", &account("a", Some("/a")), Some("s1"));
+        sessions.keep("c", waiting("a", Some("/a"), "s1").await, &[], |_| true);
+        let mine = sessions.take_warm("c", Tool::Claude, &account("a", Some("/a")), Some("s1"));
         assert!(mine.is_some());
         mine.unwrap().end();
     }
@@ -3487,8 +3884,8 @@ mod tests {
         let mut pids = vec![];
         for c in ["c1", "c2", "c3", "c4"] {
             let warm = waiting("a", None, "s").await;
-            pids.push(warm.conn.pid());
-            sessions.keep(c, warm, None, |_| true);
+            pids.push(warm.waiting.pid());
+            sessions.keep(c, warm, &[], |_| true);
         }
         assert!(ends(pids[0]).await, "the oldest ends");
         assert_eq!(sessions.warm().len(), WARM_MOST);
@@ -3501,12 +3898,47 @@ mod tests {
         sessions.expire("c2", since);
         assert!(!sessions.warm().contains_key("c2"));
         assert!(ends(pids[1]).await);
-        sessions.keep("c5", waiting("b", None, "s").await, None, |_| true);
+        sessions.keep("c5", waiting("b", None, "s").await, &[], |_| true);
         sessions.end_warm_on("a");
         assert_eq!(sessions.warm().keys().collect::<Vec<_>>(), vec!["c5"]);
         assert!(ends(pids[2]).await && ends(pids[3]).await);
         sessions.end_all_warm();
         assert!(sessions.warm().is_empty());
+    }
+
+    /// PROFILES-47: a Claude Code is started ahead for the turn's profile first, then the others in
+    /// the registry's order, only where a new conversation would talk on Claude Code, three at most.
+    #[test]
+    fn profiles_47_a_claude_code_ahead_for_each_profile_up_to_three() {
+        let profiles = ["p1", "p2", "p3", "p4", "p5"];
+        let claude = |p: &&str| ["p1", "p2", "p3", "p5"].contains(p);
+        assert_eq!(ahead(&profiles, &"p3", claude), ["p3", "p1", "p2"]);
+        assert_eq!(ahead(&profiles, &"p4", claude), ["p1", "p2", "p3"]);
+        assert_eq!(ahead(&profiles, &"p5", claude), ["p5", "p1", "p2"]);
+        assert_eq!(
+            ahead(&profiles[..1], &"p1", |_: &&str| false),
+            Vec::<&str>::new()
+        );
+    }
+
+    /// PROFILES-47: of the profiles' next conversations' Claude Codes, the one waiting longest ends
+    /// once AHEAD_MOST wait; the conversations' own WARM_MOST are apart.
+    #[tokio::test]
+    async fn profiles_47_at_most_three_profiles_wait_ahead() {
+        let sessions = Sessions::default();
+        let nexts: Vec<String> = ["n1", "n2", "n3", "n4"].map(String::from).to_vec();
+        let mut pids = vec![];
+        for n in &nexts {
+            let mut warm = waiting("a", None, "s").await;
+            warm.session = None;
+            pids.push(warm.waiting.pid());
+            assert!(sessions.keep(n, warm, &nexts, |_| true));
+        }
+        assert!(ends(pids[0]).await, "the oldest profile's ends");
+        let mut left: Vec<String> = sessions.warm().keys().cloned().collect();
+        left.sort();
+        assert_eq!(left, ["n2", "n3", "n4"]);
+        sessions.end_all_warm();
     }
 
     /// The next new conversation's Claude Code isn't one of the WARM_MOST, and none is kept when
@@ -3516,26 +3948,26 @@ mod tests {
         let sessions = Sessions::default();
         let mut next = waiting("a", None, "s").await;
         next.session = None;
-        let next_pid = next.conn.pid();
-        assert!(sessions.keep("next", next, Some("next"), |_| true));
+        let next_pid = next.waiting.pid();
+        assert!(sessions.keep("next", next, &["next".to_owned()], |_| true));
         // One with no session that isn't the next conversation's counts like any other.
         let mut taken = waiting("a", None, "s").await;
         taken.session = None;
-        let taken_pid = taken.conn.pid();
-        assert!(sessions.keep("c0", taken, Some("next"), |_| true));
+        let taken_pid = taken.waiting.pid();
+        assert!(sessions.keep("c0", taken, &["next".to_owned()], |_| true));
         let mut pids = vec![];
         for c in ["c1", "c2", "c3", "c4"] {
             let warm = waiting("a", None, "s").await;
-            pids.push(warm.conn.pid());
-            assert!(sessions.keep(c, warm, Some("next"), |_| true));
+            pids.push(warm.waiting.pid());
+            assert!(sessions.keep(c, warm, &["next".to_owned()], |_| true));
         }
         assert!(ends(taken_pid).await, "it was the oldest of the counted");
         assert!(ends(pids[0]).await, "the oldest conversation's ends");
         assert!(sessions.warm().contains_key("next"));
         assert_eq!(sessions.warm().len(), WARM_MOST + 1);
         let refused = waiting("a", None, "s").await;
-        let refused_pid = refused.conn.pid();
-        assert!(!sessions.keep("c5", refused, Some("next"), |_| false));
+        let refused_pid = refused.waiting.pid();
+        assert!(!sessions.keep("c5", refused, &["next".to_owned()], |_| false));
         assert!(ends(refused_pid).await);
         sessions.end_warm_unless(|c| c != "next" && c != "c2");
         assert_eq!(
@@ -3704,6 +4136,7 @@ mod tests {
             said: String::new(),
             attachments: vec![],
             attached_jobs: vec![],
+            defaults: None,
             repos_note: None,
             control,
             jobs: Mutex::new(vec![]),
@@ -3720,6 +4153,7 @@ mod tests {
             artifacts: Mutex::new(vec![]),
             written: Mutex::default(),
             reader: Reader::default(),
+            question: Mutex::default(),
         };
         // The run names its session: kept at once, unmarked.
         session.keep(Some("c0000000-0000-4000-8000-000000000001"));
@@ -3862,6 +4296,7 @@ mod tests {
             said: String::new(),
             attachments: vec![],
             attached_jobs: vec![],
+            defaults: None,
             repos_note: None,
             control,
             jobs: Mutex::new(vec![]),
@@ -3878,6 +4313,7 @@ mod tests {
             artifacts: Mutex::new(vec![]),
             written: Mutex::default(),
             reader: Reader::default(),
+            question: Mutex::default(),
         }
     }
 
@@ -4091,7 +4527,7 @@ mod tests {
             |pid: i32| nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok();
         assert!(alive(pid));
         let warm = Warm {
-            conn,
+            waiting: Waiting::Claude(conn),
             token: String::new(),
             account: "a".into(),
             config_dir: None,
@@ -4211,6 +4647,50 @@ mod tests {
         }
         assert!(ORIENTATION.contains(NO_SHELL));
         assert!(NO_SHELL.contains("no commands") && NO_SHELL.contains("job"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// CONVERSATION-AGENT-24: an own session may look up its MCP servers' deferred tools
+    /// (ToolSearch), which taints nothing, and its launch lifts Claude Code's first-turn hold for
+    /// them in place of any value; Oby's own servers are connected before that turn (`alwaysLoad`).
+    /// A boxed session has no ToolSearch.
+    #[test]
+    fn conversation_agent_24_an_own_session_looks_up_tools_and_waits_only_for_obys() {
+        let home = std::env::temp_dir().join(format!("obid-agent-24-{}", std::process::id()));
+        let place = Place::of(&home, "c1");
+        std::fs::create_dir_all(&place.room).unwrap();
+        let bounds = place.bounds();
+        let input = json!({"query": "select:mcp__github__merge"});
+        let own = rule("ToolSearch", &input, &bounds, &place.repos, true, &|| {});
+        assert_eq!(own, Answer::Allow);
+        assert!(!taints("ToolSearch", &input, &bounds, &place.repos));
+        let boxed = rule("ToolSearch", &input, &bounds, &place.repos, false, &|| {});
+        assert!(matches!(boxed, Answer::Deny(_)), "{boxed:?}");
+        assert!(OWN_TOOLS.split(',').any(|t| t == "ToolSearch"));
+        assert!(!TOOLS.split(',').any(|t| t == "ToolSearch"));
+        let mut env: Vec<(OsString, OsString)> = vec![
+            (MCP_STARTUP_WAIT.0.into(), "30000".into()),
+            ("A".into(), "1".into()),
+        ];
+        lift_mcp_hold(&mut env);
+        let set: Vec<_> = env
+            .iter()
+            .filter(|(n, _)| n == MCP_STARTUP_WAIT.0)
+            .collect();
+        assert_eq!(set, [&(MCP_STARTUP_WAIT.0.into(), "0".into())]);
+        std::fs::create_dir_all(&place.login).unwrap();
+        let mcp = place.login.join(MCP_FILE);
+        write_mcp(
+            &mcp,
+            "http://127.0.0.1:1/oby",
+            Some("http://127.0.0.1:1/t"),
+            "tok",
+        )
+        .unwrap();
+        let servers: Value = serde_json::from_slice(&std::fs::read(&mcp).unwrap()).unwrap();
+        for name in ["oby", "tetrix"] {
+            assert_eq!(servers["mcpServers"][name]["alwaysLoad"], true, "{servers}");
+        }
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -4440,6 +4920,7 @@ mod tests {
             said: String::new(),
             attachments: vec![],
             attached_jobs: vec![],
+            defaults: None,
             repos_note: None,
             control,
             jobs: Mutex::new(vec![]),
@@ -4456,6 +4937,7 @@ mod tests {
             artifacts: Mutex::new(vec![]),
             written: Mutex::default(),
             reader: Reader::default(),
+            question: Mutex::default(),
         }));
         assert!(sessions.session("conversation-c1", &token).is_some());
         assert!(sessions.session("conversation-c2", &token).is_none());

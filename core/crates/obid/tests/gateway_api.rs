@@ -793,6 +793,33 @@ fn a_wait_through_the_gateway_starts_at_once() {
     assert!(rest.contains(&id), "{rest}");
 }
 
+/// TASKS-29: a job's changes answer on the loopback API and not through the gateway, which
+/// passes the job's transcript for the same device token.
+#[test]
+fn tasks_29_the_gateway_refuses_a_jobs_changes() {
+    let folder = Folder::new("gateway-changes");
+    let obid = started(&folder);
+    let token = paired(&obid);
+    let job = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(&json!({"job": {
+        "repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"}})),
+    );
+    assert_eq!(job.status, 201, "{}", job.text);
+    let id = job.body["id"].as_str().unwrap().to_owned();
+    let changes = format!("/v1/jobs/{id}/changes");
+    let loopback = call(&obid, "GET", &changes, None);
+    assert_eq!(loopback.status, 200, "{}", loopback.text);
+    let phone = through(&obid, Some(&token), "GET", &changes, None);
+    assert_eq!(phone.status, 404, "{}", phone.text);
+    let transcript = format!("/v1/jobs/{id}/transcript");
+    let read = through(&obid, Some(&token), "GET", &transcript, None);
+    assert_ne!(read.status, 404, "{}", read.text);
+    call(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
+}
+
 /// RECEIPTS-5 through the gateway: a paired phone's `POST /v1/jobs` sent again with its
 /// `Idempotency-Key` gets the first job back, so the gateway passes the key on.
 #[test]

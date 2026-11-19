@@ -18,8 +18,8 @@ button { appearance: none; border: 0; background: none; padding: 0; cursor: poin
 :focus-visible { outline: 1px solid var(--muted); outline-offset: 2px; }
 
 /* the side panel and the view side by side; opening the panel pushes the view.
-   Neither squeezes below its width: in a narrow window the view runs off the
-   right edge and is clipped */
+   Docked only while the view keeps 640px (panelFit.ts, CHATFIRST-35); narrower, the
+   panel floats over the view, so nothing runs past the window's right edge */
 .app { position: relative; height: 100%; display: flex; overflow: clip; }  /* clip, not hidden: nothing (like the editor bringing its cursor into view) can scroll it sideways */
 .app > .home { flex: 1; min-width: var(--view-min); }
 /* the panel icon: right of the traffic lights, over whatever is beneath */
@@ -166,7 +166,7 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
    under it, each a step further back. The stack eases to each top card's height */
 .asks {
   position: relative;
-  width: min(480px, 100%);
+  width: min(calc(var(--column) - 60px), 100%);  /* 480px: the message box's field */
   margin-bottom: calc(var(--peeks) * 8px);
   transition: height 360ms var(--warm), margin 360ms var(--warm);
 }
@@ -175,6 +175,8 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .asks.is-empty { height: 0 !important; margin: -8px 0; }
 .ask-card { position: relative; z-index: 3; padding: 16px 18px; border-radius: 22px; background: var(--chip); text-align: left; user-select: text; }
 .ask-card .tc-ask { margin-top: 12px; padding-top: 12px; }
+/* a GitHub offer's card starts its work when clicked anywhere but its buttons (GITHUBWORK-10) */
+.ask-card.is-startable, .waiting-row.is-startable { cursor: pointer; }
 /* Home keeps it short: what happened in 3 lines at most, the command or plan in
    2 (it scrolls); the task’s page has all of it. Oby's escalation shows whole,
    scrolling inside the card (TASKS-17) */
@@ -245,7 +247,7 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
   transition: opacity 220ms cubic-bezier(0.22, 0.61, 0.36, 1), transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1);
   display: flex;
   width: 100%;
-  max-width: 520px;
+  max-width: calc(var(--column) - 20px);  /* 520px, a field of 480px between its gutters */
   margin: 0 auto;
   padding: 0 var(--gutter) var(--gutter);
 }
@@ -359,6 +361,10 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .archive-who { margin-right: 6px; color: var(--text); }
 .archive-about, .archive-ago { color: var(--muted); font-size: var(--text-sm); }
 .archive-ago { flex: none; }
+/* an archived conversation (CHATSTATE-9): its row, and Restore beside it */
+.archive-talk { display: flex; align-items: center; gap: 8px; }
+.archive-talk > .archive-row { flex: 1; min-width: 0; }
+.archive-restore { flex: none; }
 /* Waiting for you (WaitingView.tsx, Sangam's screen 17): one card per thing that needs your word */
 .waiting-head { width: 100%; margin-bottom: 12px; display: flex; align-items: center; gap: 12px; }
 .waiting-head .group-title { margin: 0; }
@@ -453,6 +459,9 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .tc-who { margin-right: 6px; color: var(--text); font-weight: 500; }
 .tc-ago { flex: none; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
 .tc-meta { margin: 4px 0 0 26px; color: var(--muted); font-size: var(--text-md); }
+/* why it runs on another agent than the words named (ACCOUNTS-31): a line under the meta, same voice */
+.tc-routed { margin: 2px 0 0 26px; color: var(--muted); font-size: var(--text-md); }
+.task-card.is-alone .tc-routed { margin: -10px 0 16px 30px; }
 
 /* running: the agent's live line */
 .tc-now { margin: 14px 0 0; max-height: 20px; display: flex; align-items: center; gap: 10px; color: var(--text); font-size: var(--text-md); min-width: 0; overflow: hidden; transition: opacity var(--fade), max-height 360ms var(--warm), margin-top 360ms var(--warm); }
@@ -497,6 +506,36 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .tc-report.is-problem { color: var(--danger); }
 .tc-option.is-quiet { background: none; color: var(--muted); }
 .tc-option.is-quiet:hover { color: var(--ink); background: var(--hover); }
+/* a pull request's checks, each its own line (PrChecks.tsx): failed first, Details at the end */
+.pr-checks { margin-top: 10px; }
+.pr-checks-line { color: var(--muted); font-size: var(--text-sm); line-height: 18px; }
+.pr-checks-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.pr-checks-list li { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: var(--text-md); line-height: 18px; color: var(--text); }
+.pr-checks-list .tc-mark-done { width: 12px; height: 12px; }
+.pr-checks-list .tc-mark .status-dot { width: 8px; height: 8px; }
+.pr-check-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+.pr-check-state { color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
+.pr-checks-list .is-failed .pr-check-name, .pr-checks-list .is-failed .pr-check-state { color: var(--danger); }
+.pr-check-details, .pr-checks-all { margin-left: auto; color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
+.pr-checks-all { margin: 6px 0 0; }
+.pr-check-details:hover, .pr-checks-all:hover { color: var(--ink); }
+/* an agent's question's options as a list (QuestionChoices.tsx): each its label (a button whose
+   ::after takes a click anywhere on the row) and, under it, its description; the recommended one
+   ringed; a multiple choice's ticks, then its answer's box and Send */
+.tc-choices { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.tc-choice { position: relative; display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border: 1px solid transparent; border-radius: 10px; background: rgba(255, 255, 255, 0.06); color: var(--item); transition: color var(--fade), background-color var(--fade), border-color var(--fade); }
+.tc-choice:hover, .tc-choice:has(.tc-choice-pick:focus-visible) { background: rgba(255, 255, 255, 0.11); color: var(--ink); }
+.tc-choice.is-recommended { border-color: rgba(255, 255, 255, 0.3); }
+.tc-choice.is-on { background: rgba(255, 255, 255, 0.13); color: var(--ink); }
+.tc-choice-pick { color: inherit; font-size: var(--text-md); line-height: 18px; text-align: left; outline: 0; }
+.tc-choice-pick::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+.tc-choice-about { color: var(--muted); font-size: var(--text-sm); line-height: 16px; pointer-events: none; }
+.tc-choice:has(.tc-choice-box) { padding-left: 36px; }
+.tc-choice-box { position: absolute; left: 12px; top: 9px; display: grid; place-items: center; width: 16px; height: 16px; border: 1px solid rgba(255, 255, 255, 0.35); border-radius: 4px; pointer-events: none; }
+.tc-choice.is-on .tc-choice-box { background: var(--ink); border-color: var(--ink); color: #111; }
+.tc-choices-send { margin-top: 4px; }
+.tc-choices .tc-choices-send .set-field { flex: 1 1 200px; min-width: 0; width: auto; font-family: inherit; }
+.tc-choices-send .tc-option:disabled { opacity: 0.4; cursor: default; }
 /* a check's Edit: the command in Settings' field, as wide as the card leaves it */
 .tc-options .set-field { flex: 1 1 200px; min-width: 0; width: auto; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
 /* Change check, after "Done when"'s command; its field in the row's place */
@@ -647,6 +686,11 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .tc-meter { width: 72px; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); overflow: hidden; display: flex; gap: 1px; }
 .tc-meter > span { height: 100%; background: rgba(255, 255, 255, 0.4); }
 .tc-meter > .is-job { background: var(--ink); }
+/* the context window's (USAGE-15): its own row under the usage, yellow past 80%, red past 90% */
+.tc-context { margin-top: 8px; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.tc-context b { color: var(--ink); font-weight: 500; }
+.tc-meter.is-high > .is-job { background: var(--full); }
+.tc-meter.is-over > .is-job { background: var(--over); }
 .tc-out { margin-top: 14px; }
 .tc-out h4 { margin: 0 0 6px; color: var(--label); font-size: var(--text-sm); font-weight: 500; }
 @media (prefers-reduced-motion: reduce) { .tc-tools .is-running .tc-tool-verb { animation: none; background: none; color: var(--ink); } }
@@ -767,8 +811,16 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .chat-layer { position: absolute; top: var(--bar); right: 0; bottom: 0; left: 0; display: grid; grid-template-rows: 1fr auto; transition: opacity 220ms cubic-bezier(0.22, 0.61, 0.36, 1), transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1); }
 .chat-scroll { position: relative; min-height: 0; }
 .chat { position: absolute; inset: 0; overflow-y: auto; padding: 16px var(--gutter) 24px; scrollbar-width: none; }
-/* as wide as the group's cards (540px), the message box under it too, so the three line up */
-.chat-column { max-width: 540px; margin: 0 auto; }
+/* as wide as the group's cards (540px in a normal window), the message box under it too, so the three
+   line up; in a wide window the thread and its box grow together (--column, tokens.css) */
+.chat-column { max-width: var(--column); margin: 0 auto; }
+/* ⌘F's find bar (FindBar.tsx), over the thread's top right; its matches lit with CSS highlights */
+.find-bar { position: absolute; top: 8px; right: calc(var(--gutter) / 2 + 8px); z-index: 5; display: flex; align-items: center; gap: 2px; padding: 4px 4px 4px 10px; border: 1px solid var(--surface-edge); border-radius: 8px; background: var(--surface); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3); }
+.find-field { width: 200px; height: 26px; border: 0; background: none; color: var(--ink); font: inherit; font-size: var(--text-md); outline: 0; }
+.find-count { min-width: 56px; padding: 0 6px; color: var(--muted); font-size: var(--text-sm); text-align: right; white-space: nowrap; }
+.find-bar .icon-button { width: 26px; height: 26px; }
+::highlight(oby-find) { background-color: rgba(255, 214, 10, 0.3); color: inherit; }
+::highlight(oby-find-current) { background-color: rgba(255, 159, 10, 0.85); color: #000; }
 .chat-thread { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; user-select: text; }
 /* Bubbles, 18px round, at most 80% of the column, for yours on the right;
    Oby's replies on the left beside its face (below). A question and its response sit
@@ -863,18 +915,15 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .msg-file > span:last-child { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* a task this message started: a card under it, the thread's full width */
 .msg-task { width: 100%; padding: 10px 12px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 14px; background: rgba(255, 255, 255, 0.06); color: var(--muted); text-align: left; user-select: none; transition: background-color var(--fade), border-color var(--fade); }
-/* the agent's icon, the status mark and the arrow sit on the title's line (18px) */
+/* the agent's icon, the status mark and the ⋯ sit on the title's line (18px) */
 .msg-task > svg:first-child { flex: none; align-self: flex-start; margin-top: 1px; }
 .msg-task > .status { align-self: flex-start; margin-top: 3px; }
-.msg-task.is-link:hover { background: rgba(255, 255, 255, 0.1); border-color: var(--line-strong); }  /* over its white 6% at rest */
 .msg-task-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .msg-task-title { color: var(--ink); font-size: var(--text-md); font-weight: 500; line-height: 18px; white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
 .msg-task-title .tc-who { margin-right: 5px; }
 .msg-task-meta { color: var(--muted); font-size: var(--text-sm); white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
 .msg-task .tc-result { margin: 2px 0 0; }
 .msg-task .tc-result a { white-space: nowrap; }
-.msg-task-go { flex: none; align-self: flex-start; margin: 2px 0 0 -2px; opacity: 0.6; }
-.msg-task.is-link:hover .msg-task-go { opacity: 1; color: var(--text); }
 /* new messages ease in from just below */
 .msg.is-new { animation: msg-in 360ms var(--warm) both; }
 @keyframes msg-in { from { opacity: 0; transform: translateY(8px); } }
@@ -882,9 +931,9 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .chat-live { margin-top: 12px; display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--text); font-size: var(--text-md); user-select: none; }
 .chat-live.is-working .tc-step { align-self: center; }  /* on its line, centred with the dot */
 /* the message box: as on Home */
-.chat-composer { max-width: calc(540px + 2 * var(--gutter)); padding-top: 8px; }
+.chat-composer { max-width: calc(var(--column) + 2 * var(--gutter)); padding-top: 8px; }
 /* Oby waiting on you, over the message box: as wide as it, a card of its own */
-.chat-ask { width: 100%; max-width: calc(540px + 2 * var(--gutter)); margin: 0 auto; padding: 8px var(--gutter) 0; animation: rise 280ms var(--warm) both; }
+.chat-ask { width: 100%; max-width: calc(var(--column) + 2 * var(--gutter)); margin: 0 auto; padding: 8px var(--gutter) 0; animation: rise 280ms var(--warm) both; }
 .chat-ask-card { padding: 14px 16px 12px; border-radius: 18px; background: var(--chip); }
 .chat-ask-card .tc-options { margin-top: 12px; }
 .chat-ask-hint { margin: 10px 0 0; color: var(--muted); font-size: var(--text-sm); }
@@ -961,6 +1010,9 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 /* a tag: 30px, its icon 15px, the words 13px, room either side */
 .composer-tag { height: 30px; max-width: 260px; padding: 0 5px 0 10px; display: inline-flex; align-items: center; gap: 7px; border-radius: var(--radius-pill); background: var(--chip-hover); color: var(--item); font-size: var(--text-md); }
 .composer-tag > svg { flex: none; color: var(--muted); }
+/* a tag with nothing to remove (a project's folders, PROJECTS-22) is as roomy on its right as on its left: the
+   5px on the right is for its remove button's own room */
+.composer-tag:not(:has(> button)) { padding-right: 10px; }
 .composer-tag-text { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .composer-tag button { flex: none; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; color: var(--muted); transition: color var(--fade), background-color var(--fade); }
 .composer-tag button:hover { color: var(--ink); background: var(--hover); }
@@ -1044,12 +1096,34 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .talk-choice-used.is-high { color: var(--full); }
 .talk-choice-used.is-over { color: var(--over); }
 .talk-choice-check { flex: none; color: var(--ink); }
+/* a model list beside the message box's menu: left-aligned rows of one line each (the full name in the
+   row's title), the current one checked, a search over them when it's long; one size, set from the
+   count of all its models (modelMenuPlace), so typing in the search never resizes it */
+.row-menu.row-submenu.model-menu { box-sizing: border-box; padding: 8px; overflow: hidden; }
+.model-search { flex: none; box-sizing: border-box; height: 32px; margin: 0 0 8px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); color: var(--ink); font: inherit; font-size: var(--text-md); outline: none; user-select: text; transition: border-color var(--fade); }
+.model-search:focus { border-color: var(--field-edge-on); }
+.model-search::placeholder { color: var(--muted); }
+.model-list { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; overscroll-behavior: contain; }
+.row-menu button.model-row { flex: none; justify-content: flex-start; gap: 10px; height: 34px; margin-top: 0; padding: 0 10px; font-size: var(--text-md); text-align: left; }
+.model-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-row .menu-check { flex: none; margin-left: auto; color: var(--ink); }
+.model-empty { padding: 8px 10px; color: var(--muted); font-size: var(--text-sm); }
+/* the account's efforts under its models (COMPOSER-17): a line, "Effort", then a pill each, four to a row
+   (talk.ts EFFORT_PILLS: the list's height counts them) */
+.model-efforts { flex: none; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); display: flex; flex-direction: column; }
+.model-efforts-label { height: 22px; padding: 0 10px; display: flex; align-items: center; color: var(--label); font-size: var(--text-sm); }
+.model-efforts-pills { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+.row-menu .model-efforts-pills button.effort-pill { box-sizing: border-box; height: 28px; margin: 0; padding: 0 6px; justify-content: center; border: 1px solid var(--line); border-radius: var(--radius-pill); font-size: var(--text-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row-menu .model-efforts-pills button.effort-pill[aria-checked="true"] { border-color: transparent; background: rgba(255, 255, 255, 0.14); color: var(--ink); }
 /* just past the gauge's top right corner, clear of its line */
 .usage-dot { position: absolute; top: 5px; right: 4px; width: 6px; height: 6px; border-radius: 50%; }
 .usage-dot.is-high { background: var(--full); }
 .usage-dot.is-over { background: var(--over); }
 /* its panel: a header with the way to Settings › Accounts, then each account's week */
 .usage-panel { padding: 8px 8px 20px; gap: 2px; }  /* 12px more at the bottom than the top */
+/* as wide as the account menu, on its gauge as that menu is on its pill (COMPOSER-18): Composer.tsx sets
+   its width, right and bottom from the gauge; it opens from its bottom right, where the gauge is */
+.usage-panel { left: auto; right: -1px; box-sizing: border-box; transform-origin: bottom right; }
 .usage-head { margin: 0 0 2px 8px; display: flex; align-items: center; justify-content: space-between; color: var(--label); font-size: var(--text-sm); }
 .usage-row { padding: 8px; display: flex; align-items: flex-start; gap: 10px; }
 .usage-row > svg { flex: none; margin-top: 1px; color: var(--muted); }
@@ -1180,6 +1254,14 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
    under its narrowest (252px) it stays 252 and the edge cuts it, no squeezing */
 .is-resizing .sidebar, .is-settling .sidebar { width: max(100%, var(--sidebar-min)); }
 .is-resizing { cursor: col-resize; }
+/* floating (a window too narrow to dock it beside a 640px chat, panelFit.ts): over the view, the
+   view at its full width under it; a dimmed strip beside it puts it away (T3 Code's sheet) */
+.app.is-floating > .home { isolation: isolate; }
+.app.is-floating .sidebar-slot { position: absolute; z-index: 9; top: 0; bottom: 0; left: 0; }
+.app.is-floating .sidebar { background: var(--bg); }
+.app.is-floating.has-sidebar .sidebar-slot { box-shadow: 0 0 32px rgba(0, 0, 0, 0.5); }
+.app.is-floating.has-sidebar .bar { padding-left: calc(var(--after-lights) + 40px); }
+.panel-scrim { position: absolute; z-index: 8; inset: 0; padding: 0; border: 0; background: rgba(0, 0, 0, 0.35); cursor: default; animation: fade-in 160ms var(--warm) both; -webkit-app-region: no-drag; }
 
 /* far left: one icon per section, your account picture at the bottom */
 .rail {
@@ -1436,6 +1518,12 @@ button.connector { width: 100%; text-align: left; }
 .sidebar-new.is-stacked { margin-bottom: 0; }
 .sidebar-new.is-stacked:not(:has(+ .sidebar-new)) { margin-bottom: 8px; }  /* the last of a stack keeps the room under it */
 .sidebar-new.is-stacked, .sidebar-new.is-stacked + .sidebar-new { height: 30px; }
+/* a shortcut's key at a row's end (shortcuts.ts, data-kbd), drawn so it's no part of the row's own
+   text (its label, what a click holds): a menu's always, the New conversation row's as the pointer's
+   on it, so the panel stays as quiet as his design */
+.has-kbd::after { content: attr(data-kbd); flex: none; margin-left: auto; padding-left: 12px; color: var(--muted); font-size: var(--text-sm); }
+.sidebar-new.has-kbd::after { opacity: 0; transition: opacity var(--fade); }
+.sidebar-new.has-kbd:hover::after, .sidebar-new.has-kbd:focus-visible::after { opacity: 1; }
 /* the search field slides open under the title */
 .sidebar-search-wrap {
   display: grid;
@@ -1548,7 +1636,7 @@ button.connector { width: 100%; text-align: left; }
 }
 .sidebar-item-more:hover { color: var(--ink); background: var(--chip-hover); }
 /* a conversation with Oby in Conversations: its name, what came of it, when it last moved */
-.convo-row { position: relative; cursor: pointer; }
+.convo-row { position: relative; cursor: pointer; padding-left: var(--convo-gutter, 16px); }
 .convo-row .sidebar-item-ago { align-self: flex-start; margin-top: 6px; }
 /* on hover (or with its menu open) the time gives way to the ⋮, in the same spot */
 .convo-row:is(:hover, :focus-visible, :has(:focus-visible), .is-menu-open) > .sidebar-item-ago { opacity: 0; }
@@ -1556,6 +1644,21 @@ button.connector { width: 100%; text-align: left; }
 .convo-row > .status-dot { position: absolute; right: 12px; bottom: 11px; }  /* under when it moved, as on the canvas */
 .convo-row:has(.connector-about:empty) > .sidebar-item-ago { align-self: center; margin-top: 0; }  /* a line of its own, beside its name */
 .convo-row:has(.connector-about:empty) > .status-dot { bottom: 6px; }
+/* its latest task done: a small grey check in the dot's spot (CHATSTATE-5); unread: its name bold */
+.convo-row > .convo-done { position: absolute; right: 10px; bottom: 8px; display: grid; place-items: center; color: rgba(255, 255, 255, 0.4); }
+.convo-row:has(.connector-about:empty) > .convo-done { bottom: 3px; }
+.convo-row.is-unread .connector-name { color: var(--ink); font-weight: 600; }
+/* over the message box: why its account can't run, and the way on (CHATSTATE-1 to 3) */
+.cant-run, .refusal { display: flex; align-items: center; gap: 8px; box-sizing: border-box; width: calc(100% - 2 * var(--gutter)); max-width: var(--column); margin: 8px auto 0; padding: 8px 10px 8px 12px; border-radius: 12px; font-size: var(--text-sm); animation: rise 280ms var(--warm) both; }
+.cant-run { background: var(--hover); color: var(--item); }
+.cant-run > svg { flex: none; }
+.cant-run-text, .refusal-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cant-run-action { flex: none; padding: 3px 9px; border-radius: 8px; color: var(--ink); background: rgba(255, 255, 255, 0.08); font-size: var(--text-sm); }
+.cant-run-action:hover { background: rgba(255, 255, 255, 0.14); }
+/* what obid refused of a click here, until dismissed (CHATSTATE-4) */
+.refusal { color: var(--ink); background: color-mix(in srgb, var(--danger) 16%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 40%, transparent); }
+.refusal-text { white-space: normal; }
+.refusal-close { flex: none; }
 .convo-row.is-menu-open { background: var(--hover); }
 .convo-row.is-menu-open .connector-name { color: var(--ink); }
 /* renaming: the name becomes a field in place, the line under it stays */
@@ -1621,9 +1724,13 @@ button.connector { width: 100%; text-align: left; }
   transition: background-color var(--fade), color var(--fade);
 }
 .row-menu button:hover { background: rgba(255, 255, 255, 0.08); color: var(--ink); }
+/* a row the keyboard is on is lit like a hover, as a macOS menu's rows are (the + menu's too, .add-panel).
+   The global focus ring (outline-offset 2px) is clipped by a menu's own scrolling box (.menu-scroll,
+   .is-scroll), leaving only its bottom edge as a stray line under the first row */
+.row-menu button:focus-visible { outline: 0; background: rgba(255, 255, 255, 0.08); color: var(--ink); }
 .row-menu button + button { margin-top: 2px; }  /* items 2px apart */
 .row-menu .is-danger { color: var(--danger); }
-.row-menu .is-danger:hover { background: rgba(240, 113, 103, 0.12); color: var(--danger); }
+.row-menu .is-danger:is(:hover, :focus-visible) { background: rgba(240, 113, 103, 0.12); color: var(--danger); }
 /* a menu's heading: what it's for (an Obysphere's logo, name and address) */
 .row-menu .menu-head { display: flex; align-items: center; gap: 10px; padding: 6px 12px 4px; }
 .menu-head-text { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
@@ -1676,6 +1783,8 @@ button.connector { width: 100%; text-align: left; }
 .set-head { margin: 0 0 8px; padding: 0 16px; color: var(--item); font-size: var(--text-md); font-weight: 500; }
 .set-card { border: 1px solid var(--surface-edge); border-radius: 16px; background: var(--surface); }
 .set-foot { margin: 8px 0 0; padding: 0 16px; color: var(--muted); font-size: var(--text-sm); line-height: 1.45; }
+.set-foot .set-footer-line { display: block; }
+.set-foot .set-footer-line + .set-footer-line { margin-top: 4px; }
 .set-row { min-height: 56px; padding: 12px 16px; display: flex; align-items: center; gap: 16px; }
 .set-row + .set-row { border-top: 1px solid var(--divider); }
 .set-label { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; color: var(--ink); font-size: var(--text-base); }
@@ -1770,7 +1879,6 @@ button.connector { width: 100%; text-align: left; }
 .source-kind-text > span { color: var(--muted); font-size: var(--text-sm); font-weight: 400; }
 .source-sign { width: 100%; height: 44px; justify-content: center; }
 .source-signed { margin: 0; display: flex; align-items: center; gap: 6px; color: var(--text); font-size: var(--text-base); }
-.source-org .set-select, .source-org select { width: 100%; }
 .source-found { margin-top: 16px; }
 .source-tools { margin: 8px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
 .source-tools code { padding: 2px 6px; border-radius: 4px; background: rgba(255, 255, 255, 0.08); color: var(--text); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
@@ -1781,6 +1889,12 @@ button.connector { width: 100%; text-align: left; }
 .set-address:focus-within { border-color: var(--field-edge-on); }
 .set-address.is-bad, .set-address.is-bad:focus-within { border-color: rgba(240, 113, 103, 0.5); }
 .set-problem { color: var(--danger); }
+/* a tool's binary (Settings › Agents › Binaries, ACCOUNTS-26): where it was found cut to one line
+   (the whole on hover), the field and its button beside it */
+.set-bin .set-label { flex: 1; min-width: 0; }
+.set-bin .set-about { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.set-bin .set-control { flex: none; gap: 8px; }
+.set-bin .set-field { width: 220px; }
 
 /* an account: what it's used this week, as a bar under its name */
 .set-usage { align-items: flex-start; }
@@ -2011,6 +2125,21 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 }
 .connection.is-down { color: var(--ink); border-color: color-mix(in srgb, var(--over) 45%, transparent); }
 
+/* another conversation needs you while the window is in front (NeedsYouNote, ALERTS-21): a quiet
+   note in the window's corner, the T3 Code way, with Open */
+.needs-note {
+  position: absolute; right: 16px; top: calc(var(--bar, 52px) + 8px); z-index: 60; display: flex; align-items: center; gap: 10px;
+  max-width: min(380px, calc(100vw - 32px)); padding: 10px 10px 10px 14px;
+  border-radius: 12px; border: 1px solid var(--surface-edge); background: var(--surface);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); color: var(--text); font-size: var(--text-md);
+  animation: fade-in 160ms var(--warm) both;
+}
+.needs-note-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--needs); }
+.needs-note-words { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.needs-note-words b { color: var(--ink); font-weight: 500; }
+.needs-note-title { color: var(--muted); font-size: var(--text-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.needs-note-close { flex: none; }
+
 /* --- Oby talking (ObyFaceLive; the owner's, 2026-10-27, ~/Projects/Deskree/research/oby-specs/balloon-final.css) ---
    The speech balloon: Q*bert's grawlix beside Oby's head while its words come in. It grows out of its
    tail on the face's body spring, breathes while open, its glyphs crossfading, then deflates back into
@@ -2194,6 +2323,33 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 /* Claude Code's field for its code, under its name, across the row (its Cancel stays up right) */
 .onb-rows .setup-row:has(> .wl-below) { flex-wrap: wrap; row-gap: 8px; padding-bottom: 10px; }
 .onb-rows .wl-below { flex-basis: 100%; padding-left: 34px; }
+/* the field for the address of the person's own Tetrix (TetrixAddress.tsx), under its row's name; its problem under it */
+.setup-field { height: 36px; padding: 0 12px; border-radius: 10px; font-size: var(--text-sm); }
+.wl-below .setup-field + .wl-sub { display: block; margin-top: 6px; }
+/* an agent not installed (FIRSTRUN-2): the vendor's command, to copy, and what to do with it */
+.setup-install-line { display: flex; align-items: center; gap: 8px; }
+.setup-install-command { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 8px; background: rgba(0, 0, 0, 0.25); font: 400 var(--text-sm)/1.3 ui-monospace, "SF Mono", Menlo, monospace; color: var(--ink); user-select: all; overflow-wrap: anywhere; }
+.setup-install .wl-sub { display: block; margin-top: 6px; }
+.wl-two .setup-field { margin-top: 8px; }
+.connector-address .setup-field { height: 44px; padding: 0 14px; font-size: var(--text-base); }
+.connector-address .wl-sub { display: block; margin-top: 6px; white-space: normal; }
+/* an Obysphere's invite link pasted in the app (JoinLink.tsx): the field and its Join on one line,
+   what's true under it; on first run as wide as the step's rows, a beat under its words */
+.join-link { width: 100%; text-align: left; }
+.join-link-line { display: flex; gap: 8px; align-items: center; }
+.join-link-line .setup-field { flex: 1; min-width: 0; }
+.join-link-line .set-button { flex: none; height: 36px; min-width: 72px; justify-content: center; }
+.join-link-under { display: block; margin-top: 6px; white-space: normal; overflow-wrap: anywhere; }
+.join-link-under strong { color: var(--ink); font-weight: 500; }
+/* the owner id a join acts for: Change, a quiet word after it; changing it, a small field and Save */
+.join-link-change { padding: 0 2px; color: var(--muted); font-size: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.join-link-change:hover { color: var(--ink); }
+.join-link-owner { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.join-link-owner .setup-field { width: 180px; height: 30px; }
+.join-link-owner .set-button { height: 30px; }
+.onb-join { width: min(436px, 100%); margin-top: 16px; }
+.join-link.is-onb .wl-sub { font-size: var(--text-md); }
+.set-row .join-link { flex: 1; min-width: 0; }
 .spinner { display: block; animation: spin 800ms linear infinite; }
 @keyframes spin { to { transform: rotate(1turn); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
@@ -2254,15 +2410,12 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 }
 
 /* Chat first (docs/contracts/chat-first.md): the side panel's Oby, Obysphere and usage rows
-   (the canvas's), and what Oby is asking you, over your conversation */
+   (the canvas's) */
 .connector.chat-own { min-height: 52px; }
 .connector.chat-own .connector-name { color: var(--ink); font-weight: 500; }
 .sidebar-new.chat-new { margin: 4px 0 2px; }
 .sidebar-item.chat-kind { gap: 6px; }
 .sidebar-item.chat-kind:last-of-type { margin-bottom: 8px; }
-.asks-over { position: absolute; z-index: 5; top: var(--bar); left: 0; right: 0; max-height: calc(100% - var(--bar)); overflow-y: auto; scrollbar-width: none; padding: 8px var(--gutter) 0; display: flex; justify-content: center; pointer-events: none; }
-.asks-over .asks { pointer-events: auto; }
-.asks-over .ask-card { background: var(--surface); box-shadow: 0 0 0 1px var(--surface-edge); }
 
 /* Agents beside Projects (docs/contracts/helpers.md, screens 08 to 10): the switch under the profile's
    name, each agent's row with its coloured Oby, its face in the bar, and the New agent sheet */
@@ -2291,8 +2444,100 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .agent-chip.is-on { background: rgba(255, 255, 255, 0.12); border-color: transparent; color: var(--ink); }
 .agent-chip:disabled { cursor: default; }
 
+/* Projects (docs/contracts/projects.md, screens 01 to 03): a group's folder mark in the side panel,
+   the chip in Home's box and a conversation's title bar, its menu, and the New project sheet */
+.project-mark { color: var(--label); }
+.sidebar-new.project-new { margin-top: 8px; }
+.project-chip { flex: none; height: 26px; max-width: 220px; padding: 0 8px; display: inline-flex; align-items: center; gap: 6px; border-radius: var(--radius-pill); background: var(--chip-hover); color: var(--text); font-size: var(--text-sm); transition: background-color var(--fade), color var(--fade); }
+.project-chip:hover, .project-chip.is-on { background: #29292c; color: var(--ink); }
+.project-chip > svg { flex: none; color: var(--muted); }
+.project-chip-name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.project-chip.bar-project { margin-left: 14px; }
+.row-menu button.project-choice { height: 36px; padding: 0 10px; gap: 10px; }
+.row-menu button.project-choice > svg:first-child { flex: none; color: var(--muted); }
+.row-menu button.project-choice.is-none { padding-left: 35px; }
+.project-choice-name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.project-choice-repos { margin-left: auto; color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
+.project-choice-repos + .menu-check { margin-left: 8px; }
+.project-sheet .modal-label { margin-top: 16px; }
+.project-sheet .modal-lede + .modal-label { margin-top: 0; }
+.project-row { height: 40px; margin-bottom: 8px; padding: 0 8px 0 14px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--field); color: var(--ink); font-size: var(--text-base); }
+.project-row > svg { flex: none; color: var(--muted); }
+.project-row-name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.project-row-where { margin-left: auto; color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
+.project-row-remove { flex: none; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; color: var(--muted); transition: color var(--fade), background-color var(--fade); }
+.project-row-remove:hover { color: var(--ink); background: var(--hover); }
+.project-adds { display: flex; gap: 8px; }
+/* editing one: Delete project… at the left of its actions */
+.project-delete { margin-right: auto; }
+/* a project's heading in the side panel: its ⋮ on hover, as a conversation's row has (Edit project…, Delete project…) */
+.project-group-row { position: relative; }
+.project-group-row .sidebar-item-more { top: 2px; }
+.project-group-row:is(:hover, :has(:focus-visible), .is-menu-open) .sidebar-item-more { opacity: 1; }
+
 /* Continue with ChatGPT (docs/contracts/chatgpt-sign-in.md): its mark in its button, OpenAI's links */
 .chatgpt-logo { vertical-align: -2px; margin-right: 6px; }
 .chatgpt-link { padding: 0; background: none; border: 0; color: var(--muted); font: inherit; text-decoration: underline; cursor: pointer; }
 .chatgpt-link:hover { color: var(--ink); }
 .wl-alt { align-self: flex-start; font-size: var(--text-sm); }
+
+/* A conversation's tasks, nested under its row in the side panel (Sangam's screens 03 and 04,
+   LIVETASK-19 to 21): the twist in the gutter on its left, then a row per task under a line */
+.convo-nest { position: relative; --convo-gutter: 16px; }
+/* the twist sits in the row's own box, in the gutter every conversation row keeps on its left (so the
+   titles line up whether it has tasks or not): no box of its own, the same in idle, hover, selected and
+   needs-you; only its colour answers the pointer */
+.convo-twist { position: absolute; z-index: 1; left: 0; top: 0; width: var(--convo-gutter); height: 44px; display: grid; place-items: center; color: var(--muted); transition: color var(--fade); }
+.convo-twist:hover, .convo-twist:focus-visible { color: var(--ink); }
+.convo-kids { margin: 0 0 2px 17px; padding-left: 8px; display: flex; flex-direction: column; border-left: 1px solid var(--line); }
+.convo-kid { height: 30px; padding: 0 8px; display: flex; align-items: center; gap: 8px; border-radius: 6px; color: var(--muted); font-size: var(--text-sm); text-align: left; min-width: 0; }
+.convo-kid:hover { background: var(--hover); }
+.convo-kid.is-active { background: var(--active); }
+.convo-kid > svg { flex: none; }
+.convo-kid > .status { flex: none; }
+.convo-kid-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
+.convo-kid-text b { color: var(--item); font-weight: 400; }
+.convo-kid.is-active .convo-kid-text b { color: var(--ink); }
+/* the new profile's sheet (screen 18): its colours under their label, as its name is */
+.profile-sheet .modal-label { margin-top: 16px; }
+.profile-sheet .modal-lede + .modal-label { margin-top: 0; }
+.profile-sheet .profile-swatches { margin-top: 0; }
+.profile-sheet .profile-delete { margin-right: auto; }
+
+/* The message box's mode chip (docs/contracts/composer.md, COMPOSER-1): the mode of the tasks the words
+   start, before the talk pill, as T3 Code's composer has it. Left to Settings (Default), it's muted */
+.composer-talk { display: flex; align-items: center; gap: 0; }
+.task-chips { display: flex; align-items: center; min-width: 0; }
+.task-chip > span { max-width: 140px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.task-chip > svg:first-child { margin-right: 4px; color: var(--muted); }
+.task-chip.is-default { color: var(--muted); }
+.task-chip.is-default:hover, .task-chip.is-default.is-on { color: var(--ink); }
+/* Words waiting for the turn under way (COMPOSER-8): a row each over the box, Edit and Cancel at its end */
+/* over the box as the Settings tip is, so the box keeps its place: within the page's gutters */
+.queued-words { position: absolute; left: var(--gutter); right: var(--gutter); bottom: calc(100% + 4px); z-index: 1; display: flex; flex-direction: column; gap: 4px; }
+.queued-row { background: var(--chip); }
+.queued-row { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 6px 0 12px; border: 1px solid var(--line); border-radius: 17px; color: var(--text); font-size: var(--text-sm); }
+.queued-row[aria-busy] { opacity: 0.6; }
+.queued-icon, .queued-label, .queued-files { flex: none; color: var(--muted); }
+.queued-files { display: flex; align-items: center; gap: 2px; }
+.queued-text { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--ink); }
+/* Files dragged over the box (COMPOSER-13): its outline lit, as when it's focused */
+.composer-field.is-dropping { border-color: var(--field-edge-on); background: rgba(255, 255, 255, 0.03); }
+.composer-drop-note { position: absolute; left: calc(var(--gutter) + 12px); right: var(--gutter); bottom: calc(100% + 4px); margin: 0; color: var(--muted); font-size: var(--text-sm); }
+/* @'s files (COMPOSER-14), after the Obys: the name, its path under it */
+.mention-panel .mention-file .add-item-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.slash-panel .add-empty { margin: 10px 12px; line-height: 18px; }
+/* Stop pressed (COMPOSER-12): "Stopping…", its square dimmed and turning until the turn ends */
+.composer-grid > .composer-send.is-stopping { opacity: 0.5; cursor: default; }
+.composer-send.is-stopping svg { animation: stopping 1.2s linear infinite; }
+@keyframes stopping { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .composer-send.is-stopping svg { animation: none; } }
+/* the conversation's last words never hide under the waiting rows: its end moves up by theirs (38px each) */
+.chat-layer:has(.queued-row) .chat { padding-bottom: calc(24px + 38px); }
+.chat-layer:has(.queued-row + .queued-row) .chat { padding-bottom: calc(24px + 2 * 38px); }
+.chat-layer:has(.queued-row + .queued-row + .queued-row) .chat { padding-bottom: calc(24px + 3 * 38px); }
+
+/* an Obysphere's new invite link (InviteTeammates.tsx): the whole link, selectable, wrapping */
+.invite-made { display: block; font: 400 var(--text-sm)/1.4 ui-monospace, "SF Mono", Menlo, monospace; color: var(--ink); user-select: all; overflow-wrap: anywhere; }
+/* the sole-admin notice (SphereAdmins.tsx): a quiet line, never a warning colour */
+.set-notice { color: var(--text); font-size: var(--text-md); line-height: 1.45; white-space: normal; }

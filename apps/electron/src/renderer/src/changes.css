@@ -1,0 +1,81 @@
+/* A task's Changes (ChangesPanel.tsx, docs/contracts/task-changes.md): a panel beside the
+   conversation, from the window's right edge under its title bar, as T3 Code's diff panel */
+.changes-panel {
+  position: fixed;
+  top: var(--bar);
+  right: 0;
+  bottom: 0;
+  width: min(560px, calc(100vw - var(--view-min)));
+  min-width: 320px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border-left: 1px solid var(--divider);
+  z-index: 40;
+  font-size: var(--text-md);
+  color: var(--text);
+  animation: changes-in var(--fade) both;
+}
+@keyframes changes-in { from { transform: translateX(24px); opacity: 0; } }
+.changes-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px 8px;
+}
+.changes-title { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.changes-title h2 { margin: 0; font-size: var(--text-base); font-weight: 600; color: var(--ink); }
+.changes-task { font-size: var(--text-sm); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.changes-total { font-variant-numeric: tabular-nums; font-size: var(--text-sm); }
+.changes-panel .is-add { color: #30d158; }
+.changes-panel .is-del { color: var(--over); }
+.changes-close {
+  display: grid; place-items: center; width: 28px; height: 28px;
+  border: 0; border-radius: 6px; background: none; color: var(--text); cursor: pointer;
+}
+.changes-close:hover { background: var(--hover); color: var(--ink); }
+.changes-controls {
+  display: flex; align-items: center; gap: 16px;
+  padding: 0 16px 10px;
+  border-bottom: 1px solid var(--divider);
+}
+.changes-controls select {
+  background: var(--chip); color: var(--ink); border: 1px solid var(--line);
+  border-radius: 6px; padding: 4px 8px; font: inherit; font-size: var(--text-sm);
+}
+.changes-ws { display: flex; align-items: center; gap: 6px; font-size: var(--text-sm); cursor: pointer; }
+.changes-body { flex: 1; overflow: auto; padding: 8px 0 24px; }
+.changes-empty { padding: 12px 16px; color: var(--muted); margin: 0; }
+.changes-files { list-style: none; margin: 0 0 8px; padding: 0 8px; }
+.changes-files button {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px; border: 0; border-radius: 6px; background: none;
+  color: var(--item); font: inherit; font-size: var(--text-sm); text-align: left; cursor: pointer;
+}
+.changes-files button:hover { background: var(--hover); }
+.changes-status { flex: none; width: 56px; color: var(--muted); }
+.changes-status.is-added { color: #30d158; }
+.changes-status.is-deleted { color: var(--over); }
+.changes-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.changes-file { margin: 8px 12px 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.changes-file h3 {
+  margin: 0; padding: 6px 10px; font-size: var(--text-sm); font-weight: 500; color: var(--ink);
+  background: var(--chip); border-bottom: 1px solid var(--line);
+  position: sticky; top: 0;
+}
+.changes-file pre {
+  margin: 0; padding: 4px 0; overflow-x: auto;
+  font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+}
+.changes-line { display: block; padding: 0 10px; white-space: pre; color: var(--text); }
+.changes-line.is-add { background: rgba(48, 209, 88, 0.12); color: var(--ink); }
+.changes-line.is-del { background: rgba(255, 69, 58, 0.12); color: var(--ink); }
+.changes-line.is-hunk { color: var(--muted); background: var(--field); }
+/* the card's own way in, under it */
+.msg-task-changes {
+  align-self: flex-start;
+  margin: 4px 0 0 2px; padding: 2px 8px;
+  border: 1px solid var(--line); border-radius: var(--radius-pill);
+  background: none; color: var(--text); font: inherit; font-size: var(--text-sm); cursor: pointer;
+}
+.msg-task-changes:hover { background: var(--hover); color: var(--ink); border-color: var(--line-strong); }

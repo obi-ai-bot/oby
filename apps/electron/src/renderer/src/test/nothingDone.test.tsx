@@ -20,7 +20,7 @@ async function cards(more: Partial<JobView>) {
   // the words as they read, without React's markers between them
   const read = (html: string) => html.replaceAll('<!-- -->', '');
   return {
-    thread: read(renderToStaticMarkup(<ThreadTask task={task} current onOpen={() => {}} />)),
+    thread: read(renderToStaticMarkup(<ThreadTask task={task} />)),
     home: read(renderToStaticMarkup(<TaskCard task={task} />)),
   };
 }
@@ -30,7 +30,7 @@ describe('a task that ended with nothing done', () => {
 
   it('TASKS-12: its card says Nothing done and No changes, never Done', async () => {
     const { thread, home } = await cards({ nothingDone: true });
-    expect(thread).toContain('Nothing done · Claude Code · Default');
+    expect(thread).toContain('>Nothing done · Claude Code');
     expect(thread).not.toContain('>Done · ');
     expect(thread).toContain('No changes');
     expect(home).toContain('No changes');
@@ -38,7 +38,7 @@ describe('a task that ended with nothing done', () => {
 
   it('TASKS-12: one obid says was done still reads Done', async () => {
     const { thread, home } = await cards({ commits: 1, published: 'https://github.com/well-prado/tetrix-e2e/pull/7' });
-    expect(thread).toContain('>Done · Claude Code · Default');
+    expect(thread).toContain('>Done · Claude Code');
     expect(thread).not.toContain('Nothing done');
     expect(home).not.toContain('No changes');
   });

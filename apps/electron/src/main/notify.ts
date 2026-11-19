@@ -185,10 +185,11 @@ function drawn(a: Served): Alert {
   };
 }
 
-// A refused alert still gets the owner's attention: the Dock's icon bounces until they look.
+// A refused alert is logged, and the Dock's badge still counts what waits (`waiting`). The Dock's
+// icon never bounces for it: the owner's word, 2026-11-17 ("I hate that jumping Oby on the Dock").
 export function refused(why: string, dock: { bounce?: (kind: 'critical') => unknown } | undefined = app.dock) {
   console.error(`Oby: macOS refused an alert: ${why}`);
-  dock?.bounce?.('critical');
+  void dock;
 }
 
 // --- the gate
@@ -246,10 +247,9 @@ export function onPage(showing: Place, p: Place) {
   if (p.settings) return false;
   if (p.job && showing.job === p.job) return true;
   if (p.conversation) return showing.conversation === p.conversation;
-  // the stack shows what has no task: on Home, and chat first over a conversation too
-  // (docs/contracts/chat-first.md, CHATFIRST-8). ponytail: with ?home a conversation has no stack, and
-  // this takes such an alert away all the same; only Sangam's comparison sees it
-  return !p.job && !showing.job;
+  // the stack shows what has no task or conversation only on Home: never over a conversation
+  // (docs/contracts/chat-first.md, CHATFIRST-8)
+  return !p.job && !showing.job && !showing.conversation;
 }
 // Whether the window is in front on that place now
 const looking = (p: Place) => !!showing && focused() && onPage(showing, p);
@@ -419,9 +419,17 @@ export function windowSeen() {
   for (const [key, s] of shown) if (looking(s.place)) withdraw(key);
 }
 
-// macOS's own settings for Oby's alerts (allowed, banners, sounds, Focus). ponytail: the packaged
-// app's bundle id, electron-builder.yml's appId; in development, the list
-const SYSTEM = `x-apple.systempreferences:com.apple.Notifications-Settings.extension${app.isPackaged ? '?id=com.deskree.oby.electron' : ''}`;
+// macOS's own settings for Oby's alerts (allowed, banners, sounds, Focus): Notifications › Oby
+// where the app has its bundle id (a packaged one, electron-builder.yml's appId; the list in
+// development), else the Notifications pane. These two are the only URLs main opens for the
+// page's click: it passes none (ALERTS-19).
+const PANE = 'x-apple.systempreferences:com.apple.Notifications-Settings.extension';
+const OBY = `${PANE}?id=com.deskree.oby.electron`;
+async function openSystemSettings() {
+  for (const url of app.isPackaged ? [OBY, PANE] : [PANE]) {
+    try { await shell.openExternal(url); return; } catch (e) { console.error(`Oby: couldn’t open System Settings at ${url}: ${e}`); }
+  }
+}
 
 // What the window shows, as the page says: a job's or a conversation's (anything else in it
 // dropped), or nothing; never refused
@@ -479,6 +487,6 @@ export function notifying(trusted: Trusted, window: () => BrowserWindow | null, 
     }
     return { ...kinds };
   }, null);
-  channels.on('open-notification-settings', [], () => { void shell.openExternal(SYSTEM); });
+  channels.on('open-notification-settings', [], () => { void openSystemSettings(); });
   onLive(heardLive);
 }

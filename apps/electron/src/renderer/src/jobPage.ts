@@ -169,6 +169,7 @@ export function pageOf(j: Job, account?: Account, needs = false, now = Date.now(
     counts: counts.length ? counts : undefined,
     groups: j.activity?.groups.length ? groupsOf(j.activity, now) : undefined,
     usage: usageOf(j, account),
+    context: j.contextWindow && j.contextWindow.used > 0 ? { used: j.contextWindow.used, size: j.contextWindow.size ?? null } : undefined,
     outgoing: j.outgoing?.length ? j.outgoing.map((o) => ({ text: outgoingText(o, j.published), at: clock(o.date) })) : undefined,
   };
 }
@@ -176,7 +177,7 @@ export function pageOf(j: Job, account?: Account, needs = false, now = Date.now(
 // obid's transcript as the session's lines (SessionView.tsx), in order
 const TOOLS: Record<string, ToolKind> = { read: 'Read', search: 'Grep', edit: 'Edit', command: 'Bash', test: 'Bash', tetrix: 'Tetrix', web: 'Web' };
 // obid names a call as it starts ("Reading scan.rs"); ended, it says what it did. Refused, it never ran.
-const PAST: Record<string, string> = { Reading: 'Read', Running: 'Ran', Editing: 'Edited', Searching: 'Searched', Looking: 'Looked', Planning: 'Planned', Using: 'Used', Fetching: 'Fetched', Writing: 'Wrote' };
+const PAST: Record<string, string> = { Reading: 'Read', Running: 'Ran', Editing: 'Edited', Searching: 'Searched', Looking: 'Looked', Planning: 'Planned', Using: 'Used', Fetching: 'Fetched', Writing: 'Wrote', Asking: 'Asked' };
 // A line once made stays the same object while its entry does (live.ts keeps those), so a long
 // session's unchanged lines don't draw again; a call running has a clock in it, so it's made anew.
 // A kind this build doesn't know has no line; a state it doesn't know stays obid's, drawn gray with
@@ -186,7 +187,8 @@ function lineOf(e: TranscriptEntry, now: number): Entry | undefined {
   const n = e.n;
   switch (e.kind) {
     case 'start': return { n, kind: 'start', text: e.summary, at: clock(e.at) };
-    case 'said': return { n, kind: 'said', text: e.text ?? e.summary, at: clock(e.at) };
+    // still being written while obid streams its words past the last whole line (LIVETASK-32)
+    case 'said': return { n, kind: 'said', text: (e.text ?? e.summary) + (e.tail ?? ''), at: clock(e.at), live: e.tail !== undefined || undefined };
     case 'thought': return { n, kind: 'thought', text: e.text ?? '', seconds: e.seconds ?? 0, running: e.state === 'running' || undefined };
     case 'you': return { n, kind: 'you', text: e.text ?? e.summary, at: clock(e.at) };
     case 'plan': return { n, kind: 'plan', todos: e.todos ?? [] };
@@ -198,6 +200,7 @@ function lineOf(e: TranscriptEntry, now: number): Entry | undefined {
         state,
         seconds: e.seconds ?? (state === 'running' ? since(e.at, now) : 0),
         meta: state === 'declined' ? 'Declined' : !known ? undefined : e.exit ? `exit ${e.exit}` : e.added || e.removed ? `+${e.added ?? 0} −${e.removed ?? 0}` : undefined,
+        live: state === 'running' && e.output ? { output: e.output.text, lines: e.output.lines } : undefined,
       };
     }
     default: return undefined;

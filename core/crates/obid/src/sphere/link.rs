@@ -45,8 +45,11 @@ use obi_protocol::identity::takes_card_runtime;
 mod asking;
 pub use asking::{AskMember, Picked, pick};
 mod follower;
+mod handoffs;
 mod inbox_actions;
 mod reviews;
+#[cfg(kani)]
+pub(crate) use reviews::{Delivery, delivery};
 mod room_link;
 mod sender;
 
@@ -174,6 +177,9 @@ struct State {
     team_takes_card_runtime: bool,
     /// When obid last asked the Sphere's `GET /v0.1/features`, while it didn't list `card_runtime`.
     features_read: i64,
+    /// The owner events read so far (SPHERE-23): the last one's id, and each re-bind as (owner, new
+    /// owner key id, obid's own reason code). Only reasons obid knows are kept.
+    owner_events: (Option<String>, Vec<(String, String, &'static str)>),
     /// The Sphere's `GET /v0.1/features` and when obid read it (an answer that isn't the list counts
     /// as none): the token exchange and the card's runtime both read it from here.
     features: Option<(Instant, Vec<String>)>,
@@ -608,6 +614,200 @@ fn from_client(error: &ClientError) -> ApiError {
 
 /// What the app needs of the delegation obid holds to sign the next one before it ends (#1215): its
 /// scope and when it ends. Never the JWT itself.
+/// Who a rebound join says this Oby already is on its Sphere (SPHERE-24).
+struct RejoinedAs<'a> {
+    sphere: &'a str,
+    obi_id: &'a str,
+    owner: &'a str,
+    owner_key: &'a str,
+}
+
+/// A rebound join's check (SPHERE-24): with no invitation to redeem, the Sphere must already list
+/// this Oby's own card, active, under the body's owner and owner key, with obid's own Obi key.
+/// The delegation is exchanged as it will be from then on (the Sphere takes it only for an active
+/// member whose current key signs the actor assertion), then the directory is read and checked.
+/// Each refusal says plainly why, and nothing is kept.
+async fn rebound_member(
+    client: &Client,
+    delegation: &str,
+    key: &Keypair,
+    member: &RejoinedAs<'_>,
+    now: i64,
+) -> Result<(), ApiError> {
+    let RejoinedAs {
+        sphere,
+        obi_id,
+        owner,
+        owner_key,
+    } = *member;
+    let refused = |why: String| api(StatusCode::CONFLICT, format!("{why}: nothing was joined."));
+    let actor = obi_protocol::identity::actor_assertion_for(
+        obi_id,
+        &obi_protocol::identity::audience(sphere),
+        key,
+        now,
+        &new_uuid(),
+    )
+    .map_err(|e| api(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let token = match client.token(delegation, &actor).await {
+        Ok(token) => token,
+        Err(ClientError::Refused { code, .. }) if code == "invalid_grant" => {
+            return Err(refused(format!(
+                "{sphere} doesn't take this Oby as an active member of yours"
+            )));
+        }
+        Err(e) => return Err(from_client(&e)),
+    };
+    crate::secrets::known().learn(SPHERE_TOKEN_SECRET, &token.access_token);
+    let members = client
+        .members(&token.access_token)
+        .await
+        .map_err(|e| from_client(&e))?;
+    let listed = members.iter().find(|m| m["obi"] == obi_id);
+    let params = listed.and_then(|m| obi_protocol::card::params(&m["card"]));
+    let carries = |k: &str| {
+        params
+            .and_then(|p| p.get(k))
+            .and_then(Value::as_str)
+            .map(str::as_bytes)
+    };
+    fn text(m: &Value) -> Option<&[u8]> {
+        m.as_str().map(str::as_bytes)
+    }
+    let entry = listed.map(|m| Listed {
+        status: text(&m["status"]),
+        owner: text(&m["owner"]),
+        owner_key: text(&m["owner_key"]),
+        key_id: carries("key_id"),
+        public_key: carries("public_key"),
+    });
+    let (key_id, public_key) = (key.key_id(), key.public_key());
+    let ours = Rebound {
+        owner: owner.as_bytes(),
+        owner_key: owner_key.as_bytes(),
+        key_id: key_id.as_bytes(),
+        public_key: public_key.as_bytes(),
+    };
+    match rebound_refusal(entry, &ours) {
+        None => Ok(()),
+        Some(Unbound::NotListed) => Err(refused(format!("{sphere} doesn't list this Oby"))),
+        Some(Unbound::Removed) => Err(refused(format!("{sphere} lists this Oby as removed"))),
+        Some(Unbound::OtherOwner) => Err(refused(format!(
+            "{sphere} lists this Oby under another owner or owner key"
+        ))),
+        Some(Unbound::OtherKey) => Err(refused(format!(
+            "{sphere} lists this Oby with a card that isn't this Oby's key"
+        ))),
+    }
+}
+
+/// What a rebound join reads of the directory's entry for this Oby (SPHERE-24): each field's text as
+/// the directory has it, as bytes (what `proofs/rebound.rs` can range over), none when it isn't text.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Listed<'a> {
+    pub status: Option<&'a [u8]>,
+    pub owner: Option<&'a [u8]>,
+    pub owner_key: Option<&'a [u8]>,
+    /// The card's `key_id` and `public_key`.
+    pub key_id: Option<&'a [u8]>,
+    pub public_key: Option<&'a [u8]>,
+}
+
+/// Who a rebound join must find listed (SPHERE-24): the body's owner and owner key, and obid's own
+/// Obi key, as bytes.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Rebound<'a> {
+    pub owner: &'a [u8],
+    pub owner_key: &'a [u8],
+    pub key_id: &'a [u8],
+    pub public_key: &'a [u8],
+}
+
+/// Why a rebound join joins nothing, in the order they're said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Unbound {
+    NotListed,
+    Removed,
+    OtherOwner,
+    OtherKey,
+}
+
+/// A rebound join's directory check (SPHERE-24): none only when the directory lists this Oby
+/// active, under `ours`' owner and owner key, its card carrying obid's own Obi key. Proved in
+/// `proofs/rebound.rs`.
+pub(crate) fn rebound_refusal(listed: Option<Listed<'_>>, ours: &Rebound<'_>) -> Option<Unbound> {
+    let Some(listed) = listed else {
+        return Some(Unbound::NotListed);
+    };
+    if listed.status != Some(b"active") {
+        return Some(Unbound::Removed);
+    }
+    if listed.owner != Some(ours.owner) || listed.owner_key != Some(ours.owner_key) {
+        return Some(Unbound::OtherOwner);
+    }
+    if listed.key_id != Some(ours.key_id) || listed.public_key != Some(ours.public_key) {
+        return Some(Unbound::OtherKey);
+    }
+    None
+}
+
+/// Why the Sphere's refusal of a token exchange ends this Obi's membership, or none (SPHERE-22).
+/// The real Sphere stops exchanging a removed member's delegation (`invalid_grant`, "the actor is
+/// not an active member owned by the subject"), and its directory then can't be read either, so
+/// this is the only way obid learns it. Not every `invalid_grant` is that: one about time (an
+/// assertion expired, from the future, too long-lived) or a reused assertion passes with the next
+/// try, and a delegation obid's own clock says has ended waits for the app's new one. Those end
+/// nothing. The spec gives no code of its own for "not a member" (an ask of the Sphere's), so its
+/// words name the reason: `removed` when they say so, else `token_refused`.
+fn membership_refused(error: &ClientError, delegation: &str, now: i64) -> Option<&'static str> {
+    let ClientError::Refused { code, message, .. } = error else {
+        return None;
+    };
+    if code != "invalid_grant" {
+        return None;
+    }
+    let passing = [
+        "expired",
+        "in the future",
+        "used before",
+        "may live at most",
+    ];
+    if passing.iter().any(|w| message.contains(w)) {
+        return None;
+    }
+    let ends = obi_protocol::jwt::parse(delegation).and_then(|p| p.claims["exp"].as_i64());
+    if ends.is_none_or(|exp| exp <= now + DELEGATION_GRACE) {
+        return None;
+    }
+    Some(if message.contains("not an active member") {
+        super::membership::REMOVED
+    } else {
+        super::membership::TOKEN_REFUSED
+    })
+}
+
+/// A delegation this close to its end, by obid's clock, is taken for ended: a refusal then is
+/// about it, not the membership (SPHERE-22).
+const DELEGATION_GRACE: i64 = 300;
+
+/// obid's closed reason codes for an owner event's `reason` (SPHERE-23): `rotated` (reserved) and a
+/// value obid doesn't know are no reason, so the Sphere can never put words of its own on the card.
+pub(crate) fn owner_event_reason(reason: &str) -> Option<&'static str> {
+    owner_event_code(reason.as_bytes())
+}
+
+/// [`owner_event_reason`], on the reason's bytes: the decision, which `proofs/owner_key.rs` proves
+/// for every byte string.
+pub(crate) fn owner_event_code(reason: &[u8]) -> Option<&'static str> {
+    [
+        inbox::SIGNED_IN_AGAIN,
+        inbox::ADMIN_RESET,
+        inbox::OPERATOR_RESET,
+    ]
+    .into_iter()
+    .find(|code| code.as_bytes() == reason)
+}
+
 fn delegation_json(delegation: &str) -> Value {
     let claims = obi_protocol::jwt::parse(delegation).map(|p| p.claims);
     let claims = claims.as_ref();
@@ -877,6 +1077,7 @@ impl Link {
             features: None,
             url_aud_refused: false,
             features_read: 0,
+            owner_events: (None, Vec::new()),
             membership,
             delegation,
             client,
@@ -968,6 +1169,7 @@ impl Link {
         if membership.as_deref().is_some_and(|s| s != "joined") {
             self.settle_on_revoke();
         }
+        self.watch_handoffs();
         self.reconcile();
         if membership.as_deref() == Some("joined") {
             self.follow();
@@ -1027,15 +1229,22 @@ impl Link {
         for cid in answering {
             self.to_owner(&cid);
         }
-        let waiting: Vec<(String, Option<String>)> = self
+        let waiting: Vec<(String, Option<String>, bool)> = self
             .lock()
             .exchanges
             .values()
             .filter(|e| e.direction == "incoming" && e.state == "accepted" && !e.ended())
-            .map(|e| (e.correlation_id.clone(), e.job.clone()))
+            .map(|e| (e.correlation_id.clone(), e.job.clone(), e.kind == "handoff"))
             .collect();
-        for (cid, job) in waiting {
-            let ended = match job.as_deref().and_then(|id| self.jobs.get(id)) {
+        for (cid, job, handoff) in waiting {
+            let job = job.as_deref().and_then(|id| self.jobs.get(id));
+            // A handoff's job that ended while obid was down sends its own result (HANDOFF-3).
+            if let (true, Some(job)) = (handoff, &job) {
+                let (link, id) = (self.clone(), job.id.clone());
+                tokio::spawn(async move { link.handoff_job_changed(&id).await });
+                continue;
+            }
+            let ended = match job {
                 Some(job) => !job.status.is_active(),
                 None => true,
             };
@@ -1115,12 +1324,13 @@ impl Link {
         let mut changed = Vec::new();
         {
             let mut state = self.lock();
-            if let Some(live) = live {
-                for item in state.inbox.values_mut() {
-                    if item.kind == "github" && item.done.is_none() && !live.contains(&item.id) {
-                        item.done = Some(now);
-                        changed.push(item.clone());
-                    }
+            for item in state.inbox.values_mut() {
+                // A `CI failed` card from before GITHUBWORK-28 goes with no answer too.
+                let gone = live.is_some_and(|live| !live.contains(&item.id));
+                if item.kind == "github" && item.done.is_none() && (gone || inbox::is_ci_item(item))
+                {
+                    item.done = Some(now);
+                    changed.push(item.clone());
                 }
             }
         }
@@ -1128,7 +1338,9 @@ impl Link {
             self.save_item(item);
         }
         for (work, known) in new.iter().zip(known) {
-            self.add_once(inbox::github_item(work, known, now));
+            if inbox::offered(work) {
+                self.add_once(inbox::github_item(work, known, now));
+            }
         }
     }
 
@@ -1408,6 +1620,16 @@ impl Link {
                 let mut shown = item.to_json();
                 shown["note"] = serde_json::json!(note);
                 return Ok(shown);
+            }
+        }
+        // One more round on the card AUTOFIX left: as many fix rounds again (AUTOFIX-10).
+        if answer.as_deref() == Some(crate::merge::ONE_MORE_ROUND) {
+            let head = crate::merge::item_head(&item.id).unwrap_or_default();
+            if !self.jobs.one_more_round(&item.job, head) {
+                return Err(api(
+                    StatusCode::CONFLICT,
+                    "Oby isn't fixing that commit's checks any more: its pull request moved on.",
+                ));
             }
         }
         item.done = Some(time::now());
@@ -1779,7 +2001,40 @@ impl Link {
             "tokenExpiresAt": state.token.as_ref().map(|t| time::format(t.1)),
             "lastPoll": state.last_poll.map(time::format),
             "lastError": state.last_error,
+            "revokedAt": joined.and_then(|m| m.revoked.as_ref()).map(|r| time::format(r.at)),
+            // A membership revoked before obid kept why was revoked the one way it can be.
+            "revokedReason": joined.filter(|m| m.state == "revoked").map(|m| {
+                m.revoked.as_ref().map_or(super::membership::REMOVED, |r| r.reason.as_str())
+            }),
         })
+    }
+
+    /// The Sphere no longer exchanges this Obi's delegation (SPHERE-22): the membership ends as a
+    /// directory that lists it revoked ends it, with `reason`, at obid's clock. Nothing more goes to
+    /// the Sphere, what's open is settled here, its peers not told, and the follower stops.
+    fn end_membership(&self, reason: &str) {
+        let ended = {
+            let mut state = self.lock();
+            let Some(m) = state.membership.as_mut().filter(|m| m.state == "joined") else {
+                return;
+            };
+            m.state = "revoked".into();
+            m.revoked.get_or_insert(super::membership::Revoked {
+                at: time::now(),
+                reason: reason.into(),
+            });
+            let ended = m.clone();
+            state.token = None;
+            ended
+        };
+        tracing::warn!("sphere: the Sphere no longer takes this Obi ({reason}): revoked");
+        if let Err(e) = self.files.save_membership(&ended) {
+            tracing::error!("can't keep the revoked membership: {e}");
+        }
+        self.settle_on_revoke();
+        if let Some(relay) = self.relay.get() {
+            relay.wake();
+        }
     }
 
     /// Whether obid keeps a membership, joined or revoked.
@@ -1954,10 +2209,68 @@ impl Link {
         Ok(pinned)
     }
 
+    /// Reads the Sphere's owner events after the last one read (SPHERE-23), at most 20 pages, and
+    /// keeps the re-binds among them. Only a changed key reads them, so a quiet directory costs
+    /// nothing. A Sphere from before has none; one that can't be read now leaves the card with no
+    /// reason, never a wrong one.
+    async fn read_owner_events(&self, token: &str) {
+        let Ok(client) = self.client() else {
+            return;
+        };
+        for _ in 0..20 {
+            let after = self.lock().owner_events.0.clone();
+            let page = match client.owner_events(token, after.as_deref(), 100).await {
+                Ok(page) => page,
+                Err(e) => {
+                    tracing::warn!("sphere: owner events can't be read: {e}");
+                    return;
+                }
+            };
+            let full = page.len() == 100;
+            {
+                let mut state = self.lock();
+                for event in &page {
+                    // The event's id, a number (or text), is the cursor for the next read.
+                    match &event["id"] {
+                        Value::Number(id) => state.owner_events.0 = Some(id.to_string()),
+                        Value::String(id) => state.owner_events.0 = Some(id.clone()),
+                        _ => {}
+                    }
+                    let (Some(owner), Some(new_key)) =
+                        (event["owner"].as_str(), event["new_key_id"].as_str())
+                    else {
+                        continue;
+                    };
+                    if let Some(code) = owner_event_reason(event["reason"].as_str().unwrap_or("")) {
+                        state
+                            .owner_events
+                            .1
+                            .push((owner.to_owned(), new_key.to_owned(), code));
+                    }
+                }
+            }
+            if !full {
+                return;
+            }
+        }
+    }
+
+    /// obid's own reason for `owner`'s key changing to the one whose fingerprint (its key id) is
+    /// `fingerprint`, when an owner event the Sphere served names exactly that change (SPHERE-23).
+    fn rebound_reason(&self, owner: &str, fingerprint: &str) -> Option<&'static str> {
+        self.lock()
+            .owner_events
+            .1
+            .iter()
+            .rev()
+            .find(|(o, key, _)| o == owner && key == fingerprint)
+            .map(|(_, _, code)| *code)
+    }
+
     /// One `trust_key` card for `owner`'s changed key, `fingerprint` (SPHERE-8): none while one for
     /// it is open, and a card for an earlier key closes. None at all after the owner's Cancel on one,
     /// until that member leaves the Sphere and comes back.
-    fn ask_to_trust(&self, owner: &str, fingerprint: &str) {
+    fn ask_to_trust(&self, owner: &str, fingerprint: &str, reason: Option<&'static str>) {
         let _one = self.trusting.lock().unwrap_or_else(|e| e.into_inner());
         if self.pins.declined(owner) {
             return;
@@ -1967,7 +2280,7 @@ impl Link {
             return;
         }
         self.close_trust_cards(|c| c.target == owner && c.payload["fingerprint"] != fingerprint);
-        let item = inbox::trust_key_item(owner, fingerprint, time::now());
+        let item = inbox::trust_key_item(owner, fingerprint, reason, time::now());
         let _ = self.add_new(item, |i| {
             i.done.is_none()
                 && i.confirm.as_deref().is_some_and(|c| {
@@ -2076,10 +2389,10 @@ impl Link {
         }
         if let Some(other) = accepts
             .iter()
-            .find(|a| !matches!(a.as_str(), "review_request" | "question"))
+            .find(|a| !matches!(a.as_str(), "review_request" | "question" | "handoff"))
         {
             return Err(invalid(format!(
-                "obid takes review_request and question in this version, not {other}."
+                "obid takes review_request, question and handoff in this version, not {other}."
             )));
         }
         if obi_protocol::keys::key_id_of(owner_key).is_none() {
@@ -2158,8 +2471,30 @@ impl Link {
     /// invitation, exchanges a token, reads the directory and starts following.
     pub async fn join(self: &Arc<Self>, body: &[u8]) -> Result<Value, ApiError> {
         let _one = self.joining.lock().await;
-        let map = object(body, &["url", "sphere", "invitation", "card", "delegation"])?;
+        let map = object(
+            body,
+            &[
+                "url",
+                "sphere",
+                "invitation",
+                "card",
+                "delegation",
+                "rebound",
+            ],
+        )?;
         let invalid = |m: String| api(StatusCode::UNPROCESSABLE_ENTITY, m);
+        // `rebound`: the Sphere already lists this Oby's card, bound when its owner signed in again
+        // (SPHERE-24), so there's no invitation to redeem; obid checks the directory instead.
+        let rebound = match map.get("rebound") {
+            None | Some(Value::Bool(false)) => false,
+            Some(Value::Bool(true)) if !map.contains_key("invitation") => true,
+            Some(Value::Bool(true)) => {
+                return Err(invalid(
+                    "A join is by an invitation or rebound, not both.".into(),
+                ));
+            }
+            Some(_) => return Err(invalid("rebound is true, or left out.".into())),
+        };
         let key = {
             let state = self.lock();
             if let Some(m) = &state.membership {
@@ -2185,36 +2520,41 @@ impl Link {
         if !is_slug(&sphere) {
             return Err(invalid(format!("{sphere:?} isn't a Sphere id.")));
         }
-        let invitation = map
-            .get("invitation")
-            .and_then(Value::as_object)
-            .ok_or_else(|| invalid(INVITATION_SHAPE.into()))?;
-        if invitation
-            .keys()
-            .any(|k| !matches!(k.as_str(), "id" | "secret" | "signin"))
-        {
-            return Err(invalid(INVITATION_SHAPE.into()));
-        }
-        let invitation_id = text_field(invitation, "id")?;
-        let secret = text_field(invitation, "secret")?;
-        if !is_token_text(invitation_id) || !is_token_text(secret) {
-            return Err(invalid(
-                "The invitation's id and secret are what the Sphere gave, unchanged.".into(),
-            ));
-        }
-        // The owner's sign-in with the Sphere, for an invitation limited to a domain: passed on
-        // to the redeem as it is, and kept nowhere.
-        let signin = match invitation.get("signin") {
-            None => None,
-            Some(Value::Object(s))
-                if s.len() == 2
-                    && ["state", "code"]
-                        .iter()
-                        .all(|k| s.get(*k).and_then(Value::as_str).is_some_and(is_token_text)) =>
+        let redeem = if rebound {
+            None
+        } else {
+            let invitation = map
+                .get("invitation")
+                .and_then(Value::as_object)
+                .ok_or_else(|| invalid(INVITATION_SHAPE.into()))?;
+            if invitation
+                .keys()
+                .any(|k| !matches!(k.as_str(), "id" | "secret" | "signin"))
             {
-                invitation.get("signin")
+                return Err(invalid(INVITATION_SHAPE.into()));
             }
-            Some(_) => return Err(invalid(INVITATION_SHAPE.into())),
+            let invitation_id = text_field(invitation, "id")?;
+            let secret = text_field(invitation, "secret")?;
+            if !is_token_text(invitation_id) || !is_token_text(secret) {
+                return Err(invalid(
+                    "The invitation's id and secret are what the Sphere gave, unchanged.".into(),
+                ));
+            }
+            // The owner's sign-in with the Sphere, for an invitation limited to a domain: passed
+            // on to the redeem as it is, and kept nowhere.
+            let signin = match invitation.get("signin") {
+                None => None,
+                Some(Value::Object(s))
+                    if s.len() == 2
+                        && ["state", "code"].iter().all(|k| {
+                            s.get(*k).and_then(Value::as_str).is_some_and(is_token_text)
+                        }) =>
+                {
+                    invitation.get("signin")
+                }
+                Some(_) => return Err(invalid(INVITATION_SHAPE.into())),
+            };
+            Some((invitation_id, secret, signin))
         };
         let card = map
             .get("card")
@@ -2275,10 +2615,23 @@ impl Link {
         .map_err(|why| invalid(format!("The delegation doesn't pass: {why}.")))?;
 
         let client = Client::new(&url, &sphere).map_err(|e| from_client(&e))?;
-        client
-            .redeem(invitation_id, secret, &owner_key, &card, signin)
-            .await
-            .map_err(|e| from_client(&e))?;
+        match redeem {
+            Some((invitation_id, secret, signin)) => {
+                client
+                    .redeem(invitation_id, secret, &owner_key, &card, signin)
+                    .await
+                    .map_err(|e| from_client(&e))?;
+            }
+            None => {
+                let member = RejoinedAs {
+                    sphere: &sphere,
+                    obi_id: &obi_id,
+                    owner: &owner,
+                    owner_key: &owner_key,
+                };
+                rebound_member(&client, &delegation, &key, &member, now).await?;
+            }
+        }
         let membership = Membership {
             state: "joined".into(),
             url,
@@ -2286,6 +2639,7 @@ impl Link {
             obi_id,
             card,
             joined_at: now,
+            revoked: None,
         };
         crate::secrets::known().learn(DELEGATION_SECRET, &delegation);
         let kept = self
@@ -2376,22 +2730,41 @@ impl Link {
             .map_err(|e| ClientError::Protocol(e.to_string()))
         };
         let plain = obi_protocol::identity::audience(&membership.sphere);
-        let token = match by_url {
-            Some(aud) => match client.token(&delegation, &actor(&aud)?).await {
-                // A Sphere whose own address isn't the one obid joined by refuses its URL: the
-                // same exchange naming the Sphere alone tells, and if it passes, obid names it
-                // alone from then on.
-                Err(ClientError::Refused { code, .. }) if code == "invalid_request" => {
-                    let token = client.token(&delegation, &actor(&plain)?).await?;
-                    let mut state = self.lock();
-                    if same_server(&state, &client) {
-                        state.url_aud_refused = true;
+        // A refusal that says this Obi is no longer a member is asked once more, with a new
+        // assertion, before it ends the membership (SPHERE-22).
+        let mut asked_again = false;
+        let token = loop {
+            let answer = match &by_url {
+                Some(aud) => match client.token(&delegation, &actor(aud)?).await {
+                    // A Sphere whose own address isn't the one obid joined by refuses its URL: the
+                    // same exchange naming the Sphere alone tells, and if it passes, obid names it
+                    // alone from then on.
+                    Err(ClientError::Refused { code, .. }) if code == "invalid_request" => {
+                        let answer = client.token(&delegation, &actor(&plain)?).await;
+                        if answer.is_ok() {
+                            let mut state = self.lock();
+                            if same_server(&state, &client) {
+                                state.url_aud_refused = true;
+                            }
+                        }
+                        answer
                     }
-                    token
-                }
-                answer => answer?,
-            },
-            None => client.token(&delegation, &actor(&plain)?).await?,
+                    answer => answer,
+                },
+                None => client.token(&delegation, &actor(&plain)?).await,
+            };
+            match answer {
+                Ok(token) => break token,
+                Err(e) => match membership_refused(&e, &delegation, now) {
+                    Some(_) if !asked_again => asked_again = true,
+                    Some(reason) => {
+                        drop(_one);
+                        self.end_membership(reason);
+                        return Err(e);
+                    }
+                    None => return Err(e),
+                },
+            }
         };
         crate::secrets::known().learn(SPHERE_TOKEN_SECRET, &token.access_token);
         self.lock().token = Some((token.access_token.clone(), now + token.expires_in));
@@ -2479,6 +2852,9 @@ impl Link {
         };
         let now = time::now();
         let mut directory = Directory::default();
+        // Owners whose key changed: asked once the loop is done, with what the Sphere's owner
+        // events say happened (SPHERE-23).
+        let mut changed: Vec<(String, String)> = Vec::new();
         for member in &members {
             let obi = member["obi"].as_str().unwrap_or("");
             let owner = member["owner"].as_str().unwrap_or("");
@@ -2508,7 +2884,7 @@ impl Link {
             if !self.pins.check(owner, owner_key, now) {
                 // A changed key: the owner is asked, once, whether to trust it.
                 if member["status"] == "active" {
-                    self.ask_to_trust(owner, &super::pins::fingerprint(owner_key));
+                    changed.push((owner.to_owned(), super::pins::fingerprint(owner_key)));
                 }
                 continue;
             }
@@ -2595,6 +2971,13 @@ impl Link {
                 },
             );
         }
+        if !changed.is_empty() {
+            self.read_owner_events(&token).await;
+            for (owner, fingerprint) in &changed {
+                let reason = self.rebound_reason(owner, fingerprint);
+                self.ask_to_trust(owner, fingerprint, reason);
+            }
+        }
         // Whether obid may put its seal key in a card (identity.md section 2): every other active
         // member's obid reads one, whatever obid trusts of it, and the Sphere takes one (asked
         // until it says so).
@@ -2640,9 +3023,8 @@ impl Link {
                     .any(|x| x == obi_protocol::identity::CARD_RUNTIME));
         let revoked = {
             let mut state = self.lock();
-            let revoked = me
-                .and_then(|me| members.iter().find(|m| m["obi"] == me.as_str()).cloned())
-                .is_some_and(|m| m["status"] == "revoked");
+            let mine = me.and_then(|me| members.iter().find(|m| m["obi"] == me.as_str()).cloned());
+            let revoked = mine.as_ref().is_some_and(|m| m["status"] == "revoked");
             state.directory = directory;
             state.directory_read = now;
             state.team_reads_seal_keys = team_reads_seal_keys;
@@ -2654,6 +3036,17 @@ impl Link {
             }
             if revoked && let Some(m) = state.membership.as_mut() {
                 m.state = "revoked".into();
+                // When and why, kept once: the apps say so instead of the Obysphere vanishing
+                // (SPHERE-20).
+                let at = mine
+                    .as_ref()
+                    .and_then(|m| m["revoked_at"].as_str())
+                    .and_then(time::parse)
+                    .unwrap_or(now);
+                m.revoked.get_or_insert(super::membership::Revoked {
+                    at,
+                    reason: super::membership::REMOVED.into(),
+                });
             }
             revoked.then(|| state.membership.clone()).flatten()
         };
@@ -2760,6 +3153,38 @@ impl Link {
     /// config's `owner`, or the GitHub login it adopted ([`Link::adopt_github_owner`]).
     pub(crate) fn owner(&self) -> String {
         self.owner.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// `PUT /v1/obid/sphere/owner` `{"owner"}`: who obid joins its first Sphere as, chosen by the
+    /// person before they join (SPHERE-21), so a stranger without `gh` doesn't fall back to the
+    /// Mac's login name, which two people's Macs often share. An owner id the Sphere takes (the
+    /// spec's slug), kept in `home/owner` as a join keeps it. `409` once obid keeps a membership,
+    /// joined or revoked: its keys and card are that owner's.
+    pub fn set_owner(&self, body: &[u8]) -> Result<Value, ApiError> {
+        let map = object(body, &["owner"])?;
+        let owner = match map.get("owner") {
+            Some(Value::String(owner)) if is_slug(owner) => owner.clone(),
+            _ => {
+                return Err(api(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "owner is an owner id: 1 to 63 lower-case letters, digits and dashes, not starting or ending with a dash.",
+                ));
+            }
+        };
+        if self.has_membership() {
+            return Err(api(
+                StatusCode::CONFLICT,
+                "This Oby is already in an Obysphere as its owner: leave it first to join as someone else.",
+            ));
+        }
+        self.files.save_owner(&owner).map_err(|e| {
+            api(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("obid couldn't keep the owner: {e}"),
+            )
+        })?;
+        *self.owner.lock().unwrap_or_else(|e| e.into_inner()) = owner.clone();
+        Ok(json!({"owner": owner}))
     }
 
     /// Until obid first joins a Sphere, its owner becomes `github`, the login gh is signed in as,
@@ -2903,12 +3328,23 @@ impl Link {
                     let mut accepts = m.accepts.clone();
                     accepts.sort();
                     json!({"obi": obi, "owner": m.owner, "accepts": accepts,
-                           "sealed": m.seal.is_some(), "verified": self.pins.verified(&m.owner)})
+                           "sealed": m.seal.is_some(), "verified": self.pins.verified(&m.owner),
+                           "unsealed": self.pins.allows_clear(&m.owner)})
                 })
                 .collect()
         };
-        // Once the state is let go: who looks alike reads it again.
+        // Once the state is let go: who looks alike reads it again. `name` is what obid calls them to
+        // the owner, as a thread does: their card's name, or their owner id when that could be
+        // mistaken for someone else's (add-only, for the message box's @ list, ASK-37).
+        let names: std::collections::HashMap<String, String> = self
+            .ask_members()
+            .into_iter()
+            .map(|m| (m.obi, m.name))
+            .collect();
         for item in &mut list {
+            if let Some(name) = item["obi"].as_str().and_then(|obi| names.get(obi)) {
+                item["name"] = json!(name);
+            }
             let alike = self.lookalikes(item["owner"].as_str().unwrap_or_default());
             if !alike.is_empty() {
                 item["lookalike"] = json!(alike);
@@ -2918,6 +3354,37 @@ impl Link {
             (a["owner"].as_str(), a["obi"].as_str()).cmp(&(b["owner"].as_str(), b["obi"].as_str()))
         });
         Ok(json!(list))
+    }
+
+    /// `PUT /v1/obid/sphere/peers/{owner}/unsealed` `{"allow": true|false}`: whether obid may send
+    /// `owner`'s Obys words in the clear while their card has no seal key (SPHERE-19). The route
+    /// takes the owner's signature to allow it; taking it back sends less, and needs none.
+    pub async fn allow_unsealed(&self, owner: &str, body: &[u8]) -> Result<Value, ApiError> {
+        let map = object(body, &["allow"])?;
+        let Some(allow) = map.get("allow").and_then(Value::as_bool) else {
+            return Err(api(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "allow is true or false.",
+            ));
+        };
+        let known = || {
+            self.lock()
+                .directory
+                .members
+                .values()
+                .any(|m| m.owner == owner)
+        };
+        // One who just joined is read from the Sphere first.
+        if !known()
+            && let Err(e) = self.read_directory().await
+        {
+            self.note_error(&e);
+        }
+        if !known() && !self.pins.allows_clear(owner) {
+            return Err(api(StatusCode::NOT_FOUND, "There's no such member."));
+        }
+        self.pins.allow_clear(owner, allow);
+        Ok(json!({"owner": owner, "unsealed": allow}))
     }
 
     /// `PUT /v1/obid/sphere/membership`: a new card and/or delegation the owner signed (to take
@@ -3080,9 +3547,14 @@ enum Decided {
     ByItself(Rule),
 }
 
-/// A failed review result: no findings, no text.
+/// A failed result, with no text: a review's has no findings; a handoff's says each condition
+/// wasn't met (docs/contracts/handoff.md).
 fn failed_result(request: &Value) -> Value {
     let body = &request["body"];
+    if request["type"] == "handoff" {
+        return json!({"for": "handoff", "outcome": "failed", "repo": body["repo"],
+            "acceptance": handoffs::acceptance(body, false)});
+    }
     json!({"for": "review_request", "outcome": "failed", "repo": body["repo"], "head_sha": body["head_sha"], "findings": []})
 }
 
@@ -3138,6 +3610,21 @@ const CHOOSE_REPOS_FIRST: &str =
 /// Why an answer no device of the owner's signed doesn't reach another Oby's question (PEER-33).
 pub const NEEDS_YOUR_HAND: &str =
     "Only you answer this one, from your own app: this answer wasn't signed, so nothing was sent.";
+
+/// Why an Accept of another Oby's review request or handoff that no device of the owner's signed
+/// is refused (SPHERE-17).
+pub const NEEDS_YOUR_ACCEPT: &str = "Only you accept another Oby's work, from your own app: this Accept wasn't signed, so nothing started.";
+
+/// The `reason` of a request refused because its receiver's card has no seal key (SPHERE-18).
+pub const NOT_SEALED: &str = "not_sealed";
+
+/// Why nothing went to `owner`'s Oby: its card has no seal key, and this owner didn't let obid send
+/// it words in the clear (SPHERE-18).
+pub fn not_sealed(owner: &str) -> String {
+    format!(
+        "{owner}'s Oby can't receive sealed asks yet, so nothing was sent. Ask {owner} to update Oby, or let Oby send to {owner} unsealed."
+    )
+}
 
 /// Why a Confirm without the owner's tap is refused (#776).
 pub const NEEDS_YOUR_TAP: &str =
@@ -3385,6 +3872,55 @@ mod tests {
 
     use super::*;
 
+    /// SPHERE-22: only an `invalid_grant` that isn't about time or a reused assertion, while the
+    /// delegation still holds by obid's clock, ends a membership; the Sphere's words name the reason.
+    #[test]
+    fn sphere_22_which_refusals_end_a_membership() {
+        let now = 1_000_000;
+        let key = Keypair::from_seed_string("sphere 22 owner");
+        let delegation = |exp: i64| {
+            obi_protocol::jwt::sign(&json!({"iss": "w", "sub": "w", "exp": exp}), &key).unwrap()
+        };
+        let live = delegation(now + 86_400);
+        let refused = |code: &str, message: &str| ClientError::Refused {
+            status: 400,
+            code: code.into(),
+            message: message.into(),
+        };
+        let gone = refused(
+            "invalid_grant",
+            "the actor is not an active member owned by the subject",
+        );
+        assert_eq!(membership_refused(&gone, &live, now), Some("removed"));
+        let other = refused(
+            "invalid_grant",
+            "the actor assertion doesn't verify with the Obi's current key",
+        );
+        assert_eq!(
+            membership_refused(&other, &live, now),
+            Some("token_refused")
+        );
+        for passing in [
+            "the delegation has expired",
+            "the actor assertion is issued in the future",
+            "this assertion was used before",
+            "the actor assertion may live at most 300 seconds",
+        ] {
+            let e = refused("invalid_grant", passing);
+            assert_eq!(membership_refused(&e, &live, now), None, "{passing}");
+        }
+        // A delegation that has ended, or nearly, by obid's clock: the app's new one is awaited.
+        assert_eq!(membership_refused(&gone, &delegation(now + 10), now), None);
+        assert_eq!(membership_refused(&gone, "not a jwt", now), None);
+        // Other codes and errors end nothing.
+        assert_eq!(
+            membership_refused(&refused("unauthorized", "x"), &live, now),
+            None
+        );
+        let down = ClientError::Unreachable("down".into());
+        assert_eq!(membership_refused(&down, &live, now), None);
+    }
+
     /// The publish gate scans every string of the reply: the agent's paths as much as its prose.
     #[test]
     fn the_gate_reads_every_text_of_a_result() {
@@ -3592,6 +4128,7 @@ mod tests {
             obi_id: "obi-wellington".into(),
             card: json!({}),
             joined_at: 0,
+            revoked: None,
         };
         link.lock().membership = Some(membership("joined"));
         let confirm = json!({"answer": inbox::CONFIRM}).to_string();
@@ -3783,6 +4320,7 @@ mod tests {
                 obi_id: "obi-wellington".into(),
                 card: json!({}),
                 joined_at: 0,
+                revoked: None,
             });
             state
                 .directory
@@ -3876,6 +4414,7 @@ mod tests {
                 obi_id: "obi-wellington".into(),
                 card: json!({}),
                 joined_at: 0,
+                revoked: None,
             });
             for (obi, owner) in [
                 ("obi-wellington", "wellington"),
@@ -4038,6 +4577,7 @@ mod tests {
             obi_id: "obi-wellington".into(),
             card: json!({}),
             joined_at: time::now(),
+            revoked: None,
         }
     }
 

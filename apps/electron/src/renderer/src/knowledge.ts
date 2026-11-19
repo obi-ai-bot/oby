@@ -27,12 +27,13 @@ const TETRIX_TOOLS: Tool[] = [
   { name: 'Diagnostics', about: 'Sync health, failed runs and stale sources', admin: true, on: false },
   { name: 'Replay and purge', about: 'Re-run failed syncs, delete orphaned data', admin: true, on: false },
 ];
-const DESKREE_TETRIX: Source = {
-  id: 'tetrix', kind: 'tetrix', name: 'Tetrix', url: 'https://mcp.tetrix.dev', org: 'deskree-inc', by: 'Doti', access: 'everyone', asks: false,
+// (the sample Obysphere's own: Oby offers no Tetrix by name, TETRIX-URL-1; a person gives theirs)
+const SAMPLE_TETRIX: Source = {
+  id: 'tetrix', kind: 'tetrix', name: 'Tetrix', url: 'https://tetrix.example.com/mcp', org: 'deskree-inc', by: 'Doti', access: 'everyone', asks: false,
   tools: TETRIX_TOOLS,
 };
 
-let bySphere: Record<string, Source[]> = { deskree: [DESKREE_TETRIX] };
+let bySphere: Record<string, Source[]> = { deskree: [SAMPLE_TETRIX] };
 const listeners = new Set<() => void>();
 const set = (next: typeof bySphere) => { bySphere = next; listeners.forEach((l) => l()); };
 const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; };
@@ -45,5 +46,5 @@ export const updateSource = (sphere: string, id: string, patch: Partial<Source>)
 export const removeSource = (sphere: string, id: string) => change(sphere, (l) => l.filter((s) => s.id !== id));
 export const setTool = (sphere: string, id: string, tool: string, on: boolean) =>
   change(sphere, (l) => l.map((s) => (s.id === id ? { ...s, tools: s.tools.map((t) => (t.name === tool ? { ...t, on } : t)) } : s)));
-// a newly connected Tetrix: the org picked
-export const tetrixFor = (org: string, by: string): Omit<Source, 'id'> => ({ ...DESKREE_TETRIX, org, by });
+// a newly connected Tetrix: at the address the person gave (its host names it), or the sample's
+export const tetrixFor = (org: string, by: string, url = SAMPLE_TETRIX.url): Omit<Source, 'id'> => ({ ...SAMPLE_TETRIX, url, org, by });

@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import { JOBS, MOCK_HELPERS, TURNS as LOG, convoTitle, followUpsOf } from './mock';
+import { JOBS, MOCK_HELPERS, MOCK_PROJECTS, TURNS as LOG, convoTitle, followUpsOf } from './mock';
 import { hasAttachments, type Attachments, type Message } from './view';
 import { addTask, conversationOfTask, relay } from './tasks';
 import { streamWords, wait } from './stream';
@@ -8,6 +8,7 @@ import * as live from './live';
 import { useKeptSetting } from './SettingsView';
 import { TALK_DEFAULT } from './talk';
 import { box as draftBox, forget } from './drafts';
+import { shortTitle, titled } from './titles';
 
 // A conversation with Oby: what you asked, its answers, and the tasks they
 // started (a card under the answer that started each). Asking Oby (Home's
@@ -23,14 +24,13 @@ type Ask = { question: string; options: string[] };
 // local: the app's own, not obid's (Oby's first conversation, onboarding.ts): kept as obid's change
 // profile: the mock's only, the profile it's in (none: the default; profiles.ts)
 // helper: a helper's own conversation, its id (helpers.ts): under Agents, never among the chats
-export type Chat = { id: string; title: string; said: Message[]; typing?: boolean; step?: string; waiting?: Ask; needs?: boolean; pinned?: boolean; fromObys?: boolean; at?: number; about?: string; local?: boolean; talkAccount?: string | null; talkedOn?: string | null; movedOff?: string | null; profile?: string; helper?: string };
+// project: the project it's in, or null (projects.ts): its group in the side panel
+// queued: the owner's words waiting for the turn under way (obid's, COMPOSER-8), shown over the box
+export type Queued = { id: string; text: string; files: string[] };
+// seen, unread, archived: when the owner last looked, a turn since, put away under Archived
+// (obid's, docs/contracts/conversation-states.md)
+export type Chat = { id: string; title: string; said: Message[]; queued?: Queued[]; typing?: boolean; step?: string; waiting?: Ask; needs?: boolean; pinned?: boolean; fromObys?: boolean; at?: number; about?: string; local?: boolean; talkAccount?: string | null; talkedOn?: string | null; movedOff?: string | null; profile?: string; helper?: string; project?: string | null; seen?: string; unread?: boolean; archived?: boolean };
 
-// named after its first line, as Oby would title it
-const titled = (text: string) => {
-  const line = text.trim().split('\n')[0];
-  const t = line.length > 48 ? `${line.slice(0, 45).trimEnd()}…` : line;
-  return t[0].toUpperCase() + t.slice(1);
-};
 
 // The mock's past conversations: your log with Oby (mock.ts), a new one each
 // time you asked something, each with what's been said since about the tasks
@@ -43,7 +43,9 @@ const seeded: Chat[] = LOG.flatMap((t, i) => {
   said.push(...jobs.flatMap(followUpsOf));
   said.sort((a, b) => b.ago - a.ago);
   const first = JOBS.find((j) => j.id === jobs[0]);
-  return [{ id: `c-${t.id}`, title: first ? convoTitle(first) : titled(t.text), said }];
+  // in the project whose repositories hold its first task's (MOCK_PROJECTS), if one does
+  const project = MOCK_PROJECTS.find((p) => first && p.repos.includes(first.repo))?.id ?? null;
+  return [{ id: `c-${t.id}`, title: first ? convoTitle(first) : titled(t.text), said, project }];
 });
 // Older ones, over the last five weeks: questions Oby answered on the spot,
 // nothing started (most of what you ask it is like this; a task is the exception); a few in the
@@ -142,8 +144,8 @@ export const lastAgo = (c: Chat) => Math.min(c.at ?? Infinity, ...c.said.map((m)
 // obid says it did (at), where it says: a card still open in it reads as just now, however old
 const movedAgo = (c: Chat) => c.at ?? lastAgo(c);
 // Never the one of what other Obys ask you (ASK-18): a question doesn't decide where the app opens.
-// Nor a helper's, which obid never makes the latest either (docs/api/helpers.md)
-export const latestChat = (all: Chat[]) => all.filter((c) => !c.fromObys && !c.helper).reduce<Chat | undefined>((best, c) => (!best || movedAgo(c) < movedAgo(best) ? c : best), undefined);
+// Nor a helper's, which obid never makes the latest either (docs/api/helpers.md), nor one put away under Archived
+export const latestChat = (all: Chat[]) => all.filter((c) => !c.fromObys && !c.helper && !c.archived).reduce<Chat | undefined>((best, c) => (!best || movedAgo(c) < movedAgo(best) ? c : best), undefined);
 // Where back comes to rest, chat first (CHATFIRST-9, CHATFIRST-12): the conversation you were last
 // in, or the empty chat (null) if that's where you were; one since deleted, your latest
 export const restingChat = (rest: string | null, all: Chat[]) =>
@@ -192,7 +194,21 @@ export function renameChat(id: string, title: string) {
 export const chooseTalk = (id: string, account: string) => (ofObid(id) ? live.chooseTalk(id, account) : update(id, () => ({ talkAccount: account })));
 export const useTalkSetting = () => { const s = live.useLive().status; const [kept] = useKeptSetting<string | null>(TALK_DEFAULT, null); return onObid ? { account: s?.talkAccount ?? null, next: s?.talkNext ?? null } : { account: kept, next: null }; };
 export const lookAtUsage = () => { if (onObid) live.lookAtUsage(); };
+// into a project or out of it (null), from the title bar's chip: obid's from its answer; the mock's, here
+export const moveChat = (id: string, project: string | null) => (ofObid(id) ? void live.moveToProject(id, project) : update(id, () => ({ project })));
 export const pinChat = (id: string, pinned: boolean) => (ofObid(id) ? void live.pinConversation(id, pinned) : update(id, () => ({ pinned })));
+// Looked at (CHATSTATE-6): obid's once it has never been, or a turn came since; the mock's, here
+export const seeChat = (id: string) => {
+  const c = chats.find((x) => x.id === id);
+  if (!c || (c.seen && !c.unread)) return;
+  if (ofObid(id)) void live.seeConversation(id); else update(id, () => ({ unread: false, seen: new Date().toISOString() }));
+};
+// Mark unread or read (CHATSTATE-7), Archive or Restore (CHATSTATE-9)
+// whether its marks can be kept: always on the mock, on obid once it says so (conversation-marks-v1)
+export const keepsMarks = (id: string) => !ofObid(id) || live.takesMarks();
+export const markChatUnread = (id: string, unread: boolean) => (ofObid(id) ? void live.markConversation(id, { seen: !unread }) : update(id, () => ({ unread })));
+export const archiveChat = (id: string, archived: boolean) => (ofObid(id) ? void live.markConversation(id, { archived }) : update(id, () => ({ archived })));
+export const archivedChats = (all: Chat[]) => all.filter((c) => c.archived && !c.helper && !c.fromObys);
 export const deleteChat = (id: string) => {
   forget(draftBox.conversation(id));  // its unsent words go with it
   if (ofObid(id)) return void live.deleteConversation(id);
@@ -206,13 +222,20 @@ export function askOby(text: string, att?: Attachments) {
   const t = text.trim();
   if (!t && !hasAttachments(att)) return;
   const id = `c${++made}`;
-  set([{ id, title: titled(t || att?.files?.[0]?.name || 'New conversation'), said: [{ who: 'you', text: t, ago: 0, ...att }] }, ...chats]);
+  set([{ id, title: t ? shortTitle(t) : titled(att?.files?.[0]?.name || 'New conversation'), said: [{ who: 'you', text: t, ago: 0, ...att }], project: att?.project ?? null }, ...chats]);
   answer(id);
   return id;
 }
 // Stop, from the message box: Oby's turn under way in the conversation ends (obid's alone).
 // ponytail: the mock's scripted answers run to their end; a cancel in work() if the mock needs it
 export const stopChat = (id: string) => { if (ofObid(id)) void live.stopConversation(id); };
+// One message waiting for the turn under way, cancelled alone (COMPOSER-9): obid's on obid, the mock's
+// own list otherwise. Whether it was dropped
+export const cancelQueued = async (id: string, turn: string) => {
+  if (ofObid(id)) return live.cancelWords(id, turn);
+  update(id, (c) => ({ queued: c.queued?.filter((q) => q.id !== turn) }));
+  return true;
+};
 // a reply in a conversation: Oby takes its next turn on it. Oby was waiting on
 // you: its question goes into the conversation, your words under it as the answer
 export function tellChat(id: string, text: string, att?: Attachments) {

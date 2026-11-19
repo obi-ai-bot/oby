@@ -1,0 +1,111 @@
+{
+  "schemaVersion": "2",
+  "name": "DELETE /v1/devices/{id}",
+  "version": "1.0.0",
+  "description": "Revokes a device with a registered device's signed revocation: 404 for one obid doesn't have, 403 for a revocation that isn't signed; 200 revoked.",
+  "trigger": {
+    "http": {
+      "method": "DELETE",
+      "path": "/v1/devices/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/devices/${state.device.id}",
+        "body": {},
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/devices/nope",
+        "body": {
+          "approval": {
+            "device": "${state.device.id}",
+            "signedAt": "2026-11-18T00:00:00Z",
+            "signature": "AAAA"
+          }
+        },
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "not-signed-403",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/devices/${state.device.id}",
+        "body": {
+          "approval": {
+            "device": "${state.device.id}",
+            "signedAt": "2026-11-18T00:00:00Z",
+            "signature": "AAAA"
+          }
+        },
+        "expect": {
+          "status": 403
+        }
+      }
+    },
+    {
+      "id": "revocation",
+      "use": "runtime.rust:device-sign",
+      "inputs": {
+        "device": "${state.device}",
+        "lines": [
+          "oby-revoke-device",
+          "${state.device.id}"
+        ]
+      }
+    },
+    {
+      "id": "revoked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/devices/${state.device.id}",
+        "body": {
+          "approval": "${state.revocation.approval}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "revoked": "${state.device.id}"
+          }
+        }
+      }
+    }
+  ]
+}

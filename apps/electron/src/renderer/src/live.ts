@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
-import { knownUpTo, withEntries, withLine } from './liveTask';
+import { knownUpTo, withEntries, withLine, withOutput, withTail } from './liveTask';
 import { LIMIT_REACHED, LIMIT_WORDS, MANAGE_USAGE, manageUsage } from './chatgpt';
-import { ApiError, api, isInboxKind, isJobStatus, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type TranscriptEntry, type Turn, type AskMark } from './obid';
+import { ApiError, api, isInboxKind, isJobStatus, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type AgentQuestion, type CheckRun, type Repo, type Status, type TranscriptEntry, type Turn, type AskMark } from './obid';
 import { carriedOn, detailOf, pageOf, publishOf, stagesOf } from './jobPage';
 import { STEER, TELL, agentOf, type Ask, type AskKind, type Job as JobView, type Attachments, type Message, type Offer } from './view';
 import { replaceChats, type Chat } from './chats';
@@ -20,6 +20,7 @@ import type { GitHubWork } from './obid';
 import { lookAgain, takeRoomPost } from './room';
 import { lookAgainAtThreads, plainId, threadChanged } from './peers';
 import { added, adopted, answered as planAnswered, awaited, awaitedIn, conversationOf, failed as sendFailed, gone as goneWith, settled, starts, type Pendings } from './pending';
+import { shortTitle, titled } from './titles';
 
 // What obid has (docs/runner-api.md), as main's one follower of its events keeps it (main/live.ts):
 // main's snapshot when the page opens and after each sync, then each event main applied, applied
@@ -59,11 +60,14 @@ type Live = ObidState & {
   picked: Record<string, { repo: string; at: string }>;
   // the files your words took, by their turn: the name obid kept, the one picked, a photo's preview
   previews: Record<string, { name: string; shown: string; preview?: string }[]>;
+  // clicks obid refused (a Stop, an answer), by the thread they belong to: a conversation's app id
+  // or a job's id. Shown there until dismissed (docs/contracts/conversation-states.md, CHATSTATE-4)
+  refused: { id: number; where: string; text: string }[];
 };
 
 let state: Live = {
   connection: 'connecting', problem: null, status: null, repos: [], github: null, jobs: {}, firstJobs: new Set(), seen: new Set(), inbox: [], limits: [],
-  conversations: [], turns: {}, loaded: new Set(), working: {}, on: {}, pending: {}, unanswered: new Set(), words: {}, pace: {}, waiting: {}, alias: {}, answered: {}, answering: new Set(), picked: {}, previews: {}, gone: new Set(), goneConversations: new Set(), settledInbox: {},
+  conversations: [], turns: {}, loaded: new Set(), working: {}, on: {}, pending: {}, unanswered: new Set(), words: {}, pace: {}, waiting: {}, alias: {}, answered: {}, answering: new Set(), picked: {}, previews: {}, refused: [], gone: new Set(), goneConversations: new Set(), settledInbox: {},
 };
 const listeners = new Set<() => void>();
 const set = (patch: Partial<Live>) => {
@@ -75,7 +79,7 @@ const set = (patch: Partial<Live>) => {
 // putting back the job its own `deleted` event took away)
 // (main brings an event's item's job itself; an answer's the page asks it for)
 const takeEvent = (e: Event) => {
-  if (e.kind === 'transcript' || e.kind === 'transcriptLine') return heard(e);
+  if (e.kind === 'transcript' || e.kind === 'transcriptLine' || e.kind === 'transcriptTail' || e.kind === 'transcriptOutput') return heard(e);
   if (e.kind === 'jobGone') sessions.delete(e.id);
   set(apply(state, e));
 };
@@ -147,6 +151,17 @@ function offersOf(s: Live, c?: string, items = s.inbox): Offer[] {
   }));
 }
 
+// The owner's words waiting in a conversation for the turn under way there (obid's delivery,
+// docs/contracts/deliveries.md): queued behind words a turn has taken (starting or running). Words
+// queued with nothing under way are about to be taken, and show in the conversation as ever
+// (COMPOSER-8). An obid with no delivery: none.
+export function waitingWords(turns: readonly Turn[]): Turn[] {
+  const mine = turns.filter((t) => t.who === 'user');
+  let taken = -1;
+  mine.forEach((t, i) => { if (t.delivery?.status === 'starting' || t.delivery?.status === 'running') taken = i; });
+  return taken < 0 ? [] : mine.slice(taken + 1).filter((t) => t.delivery?.status === 'queued');
+}
+
 export function chatOf(s: Live, c: Conversation): Chat {
   // a task's card under the answer that started it, not again under each that mentions it. A
   // job your words started or were offered (its turn), and what Oby offered for them (the offer's
@@ -171,7 +186,9 @@ export function chatOf(s: Live, c: Conversation): Chat {
     const kept = byTurn.filter((j) => j.turn === asked && !carded.has(j.id) && carded.add(j.id)).map((j) => j.id);
     if (kept.length && askedWords) askedWords.jobs = [...(askedWords.jobs ?? []), ...kept];
   };
-  const turns = (s.turns[c.id] ?? []).filter((t) => t.id !== p?.turn);
+  // words waiting for the turn under way show over the box (COMPOSER-8), and words cancelled there nowhere (COMPOSER-9)
+  const queued = waitingWords(s.turns[c.id] ?? []);
+  const turns = (s.turns[c.id] ?? []).filter((t) => t.id !== p?.turn && t.delivery?.status !== 'cancelled' && !queued.includes(t));
   // and so do the last words once no answer to them is on its way (a Stop, #1788), even under a
   // report later: anything else under way (the next words, a supervisor's turn) isn't for them
   const lastWords = turns.map((t) => t.who).lastIndexOf('user');
@@ -215,7 +232,8 @@ export function chatOf(s: Live, c: Conversation): Chat {
   confirm({ who: 'oby', text: '', ago: 0 });
   return {
     id: s.alias[c.id] ?? c.id, title: c.title, pinned: c.pinned, at: minutesAgo(c.lastActivity), said, fromObys: c.fromObys, helper: c.helper, talkAccount: c.talkAccount, talkedOn: c.talkedOn, movedOff: c.movedOff,
-    about: tasksLine(s, c.tasks),
+    project: c.project, about: tasksLine(s, c.tasks), seen: c.seen, unread: !!c.unread, archived: !!c.archived,
+    ...(queued.length ? { queued: queued.map((t) => ({ id: t.id, text: t.text, files: t.attachments ?? [] })) } : {}),
     typing: c.id in s.working, step: p || words ? undefined : s.working[c.id],
     waiting: q ? { question: q.text, options: q.options } : undefined,
     // waiting on you with no task to say so (a task's says it itself, Sidebar.tsx): Oby's question back,
@@ -232,7 +250,7 @@ function chatsOf(s: Live): Chat[] {
   for (const st of Object.values(s.pending)) {
     if (!starts(st) || [...rows, ...chats].some((c) => c.id === st.shown)) continue;
     const real = st.conversation ?? Object.keys(s.alias).find((k) => s.alias[k] === st.shown);
-    const shown = chatOf(s, { id: real ?? st.shown, title: st.said.split('\n')[0].slice(0, 48), pinned: false, created: now, lastActivity: now, cursor: '' });
+    const shown = chatOf(s, { id: real ?? st.shown, title: st.said.trim() ? shortTitle(st.said) : titled(st.files[0]?.name ?? ''), pinned: false, created: now, lastActivity: now, cursor: '' });
     rows.push({ ...shown, id: st.shown, said: shown.said.length ? shown.said : [{ who: 'you', text: st.said, ago: 0, ...(st.files.length ? { files: st.files } : {}) }], ...(st.over ? {} : { typing: true, step: shown.step ?? 'Thinking' }) });
   }
   return [...rows, ...chats];
@@ -273,7 +291,7 @@ export function askOf(s: Live, j: Job): Ask | undefined {
   // The grouped limit appears once, but unrelated permissions or questions still need attention.
   if (limitHolds(s, j) && (!item || item.kind === 'limit')) return undefined;
   if (item) {
-    const ask = itemAsk(item, item.kind === 'permission' ? j.permission?.detail : undefined);
+    const ask = itemAsk(item, item.kind === 'permission' ? j.permission?.detail : undefined, j.permission?.question);
     if (item.kind === 'permission' && j.permission?.always) ask.always = j.permission.always;
     // Oby's own question about a task that stopped: its own Done, and his question card's Tell it
     // something (#1795); a stalled task's takes no answer, so Tell it something alone. Try again and
@@ -297,7 +315,7 @@ export function askOf(s: Live, j: Job): Ask | undefined {
 // for the owner's own words (obid takes any words as the answer), so one with no options is
 // answered too.
 const LABELLED: Record<string, AskKind> = { github: 'start', failure: 'failed', agentQuestion: 'question' };
-export const itemAsk = (item: InboxItem, detail?: string): Ask => {
+export const itemAsk = (item: InboxItem, detail?: string, question?: AgentQuestion | null): Ask => {
   // a kind this build doesn't know: obid's words, its kind as its label, and nothing to answer (WIRE-2)
   if (!isInboxKind(item.kind)) return { kind: item.kind as AskKind, headline: item.headline ?? item.title, text: item.text, options: [], unknown: true };
   // Oby's ask for a repository's check (set_check): the command under the question, and the
@@ -308,7 +326,7 @@ export const itemAsk = (item: InboxItem, detail?: string): Ask => {
     const options = ['Use it', 'Edit', item.confirm!.payload?.was ? 'Keep it' : 'No check'];
     return { kind: 'check', headline: `Use this as ${item.confirm!.target}’s check before publishing?`, text: item.text, options, detail: check };
   }
-  if (item.kind === 'agentQuestion') return { kind: 'question', headline: item.text, text: '', options: [...item.options, TELL] };
+  if (item.kind === 'agentQuestion') return questionAsk(item, question);
   // A merge card's title is its task's, which the card shows already, after what it is (Not
   // merged, Ready to merge, Needs a teammate): that is its label. With no headline of the model's,
   // obid's reason leads, its first sentence (without the label's words again) over the rest (what to
@@ -335,6 +353,24 @@ export const itemAsk = (item: InboxItem, detail?: string): Ask => {
     repos: repoTicks(item),
   };
 };
+// The agent's question (#858, BYPASS-10 and 11), as T3 Code shows one: each option with its
+// description under it, the one the agent recommends marked (Claude Code's AskUserQuestion, and
+// Codex's, mark it by its label's "(Recommended)", which stays in the label: what's answered),
+// and a multiple choice ticked, then sent as one answer. The descriptions are the item's details;
+// whether several may be picked is the job's question (permission.question), when it's this one.
+const RECOMMENDED = /\(recommended\)\s*$/i;
+export const recommendedIn = (label: string) => RECOMMENDED.test(label);
+function questionAsk(item: InboxItem, question?: AgentQuestion | null): Ask {
+  const asked = question && question.question === item.text ? question : undefined;
+  const about = item.options.map((o, i) => item.details?.[i] || asked?.options.find((c) => c.label === o)?.description || '');
+  const recommended = item.options.findIndex(recommendedIn);
+  return {
+    kind: 'question', headline: item.text, text: '', options: [...item.options, TELL],
+    ...(about.some(Boolean) ? { about } : {}),
+    ...(recommended >= 0 ? { recommended } : {}),
+    ...(asked?.multiSelect && item.options.length ? { multi: true } : {}),
+  };
+}
 // A card as obid just answered it (PEER-38: its title after a tick)
 export const seeItem = (item: InboxItem) => take({ kind: 'inbox', item });
 // a check to keep: one taking a check out shows as any confirm item, its Confirm as such
@@ -369,14 +405,21 @@ export const questionOf = (i: InboxItem): PersonQuestion | undefined => {
 const word = (x: unknown) => (typeof x === 'string' ? x : '');
 export const reviewOf = (i: InboxItem): PersonReview | undefined => {
   const o = i.obi, q = o?.quoted;
-  if (i.kind !== 'obiRequest' || o?.type !== 'review_request' || typeof o.fromOwner !== 'string') return undefined;
+  if (i.kind !== 'obiRequest' || (o?.type !== 'review_request' && o?.type !== 'handoff') || typeof o.fromOwner !== 'string') return undefined;
   const conditions = (Array.isArray(q?.acceptance) ? q.acceptance as unknown[] : [])
     .map((c) => ({ text: word((c as { text?: unknown } | null)?.text), note: word((c as { note?: unknown } | null)?.note) }))
     .filter((c) => c.text || c.note);
   return {
-    id: i.id, from: o.fromOwner, text: i.text, repo: word(o.repo), headSha: word(o.headSha),
+    kind: o.type === 'handoff' ? 'task' : 'review', id: i.id, from: o.fromOwner, text: i.text, repo: word(o.repo), headSha: word(o.headSha),
     goal: word(q?.goal), summary: word(q?.summary), conditions, options: texts(i.options),
   };
+};
+// A GitHub offer's pull request's checks, each on its own line (GITHUBWORK-9): from the feed's item
+// for the same repository and number (GET /v1/github/work), none when the feed hasn't it
+export const prChecksOf = (s: Pick<Live, 'github'>, i: InboxItem): { checks?: CheckRun[] } => {
+  const g = i.github, w = s.github;
+  const runs = g && w && [...w.mine, ...w.reviews].find((x) => x.repo === g.repo && x.number === g.number)?.checkRuns;
+  return runs?.length ? { checks: runs } : {};
 };
 // An escalation with no job still reaches the stack (TASKS-17): Done and Later, whole text
 const onHome = (i: InboxItem) => ON_HOME.has(i.kind) || !!questionOf(i) || !!reviewOf(i) || (isEscalation(i) && i.kind === 'question' && !i.job);
@@ -389,12 +432,12 @@ function asksOf(s: Live): Asking[] {
       const question = questionOf(i);
       if (question) return { id: i.id, title: `Question from ${plainId(question.from)}`, question };
       const review = reviewOf(i);
-      if (review) return { id: i.id, title: `Review request from ${plainId(review.from)}`, review };
+      if (review) return { id: i.id, title: `${review.kind === 'task' ? 'Task' : 'Review request'} from ${plainId(review.from)}`, review };
       // over it a GitHub item's own title, as on To do; obid's words under Oby's headline, or under
       // the title till one comes (clamped: they can be long; an escalation's is whole, TASKS-17)
       const g = i.github;
       return {
-        id: i.id, ask: homeAsk(i), title: g?.quoted?.title ? `#${g.number} ${g.quoted.title}` : i.title, talk: i.conversation ? shownId(i.conversation) : undefined,
+        id: i.id, ask: { ...homeAsk(i), ...prChecksOf(s, i) }, title: g?.quoted?.title ? `#${g.number} ${g.quoted.title}` : i.title, talk: i.conversation ? shownId(i.conversation) : undefined,
         ...(g ? { who: g.list === 'reviews' ? g.author ?? undefined : undefined, brand: BRANDS.github, url: g.url } : {}),
       };
     }),
@@ -407,14 +450,18 @@ function asksOf(s: Live): Asking[] {
   ];
 }
 
-// Waiting for you (docs/contracts/home.md, WAITING-1 to 3): everything across the profile's
+// Waiting for you (docs/contracts/home.md, WAITING-1 to 4): everything across the profile's
 // projects that needs the owner's word, as obid sorts it (needs_you), and every merge card
-// (MERGING-21); open, not put off, not while its answer is on its way; longest waiting first. A
+// (MERGING-21); open, not put off (but a task's), not while its answer is on its way; longest waiting first. A
 // view over GET /v1/inbox, with no state of its own.
 export function waitingOf(s: Live): InboxItem[] {
   const now = Date.now();
-  return s.inbox.filter((i) => i.state === 'open' && (i.triage === 'needs_you' || i.kind === 'merge')
-    && !(i.later && Date.parse(i.later) > now) && !s.answering.has(i.id) && !(i.job && s.answered[i.job]?.item === i.id))
+  // a task's decision put off (obid's later, from another device or an earlier build, or that
+  // build's Later) is still the task's to answer: listed until it is (WAITING-4)
+  const tasks = (i: InboxItem) => !!i.job && !!s.jobs[i.job];
+  return s.inbox.filter((i) => (i.state === 'open' || (i.state === 'later' && tasks(i))) && (i.triage === 'needs_you' || i.kind === 'merge')
+    && !(i.later && Date.parse(i.later) > now && !tasks(i)) && !s.answering.has(i.id)
+    && !(i.job && s.answered[i.job]?.item === i.id && s.answered[i.job].option !== 'Later'))
     .sort((a, b) => Date.parse(a.created) - Date.parse(b.created));
 }
 export const useWaitingCount = () => useSyncExternalStore((l) => { listeners.add(l); return () => { listeners.delete(l); }; }, () => waitingOf(state).length);
@@ -504,6 +551,7 @@ function workOf(w: GitHubWork | null): GitHubItem[] {
     return {
       id: g.id, type: g.list === 'assigned' ? 'issues' : 'review', who: g.list === 'reviews' ? g.author ?? undefined : undefined,
       title: `#${g.number} ${g.title}`, repo: name, url: g.url, board: g.board ?? undefined, updated: minutesAgo(g.updated), action,
+      ...(g.checkRuns?.length ? { checks: g.checkRuns } : {}),
       request: g.list === 'reviews' ? `${g.author ?? 'Someone'} asked you to review ${at}.` : g.list === 'assigned' ? `Assigned to you in ${at}.`
         : stands ? `${stands[0].toUpperCase()}${stands.slice(1)}.` : `Open in ${at}.`,
       label: action ? undefined : g.list === 'mine' ? 'Your pull request' : 'On GitHub',
@@ -513,6 +561,9 @@ function workOf(w: GitHubWork | null): GitHubItem[] {
   });
 }
 
+// The branch a task's commits went to (TASKCONV-32): its last push's (a Fix CI job's onto its
+// owner's pull request's own branch, TASKCONV-31; the owner's Publish to another), else none yet
+const pushedTo = (j: Job) => (j.outgoing ?? []).filter((o) => o.action === 'push' && o.branch).at(-1)?.branch;
 export function taskOf(s: Live, j: Job): Task {
   // a status this build doesn't know: placed as done, with no ask, shown neutral (WIRE-3)
   const unknown = !isJobStatus(j.status);
@@ -524,12 +575,13 @@ export function taskOf(s: Live, j: Job): Task {
   const ask = answer && !putOff ? was!.ask : now;
   const job: JobView = {
     id: j.id, type: j.kind === 'review' ? 'review' : j.issue != null ? 'issues' : 'tasks', title: j.title, request: j.request,
-    agent: j.agent, account: s.status?.accounts.find((a) => a.id === j.account)?.name ?? j.account,
-    model: j.model ?? s.status?.models[j.agent]?.model ?? 'default', repo: j.repo, branch: j.branch || '—', base: j.base ?? '—',
+    agent: j.agent, account: s.status?.accounts.find((a) => a.id === j.account)?.name ?? j.account, accountId: j.account,
+    model: j.model ?? s.status?.models[j.agent]?.model ?? 'default', repo: j.repo, branch: pushedTo(j) || j.branch || '—', base: j.base ?? '—',
     check: j.check ?? undefined, repoCheck: s.repos.find((r) => r.repo === j.repo)?.check, status: j.status, step: j.step, waiting: j.waiting ?? undefined,
     round: j.rounds > 1 ? [j.round, j.rounds] : undefined,
     stages: stagesOf(j),
-    ask, summary: j.summary || undefined, reason: j.reason || undefined, canTryAgain: !unknown && stoppedHere(s, j), commits: j.commits ?? undefined, published: j.published ?? undefined, nothingDone: j.nothingDone || undefined,
+    ask, summary: j.summary || undefined, reason: j.reason || undefined, canTryAgain: !unknown && stoppedHere(s, j), commits: j.commits ?? undefined, published: j.published ?? undefined, nothingDone: j.nothingDone || undefined, worktree: !!j.worktree || undefined,
+    routed: j.routed || undefined,
     created: minutesAgo(j.created), finished: j.finished ? minutesAgo(j.finished) : undefined, conversation: j.conversation ? shownId(j.conversation) : undefined,
     noConversation: !s.conversations.some((c) => c.id === j.conversation),
     archived: !!j.archived, publish: publishOf(j, carriedOn(j, Object.values(s.jobs))),
@@ -580,15 +632,19 @@ export function patchStatus(patch: Partial<Status>) {
 // the usage panel opened: obid asks the tools for usage it hasn't read in 10 minutes, which comes
 // in an `accounts` event a few seconds later
 export function lookAtUsage() {
-  if (state.connection === 'live') void api.status().then((status) => set(answerStatus(state, status)), () => {});
+  // an answer that says what's already held changes nothing: setting it would rebuild every list
+  // and wake every screen (publish) for nothing, each time the message box's menu opens
+  if (state.connection === 'live') void api.status().then((status) => { if (JSON.stringify(status) !== JSON.stringify(state.status)) set(answerStatus(state, status)); }, () => {});
 }
 
 // --- events
 
-export function apply(s: Live, e: Exclude<Event, { kind: 'transcript' | 'transcriptLine' }>): Live {
+export function apply(s: Live, e: Exclude<Event, { kind: 'transcript' | 'transcriptLine' | 'transcriptTail' | 'transcriptOutput' }>): Live {
   switch (e.kind) {
-    // A question's card on a turn changes only the card, and nothing about a turn under way
-    case 'job': case 'jobGone': case 'inbox': case 'turnAsks': case 'accounts': case 'github':
+    // A question's card on a turn changes only the card, and nothing about a turn under way; so
+    // does its words' delivery, which only moves them between the waiting row and the conversation
+    // (waitingWords, COMPOSER-19)
+    case 'job': case 'jobGone': case 'inbox': case 'turnAsks': case 'turnDelivery': case 'accounts': case 'github':
       return { ...s, ...applyToObid(s, e) };
     // a conversation's isn't taken as the one this app's words start: another device may start one
     // meanwhile (the words' own turn, or the plan's answer, says which is this app's). Its listing
@@ -747,6 +803,15 @@ export function say(e: unknown) {
   clearing = setTimeout(() => { if (state.connection === 'live') set({ problem: null }); }, 6000);
 }
 
+// A click obid refused, kept in the thread it belongs to until the owner dismisses it (CHATSTATE-4);
+// one that belongs to none is said as any other
+let refusals = 0;
+export function refuse(where: string | undefined, e: unknown) {
+  if (!where) return say(e);
+  set({ refused: [...state.refused, { id: ++refusals, where, text: e instanceof Error ? e.message : String(e) }] });
+}
+export const dismissRefusal = (id: number) => set({ refused: state.refused.filter((r) => r.id !== id) });
+
 // --- what the app does
 
 // The repository a conversation's work was last in, by its id in the app: the one picked for
@@ -792,7 +857,7 @@ export async function openConversation(shown: string) {
 // (POST /v1/attachments), and the words carry an id of their own: sent again while obid doesn't
 // answer, obid takes them once, files and tasks included.
 let made = 0;
-export function ask(said: string, shown?: string, repo?: string, folders?: string[], att?: Pick<Attachments, 'files' | 'jobs'>): string | undefined {
+export function ask(said: string, shown?: string, repo?: string, folders?: string[], att?: Pick<Attachments, 'files' | 'jobs' | 'project' | 'defaults' | 'obys'>): string | undefined {
   const files = att?.files?.filter((f) => f.path) ?? [], jobs = att?.jobs ?? [];
   if (!said.trim() && !files.length && !jobs.length) return;
   const id = shown ?? `new:${++made}`;
@@ -813,9 +878,16 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
     try {
       if (files.length) set({ previews: { ...state.previews, [turn]: files.map((f) => ({ name: f.path!.split('/').pop()!, shown: f.name, preview: f.preview })) } });
       // the working folders go with words that start a conversation, once obid takes them (an
-      // older one refuses the key); a conversation's own are obid's already (sendFoldersBy)
+      // older one refuses the key); a conversation's own are obid's already (sendFoldersBy). So does
+      // the project chosen for it, once obid has projects (docs/api/projects.md)
+      const project = !c && takesProjects() ? att?.project : undefined;
       const a = await sent(() => api.plan(q ? q.said : words, q ? { question: q.text, option: words } : undefined, c ? { conversation: c } : { new: true },
-        has(state.status, 'folders-v1') && !c ? folders : undefined, { id: turn, attachments: paths, jobs }));
+        has(state.status, 'folders-v1') && !c ? folders : undefined, { id: turn, attachments: paths, jobs, project,
+          // the box's chips, once obid takes them (COMPOSER-3); an answer to Oby's question starts no job of its own
+          ...(has(state.status, 'composer-v1') && !q ? { defaults: att?.defaults } : {}),
+          // the members the words @-name, asked by obid as oby_ask asks (ASK-39); an answer to Oby's
+          // question asks no one
+          ...(has(state.status, 'ask-mentions-v1') && !q ? { ask: att?.obys } : {}) }));
       planned = true;
       const where = a.conversation ?? c;
       // Oby's turn is in a reply or a question (its event may land after this answer, and the card
@@ -898,12 +970,45 @@ export async function chooseTalk(shown: string, talkAccount: string) {
   take({ kind: 'conversation', conversation: await api.editConversation(c, { talkAccount }) });
 }
 export const talkReady = (shown: string) => !realId(shown).startsWith('new:');
+// The project a conversation is in (its title bar's chip, docs/contracts/projects.md): obid's answer
+// moves its row; a refusal is said, and it stays where it was
+export async function moveToProject(shown: string, project: string | null) {
+  try { const c = await api.editConversation(realId(shown), { project }); take({ kind: 'conversation', conversation: c }); } catch (e) { say(e); }
+}
+// whether obid has projects (projects-v1): with none, nothing names one (projects.ts)
+export const takesProjects = (s: Pick<Live, 'status'> = state) => has(s.status, 'projects-v1');
 export async function pinConversation(shown: string, pinned: boolean) {
   try { const c = await api.editConversation(realId(shown), { pinned }); take({ kind: 'conversation', conversation: c }); } catch (e) { say(e); }
 }
 // Stop (CHATFIRST-33): Oby's turn event ends the working line, as any answer's does
+// One message waiting for the turn under way, cancelled alone (COMPOSER-9 and 10): obid drops it
+// and the turn goes on. True when obid dropped it; false when a turn had taken it already (it shows
+// in the conversation), or obid refused, which it says
+export async function cancelWords(shown: string, turn: string): Promise<boolean> {
+  try { return !!(await api.cancelWords(realId(shown), turn)).dropped?.includes(turn); } catch (e) { say(e); return false; }
+}
+// The files of a conversation's folders for an @ (COMPOSER-14): none from an obid without them
+export async function conversationFiles(shown: string, typed: string) {
+  if (!has(state.status, 'composer-v1')) return [];
+  try { return (await api.conversationFiles(realId(shown), typed)).files; } catch { return []; }
+}
 export async function stopConversation(shown: string) {
-  try { await api.stopConversation(realId(shown)); } catch (e) { say(e); }
+  try { await api.stopConversation(realId(shown)); } catch (e) { refuse(shown, e); }
+}
+// The owner looked at it (CHATSTATE-6): obid's `seen`, so it's no longer unread. Once at a time; an
+// obid without marks refuses the key, and nothing shows unread there anyway
+const seeing = new Set<string>();
+export async function seeConversation(shown: string) {
+  const c = realId(shown);
+  if (c.startsWith('new:') || seeing.has(c) || !takesMarks()) return;
+  seeing.add(c);
+  try { take({ kind: 'conversation', conversation: await api.editConversation(c, { seen: true }) }); } catch { /* it stays as it was */ } finally { seeing.delete(c); }
+}
+// whether obid keeps a conversation's marks (conversation-marks-v1): with none, nothing is sent
+export const takesMarks = (s: Pick<Live, 'status'> = state) => has(s.status, 'conversation-marks-v1');
+// Mark unread or read (CHATSTATE-7), Archive or Restore (CHATSTATE-9): obid's answer moves the row
+export async function markConversation(shown: string, change: { seen?: boolean; archived?: boolean }) {
+  try { take({ kind: 'conversation', conversation: await api.editConversation(realId(shown), change) }); } catch (e) { say(e); }
 }
 export async function deleteConversation(shown: string) {
   const c = realId(shown);
@@ -930,17 +1035,16 @@ export async function tellJob(id: string, text: string, files: { path?: string }
     say(e);
   }
 }
-// Told from the agent's own conversation, opened in place under its card (AgentThread.tsx): the follow-up it started, if it had finished
-export const tellAgent = async (id: string, text: string, files?: { path?: string }[]) => {
-  const j = await tellJob(id, text, files, true);
-  return j && j.id !== id ? j.id : undefined;
-};
 // A task's Mode menu: how much it asks from now on (POST /v1/jobs/{id}/mode)
 export async function changeMode(id: string, mode: string) {
   try { const j = await api.mode(id, mode); take({ kind: 'job', job: j }); } catch (e) { say(e); }
 }
 export async function stopJob(id: string) {
-  try { const j = await keyed((key) => api.stop(id, key)); take({ kind: 'job', job: j }); } catch (e) { say(e); }
+  try { const j = await keyed((key) => api.stop(id, key)); take({ kind: 'job', job: j }); } catch (e) { refuse(id, e); }
+}
+// Use another account (CHATSTATE-3): queued, it starts there; ended, its Try again runs there
+export async function moveJob(id: string, account: string) {
+  try { take({ kind: 'job', job: await api.move(id, account) }); } catch (e) { refuse(id, e); }
 }
 
 // The task's menu: Rename (PATCH /v1/jobs/{id}), shown at once as the mock does it; Archive
@@ -956,6 +1060,13 @@ export async function renameJob(id: string, title: string) {
     const now = state.jobs[id];
     if (had && now?.title === title) set({ jobs: { ...state.jobs, [id]: { ...now, title: had.title } } });
     say(e);
+  }
+}
+// Undo this round (CHANGES-14): main asks in its own dialog and signs obid's sentence; the job comes
+// back with one round fewer. "Not now" in that dialog is no refusal to show.
+export async function undoJob(id: string, action: string) {
+  try { const j = await api.undo(id, action); take({ kind: 'job', job: j }); } catch (e) {
+    if (!(e instanceof ApiError && e.message.startsWith('Not undone: you said not now'))) say(e);
   }
 }
 export async function archiveJob(id: string) {
@@ -986,9 +1097,15 @@ const sessions = new Map<string, TranscriptEntry[]>();
 const sessionListeners = new Map<string, Set<() => void>>();
 export const sessionNow = (id: string) => sessions.get(id);
 const setSession = (id: string, entries: TranscriptEntry[]) => { sessions.set(id, entries); sessionListeners.get(id)?.forEach((l) => l()); };
-function heard(e: Extract<Event, { kind: 'transcript' | 'transcriptLine' }>) {
+function heard(e: Extract<Event, { kind: 'transcript' | 'transcriptLine' | 'transcriptTail' | 'transcriptOutput' }>) {
   const had = sessions.get(e.job);
-  if (had) setSession(e.job, e.kind === 'transcript' ? withEntries(had, [e.entry]) : withLine(had, e.n, e.append));
+  if (!had) return;
+  switch (e.kind) {
+    case 'transcript': return setSession(e.job, withEntries(had, [e.entry]));
+    case 'transcriptLine': return setSession(e.job, withLine(had, e.n, e.append));
+    case 'transcriptTail': return setSession(e.job, withTail(had, e.n, e.tail));
+    case 'transcriptOutput': return setSession(e.job, withOutput(had, e.n, e.output));
+  }
 }
 // the last to stop showing it lets it go: a job looked at once costs nothing from then on
 export const useSession = (id: string) => useSyncExternalStore(useCallback((l: () => void) => {
@@ -1086,9 +1203,9 @@ export async function answerJob(id: string, option: string, words?: string) {
       take({ kind: 'inbox', item: await keyed((key) => api.answer(item.id, body, key)) });
     }
   } catch (e) {
-    // not taken: it's still yours to answer
+    // not taken: it's still yours to answer, and why stays in its thread (CHATSTATE-4)
     set({ answered: without(state.answered, id) });
-    say(e);
+    refuse(j ? id : item?.job ?? (item?.conversation ? shownId(item.conversation) : undefined), e);
   } finally {
     if (!j && item) answering(item.id, false);
   }

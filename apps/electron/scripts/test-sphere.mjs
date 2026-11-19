@@ -7,7 +7,11 @@
 // admin, whose app adds the members rule that lets the question cross, then writes at a version
 // that's gone stale. Nothing here reaches a network beyond 127.0.0.1.
 //
-//   OBI_SPHERE_DIR=<obi-sphere checkout, `pnpm install` run in server/> \
+// Run through jiti (`npm run test:sphere`): src/shared/sphere.ts imports './policy' with no extension,
+// which Node's own TypeScript loader can't resolve. The Obysphere is obi-sphere at the one commit
+// e2e/sphere.ref pins (RIG-27), what the deployed Sphere runs: cloned into a cache of its own, or
+// OBI_SPHERE_DIR, a checkout that must be at that commit (OBY_SPHERE_ANY_COMMIT=1 runs on another).
+//
 //   OBY_TEST_OBID=<obid binary> npm run test:sphere
 //
 // OBY_TEST_KEEP=1 keeps the run's folder (its logs).
@@ -16,17 +20,24 @@ import { spawn } from 'node:child_process';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkoutAt, offPin, spherePin } from '../../../e2e/lib/sphere-pin.mjs';
 import { addStarterRule, assertion, join as joinSphere, keepMembership, leave, parseInvite, publicOf, starterRule, writePolicy } from '../src/shared/sphere.ts';
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = resolve(appRoot, '../..');
 const agents = join(repoRoot, 'core/crates/obid/tests/agents');
 const binary = process.env.OBY_TEST_OBID || join(repoRoot, 'core/target/debug/obid');
-const sphereDir = process.env.OBI_SPHERE_DIR;
-if (!sphereDir) { console.error('test-sphere: OBI_SPHERE_DIR names an obi-sphere checkout'); process.exit(2); }
+const pin = spherePin();
+const sphereDir = process.env.OBI_SPHERE_DIR
+  || join(homedir(), process.platform === 'darwin' ? 'Library/Caches' : '.cache', 'oby-sphere', pin);
+if (process.env.OBI_SPHERE_DIR) {
+  const off = offPin(sphereDir, pin);
+  if (off && process.env.OBY_SPHERE_ANY_COMMIT !== '1') { console.error(`test-sphere: ${off}`); process.exit(2); }
+} else checkoutAt(sphereDir, { pin, say: (line) => console.log(line) });
+console.log(`obi-sphere ${pin.slice(0, 7)} at ${sphereDir}`);
 const run = mkdtempSync(join(tmpdir(), 'oby-sphere-'));
 const children = [];
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));

@@ -863,7 +863,8 @@ fn codex_resumes_fails_and_stops() {
     assert!(
         second.starts_with(&format!("Round 2 on thread {thread}, which remembers: "))
             && second.contains("What the user asked for: TWICE")
-            && second.ends_with("GOAL MET"),
+            // Its `GOAL MET` line is obid's, not the owner's to read (TASKS-19).
+            && !second.contains("GOAL MET"),
         "{job}"
     );
     // A turn that fails part way needs you: Try again picks its thread up.
@@ -1073,6 +1074,15 @@ fn question_waits(obid: &Obid, id: &str) -> Value {
     job
 }
 
+/// Job `id`'s question once the turn that asked it ended: its summary there.
+fn asked_and_ended(obid: &Obid, id: &str) -> Value {
+    question_waits(obid, id);
+    within(60, "the turn that asked ends", || {
+        let job = call(obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (!summary(&job).is_empty()).then_some(job)
+    })
+}
+
 /// The owner answers job `id`'s waiting question with `answer`: an option's label or their words.
 fn answer_question(obid: &Obid, id: &str, job: &Value, answer: &str) {
     let answered = call(
@@ -1125,7 +1135,7 @@ fn a_cursor_job_asks_the_owner_and_resumes_with_the_answer() {
     let folder = Folder::new("cursor-asks");
     let obid = obid(&folder, false);
     let id = dispatch(&obid, json!({"agent": "cursor", "task": "ASK OWNER"}));
-    let job = question_waits(&obid, &id);
+    let job = asked_and_ended(&obid, &id);
     assert_eq!(job["status"], "running", "{job}");
     assert_eq!(job["step"], "Waiting for your answer", "{job}");
     assert_eq!(job["permission"]["tool"], "AskUserQuestion", "{job}");
@@ -1164,7 +1174,7 @@ fn a_codex_job_asks_the_owner_and_resumes_with_the_answer() {
     let folder = Folder::new("codex-asks");
     let obid = obid(&folder, false);
     let id = dispatch(&obid, json!({"agent": "codex", "task": "ASK OWNER"}));
-    let job = question_waits(&obid, &id);
+    let job = asked_and_ended(&obid, &id);
     assert_eq!(job["status"], "running", "{job}");
     assert!(
         summary(&job).starts_with("Asked: Asked the owner. End your turn now"),
@@ -1177,6 +1187,90 @@ fn a_codex_job_asks_the_owner_and_resumes_with_the_answer() {
     );
     answer_question(&obid, &id, &job, "postgres");
 
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert!(
+        summary(&job).contains("- \"Which store?\": the owner answered \"Postgres\""),
+        "{job}"
+    );
+}
+
+/// PERMISSIONS-22, PERMISSIONS-23: a Codex job's `oby_ask_owner` question shows the moment the
+/// call comes, its turn still open (Codex keeping it open, as codex-cli 0.163 did in the drive of
+/// 2026-11-17): the job's card, its step and the inbox's `agentQuestion` item. The owner's answer
+/// ends that open turn and resumes the same thread with it, and the job ends done.
+#[test]
+fn permissions_22_a_codex_question_shows_while_its_turn_is_still_open() {
+    let folder = Folder::new("codex-asks-open");
+    let obid = obid(&folder, false);
+    let id = dispatch(&obid, json!({"agent": "codex", "task": "ASK OWNER HOLD"}));
+    let job = question_waits(&obid, &id);
+    assert_eq!(job["status"], "running", "{job}");
+    assert_eq!(job["step"], "Waiting for your answer", "{job}");
+    assert_eq!(job["permission"]["question"]["question"], "Which store?");
+    // Its turn is still open: it heard the tool's answer and said nothing since.
+    within(60, "the call answered the agent", || {
+        logged(&obid, &id, "held.log")
+            .starts_with("Asked the owner.")
+            .then_some(())
+    });
+    assert!(summary(&job).is_empty(), "{job}");
+    let card = job["permission"]["id"].clone();
+    let still = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(still["permission"]["id"], card, "{still}");
+
+    answer_question(&obid, &id, &job, "postgres");
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert!(
+        summary(&job).starts_with("heard: You asked the owner with oby_ask_owner"),
+        "{job}"
+    );
+    assert!(
+        summary(&job).contains("- \"Which store?\": the owner answered \"Postgres\""),
+        "{job}"
+    );
+}
+
+/// PERMISSIONS-24: a turn that ends after it asked waits on the same card it showed while open,
+/// never a second one: the card's id and its one inbox item stay.
+#[test]
+fn permissions_24_an_ended_turn_waits_on_the_card_it_showed() {
+    let folder = Folder::new("codex-asks-same-card");
+    let obid = obid(&folder, false);
+    let id = dispatch(&obid, json!({"agent": "codex", "task": "ASK OWNER"}));
+    let first = question_waits(&obid, &id)["permission"]["id"].clone();
+    let job = asked_and_ended(&obid, &id);
+    assert_eq!(job["permission"]["id"], first, "{job}");
+    let items = call(&obid, "GET", "/v1/inbox", None).body;
+    let questions: Vec<&Value> = items
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["job"] == id.as_str() && i["kind"] == "agentQuestion")
+        .collect();
+    assert_eq!(questions.len(), 1, "{items}");
+    assert!(questions[0]["done"].is_null(), "{items}");
+}
+
+/// LANES-21 (docs/contracts/lanes.md, #2425): the owner's Codex job in Bypass (LANES-18, under
+/// `approval_policy = "never"`) calls Oby's own `oby_ask_owner` with Oby's server approved before
+/// the run, as codex-cli 0.163 needs: the owner is asked, and the answer picks its thread up.
+#[cfg(target_os = "macos")]
+#[test]
+fn lanes_21_an_own_bypass_codex_job_runs_obys_own_tools() {
+    let folder = Folder::new("codex-own-asks");
+    let obid = obid(&folder, false);
+    let id = dispatch(
+        &obid,
+        json!({"agent": "codex", "task": "ASK OWNER", "mode": "bypass"}),
+    );
+    let job = asked_and_ended(&obid, &id);
+    assert!(
+        summary(&job).starts_with("Asked: Asked the owner. End your turn now"),
+        "{job}"
+    );
+    answer_question(&obid, &id, &job, "postgres");
     let job = ended(&obid, &id);
     assert_eq!(job["status"], "done", "{job}");
     assert!(
@@ -1558,6 +1652,20 @@ fn bypass_9_a_repository_allowlist_asks_you_before_cursor_starts() {
         "{}",
         answer.text
     );
+    // A task named to an account must find it signed in (ACCOUNTS-35): a login with its token.
+    let login = folder
+        .0
+        .join("home/accounts/cursor")
+        .join(if cfg!(target_os = "macos") {
+            ".cursor/auth.json"
+        } else {
+            ".config/cursor/auth.json"
+        });
+    std::fs::write(
+        &login,
+        json!({"accessToken": "cursor-plain-test-login"}).to_string(),
+    )
+    .unwrap();
     let answer = call(
         &obid,
         "POST",
@@ -1866,7 +1974,9 @@ fn codex_and_cursor_park_and_resume_with_the_answer() {
 }
 
 /// Codex wraps each command in `/bin/zsh -lc "…"` (#634): the card asks about the command out of
-/// that shell, all of it, and offers Always with a rule when it's a single simple command.
+/// that shell, all of it, and offers Always with a rule when it's a single simple command, or a
+/// chain whose every command has one (PERMISSIONS-27): then its `rule` holds each, one per line,
+/// so it saves all that its `always` names.
 #[test]
 fn codex_cards_show_the_command_out_of_its_shell() {
     let folder = Folder::new("codex-cards");
@@ -1909,7 +2019,14 @@ fn codex_cards_show_the_command_out_of_its_shell() {
         r#"git add src/permissions.rs src/codex.rs && git commit -m "fix(obid): show it all""#;
     assert_eq!(second["title"], format!("Run {command}"), "{second}");
     assert_eq!(second["detail"], command, "{second}");
-    assert_eq!(second["rule"], Value::Null, "{second}");
+    assert_eq!(
+        second["rule"], "Bash(git add:*)\nBash(git commit:*)",
+        "{second}"
+    );
+    assert_eq!(
+        second["always"],
+        "Yes, and don't ask again for git add, git commit in obi-e2e/fixture-app"
+    );
     answer(&simple, &first);
     answer(&chained, &second);
     assert_eq!(summary(&ended(&obid, &simple)), "answer: accept");
@@ -2037,16 +2154,21 @@ fn tasks_15_codex_and_cursor_hear_the_standing_rules() {
 }
 
 /// RECOVERY-7: Codex's `codexErrorInfo` says how its turn ended, whatever its agent said last: words
-/// that name a limit hold no job on one, and a dropped stream is continued.
+/// that name a limit hold no job on one, and a dropped stream is the agent's (RECOVERY-19): the job
+/// ends with Codex's own words and Try again, its turn not sent again.
 #[test]
 fn recovery_7_codex_says_how_its_turn_ended() {
     let folder = Folder::new("recovery-7-codex");
     let (obid, _) = obid_with(&folder, false, json!({"stallAfter": 2}));
     let id = dispatch(&obid, json!({"agent": "codex", "task": "WORDS OF A LIMIT"}));
     let job = ended(&obid, &id);
-    assert_eq!(job["status"], "done", "{job}");
-    assert_eq!(job["summary"], "Carried on.", "{job}");
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(job["nextStep"], "Try again", "{job}");
     assert!(job["accountLimit"].is_null(), "{job}");
+    assert!(job["resumesAt"].is_null(), "{job}");
+    let reason = job["reason"].as_str().unwrap();
+    assert!(reason.contains("stream disconnected"), "{job}");
+    assert!(!reason.contains("usage limit"), "{job}");
 }
 
 /// RECOVERY-7: a usage limit only Codex's field says is a limit: with no other account that has

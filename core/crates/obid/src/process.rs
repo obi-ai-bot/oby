@@ -191,9 +191,76 @@ fn own_ps_folder(temp: &Path) -> Option<PathBuf> {
     Some(dir)
 }
 
+/// How long obid's own run of xcrun's shim has to make its warm cache ([`warm_xcrun`]).
+const XCRUN_WARMING: Duration = Duration::from_secs(120);
+
+/// Where obid keeps xcrun's warm cache: its own temporary folder (`/var/folders/…/T`), which no
+/// box can read or write, so no job can plant one that another job's box then starts from.
+fn warm_xcrun_db() -> PathBuf {
+    std::env::temp_dir().join("obid-xcrun_db")
+}
+
+/// xcrun's cache for a box whose temporary folder is `temp` (macOS's `/usr/bin/git` is xcrun's
+/// shim, and a box writes only there): `temp/xcrun_db`, begun as a copy of `warm` when `temp`
+/// has none yet (TASKCONV-39). Begun empty, the first `git` in every job's box looked the
+/// developer tools up afresh: 10 s on a busy Mac, against 0.07 s from a warm cache. A box writes
+/// only its own copy. With no `warm` yet, obid makes it once, outside any box, in the background:
+/// until then a box begins empty, as before.
+fn xcrun_db(temp: &Path, warm: &Path) -> PathBuf {
+    let db = temp.join("xcrun_db");
+    if cfg!(target_os = "macos") && temp.is_dir() && !db.exists() {
+        if warm.is_file() {
+            let _ = std::fs::copy(warm, &db);
+        } else {
+            warm_in_background(warm);
+        }
+    }
+    db
+}
+
+/// [`warm_xcrun`] for `warm` on a thread of its own, once per path while obid runs.
+fn warm_in_background(warm: &Path) {
+    static WARMING: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+    let mut warming = WARMING.lock().unwrap_or_else(|e| e.into_inner());
+    if warming.iter().any(|path| path == warm) {
+        return;
+    }
+    warming.push(warm.to_owned());
+    let warm = warm.to_owned();
+    std::thread::spawn(move || warm_xcrun(&warm));
+}
+
+/// Makes xcrun's cache at `warm` by running its shim once (`/usr/bin/git --version`) with only
+/// the kept variables, outside any box, in a file of its own renamed into place, so a box never
+/// copies one half written. True once `warm` is there.
+fn warm_xcrun(warm: &Path) -> bool {
+    let making = warm.with_file_name(format!(
+        "{}.making-{}",
+        warm.file_name().unwrap_or_default().to_string_lossy(),
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&making);
+    let mut command = std::process::Command::new("/usr/bin/git");
+    command
+        .arg("--version")
+        .env_clear()
+        .envs(kept(|name| std::env::var_os(name)))
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env("xcrun_db", &making)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let ran = output_within(&mut command, XCRUN_WARMING).is_some_and(|out| out.status.success());
+    if ran && making.is_file() && std::fs::rename(&making, warm).is_ok() {
+        return true;
+    }
+    let _ = std::fs::remove_file(&making);
+    warm.is_file()
+}
+
 /// The environment of a process in the job sandbox: `PATH`, `HOME` and `TMPDIR` (the job's
-/// temporary folder), [`no_publish_env`] but its credential helper, xcrun's cache in
-/// the temporary folder, the kept variables above, then `extra` (an account's `CLAUDE_CONFIG_DIR`).
+/// temporary folder), [`no_publish_env`] but its credential helper, xcrun's cache in the
+/// temporary folder (begun from obid's warm one, [`xcrun_db`]), the kept variables above, then
+/// `extra` (an account's `CLAUDE_CONFIG_DIR`).
 pub fn sandbox_env(
     path: &OsStr,
     temp: &Path,
@@ -213,8 +280,11 @@ pub fn sandbox_env(
             .map(|(name, value)| (name.into(), value)),
     );
     // macOS's /usr/bin/git is xcrun's shim: its cache goes here, not in /var/folders, which the
-    // sandbox doesn't let a job write.
-    env.push(("xcrun_db".into(), temp.join("xcrun_db").into_os_string()));
+    // sandbox doesn't let a job write, begun from obid's warm one (TASKCONV-39).
+    env.push((
+        "xcrun_db".into(),
+        xcrun_db(temp, &warm_xcrun_db()).into_os_string(),
+    ));
     // Foundation's home is the password database's, whatever `HOME` says, so SwiftPM's caches and
     // Xcode's DerivedData would go in the person's hidden `~/Library`: this makes it the job's.
     env.push(("CFFIXED_USER_HOME".into(), temp.as_os_str().to_os_string()));
@@ -224,13 +294,14 @@ pub fn sandbox_env(
         env.retain(|(set, _)| set.as_os_str() != OsStr::new(name));
         env.push(((*name).into(), value.clone()));
     }
-    // obid's own CLAUDE_CODE_TMPDIR (a Claude Code run's, below), TODO_TOOLS, NO_CLAUDE_MDS and
-    // NO_AUTO_MEMORY are the only CLAUDE_CODE_* let in.
+    // obid's own CLAUDE_CODE_TMPDIR (a Claude Code run's, below), TODO_TOOLS, NO_CLAUDE_MDS,
+    // NO_AUTO_MEMORY and an own run's MCP_STARTUP_WAIT (LANES-24) are the only CLAUDE_CODE_* let in.
     env.retain(|(name, _)| {
         name == CLAUDE_TMPDIR
             || name == CLAUDE_TODO_TOOLS
             || name == NO_CLAUDE_MDS
             || name == NO_AUTO_MEMORY
+            || name == crate::agent::MCP_STARTUP_WAIT.0
             || !is_forbidden(&name.to_string_lossy())
     });
     env
@@ -579,56 +650,45 @@ fn read_login_env() -> Option<Vec<(OsString, OsString)>> {
 }
 
 /// `owners` ([`login_env`]'s) under `env`, an own run's (LANES-4): every variable `env` doesn't set,
-/// but what pushes or signs in to a code host ([`agent_withheld`]'s), git's, obid's and Codex's own
-/// (`CODEX_*`), the shell's own bookkeeping, and Claude Code's own but the owner's gateway
-/// ([`claude_gateway`]).
+/// as the owner's terminal has it (the owner's decision of 2026-11-16, LANES-22), but what pushes
+/// or signs in to a code host ([`agent_withheld`]'s), git's, obid's and Codex's own (`CODEX_*`),
+/// the shell's own bookkeeping, the account's folder (the dispatcher's choice: obid sets it, or
+/// none for the default account) and a launching Claude Code session's own ([`CLAUDE_SESSION`]).
+/// Every other `CLAUDE*` and `ANTHROPIC_*` of the owner's is theirs.
 pub fn with_owners(env: &mut Vec<(OsString, OsString)>, owners: &[(OsString, OsString)]) {
     for (name, value) in owners {
         let n = name.to_string_lossy();
-        let withheld = if n.starts_with("CLAUDE") || n.starts_with("ANTHROPIC_") {
-            !claude_gateway(&n)
-        } else {
-            agent_withheld(&n)
-                || ["GIT_", "OBY_", "OBID_", "CODEX_"]
-                    .iter()
-                    .any(|p| n.starts_with(p))
-                || ["PWD", "OLDPWD", "SHLVL", "_"].contains(&&*n)
-        };
+        let claudes = n.starts_with("CLAUDE") || n.starts_with("ANTHROPIC_");
+        let withheld = (!claudes && agent_withheld(&n))
+            || ["GIT_", "OBY_", "OBID_", "CODEX_"]
+                .iter()
+                .any(|p| n.starts_with(p))
+            || ["PWD", "OLDPWD", "SHLVL", "_"].contains(&&*n)
+            || ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"].contains(&&*n)
+            || CLAUDE_SESSION.contains(&&*n);
         if !withheld && !env.iter().any(|(set, _)| set == name) {
             env.push((name.clone(), value.clone()));
         }
     }
 }
 
-/// Whether an own run takes `name` from the owner (their login shell, their user settings' `env`)
-/// as Claude Code's (the owner's decision LANES-4a, "Allow-list"): any `ANTHROPIC_*` (its gateway,
-/// its key, its models), or one of [`CLAUDE_GATEWAY`]. No other `CLAUDE*` name: they name its
-/// folders, settings and policy sources, permissions, extra directories, its sandbox and its
-/// session, any of which could outrank obid's `--settings` or widen the run (LANES-5).
-pub fn claude_gateway(name: &str) -> bool {
-    name.starts_with("ANTHROPIC_") || CLAUDE_GATEWAY.contains(&name)
-}
-
-/// The `CLAUDE_CODE_*` switches an own run takes from the owner (LANES-4a): which provider Claude
-/// Code calls (2.1.302's Bedrock, Vertex, Foundry, Anthropic on AWS or Google Cloud, Mantle), how
-/// it signs in there, and its models and output size. Nothing that names a path, a settings
-/// source, permissions, directories, the sandbox, hooks, MCP or a session.
-pub const CLAUDE_GATEWAY: [&str; 15] = [
-    "CLAUDE_CODE_USE_BEDROCK",
-    "CLAUDE_CODE_USE_VERTEX",
-    "CLAUDE_CODE_USE_FOUNDRY",
-    "CLAUDE_CODE_USE_ANTHROPIC_AWS",
-    "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
-    "CLAUDE_CODE_USE_MANTLE",
-    "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
-    "CLAUDE_CODE_SKIP_VERTEX_AUTH",
-    "CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
-    "CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH",
-    "CLAUDE_CODE_SKIP_ANTHROPIC_GOOGLE_CLOUD_AUTH",
-    "CLAUDE_CODE_SKIP_MANTLE_AUTH",
-    "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
-    "CLAUDE_CODE_SUBAGENT_MODEL",
-    "CLAUDE_CODE_EFFORT_LEVEL",
+/// What a Claude Code session exports to what it runs, as T3 Code lists them
+/// (`ClaudeHome.ts`): a Claude Code started with them acts as part of that session (its id, its
+/// messaging socket and token, its effort), so an own run never takes them from the owner's
+/// environment.
+pub const CLAUDE_SESSION: [&str; 12] = [
+    "CLAUDECODE",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_HOST_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_DESKTOP_APP_VERSION",
+    "CLAUDE_EFFORT",
+    "CLAUDE_PID",
+    "CLAUDE_AGENT_SDK_VERSION",
 ];
 
 /// `bin` as an absolute path: itself when it names one (a relative one from obid's own folder,
@@ -1231,6 +1291,52 @@ mod claude_tmpdir_tests {
             "{env:?}"
         );
     }
+
+    /// TASKCONV-39: a new box's xcrun cache begins as a copy of obid's warm one, so its first `git`
+    /// doesn't look the developer tools up afresh; one it already has is its own and stays.
+    #[test]
+    fn taskconv_39_a_new_box_begins_with_obids_warm_xcrun_cache() {
+        let root = std::env::temp_dir().join(format!("obid-taskconv-39-{}", uuid::Uuid::new_v4()));
+        let (warm, temp) = (root.join("warm-xcrun_db"), root.join("job"));
+        std::fs::create_dir_all(&temp).unwrap();
+        std::fs::write(&warm, "warm").unwrap();
+        assert_eq!(xcrun_db(&temp, &warm), temp.join("xcrun_db"));
+        let begun = std::fs::read_to_string(temp.join("xcrun_db")).ok();
+        if cfg!(target_os = "macos") {
+            assert_eq!(begun.as_deref(), Some("warm"));
+        } else {
+            assert_eq!(begun, None, "only macOS's git is xcrun's shim");
+        }
+        // The box's own cache is never replaced by the warm one.
+        std::fs::write(temp.join("xcrun_db"), "its own").unwrap();
+        xcrun_db(&temp, &warm);
+        let kept = std::fs::read_to_string(temp.join("xcrun_db")).unwrap();
+        assert_eq!(kept, "its own");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// TASKCONV-39: obid makes the warm cache itself, outside any box, with the shim's own run, and
+    /// a box's first `git` then begins from it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn taskconv_39_obid_makes_xcruns_warm_cache_itself() {
+        let root =
+            std::env::temp_dir().join(format!("obid-taskconv-39-warm-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("job")).unwrap();
+        let warm = root.join("warm-xcrun_db");
+        assert!(warm_xcrun(&warm), "no warm cache at {}", warm.display());
+        let made = std::fs::read(&warm).unwrap();
+        assert!(!made.is_empty());
+        let db = xcrun_db(&root.join("job"), &warm);
+        assert_eq!(std::fs::read(&db).unwrap(), made);
+        let output = std::process::Command::new("/usr/bin/git")
+            .arg("--version")
+            .env("xcrun_db", &db)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 #[cfg(test)]
@@ -1292,37 +1398,42 @@ pub(crate) mod tests {
         );
     }
 
-    /// LANES-5 with LANES-4a ("Allow-list"): of Claude Code's own variables, the owner's shell gives
-    /// an own run only `ANTHROPIC_*` and the gateway switches ([`CLAUDE_GATEWAY`]); a settings or
-    /// policy source that outranks obid's `--settings`, extra session folders and allow rules, and
-    /// any other `CLAUDE*` name never reach it.
+    /// LANES-22 (docs/contracts/lanes.md, the owner's decision of 2026-11-16): an own run takes
+    /// every `CLAUDE*` and `ANTHROPIC_*` variable of the owner's shell as their terminal does,
+    /// settings sources, sandbox switches and names obid never heard of included; only the
+    /// account's folder (the dispatcher's choice), a Claude Code session's own variables when one
+    /// launched obid, and what publishes (LANES-2) stay out.
     #[test]
-    fn lanes_5_the_owners_shell_gives_no_settings_source() {
+    fn lanes_22_the_owners_shell_gives_an_own_run_every_claude_variable() {
         let os = |text: &str| OsString::from(text);
         let mut env = Vec::new();
-        let mut owners: Vec<(OsString, OsString)> = [
+        let given = [
             "CLAUDE_CODE_MANAGED_SETTINGS_PATH",
-            "CLAUDE_CODE_REMOTE_SETTINGS_PATH",
             "CLAUDE_CODE_SANDBOXED",
-            "CLAUDE_RELAUNCH_SESSION_ADD_DIRS",
-            "CLAUDE_BG_SESSION_PERMISSION_RULES",
-            "CLAUDE_CODE_SESSION_KIND",
+            "CLAUDE_CODE_MAX_RETRIES",
             "CLAUDE_FOO",
+            "CLAUDE_CODE_USE_BEDROCK",
+            "ANTHROPIC_MODEL",
+        ];
+        let withheld = [
+            "CLAUDE_CONFIG_DIR",
+            "CLAUDE_SECURESTORAGE_CONFIG_DIR",
             "CLAUDECODE",
-        ]
-        .iter()
-        .map(|name| (os(name), os("/tmp/policy")))
-        .collect();
-        owners.push((os("CLAUDE_CODE_USE_BEDROCK"), os("1")));
-        owners.push((os("ANTHROPIC_MODEL"), os("us.anthropic.claude")));
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_MESSAGING_TOKEN",
+            "GH_TOKEN",
+        ];
+        let owners: Vec<(OsString, OsString)> = given
+            .iter()
+            .chain(&withheld)
+            .map(|name| (os(name), os("1")))
+            .collect();
         with_owners(&mut env, &owners);
-        assert_eq!(
-            env,
-            vec![
-                (os("CLAUDE_CODE_USE_BEDROCK"), os("1")),
-                (os("ANTHROPIC_MODEL"), os("us.anthropic.claude")),
-            ]
-        );
+        let names: Vec<String> = env
+            .iter()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, given, "{names:?}");
     }
 
     /// LANES-16 (docs/contracts/lanes.md): what an own run's commands left running ends with the

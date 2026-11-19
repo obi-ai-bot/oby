@@ -449,7 +449,9 @@ impl Link {
         let mut answer_by_itself = None;
         // Jobs on this Mac for teammates and shares of API accounts went with compute sharing: a
         // run_request or share_offer is declined like any kind obid doesn't take.
-        if !accepts.contains(&kind) || !(kind == "review_request" || kind == "question") {
+        if !accepts.contains(&kind)
+            || !matches!(kind.as_str(), "review_request" | "question" | "handoff")
+        {
             exchange.state = "declined".into();
             let decline = self.reply_locked(
                 &state,
@@ -489,7 +491,12 @@ impl Link {
         } else if self.inbox_full(&state, &owner) {
             self.decline_busy(&state, &mut exchange);
         } else {
-            let made = inbox::review_request_item(
+            let item_for = if kind == "handoff" {
+                inbox::handoff_item
+            } else {
+                inbox::review_request_item
+            };
+            let made = item_for(
                 &exchange.correlation_id,
                 &from,
                 &owner,
@@ -1063,6 +1070,9 @@ impl Link {
         exchange: &mut Exchange,
         rule: Option<&str>,
     ) -> Option<&'static str> {
+        if exchange.kind == "handoff" {
+            return self.accept_handoff_locked(state, exchange, rule);
+        }
         let repo = exchange.request["body"]["repo"].as_str().unwrap_or("");
         if let FirstAnswer::Decline(why) = review_start::first_answer(self.jobs.can_review(repo)) {
             let note = why.note();

@@ -1731,15 +1731,16 @@ impl Link {
                     "That request expired before the answer.",
                 ));
             }
-            // Only a review request is accepted here: a question is answered in words (above).
-            if exchange.kind != "review_request" {
+            // Only a review request or a handoff is accepted here: a question is answered in
+            // words (above).
+            if exchange.kind != "review_request" && exchange.kind != "handoff" {
                 return Err(api(
                     StatusCode::CONFLICT,
                     "That request isn't a review request.",
                 ));
             }
             let chosen = answer.as_deref().unwrap_or(inbox::DECLINE);
-            let accept = chosen == inbox::ACCEPT || chosen == inbox::ACCEPT_REMEMBER;
+            let accept = inbox::accepts(chosen);
             let remember = chosen == inbox::ACCEPT_REMEMBER || chosen == inbox::DECLINE_REMEMBER;
             exchange.decided_by = Some("inbox".into());
             let mut declined = None;

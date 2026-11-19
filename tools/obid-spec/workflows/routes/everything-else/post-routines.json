@@ -1,0 +1,159 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/routines",
+  "version": "1.0.0",
+  "description": "A new routine: 400 for another key, 422 for a schedule and an on together, an unknown zone or a label that isn't one line (ROUTINES-17); 201 with its id, kept 0600.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/routines"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Nightly check",
+          "repo": "obi-e2e/fixture-app",
+          "kind": "investigate",
+          "task": "Say what the README covers.",
+          "schedule": {
+            "every": "daily",
+            "at": "03:00"
+          },
+          "zone": "UTC"
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "another-key-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Nightly check",
+          "repo": "obi-e2e/fixture-app",
+          "kind": "investigate",
+          "task": "Say what the README covers.",
+          "schedule": {
+            "every": "daily",
+            "at": "03:00"
+          },
+          "zone": "UTC",
+          "x": 1
+        },
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "no-schedule-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Nightly check",
+          "repo": "obi-e2e/fixture-app",
+          "kind": "investigate",
+          "task": "Say what the README covers.",
+          "zone": "UTC"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "unknown-zone-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Nightly check",
+          "repo": "obi-e2e/fixture-app",
+          "kind": "investigate",
+          "task": "Say what the README covers.",
+          "schedule": {
+            "every": "daily",
+            "at": "03:00"
+          },
+          "zone": "Mars/Base"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "made",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Nightly check",
+          "repo": "obi-e2e/fixture-app",
+          "kind": "investigate",
+          "task": "Say what the README covers.",
+          "schedule": {
+            "every": "daily",
+            "at": "03:00"
+          },
+          "zone": "UTC"
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "id": {
+              "$matches": "^[0-9a-f]{8}$"
+            },
+            "name": "Nightly check",
+            "schedule": {
+              "every": "daily",
+              "at": "03:00"
+            },
+            "enabled": true
+          }
+        }
+      }
+    },
+    {
+      "id": "kept-0600",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "routines/${state.made.body.id}.json",
+        "expect": {
+          "exists": true,
+          "mode": "0600"
+        }
+      }
+    }
+  ]
+}

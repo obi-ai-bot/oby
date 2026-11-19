@@ -1,0 +1,141 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/devices",
+  "version": "1.0.0",
+  "description": "Registers a device of the owner's: 400 for a body that isn't JSON, 422 for one that isn't a device or a key that isn't P-256, 403 for a new key nobody vouched for; with the key named in home/pairing, its id, the same again for a known key.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/devices"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/devices",
+        "body": {
+          "name": "x",
+          "publicKey": "x"
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "not-json-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/devices",
+        "raw": "{",
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "not-a-device-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/devices",
+        "body": {
+          "name": "x"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "not-p256-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/devices",
+        "body": {
+          "name": "x",
+          "publicKey": "AAAA"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "a-new-key-nobody-vouched-for-403",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/devices",
+        "body": {
+          "name": "Stranger",
+          "publicKey": "BHtDwmTBhW+4l6DfbjXqbqL4nsVPrMPrnJDzx1kIXu1eP5rSyCt0cbV2v0dnJ+K1N4X3yy0mSHA0xV8zuNHrZ4o="
+        },
+        "expect": {
+          "status": [
+            403,
+            422
+          ]
+        }
+      }
+    },
+    {
+      "id": "a-known-key-the-same-id",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/devices",
+        "body": {
+          "name": "Again",
+          "publicKey": "${state.device.publicKey}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.device.id}"
+          }
+        }
+      }
+    },
+    {
+      "id": "kept-0600",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "devices.json",
+        "expect": {
+          "exists": true,
+          "mode": "0600"
+        }
+      }
+    }
+  ]
+}

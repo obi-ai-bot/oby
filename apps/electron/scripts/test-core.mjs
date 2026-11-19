@@ -35,7 +35,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { buildFixture } from '../../../e2e/lib/fixture.mjs';
-import { appRoot, launch, sleep, until } from './drive-lib.mjs';
+import { appRoot, launch, sleep, until, skipFirstRun } from './drive-lib.mjs';
 
 const repoRoot = resolve(appRoot, '../..');
 const agents = join(repoRoot, 'core/crates/obid/tests/agents');
@@ -101,8 +101,7 @@ async function openApp(s) {
   page.on('console', (m) => { if (m.type() === 'error' && /Content.Security.Policy/i.test(m.text())) errors.push(m.text()); });
   await page.waitForLoadState('domcontentloaded');
   // set up already (FirstRun.tsx), so Home shows rather than the first run's screens
-  await page.evaluate(() => { for (const k of ['oby.onboarded', 'oby.setUp', 'oby.welcomed']) localStorage.setItem(k, '1'); });
-  await page.reload();
+  await skipFirstRun(page);
   await page.waitForLoadState('domcontentloaded');
   return { page, errors };
 }
@@ -244,21 +243,17 @@ async function main() {
   const unheld = await until('the follow-up the script’s words start', async () => kept(s, JSON.parse(told.text).id));
   assert.notEqual(unheld.vetted, true, 'WORDS-7: words no keystroke or click held go unsigned');
 
-  // 8. Delete from its page's menu, on a task whose work isn't committed: obid's Confirm first, and
+  // 8. Delete from its card's menu, on a task whose work isn't committed: obid's Confirm first, and
   // on the owner's Confirm its card leaves at once, with no reload (TASKS-11)
   const draft = await s.call('POST', '/v1/jobs', { job: { repo: 'obi-e2e/fixture-app', kind: 'research', title: 'Draft task', task: 'DRAFT: notes.md' } });
   await until('the draft task ends', async () => ended(await s.call('GET', `/v1/jobs/${draft.id}`)), 120_000);
   await page.locator('.convo-row', { hasText: 'Draft task' }).evaluate((el) => el.click());
-  const row = page.locator('.msg-task.is-link', { hasText: 'Draft task' });
+  const row = page.locator('.msg-task', { hasText: 'Draft task' });
   await until('its card in its conversation', async () => (await row.count()) === 1);
-  // its page from the card's menu (LIVETASK-18): a right-click, then View details
+  // the card's menu (LIVETASK-29): a right-click, then Delete task
   await row.evaluate((el) => el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 20 })));
-  await page.getByRole('menuitem', { name: 'View details', exact: true }).evaluate((el) => el.click());
-  await page.getByRole('button', { name: 'Task options', exact: true }).evaluate((el) => el.click());
   await page.getByRole('menuitem', { name: 'Delete task' }).evaluate((el) => el.click());
   await until('obid’s Confirm', async () => (await s.call('GET', '/v1/inbox')).some((i) => i.job === draft.id && i.state === 'open'));
-  // over the conversation, once its page is left
-  await page.getByRole('button', { name: 'Back', exact: true }).evaluate((el) => el.click());
   assert.equal(await row.count(), 1, 'TASKS-11: nothing is deleted before the Confirm');
   const confirm = page.locator('.asks-over .ask-card.is-up', { hasText: 'Delete Draft task' }).getByRole('button', { name: 'Confirm', exact: true });
   await until('its Confirm on the stack', async () => (await confirm.count()) === 1 && await confirm.evaluate((el) => !el.closest('[inert]')));

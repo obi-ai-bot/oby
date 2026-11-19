@@ -4,7 +4,7 @@ import { addTask } from './tasks';
 import { wait } from './stream';
 import { onObid } from './lean';
 import { CAN_CREATE } from './spheres';
-import { ApiError, api, type Status, type TetrixTarget } from './obid';
+import { ApiError, api, type Status } from './obid';
 import { ask, liveState, useLive } from './live';
 import { UNFINISHED, signInSaid, signInWhy } from './signInWhy';
 import { MOCK_WELCOME, accountNow, waitingOver } from './chatgpt';
@@ -209,9 +209,10 @@ export async function signInGitHub() {
     row('github', 'out', signInWhy('GitHub', e));
   }
 }
-// Tetrix: Oby signs in once, for every agent, to the Tetrix the person picked in Connect Tetrix
-// (Connectors' TetrixWindow: their own's address; Oby has none built in); its page in the browser
-export async function connectTetrix(to?: TetrixTarget) {
+// Tetrix: Oby signs in once, for every agent, to the Tetrix at the address the person typed (the
+// first run's field, Settings' Connect Tetrix: their own's, Oby offers none by name); its page in
+// the browser. Off obid it stands in for that page, finished after a moment
+export async function connectTetrix(to?: { url: string }) {
   if (!onObid) return signIn((s) => s.tetrix, (tetrix) => ({ tetrix }));
   if (!to || setup.tetrix !== 'out') return;
   row('tetrix', 'waiting');
@@ -225,8 +226,6 @@ export async function connectTetrix(to?: TetrixTarget) {
     row('tetrix', 'out', signInWhy('Tetrix', e));
   }
 }
-// Tetrix's Connect window couldn't open (obid didn't answer): why, under its row
-export const tetrixFailed = (e: unknown) => row('tetrix', 'out', signInWhy('Tetrix', e));
 
 // On obid, what's signed in already shows so at once
 async function already() {

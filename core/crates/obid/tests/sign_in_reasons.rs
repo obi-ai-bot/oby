@@ -96,6 +96,10 @@ fn sign_in_4_an_account_a_task_is_using() {
     if cfg!(target_os = "macos") {
         config["claudeKeychain"] = json!(true);
     }
+    // Signed in: a task named to an account that isn't is refused (ACCOUNTS-35).
+    let account = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(account.join(".credentials.json"), "{}").unwrap();
     let obid = start(&folder.0, &config, None);
     let job = call(
         &obid,

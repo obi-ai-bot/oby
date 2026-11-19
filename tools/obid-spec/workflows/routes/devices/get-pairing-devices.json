@@ -1,0 +1,142 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/pairing/devices",
+  "version": "1.0.0",
+  "description": "The paired phones: none, then the one paired, kept 0600.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/pairing/devices"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "gateway": "127.0.0.1:0"
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/pairing/devices",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "none",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/pairing/devices",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "invite",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/pairing/invite",
+        "body": {
+          "url": "https://mac.example.invalid",
+          "name": "Test Mac"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "code": {
+              "$matches": "^[0-9]{6}$"
+            },
+            "secret": {
+              "$type": "string"
+            },
+            "url": "https://mac.example.invalid"
+          }
+        }
+      }
+    },
+    {
+      "id": "paired",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "x"
+        },
+        "method": "POST",
+        "path": "/v1/pairing",
+        "as": "token",
+        "token": "x",
+        "body": {
+          "credential": "${state.invite.body.secret}",
+          "name": "Test phone"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "token": {
+              "$type": "string"
+            },
+            "deviceID": {
+              "$type": "string"
+            },
+            "link": {
+              "name": "Test Mac"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "one",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/pairing/devices",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.paired.body.deviceID}",
+              "name": "Test phone",
+              "expiresAt": {
+                "$type": "string"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "kept-0600",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "gateway-devices.json",
+        "expect": {
+          "exists": true,
+          "mode": "0600"
+        }
+      }
+    }
+  ]
+}

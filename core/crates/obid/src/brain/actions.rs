@@ -71,6 +71,8 @@ pub struct Asked<'a> {
     pub turn: &'a str,
     /// An app of the owner's signed the words (`Control::signed`).
     pub signed: bool,
+    /// The message box's chips sent with them (super::defaults, COMPOSER-4 and 5).
+    pub defaults: Option<&'a super::defaults::Defaults>,
 }
 
 /// A plan that answers rather than acts: a reply, a question, or jobs it starts (#269). `live` is
@@ -203,6 +205,12 @@ fn planned_job(
     // Work planned after the turn read something untrusted starts now, marked untrusted, in the
     // owner's mode (the owner's decision of 2026-10-27, replacing 2026-10-23's Sandbox at most),
     // and publishes by itself as any job does (the owner's decision of 2026-10-24).
+    let new = super::defaults::Defaults::apply(
+        asked.defaults,
+        new,
+        asked.signed,
+        shared.jobs.bypass_widens(),
+    );
     marked(
         super::written_in(shared, asked.conversation, new),
         asked,
@@ -301,11 +309,30 @@ async fn dispatch(
     // Jobs that would start in Bypass mode, waiting for the owner's Confirm.
     let mut waiting: Vec<String> = vec![];
     for (d, files) in plan.dispatches.iter().zip(files) {
+        // Fix CI asked for in words: the task its card started (GITHUBWORK-29).
+        if !researched && let Some(fixing) = fix_ci(shared, d, asked).await {
+            match fixing {
+                Ok(job) => {
+                    jobs.push(job.to_json());
+                    started.push(job);
+                    continue;
+                }
+                Err(refused) => {
+                    return Talk::Reply {
+                        text: refused,
+                        jobs,
+                    };
+                }
+            }
+        }
         let new = planned_job(shared, d, asked, files, researched);
         // A job that would never ask the owner anything widens trust: only their own Confirm
         // starts it (the owner's decision of 2026-10-16; review on #551), untrusted or not.
         // Not where Bypass is their own default: `planned_job` left the mode out then.
-        if new.mode.as_deref() == Some("bypass") {
+        // The owner's own chip on words an app of theirs signed is their word (COMPOSER-4).
+        if new.mode.as_deref() == Some("bypass")
+            && !super::defaults::Defaults::owners_bypass(asked.defaults, asked.signed)
+        {
             let what = describe(&new);
             confirm(
                 shared,
@@ -346,7 +373,12 @@ async fn dispatch(
     let mut text = match (started.is_empty(), plan.reply.is_empty()) {
         (true, _) => String::new(),
         (false, true) => started_line(shared, &started),
-        (false, false) => plan.reply.clone(),
+        // The plan's words were written before routing: where a job went elsewhere, it says so.
+        (false, false) => [plan.reply.clone(), routed_lines(&started)]
+            .into_iter()
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join(" "),
     };
     if !waiting.is_empty() {
         let line = format!(
@@ -360,6 +392,42 @@ async fn dispatch(
         };
     }
     Talk::Reply { text, jobs }
+}
+
+/// A fix the owner asked for, in words, on their own pull request whose checks GitHub work last
+/// read red (not a fork's): the Fix CI task a `CI failed` card started before GITHUBWORK-28, by the
+/// same path (crate::github_work, TASKCONV-29 to 31: its checks' logs quoted, pushed onto its
+/// branch, followed by its watcher), on the agent and account the plan names, in this
+/// conversation (GITHUBWORK-29). None for any other dispatch, which starts as planned.
+async fn fix_ci(
+    shared: &Arc<Shared>,
+    d: &super::plan::Dispatch,
+    asked: &Asked<'_>,
+) -> Option<Result<Job, String>> {
+    let pr =
+        d.pr.filter(|_| d.kind == super::plan::Kind::Fix && d.issue.is_none())
+            .and_then(|pr| u64::try_from(pr).ok())?;
+    let feed = shared.github_work.to_json();
+    let item = (feed["mine"].as_array()?.iter())
+        .filter_map(|v| serde_json::from_value::<crate::github_work::Item>(v.clone()).ok())
+        .find(|i| i.repo.eq_ignore_ascii_case(&d.repo) && i.number == pr)
+        .filter(|i| crate::github_work::red(i) && i.fork == Some(false))?;
+    let routed = NewJob {
+        agent: Some(d.agent.clone()),
+        account: Some(d.account.clone()),
+        request: Some(asked.said.to_owned()),
+        ..NewJob::default()
+    };
+    let started =
+        crate::github_work::start_routine(&shared.github_work, "mine", &item, routed).await;
+    Some(match started {
+        Ok((job, _)) => {
+            let turn = (!asked.turn.is_empty()).then(|| asked.turn.to_owned());
+            let joined = (shared.jobs).join_conversation(&job.id, asked.conversation, turn);
+            Ok(joined.unwrap_or(job))
+        }
+        Err(refused) => Err(refused.message),
+    })
 }
 
 /// A planned job in obid's own words, for confirm and start items: what, where, how it asks,
@@ -479,7 +547,18 @@ pub(crate) fn started_line(shared: &Shared, jobs: &[Job]) -> String {
             )
         })
         .collect();
-    format!("On it. {}.", list(&parts))
+    let routed = routed_lines(jobs);
+    match routed.is_empty() {
+        true => format!("On it. {}.", list(&parts)),
+        false => format!("On it. {}. {routed}", list(&parts)),
+    }
+}
+
+/// Why each of `jobs` runs elsewhere than the agent the owner named (ACCOUNTS-31,
+/// CONVERSATION-AGENT-40): obid's own line, one per job routed, or nothing.
+fn routed_lines(jobs: &[Job]) -> String {
+    let lines: Vec<&str> = jobs.iter().filter_map(|j| j.routed.as_deref()).collect();
+    lines.join(" ")
 }
 
 /// "oby #12 (Login screen)", "oby PR #33".
@@ -1059,6 +1138,8 @@ fn owners_call(item: &Item, words: &str, job: Option<&Job>, owner: bool) -> Owne
             let Some(rule) = &permission.rule else {
                 return Owners::Refuse("it has no rule to save: allow it once instead.".into());
             };
+            // A chain's card holds one rule per line, each saved (PERMISSIONS-27).
+            let rule = &rule.replace('\n', ", ");
             Owners::Confirm(
                 format!("Always allow {rule} in {}", job.repo),
                 format!(
@@ -1278,6 +1359,7 @@ mod tests {
             conversation: "c",
             turn: "t",
             signed,
+            defaults: None,
         };
         let other = asked("Fix the docs", true);
         assert_eq!(named_branch(&d, false, &other).as_deref(), Some("gh-pages"));
@@ -1324,6 +1406,7 @@ mod tests {
                 conversation: "c",
                 turn: "t",
                 signed,
+                defaults: None,
             };
             let new = marked(NewJob::default(), &asked, researched);
             assert_eq!(new.own_conversation, signed, "{signed} {researched}");

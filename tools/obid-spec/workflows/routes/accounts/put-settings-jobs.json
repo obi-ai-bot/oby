@@ -1,0 +1,134 @@
+{
+  "schemaVersion": "2",
+  "name": "PUT /v1/settings/jobs",
+  "version": "1.0.0",
+  "description": "Changes how jobs run: 400 for a body that isn't JSON, 422 for a wrong type or an account obid doesn't have; 200, kept across a restart.",
+  "trigger": {
+    "http": {
+      "method": "PUT",
+      "path": "/v1/settings/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "maxRunning": 3
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "not-json-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "raw": "x",
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "a-wrong-type-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "maxRunning": "three"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "an-unknown-account-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "defaultAccount": "nobody"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "changed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "maxRunning": 3,
+          "accountFailover": false
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "maxRunning": 3,
+            "accountFailover": false
+          }
+        }
+      }
+    },
+    {
+      "id": "stop",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "kept-across-a-restart",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/settings/jobs",
+        "expect": {
+          "status": 200,
+          "body": {
+            "maxRunning": 3,
+            "accountFailover": false
+          }
+        }
+      }
+    }
+  ]
+}

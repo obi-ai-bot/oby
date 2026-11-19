@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // Two Obys and a Sphere on this Mac, for testing what talking to a person's Oby does on the real
 // thing (docs/contracts/test-rig.md): a local Sphere from a scratch clone of obi-sphere at the commit
-// in e2e/rig-sphere.ref, two scratch obids, you (owner alex) and Dana (a test teammate, owner dana), and Dana's long job. The
+// in e2e/sphere.ref, two scratch obids, you (owner alex) and Dana (a test teammate, owner dana), and Dana's long job. The
 // owner's real Oby, their logins, GitHub and the live Sphere are never used.
 //
 //   node e2e/rig.mjs start [--stand-in | --real]   everything up, joined, the rule written, Dana's job running
+//   node e2e/rig.mjs start --app [--stand-in]      the same, but you join through the dev app, with its own
+//                                                  keys (e2e/launch.mjs drives it): Dana alone joined, no rule yet
 //   node e2e/rig.mjs status                        what's up, in a few lines
 //   node e2e/rig.mjs ask "What are you working on?"  you ask Dana's Oby; prints what came back
 //   node e2e/rig.mjs review [--hold]               Dana's Oby asks yours for a review; you Accept, unless --hold
@@ -13,6 +15,7 @@
 //   node e2e/rig.mjs job --personal [task]         one outside what Dana shares (PEER-15)
 //   node e2e/rig.mjs policy on|off                 the Sphere's rule written, or none (PEER-8)
 //   node e2e/rig.mjs dana stop|start               Dana's obid only (a Mac that's off, PEER-7)
+//   node e2e/rig.mjs sphere stop|start             the Sphere only (a Sphere that went down, RIG-33)
 //   node e2e/rig.mjs stop [--force]                nothing left running; the folder stays
 //   node e2e/rig.mjs reset [--force]               stop, and start over (Dana's sign-in and the clone stay)
 //
@@ -35,13 +38,14 @@ import { buildFixture } from "./lib/fixture.mjs";
 import { requireNodeVersion } from "./lib/node-version.mjs";
 import { stopGroups } from "./lib/processes.mjs";
 import { aLink, rigRefusal } from "./lib/rig-guard.mjs";
+import { checkoutAt } from "./lib/sphere-pin.mjs";
+import { loadSphereSpec } from "./lib/sphere-spec.mjs";
 import { confirmOf, review as reviewOf, reviewBody, RULES, wordsOf } from "./lib/rig-review.mjs";
 import { family, newExchange, orphans, ours, record, stillUp, table } from "./lib/rig-state.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const RIG = resolve(process.env.OBY_RIG_DIR || join(homedir(), "Library/Application Support/oby-rig"));
 const AGENTS = join(ROOT, "core/crates/obid/tests/agents");
-const SPHERE_REMOTE = "https://github.com/obi-ai-bot/obi-sphere.git";
 const SPHERE_PORTS = [8791, 8792, 8793]; // 8799 is often another session's
 const PEOPLE = { you: { owner: "alex", name: "Alex’s Oby", port: 8794 }, dana: { owner: "dana", name: "Dana’s Oby", port: 8795 } };
 const REPO = "obi-e2e/fixture-app";
@@ -214,24 +218,10 @@ function sphereCall(state) {
   };
 }
 
-// The clone at the commit e2e/rig-sphere.ref names, so a result says what it ran on. Its marker is
-// written last: whatever was cut short is done again.
+// The clone at the commit e2e/sphere.ref names (e2e/lib/sphere-pin.mjs, RIG-27), so a result says
+// what it ran on: the commit the deployed Sphere runs.
 function cloneSphere() {
-  const pin = readFileSync(join(ROOT, "e2e/rig-sphere.ref"), "utf8").trim();
-  const clone = join(RIG, "obi-sphere"), ready = join(RIG, "obi-sphere.ready");
-  if (!existsSync(ready) || readFileSync(ready, "utf8").trim() !== pin) {
-    rmSync(ready, { force: true });
-    rmSync(clone, { recursive: true, force: true });
-    mkdirSync(clone, { recursive: true });
-    say(`Cloning obi-sphere at ${pin.slice(0, 7)} and installing its dependencies…`);
-    const git = (...args) => execFileSync("git", ["-C", clone, ...args], { stdio: "inherit", env: plain() });
-    git("init", "-q");
-    git("fetch", "-q", "--depth", "1", SPHERE_REMOTE, pin);
-    git("-c", "advice.detachedHead=false", "checkout", "-q", "FETCH_HEAD");
-    execFileSync("pnpm", ["install", "--frozen-lockfile", "--silent"], { cwd: join(clone, "server"), stdio: "inherit", env: plain() });
-    writeFileSync(ready, `${pin}\n`);
-  }
-  return pin.slice(0, 7);
+  return checkoutAt(join(RIG, "obi-sphere"), { env: plain(), say }).slice(0, 7);
 }
 
 function startSphere(state) {
@@ -273,8 +263,12 @@ async function makeSphere(state, spec) {
   save(state);
 }
 
+// Who the rig joins itself: both, or with --app only Dana, since you join through the dev app with its
+// own owner key (RIG-27).
+const joiners = (state) => (state.app ? ["dana"] : Object.keys(PEOPLE));
+
 async function joinBoth(state, spec) {
-  for (const who of Object.keys(PEOPLE)) {
+  for (const who of joiners(state)) {
     const { call, get } = api(who);
     if ((await get("/v1/obid/sphere")).state !== "joined") {
       state.ownerKeys = { ...state.ownerKeys, [who]: state.ownerKeys?.[who] ?? generateKeyPairSync("ed25519").privateKey.export({ type: "pkcs8", format: "pem" }) };
@@ -282,6 +276,8 @@ async function joinBoth(state, spec) {
       await spec.join(call, () => createPrivateKey(state.ownerKeys[who]), spec.parseInvite(state.link), PEOPLE[who].name);
     }
   }
+  // Alone, Dana's Oby has nobody to seal for: its card has the seal key once it's kept.
+  if (state.app) return spec.keepMembership(api("dana").call, () => createPrivateKey(state.ownerKeys.dana));
   await until("sealing on, on both", async () => {
     for (const who of Object.keys(PEOPLE)) await spec.keepMembership(api(who).call, () => createPrivateKey(state.ownerKeys[who]));
     const both = await Promise.all(Object.keys(PEOPLE).map((who) => api(who).get("/v1/obid/sphere")));
@@ -330,11 +326,14 @@ async function keepDanaWorking(state) {
 const ASKED_MODE = { "--stand-in": false, "--real": true };
 
 async function start(flags) {
-  for (const flag of flags) if (!(flag in ASKED_MODE)) fail(`What's ${flag}? node e2e/rig.mjs start [--stand-in | --real]`);
+  const appMode = flags.delete("--app");
+  for (const flag of flags) if (!(flag in ASKED_MODE)) fail(`What's ${flag}? node e2e/rig.mjs start [--app] [--stand-in | --real]`);
   if (flags.size > 1) fail("--stand-in or --real, not both.");
   const asked = flags.has("--stand-in") ? false : flags.has("--real") ? true : undefined;
   const state = load();
   const up = ["sphere", "you", "dana"].filter((name) => alive(state, name));
+  // You joined by the rig's key, or by the app's: one can't become the other without a reset.
+  if (state.link && Boolean(state.app) !== appMode) fail(`The rig's Sphere was made ${state.app ? "with --app (you join through the dev app)" : "without --app (the rig joins you)"}: node e2e/rig.mjs reset, then start${appMode ? " --app" : ""}.`);
   if (up.length === 3 && state.ready) {
     if (asked !== undefined && asked !== Boolean(state.real)) fail(`The rig is up with Dana on ${state.real ? "the real Claude Code" : "stand-ins"}: stop it first.`);
     await keepDanaWorking(state);
@@ -344,6 +343,7 @@ async function start(flags) {
   if (up.length) fail(`${state.ready ? "Only part of the rig is running" : "A start was cut short"} (${up.join(", ")} up): node e2e/rig.mjs stop, then start again.`);
   state.ready = false;
   state.checkout = ROOT;
+  state.app = appMode;
   save(state);
   state.obid = theObid();
   for (const who of Object.keys(PEOPLE)) if (!(await free(PEOPLE[who].port))) fail(`Port ${PEOPLE[who].port}, ${who}'s obid's, is taken by something else.`);
@@ -354,7 +354,7 @@ async function start(flags) {
     save(state);
   } else if (!(await free(state.spherePort))) fail(`Port ${state.spherePort}, the Sphere's, is taken by something else, and both Obys' memberships name it. node e2e/rig.mjs reset picks another.`);
 
-  const spec = await import(join(ROOT, "apps/electron/src/shared/sphere.ts"));
+  const spec = await sphereSpec();
   if (!existsSync(join(RIG, "fixture/remote.git"))) buildFixture(join(RIG, "fixture"));
   state.sphereCommit = cloneSphere();
   save(state);
@@ -387,17 +387,20 @@ async function start(flags) {
     await answering("you");
     await answering("dana");
     await danaAccount(state);
-    await deviceOf("you", state);
+    // With --app, your device is the dev app's own, registered on your first click there.
+    if (!state.app) await deviceOf("you", state);
     await deviceOf("dana", state);
     await joinBoth(state, spec);
-    // Only now: a policy can name only owners who have joined.
-    if (!state.policyWritten) {
+    // Only now: a policy can name only owners who have joined. With --app, once you have (`policy on`).
+    if (!state.policyWritten && !state.app) {
       await setPolicy(state, spec, RULES);
       state.policyWritten = true;
       save(state);
     }
     await danaSaysYes(state);
-    say("Joined: alex (you) and dana, by a private link. The Sphere's rule lets them ask each other questions and for reviews.");
+    say(state.app
+      ? `Joined: dana, by a private link. You join through the dev app with this link, then node e2e/rig.mjs policy on:\n  ${state.link}`
+      : "Joined: alex (you) and dana, by a private link. The Sphere's rule lets them ask each other questions and for reviews.");
     say(`Dana's sharing: ${JSON.stringify((await api("dana").get("/v1/obid/sharing")).rules?.map((r) => ({ for: r.for, repos: r.repos, tells: r.tells, starter: r.starter })))}`);
     await keepDanaWorking(state);
     state.ready = true;
@@ -457,6 +460,7 @@ async function ask(words) {
   if (!words) fail('What to ask: node e2e/rig.mjs ask "What are you working on?"');
   const state = load();
   if (!alive(state, "you")) fail("You aren't up: node e2e/rig.mjs start");
+  if (state.app) fail("You're the dev app's here (start --app): ask from Dana's thread in it, as e2e/launch.mjs does.");
   const { get } = api("you");
   const exchanges = () => get("/v1/obid/sphere/exchanges?limit=50");
   const before = await exchanges();
@@ -486,6 +490,7 @@ async function ask(words) {
 async function review(flags) {
   for (const flag of flags) if (flag !== "--hold") fail(`What's ${flag}? node e2e/rig.mjs review [--hold]`);
   const state = load();
+  if (state.app && !flags.includes("--hold")) fail("You're the dev app's here (start --app): review --hold, and Accept in the app.");
   if (!alive(state, "you")) fail("You aren't up: node e2e/rig.mjs start");
   if (!alive(state, "dana")) fail("Dana isn't up: node e2e/rig.mjs start");
   const body = reviewBody();
@@ -503,11 +508,23 @@ async function job(words) {
   say(`Dana's job: ${made.id}`);
 }
 
+// apps/electron, its packages installed (npm ci) when they aren't
+function appModules() {
+  const dir = join(ROOT, "apps/electron");
+  if (!existsSync(join(dir, "node_modules"))) execFileSync("npm", ["ci"], { cwd: dir, stdio: "inherit", env: plain() });
+  return dir;
+}
+
+// The app's shared/sphere.ts, through its jiti (e2e/lib/sphere-spec.mjs, RIG-26)
+async function sphereSpec() {
+  try { return await loadSphereSpec(appModules()); } catch (e) { fail(e.message); }
+}
+
 async function policy(word) {
   if (!["on", "off"].includes(word)) fail("node e2e/rig.mjs policy on|off");
   const state = load();
   if (!alive(state, "sphere")) fail("The Sphere isn't up: node e2e/rig.mjs start");
-  const spec = await import(join(ROOT, "apps/electron/src/shared/sphere.ts"));
+  const spec = await sphereSpec();
   const now = await setPolicy(state, spec, word === "on" ? RULES : []);
   say(`The Sphere's policy, version ${now.version}: ${now.rules?.length ?? 0} rule(s)`);
 }
@@ -527,12 +544,27 @@ async function dana(word) {
   } else fail("node e2e/rig.mjs dana stop|start");
 }
 
+async function sphere(word) {
+  const state = load();
+  if (word === "stop") {
+    await stopThese(state, ["sphere"]);
+    save(state);
+    say("The Sphere is stopped: it went down.");
+  } else if (word === "start") {
+    if (alive(state, "sphere")) return say("The Sphere is up already.");
+    if (!state.spherePort) fail("The rig has no Sphere yet: node e2e/rig.mjs start");
+    if (!(await free(state.spherePort))) fail(`Port ${state.spherePort}, the Sphere's, is taken by something else.`);
+    startSphere(state);
+    await until(`the Sphere (its log: ${join(RIG, "sphere.log")})`, async () => (await sphereCall(state)("/health")).status === 200, 120);
+    say("The Sphere is up.");
+  } else fail("node e2e/rig.mjs sphere stop|start");
+}
+
 async function app() {
   const state = load();
   if (!alive(state, "you")) fail("You aren't up: node e2e/rig.mjs start");
   if (alive(state, "app")) return say(`The dev app is up already, pid ${state.running.app.pid}.`);
-  const dir = join(ROOT, "apps/electron");
-  if (!existsSync(join(dir, "node_modules"))) execFileSync("npm", ["ci"], { cwd: dir, stdio: "inherit", env: plain() });
+  const dir = appModules();
   execFileSync("npm", ["run", "build"], { cwd: dir, stdio: "inherit", env: plain() });
   const data = join(dirOf("you"), "electron-data");
   mkdirSync(data, { recursive: true, mode: 0o700 });
@@ -612,7 +644,7 @@ function fromThisCheckout(force) {
 }
 
 const [command, ...args] = process.argv.slice(2);
-const CHANGES = new Set(["start", "stop", "reset", "job", "review", "policy", "dana", "app"]);
+const CHANGES = new Set(["start", "stop", "reset", "job", "review", "policy", "dana", "sphere", "app"]);
 try {
   requireNodeVersion(process.versions.node);
   if (command === "start") {
@@ -635,9 +667,10 @@ try {
   else if (command === "review") await review(args);
   else if (command === "policy") await policy(args[0]);
   else if (command === "dana") await dana(args[0]);
+  else if (command === "sphere") await sphere(args[0]);
   else if (command === "app") await app();
   else if (command === "reset") await reset();
-  else fail("node e2e/rig.mjs start | status | ask <words> | review [--hold] | app | job [task] | policy on|off | dana stop|start | stop | reset");
+  else fail("node e2e/rig.mjs start [--app] | status | ask <words> | review [--hold] | app | job [task] | policy on|off | dana stop|start | sphere stop|start | stop | reset");
 } catch (e) {
   console.error(`The rig: ${e.message}`);
   process.exit(1);

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // A stand-in for Claude Code in obid's publishing tests (tests/publish_api.rs): stream-json in and
 // out, as obid runs `claude`. What it does comes from the prompt:
-//   COMMIT: <file>   writes the file in the worktree and commits it
+//   COMMIT: <file>   writes the file in the worktree and commits it; with LINKED, its summary links
+//                    the file by its full path in the worktree (PUBLISHING-39)
 //   POINTER: <file>  as COMMIT, the file a Git LFS pointer (PUBLISHING-19)
 //   LEAK: <file>     commits the file with a made-up AWS access key id in it (put together here at
 //                    run time, so this file holds none a scanner flags)
@@ -250,7 +251,11 @@ rl.on("line", (line) => {
       writeFileSync(commit[1], prompt.includes("POINTER: ") ? pointer : "hello\n");
       git("add", commit[1]);
       git("commit", "-q", "-m", `Add ${commit[1]}`);
-      result(`Added ${commit[1]}.`);
+      // LINKED: links the file by its full path in the worktree, as agents do (PUBLISHING-39)
+      const here = process.cwd();
+      result(prompt.includes("LINKED")
+        ? `Added [${commit[1]}](${here}/${commit[1]}), see file://${here}/${commit[1]}:1 and \`${here.replaceAll(" ", "%20")}/${commit[1]}\`.`
+        : `Added ${commit[1]}.`);
     } else {
       result("Nothing to do.");
     }

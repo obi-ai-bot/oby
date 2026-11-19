@@ -316,9 +316,10 @@ pub struct ByHand {
 }
 
 impl ByHand {
-    /// Where the push goes: `to`, else the job's own branch.
+    /// Where the push goes: `to`, else the owner's pull request's branch a Fix CI job pushes
+    /// onto ([`Job::onto`], TASKCONV-31), else the job's own branch.
     pub fn branch<'a>(&'a self, job: &'a Job) -> &'a str {
-        self.to.as_deref().unwrap_or(&job.branch)
+        (self.to.as_deref().or(job.onto.as_deref())).unwrap_or(&job.branch)
     }
 
     /// Anything beyond Oby's own default.
@@ -393,6 +394,15 @@ pub fn refusal(job: &Job, base: &str, default_branch: &str, by_hand: &ByHand) ->
     }
     if !git::is_branch_name(base) {
         return Some(format!("{base} isn't a branch name."));
+    }
+    // Onto the owner's own pull request's branch, which is its base (TASKCONV-31): never main.
+    if let Some(onto) = job.onto.as_deref()
+        && (onto != base
+            || ["main", "master", default_branch]
+                .iter()
+                .any(|b| b.eq_ignore_ascii_case(onto)))
+    {
+        return Some(format!("obid doesn't push to {onto} by itself."));
     }
     if branch.eq_ignore_ascii_case(base) {
         return Some(format!("{branch} can't be its own base."));
@@ -613,7 +623,8 @@ fn summaries(job: &Job) -> Vec<&String> {
 
 /// The pull request's description: every round's summary, what the owner asked for, the check and
 /// the scan, `Closes #N` (`Part of #N` when it doesn't close it), that obid opened it, and how it
-/// merges: by `workflow`, the one the owner taught it, else only on their say-so. The agent's summaries are untrusted (it may have read someone else's words), so they go
+/// merges: by `workflow`, the one the owner taught it, by itself for the owner's own work, else
+/// only on their say-so. The agent's summaries are untrusted (it may have read someone else's words), so they go
 /// in as blockquotes under a label that says whose words they are, defused: no heading, HTML,
 /// link, image, alert, task box, mention, issue reference or closing keyword in them takes effect.
 pub fn body(job: &Job, closes: bool, workflow: Option<&crate::memory::Workflow>) -> String {
@@ -628,6 +639,8 @@ pub fn body(job: &Job, closes: bool, workflow: Option<&crate::memory::Workflow>)
                 format!("Round {}, the agent's summary:", i + 1)
             };
             // The owner's rule: no "Generated with Claude Code" line in a pull request obid opens.
+            // The agent's `GOAL MET` line is for obid, not the reader (TASKS-19).
+            let summary = crate::job::readable(summary);
             let summary: Vec<&str> = (summary.split('\n'))
                 .filter(|l| {
                     !l.to_lowercase()
@@ -684,6 +697,10 @@ pub fn body(job: &Job, closes: bool, workflow: Option<&crate::memory::Workflow>)
             "Oby merges it by itself, the way its owner taught it: {}",
             workflow.sentence()
         ),
+        // The owner's own work merges by itself after Oby's review (MERGING-45, PUBLISHING-42).
+        None if crate::merge::own_work(job) => {
+            "It's its owner's own work, so Oby merges it by itself after its own review.".to_owned()
+        }
         None => "Oby merges it only when its owner says so.".to_owned(),
     };
     format!(
@@ -782,6 +799,11 @@ pub struct BranchChain {
 }
 
 impl BranchChain {
+    /// The commit obid pushed last to the branch, by any job carrying it.
+    pub(crate) fn pushed(&self) -> Option<&str> {
+        self.pushed.as_deref()
+    }
+
     pub(crate) fn of(job: &Job, jobs: &std::collections::HashMap<String, Job>) -> Self {
         let mut chain = Self::default();
         let mut current = job;
@@ -1219,7 +1241,10 @@ pub async fn publish(
     })
     .inspect_err(|failure| scanned(Err(failure)))?;
     let subjects: Vec<String> = subjects.lines().map(str::to_owned).collect();
-    let title = title(job, &subjects);
+    // The Mac's own paths stay on it: the worktree's read as the repository's, the home's as
+    // `~/…`, before the scan reads what goes out (PUBLISHING-39 to 41).
+    let places = crate::local_paths::Places::of_job(job.worktree.as_deref());
+    let title = places.rewrite(&title(job, &subjects));
     // Read once: the scan checks the very description the pull request gets.
     let closes = match (job.issue, &target.gh) {
         (Some(number), Some(gh)) if target.pull_requests => {
@@ -1229,7 +1254,7 @@ pub async fn publish(
         }
         _ => false,
     };
-    let description = body(job, closes, target.workflow.as_ref());
+    let description = places.rewrite(&body(job, closes, target.workflow.as_ref()));
     let texts = scanned_texts(job, &title, &description);
     let mut said: Vec<Found> = match scan::scan(&texts, &target.scratch).await {
         Verdict::Clean => Vec::new(),
@@ -1946,9 +1971,28 @@ fn sent_elsewhere(job: &Job, by_hand: &ByHand) -> bool {
 
 /// Whether a push to `to` may replace what's there: the owner's signed force, else only a branch
 /// obid made (PUBLISHING-13).
-fn may_force(to: &str, job: &Job, by_hand: &ByHand) -> bool {
+pub(crate) fn may_force(to: &str, job: &Job, by_hand: &ByHand) -> bool {
     git::is_branch_name(to)
         && (by_hand.force || to.starts_with("oby/") || (to == job.branch && job.own_branch()))
+}
+
+/// Undo this round (docs/contracts/task-changes.md, CHANGES-10): puts the job's own `oby/` branch
+/// back at `commit`, which comes before what obid pushed there last (`lease`), with
+/// `--force-with-lease` on that push. No new commit leaves: `commit` went out with `lease`, or is
+/// on the base.
+pub(crate) async fn push_back(
+    commit: &str,
+    job: &Job,
+    target: &Target,
+    lease: &str,
+) -> Result<(), Failure> {
+    if !job.branch.starts_with("oby/") || !git::is_sha(commit) || !git::is_sha(lease) {
+        return Err(Failure::Refused(format!(
+            "Oby force-pushes only its own oby/ branches, and {} isn't one.",
+            job.branch
+        )));
+    }
+    push(commit, job, target, Some(lease), &ByHand::default()).await
 }
 
 /// Pushes one commit to the job's own branch: no tags, submodules or signing. With `lease`, the
@@ -2433,6 +2477,45 @@ mod tests {
         );
         assert!(!text.contains("only when its owner says so"));
         assert!(body(&job, false, None).ends_with("Oby merges it only when its owner says so."));
+    }
+
+    /// PUBLISHING-42: the description says how it merges as Oby will: the owner's own work by
+    /// itself after Oby's review, anything else on the owner's word.
+    #[test]
+    fn publishing_42_the_footer_tells_how_own_work_merges() {
+        let mut job = job();
+        job.own_conversation = true;
+        let own = body(&job, false, None);
+        assert!(
+            own.ends_with(
+                "It's its owner's own work, so Oby merges it by itself after its own review."
+            ),
+            "{own}"
+        );
+        assert!(!own.contains("only when its owner says so"), "{own}");
+        // Another Oby's, or reached by unsigned words: the owner's say-so.
+        job.unsigned = true;
+        assert!(body(&job, false, None).ends_with("Oby merges it only when its owner says so."));
+    }
+
+    /// TASKS-19: the agent's `GOAL MET` line is obid's, not the pull request's reader's.
+    #[test]
+    fn tasks_19_the_goal_line_stays_off_github() {
+        let mut job = job();
+        job.summary = "Sorted the parser.\n\nGOAL MET".into();
+        let text = body(&job, false, None);
+        assert!(
+            text.starts_with("The agent's summary:\n\n> Sorted the parser.\n\nWhat the user"),
+            "{text}"
+        );
+        assert!(!text.contains("GOAL"), "{text}");
+        job.summaries = Some(vec![
+            "One.\nGOAL NOT MET: the tests".into(),
+            "Two.\n\nGOAL MET".into(),
+        ]);
+        let text = body(&job, false, None);
+        assert!(text.contains("> One.\n> Not done yet: the tests"), "{text}");
+        assert!(!text.contains("GOAL"), "{text}");
     }
 
     #[test]

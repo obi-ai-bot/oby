@@ -1,11 +1,11 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { BookOpen, Check, Mail, UserPlus, ChevronDown, EllipsisVertical, Plus, Search, type LucideIcon } from 'lucide-react';
+import { BookOpen, Check, Mail, UserPlus, ChevronDown, ChevronRight, EllipsisVertical, Folder, FolderPlus, Plus, Search, type LucideIcon } from 'lucide-react';
 // the icon strip uses Phosphor: it has outline and filled versions of each icon
 import { ChatsCircleIcon, GearSixIcon, HouseIcon, ListChecksIcon, PlusIcon } from '@phosphor-icons/react';
 import { BrandMark } from './brands';
 import { ARCHIVE_AFTER, TYPES, archivedTasks, asksWaiting, countOf, getArchiveAfter, hasFresh, markSeen, openOf, renameTask, setArchiveAfter, tasksOf, tasksWith, toDoOf, useTasks, type Task } from './tasks';
 import { OBYS } from './mock';
-import { ago } from './view';
+import { ENDED, ago } from './view';
 import { ObyFace, OwnerAvatar } from './ObyFace';
 import { useScrollThumb } from './useScrollThumb';
 import { Menu } from './Menu';
@@ -16,16 +16,25 @@ import CreateSphereModal from './CreateSphereModal';
 import SphereTile from './SphereTile';
 import { CAN_CREATE, ME, SAMPLE, cancelInvite, invite, memberCount, urlOf, useSpheres, type Sphere } from './spheres';
 import TaskMenu from './TaskMenu';
-import ConvoMenu from './ConvoMenu';
-import StatusDot from './StatusDot';
+import ConvoMenu, { DeleteChatWindow } from './ConvoMenu';
+import { latestTask, rowMark } from './chatState';
+import StatusDot, { TaskMark } from './StatusDot';
 import { askCardLine, memberOpens, mockConvosWith, plainId, useConvos } from './peers';
 import { roomOpens, useRoom } from './room';
-import { chatOfTask, lastAgo, latestChat, renameChat, useChats, type Chat } from './chats';
-import { chatFirst, everything } from './lean';
+import { archivedChats, chatOfTask, lastAgo, latestChat, renameChat, useChats, type Chat } from './chats';
+import { chatFirst, everything, onObid } from './lean';
+import { tasksMatching, useObidSearch } from './search';
+import { ariaKeys, shortcutLabel, withShortcut } from './shortcuts';
 import { useWaitingCount } from './live';
 import { loadProfiles, openProfile, profileChats, useProfiles } from './profiles';
-import ProfileMenu, { NewProfileModal } from './ProfileMenu';
+import type { Profile } from './obid';
+import ProfileMenu, { EditProfileModal, NewProfileModal } from './ProfileMenu';
+import { useProjects, useProjectsOn } from './projects';
+import ProjectSheet from './ProjectSheet';
 import AgentsList, { convoAbout } from './AgentsList';
+import { kidLine, kidTitle, kidsLine, kidsOf } from './nested';
+
+import { AGENTS_SHOWN } from './panelFlags';
 import { WELCOME, sampleDid, sampleOut, useSetup } from './onboarding';
 import { SAMPLE_TALK } from './Welcome';
 
@@ -61,7 +70,7 @@ const SEARCHABLE: Section[] = ['oby', 'conversations'];
 // ?home: Home and Conversations, ?everything also + and your account picture),
 // the column beside them shows it. Search, on the tabs that have it, sits by the panel icon.
 // It opens from the left and pushes the view over.
-export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOpenGroup, onOpenTask, onOpenChat, onOpenOby, onOpenMember, onOpenTalk, onOpenArchive, onOpenSetting, onOpenSphereSetting, onOpenKnowledge, onOpenRoom, onOpenWaiting, activeWaiting = false, activeOby = null, activeTalk = null, activeSetting = null, activeSphereSetting = null, activeKnowledge = null, active = null, width, onResize }: {
+export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOpenGroup, onOpenTask, onOpenAgent, onOpenChat, onOpenOby, onOpenMember, onOpenTalk, onOpenArchive, onOpenSetting, onOpenSphereSetting, onOpenKnowledge, onOpenRoom, onOpenWaiting, activeWaiting = false, activeOby = null, activeTalk = null, activeSetting = null, activeSphereSetting = null, activeKnowledge = null, active = null, width, onResize }: {
   open: boolean;
   onClose: () => void;  // the panel closes (its tab's icon again, while that tab is showing)
   onNewChat: () => void;
@@ -69,6 +78,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   atHome: boolean;  // on Home's own page, nothing open over it
   onOpenGroup: (id: string) => void;  // chat first: a kind of work's cards (Home's chips, on Home)
   onOpenTask: (id: string) => void;  // a task's page, on its own
+  onOpenAgent?: (id: string) => void;  // a nested task: the conversation that started it, at its card (LIVETASK-28)
   onOpenChat: (id: string) => void;  // a task's conversation, from its menu or its row's icon
   onOpenOby: (name: string) => void;  // someone else's Oby, from the mock's Obysphere: its conversations
   onOpenMember: (owner: string) => void;  // a member of the live Obysphere, by owner id: their thread
@@ -112,12 +122,15 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   // the open profile's (profiles.ts): on the mock its own conversations, on obid all of them
   const profiles = useProfiles();
   const withAgents = profileChats(useChats(), profiles.list, profiles.kept);
-  // a helper's conversation is under Agents only (AgentsList), never among the chats
-  const chats = withAgents.filter((c) => !c.helper);
+  // a helper's conversation is under Agents only (AgentsList), never among the chats; an archived one
+  // is under Archived, but while something in it needs you (CHATSTATE-9)
+  const waitsIn = new Set(tasksWith('needs').flatMap((t) => chatOfTask(t.id)?.id ?? []));
+  const chats = withAgents.filter((c) => !c.helper && (!c.archived || c.needs || waitsIn.has(c.id)));
   const shownProfile = profiles.list?.length ? openProfile(profiles.list, profiles.kept) : undefined;
   // the title's menu (ProfileMenu), and New profile…'s form
   const [profileMenu, setProfileMenu] = useState<DOMRect | null>(null);
   const [newProfile, setNewProfile] = useState(false);
+  const [editProfile, setEditProfile] = useState<Profile | null>(null);
   // Home's dot turns orange while any task needs you
   const needsYou = countOf('needs') + asksWaiting().length > 0;
   // and chat first, with Home's chips gone from sight: GitHub's work waiting on you too (a review
@@ -134,8 +147,10 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   const anyWaits = noRow || needing.size > 0 || withAgents.some((c) => c.needs);
   const waiting = useWaitingCount();
   const [section, setSection] = useState<Section>(SECTIONS[0].id);
-  // chat first, under the title: Projects (Oby and the chats) or Agents (AgentsList); remembered
+  // chat first, under the title: Projects (Oby and the chats) or Agents (AgentsList); remembered.
+  // Agents is hidden while AGENTS_SHOWN is false (the owner's word, 2026-11-16): Projects only
   const [side, setSide] = useState<'projects' | 'agents'>(() => {
+    if (!AGENTS_SHOWN) return 'projects';
     try { return localStorage.getItem('oby.panelSide') === 'agents' ? 'agents' : 'projects'; } catch { return 'projects'; }
   });
   const pickSide = (to: 'projects' | 'agents') => {
@@ -260,7 +275,8 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     return { rows: more.has(g.id) ? g.tasks : [...open, ...done.slice(0, keep)], hidden: Math.max(0, done.length - keep) };
   };
   const toggleMore = (id: string) => setMore((m) => { const next = new Set(m); if (!next.delete(id)) next.add(id); return next; });
-  const archivedCount = archivedTasks().length;
+  // what Archived holds: done tasks that left Home, and chat first, the conversations put away
+  const archivedCount = archivedTasks().length + (chatFirst ? archivedChats(withAgents).length : 0);
   const { list, onScroll, thumbProps } = useScrollThumb<HTMLDivElement>();
   const pick = (id: Section) => {
     // Home again, while it's showing: back to Home's own page if something's open over it,
@@ -288,6 +304,38 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     if (!next.delete(name)) next.add(name);
     return next;
   });
+  // The Projects side's groups (docs/contracts/projects.md, PROJECTS-16 to 18): one per project, then
+  // No project. Which are folded is kept (oby.projectsFolded: their ids, "" for No project), the one
+  // thing the app keeps of projects
+  const projectsOn = useProjectsOn();
+  const projects = useProjects();
+  const [projectsFolded, setProjectsFolded] = useState<Set<string>>(() => {
+    try { const kept: unknown = JSON.parse(localStorage.getItem('oby.projectsFolded') ?? '[]'); return new Set(Array.isArray(kept) ? kept.filter((k) => typeof k === 'string') : []); } catch { return new Set(); }
+  });
+  const toggleProject = (id: string) => setProjectsFolded((f) => {
+    const next = new Set(f);
+    if (!next.delete(id)) next.add(id);
+    try { localStorage.setItem('oby.projectsFolded', JSON.stringify([...next])); } catch { /* not remembered, that's all */ }
+    return next;
+  });
+  const [newProject, setNewProject] = useState(false);
+  // a project heading's menu (its ⋮, or a right-click: PROJECTS-26), and the sheet it opens on that
+  // project, to change it or at the ask before deleting it
+  const [projectMenu, setProjectMenu] = useState<{ id: string; at: DOMRect; atPointer?: boolean } | null>(null);
+  const [projectSheet, setProjectSheet] = useState<{ id: string; deleting: boolean } | null>(null);
+  const sheetProject = projects.find((p) => p.id === projectSheet?.id);
+  // A conversation's tasks, nested under its row (LIVETASK-19 to 21): shown for the open conversation,
+  // the one holding the open task and one whose task needs you, unless the owner folded it; what the
+  // owner chose is kept (oby.kidsShown: conversation id to shown or not)
+  const [kidsShown, setKidsShown] = useState<Record<string, boolean>>(() => {
+    try { const kept: unknown = JSON.parse(localStorage.getItem('oby.kidsShown') ?? '{}'); return kept && typeof kept === 'object' && !Array.isArray(kept) ? Object.fromEntries(Object.entries(kept).filter(([, v]) => typeof v === 'boolean')) as Record<string, boolean> : {}; } catch { return {}; }
+  });
+  const showKids = (id: string, shown: boolean) => {
+    const next = { ...kidsShown, [id]: shown };
+    setKidsShown(next);
+    try { localStorage.setItem('oby.kidsShown', JSON.stringify(next)); } catch { /* not remembered, that's all */ }
+  };
+  const chatIdOf = (taskId: string) => chatOfTask(taskId)?.id;
   // the chats are searched, never the agents (Agents has no search)
   const searchable = SEARCHABLE.includes(section) && !(section === 'oby' && side === 'agents');
   const openSearch = () => {
@@ -296,21 +344,55 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   };
   // the search field takes focus as it opens
   useEffect(() => { if (searching) searchInput.current?.focus(); }, [searching]);
+  // ⌘K (SHORTCUTS-2): the chats' search, from anywhere, its field taking the keys (what was typed
+  // in it stays, selected)
+  useEffect(() => {
+    const open = () => {
+      setSection(chatFirst ? 'oby' : 'conversations');
+      if (chatFirst && side === 'agents') setSide('projects');
+      setSearching(true);
+      requestAnimationFrame(() => searchInput.current?.select());
+    };
+    addEventListener('oby:search', open);
+    return () => removeEventListener('oby:search', open);
+  }, [side]);
 
   // your conversations with Oby (matching the search): pinned ones first, under
   // Pinned, the rest under Recent (no headings while nothing's pinned)
-  const talks = chats.filter((c) => matches(c.title, ...c.said.flatMap((m) => (m.askCard ? [m.askCard.question, m.askCard.said ?? '', askCardLine(m.askCard, Date.now()) ?? ''] : [m.text]))));
+  // (SEARCH-1 to 3) what's on the page as it's typed, then, under those so nothing jumps, those
+  // obid's own search found the words in and those holding a task they're in
+  const found = useObidSearch(searching ? query : '', onObid);
+  const local = chats.filter((c) => matches(c.title, ...c.said.flatMap((m) => (m.askCard ? [m.askCard.question, m.askCard.said ?? '', askCardLine(m.askCard, Date.now()) ?? ''] : [m.text]))));
+  const byTask = tasksMatching(tasks, q);
+  const talks = !q ? local : [...local, ...chats.filter((c) => !local.includes(c) && (found.has(c.id) || byTask.has(c.id)))];
   const pinned = talks.filter((c) => c.pinned);
   // chat first, under your Oby: all of them, in one list
   const latest = latestChat(chats);
   const inOrder = [...pinned, ...talks.filter((c) => !c.pinned)];
-  const convoRow = (c: Chat) => (
-    // a row with its own menu button, so the row itself isn't a <button>
+  // each project's rows in that order, then those in none (or in one obid doesn't list); a project
+  // with none still shows, but not while searching, and No project only with rows. None listed: no groups
+  const projectGroups = !projectsOn || !projects.length ? [] : [
+    ...projects.map((p) => ({ id: p.id, name: p.name, rows: inOrder.filter((c) => c.project === p.id) })),
+    { id: '', name: 'No project', rows: inOrder.filter((c) => !projects.some((p) => p.id === c.project)) },
+  ].filter((g) => g.rows.length || (g.id && !q));
+  const convoRow = (c: Chat) => {
+    const kids = chatFirst ? kidsOf(tasks, c.id, chatIdOf) : [];
+    // its one mark (CHATSTATE-5): needs you, working, unread, then how its latest task ended
+    const latest = chatFirst ? latestTask(tasks, c.id, chatIdOf) : undefined;
+    const mark = chatFirst ? rowMark({ needs: !!c.needs || needing.has(c.id), working: working.has(c.id), unread: !!c.unread, latest }) : null;
+    const shown = kids.length > 0 && (kidsShown[c.id] ?? (activeTalk === c.id || kids.some((k) => k.status === 'needs')));
+    return (
+    <div key={c.id} className={`convo-nest${kids.length ? ' has-kids' : ''}`}>
+    {kids.length > 0 && (
+      <button className="convo-twist" aria-expanded={shown} aria-label={`${shown ? 'Hide' : 'Show'} ${c.title}’s agents`} onClick={() => showKids(c.id, !shown)}>
+        {shown ? <ChevronDown size={10} strokeWidth={2} /> : <ChevronRight size={10} strokeWidth={2} />}
+      </button>
+    )}
+    {/* a row with its own menu button, so the row itself isn't a <button> */}
     <div
-      key={c.id}
       role="button"
       tabIndex={0}
-      className={`connector task convo-row${activeTalk === c.id ? ' is-active' : ''}${convoMenu?.id === c.id ? ' is-menu-open' : ''}`}
+      className={`connector task convo-row${activeTalk === c.id ? ' is-active' : ''}${convoMenu?.id === c.id ? ' is-menu-open' : ''}${c.unread ? ' is-unread' : ''}`}
       aria-current={activeTalk === c.id || undefined}
       onClick={() => onOpenTalk(c.id)}
       onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) { e.preventDefault(); e.currentTarget.click(); } }}
@@ -333,14 +415,18 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
             aria-label="Conversation name"
           />
         ) : <span className="connector-name">{c.title}</span>}
-        <span className="connector-about">{convoAbout(c)}</span>
+        {/* searching: the words obid found it by, in its latest turn holding them */}
+        <span className="connector-about">{(q && found.get(c.id)) || (kidsLine(kids) ?? convoAbout(c))}</span>
       </span>
       {/* when it last moved; on hover, its ⋮ in the same spot */}
       <span className="sidebar-item-ago">{c.typing ? 'now' : ago(lastAgo(c))}</span>
-      {/* under it, its state as a mark: something in it needs you, or a task of its is working */}
-      {chatFirst && (c.needs || needing.has(c.id)
-        ? <span className="status-dot is-needs" role="img" aria-label="Needs you" />
-        : working.has(c.id) && <span className="status-dot is-working" role="img" aria-label="Running" />)}
+      {/* under it, its state as a mark: something in it needs you, a task of its is working, something
+          new in it, or how its latest task ended */}
+      {mark === 'needs' && <span className="status-dot is-needs" role="img" aria-label="Needs you" />}
+      {mark === 'working' && <span className="status-dot is-working" role="img" aria-label="Running" />}
+      {mark === 'unread' && <span className="status-dot is-new" role="img" aria-label="Unread" />}
+      {mark === 'failed' && <span className="status-dot is-failed" role="img" aria-label={`Latest task: ${ENDED[latest!.job.status]}`} />}
+      {mark === 'done' && <span className="convo-done" role="img" aria-label="Latest task: Done"><Check size={11} strokeWidth={2.2} /></span>}
       <button
         className="sidebar-item-more"
         aria-label={`More for ${c.title}`}
@@ -351,7 +437,27 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
         <EllipsisVertical size={14} strokeWidth={1.6} />
       </button>
     </div>
-  );
+    {/* its tasks, each a mark of its progress: its agent, its title, what it's on, its state (screen 03); a click opens this conversation at its card */}
+    {shown && (
+      <div className="convo-kids" role="group" aria-label={`${c.title}’s tasks`}>
+        {kids.map((k) => (
+          <button
+            key={k.id}
+            className="convo-kid"
+            title={kidTitle(k)}
+            onClick={() => { markSeen(k.id); onOpenAgent?.(k.id); }}
+            onContextMenu={(e) => { e.preventDefault(); setTaskMenu({ id: k.id, at: new DOMRect(e.clientX, e.clientY, 0, 0), atPointer: true }); }}
+          >
+            <BrandMark brand={k.brand} size={14} />
+            <span className="convo-kid-text"><b>{k.title}</b> · {kidLine(k)}</span>
+            <TaskMark task={k} />
+          </button>
+        ))}
+      </div>
+    )}
+    </div>
+    );
+  };
 
   // An Obysphere's people, by their names
   const memberRows = (s: Sphere) => (s.sample || s.live ? s.members.map((name) => ({ name })) : OBYS.filter((o) => s.members.includes(o.name))).filter((o) => matches(o.name)).map((o) => {
@@ -417,7 +523,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
               Settings itself, the gear filled while it's open; the design's account picture and its
               menu (name, email, Log out) with ?everything */}
           {!everything ? (
-            <button className={`rail-button rail-settings${inSettings ? ' is-on' : ''}`} data-tip="Settings" aria-label="Settings" aria-pressed={inSettings}
+            <button className={`rail-button rail-settings${inSettings ? ' is-on' : ''}`} data-tip={withShortcut('Settings', 'settings.open')} aria-label="Settings" aria-keyshortcuts={ariaKeys('settings.open')} aria-pressed={inSettings}
               // a Settings page open: the gear again closes the panel (as a tab's icon does); else it opens
               // Settings (General), staying on the Settings list if that's showing
               onClick={() => { if (inSettings && activeSetting) return pick('settings'); if (!inSettings) pick('settings'); if (!activeSetting) onOpenSetting('general'); }}>
@@ -475,7 +581,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
           )}
         </div>
         {/* chat first: Projects or Agents, under the profile's name (screen 08); the arrow keys move between them */}
-        {section === 'oby' && (
+        {section === 'oby' && AGENTS_SHOWN && (
           <div
             className="panel-side"
             role="tablist"
@@ -499,7 +605,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
         {/* on the panel icon's row */}
         <div className="sidebar-top">
           {searchable && (
-            <button className={`icon-button${searching ? ' is-on' : ''}`} aria-label="Search" aria-expanded={searching} onClick={openSearch}>
+            <button className={`icon-button${searching ? ' is-on' : ''}`} aria-label="Search" title={withShortcut('Search', 'search.open')} aria-keyshortcuts={ariaKeys('search.open')} aria-expanded={searching} onClick={openSearch}>
               <Search size={17} strokeWidth={1.6} />
             </button>
           )}
@@ -564,7 +670,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
               </span>
               {noRow && <span className="status-dot is-needs" role="img" aria-label="Needs you" />}
             </button>
-            <button className={`sidebar-new chat-new${atHome ? ' is-active' : ''}`} aria-current={atHome || undefined} onClick={onNewChat}>
+            <button className={`sidebar-new chat-new has-kbd${atHome ? ' is-active' : ''}`} aria-current={atHome || undefined} aria-keyshortcuts={ariaKeys('chat.new')} data-kbd={shortcutLabel('chat.new')} onClick={onNewChat}>
               <Plus size={16} strokeWidth={1.6} />
               <span className="sidebar-new-label">New conversation</span>
             </button>
@@ -576,8 +682,44 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
                 <span className="waiting-count">{waiting}</span>
               </button>
             )}
-            {inOrder.map(convoRow)}
+            {projectGroups.length ? projectGroups.map((g) => {
+              // while searching, a group with a match opens
+              const shut = !q && projectsFolded.has(g.id);
+              return (
+                <section key={g.id || 'none'} className={`sidebar-group project-group${shut ? ' is-folded' : ''}`}>
+                  {/* a project's heading has its own ⋮ beside it, so the heading stays a <button> */}
+                  <div
+                    className={`project-group-row${projectMenu?.id === g.id ? ' is-menu-open' : ''}`}
+                    onContextMenu={g.id ? (e) => { e.preventDefault(); setProjectMenu({ id: g.id, at: new DOMRect(e.clientX, e.clientY, 0, 0), atPointer: true }); } : undefined}
+                  >
+                    <button className="sidebar-group-head" aria-expanded={!shut} onClick={() => toggleProject(g.id)}>
+                      {g.id && <Folder size={14} strokeWidth={1.6} className="project-mark" />}
+                      <h3>{g.name}</h3>
+                      <ChevronDown size={12} strokeWidth={1.8} className="sidebar-chevron" />
+                    </button>
+                    {g.id && (
+                      <button
+                        className="sidebar-item-more"
+                        aria-label={`More for ${g.name}`}
+                        aria-haspopup="menu"
+                        aria-expanded={projectMenu?.id === g.id}
+                        onClick={(e) => setProjectMenu(projectMenu?.id === g.id ? null : { id: g.id, at: e.currentTarget.getBoundingClientRect() })}
+                      >
+                        <EllipsisVertical size={14} strokeWidth={1.6} />
+                      </button>
+                    )}
+                  </div>
+                  <div className="sidebar-group-body"><div>{g.rows.map(convoRow)}</div></div>
+                </section>
+              );
+            }) : inOrder.map(convoRow)}
             {!talks.length && <p className="sidebar-empty">{q ? `No conversations match “${query.trim()}”` : 'No conversations yet'}</p>}
+            {projectsOn && (
+              <button className="sidebar-new chat-new project-new" aria-haspopup="dialog" onClick={() => setNewProject(true)}>
+                <FolderPlus size={16} strokeWidth={1.6} />
+                <span className="sidebar-new-label">New project</span>
+              </button>
+            )}
           </div>
         )}
         {/* chat first: the kinds of work, Home's chips, first thing under Tasks */}
@@ -778,6 +920,8 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
           <button role="menuitem" className="is-danger" onClick={() => { cancelInvite(sphere.id, inviteMenu.email); setInviteMenu(null); }}>Cancel invite</button>
         </Menu>
       )}
+      {/* deleting a conversation asks first, wherever its menu was (CHATSTATE-8) */}
+      <DeleteChatWindow />
       {/* a conversation's menu (ConvoMenu) */}
       {convoMenu && menuConvo && (
         <ConvoMenu
@@ -798,14 +942,26 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
           </div>
           <hr />
           {/* Settings opens on General, unless one of its pages is open already */}
-          <button role="menuitem" onClick={() => { setAccountMenu(null); pick('settings'); if (!activeSetting) onOpenSetting('general'); }}>Settings</button>
+          <button role="menuitem" className="has-kbd" aria-keyshortcuts={ariaKeys('settings.open')} data-kbd={shortcutLabel('settings.open')} onClick={() => { setAccountMenu(null); pick('settings'); if (!activeSetting) onOpenSetting('general'); }}>Settings</button>
           <hr />
           <button role="menuitem" onClick={() => setAccountMenu(null)}>Log out</button>
         </Menu>
       )}
       {profileMenu && !!profiles.list?.length && (
-        <ProfileMenu list={profiles.list} kept={profiles.kept} at={profileMenu} onClose={() => setProfileMenu(null)} onNew={() => setNewProfile(true)} />
+        <ProfileMenu list={profiles.list} kept={profiles.kept} at={profileMenu} onClose={() => setProfileMenu(null)} onNew={() => setNewProfile(true)} onEdit={setEditProfile} />
       )}
+      {newProject && <ProjectSheet onClose={() => setNewProject(false)} onMade={() => setNewProject(false)} />}
+      {projectMenu && (
+        <Menu at={projectMenu.at} align={projectMenu.atPointer ? 'left' : 'right'} onClose={() => setProjectMenu(null)} height={94} width={180}>
+          <button role="menuitem" onClick={() => { setProjectSheet({ id: projectMenu.id, deleting: false }); setProjectMenu(null); }}>Edit project…</button>
+          <hr />
+          <button role="menuitem" className="is-danger" onClick={() => { setProjectSheet({ id: projectMenu.id, deleting: true }); setProjectMenu(null); }}>Delete project…</button>
+        </Menu>
+      )}
+      {sheetProject && projectSheet && (
+        <ProjectSheet key={`${sheetProject.id}:${projectSheet.deleting}`} editing={sheetProject} deleting={projectSheet.deleting} onClose={() => setProjectSheet(null)} onMade={() => setProjectSheet(null)} />
+      )}
+      {editProfile && <EditProfileModal key={editProfile.id} profile={editProfile} defaultName={(profiles.list ?? []).find((p) => p.default)?.name ?? 'Default'} onClose={() => setEditProfile(null)} />}
       {newProfile && <NewProfileModal taken={(profiles.list ?? []).map((p) => p.color.toLowerCase())} onClose={() => setNewProfile(false)} />}
       {inviting && <InviteModal sphere={{ name: sphere.name, url: urlOf(sphere) }} domain={sphere.domain} onSent={(emails) => invite(sphere.id, emails)} onClose={() => setInviting(false)} />}
       {creating && <CreateSphereModal email={ME.email} onCreated={(id) => { setCreating(false); setSphereId(id); pick('obysphere'); }} onClose={() => setCreating(false)} />}

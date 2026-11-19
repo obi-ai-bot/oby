@@ -10,9 +10,9 @@ import { ipc } from './ipc';
 import { flag, oneOf, optional, safeInteger, string, type Decoder } from '../shared/decode';
 
 // This Mac's device key for obid (docs/runner-api.md, "POST /v1/devices"), which makes a Confirm
-// the owner's (#776). A P-256 key made here in main, kept encrypted by safeStorage (macOS: a key
-// in the login Keychain that only this app reads without asking) in the app's own folder; it
-// never leaves main. Nothing here signs what the page asks to: a Confirm is one open item by its
+// the owner's (#776). A P-256 key made here in main, kept in the app's own folder as a 0600 file,
+// as T3 Code keeps its secrets, with no Keychain, so macOS never asks for it (keptKey); it never
+// leaves main. Nothing here signs what the page asks to: a Confirm is one open item by its
 // id, on the owner's click, and main reads that item's title from obid itself and signs obid's own
 // sentence for it; words (ownersWords) are signed only when the preload saw the owner's own
 // keystroke or click hold them, and only on the routes that carry words.
@@ -25,29 +25,57 @@ export function writeOwn(path: string, data: string | Buffer, flags: number) {
   try { writeSync(fd, typeof data === 'string' ? Buffer.from(data) : data); } finally { closeSync(fd); }
 }
 
-// A key made here in main, kept encrypted by safeStorage in the app's own folder as `file`: this
-// Mac's device key, and the owner key (main/sphere.ts)
-export function keptKey(file: string, make: () => KeyObject): KeyObject {
-  const path = join(app.getPath('userData'), file);
-  if (!safeStorage.isEncryptionAvailable()) throw new Error('This Mac’s Keychain isn’t available to Oby, so it can’t keep a key to confirm with.');
-  let sealed: Buffer | null = null;
+// A file of the app's own, read never through a link; null when it isn't there
+function readOwn(path: string): Buffer | null {
   try {
     const fd = openSync(path, O.O_RDONLY | O.O_NOFOLLOW);
-    try { sealed = readFileSync(fd); } finally { closeSync(fd); }
+    try { return readFileSync(fd); } finally { closeSync(fd); }
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw e;
   }
-  if (sealed) {
-    try { return createPrivateKey(safeStorage.decryptString(sealed)); } catch {
-      // sealed by a key this app can't open anymore (another signature, a Keychain reset): set
-      // aside, and a new one, which pairs on the owner's click as the first did
+}
+
+// A key made here in main, kept in the app's own folder as `<file>.pem`: PKCS#8 PEM, 0600, never
+// through a link, as T3 Code keeps its secrets: this Mac's device key, and the owner key
+// (main/sphere.ts). No Keychain, so macOS never asks (docs/contracts/keychain.md, KEYCHAIN-12). The
+// one exception is a key an older Oby sealed with safeStorage as `<file>`: it is opened once, the
+// last time this app reads its Keychain item, moved to `<file>.pem` and removed, so the devices it
+// paired and the Obyspheres it joined stay valid (KEYCHAIN-13).
+export function keptKey(file: string, make: () => KeyObject): KeyObject {
+  const path = join(app.getPath('userData'), `${file}.pem`), sealed = join(app.getPath('userData'), file);
+  const pem = readOwn(path);
+  if (pem) {
+    try { return createPrivateKey(pem); } catch {
+      // not a key anymore: set aside, and a new one, which pairs on the owner's click as the first did
       renameSync(path, `${path}.unreadable-${Date.now()}`);
     }
   }
-  const made = make();
+  const moved = movedOnce(sealed);
+  const kept = moved ?? make();
   // O_EXCL: never over a key that's there
-  writeOwn(path, safeStorage.encryptString(made.export({ type: 'pkcs8', format: 'pem' }) as string), O.O_EXCL);
-  return made;
+  writeOwn(path, kept.export({ type: 'pkcs8', format: 'pem' }) as string, O.O_EXCL);
+  if (moved) rmSync(sealed, { force: true });
+  return kept;
+}
+
+// A key made anew in main replacing `<file>.pem` (an owner key the Obysphere has just bound,
+// SPHEREAPP-12): written beside it 0600, never through a link, then renamed over it in one step
+export function replaceKey(file: string, key: KeyObject) {
+  const path = join(app.getPath('userData'), `${file}.pem`), next = `${path}.next`;
+  rmSync(next, { force: true });
+  writeOwn(next, key.export({ type: 'pkcs8', format: 'pem' }) as string, O.O_EXCL);
+  renameSync(next, path);
+}
+
+// An older Oby's key, sealed by safeStorage, opened once to be moved (KEYCHAIN-13). One that can't
+// be opened (another signature denied, a Keychain reset) is set aside, and a new key made
+function movedOnce(sealed: string): KeyObject | null {
+  const was = readOwn(sealed);
+  if (!was) return null;
+  try { if (safeStorage.isEncryptionAvailable()) return createPrivateKey(safeStorage.decryptString(was)); } catch { /* set aside below */ }
+  renameSync(sealed, `${sealed}.unreadable-${Date.now()}`);
+  return null;
 }
 
 let key: KeyObject | null = null;
@@ -125,6 +153,22 @@ const AGAIN_MS = 10_000, AGAIN = 2, KEPT = 8;
 let unanswered: { request: string; at: number; again: number }[] = [];
 const keyOf = (body: unknown) => typeof (body as { clientRequestId?: unknown } | null)?.clientRequestId === 'string';
 
+// The folders of the project words start a conversation in (POST /v1/plans with `project`), as main
+// itself reads them from obid for this request, never the page's (WORDS-18): none for other words,
+// or when obid doesn't answer, doesn't list it or answers what doesn't parse (then they go unsigned)
+async function projectFolders(method: string, path: string, body: unknown): Promise<string[] | undefined> {
+  const id = (body as { project?: unknown } | undefined)?.project;
+  if (method !== 'POST' || path.split('?')[0] !== '/v1/plans' || typeof id !== 'string') return undefined;
+  try {
+    const r = await obid('GET', '/v1/projects');
+    if (r.status !== 200) return undefined;
+    const folders = (JSON.parse(r.text) as { id?: unknown; folders?: unknown }[]).find((p) => p.id === id)?.folders;
+    return Array.isArray(folders) && folders.every((f) => typeof f === 'string') ? folders : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // owners: the preload saw the owner's own keystroke or click hold its words
 export async function ownersWords(method: string, path: string, body: unknown, owners = true): Promise<Answer> {
   const at = Date.now();
@@ -133,9 +177,10 @@ export async function ownersWords(method: string, path: string, body: unknown, o
   const kept = request === null ? undefined : unanswered.find((u) => u.request === request && u.again < AGAIN);
   if (kept) kept.again++;
   let words: string | null = null;
+  const sign = async () => wordsHeader(deviceKey(), (device ??= await register()), method, path, body, undefined, await projectFolders(method, path, body));
   try {
-    if (kept && await takesKeys()) words = wordsHeader(deviceKey(), (device ??= await register()), method, path, body);
-    else if (owners && takeInput()) words = wordsHeader(deviceKey(), (device ??= await register()), method, path, body);
+    if (kept && await takesKeys()) words = await sign();
+    else if (owners && takeInput()) words = await sign();
   } catch (err) {
     console.error(`Oby couldn’t sign the owner’s words, so they go unsigned: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -243,6 +288,31 @@ export function confirming(trusted: Trusted) {
         device, action, signedAt, signature: signed(`oby-publish\n${id}\n${action}\n${signedAt}`), ...choices,
         ...(choices.anyway && read.head !== undefined ? { head: read.head } : {}), ...(choices.force && read.over !== undefined ? { over: read.over } : {}),
       });
+    } catch (err) {
+      return { status: 500, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) };
+    }
+  }, REFUSED);
+
+  // Undo this round, on the owner's click (docs/contracts/task-changes.md, CHANGES-14): as Publish by
+  // hand, main reads obid's own sentence for it itself, refuses when it isn't the one the page showed,
+  // asks in main's own dialog, which the page can't click or word, and signs (`oby-undo`) only on
+  // Undo there. Asked only right after an input main saw.
+  channels.handle('obid-undo', [string, string], async (e, id, action): Promise<Answer> => {
+    if (!takeInput()) return { status: 403, text: JSON.stringify({ error: 'Undo takes your own click.' }) };
+    try {
+      const path = `/v1/jobs/${encodeURIComponent(id)}/undo`;
+      const sentence = await obid('GET', path);
+      if (sentence.status !== 200) return sentence;
+      const read = JSON.parse(sentence.text) as { action?: string };
+      if (read.action !== action) {
+        return { status: 409, text: JSON.stringify({ error: 'What Undo would do changed since it showed. Look at it again.' }) };
+      }
+      const w = BrowserWindow.fromWebContents(e.sender);
+      const asked = { type: 'warning' as const, message: 'Undo this round?', detail: action, buttons: ['Undo', 'Not now'], defaultId: 1, cancelId: 1 };
+      const { response } = await (w ? dialog.showMessageBox(w, asked) : dialog.showMessageBox(asked));
+      if (response !== 0) return { status: 409, text: JSON.stringify({ error: 'Not undone: you said not now.' }) };
+      const device = await register(), signedAt = now();
+      return obid('POST', path, { device, action, signedAt, signature: signed(`oby-undo\n${id}\n${action}\n${signedAt}`) });
     } catch (err) {
       return { status: 500, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) };
     }

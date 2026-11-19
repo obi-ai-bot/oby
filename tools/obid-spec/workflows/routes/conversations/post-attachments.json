@@ -1,0 +1,158 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/attachments",
+  "version": "1.0.0",
+  "description": "Keeps a file the app attaches (ATTACH-1): 201 with its path under home/attachments/app, its name cleaned, 0600; an empty one is 422 (ATTACH-2); words can carry it and the turn names it (ATTACH-4, 5).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/attachments"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/attachments?name=a.txt",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "attach-2-empty-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/attachments?name=a.txt",
+        "raw": "",
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-2"
+        ]
+      }
+    },
+    {
+      "id": "attach-1-kept",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/attachments?name=my%20notes!.txt",
+        "raw": "hello there",
+        "expect": {
+          "status": 201,
+          "body": {
+            "name": "my_notes_.txt",
+            "path": {
+              "$matches": "/home/attachments/app/[0-9a-f]{32}/my_notes_\\.txt$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-1"
+        ]
+      }
+    },
+    {
+      "id": "attach-5-only-a-file",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "",
+          "new": true,
+          "attachments": [
+            "${state.attach-1-kept.body.path}"
+          ]
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-5"
+        ]
+      }
+    },
+    {
+      "id": "attach-5-titled-after-the-file",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "title": {
+                "$matches": "(?i)^my_notes_[.]txt$"
+              }
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-5"
+        ]
+      }
+    },
+    {
+      "id": "attach-4-the-agent-sees-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "FILES",
+          "conversation": "${state.attach-5-only-a-file.body.conversation}",
+          "attachments": [
+            "${state.attach-1-kept.body.path}"
+          ]
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "my_notes_.txt"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-4"
+        ]
+      }
+    }
+  ]
+}

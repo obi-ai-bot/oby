@@ -322,25 +322,74 @@ pub async fn ensure_clone(
         git(&partial, &["config", NARROW, "true"]).await?;
         std::fs::rename(&partial, &clone)
             .map_err(|e| GitError(format!("can't move the clone into place: {e}")))?;
-    } else {
-        git(&clone, &["config", "remote.origin.url", remote]).await?;
-        let key = "remote.origin.pushurl";
-        git(&clone, &["config", "--replace-all", key, NO_PUSH_URL]).await?;
     }
-    // No automatic maintenance: after an agent's commit it packs refs into packed-refs, which the
-    // job sandbox doesn't let it write, and the agent spends a turn on the error.
-    git(&clone, &["config", "maintenance.auto", "false"]).await?;
-    git(&clone, &["config", "gc.auto", "0"]).await?;
-    // A job's worktree HEAD is its commits, whose objects stay in the job's own object folder
-    // until obid keeps them: a fetch here checks what it got against every worktree's HEAD too,
-    // and fails ("did not send all necessary objects") while another job holds commits (#628).
-    // Fetches leave the worktrees' HEADs out of that check, so it checks more, never less.
-    git(&clone, &["config", "fetch.hideRefs", "worktrees/"]).await?;
+    hold_settings(
+        &clone,
+        &[
+            ("remote.origin.url", remote),
+            // obid's invalid push URL, its only one.
+            ("remote.origin.pushurl", NO_PUSH_URL),
+            // No automatic maintenance: after an agent's commit it packs refs into packed-refs,
+            // which the job sandbox doesn't let it write, and the agent spends a turn on the error.
+            ("maintenance.auto", "false"),
+            ("gc.auto", "0"),
+            // A job's worktree HEAD is its commits, whose objects stay in the job's own object
+            // folder until obid keeps them: a fetch here checks what it got against every
+            // worktree's HEAD too, and fails ("did not send all necessary objects") while another
+            // job holds commits (#628). Fetches leave the worktrees' HEADs out of that check, so it
+            // checks more, never less.
+            ("fetch.hideRefs", "worktrees/"),
+        ],
+    )
+    .await?;
     exclude_obi_folders(&clone)?;
     if !refspecs.is_empty() {
         fetch(&clone, remote, refspecs).await?;
     }
     Ok(clone)
+}
+
+/// Holds `clone`'s own settings (`.git/config`) to `settings`, each key to that one value, writing
+/// only those that aren't (TASKCONV-38): git takes a lock on its config and syncs it to disk for
+/// every write, 0.4 s at a busy Mac's median and up to 2 s, while one read of them all takes a few
+/// milliseconds, and a job starting never waits on a setting that was already right.
+async fn hold_settings(clone: &Path, settings: &[(&str, &str)]) -> Result<(), GitError> {
+    let listed = run_bytes(
+        clone,
+        &["config", "--local", "--list", "-z"].map(OsStr::new),
+        &[],
+        None,
+    )
+    .await?;
+    for (key, value) in settings {
+        if !held(&listed, key, value) {
+            git(clone, &["config", "--replace-all", key, value]).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Whether `git config --list -z`'s `listed` holds `key` once, as `value` (git names a key's
+/// section and name in lower case there; a remote's name, between them, is as written).
+fn held(listed: &[u8], key: &str, value: &str) -> bool {
+    let named = |entry: &str| -> bool {
+        let (section, rest) = key.split_once('.').unwrap_or((key, ""));
+        let (middle, name) = rest.rsplit_once('.').unwrap_or(("", rest));
+        let (e_section, e_rest) = entry.split_once('.').unwrap_or((entry, ""));
+        let (e_middle, e_name) = e_rest.rsplit_once('.').unwrap_or(("", e_rest));
+        e_section.eq_ignore_ascii_case(section)
+            && e_middle == middle
+            && e_name.eq_ignore_ascii_case(name)
+    };
+    let mut values = listed
+        .split(|b| *b == 0)
+        .filter(|entry| !entry.is_empty())
+        .map(String::from_utf8_lossy)
+        .filter_map(|entry| {
+            let (name, found) = entry.split_once('\n').unwrap_or((&entry, ""));
+            named(name).then(|| found.to_owned())
+        });
+    values.next().is_some_and(|found| found == value) && values.next().is_none()
 }
 
 /// The clone's setting that says obid made it with only the default branch (`git clone
@@ -457,8 +506,24 @@ pub(crate) fn fetch_args<'a>(signed: &'a [String], refspecs: &'a [String]) -> Ve
     args
 }
 
+/// What a tool's run leaves in a worktree that is never source, whatever the repository: Python's
+/// bytecode and its tools' caches, `node_modules/`, macOS's `.DS_Store` (PUBLISHING-43). Excluded
+/// in obid's own clone, they don't hold a job's publish in a repository with no `.gitignore`, and
+/// the repository's files are never touched. Only untracked files: a repository that commits one of
+/// them keeps it.
+pub const DROPPINGS: [&str; 7] = [
+    "__pycache__/",
+    "*.pyc",
+    ".pytest_cache/",
+    ".mypy_cache/",
+    ".ruff_cache/",
+    "node_modules/",
+    ".DS_Store",
+];
+
 /// `.obi/` (what obid hands an agent: quoted inputs and context) and `.oby/` (the Swift runner's)
-/// are never part of the work: excluded in the clone's `info/exclude`, which every worktree shares.
+/// are never part of the work, nor [`DROPPINGS`]: excluded in the clone's `info/exclude`, which
+/// every worktree shares.
 pub fn exclude_obi_folders(clone: &Path) -> Result<(), GitError> {
     let info = clone.join(".git").join("info");
     std::fs::create_dir_all(&info)
@@ -467,7 +532,7 @@ pub fn exclude_obi_folders(clone: &Path) -> Result<(), GitError> {
     let text = std::fs::read_to_string(&exclude).unwrap_or_default();
     let mut lines: Vec<&str> = text.lines().collect();
     let mut changed = false;
-    for folder in ["/.obi/", "/.oby/"] {
+    for folder in ["/.obi/", "/.oby/"].into_iter().chain(DROPPINGS) {
         if !lines.contains(&folder) {
             lines.push(folder);
             changed = true;
@@ -569,16 +634,19 @@ pub fn is_branch_name(name: &str) -> bool {
     let ok_chars = name
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'/' | b'-'));
+    // Two bytes side by side, read pair by pair: what `contains` says for these, without its
+    // vectorized search, which the force-push proof can't get through (crate::proofs::publish).
+    let has = |pair: &[u8; 2]| name.as_bytes().windows(2).any(|w| w == pair);
     !name.is_empty()
         && name.len() <= 200
         && ok_chars
         && !name.starts_with(['-', '/', '.'])
-        && !name.contains("..")
-        && !name.contains("//")
+        && !has(b"..")
+        && !has(b"//")
         && !name.ends_with('/')
         && !name.ends_with('.')
         && !name.ends_with(".lock")
-        && !name.contains("/.")
+        && !has(b"/.")
 }
 
 /// What a checkout of obid's sets so Git LFS files stay pointers, as the check sees them
@@ -971,6 +1039,54 @@ pub fn is_sha(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// PUBLISHING-43: obid's clone excludes what tools leave behind, once however often it's
+    /// written; git then lists a real file left uncommitted, never a dropping.
+    #[test]
+    fn publishing_43_the_clone_excludes_droppings_not_work() {
+        let root = std::env::temp_dir().join(format!("obid-droppings-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        run(&["init", "-q"]);
+        exclude_obi_folders(&root).unwrap();
+        exclude_obi_folders(&root).unwrap();
+        let exclude = std::fs::read_to_string(root.join(".git/info/exclude")).unwrap();
+        for line in ["/.obi/", "__pycache__/", "node_modules/", ".DS_Store"] {
+            assert_eq!(
+                exclude.lines().filter(|l| *l == line).count(),
+                1,
+                "{exclude}"
+            );
+        }
+        for file in [
+            "src/__pycache__/calc.cpython-312.pyc",
+            ".pytest_cache/v/x",
+            "node_modules/a/i.js",
+            ".DS_Store",
+            "notes.txt",
+        ] {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "x").unwrap();
+        }
+        assert_eq!(
+            run(&["status", "--porcelain", "--untracked-files=all"]),
+            "?? notes.txt\n"
+        );
+        assert!(
+            !root.join(".gitignore").exists(),
+            "the repository's files untouched"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// RECOVERY-14: a repository whose name says `timeout` isn't a network failure.
     #[test]
@@ -1443,6 +1559,80 @@ mod tests {
         ] {
             assert!(!is_branch_name(bad), "{bad}");
         }
+    }
+
+    /// TASKCONV-38: a clone obid already holds to its settings is got ready for the next job with
+    /// none of them written again, so that job waits on no git config write (each one a lock and
+    /// a sync to disk); one that drifted is still put back.
+    #[tokio::test]
+    async fn taskconv_38_a_clone_already_set_is_got_ready_with_no_settings_written() {
+        use std::os::unix::fs::MetadataExt;
+        let root = std::env::temp_dir().join(format!("obid-taskconv-38-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let remote = root.join("remote");
+        std::fs::create_dir_all(&remote).unwrap();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &[
+                "-c",
+                "user.name=a",
+                "-c",
+                "user.email=a@b",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "first",
+            ],
+        ] {
+            git(&remote, args).await.unwrap();
+        }
+        let home = root.join("home");
+        let url = format!("file://{}", remote.display());
+        let refspecs = ["+refs/heads/main:refs/remotes/origin/main".to_owned()];
+        let clone = ensure_clone(&home, "o/r", &url, &refspecs).await.unwrap();
+        let config = clone.join(".git/config");
+        // git writes its config through a lock file renamed into place: a new file each write.
+        let written = || {
+            let meta = std::fs::metadata(&config).unwrap();
+            (meta.ino(), meta.mtime_nsec(), meta.mtime())
+        };
+        let before = written();
+        ensure_clone(&home, "o/r", &url, &refspecs).await.unwrap();
+        assert_eq!(
+            written(),
+            before,
+            "a clone already set had its settings written again"
+        );
+        // One that drifted is put back, and only then is the file written.
+        git(&clone, &["config", "gc.auto", "50"]).await.unwrap();
+        ensure_clone(&home, "o/r", &url, &refspecs).await.unwrap();
+        let get = |key: &'static str| {
+            let clone = clone.clone();
+            async move { git(&clone, &["config", "--get-all", key]).await.unwrap() }
+        };
+        assert_eq!(get("gc.auto").await, "0");
+        assert_eq!(get("remote.origin.pushurl").await, NO_PUSH_URL);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// TASKCONV-38: a setting counts as held only as the one value asked for, its key's section
+    /// and name in any case, a remote's name as written.
+    #[test]
+    fn taskconv_38_a_setting_is_held_only_as_its_one_value() {
+        let listed = b"core.bare\nfalse\0remote.origin.url\nfile:///r\0remote.origin.pushurl\nobid-agents-cannot-push:///\0remote.origin.pushurl\nhttps://x\0fetch.hiderefs\nworktrees/\0gc.auto\n0\0";
+        assert!(held(listed, "remote.origin.url", "file:///r"));
+        assert!(held(listed, "fetch.hideRefs", "worktrees/"));
+        assert!(held(listed, "GC.auto", "0"));
+        assert!(!held(listed, "remote.Origin.url", "file:///r"));
+        assert!(!held(listed, "remote.origin.url", "file:///other"));
+        // Two push URLs: obid's alone is what holds.
+        assert!(!held(
+            listed,
+            "remote.origin.pushurl",
+            "obid-agents-cannot-push:///"
+        ));
+        assert!(!held(listed, "maintenance.auto", "false"));
     }
 
     /// git's automatic maintenance never runs in obid's clones: after an agent's commit it packs

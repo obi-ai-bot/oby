@@ -14,6 +14,7 @@ pub mod api;
 pub mod app;
 pub mod approval;
 pub mod artifacts;
+pub mod autofix;
 pub mod brain;
 pub mod chatgpt;
 pub mod chatgpt_relay;
@@ -23,7 +24,9 @@ pub mod codex;
 pub mod config;
 pub mod conn;
 pub mod connections;
+pub mod connectors;
 pub mod conversation;
+pub mod conversation_files;
 pub mod cursor_usage;
 pub mod decisions;
 pub mod delivery;
@@ -44,6 +47,7 @@ pub mod helpers;
 pub mod job;
 pub mod jobs;
 pub mod limits;
+pub mod local_paths;
 pub mod mcp;
 pub mod memory;
 pub mod merge;
@@ -54,8 +58,11 @@ pub mod permissions;
 pub mod policy;
 pub mod power;
 pub mod process;
+pub mod profile_scope;
 pub mod profiles;
 pub mod projects;
+#[cfg(test)]
+mod proofs;
 pub mod providers;
 pub mod publish;
 pub mod push;
@@ -71,6 +78,8 @@ pub mod secrets;
 pub mod secretspec;
 pub mod settings;
 pub mod sphere;
+pub mod spill;
+pub mod steer;
 pub mod store;
 pub mod task_conversation;
 pub mod teammates;
@@ -475,7 +484,8 @@ pub async fn serve(
     stopwatch.lap("sphere");
     let cleared = clear::Cleared::open(&config.home);
     let devices = devices::Devices::open(&config.mac_home);
-    let profiles = profiles::Profiles::open(&config.home);
+    let profiles = std::sync::Arc::new(profiles::Profiles::open(&config.home));
+    profile_scope::register(&config.home, profiles.clone());
     let helpers = helpers::Helpers::open(&config.home);
     let paired = gateway::Gateway::open(&config.mac_home);
     let relay = relay::Relay::open(&config.mac_home);
@@ -517,7 +527,7 @@ pub async fn serve(
     brain::harness::forget_logins_left(&config.home);
     let conversations = conversation::Conversations::open(&config.home, events.clone());
     let projects = projects::Projects::open(&config.home);
-    projects::reconcile(&projects, &conversations);
+    projects::reconcile(&projects, &profiles.roots(&config.home), &conversations);
     let artifacts = artifacts::Artifacts::open(&config.home, events.clone());
     jobs.use_artifacts(artifacts.clone());
     let routines = Arc::new(routines::Routines::open(&config.home, events.clone()));
@@ -621,6 +631,8 @@ pub async fn serve(
         let chatgpt = shared.chatgpt.clone();
         tokio::spawn(async move { chatgpt.sweep().await });
     }
+    // Words a stop cut say so, and words that only waited get their turn (DELIVERY-7 to 10).
+    brain::recover(&shared);
     // A job a conversation started tells it how it ended (#351).
     conversation::report_job_ends(shared.clone());
     // The owner's own work that merged past Oby's review says so there (MERGING-49).

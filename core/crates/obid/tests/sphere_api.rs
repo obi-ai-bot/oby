@@ -66,6 +66,20 @@ fn answer(obid: &Obid, item: &Value, answer: &str) -> Value {
     answered.body
 }
 
+/// SPHERE-19: the owner lets obid send `owner`'s Obys words in the clear, signed, as the app does.
+/// The test Obis' cards have no seal key, so a request to one goes only after this (SPHERE-18).
+fn unsealed(obid: &Obid, owner: &str) {
+    let allowed = tokio::task::block_in_place(|| {
+        call_typed(
+            obid,
+            "PUT",
+            &format!("/v1/obid/sphere/peers/{owner}/unsealed"),
+            &json!({"allow": true}),
+        )
+    });
+    assert_eq!(allowed.status, 200, "{}", allowed.text);
+}
+
 fn exchange(obid: &Obid, id: &str) -> Value {
     get(obid, &format!("/v1/obid/sphere/exchanges/{id}"))
 }
@@ -127,7 +141,8 @@ async fn a_request_its_sender_cancels_leaves_the_inbox_and_gets_nothing_more() {
     assert!(ernesto.waiting_after(1).await.is_empty());
 }
 
-/// PEER-33 is about another Oby's question: a review request is answered with obid's token, as it was.
+/// PEER-33 is about another Oby's question: a review request is declined with obid's token, as it
+/// was (accepting it takes the owner's signature: SPHERE-17).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn peer_33_a_review_request_still_takes_the_token_alone() {
     let folder = Folder::new("peer-33-review");
@@ -153,6 +168,7 @@ async fn peer_33_a_review_request_still_takes_the_token_alone() {
 async fn only_its_sender_cancels_a_request_and_obid_sends_no_additions() {
     let folder = Folder::new("cancel-receiver");
     let (sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    unsealed(&obid, "ernesto");
     let ask = |body: Value| {
         tokio::task::block_in_place(|| call(&obid, "POST", "/v1/obid/sphere/requests", Some(&body)))
     };
@@ -1180,11 +1196,11 @@ async fn a_remembered_decline_says_no_without_asking() {
             Some(&json!({"answer": "Sure"})),
         );
         assert_eq!(wrong.status, 422);
-        let both = call(
+        let both = call_typed(
             &obid,
             "POST",
             &format!("/v1/inbox/{id}/answer"),
-            Some(&json!({"answer": "Accept", "done": true})),
+            &json!({"answer": "Accept", "done": true}),
         );
         assert_eq!(both.status, 422);
         assert_eq!(
@@ -1318,6 +1334,7 @@ async fn messages_that_fail_the_checks_are_dropped_and_never_answered() {
 async fn obid_asks_another_obi_and_follows_the_exchange() {
     let folder = Folder::new("ask");
     let (sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    unsealed(&obid, "ernesto");
     let ask = |body: Value| {
         tokio::task::block_in_place(|| call(&obid, "POST", "/v1/obid/sphere/requests", Some(&body)))
     };
@@ -1521,7 +1538,8 @@ async fn membership_takes_only_what_checks_out() {
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(kept.permissions().mode() & 0o777, 0o600);
         let mut wrong = card_body.clone();
-        wrong["accepts"] = json!(["handoff"]);
+        // A type obid doesn't take (a handoff it does: docs/contracts/handoff.md).
+        wrong["accepts"] = json!(["introduction"]);
         assert_eq!(
             call(&obid, "POST", "/v1/obid/sphere/card", Some(&wrong)).status,
             422
@@ -1916,6 +1934,7 @@ async fn home_4_a_failed_inbox_save_sends_no_event() {
 async fn a_member_whose_owner_key_changes_isnt_trusted_until_the_owner_accepts_it() {
     let folder = Folder::new("pins");
     let (sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    unsealed(&obid, "ernesto");
     let ask = || {
         let body = json!({"to": "obi-ernesto", "type": "review_request", "body": brief(), "expiresIn": 3600});
         tokio::task::block_in_place(|| call(&obid, "POST", "/v1/obid/sphere/requests", Some(&body)))
@@ -1966,6 +1985,9 @@ async fn a_member_whose_owner_key_changes_isnt_trusted_until_the_owner_accepts_i
     });
     assert_eq!(accepted.status, 200, "{}", accepted.text);
     assert_eq!(accepted.body["verified"], true);
+    // Someone with a new key isn't who the owner let have words in the clear (SPHERE-19).
+    assert_eq!(ask().status, 409, "a new key forgets the allow");
+    unsealed(&obid, "ernesto");
     assert_eq!(ask().status, 202);
 }
 
@@ -2191,6 +2213,7 @@ async fn sphere_8_after_cancel_no_card_until_the_member_leaves_and_comes_back() 
 async fn sphere_9_a_signed_confirm_trusts_the_new_key() {
     let folder = Folder::new("sphere-9");
     let (sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    unsealed(&obid, "ernesto");
     let ask = || {
         let body = json!({"to": "obi-ernesto", "type": "review_request", "body": brief(), "expiresIn": 3600});
         tokio::task::block_in_place(|| call(&obid, "POST", "/v1/obid/sphere/requests", Some(&body)))
@@ -2230,6 +2253,9 @@ async fn sphere_9_a_signed_confirm_trusts_the_new_key() {
         );
         assert!(trust_cards(&obid, "").is_empty());
     });
+    // Someone with a new key isn't who the owner let have words in the clear (SPHERE-19).
+    assert_eq!(ask().status, 409, "a new key forgets the allow");
+    unsealed(&obid, "ernesto");
     assert_eq!(ask().status, 202);
 }
 
@@ -2311,6 +2337,7 @@ async fn sphere_10_the_card_closes_when_settled_elsewhere() {
 async fn a_chain_rolled_back_or_forked_doesnt_check_out() {
     let folder = Folder::new("chain-kept");
     let (sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    unsealed(&obid, "ernesto");
     let body =
         json!({"to": "obi-ernesto", "type": "review_request", "body": brief(), "expiresIn": 3600});
     let sent = tokio::task::block_in_place(|| {
@@ -2385,6 +2412,7 @@ fn kept_receipts(folder: &Folder) -> Value {
 async fn a_send_is_taken_only_when_its_receipt_names_it() {
     let folder = Folder::new("receipt-names");
     let (sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    unsealed(&obid, "ernesto");
 
     let request = ernesto.request("obi-wellington", "review_request", brief(), 3600);
     let cid = request["id"].as_str().unwrap().to_owned();
@@ -2457,6 +2485,7 @@ async fn a_send_is_taken_only_when_its_receipt_names_it() {
 async fn a_member_whose_listed_key_isnt_the_cards_isnt_trusted() {
     let folder = Folder::new("listed-key");
     let (sphere, obid, _ernesto) = setup(&folder, &stub_agent(), None).await;
+    unsealed(&obid, "ernesto");
     let ask = || {
         let body = json!({"to": "obi-ernesto", "type": "review_request", "body": brief(), "expiresIn": 3600});
         tokio::task::block_in_place(|| call(&obid, "POST", "/v1/obid/sphere/requests", Some(&body)))
@@ -3546,6 +3575,28 @@ async fn ask_35_members_list_their_lookalikes() {
     });
 }
 
+/// ASK-37: each member carries what obid calls them to the owner, for the message box's @ list: their
+/// card's name, as a thread names them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ask_37_members_carry_their_card_name() {
+    let folder = Folder::new("ask-37");
+    let (sphere, obid, _ernesto) = setup(&folder, &stub_agent(), None).await;
+    let _dana = TestObi::join_named(&sphere, "obi-dana", "dana", "Dana Scully's Oby").await;
+    tokio::task::block_in_place(|| {
+        let members = get(&obid, "/v1/obid/sphere/members");
+        let dana = members
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["owner"] == "dana")
+            .cloned()
+            .unwrap();
+        let thread = get(&obid, "/v1/obid/sphere/peers/dana");
+        assert_eq!(dana["name"], thread["name"], "{members} {thread}");
+        assert_eq!(dana["name"], "Dana Scully", "{members}");
+    });
+}
+
 /// RECEIPTS-10: a `failed` item's Try again sent again with its key answers what the first did, and
 /// the job runs one more round, not two.
 #[test]
@@ -3786,5 +3837,512 @@ async fn teamreview_3_a_review_that_cant_start_is_declined_never_accepted() {
         assert_eq!(second["inboxItem"], Value::Null);
         assert_eq!(get(&obid, "/v1/inbox"), json!([]));
         assert_eq!(get(&obid, "/v1/jobs"), json!([]), "no work started");
+    });
+}
+
+/// SPHERE-17: another Oby's review request is accepted, once or remembered, only by the owner's
+/// hand: obid's token alone gets `403` and starts nothing; Later and Decline still take the token
+/// alone, and a signed Accept starts the review.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sphere_17_an_unsigned_accept_of_another_obys_work_starts_nothing() {
+    let folder = Folder::new("sphere-17");
+    let (_sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    let request = ernesto.request("obi-wellington", "review_request", brief(), 3600);
+    let cid = request["id"].as_str().unwrap().to_owned();
+    ernesto.send(&request).await;
+    let item = tokio::task::block_in_place(|| wait_item(&obid));
+    let id = item["id"].as_str().unwrap().to_owned();
+    let target = format!("/v1/inbox/{id}/answer");
+    tokio::task::block_in_place(|| {
+        for unsigned in ["Accept", ACCEPT_REMEMBER] {
+            let refused = call(&obid, "POST", &target, Some(&json!({"answer": unsigned})));
+            assert_eq!(refused.status, 403, "{unsigned}: {}", refused.text);
+            assert!(
+                refused.text.contains("wasn't signed"),
+                "it says why: {}",
+                refused.text
+            );
+        }
+        // Nothing happened: the item is open, the exchange waits, no rule was kept, no job.
+        let open = get(&obid, "/v1/inbox");
+        assert_eq!(open[0]["id"], json!(id), "{open}");
+        assert_eq!(open[0]["answer"], Value::Null);
+        assert_eq!(exchange(&obid, &cid)["state"], "inbox");
+        assert_eq!(get(&obid, "/v1/obid/decisions"), json!([]));
+        assert_eq!(get(&obid, "/v1/jobs"), json!([]));
+        // Putting it off takes the token alone.
+        let later = call(
+            &obid,
+            "POST",
+            &target,
+            Some(&json!({"later": "2099-01-01T00:00:00Z"})),
+        );
+        assert_eq!(later.status, 200, "{}", later.text);
+        // The owner's signed Accept starts it.
+        let accepted = answer(&obid, &item, "Accept");
+        assert_eq!(accepted["answer"], "Accept");
+        assert!(accepted["answeredBy"].is_string(), "{accepted}");
+    });
+    let replies = ernesto.receive(1, 30).await;
+    assert_eq!(replies[0]["type"], "accept", "{}", replies[0]);
+}
+
+/// SPHERE-18: nothing goes in the clear to a member whose card has no seal key. A request obid
+/// would send, and the owner's own ask from that member's thread, are refused (`409`, reason
+/// `not_sealed`) with words the app shows, and nothing reaches the Sphere.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sphere_18_nothing_goes_in_the_clear_by_default() {
+    let folder = Folder::new("sphere-18");
+    let (sphere, obid, _ernesto) = setup(&folder, &stub_agent(), None).await;
+    tokio::task::block_in_place(|| {
+        let members = get(&obid, "/v1/obid/sphere/members");
+        assert_eq!(members[0]["sealed"], false, "{members}");
+        assert_eq!(members[0]["unsealed"], false, "{members}");
+        let sent = call(
+            &obid,
+            "POST",
+            "/v1/obid/sphere/requests",
+            Some(
+                &json!({"to": "obi-ernesto", "type": "review_request", "body": brief(), "expiresIn": 3600}),
+            ),
+        );
+        assert_eq!(sent.status, 409, "{}", sent.text);
+        assert_eq!(sent.body["reason"], "not_sealed", "{}", sent.text);
+        assert!(
+            sent.text
+                .contains("ernesto's Oby can't receive sealed asks yet"),
+            "{}",
+            sent.text
+        );
+    });
+    assert!(
+        sends_of(&sphere, "obi-wellington").is_empty(),
+        "nothing reached the Sphere"
+    );
+    assert_eq!(
+        tokio::task::block_in_place(|| get(&obid, "/v1/obid/sphere/exchanges")),
+        json!([]),
+        "no exchange is kept for it"
+    );
+}
+
+/// SPHERE-19: the owner's signed word lets obid send one member words in the clear; obid's token
+/// alone can't (`403`), and taking it back needs no signature and refuses again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sphere_19_the_owners_signed_word_lets_it_go_unsealed() {
+    let folder = Folder::new("sphere-19");
+    let (_sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    let target = "/v1/obid/sphere/peers/ernesto/unsealed";
+    let send = || {
+        call(
+            &obid,
+            "POST",
+            "/v1/obid/sphere/requests",
+            Some(
+                &json!({"to": "obi-ernesto", "type": "review_request", "body": brief(), "expiresIn": 3600}),
+            ),
+        )
+    };
+    tokio::task::block_in_place(|| {
+        let token_only = call(&obid, "PUT", target, Some(&json!({"allow": true})));
+        assert_eq!(token_only.status, 403, "{}", token_only.text);
+        assert_eq!(send().status, 409, "still sealed only");
+        let nobody = call_typed(
+            &obid,
+            "PUT",
+            "/v1/obid/sphere/peers/nobody/unsealed",
+            &json!({"allow": true}),
+        );
+        assert_eq!(nobody.status, 404, "{}", nobody.text);
+        let allowed = call_typed(&obid, "PUT", target, &json!({"allow": true}));
+        assert_eq!(allowed.status, 200, "{}", allowed.text);
+        assert_eq!(allowed.body, json!({"owner": "ernesto", "unsealed": true}));
+        assert_eq!(get(&obid, "/v1/obid/sphere/members")[0]["unsealed"], true);
+        let sent = send();
+        assert_eq!(sent.status, 202, "{}", sent.text);
+    });
+    let requests = ernesto.receive(1, 20).await;
+    assert!(
+        requests[0].get("seal").is_none(),
+        "in the clear, as allowed"
+    );
+    assert_eq!(requests[0]["body"]["goal"], brief()["goal"]);
+    tokio::task::block_in_place(|| {
+        let back = call(&obid, "PUT", target, Some(&json!({"allow": false})));
+        assert_eq!(back.status, 200, "{}", back.text);
+        assert_eq!(back.body["unsealed"], false);
+        assert_eq!(send().status, 409, "sealed only again");
+        let wrong = call(&obid, "PUT", target, Some(&json!({"allow": "yes"})));
+        assert_eq!(wrong.status, 422, "{}", wrong.text);
+    });
+}
+
+/// SPHERE-20: once the Sphere's directory lists this Oby revoked, the membership answer says so,
+/// when and why, instead of the Obysphere vanishing: `state` `revoked`, `revokedAt` from the
+/// directory, `revokedReason` `removed`. A joined membership has neither.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sphere_20_a_revoked_membership_says_when_and_why() {
+    let folder = Folder::new("sphere-20");
+    let (sphere, obid, _ernesto) = setup(&folder, &stub_agent(), None).await;
+    let joined = tokio::task::block_in_place(|| get(&obid, "/v1/obid/sphere"));
+    assert_eq!(joined["revokedAt"], Value::Null, "{joined}");
+    assert_eq!(joined["revokedReason"], Value::Null, "{joined}");
+    for member in &mut sphere.lock().members {
+        if member["obi"] == "obi-wellington" {
+            member["status"] = json!("revoked");
+            member["revoked_at"] = json!("2026-11-18T09:00:00Z");
+        }
+    }
+    tokio::task::block_in_place(|| {
+        // Reading the members reads the directory.
+        let _ = call(&obid, "GET", "/v1/obid/sphere/members", None);
+        let revoked = within(20, "the membership revoked", || {
+            let me = get(&obid, "/v1/obid/sphere");
+            (me["state"] == "revoked").then_some(me)
+        });
+        assert_eq!(revoked["revokedAt"], "2026-11-18T09:00:00Z", "{revoked}");
+        assert_eq!(revoked["revokedReason"], "removed", "{revoked}");
+    });
+    // It's kept: a restarted obid says the same.
+    drop(obid);
+    let remote = folder.0.join("fixture");
+    let again = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+    let me = tokio::task::block_in_place(|| get(&again, "/v1/obid/sphere"));
+    assert_eq!(me["state"], "revoked", "{me}");
+    assert_eq!(me["revokedAt"], "2026-11-18T09:00:00Z", "{me}");
+    assert_eq!(me["revokedReason"], "removed", "{me}");
+}
+/// SPHERE-21: before its first join, the person chooses who their Oby joins as, with obid's token:
+/// a body with no owner, or one that isn't an owner id, is `422` and changes nothing (the app's
+/// probe); a valid one is kept, across a restart, and the join is as that owner; once a membership
+/// exists it's `409`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sphere_21_the_owner_id_is_chosen_before_the_first_join() {
+    let folder = Folder::new("sphere-21");
+    let sphere = FakeSphere::start().await;
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &stub_agent());
+    let obid = start(&folder.0, &config, None);
+    let target = "/v1/obid/sphere/owner";
+    let before = tokio::task::block_in_place(|| get(&obid, "/v1/obid/sphere"))["owner"].clone();
+    tokio::task::block_in_place(|| {
+        for body in [
+            json!({}),
+            json!({"owner": ""}),
+            json!({"owner": "Dana"}),
+            json!({"owner": "-dana"}),
+            json!({"owner": 7}),
+            json!({"owner": "dana", "other": 1}),
+        ] {
+            let refused = call(&obid, "PUT", target, Some(&body));
+            assert_eq!(refused.status, 422, "{body}: {}", refused.text);
+        }
+        assert_eq!(
+            get(&obid, "/v1/obid/sphere")["owner"],
+            before,
+            "nothing changed"
+        );
+        let kept = call(&obid, "PUT", target, Some(&json!({"owner": "dana-k"})));
+        assert_eq!(kept.status, 200, "{}", kept.text);
+        assert_eq!(kept.body, json!({"owner": "dana-k"}));
+        assert_eq!(get(&obid, "/v1/obid/sphere")["owner"], "dana-k");
+    });
+    // Kept across a restart.
+    drop(obid);
+    let obid = start(&folder.0, &config, None);
+    tokio::task::block_in_place(|| {
+        assert_eq!(get(&obid, "/v1/obid/sphere")["owner"], "dana-k");
+        let joined = join_a(&obid, &sphere, &Owner::new("dana-k"));
+        assert_eq!(joined["state"], "joined");
+        assert_eq!(joined["owner"], "dana-k");
+        let late = call(
+            &obid,
+            "PUT",
+            target,
+            Some(&json!({"owner": "someone-else"})),
+        );
+        assert_eq!(late.status, 409, "{}", late.text);
+        assert!(late.text.contains("leave it first"), "{}", late.text);
+        assert_eq!(get(&obid, "/v1/obid/sphere")["owner"], "dana-k");
+    });
+}
+
+/// SPHERE-22 (#2524): the real Sphere stops exchanging a removed member's delegation
+/// (`invalid_grant`) and drops its tokens, so obid can't read the directory that would say
+/// `revoked`. That refusal, asked once more, ends the membership all the same: `revoked`, reason
+/// `removed`, what was open settled with nothing sent, and no more token exchanges.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sphere_22_a_member_the_sphere_no_longer_takes_is_revoked() {
+    let folder = Folder::new("sphere-22");
+    let (sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    let request = ernesto.request("obi-wellington", "review_request", brief(), 3600);
+    let cid = request["id"].as_str().unwrap().to_owned();
+    ernesto.send(&request).await;
+    let item = tokio::task::block_in_place(|| wait_item(&obid));
+    // The admin removes obi-wellington: the Sphere drops its tokens and takes its delegation no more.
+    {
+        let mut state = sphere.lock();
+        for member in &mut state.members {
+            if member["obi"] == "obi-wellington" {
+                member["status"] = json!("revoked");
+                member["revoked_at"] = json!(obi_protocol::time::format(obi_protocol::time::now()));
+            }
+        }
+        state.tokens.retain(|_, obi| obi != "obi-wellington");
+    }
+    let sent_before = sends_of(&sphere, "obi-wellington").len();
+    tokio::task::block_in_place(|| {
+        let revoked = within(60, "the membership revoked", || {
+            let me = get(&obid, "/v1/obid/sphere");
+            (me["state"] == "revoked").then_some(me)
+        });
+        assert_eq!(revoked["revokedReason"], "removed", "{revoked}");
+        assert!(revoked["revokedAt"].is_string(), "{revoked}");
+        // What was open is settled here, its peer not told.
+        let settled = exchange(&obid, &cid);
+        assert_eq!(settled["state"], "declined", "{settled}");
+        assert!(
+            settled["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("revoked")),
+            "{settled}"
+        );
+        let done = get(&obid, "/v1/inbox?state=done");
+        assert!(
+            done.as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["id"] == item["id"] && i["answer"].is_null()),
+            "{done}"
+        );
+        // No more token exchanges: a read that would need one doesn't ask.
+        let asked = sphere.lock().actor_auds.len();
+        let members = call(&obid, "GET", "/v1/obid/sphere/members", None);
+        assert_eq!(members.status, 409, "{}", members.text);
+        assert_eq!(
+            sphere.lock().actor_auds.len(),
+            asked,
+            "no exchange after the revoke"
+        );
+    });
+    assert_eq!(
+        sends_of(&sphere, "obi-wellington").len(),
+        sent_before,
+        "nothing more went to the Sphere"
+    );
+}
+
+/// SPHERE-23: when the Obysphere's owner events say a teammate signed in again and bound the very
+/// key their card now carries (`kind` `rebound`, `new_key_id` that key's id), the `trust_key` card
+/// says so as the Obysphere's claim, in obid's own words, with `reason` `signed_in_again` in its
+/// payload, and still asks to compare. A kind obid doesn't know, or an event for another key, is
+/// no reason.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sphere_23_a_key_rebound_by_sign_in_says_so_and_still_asks() {
+    let folder = Folder::new("sphere-23");
+    let (sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    tokio::task::block_in_place(|| read_members(&obid));
+    let first = obi_protocol::keys::Keypair::from_seed_string("ernesto's new Mac");
+    let event = |id: u64, reason: &str, new_key_id: &str| {
+        json!({"id": id, "owner": "ernesto", "reason": reason, "at": "2026-11-18T12:00:00Z",
+               "old_key_id": ernesto.owner.key.key_id(), "new_key_id": new_key_id,
+               "account_linked": true, "revoked": ["obi-ernesto"]})
+    };
+    // Events the card must not take: the reserved `rotated`, a reason obid doesn't know, and a
+    // sign-in to another key.
+    sphere.lock().owner_events = vec![
+        event(1, "rotated", &first.key_id()),
+        event(2, "something_new", &first.key_id()),
+        event(3, "signed_in_again", "ed25519:not-this-key"),
+    ];
+    serve_owner_key(&sphere, &ernesto, &first, 2);
+    tokio::task::block_in_place(|| {
+        read_members(&obid);
+        let cards = trust_cards(&obid, "");
+        assert_eq!(cards.len(), 1, "{cards:#?}");
+        let fingerprint = first.key_id();
+        assert_eq!(
+            cards[0]["confirm"]["payload"],
+            json!({"owner": "ernesto", "fingerprint": fingerprint}),
+            "no reason from rotated, an unknown reason or another key"
+        );
+        assert!(
+            !cards[0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Obysphere says"),
+            "{:#}",
+            cards[0]
+        );
+    });
+    // Then the Sphere records the re-bind to the key his card carries next.
+    let second = obi_protocol::keys::Keypair::from_seed_string("ernesto's other new Mac");
+    sphere
+        .lock()
+        .owner_events
+        .push(event(4, "signed_in_again", &second.key_id()));
+    serve_owner_key(&sphere, &ernesto, &second, 3);
+    tokio::task::block_in_place(|| {
+        read_members(&obid);
+        let cards = trust_cards(&obid, "");
+        assert_eq!(
+            cards.len(),
+            1,
+            "a newer key's card stands for it: {cards:#?}"
+        );
+        let card = &cards[0];
+        let fingerprint = second.key_id();
+        assert_eq!(
+            card["confirm"]["payload"],
+            json!({"owner": "ernesto", "fingerprint": fingerprint, "reason": "signed_in_again"})
+        );
+        assert_eq!(
+            card["title"],
+            format!("New key for ernesto: compare with them ({fingerprint})")
+        );
+        assert_eq!(
+            card["text"],
+            format!(
+                "The Obysphere says ernesto signed in again. ernesto's owner key changed. Compare its fingerprint with them before you trust it: {fingerprint}."
+            )
+        );
+        // Still the owner's call: nothing is trusted by itself.
+        assert_eq!(card["options"], json!(["Confirm", "Cancel"]));
+        assert_eq!(ernestos_pin(&obid)["changedTo"], fingerprint);
+        assert_eq!(
+            ernestos_pin(&obid)["fingerprint"],
+            ernesto.owner.key.key_id()
+        );
+    });
+    // An admin's reset, read from where the last read ended (the event ids are numbers).
+    let third = obi_protocol::keys::Keypair::from_seed_string("ernesto's key after a reset");
+    sphere
+        .lock()
+        .owner_events
+        .push(event(5, "admin_reset", &third.key_id()));
+    serve_owner_key(&sphere, &ernesto, &third, 4);
+    tokio::task::block_in_place(|| {
+        read_members(&obid);
+        let cards = trust_cards(&obid, "");
+        assert_eq!(cards.len(), 1, "{cards:#?}");
+        let fingerprint = third.key_id();
+        assert_eq!(cards[0]["confirm"]["payload"]["reason"], "admin_reset");
+        assert!(
+            cards[0]["text"].as_str().unwrap().starts_with(
+                "The Obysphere says an admin reset their key. ernesto's owner key changed."
+            ),
+            "{:#}",
+            cards[0]
+        );
+        assert!(cards[0]["text"].as_str().unwrap().contains(&fingerprint));
+    });
+}
+
+/// What the Sphere's directory holds for obid's own card after its owner signed in again and the
+/// Sphere bound it with no invitation (SPHERE-24): the owner's key bound, and the member `status`
+/// with its current key `public_key` (obid's own, unless a test says otherwise).
+fn listed_in_sphere(
+    sphere: &FakeSphere,
+    card: &Value,
+    owner: &Owner,
+    status: &str,
+    public_key: &str,
+) {
+    let params = obi_protocol::card::params(card).unwrap().clone();
+    let mut state = sphere.lock();
+    state.bound.insert(owner.id.clone(), owner.key.public_key());
+    state.members.retain(|m| m["obi"] != params["obi_id"]);
+    let seq = state.entries.len() + 1;
+    state.members.push(json!({
+        "obi": params["obi_id"], "owner": owner.id, "owner_key": owner.key.public_key(),
+        "owner_key_id": owner.key.key_id(), "status": status,
+        "joined_at": obi_protocol::time::format(obi_protocol::time::now()), "card": card,
+        "keys": [{"key_id": obi_protocol::keys::key_id_of(public_key), "public_key": public_key,
+                  "valid_from_seq": seq, "valid_until_seq": null}]
+    }));
+}
+
+/// SPHERE-24: after a sign-in re-bind the Sphere already lists this Oby's card, so `POST
+/// /v1/obid/sphere/join` with `"rebound": true` in place of `invitation` redeems nothing: it
+/// exchanges the delegation, checks the directory lists obid's own card, active, under that owner
+/// and owner key, then follows as a join does. Not listed, removed, or listed with another Obi key:
+/// `409`, saying why, and nothing is joined. Both an invitation and `rebound`, or a `rebound` that
+/// isn't `true`, is `422`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sphere_24_a_rebound_join_takes_the_membership_the_sphere_lists() {
+    let folder = Folder::new("sphere-24");
+    let sphere = FakeSphere::start().await;
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+    let owner = Owner::new("wellington");
+    tokio::task::block_in_place(|| {
+        let key = call(&obid, "POST", "/v1/obid/sphere/key", None);
+        assert_eq!(key.status, 200, "{}", key.text);
+        let made = call(
+            &obid,
+            "POST",
+            "/v1/obid/sphere/card",
+            Some(
+                &json!({"url": sphere.url, "sphere": SPHERE, "obiId": "obi-wellington",
+                         "name": "Wellington's Obi", "ownerKey": owner.key.public_key(),
+                         "accepts": ["review_request"]}),
+            ),
+        );
+        assert_eq!(made.status, 200, "{}", made.text);
+        let unsigned = made.body["card"].as_object().unwrap().clone();
+        let card = obi_protocol::card::sign(&unsigned, &owner.key).unwrap();
+        let own_key = key.body["publicKey"].as_str().unwrap().to_owned();
+        let delegation = owner.delegation("obi-wellington", OBI_SCOPES);
+        let join = |extra: Value| {
+            let mut body = json!({"url": sphere.url, "sphere": SPHERE, "card": card,
+                                  "delegation": delegation});
+            for (k, v) in extra.as_object().unwrap() {
+                body[k] = v.clone();
+            }
+            call(&obid, "POST", "/v1/obid/sphere/join", Some(&body))
+        };
+        let not_joined = || assert_eq!(get(&obid, "/v1/obid/sphere")["state"], "none");
+
+        // Shapes that aren't a rebound join.
+        let both = join(json!({"rebound": true, "invitation": {"id": "x", "secret": "y"}}));
+        assert_eq!(both.status, 422, "{}", both.text);
+        let odd = join(json!({"rebound": "yes"}));
+        assert_eq!(odd.status, 422, "{}", odd.text);
+        not_joined();
+
+        // Not listed at all.
+        let absent = join(json!({"rebound": true}));
+        assert_eq!(absent.status, 409, "{}", absent.text);
+        assert!(
+            absent.text.contains("nothing was joined"),
+            "{}",
+            absent.text
+        );
+        not_joined();
+
+        // Listed, but removed.
+        listed_in_sphere(&sphere, &card, &owner, "revoked", &own_key);
+        let removed = join(json!({"rebound": true}));
+        assert_eq!(removed.status, 409, "{}", removed.text);
+        not_joined();
+
+        // Listed with an Obi key that isn't obid's.
+        let other = obi_protocol::keys::Keypair::from_seed_string("someone else's Obi key");
+        listed_in_sphere(&sphere, &card, &owner, "active", &other.public_key());
+        let not_mine = join(json!({"rebound": true}));
+        assert_eq!(not_mine.status, 409, "{}", not_mine.text);
+        not_joined();
+
+        // Listed as the Sphere binds it after a re-bind: joined, with no invitation redeemed.
+        let redeemed_before = sphere.lock().invitations.len();
+        listed_in_sphere(&sphere, &card, &owner, "active", &own_key);
+        let joined = join(json!({"rebound": true}));
+        assert_eq!(joined.status, 200, "{}", joined.text);
+        assert_eq!(joined.body["state"], "joined");
+        assert_eq!(joined.body["obiId"], "obi-wellington");
+        assert_eq!(sphere.lock().invitations.len(), redeemed_before);
+        // It follows as after a join: the directory reads with its own token.
+        let members = call(&obid, "GET", "/v1/obid/sphere/members", None);
+        assert_eq!(members.status, 200, "{}", members.text);
     });
 }

@@ -1124,6 +1124,17 @@ impl ChatGpt {
         confirmed
     }
 
+    /// Signs the account's ChatGPT login out, the account staying (ACCOUNTS-23): [`Self::remove`],
+    /// then its marker, so it no longer reads signed in. A later sign-in starts afresh. Whether
+    /// OpenAI confirmed the revoke.
+    pub async fn sign_out(&self, account: &str) -> bool {
+        let confirmed = self.remove(account).await;
+        if let Some(dir) = self.folder(account) {
+            let _ = std::fs::remove_file(dir.join(MARKER));
+        }
+        confirmed
+    }
+
     /// A device login took on this account (CHATGPT-16): the ChatGPT one goes, and the account can
     /// sign in with ChatGPT again.
     pub async fn replaced_by_device_login(&self, account: &str) {

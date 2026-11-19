@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { InboxItem, Job } from '../obid';
 
-// Waiting for you (docs/contracts/home.md, WAITING-1 to 3): one list across the profile's projects
+// Waiting for you (docs/contracts/home.md, WAITING-1 to 4): one list across the profile's projects
 // of what needs the owner's word, over obid's inbox. obid answers through the bridge main gives the
 // page (window.app.obid), stood in for here; the clock is vitest's.
 const call = vi.fn();
@@ -90,6 +90,8 @@ describe('Waiting for you', () => {
     expect(rows()).toEqual(['Retry jitter for the collector', 'Fix the live panel’s queue order', 'Fix the iOS signing step']);
     expect(host.querySelector('.waiting-counts')?.textContent).toBe('2 to merge · 1 permission');
     expect(host.textContent).toContain('tetrix · 40m');
+    // a permission says what it asks in place of how long (screen 17)
+    expect(host.textContent).toContain('oby · asks to run a command');
     // a merge's row: Oby's summary, its check and who approved it
     const first = host.querySelector('.waiting-row')!;
     expect(first.querySelector('.waiting-summary')?.textContent).toBe('Backoff gets ±20% jitter so a fleet doesn’t retry at once.');
@@ -101,6 +103,21 @@ describe('Waiting for you', () => {
     expect([...select.options].map((o) => o.textContent)).toEqual(['All projects', 'tetrix', 'oby']);
     await act(async () => { select.value = 'obi-ai-bot/oby'; select.dispatchEvent(new Event('change', { bubbles: true })); });
     expect(rows()).toEqual(['Fix the live panel’s queue order', 'Fix the iOS signing step']);
+  });
+
+  it('waiting_1_a_question_is_tagged_as_a_question_never_with_the_tasks_review', async () => {
+    fill();
+    const s = live.liveState();
+    // a running task's pipeline still says its Review is to come: that's the task's, not the question's
+    s.jobs.j4 = job('j4', 'obi-ai-bot/oby', 'Ask before deleting', { status: 'running', pipeline: { number: 3, total: 6, stages: [
+      { id: 'review', title: 'Review', state: 'upcoming', detail: 'Waiting for review' },
+    ] } });
+    s.inbox = [item('j4-question-q1', 'question', 'j4', at(2), { text: 'Delete the old fixtures?', options: ['Yes', 'No'] })];
+    await waitingPage();
+    const row = host.querySelector('.waiting-row')!;
+    expect(row.querySelector('.waiting-kind')?.textContent).toBe('Question');
+    expect(row.textContent).not.toContain('Waiting for review');
+    expect(row.querySelectorAll('.waiting-tag')).toHaveLength(0);
   });
 
   it('waiting_2_merge_is_signed_and_leaves', async () => {
@@ -247,5 +264,19 @@ describe('Waiting for you', () => {
     await show(panel());
     expect(row()).toBeUndefined();
     expect(rows()).toHaveLength(0);
+  });
+
+  it('waiting_4_a_tasks_decision_put_off_is_still_listed', () => {
+    fill();
+    const s = live.liveState();
+    // j3's permission put off in obid (another device, an earlier build's Later), with that build's
+    // record of it: still the task's to answer, so still listed; the standalone item put off isn't
+    s.inbox = s.inbox.map((i) => (i.id === 'j3-permission-p1' ? { ...i, state: 'later', later: at(-60) } : i));
+    s.answered = { j3: { ask: { kind: 'permission', headline: 'Run xcodebuild', text: '', options: ['Allow', 'Deny'] }, option: 'Later', item: 'j3-permission-p1', until: Date.now() + 3600_000 } };
+    expect(live.waitingOf(s).map((i) => i.id)).toEqual(['merge-j2', 'merge-j1', 'j3-permission-p1']);
+    expect(live.waitingOf(s).map((i) => i.id)).not.toContain('later-1');
+    // answered (not put off), it leaves while its answer is on its way
+    s.answered = { j3: { ...s.answered.j3, option: 'Allow' } };
+    expect(live.waitingOf(s).map((i) => i.id)).not.toContain('j3-permission-p1');
   });
 });

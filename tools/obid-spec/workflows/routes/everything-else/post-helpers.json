@@ -1,0 +1,217 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/helpers",
+  "version": "1.0.0",
+  "description": "A new helper (HELPERS-1, 2, 10): 400 for another key, 422 for each field obid refuses, a Cursor helper without the web too; 201 with a conversation of its own, kept 0600.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/helpers"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/helpers",
+        "body": {
+          "name": "Reviewer",
+          "color": "#3a5a8c",
+          "instructions": "Review pull requests carefully.",
+          "tool": "claude"
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "another-key-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/helpers",
+        "body": {
+          "name": "Reviewer",
+          "color": "#3a5a8c",
+          "instructions": "Review pull requests carefully.",
+          "tool": "claude",
+          "x": 1
+        },
+        "expect": {
+          "status": 400
+        }
+      },
+      "ui": {
+        "proves": [
+          "HELPERS-2"
+        ]
+      }
+    },
+    {
+      "id": "bad-colour-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/helpers",
+        "body": {
+          "name": "Reviewer",
+          "color": "blue",
+          "instructions": "Review pull requests carefully.",
+          "tool": "claude"
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "color is # and 6 hex digits, like #3a5a8c."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "HELPERS-2"
+        ]
+      }
+    },
+    {
+      "id": "bad-tool-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/helpers",
+        "body": {
+          "name": "Reviewer",
+          "color": "#3a5a8c",
+          "instructions": "Review pull requests carefully.",
+          "tool": "gemini"
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "HELPERS-2"
+        ]
+      }
+    },
+    {
+      "id": "helpers-10-cursor-needs-the-web",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/helpers",
+        "body": {
+          "name": "Reviewer",
+          "color": "#3a5a8c",
+          "instructions": "Review pull requests carefully.",
+          "tool": "cursor"
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "reason": "cursor-needs-web"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "HELPERS-10"
+        ]
+      }
+    },
+    {
+      "id": "helpers-1-made",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/helpers",
+        "body": {
+          "name": "Reviewer",
+          "color": "#3a5a8c",
+          "instructions": "Review pull requests carefully.",
+          "tool": "claude",
+          "connectors": [
+            "web",
+            "github",
+            "web"
+          ]
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "name": "Reviewer",
+            "connectors": [
+              "github",
+              "web"
+            ],
+            "conversation": {
+              "$type": "string"
+            },
+            "id": {
+              "$matches": "^[0-9a-f-]{36}$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "HELPERS-1"
+        ]
+      }
+    },
+    {
+      "id": "helpers-1-its-conversation",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.helpers-1-made.body.conversation}",
+              "helper": "${state.helpers-1-made.body.id}"
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "HELPERS-1"
+        ]
+      }
+    },
+    {
+      "id": "kept-0600",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "helpers.json",
+        "expect": {
+          "exists": true,
+          "mode": "0600"
+        }
+      }
+    }
+  ]
+}

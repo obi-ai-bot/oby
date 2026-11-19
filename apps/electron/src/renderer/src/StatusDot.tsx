@@ -30,3 +30,10 @@ export default function StatusDot({ task, live = false }: { task: Task; live?: b
     </span>
   );
 }
+
+// A task's mark where it ended or goes on, as its card in the conversation shows it: stopped or failed,
+// a red dot named as the card names it ("Stopped", "Failed"); else StatusDot's, live (no "new")
+export function TaskMark({ task }: { task: Task }) {
+  const ended = task.status === 'done' && !task.unknown ? ENDED[task.job.status] : undefined;
+  return ended ? <span className="status" role="img" aria-label={ended}><span className="status-dot is-failed" /></span> : <StatusDot task={task} live />;
+}

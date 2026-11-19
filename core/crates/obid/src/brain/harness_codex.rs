@@ -73,10 +73,76 @@ const SETTINGS: &[&str] = &[
     "mcp_servers.oby.tool_timeout_sec=3600",
 ];
 
-/// The `app-server` to run for one attempt of the turn, and what its thread is started with:
-/// `resume`'s thread when there is one, the conversation's orientation, the configured model;
-/// obid's Tetrix server at `tetrix` when it's given; web search live but for a `helper` not
-/// granted it.
+/// The `-c` settings a conversation's `app-server` starts with: Oby's server at `url` and obid's
+/// Tetrix server at `tetrix` when it's given, every feature of [`OFF`] off (the shell on in an
+/// `own` session), web search live but for a `helper` not granted it, and the relay on a ChatGPT
+/// login. Nothing here is started or written.
+fn flags(
+    account: &crate::config::Account,
+    url: &str,
+    tetrix: Option<&str>,
+    own: bool,
+    helper: Option<&Told>,
+) -> Vec<OsString> {
+    // Oby's server and Tetrix's as a job's are given ([`crate::codex::argv`]: its `-c` settings).
+    let argv = crate::codex::argv(Default::default(), Some((url, "")), tetrix);
+    let mut flags: Vec<OsString> = argv[1..argv.len() - 1].to_vec();
+    for feature in off(own) {
+        flags.extend(["-c".into(), format!("features.{feature}=false").into()]);
+    }
+    for setting in SETTINGS {
+        flags.extend(["-c".into(), (*setting).into()]);
+    }
+    // Under `never` Codex asks nobody: Oby's own tools are approved before the run (LANES-21).
+    if own {
+        flags.extend(crate::codex::OWN_OBY_TOOLS.map(OsString::from));
+    }
+    // On a ChatGPT login, no run holds a token: Codex goes through obid's relay with the turn's
+    // own token (crate::chatgpt_relay).
+    if crate::chatgpt::marker_of(account).is_some() {
+        flags.extend(crate::chatgpt_relay::codex_settings(
+            &url.replace("/v1/agent/mcp/", "/v1/agent/chatgpt/"),
+        ));
+    }
+    let web = match super::harness::web(helper) {
+        true => r#"web_search="live""#,
+        false => r#"web_search="disabled""#,
+    };
+    flags.extend(["-c".into(), web.into()]);
+    flags
+}
+
+/// What the thread is told after Codex's own instructions: the conversation's orientation, with
+/// an `own` session's shell in [`NO_SHELL`]'s place (LANES-13).
+fn instructions(shared: &Shared, tetrix: bool, own: bool, helper: Option<&Told>) -> String {
+    match own {
+        true => orientation(shared, tetrix, helper).replacen(NO_SHELL, OWN_SHELL, 1),
+        false => orientation(shared, tetrix, helper),
+    }
+}
+
+/// What a conversation's `app-server` is started with, as one number (CONVERSATION-AGENT-44): its
+/// settings ([`flags`]), the account, its lane and what its thread is told. A waiting one started
+/// otherwise isn't given the turn: it ends, and the turn starts one as it would now.
+pub(super) fn key(
+    shared: &Shared,
+    account: &crate::config::Account,
+    url: &str,
+    tetrix: Option<&str>,
+    own: bool,
+    helper: Option<&Told>,
+) -> u64 {
+    let mut all = flags(account, url, tetrix, own, helper);
+    all.extend([
+        OsString::from(&account.id),
+        OsString::from(if own { "own" } else { "boxed" }),
+        OsString::from(instructions(shared, tetrix.is_some(), own, helper)),
+    ]);
+    super::harness::flags_key(&all)
+}
+
+/// The `app-server` to run for one attempt of the turn, and what its thread is started with
+/// ([`options`]).
 /// Refuses, saying why, a Codex that keeps a feature of [`OFF`] on and a login copy near its end
 /// ([`crate::jobs::codex_copy_ready`]). An `own` one (LANES-13) runs on the account's own folder,
 /// its shell on, and Codex runs no turn on settings that aren't obid's (crate::codex).
@@ -92,28 +158,7 @@ pub(super) async fn launch(
     own: bool,
     helper: Option<&Told>,
 ) -> Result<(Launch, Option<crate::codex::Options>), String> {
-    // Oby's server and Tetrix's as a job's are given ([`crate::codex::argv`]: its `-c` settings).
-    let argv = crate::codex::argv(Default::default(), Some((url, token)), tetrix);
-    let mut flags: Vec<OsString> = argv[1..argv.len() - 1].to_vec();
-    for feature in off(own) {
-        flags.extend(["-c".into(), format!("features.{feature}=false").into()]);
-    }
-    for setting in SETTINGS {
-        flags.extend(["-c".into(), (*setting).into()]);
-    }
-    // On a ChatGPT login, no run holds a token: Codex goes through obid's relay with the turn's
-    // own token (crate::chatgpt_relay).
-    let chatgpt = crate::chatgpt::marker_of(account).is_some();
-    if chatgpt {
-        flags.extend(crate::chatgpt_relay::codex_settings(
-            &url.replace("/v1/agent/mcp/", "/v1/agent/chatgpt/"),
-        ));
-    }
-    let web = match super::harness::web(helper) {
-        true => r#"web_search="live""#,
-        false => r#"web_search="disabled""#,
-    };
-    flags.extend(["-c".into(), web.into()]);
+    let flags = flags(account, url, tetrix, own, helper);
     // Whatever repeats the turn's token (a tool's answer, the agent) is redacted.
     crate::secrets::known().learn(
         &format!("conversation {} MCP token", place.folder.display()),
@@ -143,6 +188,22 @@ pub(super) async fn launch(
     };
     all_off(&launch, off(own)).await?;
     launch.env.push(("OBY_MCP_TOKEN".into(), token.into()));
+    let options = options(shared, account, url, tetrix, resume, own, helper).await;
+    Ok((launch, Some(options)))
+}
+
+/// What a turn of the conversation's thread is started with, on a new `app-server` or one waiting
+/// for it (CONVERSATION-AGENT-44): `resume`'s thread when there is one, the conversation's
+/// orientation, the configured model (each turn's own: a model chosen since applies at once).
+pub(super) async fn options(
+    shared: &Shared,
+    account: &crate::config::Account,
+    url: &str,
+    tetrix: Option<&str>,
+    resume: &Option<String>,
+    own: bool,
+    helper: Option<&Told>,
+) -> crate::codex::Options {
     let offered = shared.jobs.model_lists.to_check(Tool::Codex, &account.id);
     let mut model = Some(crate::settings::account_model(
         &shared.config.home,
@@ -150,6 +211,7 @@ pub(super) async fn launch(
         &account.id,
         &offered,
     ));
+    let chatgpt = crate::chatgpt::marker_of(account).is_some();
     if chatgpt {
         // What its last run was refused is over.
         if let Some(run) = url.rsplit('/').next() {
@@ -161,21 +223,17 @@ pub(super) async fn launch(
             .await
             .0;
     }
-    let options = crate::codex::Options {
+    crate::codex::Options {
         resume: resume.clone(),
         model,
         effort: None,
         plan: false,
-        instructions: Some(match own {
-            true => orientation(shared, tetrix.is_some(), helper).replacen(NO_SHELL, OWN_SHELL, 1),
-            false => orientation(shared, tetrix.is_some(), helper),
-        }),
+        instructions: Some(instructions(shared, tetrix.is_some(), own, helper)),
         no_commands: !own,
         usage: false,
         priced: None,
         chatgpt,
-    };
-    Ok((launch, Some(options)))
+    }
 }
 
 /// Other confined runs may remove more features from the same checked baseline.

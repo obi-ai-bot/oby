@@ -33,3 +33,16 @@ import(${JSON.stringify(pathToFileURL(join(appRoot, 'out/main/index.js')).href)}
 `);
   return electron.launch({ executablePath: electronBinary, args: [launcher], env });
 }
+
+// First run marked done in the page's storage (`oby.onboarded`, `oby.setUp`, `oby.welcomed`), then the page
+// loaded again with it. On its first start the page reloads itself once, as it opens its profile
+// (docs/contracts/profiles.md, PROFILES-41 and 42), which can take the page away under a call: tried again
+// until both the marks and the reload hold.
+export async function skipFirstRun(page) {
+  await until('first run marked done', async () => {
+    await page.waitForLoadState('domcontentloaded');
+    await page.evaluate(() => { for (const k of ['oby.onboarded', 'oby.setUp', 'oby.welcomed']) localStorage.setItem(k, '1'); });
+    await page.reload();
+    return page.evaluate(() => localStorage.getItem('oby.onboarded') === '1');
+  }, 60_000, 250);
+}

@@ -1,0 +1,161 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/obid/sphere/audit",
+  "version": "1.0.0",
+  "description": "The Sphere's audit chain read whole and checked here: verified, its head, and this Obi's entries as typed fields only, never a message's words; 409 before joining.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/obid/sphere/audit"
+    }
+  },
+  "steps": [
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/audit",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "before-joining-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/audit",
+        "expect": {
+          "status": 409
+        }
+      }
+    },
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "asked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.dana-joined.obiId}",
+          "type": "question",
+          "body": {
+            "text": "Is the secret word plum?"
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 202
+        }
+      }
+    },
+    {
+      "id": "verified-with-typed-entries",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/audit",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "body": {
+            "verified": true,
+            "problem": null,
+            "head": {
+              "seq": {
+                "$type": "number"
+              },
+              "hash": {
+                "$type": "string"
+              }
+            },
+            "entries": {
+              "$any": {
+                "type": "question",
+                "from": "${state.alex-joined.obiId}",
+                "to": "${state.dana-joined.obiId}",
+                "correlationId": "${state.asked.body.correlationId}"
+              }
+            }
+          },
+          "text": {
+            "$not": {
+              "$contains": "plum"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -48,6 +48,16 @@ async fn setup(folder: &Folder) -> (FakeSphere, Obid, TestObi) {
     let (sphere, obid, _) = started(folder).await;
     let ernesto = TestObi::join_accepting(&sphere, "obi-ernesto", "ernesto", &["question"]).await;
     read_members(&obid);
+    tokio::task::block_in_place(|| {
+        // SPHERE-18: Ernesto's card has no seal key, so the owner lets obid ask him unsealed.
+        let unsealed = call_typed(
+            &obid,
+            "PUT",
+            "/v1/obid/sphere/peers/ernesto/unsealed",
+            &json!({"allow": true}),
+        );
+        assert_eq!(unsealed.status, 200, "{}", unsealed.text);
+    });
     (sphere, obid, ernesto)
 }
 
@@ -712,6 +722,16 @@ async fn peer_4_it_goes_to_the_oby_that_takes_questions_and_seals() {
 
     // The one that seals drops its key: the words don't wait on it, nor go to it in the clear.
     sealing.new_card(&sphere, "Dana's Oby", false);
+    tokio::task::block_in_place(|| {
+        // SPHERE-19: this member's card has no seal key; the owner lets obid ask unsealed.
+        let unsealed = call_typed(
+            &obid,
+            "PUT",
+            "/v1/obid/sphere/peers/dana/unsealed",
+            &json!({"allow": true}),
+        );
+        assert_eq!(unsealed.status, 200, "{}", unsealed.text);
+    });
     let other = tokio::task::block_in_place(|| ask(&obid, "dana", "In the clear?"));
     assert_eq!(other.status, 202, "{}", other.text);
     let got = clear.receive(1, 20).await;

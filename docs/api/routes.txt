@@ -11,6 +11,7 @@ POST /v1/accounts/{id}/reserve
 DELETE /v1/accounts/{id}/sign-in
 GET /v1/accounts/{id}/sign-in
 POST /v1/accounts/{id}/sign-in
+POST /v1/accounts/{id}/sign-out
 GET /v1/agent/chatgpt/{run}/models
 POST /v1/agent/chatgpt/{run}/responses
 POST /v1/agent/mcp/{job}
@@ -25,11 +26,13 @@ DELETE /v1/attachments
 POST /v1/attachments
 GET /v1/brain/usage
 POST /v1/clear
+GET /v1/connectors
 GET /v1/conversation
 POST /v1/conversation/stop
 GET /v1/conversations
 DELETE /v1/conversations/{id}
 PATCH /v1/conversations/{id}
+GET /v1/conversations/{id}/files
 POST /v1/devices
 DELETE /v1/devices/{id}
 GET /v1/devices/{id}/pairing
@@ -58,6 +61,7 @@ DELETE /v1/jobs/{id}
 GET /v1/jobs/{id}
 PATCH /v1/jobs/{id}
 POST /v1/jobs/{id}/archive
+GET /v1/jobs/{id}/changes
 POST /v1/jobs/{id}/delete
 POST /v1/jobs/{id}/dismiss
 POST /v1/jobs/{id}/messages
@@ -71,6 +75,8 @@ POST /v1/jobs/{id}/start
 POST /v1/jobs/{id}/stop
 GET /v1/jobs/{id}/transcript
 GET /v1/jobs/{id}/transcript/{n}
+GET /v1/jobs/{id}/undo
+POST /v1/jobs/{id}/undo
 GET /v1/jobs/{id}/wait
 GET /v1/limit-decisions
 POST /v1/limit-decisions/{id}/answer
@@ -98,8 +104,10 @@ POST /v1/obid/sphere/join
 POST /v1/obid/sphere/key
 GET /v1/obid/sphere/members
 PUT /v1/obid/sphere/membership
+PUT /v1/obid/sphere/owner
 GET /v1/obid/sphere/peers/{owner}
 POST /v1/obid/sphere/peers/{owner}/ask
+PUT /v1/obid/sphere/peers/{owner}/unsealed
 GET /v1/obid/sphere/pins
 POST /v1/obid/sphere/pins/{owner}
 POST /v1/obid/sphere/requests
@@ -115,6 +123,7 @@ POST /v1/plans
 POST /v1/plans/cancel
 GET /v1/profiles
 POST /v1/profiles
+DELETE /v1/profiles/{id}
 PATCH /v1/profiles/{id}
 GET /v1/projects
 POST /v1/projects
@@ -128,6 +137,7 @@ DELETE /v1/routines/{id}
 GET /v1/routines/{id}
 PATCH /v1/routines/{id}
 POST /v1/routines/{id}/run
+PUT /v1/settings/agents/{agent}
 GET /v1/settings/chatgpt
 PUT /v1/settings/chatgpt
 PUT /v1/settings/default-agent

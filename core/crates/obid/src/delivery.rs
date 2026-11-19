@@ -20,7 +20,8 @@ pub struct Delivery {
 
 /// The moves: start (`queued` → `starting`), confirm (`starting` → `running`, `by`), restore
 /// (`starting` → `queued`, `why`), finish (`running` → `answered`, `failed` with its `error`, or
-/// `interrupted`) and cancel (`queued` or `running` → `cancelled`).
+/// `interrupted`), cut (`starting` → `interrupted`: obid stopped as the turn began, DELIVERY-7) and
+/// cancel (`queued` or `running` → `cancelled`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Move {
     Start,
@@ -52,7 +53,7 @@ impl Delivery {
             ("starting", Move::Restore(why)) => ("queued", Some((&mut self.why, why))),
             ("running", Move::Answered) => ("answered", None),
             ("running", Move::Failed(error)) => ("failed", Some((&mut self.error, error))),
-            ("running", Move::Interrupted) => ("interrupted", None),
+            ("starting" | "running", Move::Interrupted) => ("interrupted", None),
             ("queued" | "running", Move::Cancel) => ("cancelled", None),
             _ => return false,
         };
@@ -128,7 +129,7 @@ mod tests {
                         error: Some(error.clone()),
                         ..at("failed")
                     }),
-                    ("running", Move::Interrupted) => Some(at("interrupted")),
+                    ("starting" | "running", Move::Interrupted) => Some(at("interrupted")),
                     ("queued" | "running", Move::Cancel) => Some(at("cancelled")),
                     _ => None,
                 };

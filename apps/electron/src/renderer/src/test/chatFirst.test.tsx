@@ -87,15 +87,18 @@ describe('chat first', () => {
     expect(html).not.toContain('class="chip"');
   });
 
-  it('CHATFIRST-8: what Oby asks shows over your conversation', async () => {
-    expect(await home('?everything&chat')).toMatch(/class="asks-over"><section data-asks/);
+  it('CHATFIRST-8: nothing is stacked over your conversation: the thread keeps the whole window above its box', async () => {
+    const html = await home('?everything&chat');
+    expect(html).toContain('data-chat');
+    expect(html).not.toContain('asks-over');
+    expect(html).not.toContain('data-asks');
   });
 
-  it('CHATFIRST-8: an ask with no task is on the page on Home and over a conversation; a job’s only on its own', async () => {
+  it('CHATFIRST-8: an ask with no task or conversation is on the page only on Home; a job’s only on its own', async () => {
     vi.doMock('electron', () => ({ app: { getPath: () => '', isPackaged: false }, BrowserWindow: {}, Notification: {}, ipcMain: {}, powerMonitor: {}, shell: {} }));
     const { onPage } = await import('../../../main/notify');
     expect(onPage({}, {})).toBe(true);
-    expect(onPage({ conversation: 'c1' }, {})).toBe(true);
+    expect(onPage({ conversation: 'c1' }, {})).toBe(false);
     expect(onPage({ job: 'j1' }, {})).toBe(false);
     expect(onPage({ conversation: 'c1' }, { conversation: 'c2' })).toBe(false);
     expect(onPage({ conversation: 'c1' }, { job: 'j1' })).toBe(false);

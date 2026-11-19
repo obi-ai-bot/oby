@@ -1,0 +1,125 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/obid/sphere/join: an Obysphere obid can't reach",
+  "version": "1.0.0",
+  "description": "A join to an Obysphere that doesn't answer is 504 and joins nothing (SPHERE-2).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/obid/sphere/join"
+    }
+  },
+  "steps": [
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "key",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/key",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/card",
+        "body": {
+          "url": "http://127.0.0.1:9",
+          "sphere": "nowhere",
+          "obiId": "obi-nowhere",
+          "name": "Alex's Oby",
+          "ownerKey": "${state.alex-key.public}",
+          "accepts": [
+            "question"
+          ]
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "signed",
+      "use": "runtime.rust:sign-card",
+      "inputs": {
+        "ownerKey": "${state.alex-key}",
+        "card": "${state.card.body.card}"
+      }
+    },
+    {
+      "id": "delegation",
+      "use": "runtime.rust:delegation",
+      "inputs": {
+        "ownerKey": "${state.alex-key}",
+        "owner": "alex",
+        "sphere": "nowhere",
+        "obi": "obi-nowhere"
+      }
+    },
+    {
+      "id": "sphere-2-not-answering-504",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/join",
+        "body": {
+          "url": "http://127.0.0.1:9",
+          "sphere": "nowhere",
+          "invitation": {
+            "id": "00000000-0000-4000-8000-000000000000",
+            "secret": "x"
+          },
+          "card": "${state.signed}",
+          "delegation": "${state.delegation.jwt}"
+        },
+        "expect": {
+          "status": 504
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-2"
+        ]
+      }
+    },
+    {
+      "id": "sphere-2-nothing-joined",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere",
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "none"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-2"
+        ]
+      }
+    }
+  ]
+}

@@ -17,6 +17,7 @@ pub mod actions;
 pub mod ask;
 pub mod briefing;
 pub mod calls;
+pub mod defaults;
 pub mod find;
 pub mod harness;
 pub mod harness_codex;
@@ -75,6 +76,12 @@ struct Request {
     /// The project a new conversation starts in (crate::projects), by id; only with `new`, and
     /// only from the owner's Mac app.
     project: Option<String>,
+    /// The message box's chips (docs/contracts/composer.md, COMPOSER-3 to 7): the mode, tool,
+    /// model and effort of the jobs these words start. Never written to Settings or an account.
+    defaults: Option<defaults::Defaults>,
+    /// The members the words `@`-name, by exact owner id (docs/contracts/ask-an-oby.md, ASK-40):
+    /// asked as `oby_ask` asks, before the model runs. Add-only (`ask-mentions-v1`).
+    ask: Option<Vec<String>>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -95,8 +102,10 @@ pub async fn plan(
     headers: axum::http::HeaderMap,
     paired: Option<axum::Extension<crate::gateway::PairedDevice>>,
     relayed: Option<axum::Extension<crate::gateway::Relayed>>,
+    scope: Option<axum::Extension<crate::profiles::Scope>>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
+    let scope = crate::profile_scope::of(&shared, scope);
     let req: Request = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "That isn't a plan request."))?;
     let words = req.said.trim();
@@ -115,6 +124,8 @@ pub async fn plan(
         req.attachments.as_deref().unwrap_or(&[]),
     )?;
     let jobs = attached_jobs(&shared, req.jobs.unwrap_or_default())?;
+    let defaults = req.defaults.map(defaults::Defaults::checked).transpose()?;
+    let ask = req.ask.map(|owners| mentioned(owners, words)).transpose()?;
     // No length of obid's own, as in Claude Code: the request's body is at most axum's 2 MB, and
     // the model says when words are more than it can read at once ([`TOO_LONG`]). Files or tasks
     // attached are a message without words too (Sangam's message box sends them alone).
@@ -142,6 +153,10 @@ pub async fn plan(
             "A project is chosen when a conversation starts: send project with new.",
         ));
     }
+    // The project is one of the profile the request names (crate::profiles::root_of).
+    let root = (req.project.as_ref())
+        .map(|_| crate::profiles::root_of(&shared, &headers))
+        .transpose()?;
     // Left out, a request joins the latest conversation, as it did when there was only one: the
     // apps from before #493 send none and show one thread.
     let target = match (req.conversation, req.new.unwrap_or(false)) {
@@ -155,6 +170,12 @@ pub async fn plan(
         (None, true) => Target::New,
         (None, false) => Target::Latest,
     };
+    // Another profile's conversation is none of this one's (B00-40): nothing of it is stopped.
+    if let Target::Id(id) = &target
+        && (shared.conversations.profile_of(id)).is_some_and(|tag| !scope.holds(tag.as_deref()))
+    {
+        return Err(crate::conversation::Error::NoConversation.into());
+    }
     let turns = validate_turns(req.turns)?;
     // The owner's message: after more than 30 minutes away, the answer starts with a recap (#594),
     // for an owner who asked for updates.
@@ -175,7 +196,8 @@ pub async fn plan(
         // that start a new conversation have no turn to stop.
         let underway = match &target {
             Target::Id(id) => Some(id.clone()),
-            Target::Latest => shared.turns.latest_conversation(),
+            Target::Latest => (shared.turns.latest_conversation())
+                .filter(|id| scope.holds(shared.conversations.profile_of(id).flatten().as_deref())),
             Target::New => None,
         };
         if let Some(id) = &underway {
@@ -185,7 +207,7 @@ pub async fn plan(
         if let Some(since) = back {
             recap::keep(shared.clone(), since, now);
         }
-        let conversation = underway.or_else(|| shared.conversations.latest_id());
+        let conversation = underway.or_else(|| shared.conversations.latest_id_in(Some(&scope)));
         return Ok((
             StatusCode::OK,
             axum::Json(
@@ -223,13 +245,15 @@ pub async fn plan(
     // The files go with the conversation; their names on the turn, for the tags under the words.
     // The projects' lock first, so the project can't go before the conversation is in it.
     let begun = {
-        let projects = shared.projects.lock();
-        let project = req.project.map(|p| crate::projects::joined(&projects, &p));
+        let mut projects = shared.projects.lock();
+        let project = (req.project.zip(root))
+            .map(|(p, root)| crate::projects::joined(projects.at(&root), &p));
         shared.conversations.begin(
+            &scope,
             target,
-            said.clone(),
-            jobs.clone(),
-            attachments.clone(),
+            said,
+            jobs,
+            attachments,
             id,
             foreign,
             folders,
@@ -260,71 +284,259 @@ pub async fn plan(
         )
             .into_response());
     }
-    let words = turn::Words {
-        turn: begun.turn,
-        said,
-        attachments,
-        jobs,
-        signed,
+    // The words are queued on the conversation's file: its drain answers them, with whatever else
+    // waits there (CONVERSATION-AGENT-49). The request only listens for their answer: a client
+    // that stops waiting can't be told from a slow one, so what the turn does still happens, and
+    // is kept (docs/runner-api.md, `POST /v1/plans`).
+    let asking = turn::Asking {
+        defaults,
+        ask,
+        turns,
+        back,
+        now,
     };
-    // The turn goes on by itself: a client that stops waiting can't be told from a slow one, so
-    // what the plan does still happens, and is kept (docs/runner-api.md, `POST /v1/plans`).
-    let turn = tokio::spawn(async move {
-        let conversation = begun.conversation;
-        // One answer at a time in a conversation: words said while Oby answers wait for that turn
-        // to end, and the next turn answers all that came meanwhile, as the latest's. The others',
-        // and words a cancel dropped, answer nothing.
-        let Some(next) = shared.turns.wait_turn(&conversation, words).await else {
-            if let Some(since) = back {
-                recap::keep(shared.clone(), since, now);
-            }
-            return respond(&shared, &conversation, Talk::None, None, None, vec![]);
-        };
-        // Every word this turn answers moves with it (crate::delivery).
-        let conversations = &shared.conversations;
-        let deliver = |change| conversations.deliver(&conversation, &next.turns, &change);
-        deliver(Move::Start);
-        let said = &next.words.said;
-        // The conversation as it is now, Oby's answer to the turn they waited for included.
-        let given = turns.unwrap_or_else(|| conversations.turns_but(&conversation, &next.turns));
-        let control = shared.turns.begin(&next.words.turn, &conversation);
-        deliver(Move::Confirm(next.words.turn.clone()));
-        control.set_signed(next.words.signed);
-        let asked = Asked {
-            said,
-            attachments: &next.words.attachments,
-            jobs: &next.words.jobs,
-            conversation: &conversation,
-            turn: &control.turn,
-            signed: next.words.signed,
-        };
-        // The recap is written while the brain thinks; a background call is bounded and
-        // tried once, and when it fails the answer is the same as without it.
-        let (answered, recap) = tokio::join!(
-            harness::run(&shared, said, &given, &asked, &control),
-            recap::back(&shared, back, now)
-        );
-        shared.turns.end(&control);
-        let change = match &answered.talk {
-            _ if control.cancelled() => Move::Cancel,
-            Talk::Reply { text, .. } if answered.end == turn::End::BrainFailed => {
-                Move::Failed(crate::secrets::known().redact(text))
-            }
-            _ => Move::Answered,
-        };
-        let recap = recap.or_else(|| shared.presence.take());
-        let made = shared.harness.take_made(&control.turn);
-        let (talk, details) = (answered.talk, answered.details);
-        let answer = respond(&shared, &conversation, talk, details, recap, made);
-        deliver(change);
-        answer
-    });
-    turn.await.map_err(|_| {
-        ApiError::new(
+    let heard = shared.turns.ask(&begun.turn, asking);
+    drain(&shared, &begun.conversation);
+    match heard.await {
+        Ok(turn::Heard::Answer(body)) => Ok((StatusCode::OK, axum::Json(body)).into_response()),
+        Ok(turn::Heard::Failed(status, why)) => Err(ApiError::new(status, why)),
+        Err(_) => Err(ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Oby's brain stopped before it answered.",
-        )
-    })?
+        )),
+    }
+}
+
+/// The answer's body for words a later turn's words carried, or that were cancelled: `none`, the
+/// answer in the conversation.
+fn none_body(conversation: &str) -> Value {
+    json!({"kind": "none", "jobs": [], "drafts": [], "conversation": conversation})
+}
+
+/// The conversation's one drain (CONVERSATION-AGENT-49, R05-04): while words wait there, queued on
+/// its file, one turn answers all of them at once, then the next. Asked for when the owner's words
+/// come, at start, and after a cancel; a turn's end takes the next itself. One runs at a time in a
+/// conversation, so turns there never overlap and nothing waits on a lock.
+pub fn drain(shared: &Arc<Shared>, conversation: &str) {
+    if !shared.turns.start_draining(conversation) {
+        return;
+    }
+    /// Lets another drain start when this one ended without saying it's done (it panicked).
+    struct Draining(Arc<Shared>, String, std::cell::Cell<bool>);
+    impl Drop for Draining {
+        fn drop(&mut self) {
+            if !self.2.get() {
+                self.0.turns.abandon_draining(&self.1);
+            }
+        }
+    }
+    let guard = Draining(shared.clone(), conversation.to_owned(), Default::default());
+    tokio::spawn(async move {
+        let (shared, conversation) = (guard.0.clone(), guard.1.clone());
+        loop {
+            let queued = shared.conversations.queued(&conversation);
+            if queued.is_empty() {
+                let empty = || shared.conversations.queued(&conversation).is_empty();
+                if shared.turns.done_draining(&conversation, empty) {
+                    guard.2.set(true);
+                    return;
+                }
+                continue;
+            }
+            take_turn(&shared, &conversation, queued).await;
+        }
+    });
+}
+
+/// One turn answers the owner's words `queued` in `conversation`, those a cancel didn't take
+/// first: their words one after another, every attachment and job, the latest request's chips,
+/// client turns and recap, and the owner's own only when each was signed. The latest words'
+/// request hears the answer; the earlier ones' hear `none`.
+async fn take_turn(
+    shared: &Arc<Shared>,
+    conversation: &str,
+    queued: Vec<(Turn, crate::delivery::Replay)>,
+) {
+    let conversations = &shared.conversations;
+    let ids: Vec<String> = queued.iter().map(|(t, _)| t.id.clone()).collect();
+    // Every word this turn answers moves with it (crate::delivery): those still queued now.
+    let started = conversations.deliver(conversation, &ids, &Move::Start);
+    let taken: Vec<_> = queued
+        .into_iter()
+        .filter(|(t, _)| started.contains(&t.id))
+        .collect();
+    let Some(last) = taken.last().map(|(t, _)| t.id.clone()) else {
+        return;
+    };
+    let now = obi_protocol::time::now();
+    // What each request asked with: the latest's goes with the turn; an earlier one's recap waits
+    // for the next answer with words.
+    let mut asking = turn::Asking {
+        now,
+        ..Default::default()
+    };
+    for (turn, _) in &taken {
+        let Some(asked) = shared.turns.take_asking(&turn.id) else {
+            continue;
+        };
+        if turn.id == last {
+            asking = asked;
+        } else if let Some(since) = asked.back {
+            recap::keep(shared.clone(), since, asked.now);
+        }
+    }
+    let Some(words) = turn::Words::together(&taken, asking.defaults.clone()) else {
+        return;
+    };
+    let turns: Vec<String> = taken.iter().map(|(t, _)| t.id.clone()).collect();
+    let heard = match answer(shared, conversation, &turns, words, asking).await {
+        Ok(body) => turn::Heard::Answer(body),
+        Err(e) => turn::Heard::Failed(e.status, e.message),
+    };
+    for turn in &turns {
+        let heard = match turn == &last {
+            true => heard.clone(),
+            false => turn::Heard::Answer(none_body(conversation)),
+        };
+        shared.turns.tell(turn, heard);
+    }
+}
+
+/// The turn that answers the owner's `words`, the latest of `turns` (their user turns, oldest
+/// first, `starting`), in `conversation`: what it answers with, as `POST /v1/plans` sends it.
+/// `asking`: what the latest words' request asked with.
+async fn answer(
+    shared: &Arc<Shared>,
+    conversation: &str,
+    turns: &[String],
+    words: turn::Words,
+    asking: turn::Asking,
+) -> Result<Value, ApiError> {
+    let conversations = &shared.conversations;
+    let deliver = |change| conversations.deliver(conversation, turns, &change);
+    let said = &words.said;
+    // The conversation as it is now, Oby's answer to the turn before included.
+    let given = (asking.turns).unwrap_or_else(|| conversations.turns_but(conversation, turns));
+    let control = shared.turns.begin(&words.turn, conversation);
+    deliver(Move::Confirm(words.turn.clone()));
+    conversations.begin_underway(conversation, &words.turn, "Thinking");
+    control.set_signed(words.signed);
+    control.set_mentioned(asking.ask.clone());
+    let asked = Asked {
+        said,
+        attachments: &words.attachments,
+        jobs: &words.jobs,
+        conversation,
+        turn: &control.turn,
+        signed: words.signed,
+        defaults: words.defaults.as_ref(),
+    };
+    // The recap is written while the brain thinks; a background call is bounded and
+    // tried once, and when it fails the answer is the same as without it.
+    let (answered, recap) = tokio::join!(
+        harness::run(shared, said, &given, &asked, &control),
+        recap::back(shared, asking.back, asking.now)
+    );
+    shared.turns.end(&control);
+    let change = match &answered.talk {
+        _ if control.cancelled() => Move::Cancel,
+        Talk::Reply { text, .. } if answered.end == turn::End::BrainFailed => {
+            Move::Failed(crate::secrets::known().redact(text))
+        }
+        _ => Move::Answered,
+    };
+    let recap = recap.or_else(|| shared.presence.take());
+    let made = shared.harness.take_made(&control.turn);
+    let end = answered.end.as_str();
+    let (talk, details) = (answered.talk, answered.details);
+    let body = respond(shared, conversation, talk, details, recap, made);
+    deliver(change);
+    conversations.end_underway(conversation, &control.turn, end);
+    body
+}
+
+/// At most this many members asked by one message's `@`s (ASK-41).
+const MOST_MENTIONED: usize = 10;
+
+/// `POST /v1/plans`'s `ask` (ASK-40, ASK-41): 1 to [`MOST_MENTIONED`] owner ids, each once, and the
+/// question, the words without the `@<owner>` mentions they start with. `422` for anything else.
+fn mentioned(owners: Vec<String>, words: &str) -> Result<turn::Mentioned, ApiError> {
+    let refused = |why: &str| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why);
+    let mut unique: Vec<String> = vec![];
+    for owner in owners {
+        if !obi_protocol::schema::is_valid("common#/$defs/slug", &json!(owner)) {
+            return Err(refused(
+                "ask is owner ids: 1 to 63 lower-case letters, digits and dashes, not starting or ending with a dash.",
+            ));
+        }
+        if !unique.contains(&owner) {
+            unique.push(owner);
+        }
+    }
+    if unique.is_empty() || unique.len() > MOST_MENTIONED {
+        return Err(refused("ask names 1 to 10 members."));
+    }
+    let question = without_leading_mentions(words, &unique);
+    if question.is_empty() {
+        return Err(refused(
+            "There's no question to ask: the words are only who to ask.",
+        ));
+    }
+    Ok(turn::Mentioned {
+        owners: unique,
+        question,
+    })
+}
+
+/// `words` without the `@<owner>` (case aside) they start with, for owners in `owners`, and the
+/// spaces and commas between them.
+fn without_leading_mentions(words: &str, owners: &[String]) -> String {
+    let mut rest = words.trim_start();
+    while let Some(after) = rest.strip_prefix('@') {
+        let name: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .collect();
+        if !owners.iter().any(|o| o.eq_ignore_ascii_case(&name)) {
+            break;
+        }
+        rest = after[name.len()..].trim_start_matches(|c: char| c.is_whitespace() || c == ',');
+    }
+    rest.trim().to_owned()
+}
+
+/// At start (DELIVERY-7 to 10, R05-03): the words a stop cut get obid's line and read
+/// `interrupted`, and are never run again by themselves (they may have started jobs); the words
+/// that only waited behind them get one turn per conversation, oldest first, as the owner's own
+/// only when each was signed.
+pub fn recover(shared: &Arc<Shared>) {
+    // The chips aren't kept on the file (COMPOSER-4): words answered after a restart take the
+    // owner's usual mode, tool, model and effort.
+    for conversation in shared.conversations.recover(shared.jobs.stopped_cleanly) {
+        drain(shared, &conversation);
+    }
+}
+
+/// The owner's words of `turns` waiting in `conversation` are cancelled, while they still wait:
+/// they read `cancelled`, their requests hear `none`, and an earlier one's recap waits for the
+/// next answer. The user's turns cancelled.
+fn cancel_waiting(shared: &Arc<Shared>, conversation: &str, turns: &[String]) -> Vec<String> {
+    let waiting: Vec<String> = (shared.conversations.queued(conversation).into_iter())
+        .map(|(t, _)| t.id)
+        .filter(|id| turns.is_empty() || turns.contains(id))
+        .collect();
+    let dropped = shared
+        .conversations
+        .deliver(conversation, &waiting, &Move::Cancel);
+    for turn in &dropped {
+        if let Some(since) = shared.turns.take_asking(turn).and_then(|a| a.back) {
+            recap::keep(shared.clone(), since, obi_protocol::time::now());
+        }
+        shared
+            .turns
+            .tell(turn, turn::Heard::Answer(none_body(conversation)));
+    }
+    dropped
 }
 
 /// Why words Oby's brain wrote in `conversation` aren't on obid's allowlist (crate::secretspec):
@@ -361,26 +573,36 @@ pub fn written_in(
 }
 
 /// Which conversation's turn Stop or cancel is for: `{"conversation": "<id>"}`, or, with no
-/// body (the apps from before #493), the conversation of the latest turn under way.
-fn underway(shared: &Shared, body: &Bytes) -> Result<Option<String>, ApiError> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Which {
-        conversation: Option<String>,
+/// body (the apps from before #493), the conversation of the latest turn under way. `turn`, on a
+/// cancel only, names the owner's words waiting there that it drops alone (COMPOSER-11).
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct Which {
+    conversation: Option<String>,
+    turn: Option<String>,
+}
+fn which(body: &Bytes) -> Result<Which, ApiError> {
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(Which::default());
     }
-    let named = if body.iter().all(u8::is_ascii_whitespace) {
-        None
-    } else {
-        serde_json::from_slice::<Which>(body)
-            .map_err(|_| {
-                ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    "The body is {\"conversation\": \"<id>\"}, or nothing.",
-                )
-            })?
-            .conversation
-    };
-    Ok(named.or_else(|| shared.turns.latest_conversation()))
+    serde_json::from_slice::<Which>(body).map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "The body is {\"conversation\": \"<id>\"}, or nothing.",
+        )
+    })
+}
+fn underway(shared: &Shared, body: &Bytes) -> Result<Option<String>, ApiError> {
+    let named = which(body)?;
+    if named.turn.is_some() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Stop takes {\"conversation\": \"<id>\"}, or nothing: turn is for POST /v1/plans/cancel.",
+        ));
+    }
+    Ok(named
+        .conversation
+        .or_else(|| shared.turns.latest_conversation()))
 }
 
 /// `POST /v1/conversation/stop`: the turn under way in one conversation ends after the action
@@ -396,10 +618,32 @@ pub async fn stop(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Resp
 /// `POST /v1/plans/cancel`: the turn under way in one conversation is dropped: what its plan
 /// would do doesn't happen, and its answer is `none`, as is the answer to words waiting for it,
 /// which read `cancelled` (the turn's own words do once it ends). What it did already stays done.
+///
+/// With `turn` (and its `conversation`), only those words go, while they still wait: the turn
+/// under way and other words go on, and the answer's `dropped` lists them, or is empty when a turn
+/// had taken them already (COMPOSER-11).
 pub async fn cancel(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Response, ApiError> {
+    if let Which {
+        conversation,
+        turn: Some(turn),
+    } = which(&body)?
+    {
+        let Some(id) = conversation else {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Name the conversation the words are waiting in.",
+            ));
+        };
+        let dropped = cancel_waiting(&shared, &id, std::slice::from_ref(&turn));
+        return Ok((
+            StatusCode::OK,
+            axum::Json(json!({"cancelled": true, "dropped": dropped})),
+        )
+            .into_response());
+    }
     if let Some(id) = underway(&shared, &body)? {
-        let dropped = shared.turns.cancel(Some(&id));
-        shared.conversations.deliver(&id, &dropped, &Move::Cancel);
+        shared.turns.cancel(Some(&id));
+        cancel_waiting(&shared, &id, &[]);
     }
     Ok((StatusCode::OK, axum::Json(json!({"cancelled": true}))).into_response())
 }
@@ -412,7 +656,7 @@ fn respond(
     details: Option<String>,
     recap: Option<String>,
     artifacts: Vec<Value>,
-) -> Result<Response, ApiError> {
+) -> Result<Value, ApiError> {
     if let Talk::Reply { text, jobs } = &mut talk
         && jobs.is_empty()
         && briefing::contradicts(text)
@@ -495,7 +739,7 @@ fn respond(
         body["artifacts"] = json!(artifacts);
     }
     body["conversation"] = json!(conversation);
-    Ok((StatusCode::OK, axum::Json(body)).into_response())
+    Ok(body)
 }
 
 /// A `thinking` event (#592): one call to the brain, as it begins and as its plan comes (`done`),
@@ -508,6 +752,10 @@ pub(super) fn thinking(
     text: &str,
     state: turn::State,
 ) {
+    // The conversation's turn under way is at this step while it runs (CONVERSATION-AGENT-50).
+    if state == turn::State::Running {
+        (shared.conversations).underway_step(&control.conversation, &control.turn, text);
+    }
     shared.events.send(
         "thinking",
         json!({"turn": control.turn, "conversation": control.conversation, "index": index,
@@ -537,7 +785,12 @@ pub(super) fn acknowledge(shared: &Shared, control: &turn::Control, text: &str) 
 pub(super) fn context(shared: &Shared, conversation: &str, turns: &[Turn], nonce: &str) -> Context {
     let config = &shared.config;
     let now = obi_protocol::time::now();
-    let tools = tool_accounts(config);
+    // Only the accounts of the conversation's profile (B00-40).
+    let scope = crate::profile_scope::of_conversation(shared, conversation);
+    let mine = |a: &crate::config::Account| shared.profiles.accounts.holds(&scope, &a.id);
+    let tools: Vec<_> = (tool_accounts(config).into_iter())
+        .map(|(tool, list)| (tool, list.into_iter().filter(mine).collect::<Vec<_>>()))
+        .collect();
     let mut accounts: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut every = vec!["auto".to_owned()];
     let mut move_accounts: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -578,7 +831,7 @@ pub(super) fn context(shared: &Shared, conversation: &str, turns: &[Turn], nonce
         turns: turns.to_vec(),
         conversation: conversation.to_owned(),
         place: shared.host.clone(),
-        jobs: shared.jobs.list(usize::MAX),
+        jobs: crate::profile_scope::jobs_of(shared, conversation),
         inbox: shared.link.waiting_items(now),
         accounts: told,
         // Only while routing would use it: never a full or signed-out account for the plan to pin.
@@ -1026,4 +1279,46 @@ pub(crate) fn validate_attachments(home: &Path, paths: &[String]) -> Result<Vec<
         out.push(p.clone());
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod mention_tests {
+    use super::*;
+
+    #[test]
+    fn ask_41_ask_is_owner_ids_with_a_question() {
+        let owners = |list: &[&str]| list.iter().map(|o| (*o).to_owned()).collect::<Vec<_>>();
+        // The words without the mentions they start with, each member once.
+        let m = mentioned(
+            owners(&["dana", "dima", "dana"]),
+            "@Dana, @dima are you on billing? Ask @dana too",
+        )
+        .unwrap();
+        assert_eq!(m.owners, ["dana", "dima"]);
+        assert_eq!(m.question, "are you on billing? Ask @dana too");
+        // A mention of someone not in `ask` stays in the words.
+        let m = mentioned(owners(&["dana"]), "@sam and @dana, lunch?").unwrap();
+        assert_eq!(m.question, "@sam and @dana, lunch?");
+        let m = mentioned(owners(&["dana"]), "@danat hi").unwrap();
+        assert_eq!(m.question, "@danat hi");
+        // 422s: not owner ids, none, more than ten, and only the mentions.
+        for (list, said) in [
+            (owners(&["Dana"]), "@Dana hi"),
+            (owners(&["obi dana"]), "hi"),
+            (owners(&["-dana"]), "hi"),
+            (owners(&[]), "hi"),
+            ((0..11).map(|i| format!("m{i}")).collect(), "hi"),
+            (owners(&["dana"]), "@dana"),
+            (owners(&["dana"]), " @dana ,  "),
+        ] {
+            let refused = mentioned(list.clone(), said)
+                .err()
+                .unwrap_or_else(|| panic!("{list:?} {said:?}"));
+            assert_eq!(
+                refused.status,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{list:?} {said:?}"
+            );
+        }
+    }
 }

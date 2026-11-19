@@ -1,6 +1,6 @@
 # Adding accounts
 
-The business behavior contract for connecting any number of accounts of any tool easily, from [the template](../business-contract-template.md). Scenarios are numbered `ACCOUNTS-n`; the tests that prove them are named after them (`accounts_1_…` in `core/crates/obid/tests/accounts_api.rs` and `core/crates/obid/src/accounts.rs`, `accounts_18_…` in `core/crates/obid/src/jobs/logins.rs`, `ACCOUNTS-10:` to `ACCOUNTS-16:` in `apps/electron/src/renderer/src/test/addAccount.test.ts`).
+The business behavior contract for connecting any number of accounts of any tool easily, from [the template](../business-contract-template.md). Scenarios are numbered `ACCOUNTS-n`; the tests that prove them are named after them (`accounts_1_…` in `core/crates/obid/tests/accounts_api.rs` and `core/crates/obid/src/accounts.rs`, `accounts_23_…` to `accounts_28_…` in `core/crates/obid/src/accounts/sign_out.rs`, `accounts/bins.rs`, `tests/accounts_api.rs` and `apps/electron/src/renderer/src/test/signOut.test.tsx`, `accounts_18_…` in `core/crates/obid/src/jobs/logins.rs`, `ACCOUNTS-10:` to `ACCOUNTS-16:` in `apps/electron/src/renderer/src/test/addAccount.test.ts`).
 
 ## Feature and status
 
@@ -56,6 +56,38 @@ It stays when: the tool said no email (Cursor out of reach; nothing to compare);
 - No box ever gets an account's folder; agents have no code-host login: nothing here changes either.
 - Older apps ignore the new keys. A new key in an Account is absent while it has no value.
 
+### Why an account can't run
+
+The owner's words of 2026-11-16: when an account can't run, say why, on the account, on the line where a conversation moves off it, and on a failed task's card.
+
+- **obid** keeps, per account, why its agent last couldn't start: its launch was refused (a login that's missing, ended or refused by macOS, a binary it can't find, a box it can't make), or its login was refused when it ran. In plain words: the first line, the secrets it knows taken out, each path down to its last name, so no home folder or `~/…` is in it. It's in memory only, kept until a start on that account goes through, the account is signed in again, or 10 minutes have passed since it last failed; then the next start tries it again. A sign-in or removal under way isn't a reason.
+- While it's kept, `GET /v1/status` and the `accounts` event carry it as the account's `cantRun`, and routing passes over the account as over a signed-out one: work goes to one that can start, and to it only when nothing else can. A job that names it, and a conversation the owner pointed at it, still try it first.
+- **The Electron app** shows it on the account's row in Settings › Agents, `<tool> can’t start: <reason>` (proposed, Sangam's to rewrite), and doesn't show that account as where new tasks go while another can start. A failed task's line, on its card, is obid's reason with each path down to its last name.
+
+### Where a task goes
+
+The owner's words of 2026-11-17: as simple and honest as T3 Code, which runs the provider you picked or tells you it can't.
+
+- **obid** decides where every new task goes, by one rule, whichever way it started: the owner's words, a conversation's dispatch, Fix CI and the GitHub feed's other starts, a routine's run (`Jobs::create`, `routing::route_new`). An account **can't take** a task while its tool's CLI isn't on this Mac, it isn't signed in, or its `cantRun` is kept; routing passes over one as over a signed-out account, and then takes the one with the most room.
+- **An account named** is where the task goes. One whose tool's CLI isn't on this Mac, so nothing could ever run it, is refused before anything starts (`422`), but for a follow-up nobody's words asked for now (a conversation's, a review's), which keeps its first task's account and runs as before. One the owner names in `POST /v1/jobs`, and their words' follow-up of that task, which keeps its account, is refused the same way when it isn't signed in (its login missing, or one macOS refused or that ended), never started to fail a moment later ([why](../decisions/2026-11-18-a-signed-out-account-is-refused.md)). Each says why in plain words with what to do: `Cursor isn't installed on this Mac, so this task didn't start: install it, or ask for another account.`, `Claude Code · Personal isn't signed in, so this task didn't start: sign it in from Settings › Agents, or ask for another account.` (proposed words, Sangam's to rewrite). Never a tool's raw error or a path. A signed-out account a conversation's dispatch, a routine, a review or the owner's words to a task they didn't name it for carry, and one whose `cantRun` is kept, still goes there (ACCOUNTS-20), its run saying why in plain words (ACCOUNTS-19). One at its limit keeps the job and its wait (#871).
+- **An agent the owner named** (`agent: "claude"`, "on Claude Code") whose accounts all can't take it, or have no room, hands the task to the account with the most room of any tool at once, while `accountFailover` is on, and the task says so: its `routed` line, `Claude Code is at 97% of its week until Thu 9:00 AM, so this runs on Codex · Personal.` (proposed words), shown on its card under its agent and said in the reply that started it, after the plan's own words when the plan had some (CONVERSATION-AGENT-40). With nothing else that can take it, it starts there and its run says why it couldn't, in plain words (ACCOUNTS-19 and 20); a limit waits as LIMITS-18 says; work nobody watches asked of Codex, its login only waiting for the owner's yes, waits for that yes (CHATGPT-20).
+- **Auto** (no agent or account named) takes the account with the most room that can take it; with none, it waits for room (LIMITS-18) or, when nothing could ever run it, starts on the first and its run says why it couldn't, in plain words (ACCOUNTS-19 and 20).
+- **A wait says what it waits for.** `Every account is at its limit: …` only while no account of any tool could take the job; otherwise the line names the account it waits on: `Claude Code is at its limit: resuming when it has room, at the latest Thu 9:00 AM` (proposed words).
+
+### Signing out
+
+The gap analysis of 2026-11-17: an account could be removed but not signed out.
+
+- **obid** signs an account out with the tool's own logout, run as its sign-in is (the account's own folder, no box, nothing it prints kept or logged): `claude auth logout`, `codex logout` (its file store), `cursor-agent logout`; a Continue with ChatGPT login is obid's own, so obid revokes and deletes it. The account's row, name, model and settings stay; who it was and its usage go, since its next sign-in may be someone else. The tool's own login (no folder of obid's) is the person's: signed out with the tool itself, as it's signed in. Not while a job runs on it.
+- **The Electron app** shows `Sign out` beside Remove on each signed-in account obid signs in (proposed words, Sangam's to rewrite); Sign In signs it in again.
+
+### Each tool's binary
+
+The gap analysis of 2026-11-17: a tool's binary could be set only in obid's `config.json`.
+
+- **obid** keeps a binary the owner set for a tool in `home/accounts.json` (`bins`), laid over the configuration's `agents.<tool>.bin` at every start: a path from `/`, or a command's bare name, found now as obid finds every tool's binary. One it can't find, or that is neither, is refused, so a typo never leaves a tool that can't start; `null` goes back to the configuration's. `GET /v1/status`'s `tools[]` says what each runs as (`bin`), whether the owner set it (`binSet`), and as before where it was found and its version.
+- **The Electron app** shows, after the accounts' cards in Settings › Agents, `Binaries`: a row per tool with an account, its binary in a field (Save when changed, `Use default` when set), and under it where obid found it and its version, or why obid refused the one typed (proposed words, Sangam's to rewrite).
+
 ## Failure and recovery
 
 - A status that doesn't answer in 15 seconds, or isn't JSON: nothing is learned, the account stays as it is, and the same login twice isn't noticed for that sign-in.
@@ -86,7 +118,25 @@ It stays when: the tool said no email (Cursor out of reach; nothing to compare);
 - **ACCOUNTS-15:** a card shows who it is and a bar for its session, else its week, else none.
 - **ACCOUNTS-16:** first run still connects an agent under the name it gives.
 - **ACCOUNTS-17:** one email on another plan or org is another account, and both stay.
+- **ACCOUNTS-19 (`accounts_19_*`):** a job whose agent can't start on an account fails saying `<tool> couldn't start on <account>: <reason>.`, the reason in plain words with no path; the account carries the same words as `cantRun` in `GET /v1/status` and the `accounts` event, a conversation turn's start failure too (`conversation_agent_26_*`); a start that goes through, or a sign-in, takes it off.
+- **ACCOUNTS-20 (`accounts_20_*`, `accounts_19_*`):** while `cantRun` is kept (10 minutes from its last failure), routing passes over that account, even when it's `defaultAccount`, and takes it only when nothing else can start; a job naming it still goes there, unless the owner named it and it isn't signed in (ACCOUNTS-35).
+- **ACCOUNTS-21 (`cantRun.test.tsx`):** Settings › Agents says `<tool> can’t start: <reason>` on the account's row, and "New tasks go to" shows another account that can start; with none that can, the chosen one stays shown.
+- **ACCOUNTS-22 (`cantRun.test.tsx`):** a failed task's card line is obid's reason with every path down to its last name: no `~/…`, home folder or `[oby]` in it; a bare `/login` stays.
+- **ACCOUNTS-23:** `POST /v1/accounts/{id}/sign-out` runs the tool's own logout in the account's folder (`claude auth logout`, `codex logout -c cli_auth_credentials_store="file"`, `cursor-agent logout`), or ends a Continue with ChatGPT login (revoked, its vault entry and marker gone), answers the Account with `signedIn` false, and keeps its row; Settings › Agents has `Sign out`, which asks it.
+- **ACCOUNTS-24:** the tool's own login is `409` `ownLogin` (signed out with the tool itself), a signed-out account has no Sign out in Settings, a job on it is `409` `busy`, and a logout that fails is `502` `didNotSignOut`, the account as it was.
+- **ACCOUNTS-25:** a signed-out account keeps its name and settings; who it was and its usage go, and Sign In signs it in again.
+- **ACCOUNTS-26:** `PUT /v1/settings/agents/{agent}` `{"bin": "<path or name>"}` keeps the tool's binary over the configuration's, across restarts; `GET /v1/status` `tools[].bin` and `binSet` say so; Settings › Agents › Binaries shows it, where it was found, and saves a new one.
+- **ACCOUNTS-27:** a value that isn't a path from `/` or a bare command name is `422` `badBin`, and one obid can't find `422` `notFound`, said on the tool's row; nothing changes.
+- **ACCOUNTS-28:** `{"bin": null}` (`Use default`) goes back to the configuration's; a kept value that doesn't read (an unknown tool, a relative path) is left out at start and logged.
 - **ACCOUNTS-18:** a boxed Codex copy whose access token's JWT `exp` has passed, ending on a bare 401, says `run codex once` and stays signed in; a revocation on that expired copy, or a 401 or revocation while `exp` is still ahead, still ends the login (`run codex login`).
+
+- **ACCOUNTS-30 (`accounts_30_*`):** routing passes over an account whose tool's CLI isn't on this Mac, as over a signed-out one, even when it's where new tasks go; the task carries no `routed` line, since the owner named nothing.
+- **ACCOUNTS-31 (`accounts_31_*`):** a task asked of an agent with no room (at 95% of a window) runs at once on the account with the most room of any tool, `routed` naming why and where; its step never says every account is at its limit while one has room. `accountFailover` off keeps it on the agent asked for, waiting.
+- **ACCOUNTS-32 (`accounts_32_*`, `jobs::cant_take::tests`):** a new task, or a follow-up the owner's words start, named to an account whose CLI isn't on this Mac is refused (`422`) before anything starts, saying why and what to do with no path; nothing is made. An agent asked for that isn't installed hands the task to one that is, saying so.
+- **ACCOUNTS-33 (`accounts_31_*`):** a task waiting on its own account while another has room says that account's name in its line; `Every account is at its limit` only when none has room.
+- **ACCOUNTS-34 (`github_work::accounts_34_*`):** Fix CI's task is routed like any task: past an account at 95% of its week, the one new tasks go to included, onto one with room. (It held before this contract too: Fix CI names no agent or account, so it always took Auto's routing.)
+- **ACCOUNTS-35 (`accounts_35_*`, `keychain_3_*`, `jobs::cant_take::tests`):** a task `POST /v1/jobs` names an account for that isn't signed in is refused (`422`) before anything starts, saying why and what to do, and so are the owner's words to such a task that ended, once its account is signed out; nothing is made. Their words to a task whose account they didn't name, which carry its account on, still start there. A conversation's dispatch, a routine's run or a review that names a signed-out account still starts there, its run saying why (ACCOUNTS-19).
+- **ACCOUNTS-36 (`accounts_36_*`):** a reason two accounts of a tool share (`Cursor isn't installed on this Mac`) is said once in a task's `routed` line.
 
 **Test it when it's done (real Mac):**
 

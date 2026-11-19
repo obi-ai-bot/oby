@@ -100,6 +100,24 @@ impl Approvals {
         self.check_signed(approval, &message, action, key, now)
     }
 
+    /// Lets `approval` through once for undoing job `job`'s last round by `action`, obid's own
+    /// sentence (docs/contracts/task-changes.md, CHANGES-11): the device signed
+    /// `"oby-undo\n<job id>\n<action>\n<signedAt>"`, so no publish or Confirm signature passes for it.
+    pub fn check_undo(
+        &self,
+        approval: &Approval,
+        job: &str,
+        action: &str,
+        key: Option<&str>,
+        now: i64,
+    ) -> Result<(), String> {
+        let message = format!(
+            "oby-undo\n{job}\n{}\n{}",
+            approval.action, approval.signed_at
+        );
+        self.check_signed(approval, &message, action, key, now)
+    }
+
     /// Lets `approval` through once for confirming inbox item `item`, whose title is `title`
     /// (#776): the device signed `"oby-confirm\n<item>\n<title>\n<signedAt>"`.
     pub fn check_confirm(

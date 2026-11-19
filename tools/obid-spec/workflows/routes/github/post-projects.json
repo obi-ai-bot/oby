@@ -1,0 +1,154 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/projects",
+  "version": "1.0.0",
+  "description": "A new project: 400 for another key, 422 for a name or folder or repository obid refuses; 201 with its id, kept 0600.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/projects"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "person": {
+          "Projects/app/README.md": "x\n"
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "x"
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "another-key-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "x",
+          "x": 1
+        },
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "no-name-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "folders": []
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "a-folder-thats-not-one-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "x",
+          "folders": [
+            "relative/path"
+          ]
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "a-repo-thats-not-one-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "x",
+          "repos": [
+            "fixture-app"
+          ]
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "made",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "Billing",
+          "folders": [
+            "${state.o.person}/Projects/app"
+          ],
+          "repos": [
+            "obi-e2e/fixture-app"
+          ]
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "id": {
+              "$matches": "^[0-9a-f-]{36}$"
+            },
+            "name": "Billing",
+            "repos": [
+              "obi-e2e/fixture-app"
+            ],
+            "folders": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "kept-0600",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "projects.json",
+        "expect": {
+          "exists": true,
+          "mode": "0600"
+        }
+      }
+    }
+  ]
+}

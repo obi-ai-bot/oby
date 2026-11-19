@@ -1,0 +1,128 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/obid/sphere/requests: sealed by default",
+  "version": "1.0.0",
+  "description": "A member whose card has no seal key yet, and the owner hasn't allowed words in the clear for them: the ask is 409 not_sealed and nothing is sent or kept (SPHERE-18).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/obid/sphere/requests"
+    }
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}"
+      }
+    },
+    {
+      "id": "dana-has-no-seal-key-yet",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "owner": "dana",
+              "sealed": false
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "sphere-18-an-unsealed-ask-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.dana-joined.obiId}",
+          "type": "question",
+          "body": {
+            "text": "What are you working on?"
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 409,
+          "body": {
+            "reason": "not_sealed",
+            "error": {
+              "$contains": "can't receive sealed asks yet"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-18"
+        ]
+      }
+    },
+    {
+      "id": "sphere-18-nothing-kept",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-18"
+        ]
+      }
+    }
+  ]
+}

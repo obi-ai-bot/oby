@@ -1,0 +1,209 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/obid/sphere/exchanges",
+  "version": "1.0.0",
+  "description": "Exchanges, the latest first, each side's own: outgoing on the asker's, incoming waiting in the inbox on the other's; limit cuts the list.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/obid/sphere/exchanges"
+    }
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "none-yet",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.dana-joined.obiId}",
+          "type": "question",
+          "body": {
+            "text": "First question?"
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 202
+        }
+      }
+    },
+    {
+      "id": "a-second-later",
+      "use": "runtime.rust:next-second"
+    },
+    {
+      "id": "second",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.dana-joined.obiId}",
+          "type": "question",
+          "body": {
+            "text": "Second question?"
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 202
+        }
+      }
+    },
+    {
+      "id": "latest-first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "correlationId": "${state.second.body.correlationId}",
+              "direction": "outgoing"
+            },
+            {
+              "correlationId": "${state.first.body.correlationId}",
+              "direction": "outgoing"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "limit-1",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges?limit=1",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "correlationId": "${state.second.body.correlationId}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "incoming-on-the-other-side",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "$any": {
+              "correlationId": "${state.first.body.correlationId}",
+              "direction": "incoming",
+              "state": "inbox",
+              "peerOwner": "alex",
+              "decidedBy": null
+            }
+          }
+        }
+      }
+    }
+  ]
+}

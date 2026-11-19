@@ -1028,7 +1028,7 @@ pub fn site(host: &str, port: u16) -> String {
 }
 
 /// Whether `host` is `domain` or one of its subdomains.
-fn within(host: &str, domain: &str) -> bool {
+pub(crate) fn within(host: &str, domain: &str) -> bool {
     host == domain
         || host
             .strip_suffix(domain)

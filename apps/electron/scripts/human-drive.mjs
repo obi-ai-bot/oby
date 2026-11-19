@@ -16,7 +16,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { appRoot, electronBinary, launch, sleep, until as waitFor } from './drive-lib.mjs';
+import { appRoot, electronBinary, launch, skipFirstRun, sleep, until as waitFor } from './drive-lib.mjs';
 import scenarios from './human-drive.scenarios.mjs';
 
 const runner = join(homedir(), 'Library/Application Support/Oby/Runner');
@@ -51,7 +51,7 @@ if (repo.startsWith('obi-ai-bot/')) fail(`Never drive the real tasks into ${repo
 // kill missed is done by the next run's, since the key, so the device, is the same.
 function device(action) {
   try {
-    const out = execFileSync(electronBinary, [join(appRoot, 'scripts/human-drive-device.cjs'), action, join(own, 'electron-data/device-key'), runner, DEVICE],
+    const out = execFileSync(electronBinary, [join(appRoot, 'scripts/human-drive-device.cjs'), action, join(own, 'electron-data/device-key.pem'), runner, DEVICE],
       { encoding: 'utf8', timeout: 60_000, stdio: ['ignore', 'pipe', 'ignore'] });
     return JSON.parse(out.split('\n').find((l) => l.startsWith('DEVICE '))?.slice(7) ?? '{"error":"no answer"}');
   } catch (e) { return { error: e.message.split('\n')[0] }; }
@@ -65,9 +65,12 @@ async function openApp() {
   const page = await app.firstWindow();
   await page.waitForLoadState('domcontentloaded');
   // set up already: Home, not the first run's screens (the owner went through those)
-  await page.evaluate(() => { for (const k of ['oby.onboarded', 'oby.setUp', 'oby.welcomed']) localStorage.setItem(k, '1'); });
-  await page.reload();
+  await skipFirstRun(page);
   await page.waitForLoadState('domcontentloaded');
+  // the page's first load was setting up, which held the window at the setup's 700px, and a reload
+  // on Home keeps the size it has, and setting up's hold on it (main.tsx, main's setup-window): the
+  // owner's window, set up, is the app's own 994 × 670 and resizable
+  await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; w?.setResizable(true); w?.setSize(994, 670); });
   return { app, page };
 }
 
@@ -83,7 +86,8 @@ function driver(page, record, state) {
   let said = 0;
   const shown = () => page.evaluate(() => document.body.innerText);
   const t = {
-    page, repo, state, shown,
+    // app: the window as main holds it, only for what a person does to the window itself (maximize)
+    page, app, repo, state, shown,
     step(label) { record.steps.push({ label, at: Date.now() - record.started }); },
     note(text) { record.notes.push(text); },
     async shot(name) {

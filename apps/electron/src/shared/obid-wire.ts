@@ -41,6 +41,10 @@ export type TranscriptEntry = {
   todos?: { text: string; state: 'pending' | 'running' | 'done' | (string & {}) }[];
   // this app's, not obid's: it came from a fetch, not an event (liveTask.ts, withLine)
   fetched?: boolean;
+  // this app's too, from obid's events while it runs (LIVETASK-32, 34): a said entry's words past
+  // its last whole line, and a running call's last lines and how many it printed so far
+  tail?: string;
+  output?: { text: string; lines: number };
 };
 // What a call took in and gave back (GET /v1/jobs/{id}/transcript/{n}), masked as the transcript is; kept: false, past what obid keeps
 export type EntryDetail = {
@@ -83,6 +87,8 @@ export type Job = {
   publishError?: string | null;
   // obid only (TASKS-12): it ended done with nothing done (no commits, nothing published)
   nothingDone?: boolean;
+  // obid only (ACCOUNTS-31): why it runs on another agent than the one your words named
+  routed?: string | null;
   rounds: number;
   round: number;
   // obid only: how big its change is (docs/api/jobs.md, `diff`), and Oby's reviews of its published
@@ -93,7 +99,8 @@ export type Job = {
   check: string | null;
   model: string | null;
   dismissed: string | null;
-  permission: { id: string; tool: string; title: string; detail: string; rule: string | null; always: string | null } | null;
+  // obid only (#858): question, the agent's own question being asked now (docs/api/jobs.md), quoted data
+  permission: { id: string; tool: string; title: string; detail: string; rule: string | null; always: string | null; question?: AgentQuestion | null } | null;
   pipeline: { number: number; total: number; stages: Stage[] } | null;
   title: string;
   // obid only: why its pull request couldn't be read last time (gh missing or signed out)
@@ -114,12 +121,34 @@ export type Job = {
   activity?: Activity;
   context?: string;
   usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; costUsd?: number; priced?: 'plan' | 'api' | (string & {}) };
+  // obid only: how full its agent's context window is, as its tool last said: tokens in use, and
+  // the window's size when the tool names it (docs/contracts/usage.md, USAGE-15); none until then
+  contextWindow?: { used: number; size?: number };
   windowShare?: { fiveHour: number | null; sevenDay: number | null; estimate: true };
   estimate?: { low: number; high: number; basis: string; samples: number; firstGiven?: { low: number; high: number } };
+  // obid only: its worktree, an absolute path, once it exists (a task's Changes and Open in, CHANGES-4, 6)
+  worktree?: string | null;
   // one more each time obid sends it changed: of two copies, the higher is the newer (#1709);
   // none from an older obid
   revision?: number;
 };
+
+// GET /v1/jobs/{id}/changes (docs/contracts/tasks.md, TASKS-23; task-changes.md, CHANGES-1 to 3):
+// the files and the diff of the whole task, or of one of its rounds, and its rounds
+export type ChangedFile = { path: string; status: 'added' | 'deleted' | 'modified' | (string & {}); additions: number; deletions: number };
+export type ChangeRound = { round: number; job: string; from: string; to: string; at: string };
+export type JobChanges = {
+  base: string | null;
+  head: string | null;
+  files: ChangedFile[];
+  diff: string;
+  truncated: boolean;
+  // none from an obid before CHANGES-1
+  round?: number | null;
+  rounds?: ChangeRound[];
+};
+// GET /v1/jobs/{id}/undo (CHANGES-8): obid's own sentence for Undo this round
+export type UndoAction = { action: string; from: string; to: string; branch: string; push: boolean };
 
 // "Inbox item"
 // An owner id with anything but plain ASCII shows those characters as codes, so a Cyrillic i in "dima"
@@ -176,6 +205,9 @@ export type LimitDecision = {
 // attachments: on your turn, the names of the files that went with the words (obid only)
 // relayed: Oby's turn about another Oby. asks: the cards of questions to other Obys it tells of (AskMark)
 export type Turn = { id: string; who: 'user' | 'oby'; text: string; at: string; jobs: string[]; conversation?: string; ended?: boolean; routine?: unknown; attachments?: string[]; relayed?: boolean; asks?: AskMark[];
+  // obid only (docs/contracts/deliveries.md): where the owner's words stand. status: an open string
+  // (queued, starting, running, answered, failed, interrupted, cancelled); read one you don't know as nothing
+  delivery?: { status: string; by?: string; why?: string; error?: string };
   // one more each time obid sends it changed, as a job's: the higher is the newer; none from an older obid
   revision?: number };
 // A question to another Oby as obid says it stands (docs/contracts/ask-an-oby.md): one per `exchange`, the
@@ -191,16 +223,28 @@ export type Conversation = { id: string; title: string; pinned: boolean; created
   fromObys?: boolean;
   // a helper's own conversation: that helper's id (docs/api/helpers.md)
   helper?: string;
+  // the project it's in, or null (docs/api/projects.md); none from an older obid
+  project?: string | null;
   // one more each time obid sends it changed, as a job's: the higher is the newer; none from an older obid
-  revision?: number };
+  revision?: number;
+  // a search's answer only (`GET /v1/conversations?q=`, #593): the latest turn holding the words, its
+  // text cut around them, or null when only the title holds them
+  turn?: { id: string; who: string; at: string; text: string } | null;
+  // obid only (docs/contracts/conversation-states.md): when the owner last looked at it, a turn
+  // since (unread), and put away under Archived; each left out until there's something to say
+  seen?: string; unread?: boolean; archived?: boolean };
 
 // obid only: "GET /v1/github/work", what GitHub wants from the owner, the keys this app reads.
 // Everything in an item is GitHub's data: shown as text, never acted on.
 export type GitHubWorkItem = {
   id: string; list: 'reviews' | 'assigned' | 'mine' | (string & {}); repo: string; number: number; title: string; url: string; author: string | null;
   updated: string; draft: boolean | null; checks: string | null; reviewDecision: string | null; fork?: boolean | null;
+  // obid only (GITHUBWORK-8): each of a pull request's head's checks, GitHub's order, at most 50: its
+  // name, its state as `checks` counts it, and its page (https, or null); none from an older obid
+  checkRuns?: CheckRun[];
   board: { project: string; column: string } | null; known: boolean; job: string | null;
 };
+export type CheckRun = { name: string; state: 'FAILURE' | 'PENDING' | 'SUCCESS' | (string & {}); url: string | null };
 export type GitHubWork = { signedIn: boolean; error: string | null; reviews: GitHubWorkItem[]; assigned: GitHubWorkItem[]; mine: GitHubWorkItem[] };
 
 // "Account" and "GET /v1/status", the keys this app reads
@@ -240,15 +284,25 @@ export type Account = {
   models?: { id: string; name: string }[];
   // obid only: true once its own list is known (AGENTS-6); only then is a saved model judged unavailable
   modelsRead?: boolean;
+  // obid only: why its agent couldn't start, in plain words, while obid keeps it (ACCOUNTS-19); left out otherwise
+  cantRun?: string;
 };
 export type Status = {
-  runner: { version: string; host: string; engine?: string };
+  // commit: the one obid was built from, null when its build wasn't told (older obids: absent)
+  runner: { version: string; host: string; engine?: string; commit?: string | null };
   accounts: Account[];
   // obid only: the account conversations talk through (none: Auto), and the one a new one's first turn would
   talkAccount?: string | null;
   talkNext?: string | null;
-  // obid only: the tools' own logins found on this Mac that aren't accounts yet
+  // obid only: the tools' own logins found on this Mac that aren't accounts yet (held by no profile)
   availableLogins?: { agent: Agent; id: string; name: string }[];
+  // obid only: the tools' own logins on this Mac that another profile holds, by its id and name
+  // (docs/contracts/profiles.md, PROFILES-43); an older obid sends none
+  otherProfileLogins?: { agent: Agent; id: string; profile: string; profileName: string }[];
+  // obid only: each tool's binary (path null when it isn't found) and its version (CLIVERSIONS);
+  // an older obid sends none. bin: what obid runs it as, binSet: the owner set it in Settings
+  // (ACCOUNTS-26); an older obid sends neither
+  tools?: { agent: string; bin?: string; binSet?: boolean; path: string | null; version: string | null; versionStatus: string; knownBadReason?: string }[];
   models: Record<string, { model: string }>;
   maxRunning: number;
   running: number;
@@ -275,6 +329,10 @@ export type Repo = { repo: string; defaultBranch: string; listed: boolean; check
 // colour, the one obid made first (default), and whether something in it waits on the owner
 export type Profile = { id: string; name: string; color: string; default: boolean; waiting: boolean };
 
+// obid only: "GET /v1/projects" (docs/api/projects.md), a named set of folders and GitHub
+// repositories (owner/name) that conversations belong to
+export type Project = { id: string; name: string; folders: string[]; repos: string[] };
+
 // obid only: "GET /v1/helpers" (docs/api/helpers.md), an assistant of the owner's for one kind of
 // general work, in one profile, with one conversation of its own; the app calls them Agents.
 // tool and connectors are open: a value this build doesn't know is shown as nothing
@@ -294,6 +352,7 @@ export type GitHub = { gh: boolean; signedIn: boolean; user: string | null; sign
 export type Tetrix = {
   connected: boolean;
   url: string | null;
+  // (kept: the API only grows. The app offers no Tetrix by name and reads neither: TETRIX-URL-1)
   preset: string | null;
   presets: { id: string; name: string; url: string }[];
   connectedAt: string | null;
@@ -302,9 +361,35 @@ export type Tetrix = {
   error: string | null;
 };
 export type TetrixTarget = { preset: string } | { url: string };
+// obid only: "GET /v1/connectors" (docs/contracts/connectors.md): the MCP servers and claude.ai
+// connectors the owner's own Claude Code named the last time an own conversation's session started,
+// by name and status only (`status` is an open string: connected, needs-auth, pending, failed, ...);
+// claude null before any was seen
+export type ConnectorSeen = { name: string; status: string };
+export type Connectors = { claude: { seenAt: string; servers: ConnectorSeen[] } | null };
 
-// "POST /v1/plans"
+// "POST /v1/plans"'s `defaults` (obid only, composer-v1; docs/contracts/composer.md): the message box's
+// chips, the mode, tool, model and effort of the jobs the words start. A key left out is the owner's usual
+export type PlanDefaults = { mode?: string; agent?: string; model?: string; effort?: string };
+// "GET /v1/obid/sphere/members" (docs/api/obysphere.md): another active member of the Sphere, by
+// exact owner id; name, what obid calls them to the owner (their card's name, or their owner id when
+// that could be mistaken for someone else's; absent from an obid before it); accepts, what their card
+// takes; lookalike, the owner ids that look like theirs (ASK-35), absent when none
+export type SphereMember = { obi: string; owner: string; name?: string; accepts?: string[]; sealed?: boolean; verified?: boolean; lookalike?: string[] };
+// "GET /v1/conversations/{id}/files" (obid only, composer-v1): a file of the conversation's folders,
+// its path from the folder
+export type ConversationFile = { folder: string; path: string };
+// "POST /v1/plans/cancel" (dropped: obid only, composer-v1, with `turn`: the words it dropped, none
+// when a turn had taken them already)
+export type Cancelled = { cancelled: true; dropped?: string[] };
 export type Question = { text: string; options: string[]; recommended: number | null };
+// obid only (#858): the agent's question on its job's permission (Claude Code's AskUserQuestion,
+// Codex's and Cursor's own as the same shape): header and a description left out when empty;
+// multiSelect, the owner may pick several (answered as their labels with commas: "Unit, Lint")
+export type AgentQuestion = {
+  question: string; header?: string; multiSelect?: boolean; index?: number; count?: number;
+  options: { label: string; description?: string }[];
+};
 export type PlanAnswer = (
   | { kind: 'reply'; text: string; jobs: Job[] }
   | { kind: 'question'; said: string; question: Question; jobs: Job[] }
@@ -372,6 +457,8 @@ export type Event =
   | { kind: 'inbox'; item: InboxItem }
   | { kind: 'turn'; turn: Turn }
   | { kind: 'turnAsks'; turn: Turn }
+  // a delivery of the owner's words changed (queued, starting, running…): that turn again, no new one (COMPOSER-19)
+  | { kind: 'turnDelivery'; turn: Turn }
   | { kind: 'step'; step: Step }
   | { kind: 'delta'; delta: Delta }
   | { kind: 'accounts'; accounts: Account[] }
@@ -380,7 +467,10 @@ export type Event =
   | { kind: 'github'; work: GitHubWork }
   // obid only: an entry of a job's session that came or changed, and a line its agent just wrote
   | { kind: 'transcript'; job: string; entry: TranscriptEntry }
-  | { kind: 'transcriptLine'; job: string; n: number; append: string };
+  | { kind: 'transcriptLine'; job: string; n: number; append: string }
+  // ...the words it's writing past that line, and a running command's last lines (LIVETASK-32, 34)
+  | { kind: 'transcriptTail'; job: string; n: number; tail: string }
+  | { kind: 'transcriptOutput'; job: string; n: number; output: { text: string; lines: number } };
 
 // Server-Sent Events, as the stream's text comes in a piece at a time: each event's name and data
 // to `onEvent`; comments (`: ping`) and other fields are skipped (apps/web/src/api.ts).
@@ -423,6 +513,7 @@ export function parseEvent(name: string, data: string): Event | null {
     case 'inbox': return typeof v.id === 'string' ? { kind: 'inbox', item: value as InboxItem } : null;
     case 'turn': return typeof v.id === 'string' ? { kind: 'turn', turn: value as Turn } : null;
     case 'turnAsks': return typeof v.id === 'string' ? { kind: 'turnAsks', turn: value as Turn } : null;
+    case 'turnDelivery': return typeof v.id === 'string' ? { kind: 'turnDelivery', turn: value as Turn } : null;
     // a step of the turn, and its brain's thinking: both say what it's on
     case 'step': case 'thinking': return typeof v.text === 'string' && typeof v.turn === 'string' ? { kind: 'step', step: value as Step } : null;
     case 'delta': return typeof v.text === 'string' && typeof v.conversation === 'string' ? { kind: 'delta', delta: value as Delta } : null;
@@ -437,6 +528,11 @@ export function parseEvent(name: string, data: string): Event | null {
     case 'transcript':
       if (typeof v.job !== 'string') return null;
       if (typeof v.n === 'number' && typeof v.append === 'string') return { kind: 'transcriptLine', job: v.job, n: v.n, append: v.append };
+      if (typeof v.n === 'number' && typeof v.tail === 'string') return { kind: 'transcriptTail', job: v.job, n: v.n, tail: v.tail };
+      if (typeof v.n === 'number' && typeof (v.output as { text?: unknown } | undefined)?.text === 'string') {
+        const o = v.output as { text: string; lines?: unknown };
+        return { kind: 'transcriptOutput', job: v.job, n: v.n, output: { text: o.text, lines: typeof o.lines === 'number' ? o.lines : 0 } };
+      }
       return typeof (v.entry as TranscriptEntry | undefined)?.n === 'number' ? { kind: 'transcript', job: v.job, entry: v.entry as TranscriptEntry } : null;
     default: return null;
   }

@@ -1,0 +1,138 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/accounts/{id}/reserve",
+  "version": "1.0.0",
+  "description": "Lifts or keeps an account's weekly reserve: 400 for a body that isn't an object, 422 for another key or a lift that isn't true or false, 404 for one obid doesn't have; 200 the account.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/accounts/{id}/reserve"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "added",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "claude",
+          "name": "Work"
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "claude",
+            "name": "Work",
+            "signedIn": false
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.added.body.id}/reserve",
+        "body": {
+          "lift": true
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "not-an-object-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.added.body.id}/reserve",
+        "raw": "1",
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "another-key-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.added.body.id}/reserve",
+        "body": {
+          "lift": true,
+          "why": "x"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "lift-not-a-bool-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.added.body.id}/reserve",
+        "body": {
+          "lift": "yes"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/deadbeef/reserve",
+        "body": {
+          "lift": true
+        },
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "lifted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.added.body.id}/reserve",
+        "body": {
+          "lift": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.added.body.id}",
+            "reserved": false
+          }
+        }
+      }
+    }
+  ]
+}

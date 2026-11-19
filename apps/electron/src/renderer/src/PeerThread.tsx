@@ -4,6 +4,7 @@ import { box as draftBox } from './drafts';
 import { askFromBox, boxShut, lineUnder, nextQuiet, openThread, useThreads, whoseOby, withWords } from './peers';
 import { atEnd } from './room';
 import { QuestionBlock } from './QuestionCard';
+import { HandOffButton } from './HandOff';
 import { RoomThread } from './RoomView';
 import { useSpheres } from './spheres';
 import { asksWaiting, useTasks } from './tasks';
@@ -87,6 +88,8 @@ export default function PeerThreadView({ owner, leaving, covered = false, onClos
       </div>
       {asking.map((q) => <div key={q.id} className="room-card"><QuestionBlock question={q} /></div>)}
       {held.problem && <p className="room-problem" role="alert">{held.problem}</p>}
+      {/* a task for their Oby, in the live Obysphere while they're in it (SPHEREAPP-6) */}
+      {sphere && !sphere.revoked && t?.member !== false && <HandOffButton owner={owner} name={t?.name ?? owner} />}
       {shut || waiting ? <p className="room-under">{shut ?? `Asking ${who}…`}</p> : (
         <Composer
           style={{ '--i': 2 } as React.CSSProperties}

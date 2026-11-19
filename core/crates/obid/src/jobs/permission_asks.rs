@@ -797,10 +797,11 @@ impl Jobs {
             let _ = owner.send(());
         }
         let _ = ask.reply.send(answer);
-        if decision == Decision::Always
-            && let Some(rule) = &ask.permission.rule
-        {
-            self.save_rule(rule, &job.repo);
+        if decision == Decision::Always {
+            // A chain's Always saves each of its commands' rules (PERMISSIONS-27).
+            for rule in permissions::always_rules(&ask.permission) {
+                self.save_rule(&rule, &job.repo);
+            }
         }
         self.show(id, Some(answered_step(&ask.permission, decision)));
         Ok(self.get(id).unwrap_or(job))
@@ -861,10 +862,10 @@ impl Jobs {
             permission: permission.to_owned(),
             answer: Some(said),
         });
-        if decision == Decision::Always
-            && let Some(rule) = &card.rule
-        {
-            self.save_rule(rule, &job.repo);
+        if decision == Decision::Always {
+            for rule in permissions::always_rules(&card) {
+                self.save_rule(&rule, &job.repo);
+            }
         }
         self.schedule();
         Some(Ok(self.get(id).unwrap_or(job)))
@@ -1122,6 +1123,15 @@ impl Jobs {
             } else {
                 job.permission = next.clone();
             }
+            // Asked with `oby_ask_owner` in a turn still open (PERMISSIONS-23): obid ends that turn
+            // as a shutdown does, its session kept, and the answer starts the next once its worker
+            // is gone ([`Jobs::schedule`] passes over a job with a worker).
+            if picked_up
+                && state.asked.remove(id).is_some()
+                && let Some(worker) = state.workers.get(id)
+            {
+                let _ = worker.send(Signal::Shutdown);
+            }
             (next, said, picked_up)
         };
         if let Some(qa) = qa {
@@ -1143,8 +1153,11 @@ impl Jobs {
     }
 
     /// Job `id`'s agent asks the owner with `oby_ask_owner` (a Codex or Cursor job): what the tool
-    /// answers at once. The question is asked once its turn ends ([`End::Asked`]); it can only ask,
-    /// never answer or allow anything. A second one in the same turn takes the first's place.
+    /// answers at once. The question shows the moment the call comes (PERMISSIONS-22), while its
+    /// turn may still be open: an answer then ends that turn and resumes its session with it
+    /// (PERMISSIONS-23, [`Jobs::answer_kept_question`]); a turn that ends first waits for it with no
+    /// agent ([`End::Asked`]). It can only ask, never answer or allow anything. A second one in the
+    /// same turn takes the first's place.
     pub fn ask_owner(&self, id: &str, arguments: &Value) -> Result<&'static str, String> {
         let job = self.get(id).ok_or("The job is gone.")?;
         if !asks_through_oby(&job) {
@@ -1153,10 +1166,44 @@ impl Jobs {
         let call = permissions::ask_owner_call(arguments).ok_or(
             "Ask one question, its whole text in `question` (up to 1,000 characters), with `options` (each a `label`, and a `description` if it helps) when there are a few clear choices.",
         )?;
-        self.lock().asked.insert(id.to_owned(), call);
+        self.lock().asked.insert(id.to_owned(), call.clone());
+        self.show_asked(id, call);
         Ok(
             "Asked the owner. End your turn now with a one-line summary; Oby will resume this session with the answer.",
         )
+    }
+
+    /// Job `id` shows what its agent asked with `oby_ask_owner` now, its turn still open
+    /// (PERMISSIONS-22): the card, its inbox item and the step, as a question its ended turn waits
+    /// on shows ([`Jobs::wait_for_answer`]). A live prompt the job shows stays first: the question
+    /// shows when its turn ends. An earlier question of the same turn is settled unanswered.
+    fn show_asked(&self, id: &str, call: permissions::QuestionCall) {
+        if self.lock().asks.get(id).is_some_and(|a| !a.is_empty()) {
+            return;
+        }
+        let Some(job) = self.get(id).filter(|j| j.status == Status::Running) else {
+            return;
+        };
+        let earlier = job
+            .permission
+            .as_ref()
+            .filter(|p| p.is_question() && job.question_call.as_ref().is_some_and(|c| c.ended_turn))
+            .map(|p| p.id.clone());
+        let card = permissions::question_card(&call.questions, &permissions::new_id(), 0);
+        // The inbox has it before the job shows it, as [`Jobs::show`] does.
+        self.note(PermissionNote::Waiting(Box::new(job), card.clone()));
+        self.update(id, |job| {
+            job.permission = Some(card);
+            job.question_call = Some(call);
+            job.step = codex_plan::ASKED_STEP.into();
+        });
+        if let Some(earlier) = earlier {
+            self.note(PermissionNote::Settled {
+                job: id.to_owned(),
+                permission: earlier,
+                answer: None,
+            });
+        }
     }
 
     /// Changes how much the job asks, from now on: the prompts waiting now that the new mode
@@ -1179,8 +1226,10 @@ impl Jobs {
     /// The job's waiting prompts go: nobody will answer them (it was stopped, or ended), a
     /// question a restart kept among them. obid shutting down (`shutdown`) keeps the question the
     /// job shows, and its inbox item, for the next start to keep waiting (#858), and so does a
-    /// worker ending for [`Jobs::park`] with the call it parked the job for.
-    pub(super) fn drop_asks(&self, id: &str, shutdown: bool) {
+    /// worker ending for [`Jobs::park`] with the call it parked the job for, and a run that ended
+    /// on the owner's answer (`asked`, [`End::Asked`]) with the `oby_ask_owner` question it showed
+    /// while its turn was open (PERMISSIONS-22): the same card, never a new one.
+    pub(super) fn drop_asks(&self, id: &str, shutdown: bool, asked: bool) {
         let dropped = {
             let mut state = self.lock();
             // What its agent asked with `oby_ask_owner` in a turn that didn't end well goes too.
@@ -1196,9 +1245,13 @@ impl Jobs {
             .as_ref()
             .and_then(|j| j.parked.as_ref())
             .is_some_and(|p| !p.answered);
-        let kept = shown
+        let asked_shown = job
             .as_ref()
-            .filter(|p| shutdown && (p.is_question() || parked));
+            .and_then(|j| j.question_call.as_ref())
+            .is_some_and(|c| c.ended_turn);
+        let kept = shown.as_ref().filter(|p| {
+            shutdown && (p.is_question() || parked) || asked && asked_shown && p.is_question()
+        });
         let mut settled: Vec<&str> = dropped.iter().map(|a| a.permission.id.as_str()).collect();
         // A question a restart kept has no ask of its own.
         if let Some(p) = &shown
@@ -1218,14 +1271,128 @@ impl Jobs {
         }
         // It ended (a shutdown isn't an end): a parked call the owner answered goes.
         let ended = !shutdown && job.is_some_and(|j| j.parked.is_some());
-        if shown.is_some() && kept.is_none() || ended {
+        let clear = shown.is_some() && kept.is_none();
+        if clear || ended {
             self.update(id, |job| {
-                job.permission = None;
-                job.question_call = None;
-                if !shutdown {
+                if clear {
+                    job.permission = None;
+                    job.question_call = None;
+                }
+                if ended {
                     job.parked = None;
                 }
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::watch;
+
+    /// Jobs with one running Ask-mode job `p` on `o/r`, parked after a second, its home in `root`.
+    fn jobs_in(root: &Path) -> Arc<Jobs> {
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "parkAfter": 1, "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let mut job = Job::new(
+            "p".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "codex".into(),
+            "a".into(),
+        );
+        job.status = Status::Running;
+        job.mode = Some("ask".into());
+        jobs.lock().jobs.insert("p".into(), job);
+        jobs
+    }
+
+    fn saved(jobs: &Jobs) -> Vec<String> {
+        jobs.rules().into_iter().map(|r| r.rule).collect()
+    }
+
+    /// PERMISSIONS-25 and 27, as the owner answers: Always on a commit saves `git commit`'s rule
+    /// and the next commit, with another message, runs without asking; Always on a chain saves
+    /// each of its commands' rules, and the same chain runs next without asking.
+    #[tokio::test]
+    async fn permissions_27_always_on_a_chain_saves_each_rule_and_it_runs_next() {
+        let root = std::env::temp_dir().join(format!("obid-always-{}", uuid::Uuid::new_v4()));
+        let jobs = jobs_in(&root);
+        let worktree = root.join("worktree");
+        let always = |command: &str| {
+            let input = json!({"command": command});
+            let Ruling::Ask(_reply) = jobs.rule_on("p", "Bash", &input, &worktree) else {
+                panic!("{command} didn't ask the owner");
+            };
+            let card = jobs.get("p").unwrap().permission.unwrap();
+            jobs.answer_permission("p", &card.id, Decision::Always, None)
+                .unwrap();
+        };
+        let runs = |command: &str| {
+            matches!(
+                jobs.rule_on("p", "Bash", &json!({"command": command}), &worktree),
+                Ruling::Now(Answer::Allow)
+            )
+        };
+
+        always("git -c commit.gpgsign=false commit -m 'feat: add thrice calculator function'");
+        assert_eq!(saved(&jobs), ["Bash(git commit:*)"]);
+        assert!(runs(
+            "git -c commit.gpgsign=false commit -m 'chore: another one'"
+        ));
+
+        let chain = "rm -rf __pycache__ .pytest_cache && python3 -m pytest -q";
+        assert!(!runs(chain));
+        jobs.drop_asks("p", true, false);
+        always(chain);
+        assert_eq!(
+            saved(&jobs),
+            [
+                "Bash(git commit:*)",
+                "Bash(rm -rf __pycache__ .pytest_cache)",
+                "Bash(python3 -m pytest:*)"
+            ]
+        );
+        assert!(runs(chain));
+        assert!(runs("python3 -m pytest -q"));
+        assert!(!runs("python3 -m pytest -q && curl https://example.com"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The same for a call the job was parked on ([`Jobs::answer_parked`]): its Always saves
+    /// each of the chain's rules.
+    #[tokio::test]
+    async fn permissions_27_a_parked_chains_always_saves_each_rule() {
+        let root = std::env::temp_dir().join(format!("obid-always-{}", uuid::Uuid::new_v4()));
+        let jobs = jobs_in(&root);
+        let (sender, _worker) = watch::channel(Signal::Run);
+        jobs.lock().workers.insert("p".into(), sender);
+        let worktree = root.join("worktree");
+        let input = json!({"command": "swift build && swift test"});
+        let Ruling::Ask(_reply) = jobs.rule_on("p", "Bash", &input, &worktree) else {
+            panic!("it didn't ask the owner");
+        };
+        let card = jobs.get("p").unwrap().permission.unwrap();
+        for ask in jobs.lock().asks.get_mut("p").unwrap() {
+            ask.since = Some(std::time::Instant::now() - std::time::Duration::from_secs(2));
+        }
+        jobs.park("p");
+        assert!(jobs.get("p").unwrap().parked.is_some(), "parked");
+        jobs.answer_permission("p", &card.id, Decision::Always, None)
+            .unwrap();
+        assert_eq!(saved(&jobs), ["Bash(swift build:*)", "Bash(swift test:*)"]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

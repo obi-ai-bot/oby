@@ -1,9 +1,9 @@
-//! The turns under way, as Stop and cancel reach them: one answer at a time in a conversation
-//! (words said meanwhile wait for it, then are answered together), a user's words preempting
-//! obid's own event turn (#590), and why each turn ended (#538). The turn itself runs on the
-//! conversation harness (super::harness).
+//! The turns under way, as Stop and cancel reach them: one answer at a time in a conversation, the
+//! words said meanwhile answered together by the next (crate::brain::drain, CONVERSATION-AGENT-49),
+//! and why each turn ended (#538). The turn itself runs on the conversation harness
+//! (super::harness).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -28,6 +28,19 @@ pub struct Control {
     signed: AtomicBool,
     /// When it began: an inbox item made since is one the owner hasn't seen yet.
     pub begun: i64,
+    /// The members the owner's words `@`-name (`POST /v1/plans`'s `ask`, ASK-40), until the turn
+    /// asks them: taken once, so a turn that moves to another account never asks twice.
+    mentioned: Mutex<Option<Mentioned>>,
+    /// What came of asking them, in obid's words, for every prompt of this turn.
+    asked_mentioned: Mutex<Option<String>>,
+}
+
+/// The members the owner's words `@`-name, by exact owner id, and the question: the words without
+/// the mentions they start with (docs/contracts/ask-an-oby.md, ASK-40).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Mentioned {
+    pub owners: Vec<String>,
+    pub question: String,
 }
 
 impl Control {
@@ -52,6 +65,34 @@ impl Control {
     pub fn set_signed(&self, signed: bool) {
         self.signed.store(signed, Ordering::SeqCst);
     }
+
+    /// The members the words this turn answers `@`-name (ASK-40).
+    pub fn set_mentioned(&self, mentioned: Option<Mentioned>) {
+        *self.mentioned.lock().unwrap_or_else(|e| e.into_inner()) = mentioned;
+    }
+
+    /// Whom to ask, the first time only.
+    pub fn take_mentioned(&self) -> Option<Mentioned> {
+        self.mentioned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+    }
+
+    pub fn set_asked_mentioned(&self, said: String) {
+        *self
+            .asked_mentioned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(said);
+    }
+
+    /// What came of asking the members the words named, for the model.
+    pub fn asked_mentioned(&self) -> Option<String> {
+        self.asked_mentioned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
 }
 
 /// The owner's words in a conversation, kept until a turn answers them.
@@ -66,90 +107,125 @@ pub struct Words {
     /// An app of the owner's signed them (docs/contracts/signed-words.md): only then are they the
     /// owner's own word for what Oby does at once (TASKCONV-6).
     pub signed: bool,
+    /// The message box's chips sent with them (brain::defaults, COMPOSER-3).
+    pub defaults: Option<super::defaults::Defaults>,
 }
 
-/// What the owner's next turn in a conversation answers ([`Turns::wait_turn`]): every word said
-/// there since the turn before, as one. It holds the conversation until it's dropped, so words
-/// said meanwhile wait for it.
-pub struct Next {
-    /// The latest words' turn, the words one after another, every attachment, and the latest
-    /// Mac picked to run on.
-    pub words: Words,
-    /// The user's turns it answers, oldest first.
-    pub turns: Vec<String>,
-    _held: tokio::sync::OwnedMutexGuard<()>,
+impl Words {
+    /// The owner's words `taken` (oldest first, each with what the file keeps to answer it) as
+    /// one turn answers them: their words one after another, every attachment and job, the
+    /// latest's user turn and chips (COMPOSER-7), and the owner's own only when each was signed.
+    pub fn together(
+        taken: &[(crate::conversation::Turn, crate::delivery::Replay)],
+        defaults: Option<super::defaults::Defaults>,
+    ) -> Option<Words> {
+        let (last, _) = taken.last()?;
+        Some(Words {
+            turn: last.id.clone(),
+            said: (taken.iter())
+                .map(|(t, _)| t.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+            attachments: (taken.iter())
+                .flat_map(|(_, r)| r.attachments.clone())
+                .collect(),
+            jobs: taken.iter().flat_map(|(t, _)| t.jobs.clone()).collect(),
+            signed: taken.iter().all(|(_, r)| r.signed),
+            defaults,
+        })
+    }
 }
 
-/// The turns under way.
+/// What a request for the owner's words asked with that obid doesn't keep on the conversation's
+/// file (CONVERSATION-AGENT-49): the message box's chips, the turns its client sent, since when the
+/// owner was away (a recap, #594) and when. The turn that takes the words takes it; words a
+/// restart left queued have none.
+#[derive(Debug, Clone, Default)]
+pub struct Asking {
+    pub defaults: Option<super::defaults::Defaults>,
+    /// The members the words `@`-name, to ask (`POST /v1/plans`'s `ask`, ASK-40): the latest
+    /// words', with those words alone as the question; a restart loses it, as the chips.
+    pub ask: Option<Mentioned>,
+    pub turns: Option<Vec<crate::conversation::Turn>>,
+    pub back: Option<i64>,
+    pub now: i64,
+}
+
+/// What a request for the owner's words hears ([`Turns::ask`]): the answer's body, or why none
+/// came.
+#[derive(Debug, Clone)]
+pub enum Heard {
+    Answer(serde_json::Value),
+    Failed(axum::http::StatusCode, String),
+}
+
+/// The turns under way, and each conversation's one drain (CONVERSATION-AGENT-49, R05-04): the
+/// owner's waiting words are the conversation's `queued` deliveries on disk, and nowhere else.
 #[derive(Debug, Default)]
 pub struct Turns {
     underway: Mutex<Vec<Arc<Control>>>,
-    /// The owner's words no turn has taken yet, each with its conversation, in the order they came.
-    waiting: Mutex<Vec<(String, Words)>>,
-    /// One lock per conversation, held by the owner's turn there until it ends: one answer at a
-    /// time in a conversation (docs/mac-design.md 1.6).
-    owners: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// The conversations whose drain runs (crate::brain::drain): one at a time in each.
+    draining: Mutex<HashSet<String>>,
+    /// What each request asked with, by the user's turn its words are, until a turn takes them.
+    asking: Mutex<HashMap<String, Asking>>,
+    /// Where each request waiting for its words' answer hears it, by their user's turn.
+    heard: Mutex<HashMap<String, tokio::sync::oneshot::Sender<Heard>>>,
+}
+
+fn held<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl Turns {
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Arc<Control>>> {
-        self.underway.lock().unwrap_or_else(|e| e.into_inner())
+        held(&self.underway)
     }
 
-    fn waiting(&self) -> std::sync::MutexGuard<'_, Vec<(String, Words)>> {
-        self.waiting.lock().unwrap_or_else(|e| e.into_inner())
+    /// The request for `turn`'s words, which asked with `asking`, waits for their answer: it hears
+    /// it, or `none` when a later turn's words carried them or a cancel dropped them.
+    pub fn ask(&self, turn: &str, asking: Asking) -> tokio::sync::oneshot::Receiver<Heard> {
+        let (tell, hear) = tokio::sync::oneshot::channel();
+        held(&self.asking).insert(turn.to_owned(), asking);
+        held(&self.heard).insert(turn.to_owned(), tell);
+        hear
     }
 
-    /// Waits for the owner's turn under way in `conversation` to end, then takes every word said
-    /// there that no turn took yet, `words` last: the next turn answers them all at once. None
-    /// when later words came meanwhile (their turn answers these with theirs) or a cancel dropped
-    /// them: nothing answers them on their own.
-    pub async fn wait_turn(&self, conversation: &str, words: Words) -> Option<Next> {
-        let turn = words.turn.clone();
-        self.waiting().push((conversation.to_owned(), words));
-        let lock = self
-            .owners
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(conversation.to_owned())
-            .or_default()
-            .clone();
-        // Fair: the words take the conversation in the order they came.
-        let held = lock.lock_owned().await;
-        let mut waiting = self.waiting();
-        if waiting
-            .iter()
-            .rev()
-            .find(|(c, _)| c == conversation)
-            .is_none_or(|(_, w)| w.turn != turn)
-        {
-            return None;
+    /// What the request for `turn`'s words asked with, taken once.
+    pub fn take_asking(&self, turn: &str) -> Option<Asking> {
+        held(&self.asking).remove(turn)
+    }
+
+    /// The request for `turn`'s words, if one waits, hears `heard`.
+    pub fn tell(&self, turn: &str, heard: Heard) {
+        if let Some(tell) = held(&self.heard).remove(turn) {
+            let _ = tell.send(heard);
         }
-        let taken: Vec<Words> = waiting
-            .extract_if(.., |(c, _)| c == conversation)
-            .map(|(_, w)| w)
-            .collect();
-        Some(Next {
-            words: Words {
-                turn,
-                said: taken
-                    .iter()
-                    .map(|w| w.said.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n\n"),
-                attachments: taken.iter().flat_map(|w| w.attachments.clone()).collect(),
-                jobs: taken.iter().flat_map(|w| w.jobs.clone()).collect(),
-                // Words said together are the owner's own only when every one was signed.
-                signed: taken.iter().all(|w| w.signed),
-            },
-            turns: taken.into_iter().map(|w| w.turn).collect(),
-            _held: held,
-        })
     }
 
-    /// A new turn in `conversation`: any turn still under way there is cancelled, and its plan,
-    /// when it comes, does nothing. The owner's next words wait for their turn under way there
-    /// ([`Turns::wait_turn`]), so it's never theirs.
+    /// `conversation`'s drain begins, unless one runs there already: whether it does.
+    pub fn start_draining(&self, conversation: &str) -> bool {
+        held(&self.draining).insert(conversation.to_owned())
+    }
+
+    /// `conversation`'s drain ends when `empty` says nothing waits there, judged under the lock
+    /// [`Turns::start_draining`] takes: words kept before a drain was asked for are always taken.
+    /// Whether it ended.
+    pub fn done_draining(&self, conversation: &str, empty: impl FnOnce() -> bool) -> bool {
+        let mut draining = held(&self.draining);
+        let done = empty();
+        if done {
+            draining.remove(conversation);
+        }
+        done
+    }
+
+    /// A drain that ended without [`Turns::done_draining`] (it panicked): `conversation` may have
+    /// another.
+    pub fn abandon_draining(&self, conversation: &str) {
+        held(&self.draining).remove(conversation);
+    }
+
+    /// A turn begins in `conversation`: its drain runs one at a time there.
     pub fn begin(&self, turn: &str, conversation: &str) -> Arc<Control> {
         let control = Arc::new(Control {
             turn: turn.into(),
@@ -158,12 +234,10 @@ impl Turns {
             cancelled: AtomicBool::new(false),
             signed: AtomicBool::new(false),
             begun: obi_protocol::time::now(),
+            mentioned: Mutex::new(None),
+            asked_mentioned: Mutex::new(None),
         });
-        let mut underway = self.lock();
-        for earlier in underway.iter().filter(|c| c.conversation == conversation) {
-            earlier.cancelled.store(true, Ordering::SeqCst);
-        }
-        underway.push(control.clone());
+        self.lock().push(control.clone());
         control
     }
 
@@ -177,14 +251,10 @@ impl Turns {
         self.mark(conversation, |c| c.stopped.store(true, Ordering::SeqCst))
     }
 
-    /// Drops the turns under way (in `conversation`, or all): their plans do nothing; and the
-    /// owner's words waiting there: no turn answers them. The user's turns of the words dropped.
-    pub fn cancel(&self, conversation: Option<&str>) -> Vec<String> {
-        let mut waiting = self.waiting();
-        let dropped = waiting.extract_if(.., |(c, _)| conversation.is_none_or(|id| c == id));
-        let dropped = dropped.map(|(_, w)| w.turn).collect();
+    /// Drops the turns under way (in `conversation`, or all): their plans do nothing. The words
+    /// waiting there are the conversation's to cancel (crate::brain::cancel_waiting).
+    pub fn cancel(&self, conversation: Option<&str>) {
         self.mark(conversation, |c| c.cancelled.store(true, Ordering::SeqCst));
-        dropped
     }
 
     fn mark(&self, conversation: Option<&str>, mark: impl Fn(&Control)) -> bool {
@@ -335,79 +405,88 @@ mod tests {
         }
     }
 
-    /// Words said while the owner's turn is under way wait for it to end; the next turn answers
-    /// every one of them at once, as the latest's. Cancel drops what waits, and another
-    /// conversation never waits.
-    #[tokio::test]
-    async fn words_wait_for_the_turn_under_way_and_are_answered_together() {
-        let turns = Arc::new(Turns::default());
-        let words = |turn: &str| Words {
-            turn: turn.into(),
-            said: format!("said {turn}"),
+    fn waiting(turn: &str, signed: bool) -> (crate::conversation::Turn, crate::delivery::Replay) {
+        let mut said = crate::conversation::Turn::of("user", format!("said {turn}"));
+        said.id = turn.into();
+        let replay = crate::delivery::Replay {
             attachments: vec![format!("{turn}.png")],
-            jobs: vec![],
-            signed: true,
+            signed,
         };
-        let wait = |turn: &'static str| {
-            let turns = turns.clone();
-            tokio::spawn(async move {
-                turns
-                    .wait_turn("c1", words(turn))
-                    .await
-                    .map(|next| (next.turns, next.words))
-            })
-        };
-        let waiting = |n: usize| {
-            let turns = turns.clone();
-            async move {
-                while turns.waiting().len() < n {
-                    tokio::task::yield_now().await;
-                }
-            }
-        };
-        let first = turns.wait_turn("c1", words("t1")).await.unwrap();
-        assert_eq!(first.turns, ["t1"]);
-        assert_eq!(first.words.said, "said t1");
-        drop(turns.wait_turn("c2", words("t9")).await.unwrap());
-        let second = wait("t2");
-        waiting(1).await;
-        let third = wait("t3");
-        waiting(2).await;
-        drop(first);
-        assert!(
-            second.await.unwrap().is_none(),
-            "the latest words answer it"
-        );
-        let (answered, next) = third.await.unwrap().unwrap();
-        assert_eq!(answered, ["t2", "t3"]);
-        assert_eq!(next.turn, "t3");
-        assert_eq!(next.said, "said t2\n\nsaid t3");
-        assert_eq!(next.attachments, ["t2.png", "t3.png"]);
-        let held = turns.wait_turn("c1", words("t4")).await.unwrap();
-        let dropped = wait("t5");
-        waiting(1).await;
-        turns.cancel(Some("c2"));
-        assert_eq!(turns.waiting().len(), 1, "another conversation's cancel");
-        turns.cancel(Some("c1"));
-        drop(held);
-        assert!(dropped.await.unwrap().is_none(), "cancelled");
-        assert!(turns.waiting().is_empty());
+        (said, replay)
     }
 
-    /// A turn begun cancels the one under way in its conversation (obid's own: the owner's words
-    /// wait for theirs), never another conversation's; Stop reaches only its own.
+    /// Words that waited are answered together as the latest's: their words one after another,
+    /// every attachment, signed only when each was (CONVERSATION-AGENT-49).
     #[test]
-    fn a_turn_begun_cancels_the_one_under_way_in_its_conversation_only() {
+    fn words_that_waited_are_answered_together() {
+        let words = Words::together(&[waiting("t2", true), waiting("t3", true)], None).unwrap();
+        assert_eq!(words.turn, "t3");
+        assert_eq!(words.said, "said t2\n\nsaid t3");
+        assert_eq!(words.attachments, ["t2.png", "t3.png"]);
+        assert!(words.signed);
+        let mixed = Words::together(&[waiting("t2", true), waiting("t3", false)], None).unwrap();
+        assert!(!mixed.signed);
+        assert!(Words::together(&[], None).is_none());
+    }
+
+    /// COMPOSER-7: words answered together take the latest words' chips.
+    #[test]
+    fn composer_7_words_answered_together_take_the_latest_chips() {
+        let chips = super::super::defaults::Defaults {
+            mode: Some("ask".into()),
+            ..Default::default()
+        };
+        let words = Words::together(
+            &[waiting("t2", true), waiting("t3", true)],
+            Some(chips.clone()),
+        );
+        assert_eq!(words.unwrap().defaults, Some(chips));
+    }
+
+    /// CONVERSATION-AGENT-49: the request for some words hears their answer once, and what it
+    /// asked with is taken once; a drain runs one at a time in a conversation, ends only when
+    /// nothing waits, and one that panicked lets the next start.
+    #[tokio::test]
+    async fn conversation_agent_49_a_request_hears_once_and_one_drain_runs() {
+        let turns = Turns::default();
+        let asking = Asking {
+            back: Some(7),
+            ..Default::default()
+        };
+        let heard = turns.ask("t1", asking);
+        assert_eq!(turns.take_asking("t1").and_then(|a| a.back), Some(7));
+        assert!(turns.take_asking("t1").is_none());
+        turns.tell("t1", Heard::Answer(serde_json::json!({"kind": "none"})));
+        turns.tell("t1", Heard::Answer(serde_json::json!({"kind": "reply"})));
+        match heard.await.unwrap() {
+            Heard::Answer(body) => assert_eq!(body["kind"], "none"),
+            other => panic!("{other:?}"),
+        }
+        assert!(turns.start_draining("c1"));
+        assert!(!turns.start_draining("c1"), "one drain at a time");
+        assert!(turns.start_draining("c2"), "another conversation's own");
+        assert!(!turns.done_draining("c1", || false), "words wait still");
+        assert!(!turns.start_draining("c1"));
+        assert!(turns.done_draining("c1", || true));
+        assert!(turns.start_draining("c1"));
+        turns.abandon_draining("c1");
+        assert!(turns.start_draining("c1"));
+    }
+
+    /// A turn begun cancels nothing (its conversation's drain runs one at a time); Stop and
+    /// cancel reach only their own conversation's.
+    #[test]
+    fn stop_and_cancel_reach_only_their_conversation() {
         let turns = Turns::default();
         let first = turns.begin("t1", "c1");
         let other = turns.begin("t2", "c2");
-        let second = turns.begin("t3", "c1");
-        assert!(first.cancelled() && !first.stopped());
-        assert!(other.live() && second.live());
+        assert!(first.live() && other.live());
         assert!(turns.stop(Some("c2")));
-        assert!(other.stopped() && second.live());
-        turns.end(&second);
-        assert!(turns.cancel(Some("c3")).is_empty());
+        assert!(other.stopped() && first.live());
+        turns.cancel(Some("c1"));
+        assert!(first.cancelled());
+        turns.end(&first);
+        assert!(!turns.stop(Some("c3")));
         assert_eq!(turns.latest_conversation(), Some("c2".into()));
     }
 }

@@ -1,14 +1,16 @@
 //! Projects (docs/contracts/projects.md): a named set of folders and GitHub repositories that
-//! conversations belong to, kept in `home/projects.json`. A conversation in a project answers the
-//! project's folders, from a copy obid keeps in it (crate::conversation). Only the owner's Mac app
-//! reaches the routes: they aren't on the gateway's list (crate::gateway::ROUTES).
+//! conversations belong to, kept per profile in `projects.json` under the profile's root
+//! (crate::profiles::root_of): the default profile's is `home/projects.json`. A conversation in a
+//! project answers the project's folders, from a copy obid keeps in it (crate::conversation). Only
+//! the owner's Mac app reaches the routes: they aren't on the gateway's list (crate::gateway::ROUTES).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use axum::body::Bytes;
 use axum::extract::{Path as UrlPath, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -88,53 +90,129 @@ struct Saved {
 /// The projects kept, in the order made, or why `projects.json` doesn't read.
 pub type Kept = Result<Vec<Project>, String>;
 
-/// The projects kept in `home/projects.json` (0600). Its lock is taken before the conversations'.
+/// Every profile's projects, by its root, each kept in `<root>/projects.json` (0600). One lock
+/// for them all, taken before the conversations'.
 pub struct Projects {
-    file: PathBuf,
-    kept: Mutex<Kept>,
+    home: PathBuf,
+    roots: Mutex<HashMap<PathBuf, Kept>>,
+}
+
+/// Every profile's projects, held until the guard goes: every change to a conversation's project
+/// is made under it.
+pub struct Held<'a> {
+    home: &'a Path,
+    roots: MutexGuard<'a, HashMap<PathBuf, Kept>>,
 }
 
 impl Projects {
-    /// The projects in `home`; no file is none. A file that doesn't read is logged and left as it
-    /// is: nothing writes over it, and every project route answers why.
+    /// The projects, the default profile's in `home` read now and any other profile's the first
+    /// time it's needed.
     pub fn open(home: &Path) -> Projects {
-        let file = home.join("projects.json");
-        let kept = match std::fs::read(&file) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
-            read => read.map_err(|e| e.to_string()).and_then(|bytes| {
-                let saved = serde_json::from_slice::<Saved>(&bytes);
-                saved.map(|s| s.projects).map_err(|e| e.to_string())
-            }),
-        };
-        let kept = kept.map_err(|e| {
-            tracing::error!("can't read {}: left as it is ({e})", file.display());
-            format!("Oby can't read {}: it's left as it is.", file.display())
-        });
+        let roots = HashMap::from([(home.to_path_buf(), read(home))]);
         Projects {
-            file,
-            kept: Mutex::new(kept),
+            home: home.to_path_buf(),
+            roots: Mutex::new(roots),
         }
     }
 
-    /// The projects, held until the guard goes: every change to a conversation's project is made
-    /// under it.
-    pub fn lock(&self) -> MutexGuard<'_, Kept> {
-        self.kept.lock().unwrap_or_else(|e| e.into_inner())
+    pub fn lock(&self) -> Held<'_> {
+        Held {
+            home: &self.home,
+            roots: self.roots.lock().unwrap_or_else(|e| e.into_inner()),
+        }
+    }
+}
+
+impl Held<'_> {
+    /// The projects kept under `root` (crate::profiles::root_of), read the first time.
+    pub fn at(&mut self, root: &Path) -> &mut Kept {
+        (self.roots.entry(root.to_path_buf())).or_insert_with(|| read(root))
+    }
+}
+
+impl Held<'_> {
+    /// The projects kept under `from` (a profile being deleted, PROFILES-44) added to the default
+    /// profile's, after its own, and kept: the default's as they were, for [`Self::put_back_home`].
+    /// Either file not reading, or the default's not written, changes nothing.
+    pub fn merge_into_home(&mut self, from: &Path) -> Result<Vec<Project>, ApiError> {
+        let theirs = self.at(from).clone().map_err(|why| unreadable(&why))?;
+        let home = self.home.to_path_buf();
+        let ours = self.at(&home).as_mut().map_err(|why| unreadable(why))?;
+        let before = ours.clone();
+        if theirs.is_empty() {
+            return Ok(before);
+        }
+        ours.extend(theirs);
+        if let Err(e) = keep(&home, ours) {
+            *ours = before;
+            return Err(e);
+        }
+        Ok(before)
     }
 
-    fn keep(&self, projects: &[Project]) -> Result<(), ApiError> {
-        let text = serde_json::to_vec_pretty(&json!({ "projects": projects }));
-        let written = text.map_err(std::io::Error::other);
-        written
-            .and_then(|text| crate::store::write_private(&self.file, &text))
-            .map_err(|e| {
-                tracing::error!("can't keep {}: {e}", self.file.display());
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "The projects couldn't be kept.",
-                )
-            })
+    /// The default profile's projects put back as [`Self::merge_into_home`] found them.
+    pub fn put_back_home(&mut self, before: Vec<Project>) {
+        let home = self.home.to_path_buf();
+        if let Ok(ours) = self.at(&home)
+            && ours.len() != before.len()
+        {
+            if let Err(e) = keep(&home, &before) {
+                tracing::error!(
+                    "the default profile's projects weren't put back: {}",
+                    e.message
+                );
+            }
+            *ours = before;
+        }
     }
+
+    /// `root`'s projects forgotten: its profile is gone.
+    pub fn forget(&mut self, root: &Path) {
+        self.roots.remove(root);
+    }
+}
+
+impl std::ops::Deref for Held<'_> {
+    type Target = Kept;
+
+    /// The default profile's projects, obid's home's.
+    fn deref(&self) -> &Kept {
+        &self.roots[self.home]
+    }
+}
+
+/// The projects in `root`'s `projects.json`; no file is none, and nothing is made. A file that
+/// doesn't read is logged and left as it is: nothing writes over it, and every project route
+/// answers why for that root.
+fn read(root: &Path) -> Kept {
+    let file = root.join("projects.json");
+    let kept = match std::fs::read(&file) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
+        read => read.map_err(|e| e.to_string()).and_then(|bytes| {
+            let saved = serde_json::from_slice::<Saved>(&bytes);
+            saved.map(|s| s.projects).map_err(|e| e.to_string())
+        }),
+    };
+    kept.map_err(|e| {
+        tracing::error!("can't read {}: left as it is ({e})", file.display());
+        format!("Oby can't read {}: it's left as it is.", file.display())
+    })
+}
+
+/// `projects` written to `root`'s `projects.json`, in a folder that is there: none is made.
+fn keep(root: &Path, projects: &[Project]) -> Result<(), ApiError> {
+    let file = root.join("projects.json");
+    let text = serde_json::to_vec_pretty(&json!({ "projects": projects }));
+    let written = text.map_err(std::io::Error::other);
+    written
+        .and_then(|text| crate::store::write_private(&file, &text))
+        .map_err(|e| {
+            tracing::error!("can't keep {}: {e}", file.display());
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "The projects couldn't be kept.",
+            )
+        })
 }
 
 /// The project `id` as a conversation joins it: its id and its folders, or why not.
@@ -151,12 +229,22 @@ pub fn chosen_on_the_mac() -> ApiError {
     )
 }
 
-/// At start, before obid serves: each conversation in a kept project gets its folders as they are
-/// now, and one whose project is gone leaves it ([`Event::ProjectGone`]). Skipped when
-/// `projects.json` doesn't read.
-pub fn reconcile(projects: &Projects, conversations: &Conversations) {
-    let kept = projects.lock();
-    let Ok(kept) = &*kept else { return };
+/// At start, before obid serves: each conversation in a project kept under any of `roots` (every
+/// profile's, crate::profiles::Profiles::roots) gets its folders as they are now, and one whose
+/// project is in none leaves it ([`Event::ProjectGone`]). Skipped when any `projects.json` doesn't
+/// read.
+pub fn reconcile(projects: &Projects, roots: &[PathBuf], conversations: &Conversations) {
+    let mut held = projects.lock();
+    for root in roots {
+        held.at(root);
+    }
+    let mut kept = vec![];
+    for root in roots {
+        let Ok(projects) = &held.roots[root] else {
+            return;
+        };
+        kept.extend(projects);
+    }
     let done = conversations.regroup(|id, copy| match kept.iter().find(|p| p.id == id) {
         Some(project) if project.folders == copy => None,
         Some(project) => Some(Some(project.folders.clone())),
@@ -224,15 +312,25 @@ fn checked(shared: &Shared, body: &Bytes) -> Result<Body, ApiError> {
     })
 }
 
-/// `GET /v1/projects`: every project, in the order made.
-pub async fn list(State(shared): State<Arc<Shared>>) -> Result<Response, ApiError> {
-    let kept = shared.projects.lock();
-    let projects = kept.as_ref().map_err(|why| unreadable(why))?;
+/// `GET /v1/projects`: every project of the profile the request names, in the order made.
+pub async fn list(
+    State(shared): State<Arc<Shared>>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let root = crate::profiles::root_of(&shared, &headers)?;
+    let mut held = shared.projects.lock();
+    let projects = held.at(&root).as_ref().map_err(|why| unreadable(why))?;
     Ok((StatusCode::OK, axum::Json(projects)).into_response())
 }
 
-/// `POST /v1/projects`: a new project, `folders` and `repos` none when left out.
-pub async fn create(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Response, ApiError> {
+/// `POST /v1/projects`: a new project in the profile the request names, `folders` and `repos`
+/// none when left out.
+pub async fn create(
+    State(shared): State<Arc<Shared>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let root = crate::profiles::root_of(&shared, &headers)?;
     let body = checked(&shared, &body)?;
     let project = Project {
         id: uuid::Uuid::new_v4().to_string().to_lowercase(),
@@ -240,29 +338,31 @@ pub async fn create(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Re
         folders: body.folders.unwrap_or_default(),
         repos: body.repos.unwrap_or_default(),
     };
-    let mut kept = shared.projects.lock();
-    let projects = kept.as_mut().map_err(|why| unreadable(why))?;
+    let mut held = shared.projects.lock();
+    let projects = held.at(&root).as_mut().map_err(|why| unreadable(why))?;
     projects.push(project.clone());
-    if let Err(e) = shared.projects.keep(projects) {
+    if let Err(e) = keep(&root, projects) {
         projects.pop();
         return Err(e);
     }
     Ok((StatusCode::CREATED, axum::Json(project)).into_response())
 }
 
-/// `PATCH /v1/projects/{id}`: its name, folders or repositories. New folders are kept first, then
-/// reach every conversation in it.
+/// `PATCH /v1/projects/{id}`: its name, folders or repositories, in the profile the request names.
+/// New folders are kept first, then reach every conversation in it.
 pub async fn change(
     State(shared): State<Arc<Shared>>,
     UrlPath(id): UrlPath<String>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
+    let root = crate::profiles::root_of(&shared, &headers)?;
     let body = checked(&shared, &body)?;
     if body.name.is_none() && body.folders.is_none() && body.repos.is_none() {
         return Err(refused("Send a name, folders, repos, or more than one."));
     }
-    let mut kept = shared.projects.lock();
-    let projects = kept.as_mut().map_err(|why| unreadable(why))?;
+    let mut held = shared.projects.lock();
+    let projects = held.at(&root).as_mut().map_err(|why| unreadable(why))?;
     let at = find(projects, &id)?;
     let before = projects[at].clone();
     let project = &mut projects[at];
@@ -270,7 +370,7 @@ pub async fn change(
     project.folders = body.folders.clone().unwrap_or(before.folders.clone());
     project.repos = body.repos.unwrap_or(before.repos.clone());
     let project = project.clone();
-    if let Err(e) = shared.projects.keep(projects) {
+    if let Err(e) = keep(&root, projects) {
         projects[at] = before;
         return Err(e);
     }
@@ -281,19 +381,22 @@ pub async fn change(
     Ok((StatusCode::OK, axum::Json(project)).into_response())
 }
 
-/// `DELETE /v1/projects/{id}`: every conversation in it leaves it first, keeping the folders it
-/// works in; then the project goes. One not written answers 500, and the project stays.
+/// `DELETE /v1/projects/{id}`, in the profile the request names: every conversation in it leaves
+/// it first, keeping the folders it works in; then the project goes. One not written answers 500,
+/// and the project stays.
 pub async fn delete(
     State(shared): State<Arc<Shared>>,
     UrlPath(id): UrlPath<String>,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let mut kept = shared.projects.lock();
-    let projects = kept.as_mut().map_err(|why| unreadable(why))?;
+    let root = crate::profiles::root_of(&shared, &headers)?;
+    let mut held = shared.projects.lock();
+    let projects = held.at(&root).as_mut().map_err(|why| unreadable(why))?;
     let at = find(projects, &id)?;
     let gone = |p: &str, _: &[String]| (p == id).then_some(None);
     shared.conversations.regroup(gone)?;
     let gone = projects.remove(at);
-    if let Err(e) = shared.projects.keep(projects) {
+    if let Err(e) = keep(&root, projects) {
         projects.insert(at, gone);
         return Err(e);
     }

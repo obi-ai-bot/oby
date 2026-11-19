@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { added, adopted, answered, awaited, awaitedIn, failed, gone, settled, type Pending } from '../pending';
 import type { Conversation, Turn } from '../../../shared/obid-wire';
 import { liveBridge } from './liveBridge';
@@ -108,7 +108,10 @@ async function load(conversations: Conversation[] = []) {
   return { live, rows, row, sentAs };
 }
 
-describe('words to Oby as a pending overlay', { timeout: 15_000 }, () => {
+describe('words to Oby as a pending overlay', () => {
+  // the app's first import is a cold transform that a busy Mac can stretch past a test's own time
+  // (#1839): it's done here, under vitest's hookTimeout, so each test's 30 s is its own work
+  beforeAll(async () => { await load(); vi.unstubAllGlobals(); });
   beforeEach(() => { plan = () => ({ status: 404 }); });
   afterEach(() => { vi.unstubAllGlobals(); });
 

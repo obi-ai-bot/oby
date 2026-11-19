@@ -38,10 +38,11 @@ fn account(obid: &Obid) -> Value {
     call(obid, "GET", "/v1/status", None).body["accounts"][0].clone()
 }
 
-/// USAGE-12: past its 5-hour window on its paid overage, a passing error is tried again as any is:
-/// the 100% window isn't full, so it isn't the account's limit, and the account isn't marked.
+/// USAGE-12: past its 5-hour window on its paid overage, a passing error ends the job as any does
+/// (RECOVERY-19): the 100% window isn't full, so it isn't the account's limit, the job doesn't wait
+/// for room, and the account isn't marked.
 #[test]
-fn usage_12_overage_in_use_isnt_full_a_passing_error_is_tried_again() {
+fn usage_12_overage_in_use_isnt_full_a_passing_error_isnt_its_limit() {
     let (_folder, obid) = obid("usage-12-overage");
     let now = obi_protocol::time::now();
     let usage = json!({"status": "rejected", "resetsAt": now + 3600, "rateLimitType": "five_hour",
@@ -49,14 +50,19 @@ fn usage_12_overage_in_use_isnt_full_a_passing_error_is_tried_again() {
         "unifiedWindows": {"five_hour": {"utilization": 1.0, "resetsAt": now + 3600},
             "seven_day": {"utilization": 0.62, "resetsAt": now + 86_400}}, "overageEnabled": true});
     let id = post_job(&obid, &format!("USAGE: {usage} TRANSIENT KEEP PROMPTS"));
-    // Tried again after its first wait (a minute), in its session, on its own account.
-    let job = turn_ran_or_waits(&obid, &id, 600);
+    let job = within(120, "the job ends, or it waits for room", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["status"] == "interrupted" || !job["resumesAt"].is_null()).then_some(job)
+    });
     assert!(job["resumesAt"].is_null(), "{job}");
-    assert_eq!(job["summary"], "Nothing to do.", "{job}");
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(job["nextStep"], "Try again", "{job}");
+    assert!(job["reason"].as_str().unwrap().contains("529"), "{job}");
+    assert!(job["accountLimit"].is_null(), "{job}");
     assert_eq!(job["account"], "stub", "{job}");
     let log = Path::new(job["worktree"].as_str().unwrap()).join(".obi/prompts.log");
     let told = std::fs::read_to_string(log).unwrap();
-    assert_eq!(told.matches("<<<end of prompt>>>").count(), 2, "{told}");
+    assert_eq!(told.matches("<<<end of prompt>>>").count(), 1, "{told}");
     let account = account(&obid);
     assert_eq!(account["fiveHour"], 1.0, "{account}");
     assert!(account["fullUntil"].is_null(), "{account}");
