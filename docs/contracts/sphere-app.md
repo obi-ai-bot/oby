@@ -33,7 +33,7 @@ The business behavior contract for what the Electron app does in an Obysphere at
 
 ### A revoked membership
 
-- When obid's membership is `revoked`, the Obysphere stays in the side panel with no members, its settings open with a line from obid's `revokedReason` code (an open set): `removed`, or no code, says `<name>’s admin took your Oby out.`; a code this app doesn't know says `Your Oby isn’t in <name> any more.`, and a code is never shown as it is. Then the field for a new link, and Leave. Its rules and What your Oby tells are not shown. Settings › Obysphere shows the same line over its field. Joining again leaves the revoked membership first (SPHERE-1's join).
+- When obid's membership is `revoked`, the Obysphere stays in the side panel with no members, its settings open with a line from obid's `revokedReason` code (an open set): `removed`, or no code, says `<name>’s admin took your Oby out.`; a code this app doesn't know says `Your Oby isn’t in <name> any more.`, and a code is never shown as it is. Then the field for a new link, and Leave. Its rules and What your Oby tells are not shown. Settings › Obysphere shows the same line over its field. The side panel's Obysphere says it too, under Members where `Just you so far` would be, and lists no member, so no thread opens and `@` in the message box offers none of them (SPHEREAPP-14). Joining again leaves the revoked membership first (SPHERE-1's join).
 
 ### Handing a member's Oby a task
 
@@ -114,6 +114,8 @@ The business behavior contract for what the Electron app does in an Obysphere at
 - **SPHEREAPP-12** Given an Obysphere's address in the invite-link field, when its Obysphere lists `owner_rebind`, then `Sign in with <provider>` shows; after a click main saw and Sign in in main's dialog, main starts a sign-in for a new owner key with a `127.0.0.1` `return_to`, opens the browser, and with the state and code that come back sends the rebind with no `Authorization`, a card the new key signed; on `200` it keeps the new key and hands obid the membership with a delegation from it; each refusal says why in words and keeps the old key; a sign-in that didn't finish or came back for another state sends no rebind; an Oby already in one starts nothing; an Obysphere that doesn't offer it shows no sign-in. `sphereapp_12_…` (`sphere.test.ts`, `sphereApp.test.tsx`, `ipc.test.ts`).
 
 - **SPHEREAPP-13** Given a live Obysphere that offers getting back in, when this owner hasn't added a sign-in, then Settings › Obysphere says so under its name with Sign in with <provider>; after a click main saw, main signs in for the key it holds and links the account with the owner's own token, and the group reads `Signed in as you`, no email anywhere; linked already reads so with no button; an Obysphere that doesn't offer it shows no group; a sole admin's notice points at it; getting back in as an owner who never added one says `This name never added a sign-in. Ask an admin to reset it.` `sphereapp_13_…` (`sphere.test.ts`, `sphereApp.test.tsx`, `ipc.test.ts`).
+
+- **SPHEREAPP-14** Given a joined Obysphere with members, when obid's membership turns `revoked`, then at the app's next read of it the side panel's Obysphere says, under Members and in place of `Just you so far`, that its admin took the Oby out (`removed` or no code; an unknown code says only that it's out, never the code), lists no member, and `@` offers none of them. `sphereapp_14_…` (`sphereMenu.test.tsx`; L8, RIG-34, on the rig).
 
 ### Test it when it's done
 

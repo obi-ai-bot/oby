@@ -497,12 +497,21 @@ const SCENARIOS = [
     ok("the app says you were removed");
     const link = await newLink();
     const field = await linkField(ctx.page);
+    let asked = async () => null;
     if (field) {
       await field.click();
       await ctx.page.keyboard.insertText(link);
-      await (await firstVisible([ctx.page.getByRole("button", { name: /^Join\b/ })], 5000))?.click();
+      const join = await firstVisible([ctx.page.getByRole("button", { name: /^Join\b/ })], 5000);
+      if (!join) red("a new link is in the field, and there's no Join button");
+      // Join hands the link to main, whose own native "Join …?" no click of the rig's can reach: the
+      // rig answers it Join, as in L1
+      asked = await answerMainsJoin();
+      await sleep(600);
+      await join.click();
+      const confirm = await firstVisible([ctx.page.getByRole("dialog").getByRole("button", { name: /^Join\b/ })], 2000);
+      if (confirm) await confirm.click();
     } else await joinByOpenUrl(link);
-    if (!(await joined(60))) red(`a new link didn't rejoin within 60 s (${(await you.get("/v1/obid/sphere")).state})`);
+    if (!(await joined(60))) red(`a new link didn't rejoin within 60 s (${(await you.get("/v1/obid/sphere")).state}${field && !(await asked()) ? "; main asked nothing" : ""})`);
     ok(`a new link rejoined${field ? "" : " (by the app's oby:// path: no field yet)"}`);
   } },
 ];
