@@ -537,21 +537,23 @@ async function answerLimitAsk(id: string, option: string) {
 // for your own), assigned issues under Issues. A tap starts Oby's job where it can: not on a draft,
 // an issue in a repository Oby doesn't work in, or your own pull request unless its checks failed
 // on a branch of the repository itself; a review in a repository Oby doesn't work in asks your
-// Confirm first, which adds it.
+// Confirm first, which adds it. That one's start is Fix CI on its failed checks' line (GITHUBWORK-30),
+// not a second button: Fix it only while the feed lists none of its checks as failed.
 const REVIEWED: Record<string, string> = { APPROVED: 'Approved', CHANGES_REQUESTED: 'Changes requested', REVIEW_REQUIRED: 'Waiting for review' };
 const CHECKED: Record<string, string> = { SUCCESS: 'checks passed', FAILURE: 'checks failed', ERROR: 'checks failed', PENDING: 'checks running', EXPECTED: 'checks running' };
-function workOf(w: GitHubWork | null): GitHubItem[] {
+export function workOf(w: GitHubWork | null): GitHubItem[] {
   return (w ? [...w.reviews, ...w.mine, ...w.assigned] : []).filter((g) => !g.job).map((g) => {
     const name = g.repo.split('/')[1] ?? g.repo, at = `${name} #${g.number}`;
     const red = g.checks === 'FAILURE' || g.checks === 'ERROR';
-    const action = g.draft ? undefined : g.list === 'reviews' ? 'Review it' as const
+    const fixCi = !g.draft && g.known && g.list === 'mine' && red && !g.fork && !!g.checkRuns?.some((r) => r.state === 'FAILURE');
+    const action = g.draft || fixCi ? undefined : g.list === 'reviews' ? 'Review it' as const
       : g.known && (g.list === 'assigned' || (red && !g.fork)) ? 'Fix it' as const : undefined;
     // where your own stands: "Changes requested, checks failed."
     const stands = [REVIEWED[g.reviewDecision ?? ''], CHECKED[g.checks ?? '']].filter(Boolean).join(', ');
     return {
       id: g.id, type: g.list === 'assigned' ? 'issues' : 'review', who: g.list === 'reviews' ? g.author ?? undefined : undefined,
       title: `#${g.number} ${g.title}`, repo: name, url: g.url, board: g.board ?? undefined, updated: minutesAgo(g.updated), action,
-      ...(g.checkRuns?.length ? { checks: g.checkRuns } : {}),
+      ...(g.checkRuns?.length ? { checks: g.checkRuns } : {}), ...(fixCi ? { fixCi } : {}),
       request: g.list === 'reviews' ? `${g.author ?? 'Someone'} asked you to review ${at}.` : g.list === 'assigned' ? `Assigned to you in ${at}.`
         : stands ? `${stands[0].toUpperCase()}${stands.slice(1)}.` : `Open in ${at}.`,
       label: action ? undefined : g.list === 'mine' ? 'Your pull request' : 'On GitHub',
@@ -560,6 +562,15 @@ function workOf(w: GitHubWork | null): GitHubItem[] {
     };
   });
 }
+
+// The GitHub issue a task was started from (TASKS-34): its number and obid's page for it (ISSUETASK-7,
+// a github.com one only), its title from GitHub work's feed when the feed lists it; none with no issue
+const issueOf = (s: Pick<Live, 'github'>, j: Job): { issue?: { number: number; url: string; title?: string } } => {
+  const url = j.issueUrl;
+  if (j.issue == null || !url?.startsWith('https://github.com/')) return {};
+  const w = s.github, title = w && [...w.assigned, ...w.reviews, ...w.mine].find((g) => g.url === url)?.title;
+  return { issue: { number: j.issue, url, ...(title ? { title } : {}) } };
+};
 
 // The branch a task's commits went to (TASKCONV-32): its last push's (a Fix CI job's onto its
 // owner's pull request's own branch, TASKCONV-31; the owner's Publish to another), else none yet
@@ -574,7 +585,7 @@ export function taskOf(s: Live, j: Job): Task {
   const answer = putOff ? 'Later' : was && was.option !== 'Later' && (!now || item?.id === was.item) ? was.option : undefined;
   const ask = answer && !putOff ? was!.ask : now;
   const job: JobView = {
-    id: j.id, type: j.kind === 'review' ? 'review' : j.issue != null ? 'issues' : 'tasks', title: j.title, request: j.request,
+    id: j.id, type: j.kind === 'review' ? 'review' : j.issue != null ? 'issues' : 'tasks', title: j.title, request: j.request, ...issueOf(s, j),
     agent: j.agent, account: s.status?.accounts.find((a) => a.id === j.account)?.name ?? j.account, accountId: j.account,
     model: j.model ?? s.status?.models[j.agent]?.model ?? 'default', repo: j.repo, branch: pushedTo(j) || j.branch || '—', base: j.base ?? '—',
     check: j.check ?? undefined, repoCheck: s.repos.find((r) => r.repo === j.repo)?.check, status: j.status, step: j.step, waiting: j.waiting ?? undefined,
@@ -1150,6 +1161,26 @@ export async function loadSession(id: string): Promise<void> {
 // starts nothing yet: its Confirm comes into Home's stack, and obid's words say so for a moment.
 export async function startGitHubWork(id: string) {
   try { const j = await api.startGitHubWork(id); take({ kind: 'job', job: j }); } catch (e) { say(e); }
+}
+
+// Fix CI on the owner's own red pull request's checks (GITHUBWORK-30): the feed's start, whose job
+// is the same Fix CI task words and the old card started (github_work::begin). One click starts one
+// task (GITHUBWORK-31): while its start is on its way a click starts nothing more, and once a task is
+// on it (the feed's job, or the one this start answered: obid answers a running one instead of a
+// new one) a click opens that task. Answers the task to open, if any.
+const fixedFrom = new Map<string, string>(), fixing = new Set<string>();
+export async function fixCi(id: string): Promise<string | undefined> {
+  const on = state.github?.mine.find((g) => g.id === id)?.job ?? fixedFrom.get(id);
+  if (on && state.jobs[on]) return on;
+  if (fixing.has(id)) return undefined;
+  fixing.add(id);
+  try {
+    const known = new Set(Object.keys(state.jobs));
+    const j = await api.startGitHubWork(id);
+    take({ kind: 'job', job: j });
+    fixedFrom.set(id, j.id);
+    return known.has(j.id) ? j.id : undefined;
+  } catch (e) { say(e); return undefined; } finally { fixing.delete(id); }
 }
 
 // A job's decision answered: its permission through obid's own route (POST /v1/jobs/{id}/permission),

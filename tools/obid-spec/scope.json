@@ -566,7 +566,8 @@
             "ISSUETASK-6"
           ],
           "elsewhere": {
-            "ISSUETASK-3": "lib test of GraphQL node budget."
+            "ISSUETASK-3": "lib test of GraphQL node budget.",
+            "ISSUETASK-7": "obid's integration test (tests/github_work.rs issuetask_7); obid-spec is frozen to launch flows until after launch (README)."
           }
         },
         "account-limits.md": {
@@ -867,7 +868,8 @@
             "TASKS-10": "Electron Rename/Archive/Delete/menus/session view (routes themselves in §4).",
             "TASKS-17": "retired.",
             "TASKS-25": "Electron shows no decision for failed/interrupted.",
-            "TASKS-33": "Electron renders the agent's summary under Result as Markdown (TaskCard.tsx)."
+            "TASKS-33": "Electron renders the agent's summary under Result as Markdown (TaskCard.tsx).",
+            "TASKS-34": "Electron renders the issue chip in the task's head (TaskCard.tsx, githubOnTask.test.tsx)."
           }
         },
         "task-changes.md": {
@@ -1175,7 +1177,9 @@
             "GITHUBWORK-24": "Electron cards (githubCardLean.test.tsx).",
             "GITHUBWORK-25": "Electron cards (githubCardLean.test.tsx).",
             "GITHUBWORK-26": "Electron cards (githubCardLean.test.tsx).",
-            "GITHUBWORK-27": "Electron cards (githubCardLean.test.tsx)."
+            "GITHUBWORK-27": "Electron cards (githubCardLean.test.tsx).",
+            "GITHUBWORK-30": "Electron feed card's checks (githubOnTask.test.tsx); it starts through POST /v1/github/work/{id}/start, which GITHUBWORK-28's workflow already reaches.",
+            "GITHUBWORK-31": "Electron: one start per click, then the task opens (githubOnTask.test.tsx); obid's answer of a running job is github_work::begin's."
           }
         },
         "projects.md": {

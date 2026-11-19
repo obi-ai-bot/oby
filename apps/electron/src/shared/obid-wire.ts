@@ -70,6 +70,9 @@ export type Job = {
   branch: string;
   base: string | null;
   issue: number | null;
+  // obid only (ISSUETASK-7): the page of the GitHub issue it was started from, built by obid from its
+  // repository and issue; none with no issue, and from an older obid
+  issueUrl?: string | null;
   kind: string;
   status: JobStatus;
   step: string;
