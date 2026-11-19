@@ -489,6 +489,20 @@
         "/v1/failures"
       ],
       "contracts": {
+        "task-servers.md": {
+          "obid": [
+            "TASKSERVERS-1",
+            "TASKSERVERS-2",
+            "TASKSERVERS-3",
+            "TASKSERVERS-4",
+            "TASKSERVERS-5",
+            "TASKSERVERS-6"
+          ],
+          "elsewhere": {
+            "TASKSERVERS-7": "Electron's task page and session header (TaskServers.tsx); no obid API of its own: taskServers.test.tsx.",
+            "TASKSERVERS-8": "Electron main's Open (main/servers.ts) reading the job's servers; no obid API of its own: taskServers.test.tsx."
+          }
+        },
         "job-state.md": {
           "obid": [
             "JOBSTATE-1",

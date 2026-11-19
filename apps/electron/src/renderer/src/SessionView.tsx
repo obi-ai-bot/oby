@@ -3,6 +3,7 @@ import { ArrowDown, Check, ChevronRight, ShieldCheck } from 'lucide-react';
 import Composer, { typingIn } from './Composer';
 import Formatted from './Formatted';
 import Said from './Said';
+import TaskServers from './TaskServers';
 import { CopyButton, ReplyPlace } from './Reply';
 import { BrandMark, type Brand } from './brands';
 import { useScrollThumb } from './useScrollThumb';
@@ -162,6 +163,7 @@ export default function SessionView({ id, leaving, covered = false, onBack, onGo
                 {agent.name} · {task.job.model} · {task.job.account}
                 {running && <span className="ss-live"><span className="status-dot is-working" />Live</span>}
               </p>
+              <TaskServers job={id} ports={task.job.servers} />
               <div className="ss-filters" role="tablist" aria-label="Show">
                 {FILTERS.filter((f) => f.id === 'all' || count(f.id) > 0).map((f) => (
                   <button key={f.id} role="tab" aria-selected={filter === f.id} className={filter === f.id ? 'is-on' : undefined} onClick={() => setFilter(f.id)}>

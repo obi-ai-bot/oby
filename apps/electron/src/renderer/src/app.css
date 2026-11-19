@@ -715,6 +715,11 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .ss-head > p { margin: 4px 0 14px; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--text-md); }
 .ss-live { margin-left: 8px; display: inline-flex; align-items: center; gap: 6px; color: var(--text); }
 .ss-filters { display: flex; flex-wrap: wrap; gap: 6px; }
+/* A task's local servers (TaskServers.tsx, TASKSERVERS-7): one quiet line */
+.task-servers { margin: 0 0 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.task-servers > svg { flex: none; }
+.task-servers button { padding: 0; border: 0; background: none; color: var(--text); font: inherit; cursor: pointer; transition: color var(--fade); }
+.task-servers button:hover { color: var(--ink); text-decoration: underline; }
 .ss-filters button { height: 28px; padding: 0 12px; border: 0; border-radius: var(--radius-pill); background: rgba(255, 255, 255, 0.08); color: var(--text); font: inherit; font-size: var(--text-md); cursor: pointer; transition: background-color var(--fade), color var(--fade); }
 .ss-filters button span { margin-left: 2px; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
 .ss-filters button:hover { background: rgba(255, 255, 255, 0.13); color: var(--ink); }

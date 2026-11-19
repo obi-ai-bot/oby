@@ -150,6 +150,9 @@ contextBridge.exposeInMainWorld('app', {
   // goes; true once opened. The editor's name, for the menu
   openWorktree: (job: string, where: 'terminal' | 'editor') => ipcRenderer.invoke('open-worktree', job, where) as Promise<boolean>,
   editorName: () => ipcRenderer.invoke('worktree-editor') as Promise<string | null>,
+  // Open on a task's local server (main/servers.ts, TASKSERVERS-8): only the job's id and the port go;
+  // true once main opened http://localhost:<port>, which it does only for a port obid lists
+  openTaskServer: (job: string, port: number) => ipcRenderer.invoke('open-task-server', job, port) as Promise<boolean>,
   // a reply's paths (main/worktree.ts, CHATFIRST-39 and 40): which are files of its task's worktree
   // or its conversation's folders, and one opened in the editor at its line; only the words and
   // where the reply is go, main finds the file

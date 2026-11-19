@@ -174,6 +174,7 @@ fn jobs_have_iso_dates_and_every_key() {
             "peakRss",
             "agentPeakRss",
             "checkPeakRss",
+            "servers",
         ];
         let mut extra: Vec<&str> = keys
             .keys()

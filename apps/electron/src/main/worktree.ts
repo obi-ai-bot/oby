@@ -35,7 +35,7 @@ export function editorOf(exists: (path: string) => boolean = existsSync, home = 
 }
 
 // a job's id as obid makes them: no path in it
-const JOB_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+export const JOB_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 // job `id`'s worktree under obid's home `home`, its real path: null for an id that isn't one, or a
 // folder that isn't a real one inside `home/worktrees` (missing, a file, a link, or one out of it)

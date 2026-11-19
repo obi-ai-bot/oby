@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import Composer, { typingIn } from './Composer';
 import { useScrollThumb } from './useScrollThumb';
 import TaskCard from './TaskCard';
+import TaskServers from './TaskServers';
 import { SESSIONS } from './session';
 import { markSeen, useTasks, type Task } from './tasks';
 import type { Attachments } from './view';
@@ -69,6 +70,8 @@ export default function TaskView({ id, leaving, covered = false, onBack, onHome,
           onClick={(e) => { if (!(e.target as Element).closest('.card, .row-menu')) onHome(); }}
         >
           <div className="chat-column">
+            {/* the local servers its agent started (TASKSERVERS-7) */}
+            <TaskServers job={task.id} ports={task.job.servers} />
             <TaskCard task={task} alone onSession={onSession && (onObid || SESSIONS[task.id]) ? () => onSession(task.id) : undefined} style={{ '--i': 0 } as React.CSSProperties} />
           </div>
         </section>

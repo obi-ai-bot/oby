@@ -23,6 +23,9 @@
 //                    line "<<<end of prompt>>>", and every answer to its permission prompts to
 //                    .obi/answers.log, one per line
 //   SLEEP            beats: writes a growing count to .obi/beat every 50 ms until it is ended
+//   SERVE PORT       starts a dev server's stand-in, a child process listening on 127.0.0.1 on a free
+//                    port it writes to .obi/serving; it stops listening once .obi/stop-serving is
+//                    there (then writes .obi/served) and lives on; the agent beats as SLEEP does
 //   HOG: <mb> <s>    holds <mb> MB of random bytes, as a build does, for <s> seconds, then
 //                    ends the turn with "Held." (scripts measuring memory admission)
 //   FAIL             ends the turn with an error result ("it broke"; with FAIL TOKEN, one holding
@@ -174,13 +177,16 @@
 //   anything else    ends the turn with "Nothing to do."
 // It fails the turn when its environment holds a Claude Code, Anthropic or GitHub variable.
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomFillSync } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { getPriority, homedir } from "node:os";
 import { dirname as folderOf } from "node:path";
 import { createInterface } from "node:readline";
 import { PassThrough } from "node:stream";
+
+// SERVE PORT's server (docs/contracts/task-servers.md): a child of the agent, as a dev server is.
+const SERVER = `const net = require("net"), fs = require("fs"); const server = net.createServer().listen(0, "127.0.0.1", () => fs.writeFileSync(".obi/serving", String(server.address().port))); setInterval(() => { if (fs.existsSync(".obi/stop-serving") && server.listening) server.close(() => fs.writeFileSync(".obi/served", "")); }, 50);`;
 
 // Its version, as `claude --version` prints it (docs/contracts/cli-versions.md).
 if (process.argv[2] === "--version") {
@@ -861,6 +867,11 @@ ${probes}`;
     // Random bytes, which the system can't compress away, as a compiler's memory mostly is.
     for (let i = 0; i < Number(mb); i++) held.push(randomFillSync(Buffer.allocUnsafe(1024 * 1024)));
     setTimeout(() => result(`Held ${held.length} MB.`), Number(seconds) * 1000);
+  } else if (prompt.includes("SERVE PORT")) {
+    mkdirSync(".obi", { recursive: true });
+    spawn(process.execPath, ["-e", SERVER], { stdio: "ignore" });
+    let beats = 0;
+    setInterval(() => writeFileSync(".obi/beat", String(++beats)), 50);
   } else if (prompt.includes("SLEEP")) {
     mkdirSync(".obi", { recursive: true });
     let beats = 0;

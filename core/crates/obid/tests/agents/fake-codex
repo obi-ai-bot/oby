@@ -31,6 +31,9 @@
 //                    on.", having heard its task again under "What you were last sent"
 //   DIE              exits with no result, then the same
 //   SLEEP            beats: writes a growing count to .obi/beat every 50 ms until it is ended
+//   SERVE PORT       starts a dev server's stand-in, a child process listening on 127.0.0.1 on a free
+//                    port it writes to .obi/serving; it stops listening once .obi/stop-serving is
+//                    there (then writes .obi/served) and lives on; the agent beats as SLEEP does
 //   RULES            exits on its first prompt; resumed, says whether it got its developerInstructions
 //   WORDS OF A LIMIT the agent's words name a limit, and Codex's own error ends the turn
 //   PLAN USED UP     the turn fails with a usage limit only its codexErrorInfo says
@@ -79,11 +82,14 @@
 // the policy and profile it was asked for. A thread keeps the `-c` settings it was started with
 // (`settings`).
 
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
+
+// SERVE PORT's server (docs/contracts/task-servers.md): a child of the agent, as a dev server is.
+const SERVER = `const net = require("net"), fs = require("fs"); const server = net.createServer().listen(0, "127.0.0.1", () => fs.writeFileSync(".obi/serving", String(server.address().port))); setInterval(() => { if (fs.existsSync(".obi/stop-serving") && server.listening) server.close(() => fs.writeFileSync(".obi/served", "")); }, 50);`;
 
 // Its version, as `codex --version` prints it (docs/contracts/cli-versions.md).
 if (process.argv[2] === "--version") {
@@ -337,6 +343,13 @@ async function runTurn(turnId, prompt) {
       return complete(turnId, again.match(/QUIET|DIE/) ? "Carried on." : "It never heard its task.");
     }
     if (task.includes("DIE")) process.exit(1);
+    return;
+  }
+  if (task.includes("SERVE PORT")) {
+    mkdirSync(".obi", { recursive: true });
+    spawn(process.execPath, ["-e", SERVER], { stdio: "ignore" });
+    let beats = 0;
+    setInterval(() => writeFileSync(".obi/beat", String(++beats)), 50);
     return;
   }
   if (task.includes("SLEEP")) {

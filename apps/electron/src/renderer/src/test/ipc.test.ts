@@ -123,6 +123,7 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'obid-undo': { args: ['j1', 'Undo this'], refusal: FORBIDDEN },
   'open-worktree': { args: ['j1', 'terminal'], refusal: false },
   'worktree-editor': { args: [], refusal: null },
+  'open-task-server': { args: ['j1', 3000], refusal: false },
   'reply-files': { args: ['task', 'j1', ['src/x.ts']], refusal: [] },
   'open-reply-file': { args: ['task', 'j1', 'src/x.ts:42'], refusal: false },
   showing: { args: [{ job: 'j1' }], refusal: undefined },

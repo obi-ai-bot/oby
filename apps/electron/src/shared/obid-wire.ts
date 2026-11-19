@@ -129,6 +129,9 @@ export type Job = {
   contextWindow?: { used: number; size?: number };
   windowShare?: { fiveHour: number | null; sevenDay: number | null; estimate: true };
   estimate?: { low: number; high: number; basis: string; samples: number; firstGiven?: { low: number; high: number } };
+  // obid only: the local servers its agent listens on now, one a port (docs/contracts/task-servers.md,
+  // TASKSERVERS-1); absent when there's none
+  servers?: { port: number; process: string; firstSeen: string }[];
   // obid only: its worktree, an absolute path, once it exists (a task's Changes and Open in, CHANGES-4, 6)
   worktree?: string | null;
   // one more each time obid sends it changed: of two copies, the higher is the newer (#1709);
