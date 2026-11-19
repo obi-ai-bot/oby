@@ -27,6 +27,17 @@ fn obid(name: &str, signed_in: bool) -> (Folder, Obid) {
 /// so its conversations stay in Oby's box (LANES-13), what these tests are about; [`mode`] sets
 /// another.
 fn obid_with(name: &str, signed_in: bool, bin: &str, login: Option<Value>) -> (Folder, Obid) {
+    obid_env(name, signed_in, bin, login, &[])
+}
+
+/// [`obid_with`], with `env` set over what a test's obid is given.
+fn obid_env(
+    name: &str,
+    signed_in: bool,
+    bin: &str,
+    login: Option<Value>,
+    env: &[(&str, &str)],
+) -> (Folder, Obid) {
     let folder = Folder::new(name);
     let remote = fixture(&folder.0.join("fixture"));
     let mut config = config(&folder.0, &remote, &agent("fake-harness"));
@@ -39,9 +50,42 @@ fn obid_with(name: &str, signed_in: bool, bin: &str, login: Option<Value>) -> (F
         let login = login.unwrap_or_else(|| json!({}));
         std::fs::write(account.join("auth.json"), login.to_string()).unwrap();
     }
-    let obid = start(&folder.0, &config, None);
+    let obid = start_with(&folder.0, &config, None, env);
     mode(&obid, "ask");
     (folder, obid)
+}
+
+/// obid whose next new conversation's Codex is started ahead (crate::brain::harness::prestart),
+/// in Ask: Oby's box.
+fn obid_ahead(name: &str) -> (Folder, Obid) {
+    obid_env(
+        name,
+        true,
+        "fake-codex-harness",
+        None,
+        &[("OBID_PRESTART", "on")],
+    )
+}
+
+/// After a first turn, the next new conversation's id and the thread its Codex started ahead, once
+/// both are there (CONVERSATION-AGENT-51): the stand-in keeps a thread in its `CODEX_HOME`.
+fn started_ahead(obid: &Obid) -> (String, String) {
+    let conversations = obid.home.join("conversations");
+    within(30, "the next conversation's Codex and its thread", || {
+        let next = std::fs::read_to_string(conversations.join("next-id")).ok()?;
+        let threads = conversations.join(&next).join("config/threads");
+        let thread = std::fs::read_dir(threads).ok()?.flatten().next()?;
+        let thread = thread.path().file_stem()?.to_string_lossy().into_owned();
+        codex_running(&next).then_some((next, thread))
+    })
+}
+
+/// How many of obid's stopwatch lines say a turn found its Codex running.
+fn found_running(obid: &Obid) -> usize {
+    obid.log()
+        .lines()
+        .filter(|l| l.contains("ended in its session") && l.contains("its Codex was running"))
+        .count()
 }
 
 /// Settings › Permissions: the mode new jobs get, and the lane of the owner's Codex conversation.
@@ -638,6 +682,84 @@ fn conversation_agent_44_codex_follow_ups_go_to_its_running_app_server() {
     within(15, "its Codex to end with it", || {
         (!codex_running(&conversation)).then_some(())
     });
+}
+
+/// CONVERSATION-AGENT-51: after the owner's turn, the next new conversation's Codex is started ahead
+/// with its thread, and no turn runs on it; that conversation's first turn is a `turn/start` on that
+/// thread, in that process, never a new Codex starting a thread.
+#[test]
+fn conversation_agent_51_a_new_codex_conversation_finds_its_codex_and_thread_started() {
+    let (_folder, obid) = obid_ahead("codex-conv-ahead");
+    let first = said(&obid, json!({"said": "HELLO", "new": true}));
+    let one = first.body["conversation"].as_str().unwrap().to_owned();
+    let (next, thread) = started_ahead(&obid);
+    assert_ne!(next, one);
+    // Nothing reached the model: no turn ran on it.
+    assert_eq!(turns(&obid).len(), 1, "{:?}", turns(&obid));
+    assert_eq!(found_running(&obid), 0);
+
+    let second = said(&obid, json!({"said": "REMEMBER", "new": true}));
+    assert_eq!(
+        second.body["conversation"],
+        next.as_str(),
+        "{}",
+        second.text
+    );
+    let recorded = turns(&obid);
+    assert_eq!(recorded.len(), 2, "{recorded:?}");
+    // On the thread started ahead, which it started itself: nothing was resumed.
+    assert!(recorded[1]["resumed"].is_null(), "{recorded:?}");
+    assert_ne!(recorded[1]["proc"], recorded[0]["proc"], "{recorded:?}");
+    let session = obid.home.join(format!("conversations/{next}/session.json"));
+    let kept: Value = serde_json::from_slice(&std::fs::read(&session).unwrap()).unwrap();
+    assert_eq!(kept["session"], thread.as_str(), "{kept}");
+    assert_eq!(found_running(&obid), 1, "{}", obid.log());
+    assert!(words(&second).starts_with("resume="), "{}", second.text);
+}
+
+/// CONVERSATION-AGENT-52: a Codex started ahead ends with its account's change (here a new name),
+/// as one waiting between turns does.
+#[test]
+fn conversation_agent_52_a_codex_started_ahead_ends_with_its_accounts_change() {
+    let (_folder, obid) = obid_ahead("codex-conv-ahead-account");
+    said(&obid, json!({"said": "HELLO", "new": true}));
+    let (next, _) = started_ahead(&obid);
+    let renamed = call(
+        &obid,
+        "PATCH",
+        "/v1/accounts/cstub",
+        Some(&json!({"name": "Codex renamed"})),
+    );
+    assert_eq!(renamed.status, 200, "{}", renamed.text);
+    within(15, "the Codex started ahead to end", || {
+        (!codex_running(&next)).then_some(())
+    });
+}
+
+/// CONVERSATION-AGENT-52: a Codex started ahead in Oby's box isn't the first turn's once the owner's
+/// Bypass moves that turn to the own lane (LANES-13): it ends, and the turn starts Codex on the
+/// account's own folder, in a thread of its own.
+#[cfg(target_os = "macos")]
+#[test]
+fn conversation_agent_52_a_codex_started_ahead_never_serves_another_lane() {
+    let (_folder, obid) = obid_ahead("codex-conv-ahead-lane");
+    said(&obid, json!({"said": "HELLO", "new": true}));
+    let (next, thread) = started_ahead(&obid);
+    mode(&obid, "bypass");
+    let second = said(&obid, json!({"said": "HELLO", "new": true}));
+    assert_eq!(
+        second.body["conversation"],
+        next.as_str(),
+        "{}",
+        second.text
+    );
+    let recorded = turns(&obid);
+    assert_eq!(recorded.len(), 2, "{recorded:?}");
+    assert_eq!(recorded[1]["approvalPolicy"], "never", "{recorded:?}");
+    let session = obid.home.join(format!("conversations/{next}/session.json"));
+    let kept: Value = serde_json::from_slice(&std::fs::read(&session).unwrap()).unwrap();
+    assert_ne!(kept["session"], thread.as_str(), "{kept}");
+    assert_eq!(found_running(&obid), 0, "{}", obid.log());
 }
 
 /// CONVERSATION-AGENT-45: a waiting Codex that died isn't the next turn's: that turn starts Codex
