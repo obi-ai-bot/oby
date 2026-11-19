@@ -28,7 +28,11 @@ fn obidspec_1_every_shipped_workflow_parses_and_names_a_route_obid_serves() {
                 "{}: {r} isn't in docs/api/routes.txt",
                 w.file.display()
             ),
-            None => assert_eq!(w.area, "triggers", "{}", w.file.display()),
+            None => assert!(
+                workflow::MANUAL_AREAS.contains(&w.area.as_str()),
+                "{}",
+                w.file.display()
+            ),
         }
         assert!(!w.steps.is_empty(), "{}", w.file.display());
     }
@@ -560,6 +564,10 @@ const LAUNCH_FLOWS: &[&str] = &[
     "task-states.json",
     "task-admission-and-receipts.json",
     "account-limits-and-busy.json",
+    // the window's and the Mac's, proving today's fixes (#2572, #2560)
+    "copy-not-over-card.json",
+    "release-menu.json",
+    "cmd-b.json",
 ];
 
 /// No shipped workflow ever has obid look for a tool by a bare name (a `bin` in `PUT
@@ -613,4 +621,129 @@ async fn obidspec_8_a_bare_tool_name_is_refused_before_obid_starts() {
     let input = json!({"name": "o", "config": {"agents": {"codex": {"bin": "codex"}}}});
     let refused = obid::start(&run, serde_json::from_value(input).unwrap()).await;
     assert!(format!("{:#}", refused.unwrap_err()).contains("absolute path only"));
+}
+
+fn scratch_run(dir: &Path) -> obid::Run {
+    obid::Run {
+        obid: "/bin/echo".into(),
+        root: root(),
+        scratch: dir.to_path_buf(),
+        sphere_url: None,
+        sphere_operator: None,
+    }
+}
+
+/// The app's nodes reach no obid but the workflow's own: never the owner's on 7777, never a home
+/// outside the workflow's folder; a step on an app no launch started is refused; off macOS they
+/// skip. The app workflows are manual, in `workflows/app/` (OBIDSPEC-13).
+#[tokio::test]
+async fn obidspec_13_the_app_runs_only_on_the_workflows_own_obid() {
+    let dir = tempfile::tempdir().unwrap();
+    let scratch = dir.path().canonicalize().unwrap();
+    let run = scratch_run(&scratch);
+    let launch = |input: Value| {
+        let run = run.clone();
+        async move { obid_spec::nodes::run_node(&run, "app.launch", input).await }
+    };
+    if let Some(why) = obid_spec::app::unsupported() {
+        let out = launch(json!({"mock": true})).await.unwrap();
+        assert_eq!(out["skipped"], json!(why));
+        return;
+    }
+    let home = scratch.join("o/home");
+    let e = launch(json!({"obid": {"port": 7777, "home": home}}))
+        .await
+        .unwrap_err();
+    assert!(format!("{e:#}").contains("7777 is the owner"), "{e:#}");
+    let e = launch(json!({"obid": {"port": 45123, "home": "/tmp/elsewhere"}}))
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{e:#}").contains("isn't in this workflow's folder"),
+        "{e:#}"
+    );
+    let e = launch(json!({})).await.unwrap_err();
+    assert!(format!("{e:#}").contains("mock: true"), "{e:#}");
+    let e = obid_spec::nodes::run_node(
+        &run,
+        "app.click",
+        json!({"app": "nobody", "target": {"text": "x"}}),
+    )
+    .await
+    .unwrap_err();
+    assert!(format!("{e:#}").contains("no app named nobody"), "{e:#}");
+    let shipped = workflow::load_all(&suite().join("workflows"), &node_names()).unwrap();
+    let apps: Vec<_> = shipped.iter().filter(|w| w.area == "app").collect();
+    assert!(!apps.is_empty());
+    assert!(apps.iter().all(|w| w.route.is_none()
+        && w.steps.iter().any(|s| s.node == "app.launch")
+        && w.steps
+            .iter()
+            .any(|s| s.node == "app.measure" && !s.proves.is_empty())));
+}
+
+/// Without agent-desktop (or off macOS, or without both permissions: desktop.rs's tests) a desktop
+/// step answers why it is skipped, and touches nothing (OBIDSPEC-14).
+#[tokio::test]
+async fn obidspec_14_a_desktop_step_without_agent_desktop_is_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = scratch_run(dir.path());
+    std::env::set_var(
+        "OBID_SPEC_AGENT_DESKTOP",
+        dir.path().join("absent/agent-desktop"),
+    );
+    for node in [
+        "desktop.snapshot",
+        "desktop.read",
+        "desktop.click",
+        "desktop.press",
+    ] {
+        let out = obid_spec::nodes::run_node(
+            &run,
+            node,
+            json!({"app": {"pid": 1}, "menu": ["View"], "keys": "cmd+b"}),
+        )
+        .await
+        .unwrap();
+        let why = out["skipped"].as_str().unwrap_or_default();
+        assert!(
+            why.contains("agent-desktop isn't installed")
+                || why.contains("desktop steps drive macOS"),
+            "{node}: {out}"
+        );
+    }
+}
+
+/// A workflow whose step can't run here is marked skipped: never passed, never failed, its later
+/// steps not run, the run's exit 0 when nothing failed (OBIDSPEC-15).
+#[test]
+fn obidspec_15_a_skipped_workflow_is_neither_passed_nor_failed() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("wf/desktop")).unwrap();
+    let skips = json!({"id": "menu", "use": "runtime.rust:desktop.read", "ui": {"proves": ["SHORTCUTS-10"]},
+        "inputs": {"app": {"pid": 1}, "menu": "View", "expect": {"paths": {"items": {"$len": 5}}}}});
+    let after = check("after", json!(1), json!({"body": 2}), json!({}));
+    let doc = json!({"schemaVersion": "2", "name": "needs the Mac", "trigger": {"manual": {}}, "steps": [skips, after]});
+    std::fs::write(dir.path().join("wf/desktop/menu.json"), doc.to_string()).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_obid-spec"))
+        .args(["run", "--obid", "/bin/echo"])
+        .env("OBID_SPEC_WORKFLOWS", dir.path().join("wf"))
+        .env("OBID_SPEC_AGENT_DESKTOP", dir.path().join("absent"))
+        .env("TMPDIR", dir.path())
+        .output()
+        .unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(text.contains("skip   desktop"), "{text}");
+    assert!(text.contains("0 passed, 0 failed, 1 skipped"), "{text}");
+    assert!(
+        text.contains("skipped, not run here: needs the Mac: skipped:"),
+        "{text}"
+    );
+    // the failing check after it never ran
+    assert!(!text.contains("needs the Mac › after"), "{text}");
 }

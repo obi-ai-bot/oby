@@ -1,7 +1,9 @@
 //! obid-spec: obid's endpoints and background triggers proven black-box, as BLOK workflows and
 //! Rust nodes, against the real obid binary (docs/contracts/obid-spec.md).
 
+pub mod app;
 pub mod coverage;
+pub mod desktop;
 pub mod events;
 pub mod expect;
 pub mod http;

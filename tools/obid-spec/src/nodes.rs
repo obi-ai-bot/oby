@@ -40,6 +40,18 @@ pub const NODES: &[(&str, &str)] = &[
     ("next-second", "Waits until the clock enters its next second, so what obid stamps to the second after it is later than what it stamped before."),
     ("sphere-liar", "Puts a Sphere that lies in front of an Obysphere: every call passes through, but the directory can serve a member's card re-signed with another owner key."),
     ("sphere-lie", "Has the lying Sphere serve an owner's cards signed by a new owner key from now on."),
+    ("app.launch", "Starts the real Electron app (this checkout's build), hidden, with its own user-data folder, on a scratch obid or its demo data (mock), through drive-lib.mjs's launcher."),
+    ("app.click", "Clicks (or, with hover, points at) one element of the app's window, found by role and name, label, text or css."),
+    ("app.type", "Types words into the app's window, into a target first clicked when one is named."),
+    ("app.press", "Presses keys in the app's window (Enter, Meta+B), as Playwright names them."),
+    ("app.read", "Reads the elements a target finds: how many, their text, whether visible, the attributes asked for; with expect, within and hold."),
+    ("app.measure", "Measures an element's box and, against other targets, whether they overlap, the area they share and the gap between them; with expect."),
+    ("app.screenshot", "Saves a screenshot of the app's window in the workflow's folder (and OBID_SPEC_SHOTS when it's set)."),
+    ("app.close", "Quits the app and stops its helper, by PID."),
+    ("desktop.snapshot", "Reads a surface of the app's (the menu bar by default) through agent-desktop: its tree and, for the menu bar, each menu's items by name. macOS only; skipped without the permissions."),
+    ("desktop.read", "Reads one menu's items by name, or one element by role and name, in a surface of the app's, through agent-desktop; with expect."),
+    ("desktop.click", "Runs one of the app's menu items through agent-desktop (its window brought forward for the moment, the front given back)."),
+    ("desktop.press", "Presses a key chord through macOS with agent-desktop (cmd+b), which runs the app's menu item that carries it, as a person's keys do."),
 ];
 
 type Pending =
@@ -47,6 +59,30 @@ type Pending =
 static PENDING: std::sync::Mutex<Option<Pending>> = std::sync::Mutex::new(None);
 
 pub async fn run_node(run: &Run, name: &str, input: Value) -> Result<Value> {
+    if name == "app.launch" {
+        return crate::app::launch(run, &input).await;
+    }
+    if name.starts_with("app.") || name.starts_with("desktop.") {
+        let mut out = if name.starts_with("app.") {
+            crate::app::act(run, name, &input).await?
+        } else {
+            crate::desktop::run_node(run, name, &input).await?
+        };
+        // A skip (no macOS, no permission, no agent-desktop) is answered as it is: the host marks
+        // the workflow skipped (OBIDSPEC-15).
+        if out.get("skipped").is_some() {
+            return Ok(out);
+        }
+        if let Some(want) = input.get("expect") {
+            // app.read and app.measure judged it already, with within and hold
+            let failures = expect::check(want, &out, "");
+            if !failures.is_empty() {
+                bail!("{}", failures.join("; "));
+            }
+            out["red"] = red_proof(Some(want), 0, &out, "");
+        }
+        return Ok(out);
+    }
     match name {
         "obid-start" => obid::start(run, serde_json::from_value(input)?).await,
         "obid-stop" => {
