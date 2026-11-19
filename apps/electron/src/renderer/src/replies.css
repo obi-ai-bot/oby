@@ -14,14 +14,19 @@
 
 /* A reply's: under its last line, at its right edge, in the room between replies; shown while
    the pointer is on the reply. Where a task's card or anything else follows its words, it sits on
-   the message's last line instead (.msg-foot), laid out, so it never covers what follows. */
-.msg.is-oby .msg-bubble, .ss-said { position: relative; }
+   the message's last line instead (.msg-foot), beside its time where its words start (T3 Code's
+   meta row), laid out: never on what follows, and far from the Copies of the agents' words, which
+   are at the right edge of theirs. */
+.msg.is-oby .msg-bubble { position: relative; }
 .msg-copy { position: absolute; top: calc(100% + 1px); right: -4px; z-index: 1; }
-.msg-foot { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.msg-foot > .msg-copy { position: static; margin-right: -4px; }
-.msg-foot:only-child, .msg-foot > .msg-copy:only-child { margin-left: auto; }
-.ss-said > .msg-copy { top: 100%; }
-.msg:hover .msg-copy, .ss-said:hover > .msg-copy { opacity: 1; }
+.msg-foot { width: 100%; display: flex; align-items: center; gap: 6px; }
+.msg-foot > .msg-copy { position: static; margin-left: -4px; }
+.msg-foot > .msg-time + .msg-copy { margin-left: 0; }
+/* An agent's words (under a task's card, in its session): their Copy beside their last line at the
+   right edge, laid out, so it never lies on the line under them; shown while the pointer is on those
+   words only, not on the whole message they're in */
+.ss-said > .msg-copy { position: static; flex: none; align-self: flex-end; margin: -1px -4px -1px auto; }
+.msg:hover .msg-copy:not(.ss-said > .msg-copy), .ss-said:hover > .msg-copy { opacity: 1; }
 
 /* A code block's: at its top right, over the code, on the block's own ground */
 .code-block { position: relative; min-width: 0; }
