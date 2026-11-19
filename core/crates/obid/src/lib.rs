@@ -232,12 +232,35 @@ pub fn prepare_home(config: &Config) -> Result<(), StartError> {
     store::keep_private(home, 0o700).map_err(err)
 }
 
-/// The cleanup pass (docs/runner-api.md, `cleanup`): [`CLEAN_FIRST`] after obid starts, then
-/// whenever a job may have settled, every [`CLEAN_EVERY`] for the jobs that settle as time
-/// passes, and while the disk, looked at every [`DISK_EVERY`], is low (CLEANUP-2). A pass that
-/// removed a worktree measures the folder again, unless obid is stopping (`cancelled`).
+/// When the first cleanup pass runs: [`CLEAN_FIRST`] after obid starts, or later when a debug
+/// build's test names more whole seconds in `OBID_TEST_CLEAN_FIRST_SECONDS` (B00-41). Compiled out
+/// of a release build, and never read from the configuration.
+fn clean_first() -> Duration {
+    #[cfg(debug_assertions)]
+    if let Some(later) = std::env::var("OBID_TEST_CLEAN_FIRST_SECONDS")
+        .ok()
+        .and_then(|seconds| test_clean_first(&seconds))
+    {
+        return later;
+    }
+    CLEAN_FIRST
+}
+
+/// A whole number of seconds past [`CLEAN_FIRST`]'s, nothing else: a test may only push the first
+/// pass later.
+#[cfg(debug_assertions)]
+fn test_clean_first(seconds: &str) -> Option<Duration> {
+    let seconds = seconds.parse::<u64>().ok()?;
+    (seconds > CLEAN_FIRST.as_secs()).then(|| Duration::from_secs(seconds))
+}
+
+/// The cleanup pass (docs/runner-api.md, `cleanup`): [`clean_first`] after obid starts, only ever
+/// later than [`CLEAN_FIRST`] in a debug build's test, then whenever a job may have settled, every
+/// [`CLEAN_EVERY`] for the jobs that settle as time passes, and while the disk, looked at every
+/// [`DISK_EVERY`], is low (CLEANUP-2). A pass that removed a worktree measures the folder again,
+/// unless obid is stopping (`cancelled`).
 async fn keep_worktrees_clean(shared: Arc<api::Shared>, cancelled: Arc<AtomicBool>) {
-    tokio::time::sleep(CLEAN_FIRST).await;
+    tokio::time::sleep(clean_first()).await;
     let (mut woken, mut last) = (true, 0);
     loop {
         let (now, cleared) = (obi_protocol::time::now(), shared.cleared.at());
@@ -1256,5 +1279,15 @@ mod tests {
         let panicked = tokio::task::spawn_blocking(|| panic!("a walk that fails"));
         walk_ended(panicked, events.clone(), silent).await;
         assert!(heard.try_recv().is_err(), "nothing more was sent");
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn the_first_cleanup_pass_moves_only_later_in_a_test() {
+        assert_eq!(test_clean_first("3600"), Some(Duration::from_secs(3600)));
+        assert_eq!(test_clean_first("31"), Some(Duration::from_secs(31)));
+        for seconds in ["30", "5", "0", "", "-1", "abc", "1.5"] {
+            assert_eq!(test_clean_first(seconds), None, "{seconds}");
+        }
     }
 }
