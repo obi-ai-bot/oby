@@ -8,6 +8,7 @@ pub mod events;
 pub mod expect;
 pub mod http;
 pub mod keys;
+pub mod lab;
 pub mod liar;
 pub mod nodes;
 pub mod obid;
@@ -20,6 +21,7 @@ pub fn node_names() -> Vec<&'static str> {
     nodes::NODES
         .iter()
         .map(|(n, _)| *n)
+        .chain(lab::nodes().map(|(n, _)| n))
         .chain(["cleanup"])
         .collect()
 }

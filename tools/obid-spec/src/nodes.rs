@@ -62,13 +62,15 @@ pub async fn run_node(run: &Run, name: &str, input: Value) -> Result<Value> {
     if name == "app.launch" {
         return crate::app::launch(run, &input).await;
     }
-    if name.starts_with("app.") || name.starts_with("desktop.") {
+    if name.starts_with("app.") || name.starts_with("desktop.") || name.starts_with("lab.") {
         let mut out = if name.starts_with("app.") {
             crate::app::act(run, name, &input).await?
+        } else if name.starts_with("lab.") {
+            crate::lab::run_node(run, name, &input).await?
         } else {
             crate::desktop::run_node(run, name, &input).await?
         };
-        // A skip (no macOS, no permission, no agent-desktop) is answered as it is: the host marks
+        // A skip (no macOS, no permission, no agent-desktop, no OrbStack) is answered as it is: the host marks
         // the workflow skipped (OBIDSPEC-15).
         if out.get("skipped").is_some() {
             return Ok(out);
@@ -187,7 +189,10 @@ pub async fn run_node(run: &Run, name: &str, input: Value) -> Result<Value> {
             }
             Ok(found)
         }
-        "cleanup" => Ok(json!({"stopped": crate::procs::stop_all().await})),
+        "cleanup" => Ok(json!({
+            "stopped": crate::procs::stop_all().await,
+            "lab": crate::lab::cleanup().await,
+        })),
         // `within`: asked again until it holds, for a file obid writes a moment later.
         "home-file" => {
             let until = std::time::Instant::now()

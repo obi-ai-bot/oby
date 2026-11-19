@@ -29,7 +29,8 @@ fn obidspec_1_every_shipped_workflow_parses_and_names_a_route_obid_serves() {
                 w.file.display()
             ),
             None => assert!(
-                workflow::MANUAL_AREAS.contains(&w.area.as_str()),
+                workflow::MANUAL_AREAS.contains(&w.area.as_str())
+                    || obid_spec::lab::is_lab(&w.area),
                 "{}",
                 w.file.display()
             ),

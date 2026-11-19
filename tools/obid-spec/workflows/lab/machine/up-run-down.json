@@ -1,0 +1,66 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab: a Linux machine of the workflow's own comes up, runs a command as oby, shares no folder with this Mac, and goes",
+  "version": "1.0.0",
+  "description": "The lab's own proof that its machines work (src/lab/machine.rs): an isolated Ubuntu machine made with OrbStack answers as Linux, runs as the user oby, can't see this Mac's home, and is deleted at the end. Skipped without OrbStack.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "box",
+      "use": "runtime.rust:lab.machine.up",
+      "inputs": {
+        "name": "box"
+      }
+    },
+    {
+      "id": "is-linux-as-oby",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "printf '%s %s' \"$(uname -s)\" \"$(id -un)\"",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": "Linux oby"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-MACHINE-1"
+        ]
+      }
+    },
+    {
+      "id": "no-mac-folders",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "test -d /Users || test -d /mnt/mac/Users; echo $?",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": "1\n"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-MACHINE-2"
+        ]
+      }
+    },
+    {
+      "id": "gone",
+      "use": "runtime.rust:lab.machine.down",
+      "inputs": {
+        "machine": "${state.box}"
+      }
+    }
+  ]
+}
