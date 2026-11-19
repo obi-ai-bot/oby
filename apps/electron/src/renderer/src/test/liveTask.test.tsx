@@ -431,7 +431,16 @@ describe('reading a reply in the thread', () => {
     expect(log).toMatch(/<li class="ss-said">.*<strong>.*done.*<\/strong>.*<button type="button" class="reply-copy msg-copy" aria-label="Copy"/);
     // Oby's "On it." and the agent's last words under its card; "fix it" is yours
     expect(copies(convo)).toBe(2);
-    expect(convo).toMatch(/<div class="msg-bubble"><p>.*On.*it\..*<\/p><button type="button" class="reply-copy msg-copy" aria-label="Copy"/);
+    // Oby's words end with a task's card: their Copy is under the whole message, past the card and
+    // its time, never inside the words, where it would sit on the card's corner
+    expect(convo).toMatch(/<div class="msg-bubble"><p>.*On.*it\..*<\/p><\/div>/);
+    // (this message alone: from its words to the next one; the agent's own Copy is inside the card)
+    const rest = convo.slice(convo.indexOf('<div class="msg-bubble"><p><span class="w">On</span>'));
+    const mine = rest.slice(0, rest.indexOf('role="listitem"') > 0 ? rest.indexOf('role="listitem"') : undefined);
+    const card = mine.indexOf('class="msg-task'), time = mine.indexOf('class="msg-time"'), copy = mine.lastIndexOf('class="reply-copy msg-copy"');
+    expect(card).toBeGreaterThan(-1);
+    expect(time).toBeGreaterThan(card);
+    expect(copy).toBeGreaterThan(time);
     const { default: ChatView } = await import('../ChatView');
     page.chats = [{ id: 'c1', title: 'One fix', said: [{ who: 'you', text: 'fix it', ago: 5 }, { who: 'oby', text: 'Halfway th', ago: 0, streaming: true }] } satisfies Chat];
     const none = () => {};

@@ -1,5 +1,5 @@
 import { copyPlain } from './room';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { cloneElement, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { Check, ChevronRight, Ellipsis, File as FileIcon, X } from 'lucide-react';
 import { BrandMark } from './brands';
 import { ObyFace, PeerByline } from './ObyFace';
@@ -269,8 +269,8 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                   ) : m.text ? (
                     // Oby's as it said it (its steps alone, folded where another
                     // Oby's answer came in, have no words)
-                    // with its Copy (CHATFIRST-37), once all its words are in
-                    <div key="text" className="msg-bubble"><Said text={m.text} streaming={(m as Message).streaming} />{!(m as Message).streaming && <CopyButton text={m.text} className="msg-copy" />}</div>
+                    // (its Copy, CHATFIRST-37: below, where the message ends)
+                    <div key="text" className="msg-bubble"><Said text={m.text} streaming={(m as Message).streaming} /></div>
                   ) : null,
                   // a task it couldn't start on the account named: Install or Sign in (ACCOUNTS-37)
                   ...((m as Message).fixes?.length && !(m as Message).streaming ? [<RefusalFixes key="fixes" fixes={(m as Message).fixes!} />] : []),
@@ -296,6 +296,13 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                   }),
                 ].filter(Boolean);
                 const end = parts.pop();
+                // Oby's words' Copy (CHATFIRST-37), once all its words are in: where the words end
+                // the message, under their last line as before; where a task's card or anything else
+                // follows them, on the message's last line, laid out, so it never sits on what follows
+                const copy = side === 'oby' && m.who !== 'peer' && m.text && !(m as Message).streaming ? <CopyButton text={m.text} className="msg-copy" /> : null;
+                const wordsLast = (end as { key?: unknown } | undefined)?.key === 'text';
+                const tail = copy && wordsLast ? cloneElement(end as ReactElement<{ children?: ReactNode }>, undefined, (end as ReactElement<{ children?: ReactNode }>).props.children, copy) : end;
+                const after = copy && !wordsLast ? copy : null;
                 return (
                   <div role="listitem" key={i} className={`msg is-${side}${mine ? ' is-mine' : ''}${cont ? ' is-cont' : ''}${m.ago === 0 ? ' is-new' : ''}${(m as Message).streaming ? ' is-streaming' : ''}`}>
                     {side === 'oby' && !cont && ((m as Message).by && m.who === 'oby'
@@ -306,10 +313,10 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                     {parts}
                     {last && !(m as Message).streaming && !(typing && i === thread.length - 1 && side === 'oby') ? (
                       <div className={`msg-end${end?.type === TaskEntry || end?.type === SetupCard || end?.type === OfferCard || end?.type === AskCard || (m as Message).confirm ? ' is-wide' : ''}`}>
-                        {end}
-                        <time className="msg-time">{clock(m.ago)}</time>
+                        {tail}
+                        {after ? <div className="msg-foot"><time className="msg-time">{clock(m.ago)}</time>{after}</div> : <time className="msg-time">{clock(m.ago)}</time>}
                       </div>
-                    ) : end}
+                    ) : <>{tail}{after && <div className="msg-foot">{after}</div>}</>}
                   </div>
                 );
               }),
