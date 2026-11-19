@@ -13,9 +13,13 @@
 .reply-copy.is-copied { opacity: 1; color: var(--ink); }
 
 /* A reply's: under its last line, at its right edge, in the room between replies; shown while
-   the pointer is on the reply */
+   the pointer is on the reply. Where a task's card or anything else follows its words, it sits on
+   the message's last line instead (.msg-foot), laid out, so it never covers what follows. */
 .msg.is-oby .msg-bubble, .ss-said { position: relative; }
 .msg-copy { position: absolute; top: calc(100% + 1px); right: -4px; z-index: 1; }
+.msg-foot { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.msg-foot > .msg-copy { position: static; margin-right: -4px; }
+.msg-foot:only-child, .msg-foot > .msg-copy:only-child { margin-left: auto; }
 .ss-said > .msg-copy { top: 100%; }
 .msg:hover .msg-copy, .ss-said:hover > .msg-copy { opacity: 1; }
 
