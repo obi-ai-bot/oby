@@ -1,0 +1,273 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser: the same core drives agent-browser on a headless Ubuntu machine",
+  "version": "1.0.0",
+  "description": "The browser on another computer (src/lab/browser.rs on a lab machine, src/lab/machine.rs): an isolated amd64 Ubuntu machine with agent-browser installed and hash-checked there (Chrome for Testing has no Linux arm64 build) runs the same core loop headless: open, snapshot, type and click by ref, evaluate quoted as outside data, the person's hold refusing an act, and a timed-out command neither replayed nor left blocking. Skipped without OrbStack.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "box",
+      "use": "runtime.rust:lab.machine.up",
+      "inputs": {
+        "name": "browser",
+        "arch": "amd64"
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:lab.browser.site",
+      "inputs": {}
+    },
+    {
+      "id": "agent-c1",
+      "use": "runtime.rust:lab.browser.agent",
+      "inputs": {
+        "conversation": "c1",
+        "expect": {
+          "paths": {
+            "agentBrowser.pinned": true,
+            "profileInWorkflow": true
+          }
+        },
+        "machine": "${state.box}"
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.machineUrl}/",
+          "deadlineMs": 60000
+        },
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.outside.data": "Lab fixture"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-8"
+        ]
+      }
+    },
+    {
+      "id": "snap",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.outside.data.tree": {
+              "$contains": "textbox \"Name\""
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-8"
+        ]
+      }
+    },
+    {
+      "id": "type",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "type",
+          "clear": true,
+          "text": "Ada"
+        },
+        "refFor": {
+          "role": "textbox",
+          "name": "Name"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "send",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "click"
+        },
+        "refFor": {
+          "role": "button",
+          "name": "Send"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "sent",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_evaluate",
+        "args": {
+          "expression": "document.getElementById('out').textContent"
+        },
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.outside.data": "sent:Ada",
+            "result.marksTurnUntrusted": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-8"
+        ]
+      }
+    },
+    {
+      "id": "take",
+      "use": "runtime.rust:lab.browser.take",
+      "inputs": {
+        "person": "owner",
+        "tab": "${state.open.result.tab}",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "refused",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "click"
+        },
+        "refFor": {
+          "role": "button",
+          "name": "Send"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "error.code": "human_control"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-8"
+        ]
+      }
+    },
+    {
+      "id": "release",
+      "use": "runtime.rust:lab.browser.release",
+      "inputs": {
+        "person": "owner",
+        "tab": "${state.open.result.tab}",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "slow",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "${state.site.machineUrl}/slow?ms=8000",
+          "deadlineMs": 3000
+        },
+        "expect": {
+          "paths": {
+            "ok": false,
+            "error.code": "timed_out",
+            "withinDeadline": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-8"
+        ]
+      }
+    },
+    {
+      "id": "settled",
+      "use": "runtime.rust:lab.browser.settle",
+      "inputs": {
+        "tab": "${state.open.result.tab}",
+        "within": 60,
+        "expect": {
+          "paths": {
+            "settled": true
+          }
+        }
+      }
+    },
+    {
+      "id": "once",
+      "use": "runtime.rust:lab.browser.hits",
+      "inputs": {
+        "site": "${state.site}",
+        "path": "/slow",
+        "expect": {
+          "paths": {
+            "hits": 1
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-8"
+        ]
+      }
+    },
+    {
+      "id": "down",
+      "use": "runtime.rust:lab.browser.down",
+      "inputs": {}
+    },
+    {
+      "id": "gone",
+      "use": "runtime.rust:lab.machine.down",
+      "inputs": {
+        "machine": "${state.box}"
+      }
+    }
+  ]
+}

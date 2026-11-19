@@ -1,0 +1,502 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab desktop: an agent snapshots, reads, clicks and presses keys in an app the person granted, every tool marked read-only or not, refused while the person holds the desktop",
+  "version": "1.0.0",
+  "description": "Desktop control as Oby would serve it over agent-desktop (src/lab/desktop.rs): the lab's own test app (an invisible AppKit window, never activated) driven by its PID; snapshot and read quote the app's words as outside data; a click is an accessibility press and a key combo goes to the app's process, neither taking the person's focus; every tool says whether it only reads, where agent-desktop's own MCP marks none; a conversation drives only an app the person granted it; and the person's hold on the desktop refuses every act while reads go on. Skipped off macOS, without agent-desktop or without its Accessibility and Screen Recording permissions.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "app",
+      "use": "runtime.rust:lab.desktop.app",
+      "inputs": {}
+    },
+    {
+      "id": "upstream",
+      "use": "runtime.rust:lab.desktop.upstream",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "markedReadOnly": 0,
+            "annotated": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-DESKTOP-1"
+        ]
+      }
+    },
+    {
+      "id": "ours",
+      "use": "runtime.rust:lab.desktop.tools",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "readOnly.oby_desktop_snapshot": true,
+            "readOnly.oby_desktop_read": true,
+            "readOnly.oby_desktop_list_windows": true,
+            "readOnly.oby_desktop_click": false,
+            "readOnly.oby_desktop_press": false,
+            "readOnly.oby_desktop_type": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-DESKTOP-1"
+        ]
+      }
+    },
+    {
+      "id": "not-granted",
+      "use": "runtime.rust:lab.desktop.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_desktop_snapshot",
+        "app": "${state.app}",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": false,
+            "error.code": "not_granted"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-DESKTOP-5"
+        ]
+      }
+    },
+    {
+      "id": "grant",
+      "use": "runtime.rust:lab.desktop.grant",
+      "inputs": {
+        "conversation": "c1",
+        "app": "${state.app}"
+      }
+    },
+    {
+      "id": "snap",
+      "use": "runtime.rust:lab.desktop.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_desktop_snapshot",
+        "app": "${state.app}",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.readOnly": true,
+            "result.outside.data.name": "Lab desktop",
+            "result.outside.data.children": {
+              "$any": {
+                "role": "button",
+                "name": "Count"
+              }
+            },
+            "result.marksTurnUntrusted": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-DESKTOP-2"
+        ]
+      }
+    },
+    {
+      "id": "windows",
+      "use": "runtime.rust:lab.desktop.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_desktop_list_windows",
+        "app": "${state.app}",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.outside.data": {
+              "$len": 1
+            },
+            "result.outside.data.0.pid": "${state.app.pid}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-DESKTOP-2"
+        ]
+      }
+    },
+    {
+      "id": "read",
+      "use": "runtime.rust:lab.desktop.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_desktop_read",
+        "app": "${state.app}",
+        "args": {},
+        "refFor": {
+          "role": "button",
+          "name": "Count"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.outside.data.value": "Count"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-DESKTOP-2"
+        ]
+      }
+    },
+    {
+      "id": "click",
+      "use": "runtime.rust:lab.desktop.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_desktop_click",
+        "app": "${state.app}",
+        "args": {},
+        "refFor": {
+          "role": "button",
+          "name": "Count"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.readOnly": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-DESKTOP-3"
+        ]
+      }
+    },
+    {
+      "id": "counted",
+      "use": "runtime.rust:lab.desktop.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_desktop_snapshot",
+        "app": "${state.app}",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.outside.data.children": {
+              "$any": {
+                "value": "Count: 1"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-DESKTOP-3"
+        ]
+      }
+    },
+    {
+      "id": "press",
+      "use": "runtime.rust:lab.desktop.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_desktop_press",
+        "app": "${state.app}",
+        "args": {
+          "keys": "cmd+k"
+        },
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.readOnly": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-DESKTOP-3"
+        ]
+      }
+    },
+    {
+      "id": "reset",
+      "use": "runtime.rust:lab.desktop.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_desktop_snapshot",
+        "app": "${state.app}",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.outside.data.children": {
+              "$any": {
+                "value": "Count: 0"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-DESKTOP-3"
+        ]
+      }
+    },
+    {
+      "id": "take",
+      "use": "runtime.rust:lab.desktop.take",
+      "inputs": {
+        "person": "owner",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-DESKTOP-4"
+        ]
+      }
+    },
+    {
+      "id": "held-click",
+      "use": "runtime.rust:lab.desktop.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_desktop_click",
+        "app": "${state.app}",
+        "args": {},
+        "refFor": {
+          "role": "button",
+          "name": "Count"
+        },
+        "snapshot": "${state.reset}",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "error.code": "human_control"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-DESKTOP-4"
+        ]
+      }
+    },
+    {
+      "id": "held-press",
+      "use": "runtime.rust:lab.desktop.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_desktop_press",
+        "app": "${state.app}",
+        "args": {
+          "keys": "cmd+k"
+        },
+        "expect": {
+          "paths": {
+            "ok": false,
+            "error.code": "human_control"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-DESKTOP-4"
+        ]
+      }
+    },
+    {
+      "id": "held-reads",
+      "use": "runtime.rust:lab.desktop.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_desktop_snapshot",
+        "app": "${state.app}",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.outside.data.children": {
+              "$any": {
+                "value": "Count: 0"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-DESKTOP-4"
+        ]
+      }
+    },
+    {
+      "id": "guest-takes",
+      "use": "runtime.rust:lab.desktop.take",
+      "inputs": {
+        "person": "guest",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "error.code": "held_by_other"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-DESKTOP-4"
+        ]
+      }
+    },
+    {
+      "id": "release",
+      "use": "runtime.rust:lab.desktop.release",
+      "inputs": {
+        "person": "owner",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "old-ref",
+      "use": "runtime.rust:lab.desktop.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_desktop_click",
+        "app": "${state.app}",
+        "args": {},
+        "refFor": {
+          "role": "button",
+          "name": "Count"
+        },
+        "snapshot": "${state.reset}",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "error.code": "unknown_ref"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-DESKTOP-4"
+        ]
+      }
+    },
+    {
+      "id": "snap-again",
+      "use": "runtime.rust:lab.desktop.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_desktop_snapshot",
+        "app": "${state.app}",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "acts-again",
+      "use": "runtime.rust:lab.desktop.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_desktop_click",
+        "app": "${state.app}",
+        "args": {},
+        "refFor": {
+          "role": "button",
+          "name": "Count"
+        },
+        "snapshot": "${state.snap-again}",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-DESKTOP-4"
+        ]
+      }
+    },
+    {
+      "id": "other-conversation",
+      "use": "runtime.rust:lab.desktop.tool",
+      "inputs": {
+        "conversation": "c2",
+        "tool": "oby_desktop_click",
+        "app": "${state.app}",
+        "args": {},
+        "refFor": {
+          "role": "button",
+          "name": "Count"
+        },
+        "snapshot": "${state.snap-again}",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "error.code": "not_granted"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-DESKTOP-5"
+        ]
+      }
+    },
+    {
+      "id": "still-one",
+      "use": "runtime.rust:lab.desktop.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_desktop_snapshot",
+        "app": "${state.app}",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.outside.data.children": {
+              "$any": {
+                "value": "Count: 1"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-DESKTOP-5"
+        ]
+      }
+    }
+  ]
+}

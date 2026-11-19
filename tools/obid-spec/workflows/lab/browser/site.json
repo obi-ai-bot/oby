@@ -1,0 +1,131 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser: the fixture site serves a form, a link, a download, a slow page and an alert on 127.0.0.1",
+  "version": "1.0.0",
+  "description": "The page every lab-browser workflow drives (src/lab/browser.rs, the fixture site): a node of this workflow's serves it on 127.0.0.1 and a free port, never on another address, and counts what it served.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "site",
+      "use": "runtime.rust:lab.browser.site",
+      "inputs": {}
+    },
+    {
+      "id": "home",
+      "use": "runtime.rust:lab.browser.fetch",
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-1"
+        ]
+      },
+      "inputs": {
+        "site": "${state.site}",
+        "path": "/",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body": {
+              "$matches": "(?s)<form.*<input id=\"name\".*<a href=\"/second\">.*<a id=\"dl\" href=\"/file.txt\">.*onclick=\"alert\\("
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "download",
+      "use": "runtime.rust:lab.browser.fetch",
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-1"
+        ]
+      },
+      "inputs": {
+        "site": "${state.site}",
+        "path": "/file.txt",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "headers.content-disposition": {
+              "$contains": "attachment"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "slow",
+      "use": "runtime.rust:lab.browser.fetch",
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-1"
+        ]
+      },
+      "inputs": {
+        "site": "${state.site}",
+        "path": "/slow?ms=1500",
+        "atLeastMs": 1500,
+        "expect": {
+          "paths": {
+            "status": 200,
+            "tookAtLeast": true,
+            "body": {
+              "$contains": "Slow page"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "counted",
+      "use": "runtime.rust:lab.browser.hits",
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-1"
+        ]
+      },
+      "inputs": {
+        "site": "${state.site}",
+        "path": "/slow",
+        "paths": [
+          "/",
+          "/file.txt",
+          "/second"
+        ],
+        "expect": {
+          "paths": {
+            "hits": 1,
+            "counts": [
+              1,
+              1,
+              0
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "loopback-only",
+      "use": "runtime.rust:check",
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-1"
+        ]
+      },
+      "inputs": {
+        "value": "${state.site}",
+        "expect": {
+          "paths": {
+            "url": {
+              "$matches": "^http://127\\.0\\.0\\.1:[0-9]+$"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

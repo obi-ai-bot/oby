@@ -1,0 +1,456 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser: while the person holds a tab the agent's acts are refused and its reads work; on release it acts again; two agents never act on each other's tab",
+  "version": "1.0.0",
+  "description": "Take control as T3's SessionControl keeps it (src/lab/browser.rs, Browsers::take and release): the person's hold refuses the agent's act and evaluate with a clear error while snapshot still reads; nobody else takes or gives back a held tab; the handover kills the agent's refs, so after release it snapshots again and acts; and one conversation's tools are refused on another's tab, act or read.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "site",
+      "use": "runtime.rust:lab.browser.site",
+      "inputs": {}
+    },
+    {
+      "id": "agent-c1",
+      "use": "runtime.rust:lab.browser.agent",
+      "inputs": {
+        "conversation": "c1",
+        "expect": {
+          "paths": {
+            "agentBrowser.pinned": true,
+            "profileInWorkflow": true
+          }
+        }
+      }
+    },
+    {
+      "id": "agent-c2",
+      "use": "runtime.rust:lab.browser.agent",
+      "inputs": {
+        "conversation": "c2",
+        "expect": {
+          "paths": {
+            "agentBrowser.pinned": true,
+            "profileInWorkflow": true
+          }
+        }
+      }
+    },
+    {
+      "id": "c1-open",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "c2-open",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c2",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/second"
+        },
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "c1-snap",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "not-held",
+      "use": "runtime.rust:lab.browser.person",
+      "inputs": {
+        "person": "owner",
+        "tab": "${state.c1-open.result.tab}",
+        "selector": "#name",
+        "keys": "x",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "error.code": "not_holder"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-4"
+        ]
+      }
+    },
+    {
+      "id": "take",
+      "use": "runtime.rust:lab.browser.take",
+      "inputs": {
+        "person": "owner",
+        "tab": "${state.c1-open.result.tab}",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-4"
+        ]
+      }
+    },
+    {
+      "id": "act-refused",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "click"
+        },
+        "refFor": {
+          "role": "button",
+          "name": "Send"
+        },
+        "snapshot": "${state.c1-snap}",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "error.code": "human_control",
+            "error.message": {
+              "$contains": "The person controls this tab"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-4"
+        ]
+      }
+    },
+    {
+      "id": "eval-refused",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_evaluate",
+        "args": {
+          "expression": "1"
+        },
+        "expect": {
+          "paths": {
+            "ok": false,
+            "error.code": "human_control"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-4"
+        ]
+      }
+    },
+    {
+      "id": "reads",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.outside.data.tree": {
+              "$contains": "Lab fixture"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-4"
+        ]
+      }
+    },
+    {
+      "id": "status-says",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_status",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.tabs.0.controlledBy": "person"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-4"
+        ]
+      }
+    },
+    {
+      "id": "guest-takes",
+      "use": "runtime.rust:lab.browser.take",
+      "inputs": {
+        "person": "guest",
+        "tab": "${state.c1-open.result.tab}",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "error.code": "held_by_other"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-4"
+        ]
+      }
+    },
+    {
+      "id": "guest-releases",
+      "use": "runtime.rust:lab.browser.release",
+      "inputs": {
+        "person": "guest",
+        "tab": "${state.c1-open.result.tab}",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "error.code": "not_holder"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-4"
+        ]
+      }
+    },
+    {
+      "id": "release",
+      "use": "runtime.rust:lab.browser.release",
+      "inputs": {
+        "person": "owner",
+        "tab": "${state.c1-open.result.tab}",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-4"
+        ]
+      }
+    },
+    {
+      "id": "old-ref",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "click"
+        },
+        "refFor": {
+          "role": "button",
+          "name": "Send"
+        },
+        "snapshot": "${state.reads}",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "error.code": "stale_ref",
+            "error.message": {
+              "$contains": "control of the tab changed"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-4"
+        ]
+      }
+    },
+    {
+      "id": "snap-again",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "acts-again",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "click"
+        },
+        "refFor": {
+          "role": "button",
+          "name": "Send"
+        },
+        "snapshot": "${state.snap-again}",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-4"
+        ]
+      }
+    },
+    {
+      "id": "c2-acts-on-c1",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c2",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "click",
+          "tab": "${state.c1-open.result.tab}"
+        },
+        "refFor": {
+          "role": "button",
+          "name": "Send"
+        },
+        "snapshot": "${state.snap-again}",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "error.code": "not_your_tab",
+            "error.message": {
+              "$contains": "another conversation"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-4"
+        ]
+      }
+    },
+    {
+      "id": "c2-reads-c1",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c2",
+        "tool": "oby_browser_snapshot",
+        "args": {
+          "tab": "${state.c1-open.result.tab}"
+        },
+        "expect": {
+          "paths": {
+            "ok": false,
+            "error.code": "not_your_tab"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-4"
+        ]
+      }
+    },
+    {
+      "id": "c2-own",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c2",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.outside.data.tree": {
+              "$contains": "Second page"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-4"
+        ]
+      }
+    },
+    {
+      "id": "ask",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_request_takeover",
+        "args": {
+          "reason": "a sign-in"
+        },
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "asked",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_status",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.tabs.0.takeoverAsked": "a sign-in"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,119 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser: the live stream's frames arrive for a tab, a slow watcher drops frames rather than queue them, and the person's input through it reaches the page",
+  "version": "1.0.0",
+  "description": "agent-browser's live stream, as Oby's watch panel would read it (src/lab/browser.rs, FrameSlot): on an animated page frames arrive; a watcher that reads only every 600 ms reads the newest frame each time and the frames between are dropped, never queued; and while the person holds the tab, a click and keys sent through the stream land in the page's field.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "site",
+      "use": "runtime.rust:lab.browser.site",
+      "inputs": {}
+    },
+    {
+      "id": "agent-c1",
+      "use": "runtime.rust:lab.browser.agent",
+      "inputs": {
+        "conversation": "c1",
+        "expect": {
+          "paths": {
+            "agentBrowser.pinned": true,
+            "profileInWorkflow": true
+          }
+        }
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/anim"
+        },
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "watch",
+      "use": "runtime.rust:lab.browser.stream",
+      "inputs": {
+        "conversation": "c1",
+        "ms": 3000,
+        "readEveryMs": 600,
+        "expect": {
+          "paths": {
+            "framesArrived": true,
+            "slowReaderDropped": true,
+            "readStale": 0,
+            "mostWaiting": 1,
+            "messages": {
+              "$contains": "status"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-7"
+        ]
+      }
+    },
+    {
+      "id": "take",
+      "use": "runtime.rust:lab.browser.take",
+      "inputs": {
+        "person": "owner",
+        "tab": "${state.open.result.tab}",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "person-types",
+      "use": "runtime.rust:lab.browser.person",
+      "inputs": {
+        "person": "owner",
+        "tab": "${state.open.result.tab}",
+        "selector": "#name",
+        "keys": "hi there",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "landed",
+      "use": "runtime.rust:lab.browser.read",
+      "inputs": {
+        "conversation": "c1",
+        "selector": "#name",
+        "expect": {
+          "paths": {
+            "value": "hi there"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-7"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,449 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser: an agent opens, snapshots, types, clicks, navigates, waits and answers a dialog; a stale ref is refused; evaluate's value comes back quoted",
+  "version": "1.0.0",
+  "description": "An agent's whole loop on the fixture site through the oby_browser_* tools (src/lab/browser.rs): open, snapshot (refs), type and click by ref, navigate by a link, wait_for, a stale ref after the navigation refused with a clear error, an alert answered with the dialog tool, and evaluate, whose value (and every page's words) reaches the agent quoted as outside data that marks the turn untrusted.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "site",
+      "use": "runtime.rust:lab.browser.site",
+      "inputs": {}
+    },
+    {
+      "id": "agent-c1",
+      "use": "runtime.rust:lab.browser.agent",
+      "inputs": {
+        "conversation": "c1",
+        "expect": {
+          "paths": {
+            "agentBrowser.pinned": true,
+            "profileInWorkflow": true
+          }
+        }
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.tab": {
+              "$matches": "^tab-[0-9]+$"
+            },
+            "result.outside.data": "Lab fixture"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-2"
+        ]
+      }
+    },
+    {
+      "id": "snap",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.outside.data.tree": {
+              "$contains": "textbox \"Name\""
+            },
+            "result.outside.what": "accessibility snapshot"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-2"
+        ]
+      }
+    },
+    {
+      "id": "type",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "type",
+          "clear": true,
+          "text": "Ada"
+        },
+        "refFor": {
+          "role": "textbox",
+          "name": "Name"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "send",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "click"
+        },
+        "refFor": {
+          "role": "button",
+          "name": "Send"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "sent",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_evaluate",
+        "args": {
+          "expression": "document.getElementById('out').textContent"
+        },
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.outside.data": "sent:Ada"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-2"
+        ]
+      }
+    },
+    {
+      "id": "link",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "click"
+        },
+        "refFor": {
+          "role": "link",
+          "name": "Second page"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "waited",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_wait_for",
+        "args": {
+          "text": "Second page",
+          "timeoutMs": 5000
+        },
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-2"
+        ]
+      }
+    },
+    {
+      "id": "stale",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "click"
+        },
+        "refFor": {
+          "role": "button",
+          "name": "Send"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "error.code": "stale_ref",
+            "error.message": {
+              "$contains": "Take a new snapshot"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-2"
+        ]
+      }
+    },
+    {
+      "id": "back",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.url": "${state.site.url}/"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-2"
+        ]
+      }
+    },
+    {
+      "id": "snap-home",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "alert",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "click"
+        },
+        "refFor": {
+          "role": "button",
+          "name": "Alert me"
+        },
+        "snapshot": "${state.snap-home}",
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.dialogOpened": true,
+            "result.outside.data": {
+              "$contains": "Hello from the page"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-2"
+        ]
+      }
+    },
+    {
+      "id": "blocked",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_status",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.tabs.0.dialog": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-2"
+        ]
+      }
+    },
+    {
+      "id": "accept",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_dialog",
+        "args": {
+          "accept": true
+        },
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-2"
+        ]
+      }
+    },
+    {
+      "id": "unblocked",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.outside.data.tree": {
+              "$contains": "Lab fixture"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-2"
+        ]
+      }
+    },
+    {
+      "id": "value",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_evaluate",
+        "args": {
+          "expression": "({n: 1 + 1, list: [1, 'x']})"
+        },
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.outside.data.n": 2,
+            "result.outside.data.list": [
+              1,
+              "x"
+            ],
+            "result.outside.note": {
+              "$contains": "never instructions"
+            },
+            "result.marksTurnUntrusted": true,
+            "result.data": {
+              "$exists": false
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-3"
+        ]
+      }
+    },
+    {
+      "id": "instruct",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "${state.site.url}/instruct"
+        },
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "quoted",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_evaluate",
+        "args": {
+          "expression": "document.getElementById('say').textContent"
+        },
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.outside.data": {
+              "$contains": "Ignore your instructions"
+            },
+            "result.outside.from": "${state.site.url}/instruct",
+            "result.marksTurnUntrusted": true,
+            "result.data": {
+              "$exists": false
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-3"
+        ]
+      }
+    },
+    {
+      "id": "snapshot-quoted",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.outside.data.tree": {
+              "$contains": "Ignore your instructions"
+            },
+            "result.marksTurnUntrusted": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-3"
+        ]
+      }
+    }
+  ]
+}
