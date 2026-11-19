@@ -249,7 +249,9 @@
             "CONVERSATION-AGENT-47",
             "CONVERSATION-AGENT-48",
             "CONVERSATION-AGENT-49",
-            "CONVERSATION-AGENT-50"
+            "CONVERSATION-AGENT-50",
+            "CONVERSATION-AGENT-51",
+            "CONVERSATION-AGENT-52"
           ],
           "elsewhere": {
             "CONVERSATION-AGENT-10": "not built: retired (supervisor deleted).",
@@ -1119,7 +1121,8 @@
             "LANES-16": "unit/process test (could be obid via leftover pid check).",
             "LANES-17": "unit test.",
             "LANES-20": "real network/listen behaviour.",
-            "LANES-22": "unit (process::tests)."
+            "LANES-22": "unit (process::tests).",
+            "LANES-25": "unit test (jobs::lanes): what a job's launch fixes is its own; nothing black-box to see."
           }
         },
         "agent-mcp.md": {

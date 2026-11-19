@@ -179,6 +179,49 @@ pub async fn start_kept(
     Ok(turn_on(server, prompt, options, decide, on_event, true).await)
 }
 
+/// Starts `launch` ahead of a new conversation's first turn (CONVERSATION-AGENT-51): `initialize`,
+/// an own run's settings asked (LANES-13), and its thread started with `options`, so its MCP
+/// servers come up while it waits ([`Kept`]). No turn: nothing reaches the model, and Codex writes
+/// no thread to its history until one runs. Nothing it asks is allowed while it starts. Its first
+/// turn is [`next_turn`], which asks an own run's settings again; `stop` and `limit` hold until then.
+pub async fn start_ahead(
+    launch: Launch,
+    options: &Options,
+    limit: impl Into<crate::conn::Limit>,
+    stop: watch::Receiver<process::Signal>,
+) -> Result<Kept, String> {
+    let mut conn = Conn::spawn(&launch, limit, stop, false)
+        .await
+        .map_err(|e| format!("Codex didn't start: {e}"))?;
+    conn.steer_into = conn::SteerInto::Held;
+    let server = Kept {
+        conn,
+        thread: None,
+        worktree: launch.cwd.clone(),
+        own: launch.own_sandbox,
+    };
+    let refuse = |_: &str, _: &Value| Ruling::Now(Answer::Deny("No turn is under way.".into()));
+    let mut run = Run::on(server, options, refuse, |_: Event| {});
+    let started = match run.start_thread(options).await {
+        Ok(thread) => Ok(thread),
+        Err(Stop::Failed(why)) => Err(why),
+        Err(Stop::Cut(_)) => Err("Codex stopped as it started.".into()),
+    };
+    match started {
+        Ok(thread) => Ok(Kept {
+            conn: run.conn,
+            thread: Some(thread),
+            worktree: run.worktree,
+            own: run.own,
+        }),
+        Err(why) => {
+            run.conn.close_input();
+            run.conn.finish_within(Duration::ZERO).await;
+            Err(why)
+        }
+    }
+}
+
 /// The next turn on a server [`start_kept`] kept: `limit` from now, `stop` its stop signal, the turn
 /// started on its loaded thread (`options.resume` and the thread's own settings aren't read again:
 /// they're the thread's since it started). Handed back running again when it answered.
@@ -206,38 +249,7 @@ async fn turn_on(
     on_event: impl FnMut(Event),
     keep: bool,
 ) -> (Turn, Option<Kept>) {
-    let Kept {
-        conn,
-        thread,
-        worktree,
-        own,
-    } = server;
-    let mut run = Run {
-        conn,
-        decide,
-        on_event,
-        worktree,
-        plan: options.plan,
-        own,
-        files: HashMap::new(),
-        calls: HashMap::new(),
-        no_commands: options.no_commands,
-        limits_read: None,
-        account_read: None,
-        tokens_before: None,
-        priced: options.priced.clone(),
-        fatal: None,
-        thread,
-        helpers: Default::default(),
-        told: Default::default(),
-        turn: None,
-        said: None,
-        reasoning: HashMap::new(),
-        ended: None,
-        failure: None,
-        resets: None,
-        chatgpt: options.chatgpt,
-    };
+    let mut run = Run::on(server, options, decide, on_event);
     let mut turn = Turn::default();
     match run.turn(prompt, options).await {
         Ok(()) => {}
@@ -435,6 +447,42 @@ const NOT_TOOLS: &[&str] = &[
 ];
 
 impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
+    /// A run on `server`, its thread loaded or not, for a turn started with `options`.
+    fn on(server: Kept, options: &Options, decide: D, on_event: E) -> Self {
+        let Kept {
+            conn,
+            thread,
+            worktree,
+            own,
+        } = server;
+        Run {
+            conn,
+            decide,
+            on_event,
+            worktree,
+            plan: options.plan,
+            own,
+            files: HashMap::new(),
+            calls: HashMap::new(),
+            no_commands: options.no_commands,
+            limits_read: None,
+            account_read: None,
+            tokens_before: None,
+            priced: options.priced.clone(),
+            fatal: None,
+            thread,
+            helpers: Default::default(),
+            told: Default::default(),
+            turn: None,
+            said: None,
+            reasoning: HashMap::new(),
+            ended: None,
+            failure: None,
+            resets: None,
+            chatgpt: options.chatgpt,
+        }
+    }
+
     async fn turn(&mut self, prompt: &str, options: &Options) -> Result<(), Stop> {
         let thread = match self.thread.clone() {
             // A kept server's thread is loaded: the turn is all that's left to start ([`Kept`]),

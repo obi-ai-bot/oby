@@ -51,8 +51,17 @@ Measured the same way, back to back with #726's code, at load 290–350. The sec
 
 ## What's left
 
-- **A new Codex conversation's `app-server` started ahead**, as a new conversation's Claude Code is. Its follow-ups no longer start Codex (below); its first turn still does.
 - Show the model's thinking (`thinking_delta`) and a tool's start (`content_block_start`) as they stream, instead of waiting for the whole tool-use block.
+
+## A new Codex conversation's first answer (2026-11-19)
+
+A new conversation on Codex started `codex app-server` for its first turn, then `initialize` and `thread/start`, and only then did Codex start the owner's MCP servers: per thread, in the thread's folder (`mcpServer/startupStatus/updated` names the thread). Its first model call waited for them, 1.6 to 1.8 s on a quiet Mac with the owner's six servers (#2490).
+
+What changed (CONVERSATION-AGENT-51, 52): after each of the owner's turns, the next new conversation whose first turn would talk on Codex with a `codex login` gets its `app-server` started ahead, as a Claude Code is (PROFILES-47): its room, box and login copy readied, `features list` checked, then `initialize` and its thread started with what a first turn's thread is told (`codex::start_ahead`). Its MCP servers come up while it waits. No turn runs, so nothing reaches the model, and Codex writes no thread to its history until one does. The first turn is a `turn/start` on that thread, given only when it was started as the turn would start one now (`harness_codex::key`), as a Codex waiting between turns is. Not on a ChatGPT login: its thread starts with the turn's model, and its run reaches OpenAI only through obid's relay with the turn's own token.
+
+Measured on a scratch obid, the same words in a new conversation each time (`POST /v1/plans` until its answer, and the stopwatch line): see the pull request that made it.
+
+Jobs stay cold (docs/contracts/lanes.md, LANES-25): a job's worktree, git folders, broker token and an own Codex run's profile are fixed when its CLI starts, so nothing can be started for it before it exists.
 
 ## Codex follow-ups (2026-11-18)
 

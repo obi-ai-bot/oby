@@ -82,7 +82,7 @@ A profile's own things go under its storage root: the default profile's is obid'
 ### A Claude Code ahead in each profile
 
 - obid names the next new conversation's id ahead for each profile (`next-id` in `home/conversations` for the default, as before; `next-id-<profile id>` for another), and a conversation made in a profile takes that profile's.
-- After each of the owner's turns, obid starts a Claude Code for the next new conversation of the turn's profile first, then of each other profile, in the registry's order, whose first turn would talk through Claude Code on one of its own accounts, one at a time, until three wait: no more than three profiles have one ahead at once, and a profile with no such account gets none. It is ended as before (30 minutes, its account changed or removed).
+- After each of the owner's turns, obid starts the agent for the next new conversation of the turn's profile first, then of each other profile, in the registry's order, whose first turn would talk through Claude Code, or through Codex on a `codex login` (its thread started too, CONVERSATION-AGENT-51), on one of its own accounts, one at a time, until three wait: no more than three profiles have one ahead at once, and a profile with no such account gets none. It is ended as before (30 minutes, its account changed or removed).
 - `GET /v1/status`'s `talkNext` is the account the next new conversation of the request's profile would talk through.
 
 ### Failures and recovery

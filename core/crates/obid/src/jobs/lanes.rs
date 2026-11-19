@@ -1691,6 +1691,107 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// LANES-25: a job's agent is started for that job alone. Two own Codex jobs on one account get
+    /// launches that share nothing a CLI fixes as it starts: each runs in its own worktree, names
+    /// only its own folders in its arguments and environment (its git folders, its `HOME`, the
+    /// LANES-18 profile's paths, the worktree an untrusted project), and reaches Oby's tools with
+    /// its own broker token. So no Codex started for one could be given the other.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn lanes_25_a_jobs_agent_is_started_for_that_job_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("obid-lanes-25-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let session = root.join("session");
+        std::fs::write(&session, "#!/bin/sh\nshift 2\nexec \"$@\"\n").unwrap();
+        std::fs::set_permissions(&session, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let account = root.join("account");
+        std::fs::create_dir_all(&account).unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"codex": {"bin": "/usr/bin/true",
+                    "accounts": [{"id": "a", "name": "A", "configDir": account}]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Sandbox::detect(&session),
+        )
+        .unwrap();
+        let codex = jobs.accounts(Tool::Codex).remove(0);
+        let launch = |id: &str| {
+            let job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "investigate".into(),
+                "Look into it".into(),
+                "codex".into(),
+                "a".into(),
+            );
+            jobs.insert(job.clone()).unwrap();
+            let folder = root.join(id);
+            let [worktree, admin, common, temp] =
+                ["worktree", "admin", "common", "temp"].map(|d| folder.join(d));
+            for dir in [&worktree, &admin, &common, &temp] {
+                std::fs::create_dir_all(dir).unwrap();
+            }
+            let spec = jobs.spec(&worktree, &admin, &common, &temp, true, Tool::Codex);
+            let broker = (
+                format!("http://127.0.0.1:1/v1/agent/mcp/{id}"),
+                format!("token-{id}"),
+            );
+            let launch = jobs
+                .launch(&job, &spec, Tool::Codex, Vec::new(), &codex, Some(&broker))
+                .unwrap();
+            assert!(launch.own_sandbox, "{id} runs in the own lane");
+            (launch, worktree, folder)
+        };
+        let (one, one_worktree, one_folder) = launch("one");
+        let (two, two_worktree, two_folder) = launch("two");
+        assert_eq!(one.cwd, one_worktree);
+        assert_eq!(two.cwd, two_worktree);
+        let named = |launch: &Launch| -> Vec<String> {
+            let argv = launch.argv.iter().map(|a| a.to_string_lossy().into_owned());
+            let env = launch
+                .env
+                .iter()
+                .map(|(_, v)| v.to_string_lossy().into_owned());
+            argv.chain(env).collect()
+        };
+        for (launch, own, other, id) in [
+            (&one, &one_folder, &two_folder, "one"),
+            (&two, &two_folder, &one_folder, "two"),
+        ] {
+            let all = named(launch);
+            let mine = |p: &Path| all.iter().any(|v| v.contains(p.to_str().unwrap()));
+            assert!(mine(own), "{id}'s launch names its own folders: {all:?}");
+            assert!(
+                !mine(other),
+                "{id}'s launch names another job's folder: {all:?}"
+            );
+            // Its own worktree is the untrusted project of the profile LANES-18 checks.
+            let projects = all
+                .iter()
+                .find(|v| v.starts_with("projects="))
+                .unwrap_or_else(|| panic!("{id} has no projects setting: {all:?}"));
+            assert!(
+                projects.contains(own.join("worktree").to_str().unwrap()),
+                "{projects}"
+            );
+            let token = launch
+                .env
+                .iter()
+                .find(|(name, _)| name == "OBY_MCP_TOKEN")
+                .map(|(_, v)| v.to_string_lossy().into_owned());
+            assert_eq!(token.as_deref(), Some(format!("token-{id}").as_str()));
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// obid's jobs on a home in `root`, with one Claude Code account with a folder of its own, and
     /// a "sandbox" that runs what it's given (`root/session`).
     fn own_jobs(root: &Path) -> Arc<Jobs> {

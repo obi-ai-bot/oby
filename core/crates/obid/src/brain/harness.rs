@@ -655,14 +655,14 @@ fn may_wait(shared: &Shared, warm: &Warm) -> bool {
             .is_some_and(|(_, a)| a.config_dir == warm.config_dir)
 }
 
-/// Starts the next new conversation's Claude Code now, so its first turn finds it waiting as a
-/// later turn does, connected to Oby's tools already (docs/fast-replies.md; the Agent SDK's
+/// Starts the next new conversation's Claude Code, or Codex with its thread (CONVERSATION-AGENT-51),
+/// now, so its first turn finds it waiting as a later turn does, connected to Oby's tools already (docs/fast-replies.md; the Agent SDK's
 /// `prewarm()`). obid names each profile's next conversation's id ahead
 /// ([`crate::conversation::Conversations::next_id`]) and readies its place as a turn would: the
 /// room with its checkouts, the box, a login copy and its MCP configuration, under the
 /// conversation's lock. It waits like any other ([`WARM_FOR`]), with no session until its first
 /// turn, and its token connects to Oby's tools but calls none before a turn is under way. Started
-/// after each of the owner's turns, so a Claude Code waits only while the owner is talking to Oby:
+/// after each of the owner's turns, so an agent waits only while the owner is talking to Oby:
 /// for the turn's profile first, then the others ([`ahead`], PROFILES-47), one at a time.
 /// `OBID_PRESTART=off` (obid's tests set it, but in the tests of this) starts none.
 fn prestart(shared: &Arc<Shared>, turn: &crate::profiles::Scope) {
@@ -676,35 +676,33 @@ fn prestart(shared: &Arc<Shared>, turn: &crate::profiles::Scope) {
     let (shared, turn) = (shared.clone(), turn.clone());
     tokio::spawn(async move {
         let profiles = shared.profiles.scopes();
-        // Only where a new conversation's first turn would talk on Claude Code, on one of the
-        // profile's own accounts (B00-40): another agent has none to wait.
-        let claude = |scope: &crate::profiles::Scope| {
-            matches!(
-                super::talk::next_with(&shared, scope),
-                Some((Tool::Claude, _))
-            )
+        // Only where a new conversation's first turn would talk on Claude Code, or Codex on a
+        // `codex login` ([`warmed`]), on one of the profile's own accounts (B00-40): another agent
+        // has none to wait.
+        let warm = |scope: &crate::profiles::Scope| {
+            super::talk::next_with(&shared, scope).is_some_and(|next| warmed(&next))
         };
-        for scope in ahead(&profiles, &turn, claude) {
+        for scope in ahead(&profiles, &turn, warm) {
             let id = shared.conversations.next_id(scope.tag().as_deref());
             if shared.harness.warm().contains_key(&id) {
                 continue;
             }
             if let Err(why) = start_next(&shared, &id, &scope).await {
                 let why = placed(&crate::secrets::known().redact(&why), &homes(&shared));
-                tracing::info!("the next conversation's Claude Code isn't started: {why}");
+                tracing::info!("the next conversation's agent isn't started: {why}");
             }
         }
         STARTING.store(false, Ordering::SeqCst);
     });
 }
 
-/// The profiles whose next new conversation gets a Claude Code ahead, in order (PROFILES-47): the
-/// turn's first, then the others in the registry's order, only those `claude` says would talk on
-/// Claude Code, at most [`AHEAD_MOST`]. One already waiting counts toward them.
-fn ahead<P: PartialEq + Clone>(profiles: &[P], turn: &P, claude: impl Fn(&P) -> bool) -> Vec<P> {
+/// The profiles whose next new conversation gets its agent ahead, in order (PROFILES-47): the
+/// turn's first, then the others in the registry's order, only those `warm` says would talk on an
+/// agent started ahead ([`warmed`]), at most [`AHEAD_MOST`]. One already waiting counts toward them.
+fn ahead<P: PartialEq + Clone>(profiles: &[P], turn: &P, warm: impl Fn(&P) -> bool) -> Vec<P> {
     let others = profiles.iter().filter(|p| *p != turn);
     (std::iter::once(turn).chain(others))
-        .filter(|p| claude(p))
+        .filter(|p| warm(p))
         .take(AHEAD_MOST)
         .cloned()
         .collect()
@@ -716,9 +714,8 @@ async fn start_next(
     scope: &crate::profiles::Scope,
 ) -> Result<(), String> {
     // Readied for a conversation of `scope`'s profile, on one of its accounts (B00-40).
-    let account = match super::talk::next_with(shared, scope) {
-        Some((Tool::Claude, account)) => account,
-        _ => return Ok(()),
+    let Some((tool, account)) = super::talk::next_with(shared, scope).filter(warmed) else {
+        return Ok(());
     };
     let busy = shared.harness.busy(id);
     let _held = busy.lock().await;
@@ -730,29 +727,58 @@ async fn start_next(
     let place = Place::of(&shared.config.home, id);
     place.make()?;
     checkouts(shared, &place, &|| true).await;
-    let own = own_lane(shared, Tool::Claude, &account, id);
-    if !own {
+    let own = own_lane(shared, tool, &account, id);
+    if tool == Tool::Claude && !own {
         shared.jobs.claude_login_ready(Some(&account)).await?;
     }
     place.scrub();
     let token = new_token();
     let (mcp, url, tetrix) = mcp_config(shared, &place, id, own, None)?;
-    write_mcp(&mcp, &url, tetrix.as_deref(), &token)?;
-    let mut flags = claude_flags(shared, &account.id, tetrix.is_some(), own, None);
-    let key = flags_key(&flags);
-    flags.extend(["--mcp-config".into(), mcp.into_os_string()]);
-    let launch = claude_launch(shared, &account, &place, flags, own)?;
     // Its stop signal is its turn's, given when the turn takes it ([`crate::conn::Conn::renew`]).
     let (_signal, stop) = tokio::sync::watch::channel(crate::process::Signal::Run);
-    let conn = match crate::conn::Conn::spawn(&launch, WARM_FOR, stop, false).await {
-        Ok(conn) => conn,
-        Err(e) => {
-            place.forget_login();
-            return Err(format!("Claude Code couldn't start: {e}"));
+    let (waiting, key) = match tool {
+        // Its thread started too, so its MCP servers come up meanwhile (CONVERSATION-AGENT-51).
+        Tool::Codex => {
+            let key =
+                super::harness_codex::key(shared, &account, &url, tetrix.as_deref(), own, None);
+            let (launch, options) = super::harness_codex::launch(
+                shared,
+                &account,
+                &place,
+                &url,
+                tetrix.as_deref(),
+                &token,
+                &None,
+                own,
+                None,
+            )
+            .await?;
+            let options = options.unwrap_or_default();
+            match crate::codex::start_ahead(launch, &options, WARM_FOR, stop).await {
+                Ok(kept) => (Waiting::Codex(kept), key),
+                Err(why) => {
+                    place.forget_login();
+                    return Err(format!("Codex couldn't start: {why}"));
+                }
+            }
+        }
+        _ => {
+            write_mcp(&mcp, &url, tetrix.as_deref(), &token)?;
+            let mut flags = claude_flags(shared, &account.id, tetrix.is_some(), own, None);
+            let key = flags_key(&flags);
+            flags.extend(["--mcp-config".into(), mcp.into_os_string()]);
+            let launch = claude_launch(shared, &account, &place, flags, own)?;
+            match crate::conn::Conn::spawn(&launch, WARM_FOR, stop, false).await {
+                Ok(conn) => (Waiting::Claude(conn), key),
+                Err(e) => {
+                    place.forget_login();
+                    return Err(format!("Claude Code couldn't start: {e}"));
+                }
+            }
         }
     };
     let warm = Warm {
-        waiting: Waiting::Claude(conn),
+        waiting,
         token,
         account: account.id.clone(),
         config_dir: account.config_dir.clone(),
@@ -772,7 +798,8 @@ async fn start_next(
         return Ok(());
     }
     tracing::info!(
-        "the next conversation's Claude Code is waiting ({} ms)",
+        "the next conversation's {} is waiting ({} ms)",
+        tool.name(),
         began.elapsed().as_millis()
     );
     let (shared, id) = (shared.clone(), id.to_owned());
@@ -781,6 +808,18 @@ async fn start_next(
         shared.harness.expire(&id, since);
     });
     Ok(())
+}
+
+/// Whether a new conversation's first turn on `tool` and `account` has its agent started ahead
+/// ([`prestart`]): Claude Code (PROFILES-47), and Codex on a `codex login` (CONVERSATION-AGENT-51).
+/// Not Codex on a ChatGPT login, whose thread starts with the turn's model and reaches OpenAI only
+/// through obid's relay with the turn's own token; nor Cursor, whose session is the turn's.
+fn warmed((tool, account): &(Tool, crate::config::Account)) -> bool {
+    match tool {
+        Tool::Claude => true,
+        Tool::Codex => crate::chatgpt::marker_of(account).is_none(),
+        Tool::Cursor => false,
+    }
 }
 
 /// A conversation's deleted (`DELETE /v1/conversations/{id}`, or the oldest forgotten past the
