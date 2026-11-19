@@ -1,0 +1,432 @@
+[
+  {
+    "args": [
+      "pr",
+      "view",
+      "7",
+      "--repo",
+      "obi-e2e/fixture-app",
+      "--json",
+      "state,reviewDecision,mergedAt,baseRefName,headRefOid,statusCheckRollup,mergeable,mergeStateStatus,author"
+    ],
+    "cwd": "<CRATE>",
+    "env": [
+      "GH_NO_UPDATE_NOTIFIER",
+      "GH_PROMPT_DISABLED",
+      "GH_SPINNER_DISABLED",
+      "GIT_TERMINAL_PROMPT",
+      "HOME",
+      "NO_COLOR",
+      "OBID_BASE_CHECK",
+      "OBID_FOLLOW_SECONDS",
+      "OBID_GITHUB_REFRESH_SECONDS",
+      "OBID_LOAD",
+      "OBID_LOG",
+      "OBID_MEMORY_AVAILABLE",
+      "OBID_PRESTART",
+      "OBID_RECHECK_MS",
+      "OBID_RERUN_SETTLE_SECONDS",
+      "OBID_SECURITY_BIN",
+      "OBID_USAGE_READS",
+      "PATH",
+      "TMPDIR"
+    ],
+    "files": {},
+    "stdin": ""
+  },
+  {
+    "args": [
+      "api",
+      "--paginate",
+      "--slurp",
+      "repos/obi-e2e/fixture-app/pulls/7/reviews?per_page=100"
+    ],
+    "cwd": "<CRATE>",
+    "env": [
+      "GH_NO_UPDATE_NOTIFIER",
+      "GH_PROMPT_DISABLED",
+      "GH_SPINNER_DISABLED",
+      "GIT_TERMINAL_PROMPT",
+      "HOME",
+      "NO_COLOR",
+      "OBID_BASE_CHECK",
+      "OBID_FOLLOW_SECONDS",
+      "OBID_GITHUB_REFRESH_SECONDS",
+      "OBID_LOAD",
+      "OBID_LOG",
+      "OBID_MEMORY_AVAILABLE",
+      "OBID_PRESTART",
+      "OBID_RECHECK_MS",
+      "OBID_RERUN_SETTLE_SECONDS",
+      "OBID_SECURITY_BIN",
+      "OBID_USAGE_READS",
+      "PATH",
+      "TMPDIR"
+    ],
+    "files": {},
+    "stdin": ""
+  },
+  {
+    "args": [
+      "api",
+      "repos/obi-e2e/fixture-app/rules/branches/dev"
+    ],
+    "cwd": "<CRATE>",
+    "env": [
+      "GH_NO_UPDATE_NOTIFIER",
+      "GH_PROMPT_DISABLED",
+      "GH_SPINNER_DISABLED",
+      "GIT_TERMINAL_PROMPT",
+      "HOME",
+      "NO_COLOR",
+      "OBID_BASE_CHECK",
+      "OBID_FOLLOW_SECONDS",
+      "OBID_GITHUB_REFRESH_SECONDS",
+      "OBID_LOAD",
+      "OBID_LOG",
+      "OBID_MEMORY_AVAILABLE",
+      "OBID_PRESTART",
+      "OBID_RECHECK_MS",
+      "OBID_RERUN_SETTLE_SECONDS",
+      "OBID_SECURITY_BIN",
+      "OBID_USAGE_READS",
+      "PATH",
+      "TMPDIR"
+    ],
+    "files": {},
+    "stdin": ""
+  },
+  {
+    "args": [
+      "api",
+      "repos/obi-e2e/fixture-app/branches/dev/protection/required_pull_request_reviews"
+    ],
+    "cwd": "<CRATE>",
+    "env": [
+      "GH_NO_UPDATE_NOTIFIER",
+      "GH_PROMPT_DISABLED",
+      "GH_SPINNER_DISABLED",
+      "GIT_TERMINAL_PROMPT",
+      "HOME",
+      "NO_COLOR",
+      "OBID_BASE_CHECK",
+      "OBID_FOLLOW_SECONDS",
+      "OBID_GITHUB_REFRESH_SECONDS",
+      "OBID_LOAD",
+      "OBID_LOG",
+      "OBID_MEMORY_AVAILABLE",
+      "OBID_PRESTART",
+      "OBID_RECHECK_MS",
+      "OBID_RERUN_SETTLE_SECONDS",
+      "OBID_SECURITY_BIN",
+      "OBID_USAGE_READS",
+      "PATH",
+      "TMPDIR"
+    ],
+    "files": {},
+    "stdin": ""
+  },
+  {
+    "args": [
+      "auth",
+      "status",
+      "--hostname",
+      "github.com",
+      "--active",
+      "--json",
+      "hosts"
+    ],
+    "cwd": "<CRATE>",
+    "env": [
+      "GH_NO_UPDATE_NOTIFIER",
+      "GH_PROMPT_DISABLED",
+      "GH_SPINNER_DISABLED",
+      "GIT_TERMINAL_PROMPT",
+      "HOME",
+      "NO_COLOR",
+      "OBID_BASE_CHECK",
+      "OBID_FOLLOW_SECONDS",
+      "OBID_GITHUB_REFRESH_SECONDS",
+      "OBID_LOAD",
+      "OBID_LOG",
+      "OBID_MEMORY_AVAILABLE",
+      "OBID_PRESTART",
+      "OBID_RECHECK_MS",
+      "OBID_RERUN_SETTLE_SECONDS",
+      "OBID_SECURITY_BIN",
+      "OBID_USAGE_READS",
+      "PATH",
+      "TMPDIR"
+    ],
+    "files": {},
+    "stdin": ""
+  },
+  {
+    "args": [
+      "run",
+      "list",
+      "--repo",
+      "obi-e2e/fixture-app",
+      "--commit",
+      "<commit-1>",
+      "--status",
+      "failure",
+      "--json",
+      "databaseId"
+    ],
+    "cwd": "<CRATE>",
+    "env": [
+      "GH_NO_UPDATE_NOTIFIER",
+      "GH_PROMPT_DISABLED",
+      "GH_SPINNER_DISABLED",
+      "GIT_TERMINAL_PROMPT",
+      "HOME",
+      "NO_COLOR",
+      "OBID_BASE_CHECK",
+      "OBID_FOLLOW_SECONDS",
+      "OBID_GITHUB_REFRESH_SECONDS",
+      "OBID_LOAD",
+      "OBID_LOG",
+      "OBID_MEMORY_AVAILABLE",
+      "OBID_PRESTART",
+      "OBID_RECHECK_MS",
+      "OBID_RERUN_SETTLE_SECONDS",
+      "OBID_SECURITY_BIN",
+      "OBID_USAGE_READS",
+      "PATH",
+      "TMPDIR"
+    ],
+    "files": {},
+    "stdin": ""
+  },
+  {
+    "args": [
+      "run",
+      "view",
+      "41",
+      "--repo",
+      "obi-e2e/fixture-app",
+      "--log-failed"
+    ],
+    "cwd": "<CRATE>",
+    "env": [
+      "GH_NO_UPDATE_NOTIFIER",
+      "GH_PROMPT_DISABLED",
+      "GH_SPINNER_DISABLED",
+      "GIT_TERMINAL_PROMPT",
+      "HOME",
+      "NO_COLOR",
+      "OBID_BASE_CHECK",
+      "OBID_FOLLOW_SECONDS",
+      "OBID_GITHUB_REFRESH_SECONDS",
+      "OBID_LOAD",
+      "OBID_LOG",
+      "OBID_MEMORY_AVAILABLE",
+      "OBID_PRESTART",
+      "OBID_RECHECK_MS",
+      "OBID_RERUN_SETTLE_SECONDS",
+      "OBID_SECURITY_BIN",
+      "OBID_USAGE_READS",
+      "PATH",
+      "TMPDIR"
+    ],
+    "files": {},
+    "stdin": ""
+  },
+  {
+    "from the round on, each distinct call once, in no fixed order": [
+      {
+        "args": [
+          "api",
+          "--paginate",
+          "--slurp",
+          "repos/obi-e2e/fixture-app/pulls/7/reviews?per_page=100"
+        ],
+        "cwd": "<CRATE>",
+        "env": [
+          "GH_NO_UPDATE_NOTIFIER",
+          "GH_PROMPT_DISABLED",
+          "GH_SPINNER_DISABLED",
+          "GIT_TERMINAL_PROMPT",
+          "HOME",
+          "NO_COLOR",
+          "OBID_BASE_CHECK",
+          "OBID_FOLLOW_SECONDS",
+          "OBID_GITHUB_REFRESH_SECONDS",
+          "OBID_LOAD",
+          "OBID_LOG",
+          "OBID_MEMORY_AVAILABLE",
+          "OBID_PRESTART",
+          "OBID_RECHECK_MS",
+          "OBID_RERUN_SETTLE_SECONDS",
+          "OBID_SECURITY_BIN",
+          "OBID_USAGE_READS",
+          "PATH",
+          "TMPDIR"
+        ],
+        "files": {},
+        "stdin": ""
+      },
+      {
+        "args": [
+          "api",
+          "repos/obi-e2e/fixture-app/branches/dev/protection"
+        ],
+        "cwd": "<CRATE>",
+        "env": [
+          "GH_NO_UPDATE_NOTIFIER",
+          "GH_PROMPT_DISABLED",
+          "GH_SPINNER_DISABLED",
+          "GIT_TERMINAL_PROMPT",
+          "HOME",
+          "NO_COLOR",
+          "OBID_BASE_CHECK",
+          "OBID_FOLLOW_SECONDS",
+          "OBID_GITHUB_REFRESH_SECONDS",
+          "OBID_LOAD",
+          "OBID_LOG",
+          "OBID_MEMORY_AVAILABLE",
+          "OBID_PRESTART",
+          "OBID_RECHECK_MS",
+          "OBID_RERUN_SETTLE_SECONDS",
+          "OBID_SECURITY_BIN",
+          "OBID_USAGE_READS",
+          "PATH",
+          "TMPDIR"
+        ],
+        "files": {},
+        "stdin": ""
+      },
+      {
+        "args": [
+          "api",
+          "repos/obi-e2e/fixture-app/branches/dev/protection/required_pull_request_reviews"
+        ],
+        "cwd": "<CRATE>",
+        "env": [
+          "GH_NO_UPDATE_NOTIFIER",
+          "GH_PROMPT_DISABLED",
+          "GH_SPINNER_DISABLED",
+          "GIT_TERMINAL_PROMPT",
+          "HOME",
+          "NO_COLOR",
+          "OBID_BASE_CHECK",
+          "OBID_FOLLOW_SECONDS",
+          "OBID_GITHUB_REFRESH_SECONDS",
+          "OBID_LOAD",
+          "OBID_LOG",
+          "OBID_MEMORY_AVAILABLE",
+          "OBID_PRESTART",
+          "OBID_RECHECK_MS",
+          "OBID_RERUN_SETTLE_SECONDS",
+          "OBID_SECURITY_BIN",
+          "OBID_USAGE_READS",
+          "PATH",
+          "TMPDIR"
+        ],
+        "files": {},
+        "stdin": ""
+      },
+      {
+        "args": [
+          "api",
+          "repos/obi-e2e/fixture-app/rules/branches/dev"
+        ],
+        "cwd": "<CRATE>",
+        "env": [
+          "GH_NO_UPDATE_NOTIFIER",
+          "GH_PROMPT_DISABLED",
+          "GH_SPINNER_DISABLED",
+          "GIT_TERMINAL_PROMPT",
+          "HOME",
+          "NO_COLOR",
+          "OBID_BASE_CHECK",
+          "OBID_FOLLOW_SECONDS",
+          "OBID_GITHUB_REFRESH_SECONDS",
+          "OBID_LOAD",
+          "OBID_LOG",
+          "OBID_MEMORY_AVAILABLE",
+          "OBID_PRESTART",
+          "OBID_RECHECK_MS",
+          "OBID_RERUN_SETTLE_SECONDS",
+          "OBID_SECURITY_BIN",
+          "OBID_USAGE_READS",
+          "PATH",
+          "TMPDIR"
+        ],
+        "files": {},
+        "stdin": ""
+      },
+      {
+        "args": [
+          "auth",
+          "status",
+          "--hostname",
+          "github.com",
+          "--active",
+          "--json",
+          "hosts"
+        ],
+        "cwd": "<CRATE>",
+        "env": [
+          "GH_NO_UPDATE_NOTIFIER",
+          "GH_PROMPT_DISABLED",
+          "GH_SPINNER_DISABLED",
+          "GIT_TERMINAL_PROMPT",
+          "HOME",
+          "NO_COLOR",
+          "OBID_BASE_CHECK",
+          "OBID_FOLLOW_SECONDS",
+          "OBID_GITHUB_REFRESH_SECONDS",
+          "OBID_LOAD",
+          "OBID_LOG",
+          "OBID_MEMORY_AVAILABLE",
+          "OBID_PRESTART",
+          "OBID_RECHECK_MS",
+          "OBID_RERUN_SETTLE_SECONDS",
+          "OBID_SECURITY_BIN",
+          "OBID_USAGE_READS",
+          "PATH",
+          "TMPDIR"
+        ],
+        "files": {},
+        "stdin": ""
+      },
+      {
+        "args": [
+          "pr",
+          "view",
+          "7",
+          "--repo",
+          "obi-e2e/fixture-app",
+          "--json",
+          "state,reviewDecision,mergedAt,baseRefName,headRefOid,statusCheckRollup,mergeable,mergeStateStatus,author"
+        ],
+        "cwd": "<CRATE>",
+        "env": [
+          "GH_NO_UPDATE_NOTIFIER",
+          "GH_PROMPT_DISABLED",
+          "GH_SPINNER_DISABLED",
+          "GIT_TERMINAL_PROMPT",
+          "HOME",
+          "NO_COLOR",
+          "OBID_BASE_CHECK",
+          "OBID_FOLLOW_SECONDS",
+          "OBID_GITHUB_REFRESH_SECONDS",
+          "OBID_LOAD",
+          "OBID_LOG",
+          "OBID_MEMORY_AVAILABLE",
+          "OBID_PRESTART",
+          "OBID_RECHECK_MS",
+          "OBID_RERUN_SETTLE_SECONDS",
+          "OBID_SECURITY_BIN",
+          "OBID_USAGE_READS",
+          "PATH",
+          "TMPDIR"
+        ],
+        "files": {},
+        "stdin": ""
+      }
+    ]
+  }
+]

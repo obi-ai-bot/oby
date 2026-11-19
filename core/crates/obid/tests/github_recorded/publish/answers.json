@@ -1,0 +1,64 @@
+[
+  {
+    "asked": "the job, published",
+    "job": {
+      "branch": "oby/build-<job-1>",
+      "issue": null,
+      "outgoing": [
+        {
+          "action": "push",
+          "branch": "oby/build-<job-1>",
+          "date": "<TIME>",
+          "id": "<commit-1>",
+          "repo": "obi-e2e/fixture-app"
+        },
+        {
+          "action": "pullRequest",
+          "date": "<TIME>",
+          "id": "https://github.com/obi-e2e/fixture-app/pull/7",
+          "repo": "obi-e2e/fixture-app"
+        }
+      ],
+      "publishError": null,
+      "published": "https://github.com/obi-e2e/fixture-app/pull/7",
+      "pullRequest": {
+        "base": "main",
+        "checkedAt": "<TIME>",
+        "reviewDecision": "REVIEW_REQUIRED",
+        "state": "OPEN"
+      },
+      "pullRequestError": null
+    }
+  },
+  {
+    "asked": "its follow-up, published onto its pull request",
+    "job": {
+      "branch": "oby/build-<job-1>",
+      "issue": null,
+      "outgoing": [
+        {
+          "action": "push",
+          "branch": "oby/build-<job-1>",
+          "date": "<TIME>",
+          "id": "<commit-2>",
+          "repo": "obi-e2e/fixture-app"
+        },
+        {
+          "action": "pullRequestEdit",
+          "date": "<TIME>",
+          "id": "https://github.com/obi-e2e/fixture-app/pull/7",
+          "repo": "obi-e2e/fixture-app"
+        }
+      ],
+      "publishError": null,
+      "published": "https://github.com/obi-e2e/fixture-app/pull/7",
+      "pullRequest": {
+        "base": "main",
+        "checkedAt": "<TIME>",
+        "reviewDecision": "REVIEW_REQUIRED",
+        "state": "OPEN"
+      },
+      "pullRequestError": null
+    }
+  }
+]

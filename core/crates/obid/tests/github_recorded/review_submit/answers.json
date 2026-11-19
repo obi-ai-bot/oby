@@ -1,0 +1,58 @@
+[
+  {
+    "asked": "GET /v1/inbox, the review's item",
+    "item": {
+      "answer": null,
+      "id": "feed-review-r1b2c3d4",
+      "kind": "listen",
+      "options": [
+        "Approve",
+        "Dismiss"
+      ],
+      "state": "open",
+      "text": "Post this review on pull request #31 in o/r as you? Approve posts the review shown here with Oby's verdict, from your GitHub login.",
+      "title": "Review ready: r #31",
+      "watch": {
+        "pr": {
+          "number": 31,
+          "repo": "o/r",
+          "sha": "<commit-1>",
+          "url": "https://github.com/o/r/pull/31"
+        },
+        "review": "Approve: the change does what its title says, and its tests cover the new branch.",
+        "source": "github",
+        "url": "https://github.com/o/r/pull/31",
+        "verdict": "approve"
+      }
+    }
+  },
+  {
+    "asked": "POST /v1/inbox/{item}/answer Approve",
+    "item": {
+      "answer": "Approve",
+      "id": "feed-review-r1b2c3d4",
+      "kind": "listen",
+      "options": [
+        "Approve",
+        "Dismiss"
+      ],
+      "state": "done",
+      "text": "Post this review on pull request #31 in o/r as you? Approve posts the review shown here with Oby's verdict, from your GitHub login.",
+      "title": "Review ready: r #31",
+      "watch": {
+        "posting": "<TIME>",
+        "pr": {
+          "number": 31,
+          "repo": "o/r",
+          "sha": "<commit-1>",
+          "url": "https://github.com/o/r/pull/31"
+        },
+        "review": "Approve: the change does what its title says, and its tests cover the new branch.",
+        "source": "github",
+        "url": "https://github.com/o/r/pull/31",
+        "verdict": "approve"
+      }
+    },
+    "status": 200
+  }
+]

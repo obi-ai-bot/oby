@@ -15,7 +15,9 @@ use crate::support::{Folder, Obid, config, start, stub_agent};
 /// This crate's folder, where `cargo test` runs obid: the working folder of every `gh` call obid
 /// doesn't give one.
 fn crate_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).canonicalize().unwrap()
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .canonicalize()
+        .unwrap()
 }
 
 /// Where a path's routes, fixtures and recordings are kept.
@@ -182,18 +184,19 @@ impl Recording {
         static SHA: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
         let sha = SHA.get_or_init(|| Regex::new(r"\b[0-9a-f]{40}\b").unwrap());
         let mut seen = self.commits.borrow_mut();
-        let full = sha.replace_all(text, |m: &regex::Captures| {
-            let hash = m[0].to_owned();
-            let n = match seen.iter().position(|h| *h == hash) {
-                Some(n) => n,
-                None => {
-                    seen.push(hash);
-                    seen.len() - 1
-                }
-            };
-            format!("<commit-{}>", n + 1)
-        })
-        .into_owned();
+        let full = sha
+            .replace_all(text, |m: &regex::Captures| {
+                let hash = m[0].to_owned();
+                let n = match seen.iter().position(|h| *h == hash) {
+                    Some(n) => n,
+                    None => {
+                        seen.push(hash);
+                        seen.len() - 1
+                    }
+                };
+                format!("<commit-{}>", n + 1)
+            })
+            .into_owned();
         // The short forms obid shows of a hash it met (12 and 7 characters), the same way.
         let mut out = full;
         for (n, hash) in seen.iter().enumerate() {
@@ -256,9 +259,15 @@ impl Recording {
 
 /// The keys whose values are times obid takes from its own clock, never from GitHub: when it read
 /// a pull request (`checkedAt`), when a sign-in's code ends (`expiresAt`), when a job or an item
-/// was made, started, changed or ended, and when a merge was noted (`at`).
+/// was made, started, changed or ended, when a merge was noted (`at`), when an outgoing action went
+/// (`date`), when an item was claimed to post its review (`posting`), and when the work feed reads
+/// next (`nextCheck`).
 const CLOCK_KEYS: &[&str] = &[
     "checkedAt",
+    "created",
+    "date",
+    "posting",
+    "nextCheck",
     "expiresAt",
     "createdAt",
     "startedAt",
@@ -280,14 +289,23 @@ pub fn writes(call: &Value) -> bool {
         .map(|a| a.as_str().unwrap())
         .collect();
     let pair = args.iter().take(2).copied().collect::<Vec<_>>().join(" ");
-    let method = args.windows(2).any(|w| {
-        (w[0] == "-X" || w[0] == "--method") && w[1] != "GET"
-    });
+    let method = args
+        .windows(2)
+        .any(|w| (w[0] == "-X" || w[0] == "--method") && w[1] != "GET");
     method
         || matches!(
             pair.as_str(),
-            "pr create" | "pr edit" | "pr merge" | "pr review" | "pr close" | "pr comment"
-                | "run rerun" | "issue edit" | "issue comment" | "auth login" | "auth logout"
+            "pr create"
+                | "pr edit"
+                | "pr merge"
+                | "pr review"
+                | "pr close"
+                | "pr comment"
+                | "run rerun"
+                | "issue edit"
+                | "issue comment"
+                | "auth login"
+                | "auth logout"
                 | "auth git-credential"
         )
 }
@@ -319,11 +337,13 @@ pub fn polls_once(mut calls: Vec<Value>) -> Vec<Value> {
 }
 
 /// Random ids in `text`, as `<UUID>` (Rule: obid names jobs, temporary files and folders with
-/// fresh UUIDs, different on every run).
+/// fresh UUIDs, different on every run, in their usual form or their simple one, 32 hex digits
+/// with no dashes: `listen-post-<32 hex>`, `approve-<32 hex>`).
 fn ids(text: &str) -> String {
     static UUID: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     let uuid = UUID.get_or_init(|| {
-        Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").unwrap()
+        Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\b[0-9a-f]{32}\b")
+            .unwrap()
     });
     uuid.replace_all(text, "<UUID>").into_owned()
 }

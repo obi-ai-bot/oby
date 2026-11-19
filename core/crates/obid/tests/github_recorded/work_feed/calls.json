@@ -1,0 +1,135 @@
+[
+  {
+    "args": [
+      "api",
+      "graphql",
+      "-f",
+      "query=query($assigned: String!, $reviews: String!, $mine: String!) { assigned: search(query: $assigned, type: ISSUE, first: 100) { issueCount nodes { ...work } } reviews: search(query: $reviews, type: ISSUE, first: 100) { issueCount nodes { ...work } } mine: search(query: $mine, type: ISSUE, first: 100) { issueCount nodes { ...work } } rateLimit { cost remaining resetAt } viewer { login } } fragment work on SearchResultItem { ... on Issue { number title updatedAt state author { login } authorAssociation repository { nameWithOwner } labels(first: 20) { nodes { name } } milestone { title } projectItems(first: 5, includeArchived: false) { nodes { project { title } fieldValueByName(name: \"Status\") { ... on ProjectV2ItemFieldSingleSelectValue { name } } } } } ... on PullRequest { number title updatedAt state isDraft isCrossRepository reviewDecision author { login } authorAssociation repository { nameWithOwner } labels(first: 20) { nodes { name } } milestone { title } projectItems(first: 5, includeArchived: false) { nodes { project { title } fieldValueByName(name: \"Status\") { ... on ProjectV2ItemFieldSingleSelectValue { name } } } } commits(last: 1) { nodes { commit { oid statusCheckRollup { state contexts(first: 50) { nodes { __typename ... on CheckRun { name status conclusion detailsUrl } ... on StatusContext { context state targetUrl } } } } } } } } }",
+      "-f",
+      "assigned=is:issue is:open assignee:@me archived:false sort:updated-desc",
+      "-f",
+      "reviews=is:pr is:open review-requested:@me archived:false sort:updated-desc",
+      "-f",
+      "mine=is:pr is:open author:@me archived:false sort:updated-desc"
+    ],
+    "cwd": "<CRATE>",
+    "env": [
+      "GH_NO_UPDATE_NOTIFIER",
+      "GH_PROMPT_DISABLED",
+      "GH_SPINNER_DISABLED",
+      "GIT_TERMINAL_PROMPT",
+      "HOME",
+      "NO_COLOR",
+      "OBID_BASE_CHECK",
+      "OBID_GITHUB_REFRESH_SECONDS",
+      "OBID_LOAD",
+      "OBID_LOG",
+      "OBID_MEMORY_AVAILABLE",
+      "OBID_PRESTART",
+      "OBID_RECHECK_MS",
+      "OBID_SECURITY_BIN",
+      "OBID_USAGE_READS",
+      "PATH",
+      "TMPDIR"
+    ],
+    "files": {},
+    "stdin": ""
+  },
+  {
+    "args": [
+      "api",
+      "user",
+      "--jq",
+      ".login"
+    ],
+    "cwd": "<CRATE>",
+    "env": [
+      "GH_NO_UPDATE_NOTIFIER",
+      "GH_PROMPT_DISABLED",
+      "GH_SPINNER_DISABLED",
+      "GIT_TERMINAL_PROMPT",
+      "HOME",
+      "NO_COLOR",
+      "OBID_BASE_CHECK",
+      "OBID_GITHUB_REFRESH_SECONDS",
+      "OBID_LOAD",
+      "OBID_LOG",
+      "OBID_MEMORY_AVAILABLE",
+      "OBID_PRESTART",
+      "OBID_RECHECK_MS",
+      "OBID_SECURITY_BIN",
+      "OBID_USAGE_READS",
+      "PATH",
+      "TMPDIR"
+    ],
+    "files": {},
+    "stdin": ""
+  },
+  {
+    "args": [
+      "api",
+      "user/orgs",
+      "--paginate",
+      "--jq",
+      ".[].login"
+    ],
+    "cwd": "<CRATE>",
+    "env": [
+      "GH_NO_UPDATE_NOTIFIER",
+      "GH_PROMPT_DISABLED",
+      "GH_SPINNER_DISABLED",
+      "GIT_TERMINAL_PROMPT",
+      "HOME",
+      "NO_COLOR",
+      "OBID_BASE_CHECK",
+      "OBID_GITHUB_REFRESH_SECONDS",
+      "OBID_LOAD",
+      "OBID_LOG",
+      "OBID_MEMORY_AVAILABLE",
+      "OBID_PRESTART",
+      "OBID_RECHECK_MS",
+      "OBID_SECURITY_BIN",
+      "OBID_USAGE_READS",
+      "PATH",
+      "TMPDIR"
+    ],
+    "files": {},
+    "stdin": ""
+  },
+  {
+    "args": [
+      "api",
+      "graphql",
+      "-f",
+      "query=query($assigned: String!, $reviews: String!, $mine: String!) { assigned: search(query: $assigned, type: ISSUE, first: 100) { issueCount nodes { ...work } } reviews: search(query: $reviews, type: ISSUE, first: 100) { issueCount nodes { ...work } } mine: search(query: $mine, type: ISSUE, first: 100) { issueCount nodes { ...work } } rateLimit { cost remaining resetAt } viewer { login } } fragment work on SearchResultItem { ... on Issue { number title updatedAt state author { login } authorAssociation repository { nameWithOwner } labels(first: 20) { nodes { name } } milestone { title } projectItems(first: 5, includeArchived: false) { nodes { project { title } fieldValueByName(name: \"Status\") { ... on ProjectV2ItemFieldSingleSelectValue { name } } } } } ... on PullRequest { number title updatedAt state isDraft isCrossRepository reviewDecision author { login } authorAssociation repository { nameWithOwner } labels(first: 20) { nodes { name } } milestone { title } projectItems(first: 5, includeArchived: false) { nodes { project { title } fieldValueByName(name: \"Status\") { ... on ProjectV2ItemFieldSingleSelectValue { name } } } } commits(last: 1) { nodes { commit { oid statusCheckRollup { state contexts(first: 50) { nodes { __typename ... on CheckRun { name status conclusion detailsUrl } ... on StatusContext { context state targetUrl } } } } } } } } }",
+      "-f",
+      "assigned=is:issue is:open assignee:@me archived:false sort:updated-desc",
+      "-f",
+      "reviews=is:pr is:open review-requested:@me archived:false sort:updated-desc",
+      "-f",
+      "mine=is:pr is:open author:@me archived:false sort:updated-desc"
+    ],
+    "cwd": "<CRATE>",
+    "env": [
+      "GH_NO_UPDATE_NOTIFIER",
+      "GH_PROMPT_DISABLED",
+      "GH_SPINNER_DISABLED",
+      "GIT_TERMINAL_PROMPT",
+      "HOME",
+      "NO_COLOR",
+      "OBID_BASE_CHECK",
+      "OBID_GITHUB_REFRESH_SECONDS",
+      "OBID_LOAD",
+      "OBID_LOG",
+      "OBID_MEMORY_AVAILABLE",
+      "OBID_PRESTART",
+      "OBID_RECHECK_MS",
+      "OBID_SECURITY_BIN",
+      "OBID_USAGE_READS",
+      "PATH",
+      "TMPDIR"
+    ],
+    "files": {},
+    "stdin": ""
+  }
+]

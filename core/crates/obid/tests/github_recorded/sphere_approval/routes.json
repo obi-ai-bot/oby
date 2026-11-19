@@ -1,0 +1,22 @@
+[
+ {
+  "args": "auth status *",
+  "stdout": "{\"hosts\":{\"github.com\":[{\"state\":\"success\",\"active\":true,\"host\":\"github.com\",\"login\":\"o-owner\",\"tokenSource\":\"keyring\"}]}}"
+ },
+ {
+  "args": "api user --jq .login",
+  "stdout": "o-owner"
+ },
+ {
+  "args": "pr view 12 -R obi-e2e/fixture-app --json state,headRefOid,baseRefName,url",
+  "stdoutFile": "view.json"
+ },
+ {
+  "args": "api repos/obi-e2e/fixture-app --jq .permissions.push",
+  "stdout": "true"
+ },
+ {
+  "args": "api -X POST repos/obi-e2e/fixture-app/pulls/12/reviews *",
+  "stdout": "{\"id\":1,\"state\":\"APPROVED\",\"html_url\":\"https://github.com/obi-e2e/fixture-app/pull/12#pullrequestreview-1\"}"
+ }
+]
