@@ -123,3 +123,48 @@ describe('SPHERE-16', () => {
     expect(host.textContent).not.toContain('Leave');
   });
 });
+
+// docs/contracts/sphere-app.md, SPHEREAPP-14: an admin takes this Oby out, and the side panel's Obysphere
+// says so where its members were; `@` offers none of them any more
+describe('SPHEREAPP-14', () => {
+  // main's bridge: joined to demo with dana, until obid says revoked with `why`
+  function revocable() {
+    let membership: object = { state: 'joined', url: 'https://demo.example', sphere: 'demo', owner: 'owner-a', obiId: 'obi-1' };
+    let told: (e: { sphere: string; name: string }) => void = () => {};
+    const call = vi.fn(async (_method: string, path: string) => {
+      if (path === '/v1/obid/sphere') return { status: 200, text: JSON.stringify(membership) };
+      if (path === '/v1/obid/sphere/members') return { status: 200, text: JSON.stringify([{ obi: 'obi-dana', owner: 'dana', accepts: ['question'], active: true }]) };
+      return { status: 404, text: '{"error":"Not found."}' };
+    });
+    const app = { obid: { call }, onSphere: (l: typeof told) => { told = l; return () => {}; }, sphereLeave: vi.fn() };
+    // obid revoked, and the app reads the membership again (its minute's read, or onSphere)
+    const revoke = async (why: string | null) => {
+      membership = { state: 'revoked', url: 'https://demo.example', sphere: 'demo', owner: 'owner-a', obiId: 'obi-1', revokedAt: '2026-11-19T12:00:00Z', revokedReason: why };
+      await act(async () => { told({ sphere: 'demo', name: 'demo' }); });
+    };
+    return { app, revoke };
+  }
+
+  it('sphereapp_14_the_side_panel_says_its_admin_took_your_oby_out_and_at_offers_none_of_its_members', async () => {
+    const r = revocable();
+    await show('', r.app);
+    await open('demo');
+    const { askableNow } = await import('../askable');
+    await act(async () => { await vi.waitFor(() => expect(button('Chat with dana’s Oby')).toBeDefined()); });
+    expect(askableNow().map((a) => a.name)).toEqual(['dana']);
+    await r.revoke('removed');
+    await act(async () => { await vi.waitFor(() => expect(host.querySelector('[role="status"]')?.textContent).toBe('demo’s admin took your Oby out.')); });
+    expect(host.textContent).not.toContain('Just you so far');
+    expect(button('Chat with dana’s Oby')).toBeUndefined();
+    expect(askableNow()).toEqual([]);
+  });
+
+  it('sphereapp_14: a code this app doesn’t know says only that it’s out, never the code', async () => {
+    const r = revocable();
+    await show('', r.app);
+    await open('demo');
+    await r.revoke('some_new_code');
+    await act(async () => { await vi.waitFor(() => expect(host.querySelector('[role="status"]')?.textContent).toBe('Your Oby isn’t in demo any more.')); });
+    expect(host.textContent).not.toContain('some_new_code');
+  });
+});

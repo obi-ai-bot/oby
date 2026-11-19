@@ -1856,7 +1856,8 @@
             "SPHEREAPP-10": "Electron Obysphere UI.",
             "SPHEREAPP-11": "Electron Obysphere UI.",
             "SPHEREAPP-12": "Electron Obysphere UI.",
-            "SPHEREAPP-13": "Electron Obysphere UI."
+            "SPHEREAPP-13": "Electron Obysphere UI.",
+            "SPHEREAPP-14": "Electron Obysphere UI: the side panel's revoked line (sphereMenu.test.tsx)."
           }
         },
         "test-rig.md": {

@@ -14,7 +14,7 @@ import { ConfirmModal } from './SphereSettings';
 import InviteModal from './InviteModal';
 import CreateSphereModal from './CreateSphereModal';
 import SphereTile from './SphereTile';
-import { CAN_CREATE, ME, SAMPLE, cancelInvite, invite, memberCount, urlOf, useSpheres, type Sphere } from './spheres';
+import { CAN_CREATE, ME, SAMPLE, cancelInvite, invite, memberCount, revokedLine, urlOf, useSpheres, type Sphere } from './spheres';
 import TaskMenu from './TaskMenu';
 import ConvoMenu, { DeleteChatWindow } from './ConvoMenu';
 import { latestTask, rowMark } from './chatState';
@@ -866,7 +866,10 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
             {/* Members, then Invited (who hasn't joined yet: once they do, they're
                 in Members), each folding as Home's groups do */}
             <SphereGroup id={`members:${sphere.id}`} label="Members" folded={folded} onToggle={toggleGroup}>
-            {!sphere.members.length && <p className="sidebar-empty">Just you so far</p>}
+            {/* taken out by its admin: said where its members were, not "Just you so far" (SPHEREAPP-14) */}
+            {sphere.revoked
+              ? <p className="sidebar-empty" role="status">{revokedLine(sphere)}</p>
+              : !sphere.members.length && <p className="sidebar-empty">Just you so far</p>}
             {memberRows(sphere)}
             </SphereGroup>
             {sphere.invited.length > 0 && (
