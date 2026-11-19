@@ -1,6 +1,7 @@
 //! Reading each account's usage and models (USAGE-8), and metering the machine's memory and each
-//! running job's processes (`peakRss`), which builds are sized by. It keeps what it read; it
-//! starts, stops and publishes no job.
+//! running job's processes (`peakRss`), which builds are sized by, and on the same tick what its
+//! agent's processes listen on (crate::jobs::servers). It keeps what it read; it starts, stops and
+//! publishes no job.
 
 use super::*;
 
@@ -245,19 +246,19 @@ impl Jobs {
                 })
                 .collect()
         };
-        let Ok((machine, rss)) = tokio::task::spawn_blocking(move || {
+        let Ok((machine, rss, servers)) = tokio::task::spawn_blocking(move || {
             let table = crate::meter::processes();
             let tree = |folder: &Path, checks| {
                 crate::meter::tree_rss(&table, &crate::meter::roots_in(folder, checks))
             };
             let rss: Vec<(String, u64, u64)> = folders
-                .into_iter()
+                .iter()
                 .map(|(id, folder)| {
-                    let (agent, check) = (tree(&folder, false), tree(&folder, true));
-                    (id, agent, check)
+                    let (agent, check) = (tree(folder, false), tree(folder, true));
+                    (id.clone(), agent, check)
                 })
                 .collect();
-            (crate::meter::machine(), rss)
+            (crate::meter::machine(), rss, listening(&table, folders))
         })
         .await
         else {
@@ -265,6 +266,9 @@ impl Jobs {
         };
         for memory in self.record(machine, rss) {
             self.keep_peaks(&memory);
+        }
+        if let Some(servers) = servers {
+            self.record_servers(servers);
         }
     }
 
@@ -342,6 +346,7 @@ impl Jobs {
     /// A job's worker ended and gave its slot back: the most its processes held at once is kept
     /// with it (`peakRss`), and it's no longer measured.
     pub(super) fn metered(&self, id: &str) {
+        self.servers_ended(id);
         self.measured().granted.remove(id);
         let Some(memory) = self.measured().jobs.remove(id) else {
             return;
@@ -387,6 +392,32 @@ impl Jobs {
         self.measured().machine = Some((std::time::Instant::now(), machine));
         Some(machine)
     }
+}
+
+/// What each job's agent's processes listen on (crate::jobs::servers): one read for every running
+/// job's agent together, of their own processes alone, or `None` when it couldn't be read.
+fn listening(
+    table: &[crate::meter::Process],
+    folders: Vec<(String, PathBuf)>,
+) -> Option<Vec<(String, Vec<crate::listening::Listening>)>> {
+    let trees: Vec<(String, Vec<u32>)> = folders
+        .into_iter()
+        .map(|(id, folder)| {
+            let roots = crate::meter::roots_in(&folder, false);
+            (id, crate::meter::tree_pids(table, &roots))
+        })
+        .collect();
+    let pids: Vec<u32> = trees.iter().flat_map(|(_, pids)| pids.iter().copied()).collect();
+    let found = crate::listening::listening(&pids)?;
+    Some(
+        trees
+            .into_iter()
+            .map(|(id, pids)| {
+                let own = found.iter().filter(|l| pids.contains(&l.pid)).cloned();
+                (id, own.collect())
+            })
+            .collect(),
+    )
 }
 
 /// How often at most each account's usage is asked of its tool ([`Jobs::want_usage`]): every 10

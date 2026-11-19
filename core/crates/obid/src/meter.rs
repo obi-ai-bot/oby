@@ -124,8 +124,18 @@ pub fn known_tree_cpu(table: &[Process], roots: &[u32]) -> Option<u64> {
 }
 
 fn tree_sum(table: &[Process], roots: &[u32], value: impl Fn(&Process) -> u64) -> u64 {
+    tree(table, roots).into_iter().map(value).sum()
+}
+
+/// The processes of `roots`' trees, as [`tree_rss`] counts them, each once: the ids a job's agent
+/// owns, and none of another job's or the person's other processes (TASKSERVERS-4).
+pub fn tree_pids(table: &[Process], roots: &[u32]) -> Vec<u32> {
+    tree(table, roots).into_iter().map(|p| p.pid).collect()
+}
+
+fn tree<'a>(table: &'a [Process], roots: &[u32]) -> Vec<&'a Process> {
     if roots.is_empty() {
-        return 0;
+        return Vec::new();
     }
     let mut children: HashMap<u32, Vec<&Process>> = HashMap::new();
     for process in table {
@@ -136,15 +146,15 @@ fn tree_sum(table: &[Process], roots: &[u32], value: impl Fn(&Process) -> u64) -
         .iter()
         .filter(|p| roots.contains(&p.pid) || roots.contains(&p.pgid))
         .collect();
-    let mut total = 0;
+    let mut found = Vec::new();
     while let Some(process) = stack.pop() {
         if !seen.insert(process.pid) {
             continue;
         }
-        total += value(process);
+        found.push(process);
         stack.extend(children.get(&process.pid).into_iter().flatten());
     }
-    total
+    found
 }
 
 /// The machine's memory now, or `None` when it can't be read. `OBID_MEMORY_AVAILABLE` (bytes) says

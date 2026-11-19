@@ -6,6 +6,7 @@ import { bridge, startObid, type Trusted } from './obid';
 import { living } from './live';
 import { confirming, ownersWords } from './device';
 import { worktrees } from './worktree';
+import { servers } from './servers';
 import { input, space, picked } from './words';
 import { notifying, windowLeft, windowSeen } from './notify';
 import { updating } from './updates';
@@ -87,6 +88,8 @@ const trusted: Trusted = (e) => !!win && e.sender === win.webContents && e.sende
 bridge(trusted, ownersWords);
 confirming(trusted);
 worktrees(trusted);
+// Open on a task's local server (servers.ts, TASKSERVERS-8)
+servers(trusted);
 // the Help menu's items, for ⌘K's Actions too (help.ts)
 helping(trusted);
 const channels = ipc(trusted);

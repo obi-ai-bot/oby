@@ -422,7 +422,7 @@ mod tests {
                 unfollowed, follow_up_at_work, activity, context, doing, owner_spoke, earlier,
                 made_branch, repo_on_github,
                 start_from, onto, supervised, revision, diffs, checks, scan, stage_times, estimate,
-                usage, peak_rss, agent_peak_rss, check_peak_rss, build_freed, worktree_freed,
+                usage, peak_rss, agent_peak_rss, check_peak_rss, servers, build_freed, worktree_freed,
                 usage_seen, context_window,
                 window_share, ran_secs, budget_from, changes, moves, routed, named, routine, unattended,
                 untrusted, own_lane, ran_unproxied, unsigned, client_request_id,

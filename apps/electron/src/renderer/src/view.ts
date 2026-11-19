@@ -135,6 +135,7 @@ export type Job = {
   nothingDone?: boolean;  // obid's: it ended with nothing done (TASKS-12)
   routed?: string;     // obid's: why it runs on another agent than your words named (ACCOUNTS-31)
   worktree?: boolean;  // obid's: it has a worktree on disk: Changes and Open in (CHANGES-4, 6)
+  servers?: number[];  // obid's: the ports its agent's local servers listen on now (TASKSERVERS-7)
   log?: LogLine[];
   page?: Page;         // the job page's extra data, once obid serves it
   conversation?: string;  // obid's: the conversation whose words started it

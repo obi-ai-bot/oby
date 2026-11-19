@@ -348,6 +348,16 @@ pub struct Unjudged {
     pub why: String,
 }
 
+/// A local server a running job's agent started (docs/contracts/task-servers.md, TASKSERVERS-1): a
+/// TCP port its processes listen on that this Mac reaches as `localhost`, the name of the process
+/// that listens, and when obid first saw it, in seconds since the epoch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Server {
+    pub port: u16,
+    pub process: String,
+    pub first_seen: i64,
+}
+
 /// One of a job's rounds that moved its branch (docs/contracts/task-changes.md, CHANGES-1): the
 /// commit its worktree's HEAD was at as an agent's turn started, the one it was at as the turn
 /// ended, and when the turn started, in seconds since the epoch.
@@ -773,6 +783,10 @@ pub struct Job {
     pub agent_peak_rss: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check_peak_rss: Option<u64>,
+    /// The local servers its agent's processes listen on now, by port (crate::jobs::servers,
+    /// docs/contracts/task-servers.md): only while its worker runs, so never in its file.
+    #[serde(skip)]
+    pub servers: Vec<Server>,
     /// What deleting its worktree's build outputs freed once it was done with, and when
     /// (crate::jobs, `free_build_outputs`); none before that.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1933,6 +1947,11 @@ impl Job {
         }
         if let Some(peak) = self.check_peak_rss {
             value["checkPeakRss"] = json!(peak);
+        }
+        if !self.servers.is_empty() {
+            value["servers"] = json!(self.servers.iter().map(|s| json!({"port": s.port,
+                "process": s.process, "firstSeen": obi_protocol::time::format(s.first_seen)}))
+                .collect::<Vec<_>>());
         }
         if let Some(freed) = &self.build_freed {
             value["buildFreed"] = json!({"bytes": freed.bytes, "at": date(Some(freed.at))});
