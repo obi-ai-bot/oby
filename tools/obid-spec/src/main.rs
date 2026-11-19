@@ -118,13 +118,15 @@ async fn run_main() -> Result<i32> {
             Ok(0)
         }
         "nodes" => {
-            for (n, d) in NODES {
+            for (n, d) in NODES.iter().copied().chain(obid_spec::lab::nodes()) {
                 println!("runtime.rust:{n:<16} {d}");
             }
             Ok(0)
         }
         "coverage" => {
-            let workflows = workflow::load_all(&workflows_dir(), &names)?;
+            // The lab proves features not yet in obid: no contract lists its scenarios yet.
+            let mut workflows = workflow::load_all(&workflows_dir(), &names)?;
+            workflows.retain(|w| !obid_spec::lab::is_lab(&w.area));
             let report = coverage::report(&root(), &scope()?, &workflows, a.only.as_deref())?;
             if a.gate {
                 // The check's gate (OBIDSPEC-11): only what must hold now is listed and judged.
@@ -237,6 +239,13 @@ struct WorkflowResult {
 async fn run(a: Args) -> Result<i32> {
     let names = node_names();
     let mut workflows = workflow::load_all(&workflows_dir(), &names)?;
+    // The lab's workflows run only when asked for by their tag or area (src/lab/mod.rs): the merge
+    // queue's, a pull request's and the nightly run never make a machine.
+    let wants_lab = a.tag.as_deref() == Some(obid_spec::lab::TAG)
+        || a.only.as_deref().is_some_and(obid_spec::lab::is_lab);
+    if !wants_lab {
+        workflows.retain(|w| !obid_spec::lab::is_lab(&w.area));
+    }
     if let Some(only) = &a.only {
         workflows.retain(|w| &w.area == only);
     }

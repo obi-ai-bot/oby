@@ -72,7 +72,8 @@ pub fn parse(text: &str, file: &Path, area: &str, nodes: &[&str]) -> Result<Work
         None if doc["trigger"].get("manual").is_some() => None,
         None => bail!("its trigger is neither http nor manual"),
     };
-    if !MANUAL_AREAS.contains(&area) && route.is_none() {
+    let lab = crate::lab::is_lab(area);
+    if !MANUAL_AREAS.contains(&area) && !lab && route.is_none() {
         bail!("a route's workflow has an http trigger");
     }
     let tags = match &doc["tags"] {
@@ -87,6 +88,25 @@ pub fn parse(text: &str, file: &Path, area: &str, nodes: &[&str]) -> Result<Work
             .collect::<Result<Vec<_>>>()?,
         _ => bail!("tags isn't a list"),
     };
+    // The lab's workflows (src/lab/mod.rs) run only when asked for, so each says so with its tag,
+    // and none is ever part of the launch's set; a workflow outside the lab never carries it.
+    let tagged = |t: &str| tags.iter().any(|x| x == t);
+    if lab {
+        anyhow::ensure!(route.is_none(), "a lab workflow's trigger is manual");
+        anyhow::ensure!(
+            tagged(crate::lab::TAG),
+            "a lab workflow carries the `lab` tag"
+        );
+        anyhow::ensure!(
+            !tagged("launch"),
+            "a lab workflow is never in the launch's set"
+        );
+    } else {
+        anyhow::ensure!(
+            !tagged(crate::lab::TAG),
+            "only a workflow under workflows/lab/ carries the `lab` tag"
+        );
+    }
     let list = doc["steps"]
         .as_array()
         .filter(|s| !s.is_empty())
@@ -165,6 +185,22 @@ pub fn load_all(dir: &Path, nodes: &[&str]) -> Result<Vec<Workflow>> {
                 let f = f?.path();
                 if f.extension().is_some_and(|e| e == "json") {
                     files.push((f, area.to_string()));
+                }
+            }
+        }
+    }
+    // workflows/lab/<feature>/*.json, the area `lab-<feature>` (src/lab/mod.rs)
+    let lab = dir.join("lab");
+    if lab.is_dir() {
+        for feature in std::fs::read_dir(&lab)? {
+            let feature = feature?.path();
+            if feature.is_dir() {
+                for f in std::fs::read_dir(&feature)? {
+                    let f = f?.path();
+                    if f.extension().is_some_and(|e| e == "json") {
+                        let name = feature.file_name().unwrap().to_string_lossy().to_string();
+                        files.push((f, format!("{}{name}", crate::lab::AREA_PREFIX)));
+                    }
                 }
             }
         }
@@ -299,5 +335,58 @@ mod tests {
         .unwrap();
         assert_eq!(v, json!({"whole": {"k": 1}, "text": "p7-x", "n": 3}));
         assert!(resolve(&json!("${state.missing}"), &ctx).is_err());
+    }
+
+    #[test]
+    fn obidspec_16_a_lab_workflow_is_manual_tagged_lab_and_never_launch_and_only_the_lab_carries_the_tag(
+    ) {
+        let wf = |trigger: &str, tags: &str| {
+            format!(
+                r#"{{"schemaVersion":"2","name":"x","trigger":{trigger},"tags":{tags},"steps":[{{"id":"a","use":"call"}}]}}"#
+            )
+        };
+        let manual = r#"{"manual":{}}"#;
+        let http = r#"{"http":{"method":"get","path":"/v1/x"}}"#;
+        let ok = parse(
+            &wf(manual, r#"["lab"]"#),
+            Path::new("x.json"),
+            "lab-remote",
+            &NODES,
+        )
+        .unwrap();
+        assert_eq!(ok.area, "lab-remote");
+        for (text, area, why) in [
+            (wf(manual, "[]"), "lab-remote", "carries the `lab` tag"),
+            (
+                wf(manual, r#"["lab","launch"]"#),
+                "lab-remote",
+                "never in the launch",
+            ),
+            (wf(http, r#"["lab"]"#), "lab-remote", "trigger is manual"),
+            (
+                wf(manual, r#"["lab"]"#),
+                "app",
+                "only a workflow under workflows/lab/",
+            ),
+        ] {
+            let e = parse(&text, Path::new("x.json"), area, &NODES).unwrap_err();
+            assert!(format!("{e:#}").contains(why), "{area} {text}: {e:#}");
+        }
+    }
+
+    #[test]
+    fn obidspec_16_workflows_under_lab_feature_load_as_the_area_lab_feature() {
+        let dir = std::env::temp_dir().join(format!("obid-spec-lab-load-{}", std::process::id()));
+        let feature = dir.join("lab/remote");
+        std::fs::create_dir_all(&feature).unwrap();
+        std::fs::write(
+            feature.join("a.json"),
+            r#"{"schemaVersion":"2","name":"a","trigger":{"manual":{}},"tags":["lab"],"steps":[{"id":"a","use":"call"}]}"#,
+        )
+        .unwrap();
+        let all = load_all(&dir, &NODES).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].area, "lab-remote");
     }
 }

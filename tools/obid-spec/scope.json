@@ -2058,7 +2058,8 @@
             "OBIDSPEC-12": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)",
             "OBIDSPEC-13": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)",
             "OBIDSPEC-14": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)",
-            "OBIDSPEC-15": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)"
+            "OBIDSPEC-15": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)",
+            "OBIDSPEC-16": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)"
           }
         },
         "connector-pattern.md": {

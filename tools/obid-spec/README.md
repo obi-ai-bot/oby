@@ -43,6 +43,30 @@ only when it:
 
 Anything else waits. `obid-spec coverage`'s backlog of unproven scenarios stays a list, not work.
 
+The lab, below, is the exception the owner made on 2026-11-19: its own area, never in the launch's
+set, run only when asked for.
+
+## The lab: new features, proven here first
+
+The owner's decision of 2026-11-19: every feature after wave 3 (other computers, Linux lanes and
+Codex as T3 runs it, the browser and the desktop, the Obysphere around them) is built here first,
+as Rust nodes and workflows, and proven on real machines before any of it is ported into obid or the
+app; once ported, its workflows become its acceptance tests against obid (OBIDSPEC-16).
+
+- Workflows live in `workflows/lab/<feature>/` (the area `lab-<feature>`), with a manual trigger
+  and the `lab` tag, never `launch`.
+- `obid-spec run --tag lab` (or `--only lab-<feature>`) runs them; any other run leaves them out,
+  and `coverage` doesn't count them.
+- Nodes are `lab.<feature>.<verb>`, one file per feature in `src/lab/`, owned by the session
+  building it: `machine.rs` (the machines), `remote.rs`, `browser.rs`, `lanes.rs`, `sphere.rs`.
+- `lab.machine.up` makes an Ubuntu machine of the workflow's own with OrbStack, isolated (no folder
+  shared with the Mac) and with the user `oby`; the cleanup deletes every machine the workflow
+  made. Without OrbStack a lab step answers `skipped`.
+
+```bash
+tools/obid-spec/target/debug/obid-spec run --tag lab
+```
+
 ## How it runs
 
 The host, `obid-spec`, reads the workflows and judges each step. The nodes run in a second binary,
