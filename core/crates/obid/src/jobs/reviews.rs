@@ -107,6 +107,13 @@ impl Jobs {
     /// a slot is free. With no account to run it on, the job says why (`noReviewer`), and
     /// [`Jobs::settle_reviews`] starts it once one fits.
     pub(super) fn start_review(&self, id: &str) {
+        // One start at a time: its check (`review_due`, `reviewing` none) and its `reviewing` set
+        // below are one step, so the verdict's start of a second review and a settle pass's at the
+        // same moment make one review, not two (#2553).
+        static STARTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _starting = STARTING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some((author, head)) = self.get(id).and_then(|job| {
             let head = job.review_due()?.to_owned();
             Some((job, head))

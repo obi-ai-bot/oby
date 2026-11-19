@@ -3710,6 +3710,16 @@ fn merging_8_a_follow_up_on_the_branch_at_round_one_leaves_it_to_the_owner() {
 }
 
 /// The review job of `id`'s published work at `nth` (oldest first), once there is one.
+/// The review of job `id` whose `key` is `value` (its `account`, its `agent`), once there is one:
+/// what tells two reviews apart when their `created`, in whole seconds, can't (#2553).
+fn review_by(obid: &Obid, id: &str, key: &str, value: &str) -> Value {
+    within(
+        120,
+        &format!("the review of {id} with {key} {value}"),
+        || reviews_of(obid, id).into_iter().find(|r| r[key] == value),
+    )
+}
+
 fn review_of(obid: &Obid, id: &str, nth: usize) -> Value {
     within(120, &format!("review {nth} of {id}"), || {
         reviews_of(obid, id).get(nth).cloned()
@@ -3929,7 +3939,14 @@ fn recovery_15_a_second_review_with_no_verdict_tries_no_other_reviewer() {
         let items = review_items(&obid, &id);
         (items.len() == 1).then_some(items)
     });
-    assert_eq!(review_of(&obid, &id, 1)["account"], "other");
+    // Codex's review and the second, on the other Claude Code account: told apart by their
+    // accounts, never by `created`, whose whole seconds two reviews can share (#2553).
+    review_by(&obid, &id, "account", "other");
+    let mut accounts: Vec<String> = (reviews_of(&obid, &id).iter())
+        .map(|r| r["account"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    accounts.sort();
+    assert_eq!(accounts, ["codex", "other"], "{}", obid.log());
     follow_passes(&folder.0, 3);
     assert_eq!(reviews_of(&obid, &id).len(), 2, "{}", obid.log());
     let open = open_items(&obid, &id);
@@ -3949,7 +3966,11 @@ fn recovery_15_a_second_review_the_owner_stopped_stays_stopped() {
         json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: AGENTS.md HOLD REVIEW",
                "check": "test -f AGENTS.md", "account": "stub"}),
     );
-    let review = review_of(&obid, &id, 1)["id"].as_str().unwrap().to_owned();
+    // The second review is Claude Code's, after Codex's (#2553: never by order).
+    let review = review_by(&obid, &id, "agent", "claude")["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     within(120, "the second review runs", || {
         let job = call(&obid, "GET", &format!("/v1/jobs/{review}"), None).body;
         (job["status"] == "running").then_some(())
