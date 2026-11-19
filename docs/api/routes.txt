@@ -131,6 +131,7 @@ DELETE /v1/projects/{id}
 PATCH /v1/projects/{id}
 GET /v1/repos
 POST /v1/repos/check
+POST /v1/repos/setup
 GET /v1/routines
 POST /v1/routines
 DELETE /v1/routines/{id}

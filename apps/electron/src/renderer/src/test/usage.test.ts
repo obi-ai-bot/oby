@@ -53,4 +53,23 @@ describe('usage rows', () => {
     // signed out: what obid says of the login
     expect(weekWords(accountRow(account({ agent: 'cursor', signedIn: false, label: 'Sign in again' }), now))).toBe('Sign in again');
   });
+
+  it('USAGE-18: the bar’s window against an even pace, and what’s left of it, worked out from what obid says', async () => {
+    const { accountRow } = await load();
+    const { paceLine } = await import('../pace');
+    const at = (hours: number) => new Date(now + hours * 3_600_000).toISOString();
+    // a session 3 of its 5 hours gone (60%): 80% used is ahead, 58% on pace, 30% under
+    const session = (used: number) => accountRow(account({ fiveHour: used, fiveHourResets: at(2), sevenDay: 0.2, sevenDayResets: at(100) }), now);
+    expect(paceLine(session(0.8), now)).toBe('Ahead of pace · 2h 0m of the session left');
+    expect(paceLine(session(0.58), now)).toBe('On pace · 2h 0m of the session left');
+    expect(paceLine(session(0.3), now)).toBe('Under pace · 2h 0m of the session left');
+    // with no session showing, the week's: 3 of its 7 days left is 4/7 gone (57%)
+    const week = accountRow(account({ sevenDay: 0.9, sevenDayResets: at(72) }), now);
+    expect(week.session).toBeNull();
+    expect(paceLine(week, now)).toBe('Ahead of pace · 3d 0h of the week left');
+    // no window obid knows the length of: Cursor's plan, no figure, a window that ended
+    expect(paceLine(accountRow(account({ agent: 'cursor', sevenDay: 0.5, sevenDayResets: at(48) }), now), now)).toBeNull();
+    expect(paceLine(accountRow(account({}), now), now)).toBeNull();
+    expect(paceLine(accountRow(account({ sevenDay: 0.5, sevenDayResets: at(-1) }), now), now)).toBeNull();
+  });
 });

@@ -322,8 +322,22 @@ export type Status = {
 
 // obid only: "GET /v1/repos", the repositories a job may start in: the listed ones first, then
 // GitHub's (newest push first)
-// check: the one its jobs run (none: null); noCheck: the owner said No check (#1062)
-export type Repo = { repo: string; defaultBranch: string; listed: boolean; check?: string | null; noCheck?: boolean };
+// check: the one its jobs run (none: null); noCheck: the owner said No check (#1062); setup: the
+// command obid runs in a new job's worktree before its agent starts (PUBLISHING-23, SETUP-2; none: null)
+export type Repo = { repo: string; defaultBranch: string; listed: boolean; check?: string | null; noCheck?: boolean; setup?: string | null };
+
+// obid only: a routine (docs/api/routines.md), as GET /v1/routines lists it: what each run starts,
+// obid's words for when (`when`), its next run (null while paused, or on GitHub events: `on`), and
+// its latest run. Settings › Routines (ROUTINES-18 to 21) shows them.
+export type RoutineRun = {
+  scheduled: string; at: string; outcome: 'started' | 'skipped' | 'missed' | 'failed' | (string & {});
+  reason: string | null; job: string | null; catchUp: boolean; ended: string | null;
+};
+export type Routine = {
+  id: string; name: string; repo: string; kind: string; task: string; agent: string; account: string; mode: string | null;
+  schedule: unknown; on?: unknown; zone: string; when: string; enabled: boolean; created: string; createdBy: string;
+  conversation: string | null; nextRun: string | null; failuresInARow: number; graceMinutes?: number; lastRun: RoutineRun | null;
+};
 
 // obid only: "GET /v1/profiles" (docs/api/profiles.md), a local profile on this Mac: its name and
 // colour, the one obid made first (default), and whether something in it waits on the owner

@@ -78,7 +78,7 @@ At most 20 routines (the owner's `limits.routines`). Each keeps its last 50 runs
 
 **Through the gateway.** All of these are on obid's gateway allowlist, so a paired iPhone lists, pauses, resumes, runs and deletes routines.
 
-**In the apps.** Home has a Routines group (Sangam's design, `design/app`'s `tasks.ts`): its page lists each routine waiting for its next run as he draws it, `Starts Monday at 9:00 AM`, then the jobs its runs started (`routine` set), and a job's page says `From routine: Review open PRs`. Settings › Routines, on the Mac and the iPhone, lists every routine with `when`, its next run and its last outcome, a switch (`PATCH` `enabled`), Run now and Delete (with a confirmation). Settings › Routines isn't in Sangam's design: his has no screen to manage routines yet, so this one is ours until his comes.
+**In the apps.** Home has a Routines group (Sangam's design, `design/app`'s `tasks.ts`): its page lists each routine waiting for its next run as he draws it, `Starts Monday at 9:00 AM`, then the jobs its runs started (`routine` set), and a job's page says `From routine: Review open PRs`. Settings › Routines in the Mac's Electron app (docs/contracts/routines.md, ROUTINES-18 to 21) lists every routine with `when`, its repository, its next run (`Paused` while paused; `Runs when its event comes` on GitHub events) and how its last run went, with Pause or Resume (`PATCH` `enabled`), Run now (`POST …/run`, not on a routine on GitHub events) and Delete, which asks first in the page. It reads `GET /v1/routines` as it opens, after each change and every 30 seconds while open. Settings › Routines isn't in Sangam's design: his has no screen to manage routines yet, so this one is ours until his comes.
 
 ### obid only: check-ins (#1116)
 

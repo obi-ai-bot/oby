@@ -1,6 +1,6 @@
 import { BRANDS, type Brand } from './brands';
 import { everything, onObid } from './lean';
-import type { Helper, Profile, Project, RoomPost } from '../../shared/obid-wire';
+import type { Helper, Profile, Project, Repo, RoomPost, Routine } from '../../shared/obid-wire';
 import { agentOf, type Archived, type GitHubItem, type Job, type Message, type Peer, type PeerConvo, type Place, type Share, type Stage, type StageId, type StageState, type Turn } from './view';
 
 // Mock data until the app talks to Oby's engine. The shapes follow the Mac
@@ -613,6 +613,30 @@ export const MOCK_HELPERS: Helper[] = [
   helper('researcher', 'Researcher', '#c2b5fd', 'Look things up on the web and put the numbers side by side.', ['web'], '2026-10-09T10:00:00Z'),
   helper('release-notes', 'Release notes', '#ffb3c6', 'Draft the release notes from what merged since the last release.', ['github'], '2026-10-16T11:00:00Z'),
   helper('support', 'Support replies', '#9fd3f0', 'Draft replies to the support questions that came in.', ['github', 'web'], '2026-10-23T12:00:00Z'),
+];
+// The routines on the mock (Settings › Routines, ROUTINES-18 to 21), as GET /v1/routines lists
+// them: their times days from today at a time of day, so the words stay right
+const dayAt = (days: number, hour: number) => { const d = new Date(); d.setDate(d.getDate() + days); d.setHours(hour, 0, 0, 0); return d.toISOString(); };
+const routine = (r: Partial<Routine> & Pick<Routine, 'id' | 'name' | 'repo' | 'when'>): Routine => ({
+  kind: 'review', task: `${r.name}.`, agent: 'auto', account: 'auto', mode: null, schedule: { every: 'weekdays', at: '09:00' }, on: null,
+  zone: 'America/Sao_Paulo', enabled: true, created: '2026-11-01T12:00:00Z', createdBy: 'chat', conversation: null, nextRun: dayAt(1, 9),
+  failuresInARow: 0, lastRun: null, ...r,
+});
+export const MOCK_ROUTINES: Routine[] = [
+  routine({ id: 'a1b2c3d4', name: 'Review open PRs', repo: 'obi-ai-bot/obi', when: 'Weekdays at 9:00',
+    lastRun: { scheduled: dayAt(0, 9), at: dayAt(0, 9), outcome: 'started', reason: null, job: 'j1', catchUp: false, ended: 'done' } }),
+  routine({ id: 'b2c3d4e5', name: 'Nightly dependency check', repo: 'deskree-inc/oby', kind: 'investigate', when: 'Every day at 2:00', nextRun: dayAt(1, 2),
+    lastRun: { scheduled: dayAt(0, 2), at: dayAt(0, 2), outcome: 'skipped', reason: 'The previous run was still going.', job: null, catchUp: false, ended: null } }),
+  routine({ id: 'c3d4e5f6', name: 'Release notes', repo: 'deskree-inc/oby', kind: 'build', when: 'Fridays at 16:00', enabled: false, nextRun: null, failuresInARow: 3,
+    lastRun: { scheduled: dayAt(-4, 16), at: dayAt(-4, 16), outcome: 'started', reason: null, job: 'j3', catchUp: false, ended: 'failed' } }),
+  routine({ id: 'd4e5f6a7', name: 'Review requests', repo: 'obi-ai-bot/obi', when: 'When your review is requested in obi-ai-bot/obi', schedule: null,
+    on: { github: { repo: 'obi-ai-bot/obi', event: 'reviewRequested', label: null } }, nextRun: null }),
+];
+// The repositories on the mock (Settings › Repositories, SETUP-4), as GET /v1/repos lists them
+export const MOCK_REPOS: Repo[] = [
+  { repo: 'deskree-inc/oby', defaultBranch: 'dev', listed: true, check: 'scripts/oby-check.sh', setup: 'npm ci --prefix apps/electron' },
+  { repo: 'obi-ai-bot/obi', defaultBranch: 'main', listed: true, check: null, setup: null },
+  { repo: 'deskree-inc/tetrix-ee', defaultBranch: 'main', listed: false, check: null, setup: null },
 ];
 // the mock's own, not obid's: when an agent runs by itself, beside its name in the bar (screen 09)
 export const MOCK_SCHEDULE: Record<string, string> = { inbox: 'Every weekday at 9:00 AM' };

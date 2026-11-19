@@ -1,0 +1,155 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/repos/setup",
+  "version": "1.0.0",
+  "description": "A repository's setup from Settings (SETUP-2): 422 for a body, repository or command obid refuses; a new setup asks the owner with a set_setup Confirm saying it runs on this Mac as their user, keeping nothing until it's confirmed.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/repos/setup"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/repos/setup",
+        "body": {
+          "repo": "obi-e2e/fixture-app",
+          "setup": "x"
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "not-the-body-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/repos/setup",
+        "raw": "{",
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "unknown-repo-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/repos/setup",
+        "body": {
+          "repo": "someone/else",
+          "setup": "npm ci"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "two-lines-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/repos/setup",
+        "body": {
+          "repo": "obi-e2e/fixture-app",
+          "setup": "npm ci\nrm -rf ~"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "asks-first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/repos/setup",
+        "body": {
+          "repo": "obi-e2e/fixture-app",
+          "setup": " npm ci "
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "repo": {
+              "repo": "obi-e2e/fixture-app",
+              "setup": null
+            },
+            "ask": {
+              "kind": "confirm",
+              "job": "",
+              "confirm": {
+                "action": "set_setup",
+                "target": "obi-e2e/fixture-app",
+                "payload": {
+                  "setup": "npm ci",
+                  "was": null
+                }
+              },
+              "title": {
+                "$contains": "npm ci"
+              },
+              "text": {
+                "$contains": "on this Mac, as your user"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SETUP-2"
+        ]
+      }
+    },
+    {
+      "id": "unchanged-until-confirmed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/repos",
+        "expect": {
+          "status": 200,
+          "body": {
+            "repos": [
+              {
+                "repo": "obi-e2e/fixture-app",
+                "setup": null
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SETUP-2"
+        ]
+      }
+    }
+  ]
+}

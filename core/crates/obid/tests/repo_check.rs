@@ -164,7 +164,7 @@ fn a_repository_with_no_check_is_asked_once_and_the_answer_kept() {
     assert_eq!(file()["repos"][0]["check"], "node --test");
     assert_eq!(
         listed(APP),
-        json!({"repo": APP, "defaultBranch": "main", "listed": true, "check": "node --test", "noCheck": false})
+        json!({"repo": APP, "defaultBranch": "main", "listed": true, "check": "node --test", "noCheck": false, "setup": null})
     );
     let later = post(&obid, APP);
     let job = ended(&obid, &later);

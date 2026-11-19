@@ -138,6 +138,10 @@ pub mod action {
     /// Make a check Oby guessed, or the owner typed, the check of a repository that has none
     /// (#1062, [`super::check_item`]): `target` the repository, `payload` `{"check": "<command>"}`.
     pub const SET_CHECK: &str = "set_check";
+    /// Make the owner's command a repository's setup, or take it out (SETUP-2,
+    /// [`super::setup_item`]): `target` the repository, `payload` `{"setup": "<command>" | null,
+    /// "was": <the setup it had> | null}`.
+    pub const SET_SETUP: &str = "set_setup";
     /// Merge a pull request the owner named in a conversation (`oby_merge`, TASKCONV-7): `target`
     /// `owner/name#<number>`, `payload` `{"merge": {"repo", "pr", "method"}, "base", "head",
     /// "conversation"}`: the base and head the card showed, read again before it merges.
@@ -417,6 +421,54 @@ pub fn check_item(
                 Some(check) => json!({"check": check, "was": current}),
                 None => json!({"check": null, "was": current}),
             },
+        },
+        now,
+    );
+    item.details = Some(details);
+    item
+}
+
+/// The Confirm for a repository's setup the owner typed in Settings (SETUP-2): `setup` its new one
+/// (none: take `current` out). Words proposed, Sangam's to change.
+pub fn setup_item(repo: &str, setup: Option<&str>, current: Option<&str>, now: i64) -> Item {
+    let (title, text, details) = match setup {
+        Some(setup) => (
+            format!("Run `{setup}` in each new task's worktree in {repo}?"),
+            format!(
+                "Every task there that starts after your answer runs it on this Mac, as your user, in its worktree, before its agent starts.{}",
+                match current {
+                    Some(current) => format!(" Cancel keeps `{current}`."),
+                    None => " Cancel keeps none.".to_owned(),
+                }
+            ),
+            vec![
+                format!("Every later task in {repo} runs `{setup}` before its agent starts."),
+                match current {
+                    Some(current) => format!("{repo} keeps `{current}`."),
+                    None => format!("{repo} keeps no setup."),
+                },
+            ],
+        ),
+        None => {
+            let current = current.unwrap_or_default();
+            (
+                format!("Take `{current}` out as {repo}'s setup?"),
+                format!("Tasks there then start with no setup. Cancel keeps `{current}`."),
+                vec![
+                    format!("{repo} has no setup."),
+                    format!("{repo} keeps `{current}`."),
+                ],
+            )
+        }
+    };
+    let mut item = confirm_item(
+        "",
+        title,
+        text,
+        Confirmed {
+            action: action::SET_SETUP.into(),
+            target: repo.into(),
+            payload: json!({"setup": setup, "was": current}),
         },
         now,
     );

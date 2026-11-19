@@ -158,6 +158,10 @@ SettingsView.tsx    Settings' pages (as Wellington's Mac app has them, plus
 Connectors.tsx      Settings › Connectors: on obid, GitHub (its gh) and Tetrix
                     as obid has them, with their sign-ins, Disconnect and
                     Tetrix's server; otherwise Sangam's demo list
+RoutinesSettings.tsx Settings › Routines: obid's routines, Pause or Resume,
+                    Run now and Delete (asked in the page); routines.ts its words
+RepositoriesSettings.tsx Settings › Repositories: each repository's Setup
+                    command, kept on the owner's signed Confirm (SETUP-4)
 SphereSettings.tsx  an Obysphere's settings: avatar, name, URL, members,
                     deleting or leaving it
 KnowledgeView.tsx   an Obysphere's knowledge sources (Tetrix, MCP servers);

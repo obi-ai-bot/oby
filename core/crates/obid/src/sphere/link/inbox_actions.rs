@@ -587,6 +587,30 @@ impl Link {
                 }
                 Ok(())
             }
+            // A repository's setup the owner typed in Settings (SETUP-2), kept on their signed
+            // Confirm: the command made its setup, or with none the one it had taken out. Refused
+            // when it changed since the ask, so a Confirm never keeps what it didn't show.
+            inbox::action::SET_SETUP => {
+                let payload = &confirmed.payload;
+                let setup = match &payload["setup"] {
+                    Value::String(setup) if crate::brain::plan::is_check(setup) => {
+                        Some(setup.as_str())
+                    }
+                    Value::Null => None,
+                    _ => return Err(api(StatusCode::CONFLICT, "That setup's plan was lost.")),
+                };
+                let now = self.config.repos.find(target).and_then(|r| r.setup);
+                if now.as_deref() != payload["was"].as_str() {
+                    return Err(api(
+                        StatusCode::CONFLICT,
+                        format!("{target}'s setup changed since Oby asked: ask again."),
+                    ));
+                }
+                self.config
+                    .repos
+                    .set_setup(target, setup)
+                    .map_err(|why| api(StatusCode::CONFLICT, why))
+            }
             inbox::action::MERGE_PR => {
                 let asked: crate::brain::owners_word::Merge =
                     serde_json::from_value(confirmed.payload["merge"].clone())

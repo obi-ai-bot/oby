@@ -132,7 +132,7 @@ impl Repos {
         // Outside the lists' lock: find, get and names never wait on the disk.
         let _writing = self.0.writing.lock().unwrap_or_else(|e| e.into_inner());
         match file {
-            Some(file) => add_to_file(&file, repo, None, None),
+            Some(file) => add_to_file(&file, repo, None, None, None),
             None => Ok(()),
         }
     }
@@ -159,7 +159,32 @@ impl Repos {
         };
         let _writing = self.0.writing.lock().unwrap_or_else(|e| e.into_inner());
         match file {
-            Some(file) => add_to_file(&file, &repo, Some(check), None),
+            Some(file) => add_to_file(&file, &repo, Some(check), None, None),
+            None => Ok(()),
+        }
+    }
+
+    /// Makes `setup` the setup of `name` (a listed repository, or one of GitHub's, listed now), or
+    /// takes its setup out with none: the owner's Confirm from Settings (SETUP-2), kept in the
+    /// configuration file's entry, so jobs there that start after it run it (PUBLISHING-23).
+    pub fn set_setup(&self, name: &str, setup: Option<&str>) -> Result<(), String> {
+        let repo = self
+            .find(name)
+            .ok_or_else(|| format!("{name} isn't a repository obid knows."))?;
+        let file = {
+            let mut state = self.write();
+            match state.listed.iter_mut().find(|r| same(&r.repo, name)) {
+                Some(listed) => listed.setup = setup.map(str::to_owned),
+                None => state.listed.push(Repo {
+                    setup: setup.map(str::to_owned),
+                    ..repo.clone()
+                }),
+            }
+            state.file.clone()
+        };
+        let _writing = self.0.writing.lock().unwrap_or_else(|e| e.into_inner());
+        match file {
+            Some(file) => add_to_file(&file, &repo, None, None, Some(setup)),
             None => Ok(()),
         }
     }
@@ -238,7 +263,7 @@ impl Repos {
         let Some(file) = file else { return };
         let _writing = self.0.writing.lock().unwrap_or_else(|e| e.into_inner());
         for repo in renamed {
-            if let Err(e) = add_to_file(&file, &repo, None, Some(&repo.default_branch)) {
+            if let Err(e) = add_to_file(&file, &repo, None, Some(&repo.default_branch), None) {
                 tracing::warn!("{e}");
             }
         }
@@ -296,8 +321,9 @@ impl PartialEq for Repos {
 
 impl Eq for Repos {}
 
-/// `repo` added to the `repos` of the configuration at `file`, with `check` as its check when
-/// given (`Some(None)` takes it out) and `branch` as its `defaultBranch` when given, written through
+/// `repo` added to the `repos` of the configuration at `file`, with `check` as its check and
+/// `setup` as its setup when given (`Some(None)` takes either out) and `branch` as its
+/// `defaultBranch` when given, written through
 /// a temporary file (0600). ponytail: rewritten as a JSON value, so the file's keys come out
 /// sorted; a text edit if that ever matters to someone.
 fn add_to_file(
@@ -305,6 +331,7 @@ fn add_to_file(
     repo: &Repo,
     check: Option<Option<&str>>,
     branch: Option<&str>,
+    setup: Option<Option<&str>>,
 ) -> Result<(), String> {
     let unkept =
         |e: &dyn std::fmt::Display| format!("{} isn't in {} yet: {e}", repo.repo, file.display());
@@ -334,6 +361,15 @@ fn add_to_file(
         }
         (Some(None), Some(entry)) => {
             entry.remove("check");
+        }
+        _ => {}
+    }
+    match (setup, repos[at].as_object_mut()) {
+        (Some(Some(setup)), Some(entry)) => {
+            entry.insert("setup".into(), json!(setup));
+        }
+        (Some(None), Some(entry)) => {
+            entry.remove("setup");
         }
         _ => {}
     }
@@ -541,10 +577,11 @@ pub async fn list(State(shared): State<Arc<Shared>>) -> Result<Response, ApiErro
     Ok(axum::Json(json!({ "repos": all })).into_response())
 }
 
-/// A repository as `GET /v1/repos` lists it: its check (#1062) and whether the owner said No check.
+/// A repository as `GET /v1/repos` lists it: its check (#1062), whether the owner said No check,
+/// and its setup (PUBLISHING-23, SETUP-2).
 fn entry(r: &Repo, listed: bool, no_check: &[String]) -> Value {
     json!({"repo": r.repo, "defaultBranch": r.default_branch, "listed": listed, "check": r.check,
-           "noCheck": no_check.iter().any(|n| same(n, &r.repo))})
+           "noCheck": no_check.iter().any(|n| same(n, &r.repo)), "setup": r.setup})
 }
 
 /// `POST /v1/repos/check` (#1062): the owner changes a repository's check, `{"repo", "check"}`. A
@@ -592,6 +629,54 @@ pub async fn change_check(
             ),
         )),
     };
+    let no_check = crate::settings::load(&shared.config.home).no_check;
+    let listed = repos_listed(&shared.config.repos, &repo.repo);
+    Ok(axum::Json(json!({
+        "repo": entry(&repo, listed, &no_check),
+        "ask": ask.map(|item| shared.link.shown(&item)),
+    }))
+    .into_response())
+}
+
+/// `POST /v1/repos/setup` (SETUP-2): the owner changes a repository's setup, `{"repo", "setup"}`,
+/// the one-line command obid runs in a new job's worktree before its agent starts
+/// (PUBLISHING-23). A command, or `null` to take the one kept out, opens a Confirm for it
+/// (crate::sphere::inbox::setup_item), in place of any open one, and answers it: only the owner's
+/// signed Confirm of that item keeps it, as for a check. The setup it has already asks nothing.
+/// Answers the repository as listed, and the ask (`null` when there's none).
+pub async fn change_setup(
+    State(shared): State<Arc<Shared>>,
+    body: axum::body::Bytes,
+) -> Result<Response, ApiError> {
+    use axum::http::StatusCode;
+    let refused = |why: String| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why);
+    let body: Value = serde_json::from_slice(&body)
+        .map_err(|_| refused("The body is {\"repo\", \"setup\"}.".into()))?;
+    let name = body["repo"].as_str().unwrap_or_default();
+    let repo = shared
+        .config
+        .repos
+        .find(name)
+        .ok_or_else(|| refused(format!("{name} isn't a repository obid knows.")))?;
+    let setup = match body.get("setup") {
+        Some(Value::String(setup)) if crate::brain::plan::is_check(setup) => Some(setup.trim()),
+        Some(Value::Null) => None,
+        _ => {
+            return Err(refused(
+                "setup is one line of up to 200 characters, or null to take it out.".into(),
+            ));
+        }
+    };
+    let ask = (setup != repo.setup.as_deref()).then(|| {
+        shared
+            .link
+            .add_confirm_instead(crate::sphere::inbox::setup_item(
+                &repo.repo,
+                setup,
+                repo.setup.as_deref(),
+                obi_protocol::time::now(),
+            ))
+    });
     let no_check = crate::settings::load(&shared.config.home).no_check;
     let listed = repos_listed(&shared.config.repos, &repo.repo);
     Ok(axum::Json(json!({
