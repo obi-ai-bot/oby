@@ -7,7 +7,7 @@ import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin';
 import { PlainTextPlugin } from '@lexical/react/LexicalPlainTextPlugin';
 import {
   $createParagraphNode, $getRoot, $getSelection, $isRangeSelection, $isTextNode, $setSelection, COMMAND_PRIORITY_HIGH,
-  KEY_ARROW_DOWN_COMMAND, KEY_ARROW_UP_COMMAND, KEY_ENTER_COMMAND, KEY_ESCAPE_COMMAND, KEY_TAB_COMMAND, PASTE_COMMAND, type LexicalCommand,
+  KEY_ARROW_DOWN_COMMAND, KEY_ARROW_UP_COMMAND, KEY_BACKSPACE_COMMAND, KEY_ENTER_COMMAND, KEY_ESCAPE_COMMAND, KEY_TAB_COMMAND, PASTE_COMMAND, type LexicalCommand,
 } from 'lexical';
 import { $putText, $quoteAtCaret, stepHistory, textOf, type Recalled } from './recall';
 import { registerTokens, TokenNode } from './textTokens';
@@ -33,7 +33,7 @@ export type EditorHandle = {
 // path: COMPOSER-14)
 const AT = /(?:^|\s)@([\w./-]*)$/;
 
-export default function MessageEditor({ placeholder, label, autoFocus = false, onText, onEnter, onHeight, onPasteFiles, onMention, onMentionKey, history, handle }: {
+export default function MessageEditor({ placeholder, label, autoFocus = false, onText, onEnter, onHeight, onPasteFiles, onMention, onMentionKey, onBackAtStart, history, handle }: {
   placeholder: string;
   label: string;
   autoFocus?: boolean;
@@ -43,6 +43,7 @@ export default function MessageEditor({ placeholder, label, autoFocus = false, o
   onPasteFiles?: (files: File[]) => void;  // pasted files (a screenshot, say): attached, not typed
   onMention?: (query: string | null) => void;  // an @ being typed: what follows it (null: none)
   onMentionKey?: (key: MentionKey) => boolean;  // true: the list took the key
+  onBackAtStart?: () => boolean;  // Backspace with the cursor at the very start: true, the box took it (COMPOSER-26)
   history?: string[];  // the owner's earlier words here, oldest first, for ↑ and ↓ (recall.ts)
   handle: React.Ref<EditorHandle>;
 }) {
@@ -66,14 +67,14 @@ export default function MessageEditor({ placeholder, label, autoFocus = false, o
       {/* next to the text, not in it, so the text's fade doesn't fade it */}
       <div {...thumbProps} />
       <HistoryPlugin />
-      <Behaviour autoFocus={autoFocus} onText={onText} onEnter={onEnter} onHeight={onHeight} onPasteFiles={onPasteFiles} onMention={onMention} onMentionKey={onMentionKey} history={history} handle={handle} />
+      <Behaviour autoFocus={autoFocus} onText={onText} onEnter={onEnter} onHeight={onHeight} onPasteFiles={onPasteFiles} onMention={onMention} onMentionKey={onMentionKey} onBackAtStart={onBackAtStart} history={history} handle={handle} />
     </LexicalComposer>
   );
 }
 
 // Inside the editor: spotting tokens, Enter to send, reporting changes and
 // height, and the handle Composer reads, clears, focuses and blurs it by.
-function Behaviour({ autoFocus, onText, onEnter, onHeight, onPasteFiles, onMention, onMentionKey, history, handle }: {
+function Behaviour({ autoFocus, onText, onEnter, onHeight, onPasteFiles, onMention, onMentionKey, onBackAtStart, history, handle }: {
   autoFocus: boolean;
   onText: (text: string) => void;
   onEnter: () => void;
@@ -81,13 +82,14 @@ function Behaviour({ autoFocus, onText, onEnter, onHeight, onPasteFiles, onMenti
   onPasteFiles?: (files: File[]) => void;
   onMention?: (query: string | null) => void;
   onMentionKey?: (key: MentionKey) => boolean;
+  onBackAtStart?: () => boolean;
   history?: string[];
   handle: React.Ref<EditorHandle>;
 }) {
   const [editor] = useLexicalComposerContext();
   // the latest callbacks, without re-registering on every render
-  const cb = useRef({ onText, onEnter, onHeight, onPasteFiles, onMention, onMentionKey, history });
-  cb.current = { onText, onEnter, onHeight, onPasteFiles, onMention, onMentionKey, history };
+  const cb = useRef({ onText, onEnter, onHeight, onPasteFiles, onMention, onMentionKey, onBackAtStart, history });
+  cb.current = { onText, onEnter, onHeight, onPasteFiles, onMention, onMentionKey, onBackAtStart, history };
   // the earlier words ↑ brought back, while the box still shows them as they were
   const recalled = useRef<Recalled>(null);
 
@@ -135,6 +137,13 @@ function Behaviour({ autoFocus, onText, onEnter, onHeight, onPasteFiles, onMenti
         if (e.shiftKey) return false;
         e.preventDefault();
         cb.current.onEnter();
+        return true;
+      }, COMMAND_PRIORITY_HIGH),
+      // Backspace with nothing before the cursor: the box's, for a chip before the words (COMPOSER-26)
+      editor.registerCommand(KEY_BACKSPACE_COMMAND, (e: KeyboardEvent) => {
+        if (!cb.current.onBackAtStart || !editor.getEditorState().read($atStart)) return false;
+        if (!cb.current.onBackAtStart()) return false;
+        e.preventDefault();
         return true;
       }, COMMAND_PRIORITY_HIGH),
       // a paste with files in it (an image copied or a screenshot): they're
@@ -297,4 +306,12 @@ function caretRect(range: Range, wrapAt: 'start' | 'end' | number): DOMRect | nu
   const n = range.startContainer;
   const el = n.nodeType === Node.ELEMENT_NODE ? ((n.childNodes[range.startOffset] as Element | undefined) ?? (n as Element)) : n.parentElement;
   return el && 'getBoundingClientRect' in el ? el.getBoundingClientRect() : null;
+}
+
+// Whether the cursor is at the very start of the text, nothing selected (an empty box's is)
+function $atStart(): boolean {
+  const s = $getSelection();
+  if (!$isRangeSelection(s) || !s.isCollapsed() || s.anchor.offset !== 0) return false;
+  const root = $getRoot(), first = root.getFirstDescendant(), at = s.anchor.getNode();
+  return !first || at.is(first) || at.is(root) || at.is(root.getFirstChild());
 }

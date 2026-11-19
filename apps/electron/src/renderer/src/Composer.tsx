@@ -29,8 +29,8 @@ import { ProjectChip } from './ProjectSheet';
 import TaskChips from './TaskChips';
 import QueuedWords from './QueuedWords';
 import { chipsOf, defaultsOf } from './chips';
-import { FOLDER_DROPPED, dropped, fileWords, isFileDrag, noCommands, slashOf, useMentionFiles, useStopping } from './composerInput';
-import { useLive } from './live';
+import { FOLDER_DROPPED, dropped, fileWords, isFileDrag, noCommands, skillsMatching, slashOf, useMentionFiles, useSkills, useStopping } from './composerInput';
+import { useLive, type SkillsWhere } from './live';
 import { onObid } from './lean';
 import { has } from '../../shared/capabilities';
 import type { ConversationFile } from './obid';
@@ -82,7 +82,7 @@ export const stackedAt = (was: boolean, height: number, text: string) => was || 
 // Send is Stop while Oby answers and there's nothing to send (CHATFIRST-33)
 export const stopShows = (answering: boolean, filled: boolean, attached: number) => answering && !filled && !attached;
 
-export default function Composer({ placeholder, prompts = false, note, label, onSend, home = false, hidden = false, autoFocus = !home, className = '', style, repos: withRepos = false, conversation, talk, draft, say, onStop, queued = [], onCancelQueued, history, quote }: {
+export default function Composer({ placeholder, prompts = false, note, label, onSend, home = false, hidden = false, autoFocus = !home, className = '', style, repos: withRepos = false, conversation, talk, skills, draft, say, onStop, queued = [], onCancelQueued, history, quote }: {
   placeholder?: string;
   prompts?: boolean;  // no placeholder of its own: one of Oby's prompts, changing now and then (prompts.ts)
   note?: React.ReactNode;  // a line just over the box (Home's Settings tip), coming and going with it
@@ -99,6 +99,9 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   repos?: boolean;
   conversation?: string;
   talk?: Chat | true;  // who Oby talks through, by send: this conversation's, or (true, Home's) a new one's
+  // whose skills `/` lists, where the words go (COMPOSER-25): a task's box names its task; by default a
+  // conversation's box its conversation, Home's a new one's, and any other box none
+  skills?: SkillsWhere;
   draft?: string;    // the box its unsent words are kept as (drafts.ts, box); none: not kept
   onStop?: () => void;  // Oby is answering here: with nothing to send, send is Stop (CHATFIRST-33)
   // words sent while Oby answers, waiting their turn: over the box, with Edit and Cancel (COMPOSER-8 to 10).
@@ -136,15 +139,23 @@ export default function Composer({ placeholder, prompts = false, note, label, on
     wasOpen.current = open;
   }, [view]);
   const [attached, setAttached] = useState<Attached[]>([]);
-  const stopping = stopShows(!!onStop, filled, attached.length);
+  // the skill picked for the words (COMPOSER-26, 27), set below: something to send on its own too
+  const [skill, setSkill] = useState<string | null>(null);
   // Stop pressed: "Stopping…" until the turn really ends (COMPOSER-12)
   const [stopPending, askStop] = useStopping(!!onStop);
   // The chips (COMPOSER-1 to 3): where words go to Oby (Home's, a conversation's), once obid takes them
   const status = useLive().status;
   const chipsShown = !!talk && !wordsOnly && (!onObid || has(status, 'composer-v1'));
+  // the skills of the agent the words go to, once obid lists them (always on the mock): `/` lists them,
+  // and the one picked goes with the words as a chip (COMPOSER-25 to 27)
+  const skillsWhere: SkillsWhere | undefined = wordsOnly ? undefined : skills ?? (talk === true ? {} : talk ? { conversation: talk.id } : undefined);
+  const skillsOn = !!skillsWhere && (!onObid || has(status, 'skills-v1'));
+  // words, or a skill picked with none (COMPOSER-27): send is lit, and it's no Stop
+  const ready = filled || (skillsOn && !!skill);
+  const stopping = stopShows(!!onStop, ready, attached.length);
   // the whole text, for a / at its start (COMPOSER-16); Esc puts the commands' list away until the / goes
   const [typed, setTyped] = useState('');
-  const slash = chipsShown ? slashOf(typed) : null;
+  const slash = chipsShown || skillsOn ? slashOf(typed) : null;
   const [slashClosed, setSlashClosed] = useState(false);
   useEffect(() => { if (slash === null) setSlashClosed(false); }, [slash]);
   // files dragged over the box, and what it says of folders dropped (COMPOSER-13)
@@ -213,10 +224,24 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   const matches: ({ kind: 'oby' } & Askable | { kind: 'file'; file: ConversationFile })[] = listing
     ? [...askableFor(at!, askable).map((o) => ({ kind: 'oby' as const, ...o })), ...atFiles.map((file) => ({ kind: 'file' as const, file }))] : [];
   const slashShown = slash !== null && !slashClosed && !view;
+  // the skills `/` lists: asked as it opens (null till obid answers), those matching what's typed after it
+  const skillsAnswer = useSkills(skillsOn ? skillsWhere : undefined, slashShown && !matches.length);
+  const skillRows = skillsAnswer ? skillsMatching(skillsAnswer.skills, slash ?? '') : [];
+  const [skillLit, setSkillLit] = useState(0);
+  useEffect(() => setSkillLit(0), [slash]);
+  // one picked: the /words go, and it's the box's chip (another picked replaces it)
+  const pickSkill = (name: string) => { setSkill(name); box.current?.clear(); box.current?.focus(); };
   useClicksEverywhere(matches.length > 0 || slashShown);
   const pickOby = (name: string) => { setView(null); box.current?.mention(name); box.current?.focus(); };
   const pickMatch = (m: (typeof matches)[number]) => pickOby(m.kind === 'oby' ? m.name : fileWords(m.file, workFolders));
   const onMentionKey = (key: MentionKey) => {
+    if (slashShown && !matches.length && skillRows.length) {
+      const i = Math.min(skillLit, skillRows.length - 1);
+      if (key === 'close') setSlashClosed(true);
+      else if (key === 'pick') pickSkill(skillRows[i].name);
+      else setSkillLit((i + (key === 'down' ? 1 : skillRows.length - 1)) % skillRows.length);
+      return true;
+    }
     if (slashShown && !matches.length) { if (key !== 'close') return false; setSlashClosed(true); return true; }
     if (!matches.length) return false;
     if (key === 'close') setAtClosed(true);
@@ -251,7 +276,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   // shows, and faded at the top while older ones are hidden above
   const tagRow = useRef<HTMLDivElement>(null);
   // tags coming and going: the rest glide to their places (glide.ts)
-  const tagSig = [...folders.map((f) => `folder:${f}`), repo ? 'repo' : '', ...attached.map(keyOf)].join('|');
+  const tagSig = [skill && skillsOn ? 'skill' : '', ...folders.map((f) => `folder:${f}`), repo ? 'repo' : '', ...attached.map(keyOf)].join('|');
   useGlide(tagRow, tagSig);
   const [hiddenAbove, setHiddenAbove] = useState(false);
   // on any tag coming or going (gone, the row's fade goes with it)
@@ -307,6 +332,8 @@ export default function Composer({ placeholder, prompts = false, note, label, on
       if (home) { setHomeProject(e.project ?? null); setHomeFolders(e.folders ?? []); }
       setTagsOf(draft);
     }
+    // a skill picked is for this box's words alone
+    setSkill(null);
     addEventListener('pagehide', d.flush);
     return () => { removeEventListener('pagehide', d.flush); d.flush(); };
   }, [draft]);
@@ -341,7 +368,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
       e.preventDefault();
       const b = box.current!;
       // words, or something attached, or both
-      if (sending.current || (!b.text().trim() && !attached.length)) return;
+      if (sending.current || (!b.text().trim() && !attached.length && !(skillsOn && skill))) return;
       // the files go up first (on obid): one refused keeps the box as it was, words and tags
       sending.current = true;
       const files = await uploadFiles(attached.flatMap((a) => (a.kind === 'file' ? [{ name: a.name, preview: a.preview, file: a.file }] : [])));
@@ -367,6 +394,8 @@ export default function Composer({ placeholder, prompts = false, note, label, on
         ...(project ? { project } : {}),
         // the chips go with the words, and stay for the next (COMPOSER-3)
         ...(chipsShown && defaultsOf(chipsOf(draft)) ? { defaults: defaultsOf(chipsOf(draft)) } : {}),
+        // the skill picked, beside the words; never put in them (COMPOSER-27)
+        ...(skillsOn && skill ? { skill } : {}),
       });
       if (went instanceof Promise) {
         sending.current = true;
@@ -381,6 +410,8 @@ export default function Composer({ placeholder, prompts = false, note, label, on
       setFilled(false);
       setStacked(false);
       setAttached([]);
+      // the skill was for these words only (the mode chip stays)
+      setSkill(null);
       setView(null);
       // Home's: what you sent opens as its own conversation, so the box lets go
       // (the send button too, when that's what sent it). Anywhere else the box
@@ -470,17 +501,44 @@ export default function Composer({ placeholder, prompts = false, note, label, on
             ))}
           </div>
         )}
-        {/* a / at the start: the chosen agent's own commands, where obid can list them; it lists
-            none yet, so the list says what's missing (COMPOSER-16) */}
-        {slashShown && !matches.length && (
+        {/* a / at the start: the skills of the agent the words go to, where obid gives them
+            (COMPOSER-25); with none to list, obid's why, else what's missing (COMPOSER-16) */}
+        {slashShown && !matches.length && skillRows.length > 0 && (
+          <div className="add-panel mention-panel" role="listbox" aria-label="Skills">
+            {skillRows.map((k, i) => (
+              <button
+                type="button"
+                role="option"
+                key={k.name}
+                aria-selected={i === Math.min(skillLit, skillRows.length - 1)}
+                className={`mention-skill${i === Math.min(skillLit, skillRows.length - 1) ? ' is-lit' : ''}`}
+                // the text keeps the focus (and its cursor)
+                onMouseDown={(e) => e.preventDefault()}
+                onMouseEnter={() => setSkillLit(i)}
+                onClick={() => pickSkill(k.name)}
+                title={k.description}
+              >
+                <span className="add-item-text">{`/${k.name}`}{k.description && <span className="add-item-about">{k.description}</span>}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {slashShown && !matches.length && !skillRows.length && (!skillsOn || skillsAnswer) && (
           <div className="add-panel slash-panel" role="dialog" aria-label="Commands">
-            <p className="add-empty">{noCommands(agentOf(accountAgent ?? 'claude').name)}</p>
+            <p className="add-empty">{skillsAnswer?.skills.some((k) => k.userInvocable) ? `Nothing matches “/${slash}”` : skillsAnswer?.why ?? noCommands(agentOf(skillsAnswer?.tool ?? accountAgent ?? 'claude').name)}</p>
           </div>
         )}
         {/* no talking (v1): send before the usage gauge, which keeps the end */}
         <div className={`composer-grid${everything && !wordsOnly ? '' : ' is-send-first'}`}>
-          {(attached.length > 0 || repo || folders.length > 0 || (home && projectsOn)) && (
+          {(attached.length > 0 || repo || folders.length > 0 || (home && projectsOn) || (skillsOn && skill)) && (
             <div ref={tagRow} className={`composer-tags${hiddenAbove ? ' is-scrolled' : ''}`} onScroll={(e) => setHiddenAbove(e.currentTarget.scrollTop > 0)}>
+              {/* the skill picked, first: it goes with these words (COMPOSER-26) */}
+              {skillsOn && skill && (
+                <span data-glide="skill" className="composer-tag composer-skill">
+                  <span className="composer-tag-text">{`/${skill}`}</span>
+                  <button type="button" aria-label={`Remove /${skill}`} onClick={(e) => leave(e.currentTarget.parentElement, () => setSkill(null))}><X size={13} strokeWidth={2} /></button>
+                </span>
+              )}
               {/* Home's project, first (choosing one lets go of the folders picked here) */}
               {home && projectsOn && <ProjectChip chosen={homeProject} onChoose={(p) => { setHomeProject(p); if (p) setHomeFolders([]); }} className="composer-project" />}
               {folders.map((f) => (
@@ -543,6 +601,8 @@ export default function Composer({ placeholder, prompts = false, note, label, on
             // each change narrows the list, so the first is lit again
             onMention={(q) => { setAt(q); setLit(0); if (q === null) setAtClosed(false); }}
             onMentionKey={onMentionKey}
+            // Backspace at the very start (or in an empty box) takes the skill's chip out (COMPOSER-26)
+            onBackAtStart={skillsOn && skill ? () => { setSkill(null); return true; } : undefined}
             onEnter={() => form.current?.requestSubmit()}
             // past one line (32px: 22 of text, 10 of padding) it stacks
             onHeight={(h) => setStacked((was) => stackedAt(was, h, box.current?.text() ?? ''))}
@@ -556,7 +616,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
               something to send, send takes its place. Talking comes back later, with Voice in
               Settings › General (only with ?everything): till then send is there all along, dim till
               there's something to send */}
-          {everything && !wordsOnly && !stopping && <button type="button" className={`composer-button composer-voice${filled || attached.length ? ' is-away' : ''}`} aria-label="Talk to Oby" aria-hidden={filled || attached.length > 0 || undefined} tabIndex={filled || attached.length ? -1 : 0}>
+          {everything && !wordsOnly && !stopping && <button type="button" className={`composer-button composer-voice${ready || attached.length ? ' is-away' : ''}`} aria-label="Talk to Oby" aria-hidden={ready || attached.length > 0 || undefined} tabIndex={ready || attached.length ? -1 : 0}>
             <svg width="18" height="16" viewBox="0 0 20 18" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
               <path d="M2 7v4M6 4v10M10 1v16M14 4v10M18 7v4" />
             </svg>
@@ -570,7 +630,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
               <Square size={13} strokeWidth={1.8} fill="currentColor" />
             </button>
           ) : (
-            <button type="submit" className={`composer-button composer-send${everything && !wordsOnly ? '' : ' is-always'}${filled || attached.length ? ' is-ready' : ''}`} aria-label="Send" disabled={!filled && !attached.length} aria-hidden={(everything && !wordsOnly && !filled && !attached.length) || undefined}>
+            <button type="submit" className={`composer-button composer-send${everything && !wordsOnly ? '' : ' is-always'}${ready || attached.length ? ' is-ready' : ''}`} aria-label="Send" disabled={!ready && !attached.length} aria-hidden={(everything && !wordsOnly && !ready && !attached.length) || undefined}>
               <ArrowUp size={18} strokeWidth={1.8} />
             </button>
           )}

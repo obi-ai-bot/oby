@@ -207,8 +207,11 @@ export type SetupStep = 'agents' | 'github' | 'extras' | 'first' | 'sphere' | 's
 // project: the project Home's box chose for the conversation its words start (projects.ts)
 export type Attachments = { files?: { name: string; preview?: string; file?: File; path?: string }[]; obys?: string[]; jobs?: string[]; on?: string; repo?: string; folders?: string[]; project?: string;
   // the box's chips (docs/contracts/composer.md, COMPOSER-3): the jobs these words start, never the account's
-  defaults?: { mode?: string; agent?: string; model?: string; effort?: string } };
-export const hasAttachments = (a?: Attachments) => !!(a?.files?.length || a?.obys?.length || a?.jobs?.length);
+  defaults?: { mode?: string; agent?: string; model?: string; effort?: string };
+  // the skill picked in the box (docs/contracts/composer.md, COMPOSER-27): beside the words, never in them
+  skill?: string };
+// (a skill picked is something to send, words or none: COMPOSER-27)
+export const hasAttachments = (a?: Attachments) => !!(a?.files?.length || a?.obys?.length || a?.jobs?.length || a?.skill);
 
 // The Obysphere: the other Obys in your workspace (whose they are), and your conversations with them, each about a task. who: 'you',
 // or the owner of the Oby that said it; with: the Obys in it (more than one: a

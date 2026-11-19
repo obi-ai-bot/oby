@@ -21,13 +21,14 @@ import { latestTask, rowMark } from './chatState';
 import StatusDot, { TaskMark } from './StatusDot';
 import { askCardLine, memberOpens, mockConvosWith, plainId, useConvos } from './peers';
 import { roomOpens, useRoom } from './room';
-import { archivedChats, chatOfTask, lastAgo, latestChat, renameChat, useChats, type Chat } from './chats';
+import { archivedChats, chatOfTask, lastAgo, latestChat, ofObid, renameChat, restartChat, useChats, type Chat } from './chats';
 import { chatFirst, everything, onObid } from './lean';
-import { ACTIONS, pickGroups, tasksMatching, useObidSearch } from './search';
+import { ACTIONS, RESTART, pickGroups, tasksMatching, useObidSearch } from './search';
 import { ariaKeys, JUMPS, registerCommands, shortcutLabel, withShortcut } from './shortcuts';
 import { adjacent, panelOrder, pinnedFirst, projectGroups as groupsOf } from './panelOrder';
 import SearchMore from './SearchMore';
-import { say, useWaitingCount } from './live';
+import { say, useLive, useWaitingCount } from './live';
+import { has } from '../../shared/capabilities';
 import { loadProfiles, openProfile, profileChats, useProfiles } from './profiles';
 import type { Profile } from './obid';
 import ProfileMenu, { EditProfileModal, NewProfileModal } from './ProfileMenu';
@@ -389,8 +390,11 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     });
   }, []);
   // ⌘K finds more than conversations (SHORTCUTS-11): Settings pages and a few actions, under their
-  // own headings below them; Reveal obid's Log only where main is
-  const finds = pickGroups(query, SETTINGS_PAGES, window.app?.help ? ACTIONS : ACTIONS.filter((a) => a.id !== 'reveal-log'));
+  // own headings below them; Reveal obid's Log only where main is; Restart agent only in a conversation
+  // shown, once obid lists skills-v1 (COMPOSER-28)
+  const { status } = useLive();
+  const restartable = !!activeTalk && withAgents.some((c) => c.id === activeTalk && !c.local) && (!onObid || (has(status, 'skills-v1') && ofObid(activeTalk)));
+  const finds = pickGroups(query, SETTINGS_PAGES, [...(window.app?.help ? ACTIONS : ACTIONS.filter((a) => a.id !== 'reveal-log')), ...(restartable ? [RESTART] : [])]);
   const moreFound = finds.settings.length + finds.actions.length > 0;
   const runPick = (kind: 'setting' | 'action', id: string) => {
     setSearching(false); setQuery('');
@@ -398,6 +402,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     else if (id === 'chat.new') onNewChat();
     else if (id === 'settings.open') { pick('settings'); onOpenSetting('general'); }
     else if (id === 'reveal-log') void window.app?.help?.('reveal-log').then((why) => { if (why) say(why); }, say);
+    else if (id === 'agent.restart' && activeTalk) void restartChat(activeTalk);
   };
   const searchMore = q ? <SearchMore settings={finds.settings} actions={finds.actions} onPick={runPick} /> : null;
   const convoRow = (c: Chat) => {

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { conversationFiles } from './live';
+import { conversationFiles, skillsFor, type SkillsWhere } from './live';
 import { onObid } from './lean';
-import { FILES } from './mock';
-import type { ConversationFile } from './obid';
+import { FILES, SKILLS } from './mock';
+import type { ConversationFile, Skill, SkillsAnswer } from './obid';
 
 // What the message box takes besides typing (docs/contracts/composer.md, COMPOSER-12 to 16), each
 // as T3 Code's composer does it: files dropped on it, files of the conversation's folders after an
@@ -61,6 +61,33 @@ export function useMentionFiles(conversation: string | undefined, at: string | n
 export const slashOf = (text: string) => /^\/(\S*)$/.exec(text)?.[1] ?? null;
 // What the list says while obid can list no command of the tool's: what's missing, plainly
 export const noCommands = (tool: string) => `${tool}’s own commands can’t be listed here yet: Oby doesn’t read them from its sessions, and words to Oby don’t run them. Say what you want instead.`;
+
+// --- / skills (COMPOSER-25 to 27), after T3's providerSkillSearch.ts
+
+// The skills the owner can start themselves whose name or description holds what's typed after the /
+// (case aside): names starting with it first, then names holding it, then descriptions, each in obid's order
+export function skillsMatching(skills: Skill[], typed: string): Skill[] {
+  const q = typed.toLowerCase(), offered = skills.filter((s) => s.userInvocable);
+  const name = (s: Skill) => s.name.toLowerCase(), about = (s: Skill) => (s.description ?? '').toLowerCase();
+  const first = offered.filter((s) => name(s).startsWith(q));
+  const then = offered.filter((s) => !first.includes(s) && name(s).includes(q));
+  return [...first, ...then, ...offered.filter((s) => !first.includes(s) && !then.includes(s) && about(s).includes(q))];
+}
+
+// The skills obid gives for the box's words (where), asked each time the / list opens and kept while
+// it's open; null while it's closed or still being asked. In a browser, the mock's
+export function useSkills(where: SkillsWhere | undefined, open: boolean): SkillsAnswer | null {
+  const [answer, setAnswer] = useState<SkillsAnswer | null>(null);
+  const key = open && where ? JSON.stringify(where) : null;
+  useEffect(() => {
+    setAnswer(null);
+    if (key === null) return;
+    let gone = false;
+    void (onObid ? skillsFor(JSON.parse(key) as SkillsWhere) : Promise.resolve(SKILLS)).then((a) => { if (!gone) setAnswer(a); });
+    return () => { gone = true; };
+  }, [key]);
+  return answer;
+}
 
 // --- Stop (COMPOSER-12), after T3's useStopPhase
 

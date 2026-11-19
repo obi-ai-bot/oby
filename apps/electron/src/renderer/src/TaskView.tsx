@@ -8,6 +8,7 @@ import { markSeen, useTasks, type Task } from './tasks';
 import type { Attachments } from './view';
 import { box as draftBox } from './drafts';
 import { onObid } from './lean';
+import { chatOfTask } from './chats';
 
 // how long the way out takes (the sink animation in app.css)
 const LEAVE_MS = 220;
@@ -87,6 +88,9 @@ export default function TaskView({ id, leaving, covered = false, onBack, onHome,
         placeholder="Tell Oby about this task…"
         label={`Tell Oby about ${task.title}`}
         onSend={(text, att) => onTell(task.id, text, att)}
+        // `/` lists the skills of the agent its words reach: its conversation's, where they go on its end
+        // (Home's tellFromTask), else the task's own (COMPOSER-25)
+        skills={chatOfTask(task.id) ? { conversation: chatOfTask(task.id)!.id } : { job: task.id }}
         draft={draftBox.task(task.id)}
       />
     </div>

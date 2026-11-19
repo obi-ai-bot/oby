@@ -59,6 +59,9 @@ export const ACTIONS: PaletteItem[] = [
   { id: 'settings.open', label: 'Open Settings' },
   { id: 'reveal-log', label: 'Reveal obid’s Log' },
 ];
+// In a conversation, once obid lists skills-v1 (COMPOSER-28): its agent ended while it waits, so the
+// next message starts it fresh, with the skills and settings installed since
+export const RESTART: PaletteItem = { id: 'agent.restart', label: 'Restart agent' };
 
 // every word typed is in the item's words (case aside); no words, nothing
 const holds = (words: string, query: string) => {
