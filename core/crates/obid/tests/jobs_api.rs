@@ -1360,8 +1360,8 @@ fn a_fresh_obid_works_in_the_github_repositories_gh_can_push_to() {
     assert_eq!(
         listed,
         json!({"repos": [
-            {"repo": "obi-e2e/fixture-app", "defaultBranch": "main", "listed": false, "check": null, "noCheck": false},
-            {"repo": "obi-e2e/other", "defaultBranch": "dev", "listed": false, "check": null, "noCheck": false}
+            {"repo": "obi-e2e/fixture-app", "defaultBranch": "main", "listed": false, "check": null, "noCheck": false, "setup": null},
+            {"repo": "obi-e2e/other", "defaultBranch": "dev", "listed": false, "check": null, "noCheck": false, "setup": null}
         ]})
     );
     let calls = std::fs::read_to_string(folder.0.join("gh-calls")).unwrap();
@@ -1399,7 +1399,7 @@ fn a_fresh_obid_works_in_the_github_repositories_gh_can_push_to() {
     assert_eq!(job["status"], "done", "{job}");
     assert_eq!(
         request(&obid, "GET", "/v1/repos", None).body["repos"][0],
-        json!({"repo": "obi-e2e/fixture-app", "defaultBranch": "main", "listed": true, "check": null, "noCheck": false})
+        json!({"repo": "obi-e2e/fixture-app", "defaultBranch": "main", "listed": true, "check": null, "noCheck": false, "setup": null})
     );
 
     // gh signed out: GitHub's list goes with its account, the listed repository stays.
@@ -1408,7 +1408,7 @@ fn a_fresh_obid_works_in_the_github_repositories_gh_can_push_to() {
     assert_eq!(github.body["signedIn"], false, "{}", github.text);
     assert_eq!(
         request(&obid, "GET", "/v1/repos", None).body,
-        json!({"repos": [{"repo": "obi-e2e/fixture-app", "defaultBranch": "main", "listed": true, "check": null, "noCheck": false}]})
+        json!({"repos": [{"repo": "obi-e2e/fixture-app", "defaultBranch": "main", "listed": true, "check": null, "noCheck": false, "setup": null}]})
     );
     let gone = post_job(
         &obid,
