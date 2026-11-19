@@ -149,8 +149,10 @@ const split = (s: string, at = 0) => s.split(/(\s+)/).map((w, k) => (!w || /\s/.
 // &amp;, &mdash;, &#8212; and the like read as what they stand for, as in any Markdown (not in
 // code, where they're what was typed): the browser's own table, given only the entity, in a
 // textarea, whose content is never markup
-const scratch = document.createElement('textarea');
-const decode = (s: string) => (s.includes('&') ? s.replace(/&(?:#\d{1,7}|#x[\da-f]{1,6}|[a-z][a-z\d]{1,31});/gi, (e) => { scratch.innerHTML = e; return scratch.value; }) : s);
+// made the first time it's needed, so loading this module needs no document (a test renders a
+// task card on the server)
+let scratch: HTMLTextAreaElement | undefined;
+const decode = (s: string) => (s.includes('&') ? s.replace(/&(?:#\d{1,7}|#x[\da-f]{1,6}|[a-z][a-z\d]{1,31});/gi, (e) => { scratch ??= document.createElement('textarea'); scratch.innerHTML = e; return scratch.value; }) : s);
 
 // Oby's words as they read in a message, in one line of plain text, where there's room for only
 // how it starts (the side panel)
