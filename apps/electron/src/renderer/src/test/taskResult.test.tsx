@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { Job as JobView } from '../mock';
+import type { Job as JobView } from '../view';
 
 // A task's page shows the agent's summary under Result read as Markdown, as the conversation reads
 // it, never its marks as text (docs/contracts/tasks.md, TASKS-33)
@@ -9,13 +9,13 @@ async function page(summary: string) {
   vi.stubGlobal('window', {});
   vi.stubGlobal('document', { createElement: () => ({}) });
   const { default: TaskCard } = await import('../TaskCard');
-  const { AGENTS } = await import('../mock');
+  const { BRANDS } = await import('../brands');
   const job = {
     id: 'j1', type: 'build', title: 'Oby drive 22:51', request: 'Add a line', agent: 'claude', account: 'Default', model: 'Opus',
     repo: 'well-prado/tetrix-e2e', branch: 'oby/build-1', base: 'main', status: 'done', step: '', stages: [], created: 20, finished: 1,
     commits: 1, published: 'https://github.com/well-prado/tetrix-e2e/pull/170', summary,
   } as JobView;
-  const task = { id: 'j1', type: 'build', title: job.title, brand: AGENTS.claude.brand, status: 'done', job } as never;
+  const task = { id: 'j1', type: 'build', title: job.title, brand: BRANDS.claude, status: 'done', job } as never;
   return renderToStaticMarkup(<TaskCard task={task} alone />).replaceAll('<!-- -->', '');
 }
 
