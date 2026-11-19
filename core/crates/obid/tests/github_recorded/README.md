@@ -20,14 +20,14 @@ they are.
 | File | What it is |
 |---|---|
 | `../fakes/gh` | The recording `gh`. Its routes and how they match are in its header. |
-| `recorder.rs` | Copies a path's routes into the test's folder, reads the calls back, makes them comparable, compares, and prints the diff. |
-| `<path>.rs` | One path's test, `github_recorded_<path>`. |
+| `../github_recorded.rs`, module `recorder` | Copies a path's routes into the test's folder, reads the calls back, makes them comparable, compares, and prints the diff. |
+| `../github_recorded.rs`, one module a path | One path's test, `github_recorded_<path>`. One file, as the suite's check takes every `.rs` under `tests/` for a test binary of its own. |
 | `<path>/routes.json` | What the stand-in `gh` answers, first match wins, and the fixture files it names. |
 | `<path>/calls.json`, `<path>/answers.json` | The recordings. |
 
 ## What is made comparable, and nothing else
 
-Each rule is commented where `recorder.rs` applies it. Arguments, URLs, JSON keys and every value
+Each rule is commented where the `recorder` module applies it. Arguments, URLs, JSON keys and every value
 GitHub gave stay exactly as they were.
 
 - The test's temporary folder is `<FOLDER>`, the crate's folder (obid's working folder) `<CRATE>`.

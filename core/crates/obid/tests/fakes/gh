@@ -40,7 +40,7 @@
 //                           test can tell calls obid made one after another from calls it made at
 //                           the same time
 //
-// The test, not this script, makes paths and times comparable (github_recorded/recorder.rs).
+// The test, not this script, makes paths and times comparable (tests/github_recorded.rs, `recorder`).
 
 const fs = require("fs");
 const path = require("path");
