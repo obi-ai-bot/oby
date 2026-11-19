@@ -1769,6 +1769,16 @@
             "SHORTCUTS-11": "Electron side panel search (Settings and actions)."
           }
         },
+        "help.md": {
+          "obid": [],
+          "elsewhere": {
+            "HELP-1": "Electron main's Help menu (main/help.ts); no obid API.",
+            "HELP-2": "Electron main's Help menu (main/help.ts); no obid API.",
+            "HELP-3": "Electron main's Help menu (main/help.ts); no obid API.",
+            "HELP-4": "Electron main's Help menu (main/help.ts); no obid API.",
+            "HELP-5": "Electron main's Help menu (main/help.ts); no obid API."
+          }
+        },
         "signed-words.md": {
           "obid": [
             "WORDS-5"
