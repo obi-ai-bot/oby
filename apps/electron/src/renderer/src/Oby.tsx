@@ -46,6 +46,9 @@ declare global {
       // a task's worktree in the owner's Terminal or editor, by its id, and that editor's name (preload, main/worktree.ts)
       openWorktree?(job: string, where: 'terminal' | 'editor'): Promise<boolean>;
       editorName?(): Promise<string | null>;
+      // a reply's paths: which are files of its task or conversation, and one opened at its line (Reply.tsx)
+      replyFiles?(place: 'task' | 'conversation', id: string, refs: string[]): Promise<boolean[]>;
+      openReplyFile?(place: 'task' | 'conversation', id: string, ref: string): Promise<boolean>;
       // the Obysphere's rules, and the members rule added at the version read (preload, main/sphere.ts)
       spherePolicy?(): Promise<PolicyAnswer | null>;
       sphereSetPolicy?(version: number): Promise<PolicyAnswer | null>;

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import Said from './Said';
+import { ReplyPlace } from './Reply';
 import { Check, ChevronDown, ChevronRight, Info } from 'lucide-react';
 import { BrandMark } from './brands';
 import StatusDot from './StatusDot';
@@ -121,7 +122,7 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
           {ended && (j.summary || result) && (
             <Section title="Result">
               {/* the agent's summary is Markdown (obid quotes it as such): read as the conversation reads it (TASKS-33) */}
-              {j.summary && <div className="tc-report tc-said"><Said text={j.summary} /></div>}
+              {j.summary && <div className="tc-report tc-said"><ReplyPlace.Provider value={{ place: 'task', id: task.id }}><Said text={j.summary} /></ReplyPlace.Provider></div>}
               {result}
               {/* every outgoing action, as it happened */}
               {page?.outgoing && (

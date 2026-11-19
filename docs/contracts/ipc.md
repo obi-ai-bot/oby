@@ -68,6 +68,8 @@ A decoder answers `{ value }` or `undefined` when it can't read the value, so `o
 | `sphere.ts` | `sphere-leave` | `handle` | none | `'Not this app’s page.'` |
 | `sphere.ts` | `sphere-policy` | `handle` | none | `null` |
 | `sphere.ts` | `sphere-set-policy` | `handle` | `safeInteger` | `null` (with no click main saw: a `failed` answer, [sphere-policy.md](sphere-policy.md) POLICY-4) |
+| `worktree.ts` | `reply-files` | `handle` | `oneOf('task', 'conversation')`, `string`, a list of at most 200 strings ([chat-first.md](chat-first.md), CHATFIRST-39) | `[]` |
+| `worktree.ts` | `open-reply-file` | `handle` | `oneOf('task', 'conversation')`, `string`, `string`; with no click main saw, `false` (CHATFIRST-40) | `false` |
 | `sphere.ts` | `sphere-join` | `handle` | `string` | `{ kind: 'failed', name: '', why: 'Not this app’s page.' }` (with no click main saw: `why` `Joining takes your own click.`, [sphere-app.md](sphere-app.md) SPHEREAPP-4) |
 | `sphere.ts` | `sphere-handoff` | `handle` | `handoffAsk`: an object of four strings, `to`, `goal`, `repo` and `base` | `'Not this app’s page.'` (with no click main saw: `Handing a task over takes your own click.`, SPHEREAPP-6) |
 | `sphere.ts` | `sphere-invitations` | `handle` | none | `null` |

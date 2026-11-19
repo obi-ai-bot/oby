@@ -1,8 +1,9 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Check } from 'lucide-react';
 import { waitSays } from './chatgpt';
 import ContextMeter from './ContextMeter';
 import Said from './Said';
+import { CopyButton, ReplyPlace } from './Reply';
 import { BrandMark } from './brands';
 import { Line, liveFor, useEntries, useLiveLines } from './SessionView';
 import { ASK_LABEL, agentOf } from './view';
@@ -42,8 +43,11 @@ export default function TaskLog({ task }: { task: Task }) {
   const answered = task.status !== 'needs' && j.ask && task.answer && task.answer !== 'Later';
   // how full its agent's context is while it works, as its tool said (docs/contracts/usage.md, USAGE-17)
   const context = atWork ? j.page?.context : undefined;
+  // its words' paths are its worktree's (Reply.tsx, CHATFIRST-39)
+  const place = useMemo(() => ({ place: 'task' as const, id: task.id }), [task.id]);
   if (!plan && !lines.length && !says && !answered && !context) return null;
   return (
+    <ReplyPlace.Provider value={place}>
     <div className="lt-log" role="group" aria-label={`What ${agent.name} did`}>
       {plan && <ol className="ss-entries"><Line entry={plan} job={task.id} brand={agent.brand} live={liveFor(plan, live)} /></ol>}
       {extra > 0 && <button type="button" className="lt-log-more" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? 'Show less' : `Show ${extra} more`}</button>}
@@ -60,6 +64,7 @@ export default function TaskLog({ task }: { task: Task }) {
       {answered && <p className="lt-answered"><Check size={12} strokeWidth={2} />{j.ask!.label ?? ASK_LABEL[j.ask!.kind] ?? j.ask!.kind} · {task.answer}</p>}
       {context && <ContextMeter used={context.used} size={context.size} />}
     </div>
+    </ReplyPlace.Provider>
   );
 }
 
@@ -69,6 +74,8 @@ function Words({ text, streaming, brand }: { text: string; streaming?: boolean; 
     <li className="ss-said">
       <span className="ss-mark"><BrandMark brand={brand} size={16} mono /></span>
       <Fold><Said text={text} streaming={streaming} /></Fold>
+      {/* its Copy (CHATFIRST-37), once all its words are in */}
+      {!streaming && <CopyButton text={text} className="msg-copy" />}
     </li>
   );
 }

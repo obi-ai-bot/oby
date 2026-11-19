@@ -3,6 +3,7 @@ import { ArrowDown, Check, ChevronRight, ShieldCheck } from 'lucide-react';
 import Composer, { typingIn } from './Composer';
 import Formatted from './Formatted';
 import Said from './Said';
+import { CopyButton, ReplyPlace } from './Reply';
 import { BrandMark, type Brand } from './brands';
 import { useScrollThumb } from './useScrollThumb';
 import { agentOf, type Attachments } from './view';
@@ -141,8 +142,11 @@ export default function SessionView({ id, leaving, covered = false, onBack, onGo
   const visible = entries.map((e, n) => ({ e, n })).filter(({ e }) => filter === 'all' || e.kind === 'start' || filterOf(e) === filter);
   const tail = useTail(visible);
   const agent = agentOf(task.job.agent);
+  // its words' paths are its worktree's (Reply.tsx, CHATFIRST-39)
+  const place = useMemo(() => ({ place: 'task' as const, id: task.id }), [task.id]);
 
   return (
+    <ReplyPlace.Provider value={place}>
     <div className={`chat-layer${leaving ? ' is-leaving' : ''}${covered ? ' is-covered' : ''}`} inert={covered}>
       <div className="chat-scroll">
         <section
@@ -189,6 +193,7 @@ export default function SessionView({ id, leaving, covered = false, onBack, onGo
         draft={draftBox.task(task.id)}
       />
     </div>
+    </ReplyPlace.Provider>
   );
 }
 
@@ -206,6 +211,8 @@ export const Line = memo(function Line({ entry: e, job, brand, live }: { entry: 
             <Said text={e.live && !onObid ? live.shown : e.text} streaming={e.live} />
             {e.live && <span className="ss-caret" aria-hidden="true" />}
           </div>
+          {/* its Copy (CHATFIRST-37), once all its words are in */}
+          {!e.live && <CopyButton text={e.text} className="msg-copy" />}
         </li>
       );
     case 'thought':
