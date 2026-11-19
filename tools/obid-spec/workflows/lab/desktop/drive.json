@@ -11,11 +11,6 @@
   ],
   "steps": [
     {
-      "id": "app",
-      "use": "runtime.rust:lab.desktop.app",
-      "inputs": {}
-    },
-    {
       "id": "upstream",
       "use": "runtime.rust:lab.desktop.upstream",
       "inputs": {
@@ -52,6 +47,11 @@
           "LAB-DESKTOP-1"
         ]
       }
+    },
+    {
+      "id": "app",
+      "use": "runtime.rust:lab.desktop.app",
+      "inputs": {}
     },
     {
       "id": "not-granted",
