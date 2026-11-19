@@ -320,6 +320,11 @@
             "CHATFIRST-33": "Electron UI (rows, dots, stack, copy, Stop button, widths, panel). (CHATFIRST-33's Stop calls POST /v1/conversation/stop with `conversation`: the obid half is t",
             "CHATFIRST-34": "Electron UI (rows, dots, stack, copy, Stop button, widths, panel). (CHATFIRST-33's Stop calls POST /v1/conversation/stop with `conversation`: the obid half is t",
             "CHATFIRST-35": "Electron UI (rows, dots, stack, copy, Stop button, widths, panel). (CHATFIRST-33's Stop calls POST /v1/conversation/stop with `conversation`: the obid half is t",
+            "CHATFIRST-37": "Electron reply controls (Reply.tsx, Said.tsx) and main's path check (main/worktree.ts); no obid API.",
+            "CHATFIRST-38": "Electron reply controls (Reply.tsx, Said.tsx) and main's path check (main/worktree.ts); no obid API.",
+            "CHATFIRST-39": "Electron reply controls (Reply.tsx, Said.tsx) and main's path check (main/worktree.ts); no obid API.",
+            "CHATFIRST-40": "Electron reply controls (Reply.tsx, Said.tsx) and main's path check (main/worktree.ts); no obid API.",
+            "CHATFIRST-41": "Electron reply controls (Reply.tsx, Said.tsx) and main's path check (main/worktree.ts); no obid API.",
             "SEARCH-1": "Electron search (its obid half: GET /v1/conversations?q=&limit=50 with `turn`).",
             "SEARCH-2": "Electron (task title search).",
             "SEARCH-3": "Electron debounce (obid half: q ≤ 200 chars else 422)."
@@ -1753,7 +1758,12 @@
             "SHORTCUTS-3": "Electron keys.",
             "SHORTCUTS-4": "Electron keys.",
             "SHORTCUTS-5": "Electron keys.",
-            "SHORTCUTS-6": "Electron keys."
+            "SHORTCUTS-6": "Electron keys.",
+            "SHORTCUTS-7": "Electron keys.",
+            "SHORTCUTS-8": "Electron keys.",
+            "SHORTCUTS-9": "Electron keys.",
+            "SHORTCUTS-10": "Electron main's menu bar (release build without developer items).",
+            "SHORTCUTS-11": "Electron side panel search (Settings and actions)."
           }
         },
         "signed-words.md": {

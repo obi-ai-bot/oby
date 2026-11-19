@@ -150,6 +150,11 @@ contextBridge.exposeInMainWorld('app', {
   // goes; true once opened. The editor's name, for the menu
   openWorktree: (job: string, where: 'terminal' | 'editor') => ipcRenderer.invoke('open-worktree', job, where) as Promise<boolean>,
   editorName: () => ipcRenderer.invoke('worktree-editor') as Promise<string | null>,
+  // a reply's paths (main/worktree.ts, CHATFIRST-39 and 40): which are files of its task's worktree
+  // or its conversation's folders, and one opened in the editor at its line; only the words and
+  // where the reply is go, main finds the file
+  replyFiles: (place: 'task' | 'conversation', id: string, refs: string[]) => ipcRenderer.invoke('reply-files', place, id, refs) as Promise<boolean[]>,
+  openReplyFile: (place: 'task' | 'conversation', id: string, ref: string) => ipcRenderer.invoke('open-reply-file', place, id, ref) as Promise<boolean>,
   sphereLeave: () => ipcRenderer.invoke('sphere-leave') as Promise<string | null>,
   // an invite link pasted in the app (first run, Settings › Obysphere), joined through main's one
   // join path, its own dialog included, only right after the owner's click (SPHEREAPP-3, 4)

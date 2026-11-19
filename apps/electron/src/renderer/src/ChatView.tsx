@@ -1,5 +1,5 @@
 import { copyPlain } from './room';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronRight, Ellipsis, File as FileIcon, X } from 'lucide-react';
 import { BrandMark } from './brands';
 import { ObyFace, PeerByline } from './ObyFace';
@@ -17,6 +17,7 @@ import { replyTarget, type Box } from './replyTarget';
 import Composer, { typingIn } from './Composer';
 import Formatted from './Formatted';
 import Said from './Said';
+import { CopyButton, Photo, ReplyPlace, type Place } from './Reply';
 import { convoTitle, threadOf } from './mock';
 import { ENDED, agentOf, type Message } from './view';
 import { asksWaiting, markSeen, stop, tell, tellPlaceholder, useTasks, type Task } from './tasks';
@@ -78,6 +79,9 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   // deleted, it's gone while this sinks away: keep showing the last of it
   const keptTask = useRef<Task>(null), keptChat = useRef<Chat>(null);
   const task = kind === 'task' ? tasks.find((t) => t.id === id) ?? keptTask.current! : null;
+  // where its replies' paths are read (Reply.tsx, CHATFIRST-39): a task's thread, its worktree; a
+  // conversation with Oby, its folders; other people's Obys' words, nowhere
+  const place = useMemo<Place | null>(() => (kind === 'task' ? { place: 'task', id } : kind === 'oby' ? { place: 'conversation', id } : null), [kind, id]);
   const talk = kind === 'oby' ? chats.find((c) => c.id === id) ?? keptChat.current! : null;
   const convo = kind === 'peer' ? convos.find((c) => c.id === id)! : null;
   if (task) keptTask.current = task;
@@ -224,6 +228,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   };
 
   return (
+    <ReplyPlace.Provider value={place}>
     <div className={`chat-layer${leaving ? ' is-leaving' : ''}${covered ? ' is-covered' : ''}`} inert={covered}>
       <div className="chat-scroll">
         {/* ⌘F: find in this conversation (SHORTCUTS-3) */}
@@ -257,7 +262,8 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                   ) : m.text ? (
                     // Oby's as it said it (its steps alone, folded where another
                     // Oby's answer came in, have no words)
-                    <div key="text" className="msg-bubble"><Said text={m.text} streaming={(m as Message).streaming} /></div>
+                    // with its Copy (CHATFIRST-37), once all its words are in
+                    <div key="text" className="msg-bubble"><Said text={m.text} streaming={(m as Message).streaming} />{!(m as Message).streaming && <CopyButton text={m.text} className="msg-copy" />}</div>
                   ) : null,
                   // setting up (Oby's first conversation): where you act, once its words are in
                   ...((m as Message).setup && !(m as Message).streaming ? [<SetupCard key="setup" step={(m as Message).setup!} />] : []),
@@ -386,6 +392,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
       {/* (from its ⋯, at the card's right edge: it opens leftward; from a right-click, at the pointer) */}
       {menu && menuTask && <TaskMenu task={menuTask} at={menu.at} align={menu.at.width > 0 ? 'right' : 'left'} onClose={() => setMenu(null)} onTell={() => tellTo(menu.id)} />}
     </div>
+    </ReplyPlace.Provider>
   );
 }
 
@@ -418,7 +425,8 @@ function Attached({ files = [] }: { files?: { name: string; preview?: string }[]
   return (
     <div className="msg-attached">
       {files.map((f, i) => (f.preview
-        ? <img key={i} className="msg-photo" src={f.preview} alt={f.name} />
+        // a click shows it full size (CHATFIRST-41)
+        ? <Photo key={i} className="msg-photo" src={f.preview} alt={f.name} />
         : <span key={i} className="msg-file"><FileIcon size={14} strokeWidth={1.8} /><span>{f.name}</span></span>))}
     </div>
   );

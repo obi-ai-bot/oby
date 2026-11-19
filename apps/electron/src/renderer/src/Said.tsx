@@ -1,6 +1,7 @@
 import { Component, createElement, Fragment, useMemo, useRef, type ReactNode } from 'react';
 import { lexer, type Token, type Tokens } from 'marked';
-import { tokenize } from './textTokens';
+import { isPath, tokenize } from './textTokens';
+import { CodeBlock, FileLink, Streaming } from './Reply';
 
 // What Oby (or a job's agent) said, from its Markdown (GitHub's): paragraphs, lists (nested,
 // numbered, to-dos), **bold**, *italic*, `code` and code blocks, links, headings, quotes and
@@ -8,9 +9,11 @@ import { tokenize } from './textTokens';
 // text it is. In plain text, references, paths and @mentions are set apart as in the message
 // box, and each word is its own span, so a word coming in can fade in (see .is-streaming). Read
 // again only when its text changes: the conversation renders again with each word coming in.
+// A code block is in colour with its Copy, and a path a file of the reply's task or conversation
+// opens it (Reply.tsx, CHATFIRST-38 to 40).
 // streaming: its words are still coming in (closed, below)
 export default function Said({ text, streaming = false }: { text: string; streaming?: boolean }) {
-  return <Safe text={text}><Blocks text={text} streaming={streaming} /></Safe>;
+  return <Safe text={text}><Streaming.Provider value={streaming}><Blocks text={text} streaming={streaming} /></Streaming.Provider></Safe>;
 }
 // A read that takes too long twice (once could be the machine, not the words) isn't done again:
 // twice in a row while words come in, until they're all in; twice for the same words, for as long
@@ -89,7 +92,7 @@ const blocks = (ts: Token[]): ReactNode[] => ts.map((t, k) => {
     case 'list': return createElement(t.ordered ? 'ol' : 'ul', { key: k, start: t.ordered ? t.start : undefined },
       (t.items as Tokens.ListItem[]).map((item, i) => <li key={i}>{blocks(item.tokens)}</li>));
     case 'checkbox': return <input key={k} type="checkbox" checked={t.checked} disabled />;
-    case 'code': return <pre key={k} className="ss-code">{t.text}</pre>;
+    case 'code': return <CodeBlock key={k} text={t.text} lang={t.lang} />;
     case 'blockquote': return <blockquote key={k} className="msg-quote">{blocks(t.tokens!)}</blockquote>;
     case 'table': {
       const cell = (c: Tokens.TableCell, i: number) => createElement(c.header ? 'th' : 'td', { key: i, style: { textAlign: c.align ?? undefined } }, inline(c.tokens));
@@ -115,14 +118,17 @@ const inline = (ts: Token[], inLink = false): ReactNode[] => ts.map((t, k) => {
     case 'strong': return <strong key={k}>{inline(t.tokens!, inLink)}</strong>;
     case 'em': return <em key={k}>{inline(t.tokens!, inLink)}</em>;
     case 'del': return <del key={k}>{inline(t.tokens!, inLink)}</del>;
-    case 'codespan': return <code key={k} className="tok tok-code">{split(t.text)}</code>;
+    // `src/x.ts:42`: a path, in code, opens as one does in the words
+    case 'codespan': return !inLink && isPath(t.text)
+      ? <FileLink key={k} text={t.text} className="tok tok-code">{split(t.text)}</FileLink>
+      : <code key={k} className="tok tok-code">{split(t.text)}</code>;
     case 'br': return <br key={k} />;
     // a to-do's box, in a list with blank lines between its items
     case 'checkbox': return <input key={k} type="checkbox" checked={t.checked} disabled />;
     case 'link': return inLink ? <Fragment key={k}>{inline(t.tokens!, true)}</Fragment> : <Link key={k} href={t.href}>{inline(t.tokens!, true)}</Link>;
     // a picture is never fetched: its words, linked (inside a link, a badge: just its words)
     case 'image': return inLink ? <Fragment key={k}>{words(t.text || t.href)}</Fragment> : <Link key={k} href={t.href}>{words(t.text || t.href)}</Link>;
-    case 'text': return <Fragment key={k}>{t.tokens ? inline(t.tokens, inLink) : words(decode(t.text))}</Fragment>;
+    case 'text': return <Fragment key={k}>{t.tokens ? inline(t.tokens, inLink) : words(decode(t.text), inLink)}</Fragment>;
     case 'escape': return t.text;
     // HTML, and anything else: as it was written
     default: return <Fragment key={k}>{words(t.raw)}</Fragment>;
@@ -143,7 +149,10 @@ function Link({ href, children }: { href: string; children: ReactNode }) {
 
 // references, paths and @mentions set apart as in the message box (Formatted); a run of text past
 // 4 KB (no one's prose) stays one piece of text: thousands of spans cost more than they show
-const words = (s: string) => s.length > 4096 ? s : tokenize(s).map((r, i) => (r.kind ? <span key={i} className={`tok tok-${r.kind}`}>{split(r.text)}</span> : split(r.text, i)));
+// (a path a file of the reply's task or conversation opens it: FileLink; never in a link's words)
+const words = (s: string, inLink = false) => s.length > 4096 ? s : tokenize(s).map((r, i) => (
+  r.kind === 'path' && !inLink ? <FileLink key={i} text={r.text} className="tok tok-path">{split(r.text)}</FileLink>
+    : r.kind ? <span key={i} className={`tok tok-${r.kind}`}>{split(r.text)}</span> : split(r.text, i)));
 const split = (s: string, at = 0) => s.split(/(\s+)/).map((w, k) => (!w || /\s/.test(w) ? w : <span key={`${at}.${k}`} className="w">{w}</span>));
 
 // &amp;, &mdash;, &#8212; and the like read as what they stand for, as in any Markdown (not in

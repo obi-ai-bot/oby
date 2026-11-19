@@ -1,11 +1,12 @@
 import { execFile } from 'node:child_process';
-import { existsSync, lstatSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, sep } from 'node:path';
+import { isAbsolute, join, resolve, sep } from 'node:path';
 import { HOME, obid, type Trusted } from './obid';
+import { obidState } from './live';
 import { takeInput } from './words';
 import { ipc } from './ipc';
-import { oneOf, string } from '../shared/decode';
+import { oneOf, string, type Decoder } from '../shared/decode';
 
 // Open in Terminal, Open in <editor> (docs/contracts/task-changes.md, CHANGES-6 and 7): a task's
 // worktree, in a program of the owner's own. The page sends only the job's id: main makes the path
@@ -69,9 +70,87 @@ export async function openWorktree(id: string, where: 'terminal' | 'editor', run
   return new Promise((resolve) => { run(program, args, (err) => resolve(!err)); });
 }
 
+// A path in a reply (docs/contracts/chat-first.md, CHATFIRST-39 and 40): `src/x.ts`, `src/x.ts:42`
+// or `src/x.ts:42:7`, written by an agent or Oby, so anyone's words. The page sends only the words
+// and where the reply is (a task, by its id; a conversation, by its id): main makes the folders
+// itself, the task's worktree or the conversation's folders as obid has them, and a path is a file
+// only when it is a real file inside one of them, after every link in it is followed. Anything
+// else (outside them, `..` out, a folder, a link out, a URL, a scheme) is no file, and stays text.
+export type Place = 'task' | 'conversation';
+export type FileAt = { file: string; line?: number; column?: number };
+
+// the folders a reply's paths are read from, each real: a task's worktree; a conversation's folders
+// (its project's while it's in one), only those obid lists for it, each a real folder
+export function foldersOf(place: Place, id: string, home = HOME): string[] {
+  if (place === 'task') { const dir = worktreeOf(home, id); return dir ? [dir] : []; }
+  const folders = obidState().conversations.find((c) => c.id === id)?.folders ?? [];
+  return folders.flatMap((f) => {
+    if (typeof f !== 'string' || !isAbsolute(f)) return [];
+    try { const real = realpathSync(f); return statSync(real).isDirectory() ? [real] : []; } catch { return []; }
+  });
+}
+
+// `path[:line[:column]]` as a reply writes it, at most 1,024 characters and no control character
+const REF = /^([^\0-\x1f\x7f]+?)(?::(\d{1,7})(?::(\d{1,7}))?)?$/;
+// the file a reply's path names in `folders`, or null when it names none of theirs
+export function fileIn(folders: string[], ref: string, home = homedir()): FileAt | null {
+  if (ref.length > 1024) return null;
+  const m = REF.exec(ref);
+  if (!m || /^[a-z][a-z\d+.-]*:/i.test(m[1])) return null;
+  const path = m[1].startsWith('~/') ? join(home, m[1].slice(2)) : m[1];
+  for (const root of folders) {
+    const target = isAbsolute(path) ? path : resolve(root, path);
+    try {
+      const real = realpathSync(target);
+      if (!real.startsWith(root + sep) || !statSync(real).isFile()) continue;
+      const line = m[2] ? Number(m[2]) : undefined, column = m[3] ? Number(m[3]) : undefined;
+      return { file: real, ...(line ? { line } : {}), ...(line && column ? { column } : {}) };
+    } catch { /* not there: the next folder */ }
+  }
+  return null;
+}
+
+// the program and arguments that open `at` in the owner's editor, at its line: the editor's own
+// command-line tool inside its app (Cursor's and VS Code's `--goto`, Zed's `cli`), else the app
+// opened on the file (at its first line), else Finder showing it (never `open` on the file itself,
+// which would run a script or an app)
+export function openFileCommand(at: FileAt, editor: Editor = editorOf(), exists: (path: string) => boolean = existsSync): [string, string[]] {
+  const spot = at.line && !at.file.includes(':') ? `${at.file}:${at.line}${at.column ? `:${at.column}` : ''}` : at.file;
+  if (editor.app) {
+    const cli = editor.label === 'Zed' ? join(editor.app, 'Contents/MacOS/cli')
+      : join(editor.app, 'Contents/Resources/app/bin', editor.label === 'Cursor' ? 'cursor' : 'code');
+    if (exists(cli)) return editor.label === 'Zed' ? [cli, [spot]] : [cli, spot === at.file ? [at.file] : ['--goto', spot]];
+    return ['/usr/bin/open', ['-a', editor.app, at.file]];
+  }
+  return ['/usr/bin/open', ['-R', at.file]];
+}
+
+// which of a reply's paths are files it may open (the page links those, the rest stay text)
+export const filesOf = (place: Place, id: string, refs: string[]) => {
+  const folders = foldersOf(place, id);
+  return refs.map((r) => !!folders.length && !!fileIn(folders, r));
+};
+
+// Opens a reply's path in the owner's editor: true once started, false when it names no file of the
+// reply's task or conversation (or not a Mac, or a task obid doesn't have)
+export async function openFile(place: Place, id: string, ref: string, run = execFile): Promise<boolean> {
+  if (process.platform !== 'darwin') return false;
+  const at = fileIn(foldersOf(place, id), ref);
+  if (!at) return false;
+  if (place === 'task' && (await obid('GET', `/v1/jobs/${encodeURIComponent(id)}`)).status !== 200) return false;
+  const [program, args] = openFileCommand(at);
+  return new Promise((done) => { run(program, args, (err) => done(!err)); });
+}
+
+// a reply's paths, as the page sends them: at most 200, each a string
+const refs: Decoder<string[]> = (v) => (Array.isArray(v) && v.length <= 200 && v.every((r) => typeof r === 'string') ? { value: v as string[] } : undefined);
+
 export function worktrees(trusted: Trusted) {
   const channels = ipc(trusted);
   // the editor's name, for the menu's "Open in <editor>"
   channels.handle('worktree-editor', [], () => editorOf().label, null);
   channels.handle('open-worktree', [string, oneOf('terminal', 'editor')], (_e, id, where) => (takeInput() ? openWorktree(id, where) : false), false);
+  // a reply's paths: which are files to link (CHATFIRST-39), and one opened, right after a click main saw (CHATFIRST-40)
+  channels.handle('reply-files', [oneOf('task', 'conversation'), string, refs], (_e, place, id, list) => filesOf(place, id, list), [] as boolean[]);
+  channels.handle('open-reply-file', [oneOf('task', 'conversation'), string, string], (_e, place, id, ref) => (takeInput() ? openFile(place, id, ref) : false), false);
 }

@@ -22,8 +22,8 @@ const PATTERNS: [Kind, RegExp][] = [
   ['url', /\bhttps?:\/\/[^\s<>"'`]*[^\s<>"'`.,;:!?)\]}]/],
   ['code', /`[^`\n]+`/],
   ['ref', /(?<![\w#])(?:[\w.-]+\/)?(?:[\w.-]+)?#\d+(?!\w)/],
-  // (not the full stop or dash after it)
-  ['path', /(?<![\w.:/@-])(?:~\/|\.{1,2}\/|\/)?(?:[\w@.-]+\/)+[\w@.-]*[\w@]/],
+  // (not the full stop or dash after it); a line and column after it are part of it (src/x.ts:42:7)
+  ['path', /(?<![\w.:/@-])(?:~\/|\.{1,2}\/|\/)?(?:[\w@.-]+\/)+[\w@.-]*[\w@](?::\d+(?::\d+)?(?!\w))?/],
 ];
 // members joining or leaving: who's set apart from the next keystroke on
 onAskable(() => { PATTERNS[0] = ['mention', mentionOf(askableNow().map((o) => o.name))]; });
@@ -39,6 +39,9 @@ export function findToken(text: string) {
 // what a token is (worked out from its text each time, so it follows edits)
 const kindOf = (text: string): Kind | null =>
   PATTERNS.find(([, re]) => { const m = re.exec(text); return m && m.index === 0 && m[0].length === text.length; })?.[0] ?? null;
+
+// a whole text that is one path (`src/x.ts:42` in backticks: Said opens it as a path)
+export const isPath = (text: string) => kindOf(text) === 'path';
 
 // Text cut into runs, plain or recognised (with what kind), in order: how a
 // sent message shows the same things the message box did as it was typed.

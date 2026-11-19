@@ -418,3 +418,33 @@ describe('a task at work', () => {
     expect(lines[2]).toMatchObject({ state: 'failed' });
   });
 });
+
+// Reading a reply in the thread (docs/contracts/chat-first.md, CHATFIRST-37 and 41): where its
+// controls are; what they do is replies.test.tsx
+describe('reading a reply in the thread', () => {
+  beforeEach(() => { page.boxes = {}; page.obid = false; vi.clearAllMocks(); });
+  afterEach(() => { vi.unstubAllGlobals(); });
+  const copies = (html: string) => html.match(/aria-label="Copy"/g)?.length ?? 0;
+
+  it('CHATFIRST-37: Oby\'s reply and its task\'s agent\'s words each have their Copy; yours and words still coming in have none', async () => {
+    const { log, convo } = await views([tool('Read', 'a.ts'), { kind: 'said', text: 'All **done**.', at: '2:10 PM' }], {}, 'done');
+    expect(log).toMatch(/<li class="ss-said">.*<strong>.*done.*<\/strong>.*<button type="button" class="reply-copy msg-copy" aria-label="Copy"/);
+    // Oby's "On it." and the agent's last words under its card; "fix it" is yours
+    expect(copies(convo)).toBe(2);
+    expect(convo).toMatch(/<div class="msg-bubble"><p>.*On.*it\..*<\/p><button type="button" class="reply-copy msg-copy" aria-label="Copy"/);
+    const { default: ChatView } = await import('../ChatView');
+    page.chats = [{ id: 'c1', title: 'One fix', said: [{ who: 'you', text: 'fix it', ago: 5 }, { who: 'oby', text: 'Halfway th', ago: 0, streaming: true }] } satisfies Chat];
+    const none = () => {};
+    expect(copies(read(renderToStaticMarkup(<ChatView kind="oby" id="c1" leaving={false} onBack={none} onGone={none} />)))).toBe(0);
+  });
+
+  it('CHATFIRST-41: a picture that went with a message is a button that shows it full size', async () => {
+    stub();
+    const { default: ChatView } = await import('../ChatView');
+    page.chats = [{ id: 'c1', title: 'A picture', said: [{ who: 'you', text: 'look', ago: 5, files: [{ name: 'shot.png', preview: 'data:image/png;base64,AA==' }, { name: 'notes.txt' }] }] } satisfies Chat];
+    const none = () => {};
+    const html = read(renderToStaticMarkup(<ChatView kind="oby" id="c1" leaving={false} onBack={none} onGone={none} />));
+    expect(html).toContain('<button type="button" class="photo-open" aria-label="Show shot.png full size"><img class="msg-photo" src="data:image/png;base64,AA==" alt="shot.png"/></button>');
+    expect(html).not.toContain('aria-label="Show notes.txt full size"');
+  });
+});

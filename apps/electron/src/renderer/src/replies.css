@@ -1,0 +1,65 @@
+/* Reading a reply (Reply.tsx, docs/contracts/chat-first.md CHATFIRST-37 to 41): the controls are
+   quiet, Sangam's tokens only, and show when the pointer is on what they act on. */
+
+/* Copy: a 22px icon in --muted, --ink with --hover under the pointer, as the side panel's icons */
+.reply-copy {
+  width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px;
+  display: inline-grid; place-items: center;
+  background: none; color: var(--muted); cursor: pointer;
+  opacity: 0; transition: opacity 120ms var(--warm), background 120ms var(--warm), color 120ms var(--warm);
+}
+.reply-copy:hover { background: var(--hover); color: var(--ink); }
+.reply-copy:focus-visible { opacity: 1; outline: 1px solid var(--line-focus); outline-offset: 0; }
+.reply-copy.is-copied { opacity: 1; color: var(--ink); }
+
+/* A reply's: under its last line, at its right edge, in the room between replies; shown while
+   the pointer is on the reply */
+.msg.is-oby .msg-bubble, .ss-said { position: relative; }
+.msg-copy { position: absolute; top: calc(100% + 1px); right: -4px; z-index: 1; }
+.ss-said > .msg-copy { top: 100%; }
+.msg:hover .msg-copy, .ss-said:hover > .msg-copy { opacity: 1; }
+
+/* A code block's: at its top right, over the code, on the block's own ground */
+.code-block { position: relative; min-width: 0; }
+.code-copy { position: absolute; top: 5px; right: 5px; background: var(--chip); }
+.code-copy:hover { background: var(--chip-hover); }
+.code-block:hover .code-copy { opacity: 1; }
+li > .code-block { margin: 2px 0 0; }
+
+/* Code in colour: Prism's tokens, quiet on the block's dark ground. Paths and tags keep the coral
+   a path has in the words (.tok-path) */
+.ss-code .hl-comment, .ss-code .hl-prolog, .ss-code .hl-doctype, .ss-code .hl-cdata { color: var(--muted); }
+.ss-code .hl-punctuation, .ss-code .hl-operator { color: var(--text); }
+.ss-code .hl-keyword, .ss-code .hl-atrule, .ss-code .hl-rule, .ss-code .hl-important, .ss-code .hl-builtin { color: #c9a8ff; }
+.ss-code .hl-string, .ss-code .hl-char, .ss-code .hl-attr-value, .ss-code .hl-regex, .ss-code .hl-url, .ss-code .hl-inserted { color: #a8d8a0; }
+.ss-code .hl-number, .ss-code .hl-boolean, .ss-code .hl-constant, .ss-code .hl-symbol { color: #f5bd85; }
+.ss-code .hl-function, .ss-code .hl-class-name, .ss-code .hl-title { color: #8ab8ff; }
+.ss-code .hl-tag, .ss-code .hl-selector, .ss-code .hl-property, .ss-code .hl-attr-name, .ss-code .hl-key { color: #ff8a70; }
+.ss-code .hl-variable, .ss-code .hl-parameter { color: var(--ink); }
+.ss-code .hl-deleted { color: var(--danger); }
+.ss-code .hl-bold { font-weight: 600; }
+.ss-code .hl-italic { font-style: italic; }
+
+/* A path that is a file of the reply's task or conversation: the same coral, underlined under the
+   pointer, as a link is */
+a.tok-file { text-decoration: none; cursor: pointer; }
+a.tok-file:hover { text-decoration: underline; text-underline-offset: 2px; }
+a.tok-file:focus-visible { outline: 1px solid var(--line-focus); outline-offset: 1px; }
+
+/* A picture that went with a message: the thumbnail is a button, zooming in under the pointer */
+.photo-open { display: block; padding: 0; border: 0; border-radius: 14px; background: none; cursor: zoom-in; }
+.photo-open:focus-visible { outline: 1px solid var(--line-focus); outline-offset: 2px; }
+
+/* ...and full size over the window, on the modal's own backdrop */
+.image-view {
+  position: fixed; inset: 0; z-index: 100;
+  display: grid; place-items: center; padding: 48px;
+  background: rgba(0, 0, 0, 0.8); cursor: zoom-out;
+  animation: fade-in 160ms var(--warm) both; -webkit-app-region: no-drag;
+}
+.image-view > img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 10px; box-shadow: 0 0 0 1px var(--line); cursor: default; }
+.image-view-close {
+  position: absolute; top: 16px; right: 16px; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px;
+  display: grid; place-items: center; background: var(--chip); color: var(--item); cursor: pointer;
+}
+.image-view-close:hover { background: var(--chip-hover); color: var(--ink); }
