@@ -859,7 +859,8 @@
             "TASKS-9": "Electron Rename/Archive/Delete/menus/session view (routes themselves in §4).",
             "TASKS-10": "Electron Rename/Archive/Delete/menus/session view (routes themselves in §4).",
             "TASKS-17": "retired.",
-            "TASKS-25": "Electron shows no decision for failed/interrupted."
+            "TASKS-25": "Electron shows no decision for failed/interrupted.",
+            "TASKS-33": "Electron renders the agent's summary under Result as Markdown (TaskCard.tsx)."
           }
         },
         "task-changes.md": {
