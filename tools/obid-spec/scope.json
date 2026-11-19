@@ -1758,7 +1758,12 @@
             "SHORTCUTS-3": "Electron keys.",
             "SHORTCUTS-4": "Electron keys.",
             "SHORTCUTS-5": "Electron keys.",
-            "SHORTCUTS-6": "Electron keys."
+            "SHORTCUTS-6": "Electron keys.",
+            "SHORTCUTS-7": "Electron keys.",
+            "SHORTCUTS-8": "Electron keys.",
+            "SHORTCUTS-9": "Electron keys.",
+            "SHORTCUTS-10": "Electron main's menu bar (release build without developer items).",
+            "SHORTCUTS-11": "Electron side panel search (Settings and actions)."
           }
         },
         "signed-words.md": {
