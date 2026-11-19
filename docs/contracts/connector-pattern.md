@@ -154,7 +154,16 @@ Each is **Proposed** but where it says **In force**; a test named after the scen
 - **CONNECTOR-13** **In force.** Every key obid answers about GitHub today keeps its name and meaning; another connector's reference comes under a new key.
 - **CONNECTOR-14** The first new connector's pull request changes only its definition, adapter, registry line, suite entry and contract section, as the scope report shows.
 - **CONNECTOR-15** A new connector is off until the owner turns it on; with it off, every recording of G1 is reproduced unchanged.
-- **CONNECTOR-20** to **CONNECTOR-29** The conformance suite's cases, as "The conformance suite" states each.
+- **CONNECTOR-20** An SSH remote whose host isn't the web host is recognized as this host. ("The conformance suite")
+- **CONNECTOR-21** An Enterprise or self-hosted hostname is recognized only when the owner configured it; an unclaimed host is unknown. ("The conformance suite")
+- **CONNECTOR-22** Every service state maps to exactly one of Oby's; an unknown one maps to unknown, never open. ("The conformance suite")
+- **CONNECTOR-23** A list past 100 comes back whole; one cut short says it is partial. ("The conformance suite")
+- **CONNECTOR-24** A merge is parsed: its merged commit read back, its credits kept intact. ("The conformance suite")
+- **CONNECTOR-25** A send carrying a planted secret, or with no scanner, sends nothing. ("The conformance suite")
+- **CONNECTOR-26** No token in any answer, log line, error or agent input, even when the service echoes one. ("The conformance suite")
+- **CONNECTOR-27** Service text reaches an agent only inside its quoted file, with the fence whole. ("The conformance suite")
+- **CONNECTOR-28** Rate-limited, down, signed out and no permission each answer their typed error, never an empty list. ("The conformance suite")
+- **CONNECTOR-29** A false capability is skipped and said, and its call never made. ("The conformance suite")
 - **CONNECTOR-30** Every recorded GitHub call and API snapshot of G1 is reproduced byte for byte on the commit under test; one difference fails.
 
 ### Test it when it's done (a real Mac)
