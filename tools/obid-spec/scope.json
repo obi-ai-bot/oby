@@ -62,7 +62,9 @@
             "PEER-39",
             "PEER-40",
             "PEER-41",
-            "PEER-43"
+            "PEER-43",
+            "PEER-44",
+            "PEER-45"
           ],
           "elsewhere": {
             "PEER-7": "— Electron member row/thread view (apps/electron).",

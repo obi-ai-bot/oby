@@ -952,13 +952,19 @@ impl Link {
         meant: Option<Meant<'_>>,
     ) -> Result<Value, ApiError> {
         let invalid = |m: String| api(StatusCode::UNPROCESSABLE_ENTITY, m);
+        // The owner's own question from a member's thread doesn't need the Sphere there as they
+        // send it: built by the directory as last read, it waits for the Sphere and goes once it's
+        // back, the same signed message, so the Sphere takes it once (PEER-44).
+        let may_wait = meant.is_some_and(|m| m.by_owner) && kind == "question";
         // Built, sealed and sent; once more after a seal refusal, with the directory read again.
         let mut attempt = 0;
         loop {
             attempt += 1;
             if let Err(e) = self.read_directory().await {
                 self.note_error(&e);
-                return Err(from_client(&e));
+                if !(may_wait && asking::away(&e) && self.lock().directory_read != 0) {
+                    return Err(from_client(&e));
+                }
             }
             let (envelope, peer_owner) = {
                 let state = self.lock();
@@ -1105,6 +1111,20 @@ impl Link {
                         );
                     });
                     return Ok(updated.unwrap_or(exchange).to_json());
+                }
+                Err(e) if may_wait && asking::away(&e) => {
+                    // Kept as signed, its id its request key: the sender tries it again until the
+                    // Sphere answers, and a retry of what the Sphere already has gets the first
+                    // answer, never a second message (sphere-api.md 6.1, check 8).
+                    self.refused_token(&e);
+                    self.note_error(&e);
+                    let waiting = self.update_exchange(&cid, |x| {
+                        x.outbox = vec![kept_envelope.clone()];
+                        x.tried = Some(cid.clone());
+                        x.error = Some(asking::NOT_SENT_YET.into());
+                    });
+                    self.outbox.notify_one();
+                    return Ok(waiting.unwrap_or(exchange).to_json());
                 }
                 Err(e) => {
                     self.lock().exchanges.remove(&cid);

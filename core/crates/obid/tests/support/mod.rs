@@ -1401,6 +1401,8 @@ pub struct SphereState {
     pub swap_member: Option<(u32, Value)>,
     /// Reads of the directory answer `503`.
     pub members_down: bool,
+    /// A Sphere away for now: every path but its health answers `503` ([`sphere_away`]).
+    pub down: bool,
     /// Every send's body as it arrived, with its sender and the status answered.
     pub sends: Vec<(String, String, u16)>,
     /// The next send of this type is recorded and delivered, and its answer waits until the test
@@ -1497,6 +1499,22 @@ fn sphere_error(status: StatusCode, code: &str, message: &str) -> Response {
         .into_response()
 }
 
+/// While [`SphereState::down`], every path but health answers `503`: a Sphere away for now.
+async fn sphere_away(
+    State(state): State<Arc<Mutex<SphereState>>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if state.lock().unwrap().down && request.uri().path() != "/v0.1/health" {
+        return sphere_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "away for now",
+        );
+    }
+    next.run(request).await
+}
+
 fn new_token() -> String {
     let mut bytes = [0u8; 24];
     getrandom::fill(&mut bytes).unwrap();
@@ -1541,6 +1559,10 @@ impl FakeSphere {
                 "/v0.1/relay/{relay}/devices/{device}",
                 axum::routing::put(put_relay_device).delete(delete_relay_device),
             )
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                sphere_away,
+            ))
             .with_state(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());

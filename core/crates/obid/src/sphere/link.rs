@@ -65,6 +65,9 @@ const POLL_WAIT: u32 = 25;
 const DIRECTORY_EVERY: i64 = 60;
 /// The longest a reply waits to be sent again after a failure.
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
+/// The longest the owner's own question waits to be tried again while the Sphere is away, so it
+/// goes within this of the Sphere coming back (PEER-44, RIG-33).
+const ASK_RETRY_MAX: Duration = Duration::from_secs(5);
 /// What obid's card says it is: from 0.2.0, an obid that reads a card with a seal key (#1233); from
 /// 0.3.0, one that takes `card_runtime` too, a card's `features`, `runtime` and `vendors` (spec
 /// identity.md section 2.3), which it says the spec's way, with `+card-runtime` as build metadata.

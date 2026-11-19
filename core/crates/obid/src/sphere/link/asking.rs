@@ -2,10 +2,26 @@
 //! request does ([`Link::request`]: the schema, the secret scan, sealed and signed), remembering the
 //! conversation so that what comes back posts there (crate::brain::ask).
 
+use super::reviews::{Delivery, delivery};
 use super::*;
 
 /// How long a question asked in a conversation stays open: a person may answer it later that day.
 const ASK_LIFETIME: i64 = 86_400;
+
+/// What a question the Sphere couldn't take yet says while it waits for it (PEER-44): the
+/// exchange's own `error`, until it goes.
+pub(super) const NOT_SENT_YET: &str =
+    "Not sent yet: the Obysphere can't be reached. It goes once it's back.";
+
+/// Whether a Sphere error says only that it's away for now, so the owner's own question may wait
+/// for it (PEER-44): no answer, or one that says to try later. Any other refusal stands.
+pub(super) fn away(error: &ClientError) -> bool {
+    match error {
+        ClientError::Unreachable(_) => true,
+        ClientError::Refused { status, .. } => *status >= 500 || *status == 408 || *status == 429,
+        ClientError::Protocol(_) => false,
+    }
+}
 
 /// Another active member, for a conversation to ask. Its ids and its card are what it says of
 /// itself: an open invitation lets whoever redeems it pick them.
@@ -275,10 +291,14 @@ impl Link {
             ));
         }
         // Not the last read: someone who joined since isn't "no such member" with the Sphere away.
+        // A member the last read had is asked by it, and the question waits for the Sphere
+        // (PEER-44); for anyone else the read says nothing, so it's refused.
         if let Err(e) = self.read_directory().await {
             self.note_error(&e);
-            let e = from_client(&e);
-            return Err(api(e.status, crate::brain::ask::refusal(owner, &e)));
+            if !(away(&e) && self.ask_members().iter().any(|m| m.owner == owner)) {
+                let e = from_client(&e);
+                return Err(api(e.status, crate::brain::ask::refusal(owner, &e)));
+            }
         }
         let members: Vec<AskMember> = self
             .ask_members()
@@ -319,6 +339,72 @@ impl Link {
         let verified = self.pins.verified(owner);
         let post = exchange.and_then(|e| e.posts(&self.owner(), verified).into_iter().next());
         Ok(post.unwrap_or(Value::Null))
+    }
+
+    /// Whether the owner's own question waits for the Sphere ([`NOT_SENT_YET`]): the sender then
+    /// tries more often.
+    pub(super) fn question_waits(&self) -> bool {
+        self.lock().exchanges.values().any(|e| {
+            e.direction == "outgoing"
+                && e.outbox.first().is_some_and(|m| m["id"] == e.request["id"])
+        })
+    }
+
+    /// Whether the owner's question waiting for the Sphere may still go, by the directory read
+    /// again now, as [`Link::send_scanned`] checks it as it's asked: to an active member that still
+    /// says it acts for the owner it was meant for, takes questions, and seals or was let have
+    /// words in the clear. `Err(None)`: the directory can't be read, so it waits; `Err(Some(why))`,
+    /// in obid's words: it never goes.
+    pub(super) async fn waiting_question_holds(&self, cid: &str) -> Result<(), Option<String>> {
+        if let Err(e) = self.read_directory().await {
+            self.note_error(&e);
+            self.refused_token(&e);
+            return Err(None);
+        }
+        let state = self.lock();
+        let Some(asked) = state.exchanges.get(cid) else {
+            return Err(Some("The exchange is gone: nothing was sent.".into()));
+        };
+        let Some(member) = state.directory.members.get(&asked.peer) else {
+            return Err(Some(format!(
+                "{} isn't a member any more: nothing was sent.",
+                asked.peer
+            )));
+        };
+        if !member.active {
+            return Err(Some(format!(
+                "{} has been revoked: nothing was sent.",
+                asked.peer
+            )));
+        }
+        if asked.peer_owner.as_deref() != Some(member.owner.as_str()) {
+            tracing::warn!(
+                "sphere: {} now says it acts for {}",
+                asked.peer,
+                member.owner
+            );
+            return Err(Some(
+                "That Oby now says it acts for someone else: nothing was sent.".into(),
+            ));
+        }
+        if !member.accepts.contains(&asked.kind) {
+            return Err(Some(format!(
+                "{}'s card doesn't accept {}: nothing was sent.",
+                asked.peer, asked.kind
+            )));
+        }
+        match delivery(
+            member.seal.is_some(),
+            self.pins.seals(&asked.peer),
+            self.pins.allows_clear(&member.owner),
+        ) {
+            Delivery::Sealed | Delivery::Clear => Ok(()),
+            Delivery::KnownToSeal => Err(Some(format!(
+                "{} seals, and obid trusts no seal key of its now: nothing was sent.",
+                asked.peer
+            ))),
+            Delivery::NotSealed => Err(Some(not_sealed(&member.owner))),
+        }
     }
 
     /// Which of one owner's Obys a question goes to: one that takes questions, first one whose words
