@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { knownUpTo, withEntries, withLine, withOutput, withTail } from './liveTask';
 import { LIMIT_REACHED, LIMIT_WORDS, MANAGE_USAGE, manageUsage } from './chatgpt';
-import { ApiError, api, isInboxKind, isJobStatus, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type AgentQuestion, type CheckRun, type Repo, type Status, type TranscriptEntry, type Turn, type AskMark } from './obid';
+import { ApiError, api, isInboxKind, isJobStatus, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type AgentQuestion, type CheckRun, type Repo, type Status, type TranscriptEntry, type Turn, type AskMark, type SkillsAnswer } from './obid';
 import { carriedOn, detailOf, pageOf, publishOf, stagesOf } from './jobPage';
 import { STEER, TELL, agentOf, type Ask, type AskKind, type Job as JobView, type Attachments, type Message, type Offer } from './view';
 import { replaceChats, type Chat } from './chats';
@@ -868,9 +868,11 @@ export async function openConversation(shown: string) {
 // (POST /v1/attachments), and the words carry an id of their own: sent again while obid doesn't
 // answer, obid takes them once, files and tasks included.
 let made = 0;
-export function ask(said: string, shown?: string, repo?: string, folders?: string[], att?: Pick<Attachments, 'files' | 'jobs' | 'project' | 'defaults' | 'obys'>): string | undefined {
+export function ask(said: string, shown?: string, repo?: string, folders?: string[], att?: Pick<Attachments, 'files' | 'jobs' | 'project' | 'defaults' | 'obys' | 'skill'>): string | undefined {
   const files = att?.files?.filter((f) => f.path) ?? [], jobs = att?.jobs ?? [];
-  if (!said.trim() && !files.length && !jobs.length) return;
+  // a skill picked goes alone too, to an obid that takes it (COMPOSER-27)
+  const skill = has(state.status, 'skills-v1') ? att?.skill : undefined;
+  if (!said.trim() && !files.length && !jobs.length && !skill) return;
   const id = shown ?? `new:${++made}`;
   const c = shown ? realId(shown) : null;
   const q = c ? state.waiting[c] : undefined;
@@ -898,7 +900,9 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
           ...(has(state.status, 'composer-v1') && !q ? { defaults: att?.defaults } : {}),
           // the members the words @-name, asked by obid as oby_ask asks (ASK-39); an answer to Oby's
           // question asks no one
-          ...(has(state.status, 'ask-mentions-v1') && !q ? { ask: att?.obys } : {}) }));
+          ...(has(state.status, 'ask-mentions-v1') && !q ? { ask: att?.obys } : {}),
+          // the skill picked in the box, beside the words (COMPOSER-27); an answer to Oby's question is only the answer
+          ...(skill && !q ? { skill } : {}) }));
       planned = true;
       const where = a.conversation ?? c;
       // Oby's turn is in a reply or a question (its event may land after this answer, and the card
@@ -1003,6 +1007,24 @@ export async function conversationFiles(shown: string, typed: string) {
   if (!has(state.status, 'composer-v1')) return [];
   try { return (await api.conversationFiles(realId(shown), typed)).files; } catch { return []; }
 }
+// The skills the box's words would reach (COMPOSER-25): a conversation's (its app id), a task's, or
+// (neither) a new conversation's. An obid without them, or a call that fails, lists none and says nothing
+export type SkillsWhere = { conversation: string } | { job: string } | Record<string, never>;
+export async function skillsFor(where: SkillsWhere): Promise<SkillsAnswer> {
+  const none: SkillsAnswer = { tool: null, account: null, skills: [] };
+  if (!has(state.status, 'skills-v1')) return none;
+  const conversation = 'conversation' in where ? realId(where.conversation) : undefined;
+  // a conversation obid hasn't named yet is a new one's
+  const asked = conversation && !conversation.startsWith('new:') ? { conversation } : 'job' in where ? { job: where.job } : {};
+  try { return await api.skills(asked); } catch { return none; }
+}
+// ⌘K's Restart agent (COMPOSER-28): the conversation's agent waiting for its next turn is ended, so
+// that turn starts it afresh; obid's answer said in a line
+export const RESTARTED = 'Agent restarted: your next message starts it fresh.';
+export const NOTHING_TO_RESTART = 'Nothing to restart: your next message starts the agent fresh anyway.';
+export async function restartAgent(shown: string) {
+  try { say((await api.restartConversation(realId(shown))).restarted ? RESTARTED : NOTHING_TO_RESTART); } catch (e) { say(e); }
+}
 export async function stopConversation(shown: string) {
   try { await api.stopConversation(realId(shown)); } catch (e) { refuse(shown, e); }
 }
@@ -1030,11 +1052,13 @@ export async function deleteConversation(shown: string) {
 
 // Told a job's agent something (POST /v1/jobs/{id}/messages). conversation: from its page, so the
 // words go into the task's conversation, which obid makes now for a task that has none
-// (TASKCONV-4); the job, which names it, comes back
-export async function tellJob(id: string, text: string, files: { path?: string }[] = [], conversation = false): Promise<Job | undefined> {
+// (TASKCONV-4); the job, which names it, comes back. skill: the one picked in the box, beside the
+// words, to an obid that takes it (COMPOSER-27)
+export async function tellJob(id: string, text: string, files: { path?: string }[] = [], conversation = false, skill?: string): Promise<Job | undefined> {
   const paths = files.flatMap((f) => (f.path ? [f.path] : []));
+  const picked = skill && has(state.status, 'skills-v1') ? skill : undefined;
   try {
-    const j = await keyed((key) => api.message(id, text.trim(), paths, conversation, key));
+    const j = await keyed((key) => api.message(id, text.trim(), paths, conversation, key, picked));
     // the follow-up it started, and the task itself, now in the conversation
     const told = j.id === id ? j : await api.job(id).catch(() => undefined);
     take({ kind: 'job', job: j });

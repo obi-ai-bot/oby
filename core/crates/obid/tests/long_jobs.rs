@@ -1074,6 +1074,56 @@ fn taskconv_33_words_reach_a_claude_code_job_in_the_turn_under_way() {
     assert_eq!(told.len(), 1, "{told:?}");
 }
 
+/// SKILLS-11: a skill the owner picked for a task at work reaches its Claude Code as `/name` and
+/// their words; one its agent hasn't, or for a task no longer at work, is refused.
+#[cfg(target_os = "macos")]
+#[test]
+fn skills_11_a_picked_skill_reaches_a_task_at_work() {
+    let (folder, obid) = obid("skills-11");
+    let skill = folder.0.join("home/accounts/stub/skills/write-tests");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\ndescription: Tests first.\n---\n",
+    )
+    .unwrap();
+    let id = post_job(&obid, "STEPS: 60 250 KEEP PROMPTS");
+    at_work(&obid, &id);
+    let path = format!("/v1/jobs/{id}/messages");
+    let listed = call(&obid, "GET", &format!("/v1/skills?job={id}"), None);
+    assert_eq!(
+        listed.body["skills"][0]["name"], "write-tests",
+        "{}",
+        listed.text
+    );
+    let missing = call_typed(
+        &obid,
+        "POST",
+        &path,
+        &json!({"text": "go", "skill": "no-such-skill"}),
+    );
+    assert_eq!(missing.status, 422, "{}", missing.text);
+    let answer = call_typed(
+        &obid,
+        "POST",
+        &path,
+        &json!({"text": "use SQLite", "skill": "write-tests"}),
+    );
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    let summary = job["summary"].as_str().unwrap_or_default();
+    assert!(summary.contains("heard: /write-tests use SQLite"), "{job}");
+    let after = call_typed(
+        &obid,
+        "POST",
+        &path,
+        &json!({"text": "again", "skill": "write-tests"}),
+    );
+    assert_eq!(after.status, 422, "{}", after.text);
+    assert!(after.text.contains("at work"), "{}", after.text);
+}
+
 /// RECOVERY-2: after a panic before publishing began (`jobs::tests::recovery_2_a_real_panic_is_
 /// scheduled_again`), its next run goes on in its session, told what happened.
 #[test]

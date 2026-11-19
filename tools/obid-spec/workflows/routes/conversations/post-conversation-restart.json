@@ -1,0 +1,128 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/conversations/{id}/restart",
+  "version": "1.0.0",
+  "description": "Restart agent (SKILLS-10): the agent waiting for a conversation's next turn ends, and the next turn starts it again; again with none waiting says so; 404 for a conversation it doesn't have.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/conversations/{id}/restart"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY ok",
+          "new": true
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/conversations/${state.said.body.conversation}/restart",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/conversations/00000000-0000-4000-8000-000000000000/restart",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "skills-10-the-waiting-agent-ends",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "SKILLS-10"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/conversations/${state.said.body.conversation}/restart",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "restarted": true
+          }
+        }
+      }
+    },
+    {
+      "id": "skills-10-none-waits-after",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "SKILLS-10"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/conversations/${state.said.body.conversation}/restart",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "restarted": false
+          }
+        }
+      }
+    },
+    {
+      "id": "skills-10-the-next-turn-answers",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "SKILLS-10"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY again",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "text": "again"
+          }
+        }
+      }
+    }
+  ]
+}

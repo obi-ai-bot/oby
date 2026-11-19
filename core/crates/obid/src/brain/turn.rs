@@ -33,6 +33,9 @@ pub struct Control {
     mentioned: Mutex<Option<Mentioned>>,
     /// What came of asking them, in obid's words, for every prompt of this turn.
     asked_mentioned: Mutex<Option<String>>,
+    /// The skill the owner picked in the box for these words (`POST /v1/plans`'s `skill`,
+    /// SKILLS-6 to 8): only ever from that field, never from what the words say.
+    skill: Mutex<Option<String>>,
 }
 
 /// The members the owner's words `@`-name, by exact owner id, and the question: the words without
@@ -87,6 +90,15 @@ impl Control {
     }
 
     /// What came of asking the members the words named, for the model.
+    /// The skill the owner picked for the words this turn answers (SKILLS-6 to 8).
+    pub fn set_skill(&self, skill: Option<String>) {
+        *self.skill.lock().unwrap_or_else(|e| e.into_inner()) = skill;
+    }
+
+    pub fn skill(&self) -> Option<String> {
+        self.skill.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     pub fn asked_mentioned(&self) -> Option<String> {
         self.asked_mentioned
             .lock()
@@ -146,6 +158,9 @@ pub struct Asking {
     /// The members the words `@`-name, to ask (`POST /v1/plans`'s `ask`, ASK-40): the latest
     /// words', with those words alone as the question; a restart loses it, as the chips.
     pub ask: Option<Mentioned>,
+    /// The skill the owner picked for these words (`POST /v1/plans`'s `skill`, SKILLS-6 to 8): the
+    /// latest words', as the chips; a restart loses it.
+    pub skill: Option<String>,
     pub turns: Option<Vec<crate::conversation::Turn>>,
     pub back: Option<i64>,
     pub now: i64,
@@ -236,6 +251,7 @@ impl Turns {
             begun: obi_protocol::time::now(),
             mentioned: Mutex::new(None),
             asked_mentioned: Mutex::new(None),
+            skill: Mutex::new(None),
         });
         self.lock().push(control.clone());
         control

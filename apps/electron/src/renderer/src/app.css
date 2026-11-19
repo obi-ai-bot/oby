@@ -2545,6 +2545,9 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 /* @'s files (COMPOSER-14), after the Obys: the name, its path under it */
 .mention-panel .mention-file .add-item-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .slash-panel .add-empty { margin: 10px 12px; line-height: 18px; }
+/* `/`'s skills (COMPOSER-25): the name, its description under it on one line, as Run on another Mac's rows */
+.mention-panel button.mention-skill { height: 46px; }
+.mention-panel .mention-skill .add-item-text, .mention-panel .mention-skill .add-item-about { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 /* Stop pressed (COMPOSER-12): "Stopping…", its square dimmed and turning until the turn ends */
 .composer-grid > .composer-send.is-stopping { opacity: 0.5; cursor: default; }
 .composer-send.is-stopping svg { animation: stopping 1.2s linear infinite; }

@@ -348,6 +348,9 @@ pub struct Sessions {
     /// Each conversation's Claude Code or Codex still running after its turn, waiting for the next
     /// one.
     warm: Mutex<HashMap<String, Warm>>,
+    /// Conversations whose agent the owner restarted (SKILLS-10): none waits for their next turn,
+    /// one a turn under way would keep included.
+    fresh: Mutex<BTreeSet<String>>,
 }
 
 /// How long a conversation's Claude Code waits for its next turn before it ends: half the hour a
@@ -506,6 +509,22 @@ impl Sessions {
         warm.into_iter().for_each(Warm::end_now);
     }
 
+    /// The owner's Restart agent (SKILLS-10): `conversation`'s waiting agent ends now, and none a
+    /// turn under way would keep waits after it, so its next turn starts the agent again on the
+    /// same session, with whatever was installed since. Whether one waited.
+    pub fn restart(&self, conversation: &str) -> bool {
+        (self.fresh.lock().unwrap_or_else(|e| e.into_inner())).insert(conversation.to_owned());
+        let warm = self.warm().remove(conversation);
+        let waited = warm.is_some();
+        warm.into_iter().for_each(Warm::end_now);
+        waited
+    }
+
+    /// Whether the owner restarted `conversation`'s agent since a turn last looked: once.
+    fn take_fresh(&self, conversation: &str) -> bool {
+        (self.fresh.lock().unwrap_or_else(|e| e.into_inner())).remove(conversation)
+    }
+
     /// Ends every waiting Claude Code, their login copies taken out at once: obid is stopping.
     pub fn end_all_warm(&self) {
         let all: Vec<Warm> = self.warm().drain().map(|(_, warm)| warm).collect();
@@ -648,8 +667,10 @@ impl Sessions {
 fn keep_warm(shared: &Arc<Shared>, conversation: &str, warm: Warm) {
     let since = warm.since;
     let nexts = shared.conversations.nexts();
+    // Restarted while the turn ran (SKILLS-10): it doesn't wait.
+    let restarted = shared.harness.take_fresh(conversation);
     let kept = shared.harness.keep(conversation, warm, &nexts, |warm| {
-        shared.conversations.exists(conversation) && may_wait(shared, warm)
+        !restarted && shared.conversations.exists(conversation) && may_wait(shared, warm)
     });
     if !kept {
         return;
@@ -755,6 +776,7 @@ async fn start_next(
         Tool::Codex => {
             let key =
                 super::harness_codex::key(shared, &account, &url, tetrix.as_deref(), own, None);
+            let key = with_skills(key, tool, &account, own);
             let (launch, options) = super::harness_codex::launch(
                 shared,
                 &account,
@@ -779,7 +801,7 @@ async fn start_next(
         _ => {
             write_mcp(&mcp, &url, tetrix.as_deref(), &token)?;
             let mut flags = claude_flags(shared, &account.id, tetrix.is_some(), own, None);
-            let key = flags_key(&flags);
+            let key = with_skills(flags_key(&flags), tool, &account, own);
             flags.extend(["--mcp-config".into(), mcp.into_os_string()]);
             let launch = claude_launch(shared, &account, &place, flags, own)?;
             match crate::conn::Conn::spawn(&launch, WARM_FOR, stop, false).await {
@@ -1086,6 +1108,90 @@ pub(super) fn flags_key(flags: &[OsString]) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     flags.hash(&mut hasher);
     hasher.finish()
+}
+
+/// A waiting agent's `key` with the mark of the account's skills, plugins and settings as they are
+/// now, for a run on the owner's own settings: one started before an install, a plugin turned on
+/// or a skill changed isn't given the turn, which starts its agent afresh (SKILLS-9). A boxed run
+/// has none of them.
+fn with_skills(key: u64, tool: Tool, account: &crate::config::Account, own: bool) -> u64 {
+    match crate::skills::mark_for(tool, account, own) {
+        0 => key,
+        mark => key ^ mark.rotate_left(17),
+    }
+}
+
+/// Who hears the owner's next words in `conversation` (or a new conversation of `scope`'s profile),
+/// as its turn would pick them ([`run`]): the account the owner chose, else the one its session is
+/// on, else whichever has room, of its profile's; and why none of the owner's skills runs there,
+/// when they don't (docs/api/skills.md, SKILLS-5).
+pub fn hearer(
+    shared: &Arc<Shared>,
+    conversation: Option<&str>,
+    scope: &crate::profiles::Scope,
+) -> crate::skills::Hearer {
+    let next = match conversation {
+        Some(id) => {
+            let place = Place::of(&shared.config.home, id);
+            let only = shared.helpers.of(id).map(|h| h.tool);
+            let only = only.as_deref();
+            let agents = shared.config.agents.get();
+            let tool_of = |id: &str| crate::accounts::find(&agents, id).map(|(t, _)| t.id());
+            let scope = crate::profile_scope::of_conversation(shared, id);
+            let mine = |id: &str| shared.profiles.accounts.holds(&scope, id);
+            let chosen = super::talk::chosen(shared, id)
+                .filter(|c| only.is_none_or(|only| tool_of(c) == Some(only)))
+                .filter(|c| mine(c));
+            let on = kept_on(&place);
+            let mut accounts =
+                super::talk::accounts(shared, chosen.as_deref(), on.as_deref(), only);
+            accounts.retain(|(_, account)| mine(&account.id));
+            accounts.into_iter().next()
+        }
+        None => super::talk::next_with(shared, scope),
+    };
+    let Some((tool, account)) = next else {
+        return crate::skills::Hearer {
+            tool: None,
+            account: None,
+            project: None,
+            why: Some("No account can talk here yet.".into()),
+        };
+    };
+    let own = tool != Tool::Cursor && own_lane(shared, tool, &account, conversation.unwrap_or(""));
+    crate::skills::Hearer {
+        tool: Some(tool),
+        account: Some(account),
+        project: None,
+        why: (!own).then(|| crate::skills::boxed_why(tool)),
+    }
+}
+
+/// The skill the owner picked for this turn's words, when the agent it runs on has it and runs on
+/// their own settings (SKILLS-6 to 8), else its name and why it doesn't run here, for the answer.
+async fn picked_skill(
+    shared: &Shared,
+    control: &Control,
+    tool: Tool,
+    account: &crate::config::Account,
+    own: bool,
+) -> (Option<String>, Option<(String, String)>) {
+    let Some(name) = control.skill() else {
+        return (None, None);
+    };
+    let runs = own
+        && tool != Tool::Cursor
+        && crate::skills::offers(shared, tool, account, None, &name).await;
+    if runs {
+        return (Some(name), None);
+    }
+    let why = match own && tool != Tool::Cursor {
+        true => format!("{} · {} hasn't it", tool.name(), account.name),
+        false => crate::skills::boxed_why(tool)
+            .trim_end_matches('.')
+            .to_owned(),
+    };
+    (None, Some((name, why)))
 }
 
 /// A token for a conversation's MCP endpoint.
@@ -1721,6 +1827,32 @@ async fn session(
         account,
         resumed.as_ref().map(|k| k.session.as_str()),
     );
+    // The owner restarted its agent since (SKILLS-10): this turn starts it again.
+    let warm = match shared.harness.take_fresh(&control.conversation) {
+        true => {
+            warm.into_iter().for_each(Warm::end_now);
+            None
+        }
+        false => warm,
+    };
+    // The skill the owner picked, where this agent has it (SKILLS-6 to 8).
+    let own = own_lane(shared, tool, account, &control.conversation);
+    let (skill, skill_said) = picked_skill(shared, control, tool, account, own).await;
+    // A skill picked with no words, which this agent hasn't: nothing to say to it (SKILLS-8).
+    if let Some(line) = skill_said
+        .as_ref()
+        .filter(|_| said.trim().is_empty() && asked.attachments.is_empty() && asked.jobs.is_empty())
+    {
+        super::thinking(shared, control, 1, "Thinking", State::Done);
+        return Ok(Answered {
+            talk: Talk::reply(format!(
+                "Nothing was sent: the skill {} doesn't run here ({}).",
+                line.0, line.1
+            )),
+            details: None,
+            end: End::Answered,
+        });
+    }
     let token = match &warm {
         Some(warm) => shared.harness.reopen(&warm.token, session.clone()),
         None => shared.harness.open(session.clone()),
@@ -1745,6 +1877,7 @@ async fn session(
         given,
         control,
         &watch,
+        skill.as_deref(),
     )
     .await;
     watch.mark("ended");
@@ -1841,8 +1974,17 @@ async fn session(
             said: said.to_owned(),
             question,
         },
-        None if text.is_empty() && jobs.is_empty() && !published => Talk::None,
+        None if text.is_empty() && jobs.is_empty() && !published && skill_said.is_none() => {
+            Talk::None
+        }
         _ => Talk::Reply { text, jobs },
+    };
+    let talk = match &skill_said {
+        Some((name, why)) => said_why(
+            talk,
+            &format!("Your words went without the skill {name}: {why}."),
+        ),
+        None => talk,
     };
     Ok(Answered {
         talk,
@@ -1866,9 +2008,22 @@ async fn attempts(
     given: &[Turn],
     control: &Arc<Control>,
     watch: &Stopwatch,
+    skill: Option<&str>,
 ) -> Result<(String, End), Unanswered> {
     let config = &shared.config.conversation;
-    let said = &session.said;
+    // With a skill the owner picked (SKILLS-6, 7): Codex gets `$name` before their words; Claude
+    // Code gets them as `/name …`, the last text block of its message, all else before it.
+    let said = &match (skill, tool) {
+        (Some(name), Tool::Codex) => crate::skills::codex_mention(name, &session.said),
+        (Some(_), Tool::Claude) => String::new(),
+        _ => session.said.clone(),
+    };
+    let command = match (skill, tool) {
+        (Some(name), Tool::Claude) => Some(crate::vault::for_agent(
+            &crate::skills::claude_command(name, &session.said),
+        )?),
+        _ => None,
+    };
     let own = own_lane(shared, tool, account, &control.conversation);
     // The budget is the turn's, both runs together.
     let deadline = Instant::now() + config.budget;
@@ -2021,6 +2176,7 @@ async fn attempts(
             }
             _ => flags_key(&flags),
         };
+        let key = with_skills(key, tool, account, own);
         if let Some(session) = &resume {
             flags.extend(["--resume".into(), session.into()]);
         }
@@ -2135,7 +2291,16 @@ async fn attempts(
             let _ = std::fs::remove_file(temp.join(EXIT_RECORD));
         }
         let turn = one(
-            shared, place, session, run, &prompt, limit, &protocol, watch, own,
+            shared,
+            place,
+            session,
+            run,
+            &prompt,
+            command.as_deref(),
+            limit,
+            &protocol,
+            watch,
+            own,
         )
         .await;
         let turn = match turn {
@@ -2752,6 +2917,7 @@ async fn one(
     session: &Arc<Session>,
     run: Run,
     prompt: &str,
+    command: Option<&str>,
     limit: Duration,
     protocol: &Protocol,
     watch: &Stopwatch,
@@ -2917,6 +3083,11 @@ async fn one(
             session.taint()
         }))
     };
+    // Claude Code's message: the skill's `/name …` its last text block (SKILLS-6).
+    let message = match command {
+        Some(command) => crate::skills::claude_message(prompt, command),
+        None => agent::user_message(prompt),
+    };
     let ran = match (run, protocol) {
         // Kept running for the next turn when it answered (CONVERSATION-AGENT-44).
         (Run::Cold(launch), Protocol::Codex(options)) => {
@@ -2931,7 +3102,7 @@ async fn one(
         }
         (Run::Cold(launch), Protocol::Claude) => {
             match crate::conn::Conn::spawn(&launch, limit, stop, false).await {
-                Ok(conn) => Ok(agent::turn_on(conn, prompt, decide, on_event, true).await)
+                Ok(conn) => Ok(agent::turn_with(conn, message, decide, on_event, true).await)
                     .map(|(turn, conn)| (turn, conn.map(Waiting::Claude))),
                 Err(e) => Err(e),
             }
@@ -2944,7 +3115,7 @@ async fn one(
             .map(|(turn, kept)| (turn, kept.map(Waiting::Codex))),
             (Waiting::Claude(mut conn), Protocol::Claude) => {
                 conn.renew(limit, stop);
-                Ok(agent::turn_on(conn, prompt, decide, on_event, true).await)
+                Ok(agent::turn_with(conn, message, decide, on_event, true).await)
                     .map(|(turn, conn)| (turn, conn.map(Waiting::Claude)))
             }
             (waiting, _) => {

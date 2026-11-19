@@ -18,7 +18,7 @@ import type {
   JobChanges,
   UndoAction,
   LimitDecision,
-  PlanAnswer, PlanDefaults, ConversationFile, Cancelled,
+  PlanAnswer, PlanDefaults, PlanRequest, JobMessageRequest, ConversationFile, Cancelled, SkillsAnswer, Restarted,
   Profile,
   Project,
   Repo,
@@ -117,8 +117,9 @@ export const api = {
   transcript: (j: string, after?: number) => call<{ next: number | null; entries: TranscriptEntry[] }>('GET', `/v1/jobs/${id(j)}/transcript${q({ after })}`),
   // conversation: the words go into the task's conversation too, made now if it has none (a task
   // page's box: docs/contracts/task-conversations.md, TASKCONV-4)
-  message: (j: string, text: string, attachments?: string[], conversation = false, key?: string) =>
-    call<Job>('POST', `/v1/jobs/${id(j)}/messages`, keyed({ text, ...(attachments?.length ? { attachments } : {}), ...(conversation ? { conversation: true } : {}) }, key)),
+  // skill: the one the owner picked in the box (skills-v1, COMPOSER-27), beside the words
+  message: (j: string, text: string, attachments?: string[], conversation = false, key?: string, skill?: string) =>
+    call<Job>('POST', `/v1/jobs/${id(j)}/messages`, keyed<JobMessageRequest>({ text, ...(attachments?.length ? { attachments } : {}), ...(conversation ? { conversation: true as const } : {}), ...(skill ? { skill } : {}) }, key)),
   // a job's waiting permission (POST /v1/jobs/{id}/permission)
   permission: (j: string, body: { id: string; decision: 'allow' | 'always' | 'deny'; message?: string }) =>
     call<Job>('POST', `/v1/jobs/${id(j)}/permission`, body),
@@ -158,17 +159,24 @@ export const api = {
   // words to Oby: in a conversation, or starting a new one. with: the words' id (sent again with
   // the same id, nothing happens twice), the files uploaded for them and the tasks attached
   plan: (said: string, answer: { question: string; option: string } | undefined, where: { conversation: string } | { new: true }, folders?: string[],
-    with_: { id?: string; attachments?: string[]; jobs?: string[]; project?: string; defaults?: PlanDefaults; ask?: string[] } = {}) =>
-    call<PlanAnswer>('POST', '/v1/plans', {
+    with_: { id?: string; attachments?: string[]; jobs?: string[]; project?: string; defaults?: PlanDefaults; ask?: string[]; skill?: string } = {}) =>
+    call<PlanAnswer>('POST', '/v1/plans', <PlanRequest>{
       said, ...(answer ? { answer } : {}), ...where, ...(folders?.length ? { folders } : {}), ...(with_.id ? { id: with_.id } : {}),
       ...(with_.attachments?.length ? { attachments: with_.attachments } : {}), ...(with_.jobs?.length ? { jobs: with_.jobs } : {}),
       ...(with_.project ? { project: with_.project } : {}),
       ...(with_.defaults && Object.keys(with_.defaults).length ? { defaults: with_.defaults } : {}),
       // the members the words @-name (ask-mentions-v1, ASK-39): obid asks them as oby_ask does
       ...(with_.ask?.length ? { ask: with_.ask } : {}),
+      // the skill the owner picked in the box (skills-v1, COMPOSER-27): beside the words, never in them
+      ...(with_.skill ? { skill: with_.skill } : {}),
     }),
   // one message waiting in a conversation, dropped alone (composer-v1, COMPOSER-9 and 10)
   cancelWords: (conversation: string, turn: string) => call<Cancelled>('POST', '/v1/plans/cancel', { conversation, turn }),
+  // the skills of the agent the box's words would go to (skills-v1, COMPOSER-25): a conversation's, a
+  // task's while it's at work, or (neither) a new conversation's; and a conversation's agent ended
+  // while it waits, so its next turn starts it afresh (COMPOSER-28)
+  skills: (where: { conversation?: string; job?: string } = {}) => call<SkillsAnswer>('GET', `/v1/skills${q(where)}`),
+  restartConversation: (c: string) => call<Restarted>('POST', `/v1/conversations/${id(c)}/restart`),
   // the files of a conversation's folders matching what's typed after an @ (composer-v1, COMPOSER-14)
   conversationFiles: (c: string, typed: string) => call<{ files: ConversationFile[] }>('GET', `/v1/conversations/${id(c)}/files${q({ q: typed })}`),
   // a file picked or pasted, kept by obid for the words it goes with: its path there; one over

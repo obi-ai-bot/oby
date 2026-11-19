@@ -1374,8 +1374,31 @@ pub async fn message(
         return Err(ApiError::new(StatusCode::FORBIDDEN, why));
     }
     value.as_object_mut().map(|b| b.remove("clientRequestId"));
+    // A skill the owner picked for a task at work (SKILLS-11): its agent gets it in its own form.
+    let skill = match value.get("skill") {
+        None | Some(Value::Null) => None,
+        Some(skill) => {
+            let name = skill.as_str().filter(|s| crate::skills::valid_name(s));
+            let name = name.ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "skill is a skill's name: letters, digits, `:`, `_` and `-`, at most 128.",
+                )
+            })?;
+            Some(name.to_owned())
+        }
+    };
     let judged = json!({"body": value, "signed": typed});
     let text = judged["body"]["text"].as_str().unwrap_or_default();
+    let with_skill = match (&skill, &first) {
+        (Some(name), Some(job)) => Some(
+            crate::skills::job_words(&shared, job, name, text)
+                .await
+                .map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?,
+        ),
+        _ => None,
+    };
+    let text = with_skill.as_deref().unwrap_or(text);
     let route = format!("POST /v1/jobs/{id}/messages");
     keyed(&shared, key.as_deref(), &route, &judged, stored, async {
         let source = [crate::jobs::Source::Api, crate::jobs::Source::Owner][usize::from(typed)];

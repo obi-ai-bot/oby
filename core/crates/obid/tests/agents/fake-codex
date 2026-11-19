@@ -83,7 +83,7 @@
 // (`settings`).
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
@@ -454,6 +454,17 @@ rl.on("line", (line) => {
   }
   const { id, method, params } = message;
   switch (method) {
+    // Its own skills (SKILLS-4): each folder of $CODEX_HOME/skills with a SKILL.md, its
+    // `description:` line, as Codex's `skills/list` answers.
+    case "skills/list": {
+      const root = join(process.env.CODEX_HOME ?? join(process.env.HOME ?? ".", ".codex"), "skills");
+      const skills = (existsSync(root) ? readdirSync(root) : []).filter((name) => existsSync(join(root, name, "SKILL.md"))).sort().map((name) => {
+        const text = readFileSync(join(root, name, "SKILL.md"), "utf8");
+        const description = /^description:\s*(.*)$/m.exec(text)?.[1] ?? "";
+        return { name, description, enabled: !/^enabled:\s*false$/m.test(text), scope: "user", path: join(root, name, "SKILL.md") };
+      });
+      return send({ id, result: { data: [{ cwd: (params?.cwds ?? [process.cwd()])[0], skills, errors: [] }] } });
+    }
     case "initialize":
       return send({ id, result: { userAgent: "fake-codex/0.0.0" } });
     case "initialized":

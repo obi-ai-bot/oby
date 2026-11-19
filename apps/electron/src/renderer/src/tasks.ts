@@ -144,7 +144,7 @@ function reply(id: string, text: () => string, start?: () => string[] | undefine
 // On obid, whether obid took them: the message box keeps words obid refused (ATTACH-20).
 export function tell(id: string, text: string, att?: Attachments): Promise<boolean> | undefined {
   // on obid, from the task's page or thread: into its conversation, made now if it has none
-  if (onObid) return live.tellJob(id, text, att?.files, true).then((j) => j !== undefined);
+  if (onObid) return live.tellJob(id, text, att?.files, true, att?.skill).then((j) => j !== undefined);
   const t = text.trim(), r = relay(id, t);
   if ((!t && !hasAttachments(att)) || !r) return;
   say(id, { who: 'you', text: t, ago: 0, ...att });

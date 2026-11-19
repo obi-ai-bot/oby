@@ -215,7 +215,8 @@
         "/v1/brain",
         "/v1/attachments",
         "/v1/plans",
-        "/v1/clear"
+        "/v1/clear",
+        "/v1/skills"
       ],
       "contracts": {
         "conversation-agent.md": {
@@ -361,7 +362,11 @@
             "COMPOSER-21": "Electron message box's ↓ back to an empty box (recall.test.tsx); no obid API.",
             "COMPOSER-22": "Electron message box keeps its arrows for the owner's own words and the @ list (recall.test.tsx); no obid API.",
             "COMPOSER-23": "Electron Reply about this on a reply's selected words (replySelection.test.tsx); no obid API.",
-            "COMPOSER-24": "Electron quote into the box above the caret (recall.test.tsx, replySelection.test.tsx); no obid API."
+            "COMPOSER-24": "Electron quote into the box above the caret (recall.test.tsx, replySelection.test.tsx); no obid API.",
+            "COMPOSER-25": "Electron `/` list of skills (asks GET /v1/skills; obid's half is SKILLS-5).",
+            "COMPOSER-26": "Electron skill chip in the box; no obid API.",
+            "COMPOSER-27": "app sends `skill` beside the words (obid's half: SKILLS-6 to 8, 11, 12).",
+            "COMPOSER-28": "Electron ⌘K Restart agent (sends POST /v1/conversations/{id}/restart; obid's half: SKILLS-10)."
           }
         },
         "drafts.md": {
@@ -488,6 +493,23 @@
           "elsewhere": {
             "DELIVERY-6": "delivery.rs state machine unit (no route asks an arbitrary move)."
           }
+        },
+        "skills.md": {
+          "obid": [
+            "SKILLS-1",
+            "SKILLS-2",
+            "SKILLS-3",
+            "SKILLS-4",
+            "SKILLS-5",
+            "SKILLS-6",
+            "SKILLS-7",
+            "SKILLS-8",
+            "SKILLS-9",
+            "SKILLS-10",
+            "SKILLS-11",
+            "SKILLS-12"
+          ],
+          "elsewhere": {}
         }
       }
     },

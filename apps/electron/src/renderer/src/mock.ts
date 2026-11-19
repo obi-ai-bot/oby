@@ -1,6 +1,6 @@
 import { BRANDS, type Brand } from './brands';
 import { everything, onObid } from './lean';
-import type { Helper, Profile, Project, Repo, RoomPost, Routine } from '../../shared/obid-wire';
+import type { Helper, Profile, Project, Repo, RoomPost, Routine, SkillsAnswer } from '../../shared/obid-wire';
 import { agentOf, type Archived, type GitHubItem, type Job, type Message, type Peer, type PeerConvo, type Place, type Share, type Stage, type StageId, type StageState, type Turn } from './view';
 
 // Mock data until the app talks to Oby's engine. The shapes follow the Mac
@@ -786,3 +786,12 @@ export const mockRoomScene = ROOM_SCENE;
 export const FILES: { folder: string; path: string }[] = [
   'src/app.tsx', 'src/auth/login.tsx', 'src/auth/signup.tsx', 'src/auth/session.ts', 'src/api/client.ts', 'README.md',
 ].map((path) => ({ folder: '/Users/you/Projects/web', path }));
+
+// The skills `/` lists in a browser (COMPOSER-25): two made up, as obid's GET /v1/skills would give
+// them; obid lists the owner's own
+export const SKILLS: SkillsAnswer = {
+  tool: 'claude', account: 'claude-default', skills: [
+    { name: 'review:check-diff', description: 'Reads the diff and says what’s risky before you open a pull request.', userInvocable: true, source: 'plugin', plugin: 'review' },
+    { name: 'write-tests', description: 'Writes tests for the code you name, named after its scenarios.', userInvocable: true, source: 'user' },
+  ],
+};

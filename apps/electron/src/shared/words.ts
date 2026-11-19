@@ -71,12 +71,14 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
       defaults: (d) => isBody(d) && shaped(d, { mode: text, agent: text, model: text, effort: text }),
       // the members the words @-name (ASK-39): only owners the words name, so a page can't add one
       ask: (a) => strings(a) && (a as string[]).length > 0 && (a as string[]).every((o) => named(body.said as string, o)),
+      // the skill picked in the box (COMPOSER-27): signed with the body, never one of the words
+      skill: text,
     });
     // an answer to Oby's question: the words it answers, and the owner's answer
     return ok ? [body.said as string, ...(isBody(answer) ? [answer.option as string] : [])] : null;
   }
   if (method === 'POST' && MESSAGES.test(p)) {
-    return text(body.text) && shaped(body, { text, attachments: strings, conversation: flag, clientRequestId: requestKey }) ? [body.text as string] : null;
+    return text(body.text) && shaped(body, { text, attachments: strings, conversation: flag, clientRequestId: requestKey, skill: text }) ? [body.text as string] : null;
   }
   // the owner's `say` in the Sphere's room: its words alone (the app sends no about or replyTo)
   if (method === 'POST' && ROOM.test(p)) return text(body.text) && shaped(body, { text }) ? [body.text as string] : null;

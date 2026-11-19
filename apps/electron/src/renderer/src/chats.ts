@@ -237,6 +237,8 @@ export function askOby(text: string, att?: Attachments) {
 // Stop, from the message box: Oby's turn under way in the conversation ends (obid's alone).
 // ponytail: the mock's scripted answers run to their end; a cancel in work() if the mock needs it
 export const stopChat = (id: string) => { if (ofObid(id)) void live.stopConversation(id); };
+// ⌘K's Restart agent (COMPOSER-28): obid's on obid; the mock's has no agent waiting, so it says so
+export const restartChat = (id: string) => (ofObid(id) ? live.restartAgent(id) : live.say(live.NOTHING_TO_RESTART));
 // One message waiting for the turn under way, cancelled alone (COMPOSER-9): obid's on obid, the mock's
 // own list otherwise. Whether it was dropped
 export const cancelQueued = async (id: string, turn: string) => {

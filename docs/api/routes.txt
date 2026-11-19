@@ -33,6 +33,7 @@ GET /v1/conversations
 DELETE /v1/conversations/{id}
 PATCH /v1/conversations/{id}
 GET /v1/conversations/{id}/files
+POST /v1/conversations/{id}/restart
 POST /v1/devices
 DELETE /v1/devices/{id}
 GET /v1/devices/{id}/pairing
@@ -148,6 +149,7 @@ GET /v1/settings/models
 GET /v1/settings/models/options
 GET /v1/settings/permissions
 PUT /v1/settings/permissions
+GET /v1/skills
 GET /v1/spheres/{sphere}/room
 POST /v1/spheres/{sphere}/room
 GET /v1/status

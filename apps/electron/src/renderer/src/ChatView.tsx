@@ -385,6 +385,8 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
           placeholder={tellPlaceholder(toTask, toAgent!)}
           label={`Tell the agent about ${toTask.title}`}
           onSend={sendFoot}
+          // `/` lists the task's agent's skills, which a picked one goes to (COMPOSER-25, 27)
+          skills={{ job: toTask.id }}
           draft={draftBox.task(toTask.id)}
           history={history}
           quote={quote}
@@ -399,6 +401,8 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
           repos={!!talk && !talk.local}
           conversation={talk?.id}
           talk={talk && !talk.local && (!onObid || talkReady(talk.id)) ? talk : undefined}
+          // a task's own thread: its agent's skills (COMPOSER-25); a conversation's are its talk's
+          skills={task ? { job: task.id } : undefined}
           draft={task ? draftBox.task(task.id) : talk ? draftBox.conversation(talk.id) : draftBox.peer(convo!.id)}
           onStop={task ? (task.status === 'running' && !task.unknown ? () => stop(task.id) : undefined) : talk && typing && ofObid(talk.id) && talkReady(talk.id) ? () => stopChat(talk.id) : undefined}
           history={history}

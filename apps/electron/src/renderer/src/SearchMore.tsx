@@ -1,10 +1,10 @@
-import { FileText, Plus, Settings } from 'lucide-react';
+import { FileText, Plus, RotateCcw, Settings } from 'lucide-react';
 import type { PaletteItem } from './search';
 
 // What ⌘K finds besides conversations (docs/contracts/shortcuts.md, SHORTCUTS-11): Settings pages and
 // a few actions, each group under its own heading below the conversations, as T3 Code's palette
 // shows Threads, Settings and Actions. Rows as the side panel's own New conversation.
-const ICONS: Record<string, typeof Plus> = { 'chat.new': Plus, 'settings.open': Settings, 'reveal-log': FileText };
+const ICONS: Record<string, typeof Plus> = { 'chat.new': Plus, 'settings.open': Settings, 'reveal-log': FileText, 'agent.restart': RotateCcw };
 
 export default function SearchMore({ settings, actions, onPick }: {
   settings: PaletteItem[];

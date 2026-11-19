@@ -263,6 +263,11 @@ pub fn router(shared: Arc<Shared>) -> Router {
             get(crate::conversation_files::search),
         )
         .route(
+            "/v1/conversations/{id}/restart",
+            post(crate::skills::restart),
+        )
+        .route("/v1/skills", get(crate::skills::list))
+        .route(
             "/v1/routines",
             get(crate::routines::list).post(crate::routines::create),
         )
@@ -689,6 +694,7 @@ pub const CAPABILITIES: &[&str] = &[
     "project-jobs-v1",
     "projects-v1",
     "revisions-v1",
+    "skills-v1",
 ];
 
 #[derive(Serialize)]

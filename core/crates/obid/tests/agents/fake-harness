@@ -48,6 +48,8 @@
 //   FULL ON <w>    on an account whose login's access token holds <w>, says the account is full
 //                  (a refused rate_limit_event) and ends the turn with Claude Code's usage-limit
 //                  error; elsewhere says "answered"
+//   /<name> <words>  (the last text block opening with it, as Claude Code starts a skill) says
+//                  "skill: <name> words=<words>"
 //   anything else  says "Nothing to do." (what it says as a job's agent)
 // As a job's agent: a prompt holding STALLS-ALWAYS, or any later one of that job, goes quiet for
 // two minutes (so obid's stall watch holds it), and one holding STALLS-ONCE only until it stalled; one
@@ -226,10 +228,14 @@ const handle = (line) => {
   }
   if (message.type !== "user") return;
   heard += 1;
-  const prompt = typeof message.message.content === "string" ? message.message.content : "";
+  // A message of text blocks (a skill the owner picked: its `/name …` the last block, SKILLS-6)
+  // reads as its blocks joined, and is recorded as its blocks too.
+  const content = message.message.content;
+  const blocks = Array.isArray(content) ? content.filter((b) => b?.type === "text").map((b) => b.text) : null;
+  const prompt = typeof content === "string" ? content : (blocks ?? []).join("\n");
   appendFileSync(
     join(records, "turns.jsonl"),
-    JSON.stringify({ at: Date.now(), argv, cwd: process.cwd(), home: process.env.HOME, config: process.env.CLAUDE_CONFIG_DIR, prompt, resumed, id: procId, pid: process.pid }) + "\n",
+    JSON.stringify({ at: Date.now(), argv, cwd: process.cwd(), home: process.env.HOME, config: process.env.CLAUDE_CONFIG_DIR, prompt, blocks, resumed, id: procId, pid: process.pid }) + "\n",
   );
   // A session it can't find: 2.1.302 says so in `errors`, with no `result` and no init, and exits.
   if (prompt.split("\n").pop().startsWith("GONE") && !prompt.includes("earlier turns")) {
@@ -284,6 +290,11 @@ const handle = (line) => {
     setTimeout(() => say("woke"), 120000);
     return;
   }
+  // Claude Code starts a skill only from `/name` opening the last text block: it says which, and
+  // what came after the name (SKILLS-6).
+  const last = blocks ? blocks[blocks.length - 1] : prompt;
+  const command = /^\/([A-Za-z0-9][A-Za-z0-9:_-]*)(?:\s+([\s\S]*))?$/.exec(last ?? "");
+  if (command && (blocks || !prompt.includes("\n"))) return say(`skill: ${command[1]} words=${(command[2] ?? "").trim()}`);
   act(prompt.split("\n").pop(), prompt, before).catch(failed);
 };
 // Lines that come while the first turn is held wait for it, in order.

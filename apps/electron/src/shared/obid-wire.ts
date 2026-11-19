@@ -397,6 +397,24 @@ export type Connectors = { claude: { seenAt: string; servers: ConnectorSeen[] } 
 // "POST /v1/plans"'s `defaults` (obid only, composer-v1; docs/contracts/composer.md): the message box's
 // chips, the mode, tool, model and effort of the jobs the words start. A key left out is the owner's usual
 export type PlanDefaults = { mode?: string; agent?: string; model?: string; effort?: string };
+// "POST /v1/plans" as this app sends it. skill (obid only, skills-v1; docs/api/skills.md): the skill the
+// owner picked in the box, beside the words, never in them (COMPOSER-27)
+export type PlanRequest = {
+  said: string; answer?: { question: string; option: string }; conversation?: string; new?: true; folders?: string[]; id?: string;
+  attachments?: string[]; jobs?: string[]; project?: string; defaults?: PlanDefaults; ask?: string[]; skill?: string;
+};
+// "POST /v1/jobs/{id}/messages" as this app sends it; skill as on POST /v1/plans (COMPOSER-27)
+export type JobMessageRequest = { text: string; attachments?: string[]; conversation?: true; clientRequestId?: string; skill?: string };
+// "GET /v1/skills" (obid only, skills-v1; docs/api/skills.md): a skill of the agent that would get the
+// owner's next words there. source: an open string (user, project, plugin, managed, system, ...);
+// plugin: its plugin's name, for a plugin's skill only
+export type Skill = { name: string; description?: string; userInvocable: boolean; source: string; plugin?: string };
+// tool and account: null where no account would take the words; skills [] with why (one sentence for
+// the owner) where skills wouldn't run
+export type SkillsAnswer = { tool: string | null; account: string | null; skills: Skill[]; why?: string };
+// "POST /v1/conversations/{id}/restart" (obid only, skills-v1): whether an agent waiting for the
+// conversation's next turn was ended
+export type Restarted = { restarted: boolean };
 // "GET /v1/obid/sphere/members" (docs/api/obysphere.md): another active member of the Sphere, by
 // exact owner id; name, what obid calls them to the owner (their card's name, or their owner id when
 // that could be mistaken for someone else's; absent from an obid before it); accepts, what their card
