@@ -830,7 +830,10 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 /* as wide as the group's cards (540px in a normal window), the message box under it too, so the three
    line up; in a wide window the thread and its box grow together (--column, tokens.css) */
 .chat-column { max-width: var(--column); margin: 0 auto; }
-/* ⌘F's find bar (FindBar.tsx), over the thread's top right; its matches lit with CSS highlights */
+/* ⌘F's find bar (FindBar.tsx), over the thread's top right; its matches lit with CSS highlights. While
+   it's open the thread keeps its height free at the top (T3 Code's THREAD_FIND_BAR_RESERVED_HEIGHT), so
+   the first message, and a match scrolled to, show under it, never behind it */
+.chat-scroll:has(> .find-bar) > .chat { padding-top: 60px; scroll-padding-top: 60px; }
 .find-bar { position: absolute; top: 8px; right: calc(var(--gutter) / 2 + 8px); z-index: 5; display: flex; align-items: center; gap: 2px; padding: 4px 4px 4px 10px; border: 1px solid var(--surface-edge); border-radius: 8px; background: var(--surface); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3); }
 .find-field { width: 200px; height: 26px; border: 0; background: none; color: var(--ink); font: inherit; font-size: var(--text-md); outline: 0; }
 .find-count { min-width: 56px; padding: 0 6px; color: var(--muted); font-size: var(--text-sm); text-align: right; white-space: nowrap; }
