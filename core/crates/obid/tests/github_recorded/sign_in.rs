@@ -1,0 +1,49 @@
+//! Sign-in status and the reviewer account: `GET /v1/github`, the owner's device sign-in
+//! (`POST /v1/github/sign-in`), and the reviewer's (`POST`/`DELETE /v1/github/reviewer/sign-in`).
+
+use serde_json::json;
+
+use crate::support::*;
+
+#[test]
+fn github_recorded_sign_in() {
+    let (_folder, recording, obid, _) = crate::recorder::recorded_obid("sign-in", "sign_in");
+    let mut answers = Vec::new();
+    let mut said = |what: &str, answer: Answer| {
+        answers.push(json!({"asked": what, "status": answer.status, "body": answer.body}));
+    };
+
+    said("GET /v1/github", call(&obid, "GET", "/v1/github", None));
+    said(
+        "POST /v1/github/sign-in",
+        call(&obid, "POST", "/v1/github/sign-in", None),
+    );
+    recording.raise("approve");
+    let signed = within(20, "gh to say it's signed in", || {
+        let now = call(&obid, "GET", "/v1/github", None);
+        (now.body["signedIn"] == true).then_some(now)
+    });
+    said("GET /v1/github, signed in", signed);
+
+    said(
+        "POST /v1/github/reviewer/sign-in",
+        call(&obid, "POST", "/v1/github/reviewer/sign-in", None),
+    );
+    recording.raise("approve-reviewer");
+    let reviewer = within(20, "the reviewer to be signed in", || {
+        let now = call(&obid, "GET", "/v1/github", None);
+        (now.body["reviewer"]["signedIn"] == true).then_some(now)
+    });
+    said("GET /v1/github, reviewer signed in", reviewer);
+    said(
+        "DELETE /v1/github/reviewer/sign-in",
+        call(&obid, "DELETE", "/v1/github/reviewer/sign-in", None),
+    );
+    said(
+        "GET /v1/github, reviewer signed out",
+        call(&obid, "GET", "/v1/github", None),
+    );
+
+    recording.assert_calls(&recording.calls_starting(&["auth"]));
+    recording.assert_answers(&json!(answers));
+}

@@ -1,0 +1,167 @@
+#!/usr/bin/env node
+// A recording stand-in for gh (tests/github_recorded/README.md). It answers from a route table and
+// writes down every call it gets, so a test can compare what obid asked GitHub, call by call, with
+// a recording kept in the repository.
+//
+// Its folder is `$GH_RECORDING`, else `gh-recording` next to obid's HOME (support::start gives
+// obid `<test folder>/env-home`, so that is `<test folder>/gh-recording`). In it:
+//
+//   routes.json   the answers: an array, the first route whose `args` matches answers. `args` is a
+//                 pattern over the call's arguments joined by single spaces, `*` matching anything
+//                 (newlines too). A route may also have:
+//                   stdout / stderr          what it prints, as given
+//                   stdoutFile / stderrFile  what it prints, from that file in this folder
+//                   run                      a shell command whose output it prints instead, run
+//                                            with the call's arguments as "$@" in this folder (an
+//                                            answer that depends on a repository's state, as a
+//                                            pull request's head)
+//                   exit                     its exit status (0)
+//                   when / unless            it matches only while that flag file is there / isn't
+//                   sets / clears            the flag file it writes / removes after matching
+//                   waitFor                  a flag file it waits for before answering, as gh's own
+//                                            device sign-in waits for the person; it gives up, with
+//                                            status 1, once its caller or this folder is gone
+//                   times                    how many calls it answers; after that it is skipped
+//                   withEnv / withoutEnv     it matches only when that variable is set / isn't
+//                                            (the reviewer's gh has GH_CONFIG_DIR)
+//                   writes                   files it writes after matching, by name, `$NAME` in a
+//                                            name being that variable's value (a login's hosts.yml)
+//                 A call no route matches fails as GitHub's 404 does, and is recorded all the same.
+//   calls.jsonl   written here: a line per call, in the order calls arrived, holding
+//                   args    its arguments, as given
+//                   env     the names of its environment variables, sorted, never their values
+//                   cwd     its working folder
+//                   stdin   what it was given on stdin ("" when none)
+//                   files   for an argument naming a file gh reads (`--input <f>`, `--body-file <f>`,
+//                           `-F <k>=@<f>`, `<k>=@<f>`): that file's text, by the argument's index
+//                   route   the index of the route that answered it, or null
+//
+// The test, not this script, makes paths and times comparable (github_recorded/recorder.rs).
+
+const fs = require("fs");
+const path = require("path");
+
+const home = process.env.HOME || "";
+const dir = process.env.GH_RECORDING || path.join(path.dirname(home), "gh-recording");
+const args = process.argv.slice(2);
+
+function readStdin() {
+  // gh is given /dev/null by obid and a pipe by git (`gh auth git-credential`); a terminal is never
+  // read, so a test run by hand can't hang here.
+  if (process.stdin.isTTY) return "";
+  try {
+    return fs.readFileSync(0, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function filesRead() {
+  const files = {};
+  const read = (index, file) => {
+    try {
+      files[index] = fs.readFileSync(file, "utf8");
+    } catch (e) {
+      files[index] = `<unreadable: ${e.code}>`;
+    }
+  };
+  args.forEach((arg, i) => {
+    const prev = args[i - 1];
+    if ((prev === "--input" || prev === "--body-file") && arg !== "-") read(i, arg);
+    const at = arg.match(/^[A-Za-z0-9_.\[\]-]+=@(.+)$/);
+    if (at) read(i, at[1]);
+  });
+  return files;
+}
+
+function matches(pattern, joined) {
+  const source = pattern
+    .split("*")
+    .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
+    .join("[\\s\\S]*");
+  return new RegExp(`^${source}$`).test(joined);
+}
+
+function flag(name) {
+  return path.join(dir, "flags", name);
+}
+
+function pause(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const routes = JSON.parse(fs.readFileSync(path.join(dir, "routes.json"), "utf8"));
+const used = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(dir, "used.json"), "utf8"));
+  } catch {
+    return {};
+  }
+})();
+const joined = args.join(" ");
+const index = routes.findIndex((route, i) => {
+  if (!matches(route.args, joined)) return false;
+  if (route.when && !fs.existsSync(flag(route.when))) return false;
+  if (route.unless && fs.existsSync(flag(route.unless))) return false;
+  if (route.times !== undefined && (used[i] || 0) >= route.times) return false;
+  if (route.withEnv && process.env[route.withEnv] === undefined) return false;
+  if (route.withoutEnv && process.env[route.withoutEnv] !== undefined) return false;
+  return true;
+});
+
+const record = {
+  args,
+  env: Object.keys(process.env).sort(),
+  cwd: process.cwd(),
+  stdin: readStdin(),
+  files: filesRead(),
+  route: index < 0 ? null : index,
+};
+fs.appendFileSync(path.join(dir, "calls.jsonl"), JSON.stringify(record) + "\n");
+
+if (index < 0) {
+  process.stderr.write("gh: Not Found (HTTP 404)\n");
+  process.exit(1);
+}
+const route = routes[index];
+if (route.times !== undefined) {
+  used[index] = (used[index] || 0) + 1;
+  fs.writeFileSync(path.join(dir, "used.json"), JSON.stringify(used));
+}
+const text = (inline, file) =>
+  inline !== undefined ? inline : file ? fs.readFileSync(path.join(dir, file), "utf8") : "";
+const out = route.run
+  ? require("child_process").execFileSync("/bin/sh", ["-c", route.run, "gh", ...args], {
+      cwd: dir,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "inherit"],
+    })
+  : text(route.stdout, route.stdoutFile);
+const err = text(route.stderr, route.stderrFile);
+// What it says before it waits is said at once, as gh prints a device code before the person acts.
+if (err) fs.writeSync(2, err.endsWith("\n") ? err : err + "\n");
+if (route.waitFor) {
+  while (!fs.existsSync(flag(route.waitFor))) {
+    if (!alive(process.ppid) || !fs.existsSync(dir)) process.exit(1);
+    pause(100);
+  }
+}
+fs.mkdirSync(path.join(dir, "flags"), { recursive: true });
+if (route.sets) fs.writeFileSync(flag(route.sets), "");
+if (route.clears) fs.rmSync(flag(route.clears), { force: true });
+for (const [name, content] of Object.entries(route.writes || {})) {
+  const file = name.replace(/\$([A-Z_]+)/g, (_, v) => process.env[v] || "");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, content);
+}
+if (out) fs.writeSync(1, out.endsWith("\n") ? out : out + "\n");
+process.exit(route.exit || 0);

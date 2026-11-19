@@ -1,0 +1,89 @@
+[
+  {
+    "asked": "GET /v1/github",
+    "body": {
+      "gh": true,
+      "reviewer": {
+        "error": null,
+        "signIn": null,
+        "signedIn": false,
+        "user": null
+      },
+      "signIn": null,
+      "signedIn": false,
+      "user": null
+    },
+    "status": 200
+  },
+  {
+    "asked": "POST /v1/github/sign-in",
+    "body": {
+      "expiresAt": "<TIME>",
+      "url": "https://github.com/login/device",
+      "userCode": "AB12-CD34"
+    },
+    "status": 200
+  },
+  {
+    "asked": "GET /v1/github, signed in",
+    "body": {
+      "gh": true,
+      "reviewer": {
+        "error": null,
+        "signIn": null,
+        "signedIn": false,
+        "user": null
+      },
+      "signIn": null,
+      "signedIn": true,
+      "user": "o-owner"
+    },
+    "status": 200
+  },
+  {
+    "asked": "POST /v1/github/reviewer/sign-in",
+    "body": {
+      "expiresAt": "<TIME>",
+      "url": "https://github.com/login/device",
+      "userCode": "RV12-CD34"
+    },
+    "status": 200
+  },
+  {
+    "asked": "GET /v1/github, reviewer signed in",
+    "body": {
+      "gh": true,
+      "reviewer": {
+        "error": null,
+        "signIn": null,
+        "signedIn": true,
+        "user": "o-reviewer"
+      },
+      "signIn": null,
+      "signedIn": true,
+      "user": "o-owner"
+    },
+    "status": 200
+  },
+  {
+    "asked": "DELETE /v1/github/reviewer/sign-in",
+    "body": null,
+    "status": 204
+  },
+  {
+    "asked": "GET /v1/github, reviewer signed out",
+    "body": {
+      "gh": true,
+      "reviewer": {
+        "error": null,
+        "signIn": null,
+        "signedIn": false,
+        "user": null
+      },
+      "signIn": null,
+      "signedIn": true,
+      "user": "o-owner"
+    },
+    "status": 200
+  }
+]

@@ -1,0 +1,13 @@
+//! GitHub as obid uses it today, recorded (tests/github_recorded/README.md): each test drives one
+//! GitHub path through obid's API, on a scratch obid with the recording `gh` (tests/fakes/gh) first
+//! on its `PATH`, and compares (a) every `gh` call obid made for it and (b) every answer of obid's
+//! that carries GitHub's data with the recordings kept in tests/github_recorded/<path>/. These are
+//! the baseline a move of GitHub behind another interface must reproduce exactly.
+
+mod support;
+
+#[path = "github_recorded/recorder.rs"]
+mod recorder;
+
+#[path = "github_recorded/sign_in.rs"]
+mod sign_in;
