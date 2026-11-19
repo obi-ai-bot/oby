@@ -432,6 +432,13 @@ pub struct Job {
     pub review_failed: Option<ReviewFailed>,
     pub summaries: Option<Vec<String>>,
     pub issue: Option<u64>,
+    /// The page of the GitHub issue it was started from, `https://github.com/<repo>/issues/<n>`,
+    /// built by obid from its repository and `issue` as it's made ([`Job::set_issue`],
+    /// docs/contracts/issue-tasks.md, ISSUETASK-7): none on a job with no issue, and on one from
+    /// before. In the API as `issueUrl`. No GitHub text: the issue's title stays GitHub's, read
+    /// by the app from the feed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_url: Option<String>,
     pub rounds: Option<u32>,
     pub round: Option<u32>,
     /// Its tool's version as its latest round started (crate::cli_versions), or none when it
@@ -1290,6 +1297,16 @@ impl Job {
         }
     }
 
+    /// Its GitHub issue, `issue`, and that issue's page, `issue_url` (ISSUETASK-7): built from its
+    /// repository's name, as obid's `gh` reads the issue (ISSUETASK-1), only when that name is one
+    /// of GitHub's (`owner/name`).
+    pub fn set_issue(&mut self, issue: Option<u64>) {
+        self.issue = issue;
+        self.issue_url = issue
+            .filter(|_| crate::github::is_repo(&self.repo))
+            .map(|n| format!("https://github.com/{}/issues/{n}", self.repo));
+    }
+
     /// What a Confirm about it is proposed against: its round, status, commits, mode, tool and
     /// account. Confirmed after any of them changed, it's refused.
     pub fn snapshot(&self) -> Value {
@@ -1864,6 +1881,10 @@ impl Job {
         }
         if let Some(why) = &self.no_reviewer {
             value["noReviewer"] = json!(why);
+        }
+        // The page of the issue it was started from (ISSUETASK-7): only when it has one.
+        if let Some(url) = &self.issue_url {
+            value["issueUrl"] = json!(url);
         }
         value["agentVersion"] = json!(self.agent_version);
         value["project"] = json!(self.project);

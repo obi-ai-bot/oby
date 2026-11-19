@@ -2290,7 +2290,7 @@ impl Jobs {
             .unwrap_or_else(|| new.task.clone());
         job.title = new.title.map(|t| t.trim().to_owned());
         job.pr = new.pr;
-        job.issue = new.issue;
+        job.set_issue(new.issue);
         job.round = Some(1);
         job.check = new
             .check

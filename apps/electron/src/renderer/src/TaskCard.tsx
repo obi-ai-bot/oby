@@ -96,6 +96,12 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
           </Menu>
         )}
       </p>
+      {/* the GitHub issue it was started from, a chip that opens it (TASKS-34); GitHub's title as text */}
+      {j.issue && (
+        <button type="button" className="tc-issue" title={j.issue.title ? `#${j.issue.number} · ${j.issue.title}` : `#${j.issue.number}`} onClick={() => openOnGitHub(j.issue!.url)}>
+          <span className="tc-issue-text">#{j.issue.number}{j.issue.title && <> · {j.issue.title}</>}</span>
+        </button>
+      )}
       {/* obid's line when it runs on another agent than your words named (ACCOUNTS-31) */}
       {j.routed && <p className="tc-routed">{j.routed}</p>}
 

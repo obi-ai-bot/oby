@@ -411,7 +411,7 @@ mod tests {
                 summary, session, created, started, commits, published, pushed, publish_error,
                 publish_step, outgoing, pull_request, pull_request_error, review_error, reviewing,
                 review, approvals, review_of, security_paths, no_reviewer, review_failed,
-                summaries, issue, agent_version, check, check_asked, checked, model, effort,
+                summaries, issue, issue_url, agent_version, check, check_asked, checked, model, effort,
                 model_from_account, effort_named, complex, issue_unread, notes, files, attachments,
                 attachments_gone, start_commit, checked_head, mode, cut, after_pr_rebase,
                 checks_rounds, autofix, changes_rounds, crash_resumes, recovery, worktree, obi,

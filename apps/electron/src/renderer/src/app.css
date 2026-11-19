@@ -459,6 +459,11 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .tc-who { margin-right: 6px; color: var(--text); font-weight: 500; }
 .tc-ago { flex: none; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
 .tc-meta { margin: 4px 0 0 26px; color: var(--muted); font-size: var(--text-md); }
+/* the GitHub issue a task came from (TaskCard.tsx, TASKS-34): a small chip under its line, one line, ellipsed */
+.tc-issue { display: inline-flex; max-width: calc(100% - 26px); margin: 6px 0 0 26px; padding: 2px 8px; border-radius: var(--radius-pill); background: var(--hover); color: var(--text); font-size: var(--text-sm); line-height: 16px; transition: color var(--fade), background-color var(--fade); }
+.tc-issue:hover { color: var(--ink); background: rgba(255, 255, 255, 0.13); }
+.tc-issue-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-card.is-alone .tc-issue { margin: -10px 0 16px 30px; }
 /* why it runs on another agent than the words named (ACCOUNTS-31): a line under the meta, same voice */
 .tc-routed { margin: 2px 0 0 26px; color: var(--muted); font-size: var(--text-md); }
 .task-card.is-alone .tc-routed { margin: -10px 0 16px 30px; }
@@ -508,7 +513,11 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .tc-option.is-quiet:hover { color: var(--ink); background: var(--hover); }
 /* a pull request's checks, each its own line (PrChecks.tsx): failed first, Details at the end */
 .pr-checks { margin-top: 10px; }
-.pr-checks-line { color: var(--muted); font-size: var(--text-sm); line-height: 18px; }
+.pr-checks-line { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: var(--text-sm); line-height: 18px; }
+/* Fix CI on the owner's own red pull request (GITHUBWORK-30), at the line's end, over the failed checks */
+.pr-checks-fix { margin-left: auto; padding: 2px 10px; border-radius: var(--radius-pill); background: rgba(255, 255, 255, 0.08); color: var(--item); font-size: var(--text-sm); line-height: 18px; white-space: nowrap; transition: color var(--fade), background-color var(--fade); }
+.pr-checks-fix:hover { background: rgba(255, 255, 255, 0.13); color: var(--ink); }
+.pr-checks-fix:disabled { opacity: 0.5; cursor: default; }
 .pr-checks-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .pr-checks-list li { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: var(--text-md); line-height: 18px; color: var(--text); }
 .pr-checks-list .tc-mark-done { width: 12px; height: 12px; }

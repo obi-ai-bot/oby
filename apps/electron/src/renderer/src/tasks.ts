@@ -324,6 +324,13 @@ export function putOff(id: string) {
   later.add(id);
   set([...tasks]);
 }
+// Fix CI on the owner's own red pull request's checks (GITHUBWORK-30): on obid its start, once,
+// and a task already on it opens instead (GITHUBWORK-31); on the mock, the mock's start
+export async function fixCi(id: string, open?: (task: string) => void) {
+  if (!onObid) return startGitHub(id);
+  const task = await live.fixCi(id);
+  if (task) open?.(task);
+}
 export function startGitHub(id: string) {
   if (onObid) return void live.startGitHubWork(id);
   const g = waiting.find((k) => k.id === id);

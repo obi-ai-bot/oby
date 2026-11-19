@@ -5,7 +5,7 @@ import { CommandWindow } from './Connectors';
 import { BrandMark, BRANDS } from './brands';
 import { ago, ASK_LABEL, type GitHubItem } from './view';
 import PrChecks from './PrChecks';
-import { columnsOf, gitHubError, hasToDo, openOnGitHub, putOff, startGitHub, tasksIn, toDoOf, useTasks, type Tab, type TaskType } from './tasks';
+import { columnsOf, fixCi, gitHubError, hasToDo, openOnGitHub, putOff, startGitHub, tasksIn, toDoOf, useTasks, type Tab, type TaskType } from './tasks';
 
 // how long the way out takes (the sink animation in app.css)
 const LEAVE_MS = 220;
@@ -126,7 +126,7 @@ export default function GroupView({ group, tab: startTab, leaving, covered = fal
             {columns.map((c) => (
               <div key={`${c.project ?? ''}/${c.name ?? ''}`} className="group-board">
                 {named && <h2 className="group-board-name rise" style={{ '--i': at++ } as React.CSSProperties}>{c.name ?? 'Not on a board'}</h2>}
-                {c.items.map((g) => <GitHubCard key={g.id} item={g} style={{ '--i': at++ } as React.CSSProperties} />)}
+                {c.items.map((g) => <GitHubCard key={g.id} item={g} onOpenTask={onOpenTask} style={{ '--i': at++ } as React.CSSProperties} />)}
               </div>
             ))}
             {cards.map((c, i) => (
@@ -170,9 +170,11 @@ export default function GroupView({ group, tab: startTab, leaving, covered = fal
 // A GitHub item no job works on yet, as a card under To do: GitHub's mark, who
 // and what, the repository and its board column, then "Start it?" with the one
 // click that starts Oby's job on it, Open on GitHub, and Later. Where Oby can't
-// start on it (live.ts), where it stands instead, and why.
+// start on it (live.ts), where it stands instead, and why. The owner's own red
+// pull request's start is Fix CI on its checks' line (GITHUBWORK-30); a task
+// already on it opens instead (GITHUBWORK-31).
 // Everything from GitHub is shown as text.
-function GitHubCard({ item, style }: { item: GitHubItem; style?: React.CSSProperties }) {
+export function GitHubCard({ item, style, onOpenTask }: { item: GitHubItem; style?: React.CSSProperties; onOpenTask?: (id: string) => void }) {
   return (
     <article className="card rise task-card" aria-label={item.title} style={style}>
       <header className="tc-head">
@@ -191,7 +193,7 @@ function GitHubCard({ item, style }: { item: GitHubItem; style?: React.CSSProper
         <span className="tc-ask-kind">{item.label ?? ASK_LABEL.start}</span>
         <p className="tc-ask-head">{item.request}</p>
         {item.note && <p className="tc-ask-text">{item.note}</p>}
-        {item.checks && <PrChecks runs={item.checks} />}
+        {item.checks && <PrChecks runs={item.checks} fix={item.fixCi ? { onFix: () => fixCi(item.id, onOpenTask) } : undefined} />}
         <div className="tc-options">
           {item.action && <button className="tc-option is-primary" onClick={() => startGitHub(item.id)}>{item.action}</button>}
           <button className={`tc-option${item.action ? '' : ' is-primary'}`} onClick={() => openOnGitHub(item.url)}>Open on GitHub</button>

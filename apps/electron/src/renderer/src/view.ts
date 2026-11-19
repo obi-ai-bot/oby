@@ -107,6 +107,9 @@ export type Job = {
   who?: string;        // the person it's for, shown before the title
   from?: Brand;        // where it came from (GitHub, Slack, Gmail…); none when you asked Oby
   request: string;     // your own words, or the message it came from
+  // the GitHub issue it was started from (TASKS-34): its number and page (obid's issueUrl), and its
+  // title when GitHub work's feed has it (GitHub's text, shown as text); none with no issue
+  issue?: { number: number; url: string; title?: string };
   agent: Agent | (string & {});  // obid's; one this build doesn't know shows by agentOf
   account: string;     // which of the accounts it runs on (Personal, Deskree, or someone's shared one)
   accountId?: string;  // obid's: that account's id
@@ -166,6 +169,7 @@ export type GitHubItem = {
   board?: { project: string; column: string };
   updated: number;     // minutes ago
   checks?: CheckRun[]; // a pull request's checks, each its own line (PrChecks.tsx, GITHUBWORK-9)
+  fixCi?: boolean;     // the owner's own red pull request: Fix CI on its checks' line (GITHUBWORK-30)
 };
 
 // Done and out of Home: the archive (Home's Archived), most recent first.

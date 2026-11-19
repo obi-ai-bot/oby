@@ -1419,6 +1419,37 @@ fn who_wrote(gh: &Path, commenters: &[&str]) {
 /// ISSUETASK-1 (#1660): a task on an issue gets what people wrote on it, read with obid's own gh
 /// and quoted as data in its worktree's `.obi/inputs/`; its agent's prompt names the file and
 /// never carries the issue's words.
+/// ISSUETASK-7: a job on an issue keeps that issue's page, `issueUrl`, built from its repository and
+/// number, in its answer and its record; a job with no issue has none.
+#[test]
+fn issuetask_7_a_job_on_an_issue_keeps_its_page() {
+    let folder = Folder::new("issuetask-7");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &agents().join("fake-claude"));
+    let obid = start(&folder.0, &config, Some(&agents()));
+    let make = |job: Value| {
+        let made = call(&obid, "POST", "/v1/jobs", Some(&json!({ "job": job })));
+        assert_eq!(made.status, 201, "{}", made.text);
+        made.body
+    };
+    let page = "https://github.com/obi-e2e/fixture-app/issues/140";
+    let on_issue =
+        make(json!({"repo": REPO, "kind": "fix", "task": "Add a line to the docs", "issue": 140}));
+    assert_eq!(on_issue["issue"], 140, "{on_issue}");
+    assert_eq!(on_issue["issueUrl"], page, "{on_issue}");
+    let id = on_issue["id"].as_str().unwrap();
+    let read = call(&obid, "GET", &format!("/v1/jobs/{id}"), None);
+    assert_eq!(read.body["issueUrl"], page, "{}", read.text);
+    let kept: Value = serde_json::from_str(
+        &std::fs::read_to_string(obid.home.join(format!("jobs/{id}.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(kept["issueUrl"], page, "kept in its record: {kept}");
+
+    let plain = make(json!({"repo": REPO, "kind": "fix", "task": "Add a line to the docs"}));
+    assert!(plain.get("issueUrl").is_none(), "{plain}");
+}
+
 #[test]
 fn issuetask_1_a_task_on_an_issue_gets_its_text_quoted() {
     let folder = Folder::new("issuetask-1");
