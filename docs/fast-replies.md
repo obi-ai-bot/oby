@@ -59,7 +59,14 @@ A new conversation on Codex started `codex app-server` for its first turn, then 
 
 What changed (CONVERSATION-AGENT-51, 52): after each of the owner's turns, the next new conversation whose first turn would talk on Codex with a `codex login` gets its `app-server` started ahead, as a Claude Code is (PROFILES-47): its room, box and login copy readied, `features list` checked, then `initialize` and its thread started with what a first turn's thread is told (`codex::start_ahead`). Its MCP servers come up while it waits. No turn runs, so nothing reaches the model, and Codex writes no thread to its history until one does. The first turn is a `turn/start` on that thread, given only when it was started as the turn would start one now (`harness_codex::key`), as a Codex waiting between turns is. Not on a ChatGPT login: its thread starts with the turn's model, and its run reaches OpenAI only through obid's relay with the turn's own token.
 
-Measured on a scratch obid, the same words in a new conversation each time (`POST /v1/plans` until its answer, and the stopwatch line): see the pull request that made it.
+Measured on 2026-11-19, two scratch obids side by side (one built from `dev`, one with this), the owner's own Codex login in Bypass (the own lane), load 2.6 to 4.4, five new conversations each, interleaved, "Say hello in exactly three words." (`POST /v1/plans` with `new` until its answer):
+
+| | `POST` until the answer | until its first words (stopwatch) | POST until the turn had its thread (`session`) |
+|---|---|---|---|
+| before | 4.25 to 7.71 s, median 5.37 | 3.95 to 6.51 s, median 5.19 | 151 to 193 ms |
+| after | 3.35 to 4.51 s, median 3.66 | 2.73 to 4.26 s, median 3.49 | 22 to 27 ms |
+
+Starting Codex ahead took 133 to 157 ms each time (obid's log, `the next conversation's Codex is waiting`); the rest of what the first answer saves is its MCP servers' start, done while it waited.
 
 Jobs stay cold (docs/contracts/lanes.md, LANES-25): a job's worktree, git folders, broker token and an own Codex run's profile are fixed when its CLI starts, so nothing can be started for it before it exists.
 
