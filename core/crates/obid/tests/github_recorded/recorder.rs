@@ -58,6 +58,41 @@ pub struct Recording {
     folder: PathBuf,
     pid: std::cell::Cell<Option<u32>>,
     commits: std::cell::RefCell<Vec<String>>,
+    compared: std::cell::Cell<bool>,
+}
+
+/// A test that fails before it compares (it waited for a state obid never reached, because a call
+/// changed and no route answered it) says which calls no route answered, as they were made: what
+/// obid asked GitHub that it didn't ask when this path was recorded.
+impl Drop for Recording {
+    fn drop(&mut self) {
+        if !std::thread::panicking() || self.compared.get() {
+            return;
+        }
+        let text = std::fs::read_to_string(self.dir.join("calls.jsonl")).unwrap_or_default();
+        let unanswered: Vec<String> = text
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|call| call.get("args").is_some() && call["route"].is_null())
+            .map(|call| {
+                let args: Vec<String> = call["args"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|a| self.commits(&ids(&self.paths(a.as_str().unwrap()))))
+                    .collect();
+                format!("  gh {}", args.join(" "))
+            })
+            .collect();
+        if !unanswered.is_empty() {
+            eprintln!(
+                "{}: calls no route in {} answered (obid's other paths' reads at its start among them, and any call this path didn't make when it was recorded):\n{}",
+                self.path,
+                kept(&self.path).join("routes.json").display(),
+                unanswered.join("\n")
+            );
+        }
+    }
 }
 
 impl Recording {
@@ -81,6 +116,7 @@ impl Recording {
             folder: folder.0.clone(),
             pid: std::cell::Cell::new(None),
             commits: std::cell::RefCell::new(Vec::new()),
+            compared: std::cell::Cell::new(false),
         }
     }
 
@@ -94,12 +130,41 @@ impl Recording {
         std::fs::write(self.dir.join("flags").join(name), "").unwrap();
     }
 
+    /// Whether every call so far whose arguments start with `prefix` has ended: a test that waits
+    /// for one to end before asking obid again keeps its own reads out of that call's time.
+    pub fn ended(&self, prefix: &str) -> bool {
+        let text = std::fs::read_to_string(self.dir.join("calls.jsonl")).unwrap_or_default();
+        let lines: Vec<Value> = text
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+        let started: Vec<&str> = lines
+            .iter()
+            .filter(|l| {
+                l["args"].as_array().is_some_and(|args| {
+                    let joined: Vec<&str> = args.iter().filter_map(Value::as_str).collect();
+                    joined.join(" ").starts_with(prefix)
+                })
+            })
+            .filter_map(|l| l["id"].as_str())
+            .collect();
+        !started.is_empty()
+            && started
+                .iter()
+                .all(|id| lines.iter().any(|l| l["end"].as_str() == Some(id)))
+    }
+
     /// Every call so far, as tests/fakes/gh wrote it down, made comparable ([`normalize_call`]).
     pub fn calls(&self) -> Vec<Value> {
         let text = std::fs::read_to_string(self.dir.join("calls.jsonl")).unwrap_or_default();
-        let calls: Vec<Value> = text
+        let lines: Vec<Value> = text
             .lines()
-            .map(|line| self.normalize_call(serde_json::from_str(line).unwrap()))
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let calls = lines
+            .into_iter()
+            .filter(|l| l.get("args").is_some())
+            .map(|l| self.normalize_call(l))
             .collect();
         polls_once(calls)
     }
@@ -126,6 +191,7 @@ impl Recording {
 
     /// `calls` against the kept `calls.json`.
     pub fn assert_calls(&self, calls: &[Value]) {
+        self.compared.set(true);
         compare(
             &kept(&self.path).join("calls.json"),
             &Value::Array(calls.to_vec()),
@@ -143,8 +209,10 @@ impl Recording {
     /// clock or randomness, is replaced; arguments, URLs, file texts and keys stay as they were.
     fn normalize_call(&self, mut call: Value) -> Value {
         // The fake's own bookkeeping, not what obid asked.
-        call.as_object_mut().unwrap().remove("route");
         let map = call.as_object_mut().unwrap();
+        for key in ["route", "id", "start"] {
+            map.remove(key);
+        }
         // Rule: a working folder in the test's folder or the crate's is said relative to it; the
         // folder itself is a temporary one, different on every run.
         if let Some(cwd) = map.get("cwd").and_then(Value::as_str) {
@@ -210,7 +278,8 @@ impl Recording {
         out
     }
 
-    /// Every string in `value` with [`paths`] and [`ids`] applied.
+    /// Every string in `value` with [`paths`](Self::paths), [`ids`] and
+    /// [`commits`](Self::commits) applied.
     fn normalize_strings(&self, value: Value) -> Value {
         match value {
             Value::String(s) => Value::String(self.commits(&ids(&self.paths(&s)))),
@@ -277,6 +346,27 @@ const CLOCK_KEYS: &[&str] = &[
     "readAt",
     "at",
 ];
+
+/// `calls` with every write, in order, and each read only the first time it was made. Rule, for a
+/// path where obid's own loops read the same thing again at times of their own (the repository
+/// list rereads gh's login once a sign-in ends): how often and when a read is made again is the
+/// machine's timing; which reads there are, and every write in its order, are obid's.
+pub fn distinct_reads(calls: Vec<Value>) -> Vec<Value> {
+    let mut seen: Vec<Value> = Vec::new();
+    calls
+        .into_iter()
+        .filter(|call| {
+            if writes(call) {
+                return true;
+            }
+            if seen.contains(call) {
+                return false;
+            }
+            seen.push(call.clone());
+            true
+        })
+        .collect()
+}
 
 /// Whether `call` changes something on GitHub or in a login: a request with a method of its own,
 /// a pull request's create, edit, merge, review or close, a run's rerun, an issue's edit, a sign-in.
@@ -405,15 +495,14 @@ pub fn diff(was: &str, now: &str) -> String {
     let changed: Vec<usize> = (0..lines.len()).filter(|&k| lines[k].0 != ' ').collect();
     let mut out = String::new();
     let mut last: Option<usize> = None;
-    for k in 0..lines.len() {
-        let near = changed.iter().any(|&c| c.abs_diff(k) <= 2);
-        if !near {
+    for (k, (mark, line)) in lines.iter().enumerate() {
+        if !changed.iter().any(|&c| c.abs_diff(k) <= 2) {
             continue;
         }
         if last.is_some_and(|l| k > l + 1) {
             out.push_str("   ...\n");
         }
-        out.push_str(&format!("{} {}\n", lines[k].0, lines[k].1));
+        out.push_str(&format!("{mark} {line}\n"));
         last = Some(k);
     }
     out

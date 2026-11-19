@@ -35,6 +35,10 @@
 //                   files   for an argument naming a file gh reads (`--input <f>`, `--body-file <f>`,
 //                           `-F <k>=@<f>`, `<k>=@<f>`): that file's text, by the argument's index
 //                   route   the index of the route that answered it, or null
+//                   id, start   a random id for the call and when it began (ms since the epoch);
+//                           a second line `{"end": <id>, "at": <ms>}` says when it ended, so the
+//                           test can tell calls obid made one after another from calls it made at
+//                           the same time
 //
 // The test, not this script, makes paths and times comparable (github_recorded/recorder.rs).
 
@@ -118,7 +122,10 @@ const index = routes.findIndex((route, i) => {
   return true;
 });
 
+const id = require("crypto").randomUUID();
 const record = {
+  id,
+  start: performance.timeOrigin + performance.now(),
   args,
   env: Object.keys(process.env).sort(),
   cwd: process.cwd(),
@@ -127,6 +134,12 @@ const record = {
   route: index < 0 ? null : index,
 };
 fs.appendFileSync(path.join(dir, "calls.jsonl"), JSON.stringify(record) + "\n");
+process.on("exit", () => {
+  fs.appendFileSync(
+    path.join(dir, "calls.jsonl"),
+    JSON.stringify({ end: id, at: performance.timeOrigin + performance.now() }) + "\n",
+  );
+});
 
 if (index < 0) {
   process.stderr.write("gh: Not Found (HTTP 404)\n");

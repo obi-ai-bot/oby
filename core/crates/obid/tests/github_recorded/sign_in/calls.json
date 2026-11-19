@@ -61,39 +61,6 @@
   {
     "args": [
       "auth",
-      "status",
-      "--hostname",
-      "github.com",
-      "--active",
-      "--json",
-      "hosts"
-    ],
-    "cwd": "<CRATE>",
-    "env": [
-      "GH_NO_UPDATE_NOTIFIER",
-      "GH_PROMPT_DISABLED",
-      "GH_SPINNER_DISABLED",
-      "GIT_TERMINAL_PROMPT",
-      "HOME",
-      "NO_COLOR",
-      "OBID_BASE_CHECK",
-      "OBID_GITHUB_REFRESH_SECONDS",
-      "OBID_LOAD",
-      "OBID_LOG",
-      "OBID_MEMORY_AVAILABLE",
-      "OBID_PRESTART",
-      "OBID_RECHECK_MS",
-      "OBID_SECURITY_BIN",
-      "OBID_USAGE_READS",
-      "PATH",
-      "TMPDIR"
-    ],
-    "files": {},
-    "stdin": ""
-  },
-  {
-    "args": [
-      "auth",
       "login",
       "--hostname",
       "github.com",
@@ -114,74 +81,6 @@
       "GIT_CONFIG_GLOBAL",
       "HOME",
       "NO_COLOR",
-      "PATH",
-      "TMPDIR"
-    ],
-    "files": {},
-    "stdin": ""
-  },
-  {
-    "args": [
-      "auth",
-      "status",
-      "--hostname",
-      "github.com",
-      "--active",
-      "--json",
-      "hosts"
-    ],
-    "cwd": "<CRATE>",
-    "env": [
-      "DBUS_SESSION_BUS_ADDRESS",
-      "GH_CONFIG_DIR",
-      "GH_NO_UPDATE_NOTIFIER",
-      "GH_PROMPT_DISABLED",
-      "GH_SPINNER_DISABLED",
-      "GIT_TERMINAL_PROMPT",
-      "HOME",
-      "NO_COLOR",
-      "OBID_BASE_CHECK",
-      "OBID_GITHUB_REFRESH_SECONDS",
-      "OBID_LOAD",
-      "OBID_LOG",
-      "OBID_MEMORY_AVAILABLE",
-      "OBID_PRESTART",
-      "OBID_RECHECK_MS",
-      "OBID_SECURITY_BIN",
-      "OBID_USAGE_READS",
-      "PATH",
-      "TMPDIR"
-    ],
-    "files": {},
-    "stdin": ""
-  },
-  {
-    "args": [
-      "auth",
-      "status",
-      "--hostname",
-      "github.com",
-      "--active",
-      "--json",
-      "hosts"
-    ],
-    "cwd": "<CRATE>",
-    "env": [
-      "GH_NO_UPDATE_NOTIFIER",
-      "GH_PROMPT_DISABLED",
-      "GH_SPINNER_DISABLED",
-      "GIT_TERMINAL_PROMPT",
-      "HOME",
-      "NO_COLOR",
-      "OBID_BASE_CHECK",
-      "OBID_GITHUB_REFRESH_SECONDS",
-      "OBID_LOAD",
-      "OBID_LOG",
-      "OBID_MEMORY_AVAILABLE",
-      "OBID_PRESTART",
-      "OBID_RECHECK_MS",
-      "OBID_SECURITY_BIN",
-      "OBID_USAGE_READS",
       "PATH",
       "TMPDIR"
     ],

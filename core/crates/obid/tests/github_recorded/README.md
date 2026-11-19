@@ -43,6 +43,18 @@ GitHub gave stay exactly as they were.
   obid again, or obid's own timers, read GitHub a number of times that depends on the machine. A
   block holding a **write** (a request with a method, a pull request's create, edit, merge or
   review, a rerun, a sign-in) is never folded.
+- Where obid's own loops reread the same thing at times of their own (the repository list rereads
+  gh's login once a sign-in ends), the path keeps each **read** once, the first time, and every
+  write in order (`distinct_reads`).
+- A path that obid's other loops interleave with keeps only its own calls (`calls_starting`, or
+  the calls after a mark), saying which in its test.
+
+## When a test fails
+
+- **A recording differs:** the test prints the lines of `calls.json` or `answers.json` that
+  changed, `-` as recorded and `+` as now.
+- **It fails before it compares** (it waited for a state obid never reached, because a call changed
+  and no route answered it): it prints the calls no route answered, as obid made them.
 
 ## Re-recording
 
