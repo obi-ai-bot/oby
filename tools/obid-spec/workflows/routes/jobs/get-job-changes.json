@@ -117,8 +117,7 @@
       "ui": {
         "proves": [
           "TASKS-23"
-        ],
-        "flaky": "#2529: under load the diff sometimes comes back empty and truncated"
+        ]
       }
     },
     {
