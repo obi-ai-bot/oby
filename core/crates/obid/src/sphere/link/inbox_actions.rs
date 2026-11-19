@@ -1740,7 +1740,7 @@ impl Link {
                 ));
             }
             let chosen = answer.as_deref().unwrap_or(inbox::DECLINE);
-            let accept = chosen == inbox::ACCEPT || chosen == inbox::ACCEPT_REMEMBER;
+            let accept = inbox::accepts(chosen);
             let remember = chosen == inbox::ACCEPT_REMEMBER || chosen == inbox::DECLINE_REMEMBER;
             exchange.decided_by = Some("inbox".into());
             let mut declined = None;

@@ -159,6 +159,13 @@ pub async fn peer_ask(
     ))
 }
 
+/// Whether a `PUT …/unsealed` is refused: letting a member's Obys have words in the clear takes an
+/// app of the owner's signature (`signed`, asked only then: checking a signature uses it up);
+/// taking it back never does (SPHERE-19). Proved in `proofs/sealed.rs`.
+pub(crate) fn unsigned_unsealing(allowing: bool, signed: impl FnOnce() -> bool) -> bool {
+    allowing && !signed()
+}
+
 /// `PUT /v1/obid/sphere/peers/{owner}/unsealed`: whether obid may send that member's Obys words in
 /// the clear while their card has no seal key (SPHERE-19). Sealed is the default (SPHERE-18), so
 /// allowing it is the owner's word alone, signed by an app of theirs: obid's token, which the page
@@ -171,7 +178,9 @@ pub async fn allow_unsealed(
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let allowing = serde_json::from_slice::<Value>(&body).is_ok_and(|b| b["allow"] == true);
-    if allowing && crate::routes::signed_by(&shared, "PUT", &uri, &headers, &body).is_none() {
+    if unsigned_unsealing(allowing, || {
+        crate::routes::signed_by(&shared, "PUT", &uri, &headers, &body).is_some()
+    }) {
         return Err(ApiError::new(
             StatusCode::FORBIDDEN,
             "Sending to them unsealed is only yours to allow: an app of yours signs it.",
@@ -244,6 +253,23 @@ pub async fn inbox(
     Ok(json(StatusCode::OK, shared.link.inbox_json(done, limit)))
 }
 
+/// Whether an answer is an Accept of another Oby's work that no hand of the owner's gave, so it is
+/// refused (SPHERE-17): `signed`, an app of the owner's signed this exact request (`X-Oby-Words`);
+/// `paired`, a phone paired through the gateway sent it; `request` the type of the open item's
+/// other-Oby request (none when no such item is open); `answer` the body's `answer`, both as bytes.
+/// Decline, Later and every other answer never need a hand here. Proved in `proofs/accept.rs`.
+pub(crate) fn unsigned_accept(
+    signed: bool,
+    paired: bool,
+    request: Option<&[u8]>,
+    answer: Option<&[u8]>,
+) -> bool {
+    !signed
+        && !paired
+        && matches!(request, Some(b"review_request" | b"handoff"))
+        && answer.is_some_and(super::inbox::accepts_bytes)
+}
+
 /// `POST /v1/inbox/{id}/answer`.
 pub async fn answer(
     State(shared): State<Arc<Shared>>,
@@ -278,21 +304,23 @@ pub async fn answer(
     // hand too (SPHERE-17, the Approvals non-negotiable): a signature of one of their devices, or a
     // paired phone through the gateway, never obid's token alone. Decline and Later stay unsigned:
     // saying no or putting it off starts nothing.
-    if !typed
-        && device.is_none()
-        && shared.link.item(&id).is_some_and(|i| {
-            i.done.is_none()
-                && i.obi
-                    .as_ref()
-                    .is_some_and(|o| o["type"] == "review_request" || o["type"] == "handoff")
-        })
-        && serde_json::from_slice::<Value>(&body).is_ok_and(|b| {
-            matches!(
-                b["answer"].as_str(),
-                Some(super::inbox::ACCEPT | super::inbox::ACCEPT_REMEMBER)
-            )
-        })
-    {
+    let open = (!typed && device.is_none())
+        .then(|| shared.link.item(&id))
+        .flatten()
+        .filter(|i| i.done.is_none());
+    let parsed = serde_json::from_slice::<Value>(&body).ok();
+    if unsigned_accept(
+        typed,
+        device.is_some(),
+        open.as_ref()
+            .and_then(|i| i.obi.as_ref())
+            .and_then(|o| o["type"].as_str())
+            .map(str::as_bytes),
+        parsed
+            .as_ref()
+            .and_then(|b| b["answer"].as_str())
+            .map(str::as_bytes),
+    ) {
         return Err(ApiError::new(
             StatusCode::FORBIDDEN,
             super::link::NEEDS_YOUR_ACCEPT,

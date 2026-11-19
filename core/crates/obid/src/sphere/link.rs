@@ -48,6 +48,8 @@ mod follower;
 mod handoffs;
 mod inbox_actions;
 mod reviews;
+#[cfg(kani)]
+pub(crate) use reviews::{Delivery, delivery};
 mod room_link;
 mod sender;
 
@@ -661,27 +663,92 @@ async fn rebound_member(
         .members(&token.access_token)
         .await
         .map_err(|e| from_client(&e))?;
-    let Some(listed) = members.iter().find(|m| m["obi"] == obi_id) else {
-        return Err(refused(format!("{sphere} doesn't list this Oby")));
+    let listed = members.iter().find(|m| m["obi"] == obi_id);
+    let params = listed.and_then(|m| obi_protocol::card::params(&m["card"]));
+    let carries = |k: &str| {
+        params
+            .and_then(|p| p.get(k))
+            .and_then(Value::as_str)
+            .map(str::as_bytes)
     };
-    if listed["status"] != "active" {
-        return Err(refused(format!("{sphere} lists this Oby as removed")));
+    fn text(m: &Value) -> Option<&[u8]> {
+        m.as_str().map(str::as_bytes)
     }
-    if listed["owner"] != owner || listed["owner_key"] != owner_key {
-        return Err(refused(format!(
+    let entry = listed.map(|m| Listed {
+        status: text(&m["status"]),
+        owner: text(&m["owner"]),
+        owner_key: text(&m["owner_key"]),
+        key_id: carries("key_id"),
+        public_key: carries("public_key"),
+    });
+    let (key_id, public_key) = (key.key_id(), key.public_key());
+    let ours = Rebound {
+        owner: owner.as_bytes(),
+        owner_key: owner_key.as_bytes(),
+        key_id: key_id.as_bytes(),
+        public_key: public_key.as_bytes(),
+    };
+    match rebound_refusal(entry, &ours) {
+        None => Ok(()),
+        Some(Unbound::NotListed) => Err(refused(format!("{sphere} doesn't list this Oby"))),
+        Some(Unbound::Removed) => Err(refused(format!("{sphere} lists this Oby as removed"))),
+        Some(Unbound::OtherOwner) => Err(refused(format!(
             "{sphere} lists this Oby under another owner or owner key"
-        )));
-    }
-    let params = obi_protocol::card::params(&listed["card"]);
-    let carries = |k: &str| params.and_then(|p| p.get(k)).and_then(Value::as_str);
-    if carries("key_id") != Some(key.key_id().as_str())
-        || carries("public_key") != Some(key.public_key().as_str())
-    {
-        return Err(refused(format!(
+        ))),
+        Some(Unbound::OtherKey) => Err(refused(format!(
             "{sphere} lists this Oby with a card that isn't this Oby's key"
-        )));
+        ))),
     }
-    Ok(())
+}
+
+/// What a rebound join reads of the directory's entry for this Oby (SPHERE-24): each field's text as
+/// the directory has it, as bytes (what `proofs/rebound.rs` can range over), none when it isn't text.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Listed<'a> {
+    pub status: Option<&'a [u8]>,
+    pub owner: Option<&'a [u8]>,
+    pub owner_key: Option<&'a [u8]>,
+    /// The card's `key_id` and `public_key`.
+    pub key_id: Option<&'a [u8]>,
+    pub public_key: Option<&'a [u8]>,
+}
+
+/// Who a rebound join must find listed (SPHERE-24): the body's owner and owner key, and obid's own
+/// Obi key, as bytes.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Rebound<'a> {
+    pub owner: &'a [u8],
+    pub owner_key: &'a [u8],
+    pub key_id: &'a [u8],
+    pub public_key: &'a [u8],
+}
+
+/// Why a rebound join joins nothing, in the order they're said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Unbound {
+    NotListed,
+    Removed,
+    OtherOwner,
+    OtherKey,
+}
+
+/// A rebound join's directory check (SPHERE-24): none only when the directory lists this Oby
+/// active, under `ours`' owner and owner key, its card carrying obid's own Obi key. Proved in
+/// `proofs/rebound.rs`.
+pub(crate) fn rebound_refusal(listed: Option<Listed<'_>>, ours: &Rebound<'_>) -> Option<Unbound> {
+    let Some(listed) = listed else {
+        return Some(Unbound::NotListed);
+    };
+    if listed.status != Some(b"active") {
+        return Some(Unbound::Removed);
+    }
+    if listed.owner != Some(ours.owner) || listed.owner_key != Some(ours.owner_key) {
+        return Some(Unbound::OtherOwner);
+    }
+    if listed.key_id != Some(ours.key_id) || listed.public_key != Some(ours.public_key) {
+        return Some(Unbound::OtherKey);
+    }
+    None
 }
 
 /// Why the Sphere's refusal of a token exchange ends this Obi's membership, or none (SPHERE-22).
@@ -725,13 +792,20 @@ const DELEGATION_GRACE: i64 = 300;
 
 /// obid's closed reason codes for an owner event's `reason` (SPHERE-23): `rotated` (reserved) and a
 /// value obid doesn't know are no reason, so the Sphere can never put words of its own on the card.
-fn owner_event_reason(reason: &str) -> Option<&'static str> {
-    match reason {
-        inbox::SIGNED_IN_AGAIN => Some(inbox::SIGNED_IN_AGAIN),
-        inbox::ADMIN_RESET => Some(inbox::ADMIN_RESET),
-        inbox::OPERATOR_RESET => Some(inbox::OPERATOR_RESET),
-        _ => None,
-    }
+pub(crate) fn owner_event_reason(reason: &str) -> Option<&'static str> {
+    owner_event_code(reason.as_bytes())
+}
+
+/// [`owner_event_reason`], on the reason's bytes: the decision, which `proofs/owner_key.rs` proves
+/// for every byte string.
+pub(crate) fn owner_event_code(reason: &[u8]) -> Option<&'static str> {
+    [
+        inbox::SIGNED_IN_AGAIN,
+        inbox::ADMIN_RESET,
+        inbox::OPERATOR_RESET,
+    ]
+    .into_iter()
+    .find(|code| code.as_bytes() == reason)
 }
 
 fn delegation_json(delegation: &str) -> Value {
