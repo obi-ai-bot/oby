@@ -24,6 +24,9 @@ import { asksWaiting, markSeen, stop, tell, tellPlaceholder, useTasks, type Task
 import { cancelQueued, obys, ofObid, seeChat, stopChat, tellChat, useChats, type Chat } from './chats';
 import CantRunLine from './CantRunLine';
 import Refusals from './Refusals';
+import RefusalFixes from './RefusalFixes';
+import ReplySelection from './ReplySelection';
+import { historyOf } from './recall';
 import SetupCard from './SetupCard';
 import OfferCard from './OfferCard';
 import { WELCOME, typedFirst } from './onboarding';
@@ -113,6 +116,10 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
     // person's Oby from the same side, under its owner's name (by). Only you, the
     // person, get a bubble
     : { who: 'oby', by: m.who === 'oby' ? undefined : m.who, text: m.text, ago: m.ago, jobs: m.task ? [m.task] : undefined, streaming: m.streaming }));
+  // the owner's earlier words here, for ↑ in an empty box (COMPOSER-20), and where a reply's picked
+  // words go in it (COMPOSER-23)
+  const history = useMemo(() => historyOf(thread.filter((m) => m.who === 'you').map((m) => m.text)), [thread]);
+  const quote = useRef<((text: string) => void) | null>(null);
   // an Oby at work on an answer, and what it's on (someone else's: writing)
   const typing = !!(task ?? talk ?? convo)!.typing, step = talk ? talk.step : convo?.typing ? 'Writing' : undefined;
   // who's writing, in a conversation with other people's Obys: the first in it
@@ -265,6 +272,8 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                     // with its Copy (CHATFIRST-37), once all its words are in
                     <div key="text" className="msg-bubble"><Said text={m.text} streaming={(m as Message).streaming} />{!(m as Message).streaming && <CopyButton text={m.text} className="msg-copy" />}</div>
                   ) : null,
+                  // a task it couldn't start on the account named: Install or Sign in (ACCOUNTS-37)
+                  ...((m as Message).fixes?.length && !(m as Message).streaming ? [<RefusalFixes key="fixes" fixes={(m as Message).fixes!} />] : []),
                   // setting up (Oby's first conversation): where you act, once its words are in
                   ...((m as Message).setup && !(m as Message).streaming ? [<SetupCard key="setup" step={(m as Message).setup!} />] : []),
                   // work Oby offers to start: yours to start with a tap
@@ -370,6 +379,8 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
           label={`Tell the agent about ${toTask.title}`}
           onSend={sendFoot}
           draft={draftBox.task(toTask.id)}
+          history={history}
+          quote={quote}
           onStop={toTask.status === 'running' && !toTask.unknown ? () => stop(toTask.id) : undefined}
         />
       </> : (
@@ -383,11 +394,15 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
           talk={talk && !talk.local && (!onObid || talkReady(talk.id)) ? talk : undefined}
           draft={task ? draftBox.task(task.id) : talk ? draftBox.conversation(talk.id) : draftBox.peer(convo!.id)}
           onStop={task ? (task.status === 'running' && !task.unknown ? () => stop(task.id) : undefined) : talk && typing && ofObid(talk.id) && talkReady(talk.id) ? () => stopChat(talk.id) : undefined}
+          history={history}
+          quote={quote}
           // words sent while Oby answers here, waiting their turn (COMPOSER-8 to 10)
           queued={talk?.queued}
           onCancelQueued={talk ? (q) => cancelQueued(talk.id, q.id) : undefined}
         />
       )}
+      {/* words picked out of a reply: Reply about this, quoted into the box (COMPOSER-23) */}
+      <ReplySelection root={list} onQuote={(text) => quote.current?.(text)} />
       {/* a card's menu: tell its agent something, Stop or Archive, and Delete */}
       {/* (from its ⋯, at the card's right edge: it opens leftward; from a right-click, at the pointer) */}
       {menu && menuTask && <TaskMenu task={menuTask} at={menu.at} align={menu.at.width > 0 ? 'right' : 'left'} onClose={() => setMenu(null)} onTell={() => tellTo(menu.id)} />}

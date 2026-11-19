@@ -1,5 +1,5 @@
 import { BRANDS, lettered, type Brand } from './brands';
-import { isAgent, type AskMark, type CheckRun } from '../../shared/obid-wire';
+import { isAgent, type AskMark, type CheckRun, type Fix } from '../../shared/obid-wire';
 
 // The app's view of Oby's work: the shapes its screens draw, their fixed words and the
 // helpers that read them. The demo data built from these is in mock.ts.
@@ -188,7 +188,9 @@ export type Turn = { id: string; who: 'user' | 'oby'; text: string; at: number; 
 // way, folded over its words (looked: how many were lookups; asked: whose Obys
 // it asked); streaming: its words still coming in. files: what went with yours
 // (a photo with a preview of itself); obys: the Obys it @mentions
-export type Message = { who: string; text: string; ago: number; jobs?: string[]; by?: string; steps?: string[]; looked?: number; asked?: string[]; streaming?: boolean; setup?: SetupStep; offer?: Offer; confirm?: { id: string; ask: Ask }; askCard?: AskMark } & Attachments;
+export type Message = { who: string; text: string; ago: number; jobs?: string[]; by?: string; steps?: string[]; looked?: number; asked?: string[]; streaming?: boolean; setup?: SetupStep; offer?: Offer; confirm?: { id: string; ask: Ask }; askCard?: AskMark; fixes?: Fix[] } & Attachments;
+// fixes (obid only): on Oby's words that a task couldn't start on the account named, Install or Sign in
+// under them (RefusalFixes.tsx, ACCOUNTS-37)
 // askCard (obid only): a question to another Oby, one card that updates in place (AskCard.tsx)
 // confirm (obid only): a Confirm Oby's answer made (a merge, a write on GitHub), answered here or
 // on Home, one item (#1680)

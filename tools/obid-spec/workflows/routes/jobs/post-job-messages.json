@@ -2,7 +2,7 @@
   "schemaVersion": "2",
   "name": "POST /v1/jobs/{id}/messages",
   "version": "1.0.0",
-  "description": "Words to a task: 404 for one obid doesn't have, 400 without text, 422 for empty words; a running task hears them; a finished one starts a follow-up (JOBSTATE-12), once for a repeated key (RECEIPTS-8).",
+  "description": "Words to a task: 404 for one obid doesn't have, 400 without text, 422 for empty words; a running task hears them; a finished one starts a follow-up (JOBSTATE-12), once for a repeated key (RECEIPTS-8); files to a running task reach its .obi/inputs and mark it (ATTACH-21, 22), and wait for one that asks the owner (ATTACH-23).",
   "trigger": {
     "http": {
       "method": "POST",
@@ -136,6 +136,196 @@
             "status": "running"
           }
         }
+      }
+    },
+    {
+      "id": "attach-21-upload",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/attachments?name=build.log",
+        "raw": "all good",
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "attach-21-files-to-a-task-at-work",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/messages",
+        "body": {
+          "text": "Use this log",
+          "attachments": [
+            "${state.attach-21-upload.body.path}"
+          ]
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.s.body.id}",
+            "status": "running",
+            "step": "You: Use this log"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-21"
+        ]
+      }
+    },
+    {
+      "id": "attach-21-in-its-inputs",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.s.body.id}/.obi/inputs/build.log",
+        "within": 30,
+        "expect": {
+          "text": "all good"
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-21"
+        ]
+      }
+    },
+    {
+      "id": "attach-22-they-mark-it",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "jobs/${state.s.body.id}.json",
+        "within": 30,
+        "expect": {
+          "json": {
+            "foreign": {
+              "$type": "string"
+            },
+            "foreignByApi": {
+              "$exists": false
+            },
+            "attachments": [
+              {
+                "$contains": "build.log"
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-22"
+        ]
+      }
+    },
+    {
+      "id": "q",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "q",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "asking",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.q}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "Pick a store. JOB-ASKS-QUESTION",
+            "mode": "ask"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "asking-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.q}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.asking.body.id}",
+        "within": 90,
+        "expect": {
+          "status": 200,
+          "body": {
+            "permission": {
+              "question": {
+                "$type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "attach-23-upload",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.q}",
+        "method": "POST",
+        "path": "/v1/attachments?name=more.png",
+        "raw": "png",
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "attach-23-not-while-it-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.q}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.asking.body.id}/messages",
+        "body": {
+          "text": "",
+          "attachments": [
+            "${state.attach-23-upload.body.path}"
+          ]
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "It can't take files now: it's getting ready, waiting for your answer or wrapping up. Send them again once it's at work."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-23"
+        ]
+      }
+    },
+    {
+      "id": "attach-23-nothing-copied",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.q}",
+        "path": "worktrees/${state.asking.body.id}/.obi/inputs/more.png",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-23"
+        ]
       }
     },
     {

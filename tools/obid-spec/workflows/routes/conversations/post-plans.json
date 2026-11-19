@@ -2,7 +2,7 @@
   "schemaVersion": "2",
   "name": "POST /v1/plans",
   "version": "1.0.0",
-  "description": "The owner's words into a conversation: 400 for a body that isn't a plan, 422 for an id, attachment, defaults or empty words obid refuses, 404 for a conversation it doesn't have; a turn on the stand-in answers its reply, keeps the conversation 0600 with the turn delivered, emits conversation, turn and reply, a repeated id is answered once (ATTACH-8), a question comes back as a question (CONVERSATION-AGENT-47), and a task it starts is the turn's (TASKCONV-5).",
+  "description": "The owner's words into a conversation: 400 for a body that isn't a plan, 422 for an id, attachment, defaults or empty words obid refuses, 404 for a conversation it doesn't have; a turn on the stand-in answers its reply, keeps the conversation 0600 with the turn delivered, emits conversation, turn and reply, a repeated id is answered once (ATTACH-8), a question comes back as a question (CONVERSATION-AGENT-47), and a task it starts is the turn's (TASKCONV-5), and a task named to an account whose CLI isn't installed starts nothing and carries Install (ACCOUNTS-37, #2487).",
   "trigger": {
     "http": {
       "method": "POST",
@@ -432,6 +432,116 @@
             "conversation": "${state.said.body.conversation}"
           }
         }
+      }
+    },
+    {
+      "id": "nc",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "nc",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "cursor": {
+              "bin": "/nonexistent/obid-spec/cursor-agent",
+              "accounts": [
+                {
+                  "id": "cx",
+                  "name": "Cursor X",
+                  "configDir": "${run.scratch}/nc/home/accounts/cx"
+                }
+              ]
+            }
+          }
+        },
+        "files": {
+          "accounts/cx/.keep": ""
+        }
+      }
+    },
+    {
+      "id": "accounts-37-a-missing-cli-carries-install",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.nc}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Add a greeting\", \"kind\": \"build\", \"agent\": \"cursor\", \"account\": \"Cursor X\"}",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "jobs": [],
+            "fixes": [
+              {
+                "action": "install",
+                "agent": "cursor",
+                "account": "cx"
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-37"
+        ]
+      }
+    },
+    {
+      "id": "accounts-37-on-obys-turn",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.nc}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.accounts-37-a-missing-cli-carries-install.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "who": "oby",
+                  "fixes": [
+                    {
+                      "action": "install",
+                      "agent": "cursor",
+                      "account": "cx"
+                    }
+                  ]
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-37"
+        ]
+      }
+    },
+    {
+      "id": "accounts-37-nothing-started",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.nc}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-37"
+        ]
       }
     }
   ]

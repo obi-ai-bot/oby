@@ -211,11 +211,17 @@ export type LimitDecision = {
 // attachments: on your turn, the names of the files that went with the words (obid only)
 // relayed: Oby's turn about another Oby. asks: the cards of questions to other Obys it tells of (AskMark)
 export type Turn = { id: string; who: 'user' | 'oby'; text: string; at: string; jobs: string[]; conversation?: string; ended?: boolean; routine?: unknown; attachments?: string[]; relayed?: boolean; asks?: AskMark[];
+  // obid only (docs/contracts/accounts.md, ACCOUNTS-37): on Oby's words that a task couldn't start on
+  // the account named, what the owner can do; none from an older obid
+  fixes?: Fix[];
   // obid only (docs/contracts/deliveries.md): where the owner's words stand. status: an open string
   // (queued, starting, running, answered, failed, interrupted, cancelled); read one you don't know as nothing
   delivery?: { status: string; by?: string; why?: string; error?: string };
   // one more each time obid sends it changed, as a job's: the higher is the newer; none from an older obid
   revision?: number };
+// What the owner can do about a task obid couldn't start on an account (ACCOUNTS-37). action: an open
+// string, install (its CLI isn't on this Mac) or signIn; read one you don't know as nothing
+export type Fix = { action: string; agent: string; account: string };
 // A question to another Oby as obid says it stands (docs/contracts/ask-an-oby.md): one per `exchange`, the
 // latest, in place of its turns; a refused one has no exchange. state: an open string. said: the other
 // Oby's words, data. by and reason: its own claims, which pick words and never show. why: obid's words.

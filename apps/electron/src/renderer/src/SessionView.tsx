@@ -1,6 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, Check, ChevronRight, ShieldCheck } from 'lucide-react';
 import Composer, { typingIn } from './Composer';
+import ReplySelection from './ReplySelection';
 import Formatted from './Formatted';
 import Said from './Said';
 import TaskServers from './TaskServers';
@@ -123,6 +124,7 @@ export default function SessionView({ id, leaving, covered = false, onBack, onGo
   const running = task.status === 'running' || task.status === 'needs';
   const [filter, setFilter] = useState('all');
   const { list, onListScroll, atEnd, thumbProps } = useLiveEnd();
+  const quote = useRef<((text: string) => void) | null>(null);
   const live = useLiveLines(entries, running);
 
   useEffect(() => {
@@ -193,7 +195,10 @@ export default function SessionView({ id, leaving, covered = false, onBack, onGo
         label={`Tell Oby about ${task.title}`}
         onSend={(text, att) => onTell(task.id, text, att)}
         draft={draftBox.task(task.id)}
+        quote={quote}
       />
+      {/* words picked out of the agent's replies: Reply about this, quoted into the box (COMPOSER-23) */}
+      <ReplySelection root={list} onQuote={(text) => quote.current?.(text)} />
     </div>
     </ReplyPlace.Provider>
   );

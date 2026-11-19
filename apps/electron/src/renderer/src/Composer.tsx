@@ -82,7 +82,7 @@ export const stackedAt = (was: boolean, height: number, text: string) => was || 
 // Send is Stop while Oby answers and there's nothing to send (CHATFIRST-33)
 export const stopShows = (answering: boolean, filled: boolean, attached: number) => answering && !filled && !attached;
 
-export default function Composer({ placeholder, prompts = false, note, label, onSend, home = false, hidden = false, autoFocus = !home, className = '', style, repos: withRepos = false, conversation, talk, draft, say, onStop, queued = [], onCancelQueued }: {
+export default function Composer({ placeholder, prompts = false, note, label, onSend, home = false, hidden = false, autoFocus = !home, className = '', style, repos: withRepos = false, conversation, talk, draft, say, onStop, queued = [], onCancelQueued, history, quote }: {
   placeholder?: string;
   prompts?: boolean;  // no placeholder of its own: one of Oby's prompts, changing now and then (prompts.ts)
   note?: React.ReactNode;  // a line just over the box (Home's Settings tip), coming and going with it
@@ -105,6 +105,10 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   // onCancelQueued answers whether obid dropped them
   queued?: Queued[];
   onCancelQueued?: (q: Queued) => Promise<boolean>;
+  // the owner's earlier words here, oldest first: ↑ in an empty box brings them back (COMPOSER-20 to 22)
+  history?: string[];
+  // where a reply's picked words are put in the box, quoted above the caret (ReplySelection, COMPOSER-23)
+  quote?: React.MutableRefObject<((text: string) => void) | null>;
   hidden?: boolean;
   autoFocus?: boolean;  // focused on opening (a conversation's is; Home's and a task page's aren't)
   className?: string;  // a page's own spacing around it
@@ -236,6 +240,11 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   };
   const field = useRef<HTMLDivElement>(null);
   const box = useRef<EditorHandle>(null);
+  useEffect(() => {
+    if (!quote) return;
+    quote.current = (text) => { box.current?.quote(text); box.current?.focus(); };
+    return () => { quote.current = null; };
+  }, [quote]);
   const form = useRef<HTMLFormElement>(null);
   const tasks = useTasks();
   // Past 3 rows the tags scroll: kept at the bottom, so what you just added
@@ -538,6 +547,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
             // past one line (32px: 22 of text, 10 of padding) it stacks
             onHeight={(h) => setStacked((was) => stackedAt(was, h, box.current?.text() ?? ''))}
             onPasteFiles={wordsOnly ? undefined : (list) => addFiles(list, true)}
+            history={history}
           />
           {talk && <div className="composer-talk">{chipsShown && <TaskChips box={draft} />}<TalkPill chat={talk === true ? undefined : talk} /></div>}
           {/* how much of the agents' accounts is used, session and week (UsagePanel on a click) */}

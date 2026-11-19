@@ -112,6 +112,14 @@ Sources: [Cursor forum](https://forum.cursor.com/t/how-to-get-cost-and-usage-dat
 const past: Chat[] = PAST.map(([title, asked, answer, at, profile], i) => ({
   id: `p${i + 1}`, title, said: [{ who: 'you', text: asked, ago: at }, { who: 'oby', text: answer, ago: at - 1 }], ...(profile ? { profile } : {}),
 }));
+// A task named to an agent whose CLI isn't on this Mac: Oby's answer says so, with Install under it
+// (RefusalFixes.tsx, ACCOUNTS-37); asked twice, so ↑ in its box brings back both (COMPOSER-20)
+past.push({ id: 'p-install', title: 'Greeting on Cursor', said: [
+  { who: 'you', text: 'start a task on Cursor in oby: add a greeting to the README', ago: 2 * D + 3 },
+  { who: 'oby', text: 'Cursor isn’t installed on this Mac, so this task didn’t start: install it, or ask for another account.', ago: 2 * D + 2, fixes: [{ action: 'install', agent: 'cursor', account: 'cursor' }] },
+  { who: 'you', text: 'ok, on Claude Code then', ago: 2 * D + 1 },
+  { who: 'oby', text: 'On it. Claude Code is adding a greeting to the README in oby on Personal.', ago: 2 * D },
+] });
 
 // The mock's agents' conversations (MOCK_HELPERS, screens 08 and 09): Inbox helper waiting on two
 // questions, Researcher at work, the other two quiet for a while
