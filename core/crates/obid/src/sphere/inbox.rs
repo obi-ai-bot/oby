@@ -25,6 +25,18 @@ pub const DECLINE: &str = "Decline";
 pub const DECLINE_REMEMBER: &str = "Decline, and remember for this repo";
 pub const OBI_OPTIONS: [&str; 4] = [ACCEPT, ACCEPT_REMEMBER, DECLINE, DECLINE_REMEMBER];
 
+/// Whether `answer` accepts another Oby's request, once or remembered: the one match both the
+/// route's signature gate (SPHERE-17) and the code that carries the answer out read.
+pub fn accepts(answer: &str) -> bool {
+    accepts_bytes(answer.as_bytes())
+}
+
+/// [`accepts`], on the answer's bytes: the decision, which `proofs/accept.rs` proves for every byte
+/// string (a symbolic `&str` that long costs CBMC its UTF-8 check).
+pub(crate) fn accepts_bytes(answer: &[u8]) -> bool {
+    answer == ACCEPT.as_bytes() || answer == ACCEPT_REMEMBER.as_bytes()
+}
+
 /// The two answers to a `start` item.
 pub const START: &str = "Start";
 pub const CANCEL_START: &str = "Cancel";
@@ -1252,6 +1264,27 @@ mod tests {
         assert_eq!(saved["fromANewerObid"], json!({"a": 1}));
         assert_eq!(saved["done"], 2);
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// SPHERE-23: each reason obid keeps has its own fixed sentence, the owner's id the only thing put
+    /// in; `rotated` and anything else have none.
+    #[test]
+    fn sphere_23_each_kept_reason_has_obids_own_sentence() {
+        assert_eq!(
+            reason_words("ana", SIGNED_IN_AGAIN).as_deref(),
+            Some("The Obysphere says ana signed in again. ")
+        );
+        assert_eq!(
+            reason_words("ana", ADMIN_RESET).as_deref(),
+            Some("The Obysphere says an admin reset their key. ")
+        );
+        assert_eq!(
+            reason_words("ana", OPERATOR_RESET).as_deref(),
+            Some("The Obysphere says the Obysphere's operator reset their key. ")
+        );
+        for other in ["rotated", "", "Signed_in_again", "signed_in_again "] {
+            assert_eq!(reason_words("ana", other), None, "{other:?}");
+        }
     }
 
     /// MERGING-28

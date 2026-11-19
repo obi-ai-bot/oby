@@ -11,6 +11,36 @@ use serde_json::{Value, json};
 
 use super::*;
 
+/// How a request goes to a member, before anything is built (protocol.md section 9.1, SPHERE-18,
+/// SPHERE-19). Proved in `proofs/sealed.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Delivery {
+    /// Sealed for the seal key its card has.
+    Sealed,
+    /// In the clear: its card has no seal key, and this owner's signed word lets it go unsealed.
+    Clear,
+    /// Refused: the Obi is known to seal, and the card served now has no seal key obid trusts (an
+    /// older card, or a key list its card doesn't sign).
+    KnownToSeal,
+    /// Refused, sealed by default: its card has no seal key and this owner didn't let it go
+    /// unsealed ([`NOT_SEALED`]).
+    NotSealed,
+}
+
+/// [`Delivery`] for a member whose card `has_seal_key`, an Obi obid knows `seals`, whose owner this
+/// owner let have words in the clear (`allowed_clear`, `Pins::allows_clear`).
+pub(crate) fn delivery(has_seal_key: bool, seals: bool, allowed_clear: bool) -> Delivery {
+    if has_seal_key {
+        Delivery::Sealed
+    } else if seals {
+        Delivery::KnownToSeal
+    } else if allowed_clear {
+        Delivery::Clear
+    } else {
+        Delivery::NotSealed
+    }
+}
+
 impl Link {
     // -----------------------------------------------------------------------------------------
     // The review job's end: the publish gate and the result
@@ -951,23 +981,24 @@ impl Link {
                 if !member.accepts.contains(&kind) {
                     return Err(invalid(format!("{to}'s card doesn't accept {kind}.")));
                 }
-                // An Obi known to seal gets nothing in the clear: not when the Sphere serves an older
-                // card, or a key list its card doesn't sign (protocol.md section 9.1).
-                if member.seal.is_none() && self.pins.seals(&to) {
-                    return Err(api(
-                        StatusCode::CONFLICT,
-                        format!(
-                            "{to} seals, and obid trusts no seal key of its now: nothing was sent."
-                        ),
-                    ));
-                }
-                // Sealed by default (SPHERE-18): nothing goes in the clear to an Obi whose card has
-                // no seal key, unless this owner said, signed, that it may for that member
-                // (SPHERE-19, "Oby forbids nothing").
-                if member.seal.is_none() && !self.pins.allows_clear(&member.owner) {
-                    return Err(
-                        api(StatusCode::CONFLICT, not_sealed(&member.owner)).because(NOT_SEALED)
-                    );
+                match delivery(
+                    member.seal.is_some(),
+                    self.pins.seals(&to),
+                    self.pins.allows_clear(&member.owner),
+                ) {
+                    Delivery::Sealed | Delivery::Clear => {}
+                    Delivery::KnownToSeal => {
+                        return Err(api(
+                            StatusCode::CONFLICT,
+                            format!(
+                                "{to} seals, and obid trusts no seal key of its now: nothing was sent."
+                            ),
+                        ));
+                    }
+                    Delivery::NotSealed => {
+                        return Err(api(StatusCode::CONFLICT, not_sealed(&member.owner))
+                            .because(NOT_SEALED));
+                    }
                 }
                 if matches!(kind.as_str(), "share_offer" | "run_request") {
                     return Err(invalid(
