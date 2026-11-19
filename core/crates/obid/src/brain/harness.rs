@@ -108,6 +108,8 @@ pub struct Session {
     pub control: Arc<Control>,
     /// The jobs Oby's tools started this turn: their cards go on the turn.
     pub jobs: Mutex<Vec<Value>>,
+    /// What the owner can do about a task its tools couldn't start (ACCOUNTS-37): on the turn.
+    pub fixes: Mutex<Vec<Value>>,
     /// The turn's own word, which fences what agents wrote in a tool's answer.
     pub nonce: String,
     /// The turn read something untrusted (the web, a file, a command's output, an attachment): the
@@ -339,6 +341,8 @@ pub struct Sessions {
     open: Mutex<HashMap<String, Arc<Session>>>,
     /// What each ended turn published, by the user's turn id, until its answer takes it.
     made: Mutex<HashMap<String, Vec<Value>>>,
+    /// What each ended turn's refused tasks offer (ACCOUNTS-37), by the user's turn id, the same way.
+    fixes: Mutex<HashMap<String, Vec<Value>>>,
     /// One lock per conversation, so its turns run one at a time (N9).
     busy: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Each conversation's Claude Code or Codex still running after its turn, waiting for the next
@@ -597,6 +601,16 @@ impl Sessions {
     /// its Oby turn carry them.
     pub fn take_made(&self, turn: &str) -> Vec<Value> {
         self.made
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(turn)
+            .unwrap_or_default()
+    }
+
+    /// The fixes of the turn `turn`'s refused tasks (ACCOUNTS-37), taken once: its Oby turn
+    /// carries them.
+    pub fn take_fixes(&self, turn: &str) -> Vec<Value> {
+        self.fixes
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(turn)
@@ -1665,6 +1679,7 @@ async fn session(
         repos_note,
         control: control.clone(),
         jobs: Mutex::new(vec![]),
+        fixes: Mutex::default(),
         nonce: super::briefing::nonce(),
         // The conversation of other Obys' questions: every turn there starts untrusted (ASK-16).
         web: AtomicBool::new(
@@ -1768,6 +1783,15 @@ async fn session(
     let text = crate::secrets::known().redact(&text);
     let jobs = std::mem::take(&mut *session.jobs.lock().unwrap_or_else(|e| e.into_inner()));
     let made = std::mem::take(&mut *session.artifacts.lock().unwrap_or_else(|e| e.into_inner()));
+    let fixes = std::mem::take(&mut *session.fixes.lock().unwrap_or_else(|e| e.into_inner()));
+    if !fixes.is_empty() {
+        let mut kept = shared
+            .harness
+            .fixes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        kept.insert(control.turn.clone(), fixes);
+    }
     let published = !made.is_empty();
     if published {
         shared
@@ -4179,6 +4203,7 @@ mod tests {
             repos_note: None,
             control,
             jobs: Mutex::new(vec![]),
+            fixes: Mutex::default(),
             nonce: "n".into(),
             web: AtomicBool::new(false),
             shared: std::sync::Weak::new(),
@@ -4339,6 +4364,7 @@ mod tests {
             repos_note: None,
             control,
             jobs: Mutex::new(vec![]),
+            fixes: Mutex::default(),
             nonce: "n".into(),
             web: AtomicBool::new(false),
             shared: std::sync::Weak::new(),
@@ -4963,6 +4989,7 @@ mod tests {
             repos_note: None,
             control,
             jobs: Mutex::new(vec![]),
+            fixes: Mutex::default(),
             nonce: "n".into(),
             web: AtomicBool::new(false),
             shared: std::sync::Weak::new(),

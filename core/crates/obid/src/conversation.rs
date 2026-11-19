@@ -90,6 +90,11 @@ pub struct Turn {
     /// relayed turns that tell of it; one that doesn't reads `text`, as ever. Left out when none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub asks: Vec<Value>,
+    /// On Oby's turn that says a task it was asked for couldn't start on the account named: what
+    /// the owner can do, `{action: "install" | "signIn", agent, account}` each, for Install or
+    /// Sign in under it (docs/contracts/accounts.md, ACCOUNTS-37). Left out when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fixes: Vec<Value>,
     /// On the owner's words sent by `POST /v1/plans`: where they stand (crate::delivery).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<Delivery>,
@@ -980,7 +985,7 @@ impl Conversations {
 
     /// Oby's turn in the conversation `id`, with the artifacts it made (`{id, version}` each): its
     /// brain's own words, which carry only what the conversation read (marked already). The turn
-    /// asks `asked` when it does.
+    /// asks `asked` when it does, and carries `fixes` (ACCOUNTS-37).
     pub fn append_asking(
         &self,
         id: &str,
@@ -988,9 +993,10 @@ impl Conversations {
         jobs: Vec<String>,
         artifacts: Vec<Value>,
         asked: Option<Asked>,
+        fixes: Vec<Value>,
     ) -> Result<Turn, Error> {
         let mut turn = Turn::of("oby", text);
-        (turn.jobs, turn.artifacts, turn.asked) = (jobs, artifacts, asked);
+        (turn.jobs, turn.artifacts, turn.asked, turn.fixes) = (jobs, artifacts, asked, fixes);
         self.append_as(id, turn, None)
     }
 
@@ -3651,7 +3657,7 @@ mod tests {
             .unwrap()
             .conversation;
         conversations
-            .append_asking(&id, "On it.".into(), vec![], vec![], None)
+            .append_asking(&id, "On it.".into(), vec![], vec![], None, vec![])
             .unwrap();
         conversations
             .job_ended(&id, "Done.".into(), "j1".into(), None)
@@ -3717,6 +3723,7 @@ mod tests {
                     question: "Which store?".into(),
                     options: vec!["SQLite".into(), "Postgres".into()],
                 }),
+                vec![],
             )
             .unwrap();
         assert!(conversations.oby_asked(&id, "Which store?", "SQLite"));

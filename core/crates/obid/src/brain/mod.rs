@@ -447,9 +447,10 @@ async fn answer(
     };
     let recap = recap.or_else(|| shared.presence.take());
     let made = shared.harness.take_made(&control.turn);
+    let fixes = shared.harness.take_fixes(&control.turn);
     let end = answered.end.as_str();
     let (talk, details) = (answered.talk, answered.details);
-    let body = respond(shared, conversation, talk, details, recap, made);
+    let body = respond(shared, conversation, talk, details, recap, (made, fixes));
     deliver(change);
     conversations.end_underway(conversation, &control.turn, end);
     body
@@ -655,7 +656,7 @@ fn respond(
     mut talk: Talk,
     details: Option<String>,
     recap: Option<String>,
-    artifacts: Vec<Value>,
+    (artifacts, fixes): (Vec<Value>, Vec<Value>),
 ) -> Result<Value, ApiError> {
     if let Talk::Reply { text, jobs } = &mut talk
         && jobs.is_empty()
@@ -720,10 +721,14 @@ fn respond(
         }
     };
     if let Some((text, jobs, asked)) = said {
-        match shared
-            .conversations
-            .append_asking(conversation, text, jobs, artifacts.clone(), asked)
-        {
+        match shared.conversations.append_asking(
+            conversation,
+            text,
+            jobs,
+            artifacts.clone(),
+            asked,
+            fixes.clone(),
+        ) {
             Ok(_) => {}
             // Deleted while the brain thought: the answer still goes to the app that asked.
             Err(crate::conversation::Error::NoConversation) => {
@@ -737,6 +742,9 @@ fn respond(
     }
     if !artifacts.is_empty() {
         body["artifacts"] = json!(artifacts);
+    }
+    if !fixes.is_empty() {
+        body["fixes"] = json!(fixes);
     }
     body["conversation"] = json!(conversation);
     Ok(body)

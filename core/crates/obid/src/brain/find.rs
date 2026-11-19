@@ -68,6 +68,7 @@ mod tests {
                         attachments: vec![],
                         relayed: false,
                         asks: vec![],
+                        fixes: vec![],
                         delivery: None,
                         revision: 0,
                     },
