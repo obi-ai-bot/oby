@@ -115,7 +115,8 @@
             "ASK-35",
             "ASK-36",
             "ASK-40",
-            "ASK-41"
+            "ASK-41",
+            "ASK-42"
           ],
           "elsewhere": {
             "ASK-15": "— real-Mac Keychain-only Claude login (manual step; fake-security can't reach the Keychain).",

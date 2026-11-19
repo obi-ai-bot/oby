@@ -152,6 +152,23 @@ describe('a question to another Oby is one card', () => {
     expect(cardsIn(shown([words([refused, refused]), asked]))).toBe(2);
   });
 
+  it('ask_42_a_question_waiting_for_the_obysphere_says_not_sent_yet_then_goes_on_one_card', () => {
+    const unsent = card({ state: 'unsent', quietAt: null });
+    let html = shown([words([unsent]), { ...asked, text: 'The Obysphere can’t be reached right now, so it hasn’t gone yet.' }]);
+    expect(cardsIn(html)).toBe(1);
+    expect(html).toContain('ask-card-line">Not sent yet<');
+    // the Obysphere back: it went, on the same card
+    html = shown([words([unsent]), asked, told('o2', 5, 'The Obysphere is back, so I asked dana’s Oby.', [card()])]);
+    expect(cardsIn(html)).toBe(1);
+    expect(html).toContain('ask-card-line">Asked<');
+    expect(html).not.toContain('Not sent yet');
+    // or it never went once the Obysphere was back: obid's words, on the same card
+    const why = 'dana’s Oby never got this question: it couldn’t go once the Obysphere was back.';
+    html = shown([words([unsent]), asked, told('o2', 5, why, [card({ state: 'refused', quietAt: undefined, why })])]);
+    expect(cardsIn(html)).toBe(1);
+    expect(html).toContain(`ask-card-line">${why}<`);
+  });
+
   it('ask_24_a_click_opens_their_thread', () => {
     shown([words([card({ owner: 'aaron', name: 'Dima' })]), asked]);
     const label = Object.keys(page.clicks).find((l) => l.startsWith('Open Dima’s Oby (aaron)'))!;

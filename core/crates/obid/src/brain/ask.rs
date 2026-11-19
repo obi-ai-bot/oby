@@ -179,7 +179,7 @@ pub(super) async fn ask(
             "Your question to {wanted} waits for the owner's OK: its Confirm is under this answer, and on Home. Nothing has gone yet: say so."
         ));
     }
-    if let Err(e) = shared
+    let cid = match shared
         .link
         .ask(
             &member.obi,
@@ -190,14 +190,22 @@ pub(super) async fn ask(
         )
         .await
     {
-        let said = refusal(wanted, &e);
-        if let Some(card) = refused_card(&member.owner, &member.name, &question, &said) {
-            let _ = shared.conversations.add_ask(&session.conversation, card);
+        Ok(cid) => cid,
+        Err(e) => {
+            let said = refusal(wanted, &e);
+            if let Some(card) = refused_card(&member.owner, &member.name, &question, &said) {
+                let _ = shared.conversations.add_ask(&session.conversation, card);
+            }
+            return Err(said);
         }
-        return Err(said);
-    }
+    };
     if let Some(name) = &known_as {
         shared.link.remember_known_as(name, &member.owner);
+    }
+    if shared.link.unsent(&cid) {
+        return Ok(format!(
+            "The Obysphere can't be reached right now, so your question to {wanted}'s Oby hasn't gone yet: it goes by itself once the Obysphere is back, and what comes back posts itself in this conversation, quoted. Say so, in one sentence, and don't guess."
+        ));
     }
     Ok(format!(
         "Asked {wanted}'s Oby. What comes back posts itself in this conversation, quoted: say you asked, in one sentence, and don't guess."
@@ -382,7 +390,8 @@ fn decline_of(exchange: &Exchange) -> Option<&Value> {
 
 /// The card of the question `exchange` at `now`: obid says where it stands, the app says it in its
 /// words. `state` is an open string, under a key no phone reads: `asking`, `waiting`, `quiet`,
-/// `answered`, `declined`, `expired`, `cancelled` or (no exchange) `refused`. `said`: the other Oby's words, data.
+/// `answered`, `declined`, `expired`, `cancelled`, `unsent` (it waits for the Obysphere, ASK-42) or
+/// `refused` (no exchange, or one that never went once the Obysphere was back). `said`: the other Oby's words, data.
 /// `by` and `reason` are its own claims, which pick words and never show.
 fn card(exchange: &Exchange, name: &str, now: i64) -> Value {
     let quiet_at = || obi_protocol::time::format(exchange.created + QUIET);
@@ -409,6 +418,13 @@ fn card(exchange: &Exchange, name: &str, now: i64) -> Value {
         }
         "expired" => ("expired", None, None, None, None),
         "cancelled" => ("cancelled", None, None, None, None),
+        // It never went once the Obysphere was back (ASK-42): obid's words, never the Sphere's.
+        "failed" => {
+            return json!({"exchange": exchange.correlation_id, "owner": exchange.peer_owner,
+                          "name": name, "question": exchange.request["body"]["text"],
+                          "state": "refused", "why": never_went(name)});
+        }
+        _ if exchange.unsent() => ("unsent", None, None, None, None),
         _ if exchange.waiting_on_them() => ("waiting", None, None, None, None),
         _ if now - exchange.created >= QUIET => ("quiet", Some(quiet_at()), None, None, None),
         _ => ("asking", Some(quiet_at()), None, None, None),
@@ -416,6 +432,12 @@ fn card(exchange: &Exchange, name: &str, now: i64) -> Value {
     json!({"exchange": exchange.correlation_id, "owner": exchange.peer_owner, "name": name,
            "question": exchange.request["body"]["text"], "state": state, "quietAt": quiet_at,
            "by": by, "reason": reason, "said": said.filter(|s| !s.trim().is_empty()).map(shown)})
+}
+
+/// Why a question that waited for the Obysphere never went (ASK-42), in obid's words: what stopped
+/// it once the Sphere was back can name what a member chose, so it says only that.
+fn never_went(name: &str) -> String {
+    format!("{name}'s Oby never got this question: it couldn't go once the Obysphere was back.")
 }
 
 /// The card of a question that didn't go: `why` in obid's words, and no exchange, since a refusal
@@ -472,6 +494,15 @@ fn telling(exchange: &Exchange, name: &str, now: i64) -> Option<Telling> {
             format!("{oby} never answered: the question expired."),
             false,
         ),
+        // It waited for the Obysphere and never went (ASK-42).
+        "failed" => said("end", never_went(name), false),
+        // Waiting for the Obysphere: its card says so, and nobody is quiet yet.
+        _ if exchange.unsent() => None,
+        _ if told("unsent") && !told("went") => said(
+            "went",
+            format!("The Obysphere is back, so I asked {oby}."),
+            false,
+        ),
         _ if exchange.waiting_on_them() => (!told("waiting")).then(|| Telling {
             key: "waiting",
             text: format!("{oby} hasn't answered. It's waiting on {name}."),
@@ -522,6 +553,10 @@ async fn tell(shared: &Shared) {
         // Its card, as soon as it went: on the owner's word or their Confirm, a turn under way or not.
         if !exchange.told.iter().any(|t| t == "card") {
             shared.link.mark_told(cid, "card");
+            // Once it goes, the conversation hears so (ASK-42).
+            if exchange.unsent() {
+                shared.link.mark_told(cid, "unsent");
+            }
             if let Err(e) = shared
                 .conversations
                 .add_ask(conversation, card(&exchange, name, now))

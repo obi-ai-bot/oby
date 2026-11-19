@@ -95,6 +95,8 @@ export function askedLine(state: string, t: Pick<PeerThread, 'name' | 'owner'>, 
   const { person, oby } = named(t);
   switch (state) {
     case 'asking': return 'Asked';
+    // a question obid keeps until the Obysphere is back (ASK-42): the room's own words for it
+    case 'unsent': return 'Not sent yet';
     case 'waiting': return `It’s waiting on ${person}.`;
     case 'quiet': return `${oby} hasn’t answered yet.`;
     case 'answered': return by === 'owner' ? `${person} answered this one, not its Oby.` : `${person} wasn’t bothered.`;
