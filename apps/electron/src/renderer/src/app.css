@@ -879,24 +879,25 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
    as wide as your bubbles get (80%) */
 .msg.is-oby.is-mine, .msg.is-oby.is-mine .msg-end { align-items: flex-end; }
 .msg.is-oby.is-mine .msg-bubble { width: auto; max-width: 80%; }
-/* its paragraphs and lists: 8px apart, the list's dots in the margin of its words */
-.msg.is-oby .msg-bubble > *, .ss-words > *, .tc-said > * { margin: 0; }
-.msg.is-oby .msg-bubble > * + *, .ss-words > * + *, .tc-said > * + * { margin-top: 8px; }
+/* its paragraphs and lists: 8px apart, the list's dots in the margin of its words (an agent's words under
+   its task's card too, .lt-fold-body: their own margins once doubled the log's 4px between entries) */
+.msg.is-oby .msg-bubble > *, .ss-words > *, .lt-fold-body > *, .tc-said > * { margin: 0; }
+.msg.is-oby .msg-bubble > * + *, .ss-words > * + *, .lt-fold-body > * + *, .tc-said > * + * { margin-top: 8px; }
 .msg.is-oby .msg-bubble > ul { padding-left: 18px; list-style: disc; }
 .msg.is-oby .msg-bubble li + li { margin-top: 2px; }
 /* The rest of Oby's and an agent's Markdown (Said), where Sangam's design is silent: kept plain, with his tokens.
    Numbered and nested lists as the dotted one; headings at the words' size, bold; code blocks as
    a session's (.ss-code); quotes as another Oby's (.msg-quote); tables with --line rules */
-:is(.msg-bubble, .msg-quote, .ss-words, .tc-said) :is(ul, ol) { margin: 0; padding-left: 18px; }
-:is(.msg-bubble, .msg-quote, .ss-words, .tc-said) li > :is(ul, ol, p, pre) { margin: 2px 0 0; }
-:is(.msg-bubble, .msg-quote, .ss-words, .tc-said) li > p:first-child { margin: 0; }
-:is(.msg-bubble, .msg-quote, .ss-words, .tc-said) :is(h3, h4, h5, h6) { font-size: inherit; font-weight: 600; color: var(--ink); }
-:is(.msg-bubble, .msg-quote, .ss-words, .tc-said) li:has(> input[type="checkbox"], > p > input[type="checkbox"]) { list-style: none; }
-:is(.msg-bubble, .msg-quote, .ss-words, .tc-said) li > input[type="checkbox"],
-:is(.msg-bubble, .msg-quote, .ss-words, .tc-said) li > p > input[type="checkbox"] { margin: 0 6px 0 0; vertical-align: -2px; }
-:is(.msg-bubble, .msg-quote, .ss-words, .tc-said) hr { height: 1px; border: 0; background: var(--line); }
-:is(.msg-bubble, .ss-words) a.tok-url { text-decoration: none; }
-:is(.msg-bubble, .ss-words) a.tok-url:hover { text-decoration: underline; }
+:is(.msg-bubble, .msg-quote, .ss-words, .lt-fold-body, .tc-said) :is(ul, ol) { margin: 0; padding-left: 18px; }
+:is(.msg-bubble, .msg-quote, .ss-words, .lt-fold-body, .tc-said) li > :is(ul, ol, p, pre) { margin: 2px 0 0; }
+:is(.msg-bubble, .msg-quote, .ss-words, .lt-fold-body, .tc-said) li > p:first-child { margin: 0; }
+:is(.msg-bubble, .msg-quote, .ss-words, .lt-fold-body, .tc-said) :is(h3, h4, h5, h6) { font-size: inherit; font-weight: 600; color: var(--ink); }
+:is(.msg-bubble, .msg-quote, .ss-words, .lt-fold-body, .tc-said) li:has(> input[type="checkbox"], > p > input[type="checkbox"]) { list-style: none; }
+:is(.msg-bubble, .msg-quote, .ss-words, .lt-fold-body, .tc-said) li > input[type="checkbox"],
+:is(.msg-bubble, .msg-quote, .ss-words, .lt-fold-body, .tc-said) li > p > input[type="checkbox"] { margin: 0 6px 0 0; vertical-align: -2px; }
+:is(.msg-bubble, .msg-quote, .ss-words, .lt-fold-body, .tc-said) hr { height: 1px; border: 0; background: var(--line); }
+:is(.msg-bubble, .ss-words, .lt-fold-body) a.tok-url { text-decoration: none; }
+:is(.msg-bubble, .ss-words, .lt-fold-body) a.tok-url:hover { text-decoration: underline; }
 .md-table { max-width: 100%; overflow-x: auto; }
 .md-table table { border-collapse: collapse; }
 .md-table :is(th, td) { padding: 4px 10px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
