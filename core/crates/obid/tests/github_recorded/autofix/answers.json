@@ -1,0 +1,88 @@
+{
+  "autofixInApi": null,
+  "autofixLines": [
+    "Its checks failed on GitHub. Fixing them: round 1 of 3.",
+    "Its checks pass on GitHub now."
+  ],
+  "green": {
+    "autoMerge": null,
+    "autoMergeOff": null,
+    "issue": null,
+    "issueUrl": null,
+    "mergeError": "Oby isn't in an Obysphere, so no teammate's Oby can approve it. Invite a teammate who can push to obi-e2e/fixture-app to an Obysphere with you, or get their approval on GitHub yourself.",
+    "mergeNeedsYou": true,
+    "mergedBy": null,
+    "mergedStage": {
+      "id": "merged",
+      "state": "upcoming",
+      "title": "Merged into dev"
+    },
+    "outgoing": [
+      {
+        "action": "push",
+        "branch": "oby/fix-7",
+        "date": "<TIME>",
+        "id": "<commit-1>",
+        "repo": "obi-e2e/fixture-app"
+      },
+      {
+        "action": "push",
+        "branch": "oby/fix-7",
+        "date": "<TIME>",
+        "id": "<commit-2>",
+        "repo": "obi-e2e/fixture-app"
+      }
+    ],
+    "published": "https://github.com/obi-e2e/fixture-app/pull/7",
+    "pullRequest": {
+      "base": "dev",
+      "checkedAt": "<TIME>",
+      "head": "<commit-2>",
+      "reviewDecision": null,
+      "state": "OPEN"
+    }
+  },
+  "mergeCards": [
+    {
+      "done": false,
+      "options": [
+        "Dismiss"
+      ],
+      "text": "Oby isn't in an Obysphere, so no teammate's Oby can approve it. Invite a teammate who can push to obi-e2e/fixture-app to an Obysphere with you, or get their approval on GitHub yourself.",
+      "title": "Not merged: COMMIT: fix.txt"
+    }
+  ],
+  "red": {
+    "autoMerge": null,
+    "autoMergeOff": null,
+    "issue": null,
+    "issueUrl": null,
+    "mergeError": null,
+    "mergeNeedsYou": false,
+    "mergedBy": null,
+    "mergedStage": {
+      "id": "merged",
+      "state": "upcoming",
+      "title": "Merged into dev"
+    },
+    "outgoing": [
+      {
+        "action": "push",
+        "branch": "oby/fix-7",
+        "date": "<TIME>",
+        "id": "<commit-1>",
+        "repo": "obi-e2e/fixture-app"
+      }
+    ],
+    "published": "https://github.com/obi-e2e/fixture-app/pull/7",
+    "pullRequest": {
+      "base": "dev",
+      "checkedAt": "<TIME>",
+      "head": "<commit-1>",
+      "reviewDecision": null,
+      "state": "OPEN"
+    }
+  },
+  "round": 2,
+  "status": "done"
+}

@@ -1,0 +1,82 @@
+[
+  {
+    "asked": "the ask, open",
+    "item": {
+      "answer": null,
+      "confirm": {
+        "action": "approve_on_host",
+        "payload": {
+          "baseBranch": "main",
+          "correlationId": "<UUID>",
+          "expiresAt": "<TIME>",
+          "from": "obi-o-teammate",
+          "fromOwner": "o-teammate",
+          "headSha": "<commit-1>",
+          "job": "<job>",
+          "pr": 12,
+          "repo": "obi-e2e/fixture-app"
+        },
+        "target": "obi-approve-<UUID>"
+      },
+      "id": "obi-approve-<UUID>",
+      "kind": "confirm",
+      "options": [
+        "Confirm",
+        "Cancel"
+      ],
+      "state": "open",
+      "text": "Your Oby's review of obi-e2e/fixture-app pull request #12 at <commit-1> passed. o-teammate's Oby (obi-o-teammate) asks you to approve it on GitHub, as you, so it can merge. Your Confirm approves this commit only, for this request.",
+      "title": "Approve o-teammate's pull request #12 on obi-e2e/fixture-app at <commit-1> on GitHub, as you"
+    }
+  },
+  {
+    "asked": "POST /v1/inbox/{ask}/answer Confirm",
+    "item": {
+      "answer": "Confirm",
+      "confirm": {
+        "action": "approve_on_host",
+        "payload": {
+          "baseBranch": "main",
+          "correlationId": "<UUID>",
+          "expiresAt": "<TIME>",
+          "from": "obi-o-teammate",
+          "fromOwner": "o-teammate",
+          "headSha": "<commit-1>",
+          "job": "<job>",
+          "pr": 12,
+          "repo": "obi-e2e/fixture-app"
+        },
+        "target": "obi-approve-<UUID>"
+      },
+      "id": "obi-approve-<UUID>",
+      "kind": "confirm",
+      "options": [
+        "Confirm",
+        "Cancel"
+      ],
+      "state": "done",
+      "text": "Your Oby's review of obi-e2e/fixture-app pull request #12 at <commit-1> passed. o-teammate's Oby (obi-o-teammate) asks you to approve it on GitHub, as you, so it can merge. Your Confirm approves this commit only, for this request.",
+      "title": "Approve o-teammate's pull request #12 on obi-e2e/fixture-app at <commit-1> on GitHub, as you"
+    },
+    "status": 200
+  },
+  {
+    "asked": "GET /v1/jobs/{review job}",
+    "issue": null,
+    "issueUrl": null,
+    "outgoing": [
+      {
+        "action": "pullRequestApproval",
+        "date": "<TIME>",
+        "id": "https://github.com/obi-e2e/fixture-app/pull/12#pullrequestreview-1",
+        "repo": "obi-e2e/fixture-app"
+      }
+    ],
+    "published": null,
+    "pullRequest": null
+  },
+  {
+    "asked": "the teammate's Oby's reply",
+    "host_review": "asked"
+  }
+]

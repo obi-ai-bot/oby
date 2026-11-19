@@ -1,0 +1,9 @@
+[
+  {"args": "auth status *",
+   "stdout": "{\"hosts\":{\"github.com\":[{\"state\":\"success\",\"active\":true,\"host\":\"github.com\",\"login\":\"o-owner\",\"tokenSource\":\"keyring\"}]}}"},
+  {"args": "pr view 31 -R o/r --json author", "stdout": "{\"author\":{\"login\":\"o-teammate\"}}"},
+  {"args": "pr view 31 -R o/r --json state,headRefOid",
+   "stdout": "{\"state\":\"OPEN\",\"headRefOid\":\"3333333333333333333333333333333333333333\"}"},
+  {"args": "api -X POST repos/o/r/pulls/31/reviews *",
+   "stdout": "{\"id\":7,\"state\":\"APPROVED\",\"html_url\":\"https://github.com/o/r/pull/31#pullrequestreview-7\"}"}
+]

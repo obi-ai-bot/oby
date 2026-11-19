@@ -1,0 +1,15 @@
+[
+  {"args": "auth status *", "withEnv": "GH_CONFIG_DIR", "when": "reviewer-signed",
+   "stdout": "{\"hosts\":{\"github.com\":[{\"state\":\"success\",\"active\":true,\"host\":\"github.com\",\"login\":\"o-reviewer\"}]}}"},
+  {"args": "auth status *", "withEnv": "GH_CONFIG_DIR", "stdout": "{\"hosts\":{}}"},
+  {"args": "auth login *", "withEnv": "GH_CONFIG_DIR",
+   "stderr": "! One-time code (RV12-CD34) copied to clipboard", "waitFor": "approve-reviewer",
+   "sets": "reviewer-signed",
+   "writes": {"$GH_CONFIG_DIR/hosts.yml": "github.com:\n    oauth_token: gho_REVIEWER_NEVER_SHOWN\n    user: o-reviewer\n"}},
+  {"args": "auth status *", "when": "signed",
+   "stdout": "{\"hosts\":{\"github.com\":[{\"state\":\"success\",\"active\":true,\"host\":\"github.com\",\"login\":\"o-owner\",\"tokenSource\":\"keyring\"}]}}"},
+  {"args": "auth status *", "stdout": "{\"hosts\":{}}"},
+  {"args": "auth login *",
+   "stderr": "! One-time code (AB12-CD34) copied to clipboard\nOpen this URL to continue in your web browser: https://github.com/login/device",
+   "waitFor": "approve", "sets": "signed"}
+]

@@ -1,0 +1,20 @@
+{
+  "state": "open",
+  "merged": false,
+  "title": "Fix the thing",
+  "base": {
+    "ref": "dev",
+    "repo": {
+      "full_name": "obi-e2e/fixture-app"
+    }
+  },
+  "head": {
+    "ref": "oby/fix-7",
+    "sha": "__HEAD__",
+    "repo": {
+      "full_name": "obi-e2e/fixture-app"
+    }
+  },
+  "mergeable": true,
+  "mergeable_state": "clean"
+}

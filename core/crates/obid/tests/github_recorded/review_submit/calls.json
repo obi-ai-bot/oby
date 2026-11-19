@@ -1,0 +1,172 @@
+[
+  {
+    "args": [
+      "pr",
+      "view",
+      "31",
+      "-R",
+      "o/r",
+      "--json",
+      "state,headRefOid"
+    ],
+    "cwd": "<CRATE>",
+    "env": [
+      "GH_NO_UPDATE_NOTIFIER",
+      "GH_PROMPT_DISABLED",
+      "GH_SPINNER_DISABLED",
+      "GIT_TERMINAL_PROMPT",
+      "HOME",
+      "NO_COLOR",
+      "OBID_BASE_CHECK",
+      "OBID_GITHUB_REFRESH_SECONDS",
+      "OBID_LOAD",
+      "OBID_LOG",
+      "OBID_MEMORY_AVAILABLE",
+      "OBID_PRESTART",
+      "OBID_RECHECK_MS",
+      "OBID_SECURITY_BIN",
+      "OBID_USAGE_READS",
+      "PATH",
+      "TMPDIR"
+    ],
+    "files": {},
+    "stdin": ""
+  },
+  {
+    "args": [
+      "auth",
+      "status",
+      "--hostname",
+      "github.com",
+      "--active",
+      "--json",
+      "hosts"
+    ],
+    "cwd": "<CRATE>",
+    "env": [
+      "GH_NO_UPDATE_NOTIFIER",
+      "GH_PROMPT_DISABLED",
+      "GH_SPINNER_DISABLED",
+      "GIT_TERMINAL_PROMPT",
+      "HOME",
+      "NO_COLOR",
+      "OBID_BASE_CHECK",
+      "OBID_GITHUB_REFRESH_SECONDS",
+      "OBID_LOAD",
+      "OBID_LOG",
+      "OBID_MEMORY_AVAILABLE",
+      "OBID_PRESTART",
+      "OBID_RECHECK_MS",
+      "OBID_SECURITY_BIN",
+      "OBID_USAGE_READS",
+      "PATH",
+      "TMPDIR"
+    ],
+    "files": {},
+    "stdin": ""
+  },
+  {
+    "args": [
+      "pr",
+      "view",
+      "31",
+      "-R",
+      "o/r",
+      "--json",
+      "author"
+    ],
+    "cwd": "<CRATE>",
+    "env": [
+      "GH_NO_UPDATE_NOTIFIER",
+      "GH_PROMPT_DISABLED",
+      "GH_SPINNER_DISABLED",
+      "GIT_TERMINAL_PROMPT",
+      "HOME",
+      "NO_COLOR",
+      "OBID_BASE_CHECK",
+      "OBID_GITHUB_REFRESH_SECONDS",
+      "OBID_LOAD",
+      "OBID_LOG",
+      "OBID_MEMORY_AVAILABLE",
+      "OBID_PRESTART",
+      "OBID_RECHECK_MS",
+      "OBID_SECURITY_BIN",
+      "OBID_USAGE_READS",
+      "PATH",
+      "TMPDIR"
+    ],
+    "files": {},
+    "stdin": ""
+  },
+  {
+    "args": [
+      "pr",
+      "view",
+      "31",
+      "-R",
+      "o/r",
+      "--json",
+      "state,headRefOid"
+    ],
+    "cwd": "<CRATE>",
+    "env": [
+      "GH_NO_UPDATE_NOTIFIER",
+      "GH_PROMPT_DISABLED",
+      "GH_SPINNER_DISABLED",
+      "GIT_TERMINAL_PROMPT",
+      "HOME",
+      "NO_COLOR",
+      "OBID_BASE_CHECK",
+      "OBID_GITHUB_REFRESH_SECONDS",
+      "OBID_LOAD",
+      "OBID_LOG",
+      "OBID_MEMORY_AVAILABLE",
+      "OBID_PRESTART",
+      "OBID_RECHECK_MS",
+      "OBID_SECURITY_BIN",
+      "OBID_USAGE_READS",
+      "PATH",
+      "TMPDIR"
+    ],
+    "files": {},
+    "stdin": ""
+  },
+  {
+    "args": [
+      "api",
+      "-X",
+      "POST",
+      "repos/o/r/pulls/31/reviews",
+      "-f",
+      "commit_id=<commit-1>",
+      "-f",
+      "event=APPROVE",
+      "-F",
+      "body=@<FOLDER>/home/tmp/listen-post-<UUID>/review.md"
+    ],
+    "cwd": "<CRATE>",
+    "env": [
+      "GH_NO_UPDATE_NOTIFIER",
+      "GH_PROMPT_DISABLED",
+      "GH_SPINNER_DISABLED",
+      "GIT_TERMINAL_PROMPT",
+      "HOME",
+      "NO_COLOR",
+      "OBID_BASE_CHECK",
+      "OBID_GITHUB_REFRESH_SECONDS",
+      "OBID_LOAD",
+      "OBID_LOG",
+      "OBID_MEMORY_AVAILABLE",
+      "OBID_PRESTART",
+      "OBID_RECHECK_MS",
+      "OBID_SECURITY_BIN",
+      "OBID_USAGE_READS",
+      "PATH",
+      "TMPDIR"
+    ],
+    "files": {
+      "9": "Approve: the change does what its title says, and its tests cover the new branch.\n\nby Oby: Oby wrote this review."
+    },
+    "stdin": ""
+  }
+]

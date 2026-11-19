@@ -1,0 +1,95 @@
+[
+  {
+    "args": "auth status --hostname github.com --active --json hosts",
+    "withEnv": "GH_CONFIG_DIR",
+    "stdout": "{\"hosts\": {\"github.com\": [{\"active\": true, \"state\": \"success\", \"login\": \"o-reviewer\"}]}}"
+  },
+  {
+    "args": "auth status --hostname github.com --active --json hosts",
+    "stdout": "{\"hosts\": {\"github.com\": [{\"active\": true, \"state\": \"success\", \"login\": \"o-owner\"}]}}"
+  },
+  {
+    "args": "pr view 7 --repo obi-e2e/fixture-app --json *",
+    "stdoutFile": "view.json"
+  },
+  {
+    "args": "api --paginate --slurp repos/obi-e2e/fixture-app/pulls/7/reviews?per_page=100",
+    "when": "approved",
+    "stdout": "[[{\"id\": 1, \"user\": {\"login\": \"o-reviewer\", \"type\": \"User\"}, \"state\": \"APPROVED\", \"commit_id\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"author_association\": \"COLLABORATOR\", \"body\": \"\"}]]"
+  },
+  {
+    "args": "api --paginate --slurp repos/obi-e2e/fixture-app/pulls/7/reviews?per_page=100",
+    "stdout": "[[]]"
+  },
+  {
+    "args": "api --paginate --slurp repos/obi-e2e/fixture-app/pulls/7/reviews/*/comments?per_page=100",
+    "stdout": "[[]]"
+  },
+  {
+    "args": "api user --jq .login",
+    "stdout": "o-owner"
+  },
+  {
+    "args": "api user/orgs --paginate --jq .[].login",
+    "stdout": "obi-e2e"
+  },
+  {
+    "args": "api --paginate --slurp repos/obi-e2e/fixture-app/pulls/7/commits?per_page=100",
+    "stdout": "[[{\"commit\": {\"message\": \"Fix the thing\\n\\nIt broke. Closes #12\"}}]]"
+  },
+  {
+    "args": "api repos/obi-e2e/fixture-app --jq .permissions.push",
+    "stdout": "true"
+  },
+  {
+    "args": "api repos/obi-e2e/fixture-app/rules/branches/*",
+    "stdout": "[]"
+  },
+  {
+    "args": "api repos/obi-e2e/fixture-app/branches/*/protection/required_pull_request_reviews",
+    "stdout": "{\"message\": \"Branch not protected\", \"status\": \"404\"}",
+    "stderr": "gh: Branch not protected (HTTP 404)",
+    "exit": 1
+  },
+  {
+    "args": "api -X POST repos/obi-e2e/fixture-app/pulls/7/reviews *",
+    "sets": "approved",
+    "stdout": "{\"id\": 1}"
+  },
+  {
+    "args": "api repos/obi-e2e/fixture-app/pulls/7",
+    "stdoutFile": "pull.json"
+  },
+  {
+    "args": "api -X PUT repos/obi-e2e/fixture-app/pulls/7/merge *",
+    "sets": "merged",
+    "stdout": "{\"merged\": true}"
+  },
+  {
+    "args": "pr merge 7 --repo obi-e2e/fixture-app --auto *",
+    "sets": "armed"
+  },
+  {
+    "args": "pr merge 7 --repo obi-e2e/fixture-app --disable-auto",
+    "clears": "armed"
+  },
+  {
+    "args": "api repos/obi-e2e/fixture-app/compare/*",
+    "stdout": "{\"behind_by\": 3}"
+  },
+  {
+    "args": "run list --repo obi-e2e/fixture-app --commit * --status failure --json databaseId",
+    "stdout": "[]"
+  },
+  {
+    "args": "run list --repo obi-e2e/fixture-app --commit * --json databaseId,conclusion",
+    "stdout": "[]"
+  },
+  {
+    "args": "api -X DELETE repos/obi-e2e/fixture-app/git/refs/heads/oby/fix-7"
+  },
+  {
+    "args": "run list --repo obi-e2e/fixture-app --event merge_group *",
+    "stdout": "[]"
+  }
+]
