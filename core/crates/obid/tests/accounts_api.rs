@@ -292,20 +292,15 @@ fn a_cursor_keychain_login_that_ended_says_run_cursor_agent_once() {
             &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "ENV", "account": "cursor"}}),
         ),
     );
-    assert_eq!(job.status, 201, "{}", job.text);
-    let id = job.body["id"].as_str().unwrap().to_owned();
-    let failed = within(30, "the job ended", || {
-        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
-        (job["status"] != "queued" && job["status"] != "running").then_some(job)
-    });
-    assert!(
-        failed.to_string().contains("run cursor-agent once"),
-        "{failed}"
-    );
+    // Named to a login that can't run, it's refused before it starts, saying why (ACCOUNTS-35).
+    assert_eq!(job.status, 422, "{}", job.text);
+    assert!(job.text.contains("run cursor-agent once"), "{}", job.text);
+    let jobs = call(&obid, "GET", "/v1/jobs", None).body;
+    assert_eq!(jobs.as_array().unwrap().len(), 0, "{jobs}");
 }
 
 /// KEYCHAIN-3: Cursor's own Keychain login macOS didn't give obid (Deny): it's signed out, its label
-/// says to sign in again and choose Always Allow, a job on it doesn't start, saying why, and its
+/// says to sign in again and choose Always Allow, a job named to it is refused, saying why, and its
 /// value is asked for once, not at every status.
 #[cfg(target_os = "macos")]
 #[test]
@@ -341,17 +336,12 @@ fn keychain_3_a_cursor_login_macos_refused_says_why() {
             &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "ENV", "account": "cursor"}}),
         ),
     );
-    assert_eq!(job.status, 201, "{}", job.text);
-    let id = job.body["id"].as_str().unwrap().to_owned();
-    let failed = within(30, "the job ended", || {
-        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
-        (job["status"] != "queued" && job["status"] != "running").then_some(job)
-    });
+    // Named to it, the job is refused before it starts, saying why (ACCOUNTS-35).
+    assert_eq!(job.status, 422, "{}", job.text);
     assert!(
-        failed
-            .to_string()
-            .contains("Cursor keeps its login in your Keychain"),
-        "{failed}"
+        job.text.contains("Cursor keeps its login in your Keychain"),
+        "{}",
+        job.text
     );
     call(&obid, "GET", "/v1/status", None);
     let asked = std::fs::read_to_string(folder.0.join("tmp/obid-test-security-calls")).unwrap();
@@ -661,6 +651,7 @@ fn an_account_with_a_job_isnt_removed() {
     let folder = Folder::new("accounts-busy");
     let remote = fixture(&folder.0.join("fixture"));
     let config = config(&folder.0, &remote, &agent("fake-claude"));
+    signed_in(&config);
     let obid = start(&folder.0, &config, None);
     let job = call(
         &obid,
@@ -1764,4 +1755,164 @@ fn accounts_9_limits_accounts_is_the_only_cap_on_how_many() {
     let full = add(&obid, json!({"agent": "codex"}));
     assert_eq!(full.status, 422, "{}", full.text);
     assert!(full.text.contains("at most 40"), "{}", full.text);
+}
+
+/// ACCOUNTS-23 to 25: an account signs out with its tool's own logout, run in its folder, and stays:
+/// its name with it, signed out, who it was gone; Sign In signs it in again. The tool's own login is
+/// the person's, signed out with the tool itself.
+#[test]
+fn accounts_23_24_25_an_account_signs_out_with_its_tools_own_logout_and_stays() {
+    let folder = Folder::new("accounts-sign-out");
+    let mut config = accounts_config(&folder.0);
+    config["agents"]["claude"]["accounts"] =
+        json!([{"id": "default", "name": "Default", "configDir": null}]);
+    let obid = start(&folder.0, &config, None);
+    let added = add(&obid, json!({"agent": "codex", "name": "Work"}));
+    let id = added.body["id"].as_str().unwrap().to_owned();
+    let dir = obid.home.join("accounts").join(&id);
+    std::fs::write(
+        dir.join("who.json"),
+        r#"{"email": "work@example.com", "plan": "plus"}"#,
+    )
+    .unwrap();
+    let started = call(&obid, "GET", &format!("/v1/accounts/{id}/sign-in"), None);
+    assert_eq!(started.status, 200, "{}", started.text);
+    within(15, "Codex signed in, and who it is read", || {
+        account(&obid, &id)
+            .filter(|a| a["signedIn"] == true && a["email"] == "work@example.com")
+            .map(|_| ())
+    });
+
+    let out = call(&obid, "POST", &format!("/v1/accounts/{id}/sign-out"), None);
+    assert_eq!(out.status, 200, "{}", out.text);
+    assert_eq!(out.body["signedIn"], false);
+    assert_eq!(out.body["name"], "Work");
+    assert!(
+        out.body.get("email").is_none(),
+        "who it was stays: {}",
+        out.text
+    );
+    assert!(!dir.join("auth.json").exists(), "the logout left its login");
+    // Its own logout, in the account's own folder.
+    let saw: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("logout-saw.json")).unwrap()).unwrap();
+    assert_eq!(
+        saw["argv"],
+        json!(["logout", "-c", "cli_auth_credentials_store=\"file\""])
+    );
+    assert_eq!(saw["env"]["CODEX_HOME"], json!(dir));
+    let kept = account(&obid, &id).expect("the account stays");
+    assert_eq!(kept["signedIn"], false);
+    for text in [&out.text, &obid.log()] {
+        assert!(!text.contains(SECRET), "the logout's output leaked: {text}");
+    }
+
+    // ACCOUNTS-24: the tool's own login is the person's.
+    let own = call(&obid, "POST", "/v1/accounts/default/sign-out", None);
+    assert_eq!(own.status, 409, "{}", own.text);
+    assert_eq!(own.body["reason"], "ownLogin");
+    assert_eq!(
+        call(&obid, "POST", "/v1/accounts/nobody/sign-out", None).status,
+        404
+    );
+
+    // ACCOUNTS-25: Sign In signs it in again.
+    let again = call(&obid, "GET", &format!("/v1/accounts/{id}/sign-in"), None);
+    assert_eq!(again.status, 200, "{}", again.text);
+    within(15, "Codex signed in again", || {
+        account(&obid, &id)
+            .filter(|a| a["signedIn"] == true)
+            .map(|_| ())
+    });
+}
+
+/// ACCOUNTS-26 to 28: a tool's binary set from Settings is kept over the configuration's, across a
+/// restart; one obid can't find, or that isn't a path or a name, changes nothing; null takes it back.
+#[test]
+fn accounts_26_27_28_a_tools_binary_is_set_kept_and_taken_back() {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = Folder::new("accounts-bins");
+    let config = accounts_config(&folder.0);
+    let mut obid = start(&folder.0, &config, None);
+    let codex_of = |obid: &Obid| {
+        call(obid, "GET", "/v1/status", None).body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["agent"] == "codex")
+            .cloned()
+            .unwrap()
+    };
+    let configured = agent("fake-codex").display().to_string();
+    assert_eq!(codex_of(&obid)["bin"], json!(configured));
+    assert_eq!(codex_of(&obid)["binSet"], false);
+
+    // Another binary, a copy of the stand-in.
+    let other = folder.0.join("bin/other-codex");
+    std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+    std::fs::write(&other, format!("#!/bin/sh\nexec {configured} \"$@\"\n")).unwrap();
+    std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let set = call(
+        &obid,
+        "PUT",
+        "/v1/settings/agents/codex",
+        Some(&json!({"bin": other})),
+    );
+    assert_eq!(set.status, 200, "{}", set.text);
+    assert_eq!(set.body["bin"], json!(other));
+    assert_eq!(set.body["binSet"], true);
+    assert_eq!(codex_of(&obid)["bin"], json!(other));
+
+    // ACCOUNTS-27: refused, nothing changed.
+    let missing = call(
+        &obid,
+        "PUT",
+        "/v1/settings/agents/codex",
+        Some(&json!({"bin": "/no/such/codex"})),
+    );
+    assert_eq!(
+        (missing.status, missing.body["reason"].clone()),
+        (422, json!("notFound")),
+        "{}",
+        missing.text
+    );
+    let bad = call(
+        &obid,
+        "PUT",
+        "/v1/settings/agents/codex",
+        Some(&json!({"bin": "bin/codex"})),
+    );
+    assert_eq!(
+        (bad.status, bad.body["reason"].clone()),
+        (422, json!("badBin")),
+        "{}",
+        bad.text
+    );
+    assert_eq!(
+        call(
+            &obid,
+            "PUT",
+            "/v1/settings/agents/gemini",
+            Some(&json!({"bin": "gemini"}))
+        )
+        .status,
+        404
+    );
+    assert_eq!(codex_of(&obid)["bin"], json!(other));
+
+    // ACCOUNTS-26: kept across a restart.
+    assert!(obid.stop().success());
+    obid = start(&folder.0, &config, None);
+    assert_eq!(codex_of(&obid)["bin"], json!(other));
+
+    // ACCOUNTS-28: null takes it back to the configuration's.
+    let back = call(
+        &obid,
+        "PUT",
+        "/v1/settings/agents/codex",
+        Some(&json!({"bin": null})),
+    );
+    assert_eq!(back.status, 200, "{}", back.text);
+    assert_eq!(back.body["binSet"], false);
+    assert_eq!(codex_of(&obid)["bin"], json!(configured));
 }

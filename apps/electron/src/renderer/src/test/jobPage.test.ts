@@ -132,4 +132,14 @@ describe('the task page on obid data', () => {
     expect(lines[3]).toMatchObject({ tool: 'Edit', meta: '+3 −2' });
     expect(lines[4]).toMatchObject({ tool: 'Read', state: 'running', seconds: 2 });
   });
+
+  it('an agent\'s question to the owner reads as words, asked and then answered', () => {
+    // obid names the call (agent::step); ended, the line says what it did, never the tool's name
+    const [asking, asked] = sessionOf([
+      { n: 1, at: ago(2), kind: 'tool', tool: 'mcp__oby__oby_ask_owner', summary: 'Asking you a question', state: 'running' },
+      { n: 2, at: ago(1), kind: 'tool', tool: 'AskUserQuestion', summary: 'Asking you a question', state: 'done', seconds: 3 },
+    ], NOW);
+    expect(asking).toMatchObject({ verb: 'Asking', target: 'you a question' });
+    expect(asked).toMatchObject({ verb: 'Asked', target: 'you a question' });
+  });
 });

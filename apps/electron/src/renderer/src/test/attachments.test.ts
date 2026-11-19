@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { liveBridge } from './liveBridge';
 
 // ATTACH-10, ATTACH-15, ATTACH-16 (docs/contracts/attachments.md): the message box's files reach obid. Each file is
@@ -37,7 +37,10 @@ async function load(answer: (c: Call, n: number) => { status: number; body?: unk
 }
 const plans = () => calls.filter((c) => c.path === '/v1/plans');
 
-describe('files and photos reach obid', { timeout: 15_000 }, () => {
+describe('files and photos reach obid', () => {
+  // the app's first import is a cold transform that a busy Mac can stretch past a test's own time
+  // (#1839): it's done here, under vitest's hookTimeout, so each test's 30 s is its own work
+  beforeAll(async () => { await load(() => ({ status: 404 })); vi.unstubAllGlobals(); });
   afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
   it('attach_10_files_are_uploaded_then_sent_with_the_words_tasks_and_an_id', async () => {

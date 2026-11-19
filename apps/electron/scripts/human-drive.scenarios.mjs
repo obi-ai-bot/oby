@@ -9,6 +9,7 @@
 const MIN = 60_000;
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const ASKS = 'section[aria-label="Oby is asking"]';
+const REPLY = '.msg.is-oby .msg-bubble';
 const PR_OPEN = /Pull request open · waiting for your review on GitHub|Merged into \S+|Oby is reviewing|Waiting for review[^\n]*/;
 const ended = (j) => ['done', 'failed', 'interrupted', 'stopped'].includes(j?.status);
 const stamp = new Date().toISOString().slice(0, 16);
@@ -88,18 +89,16 @@ async function answerCards(t, { done, ms = 25 * MIN, mine = () => false }) {
   throw new Error(`not done in ${ms / MIN} minutes`);
 }
 
-// a task's page, as the owner opens it: its card in its conversation, then View details in the card's
-// menu (a right-click). Its conversation is the latest few: they go down the list until its card shows
+// a task as the owner opens it: its card in the conversation that started it, what it did under it
+// (LIVETASK-28). Its conversation is the latest few: they go down the list until its card shows
 async function openTask(t, title) {
   await home(t);
-  const card = t.page.locator('.msg-task.is-link', { hasText: title }).first(), rows = t.page.locator('.convo-row');
+  const card = t.page.locator('.msg-task', { hasText: title }).first(), rows = t.page.locator('.convo-row');
   for (let i = 0; i < Math.min(20, await rows.count()) && !(await card.isVisible()); i++) {
     await rows.nth(i).click();
     await sleep(500);
   }
-  await card.click({ button: 'right' });
-  await t.page.getByRole('menuitem', { name: 'View details' }).click();
-  await t.see('Tell Oby about this task…', { label: 'its page' });
+  await t.see('Reply to Oby…', { label: 'its conversation' });
 }
 
 // this run's repository and pull request only, never another of the owner's: `<repo>#<n>`
@@ -133,7 +132,7 @@ async function rebaseThenMerge(t, url, merged) {
   const ref = new RegExp(`${escape(prRef(t, url))}(?!\\d)`, 'i'), mine = (title) => ref.test(title);
   await openTask(t, t.state.task.title);
   const since = Date.now();
-  await t.say(`Rebase it onto ${base}, then merge it.`, 'Tell Oby about this task…');
+  await t.say(`Rebase it onto ${base}, then merge it.`, 'Reply to Oby…');
   t.note(`Oby, told to rebase: ${(await t.reply({ ms: 5 * MIN })).replace(/\n+/g, ' ')}`);
   await t.shot('told-to-rebase');
   // a Confirm for this pull request under its answer (a rebase's or a merge's), if Oby made one
@@ -247,7 +246,7 @@ export default [
       await home(t);
       await answerCards(t, { done: () => { const j = t.job(id); return j?.published || ended(j); } });
       await openTask(t, t.state.task.title);
-      const seen = await t.see(PR_OPEN, { ms: 5 * MIN, label: 'its pull request on its page' });
+      const seen = await t.see(PR_OPEN, { ms: 5 * MIN, label: 'its pull request in its conversation' });
       await t.shot('pull-request');
       const job = t.job(id);
       t.state.job = job;
@@ -256,12 +255,12 @@ export default [
   },
   {
     id: 'follow-up',
-    title: 'A follow-up on its page: same kind, agent, account and repository',
+    title: 'A follow-up in its conversation: same kind, agent, account and repository',
     contract: 'task-conversations.md (TASKCONV-3)',
     needs: ['to-pr'],
     run: async (t) => {
       const since = Date.now();
-      await t.say('Add a second line "- follow-up" under it.', 'Tell Oby about this task…');
+      await t.say('Add a second line "- follow-up" under it.', 'Reply to Oby…');
       // its card in the task's conversation, which the app opens (Oby names it as it likes)
       const first = t.state.job, { job } = await newTask(t, since, [first.kind]);
       if (!job) throw new Error('no follow-up job');
@@ -294,7 +293,7 @@ export default [
         // no card merged it (a question with only "Done" can't): the owner tells Oby, as they would
         t.note(`not merged after the cards (${(t.state.cards ?? 0) - before} answered): the owner says so in words`);
         await openTask(t, t.state.task.title);
-        await t.say('Merge it as it is.', 'Tell Oby about this task…');
+        await t.say('Merge it as it is.', 'Reply to Oby…');
         t.note(`Oby: ${(await t.reply({ ms: 5 * MIN })).replace(/\n+/g, ' ')}`);
         await t.shot('told-to-merge');
         // words read with untrusted text make a Confirm: under Oby's answer (and on Home), answered
@@ -309,7 +308,7 @@ export default [
       if (!merged() && conflicts()) await rebaseThenMerge(t, url, merged);
       if (!merged()) throw new Error('not merged');
       await openTask(t, t.state.task.title);
-      await t.see(/Merged[^\n]*/, { ms: 3 * MIN, label: 'merged, on its page' });
+      await t.see(/Merged[^\n]*/, { ms: 3 * MIN, label: 'merged, in its conversation' });
       await t.shot('merged');
     },
   },
@@ -328,4 +327,314 @@ export default [
       if ((t.state.cards ?? 0) === before) throw new Error('no permission or question card came');
     },
   },
+  {
+    id: 'first-answer',
+    title: 'The time to the first answer in a new conversation',
+    contract: 'conversation-agent.md (CONVERSATION-AGENT-24, 25)',
+    run: async (t) => {
+      // twice cold (a new conversation each), then once warm (a second message in the last one)
+      const times = [];
+      for (const [i, cold] of [[1, true], [2, true], [3, false]]) {
+        if (cold) await home(t);
+        // counted in the conversation that's open (the top chat layer), never in one leaving under it
+        const open = () => t.page.locator('.chat-layer:not(.is-leaving)').last();
+        const SIGN = '.msg.is-oby, .msg.is-streaming, .msg-step';
+        const replies = async () => (await open().count()) ? open().locator(REPLY).count() : 0;
+        const before = await replies(), signs = (await open().count()) ? await open().locator(SIGN).count() : 0;
+        const t0 = Date.now();
+        await t.say(i === 3 ? 'And one more word?' : `Say hello in ${['three', 'four'][i - 1]} words.`);
+        // the first sign Oby is on it (its streaming bubble, a step, or a reply) and the first words of it
+        await until(t, async () => (await open().locator(SIGN).count()) > (cold ? 0 : signs), 60_000);
+        const sign = Date.now() - t0;
+        await until(t, async () => (await replies()) > (cold ? 0 : before) && (await open().locator(REPLY).last().innerText()).trim(), 120_000);
+        const words = Date.now() - t0;
+        const text = await t.reply({ ms: 2 * MIN });
+        const all = Date.now() - t0;
+        times.push({ cold, sign, words, all });
+        t.note(`${cold ? 'cold' : 'warm'}: a first sign in ${(sign / 1000).toFixed(1)} s, first words in ${(words / 1000).toFixed(1)} s, the whole answer in ${(all / 1000).toFixed(1)} s (“${text.slice(0, 60).replace(/\n/g, ' ')}”)`);
+        if (i === 1) await t.shot('first-answer');
+      }
+      t.state.firstAnswer = times;
+    },
+  },
+  {
+    id: 'agent-menu',
+    title: 'The agent menu and its model search (nothing picked)',
+    contract: 'conversation-agent.md (CONVERSATION-AGENT-27 to 31)',
+    run: async (t) => {
+      await home(t);
+      const pill = t.page.locator('button.talk-pick').filter({ visible: true }).last();
+      await pill.waitFor({ timeout: 20_000 });
+      t.note(`the pill reads: ${await pill.getAttribute('aria-label')}`);
+      const t0 = Date.now();
+      await pill.click();
+      await t.page.locator('.talk-menu').waitFor({ timeout: 5000 });
+      t.note(`menu open in ${Date.now() - t0} ms`);
+      await t.shot('menu');
+      const rows = t.page.locator('.talk-menu button.talk-choice[aria-haspopup="menu"]:not([disabled])');
+      const n = await rows.count();
+      t.note(`accounts listed: ${n}: ${(await rows.allInnerTexts()).map((s) => s.replace(/\n+/g, ' · ')).join(' | ')}`);
+      let searched = false;
+      for (let i = 0; i < n && !searched; i++) {
+        await rows.nth(i).click();
+        const list = t.page.locator('.model-menu');
+        await list.waitFor({ timeout: 5000 });
+        const box = await list.boundingBox();
+        const models = await list.locator('.model-row').allInnerTexts();
+        t.note(`${(await rows.nth(i).locator('.talk-choice-name').innerText())}: ${models.length} models (${models.slice(0, 8).join(', ')}${models.length > 8 ? '…' : ''}), list at ${Math.round(box?.x ?? 0)},${Math.round(box?.y ?? 0)} ${Math.round(box?.width ?? 0)}×${Math.round(box?.height ?? 0)}`);
+        await t.shot(`models-${i + 1}`);
+        const search = list.locator('input.model-search');
+        if (await search.count()) {
+          const focused = await search.evaluate((el) => el === document.activeElement);
+          t.note(`its search is ${focused ? '' : 'NOT '}focused as the list opens`);
+          const q = models[1]?.split(/\s+/)[0]?.slice(0, 4) ?? 'son';
+          await t.page.keyboard.type(q.toLowerCase());
+          await sleep(300);
+          const after = await list.boundingBox();
+          t.note(`“${q.toLowerCase()}” leaves ${await list.locator('.model-row').count()} rows; the list ${after?.height === box?.height && after?.x === box?.x ? 'kept' : 'CHANGED'} its size and place`);
+          await t.shot('search');
+          await t.page.keyboard.type('zzqx');
+          await t.see('No models match', { ms: 3000 });
+          await t.shot('no-match');
+          searched = true;
+        }
+      }
+      if (!searched) t.note('no account has more than 6 models: no search to try');
+      // Escape: clears the search, closes the list, closes the menu; nothing chosen
+      for (let i = 0; i < 4 && (await t.page.locator('.talk-menu').count()); i++) { await t.page.keyboard.press('Escape'); await sleep(250); }
+      if (await t.page.locator('.talk-menu').count()) throw new Error('Escape didn’t close the agent menu');
+      const still = await pill.getAttribute('aria-label');
+      t.note(`after Escape the pill reads: ${still}`);
+    },
+  },
+  {
+    id: 'nested',
+    title: 'A task nests under its conversation and opens its own thread',
+    contract: 'live-task.md (LIVETASK-19 to 22)',
+    run: async (t) => {
+      await home(t);
+      const since = Date.now();
+      await t.say(`Start a task now in ${t.repo} on Claude Code, in Ask mode: before writing anything, its agent asks me (not you) one question: should the word be "yes" or "no"? Then it makes docs/oby-decision.md with that one word. Change nothing else.`);
+      const task = track(t, await newTask(t, since));
+      t.state.decision = task;
+      // its conversation's row, with the task under it
+      const kid = t.page.locator('.convo-kid', { hasText: task.title }).first();
+      await until(t, () => kid.isVisible(), 60_000).catch(async () => {
+        // folded: the twist under the open conversation unfolds it
+        const twist = t.page.locator('.convo-row.is-active').locator('xpath=..').locator('.convo-twist');
+        if (await twist.count()) await twist.click();
+        await kid.waitFor({ timeout: 10_000 });
+      });
+      t.note(`its row: ${(await kid.innerText()).replace(/\n+/g, ' ')}`);
+      const row = t.page.locator('.convo-row.is-active');
+      if (await row.count()) t.note(`its conversation's row: ${(await row.innerText()).replace(/\n+/g, ' · ')}`);
+      await t.shot('nested-row');
+      await kid.click();
+      await t.page.locator('.agent-layer').filter({ visible: true }).waitFor({ timeout: 10_000 });
+      t.note(`its thread: ${(await t.page.locator('.agent-layer').last().innerText()).slice(0, 300).replace(/\n+/g, ' · ')}`);
+      await t.shot('task-thread');
+      await t.page.keyboard.press('Escape');
+      await sleep(600);
+      await t.shot('back');
+    },
+  },
+  {
+    id: 'decision',
+    title: 'A decision in the bar over the message box: put off with Later, found again, then answered',
+    contract: 'live-task.md (LIVETASK-23 to 26), home.md (WAITING-1 to 4)',
+    needs: ['nested'],
+    run: async (t) => {
+      const task = t.state.decision;
+      const bar = () => t.page.locator('.decision-bar').filter({ visible: true }).last();
+      const id = task.job.id;
+      // in its conversation: the bar comes when the task asks
+      await until(t, async () => (await bar().count()) || ended(t.job(id)), 10 * MIN);
+      if (ended(t.job(id))) throw new Error(`the task ended (${t.job(id).status}) with no decision asked of the owner`);
+      t.note(`the bar: ${(await bar().innerText()).replace(/\n+/g, ' · ')}`);
+      await t.shot('bar');
+      const kind = t.job(id).ask?.kind;
+      t.note(`what it asks, as obid keeps it: ${kind}, “${t.job(id).ask?.headline}”`);
+      // Later: off this bar, while the view is open
+      await sleep(700);
+      await bar().getByRole('button', { name: 'Later', exact: true }).click();
+      await sleep(600);
+      t.note(`after Later the bar is ${(await bar().count()) ? 'STILL there' : 'gone'}`);
+      await t.shot('later');
+      // found again: its nested row
+      const kid = t.page.locator('.convo-kid', { hasText: task.title }).first();
+      t.note(`its row after Later: ${(await kid.isVisible()) ? (await kid.innerText()).replace(/\n+/g, ' ') : 'not shown'}`);
+      // its own thread
+      await kid.click();
+      await t.page.locator('.agent-layer').filter({ visible: true }).waitFor({ timeout: 10_000 });
+      await sleep(600);
+      const inThread = await t.page.locator('.agent-layer .decision-bar').count();
+      t.note(`in its thread the decision is ${inThread ? 'there' : 'MISSING'}`);
+      await t.shot('in-thread');
+      await t.page.keyboard.press('Escape');
+      await sleep(600);
+      // Waiting for you
+      const waiting = t.page.getByRole('button', { name: /Waiting for you/ });
+      if (await waiting.count()) {
+        await waiting.first().click();
+        await t.see('Waiting for you', { ms: 5000 });
+        await sleep(600);
+        const listed = (await t.page.locator('.waiting-list').innerText().catch(() => '')).includes(task.title);
+        t.note(`Waiting for you lists it: ${listed ? 'yes' : 'NO'}`);
+        await t.shot('waiting');
+        await t.page.keyboard.press('Escape');
+        await sleep(600);
+      } else t.note('no Waiting for you row in the side panel');
+      // back to its conversation: the bar again, and answered there
+      const convo = t.page.locator('.convo-nest', { has: kid }).locator('.convo-row');
+      await convo.first().click();
+      await until(t, () => bar().count(), 20_000).catch(() => {});
+      t.note(`back in its conversation the bar is ${(await bar().count()) ? 'back' : 'MISSING'}`);
+      await t.shot('back-again');
+      await sleep(700);
+      // (the owner may answer it first from their own app: then it's gone from here, and noted)
+      const answer = bar().getByRole('button', { name: /^(yes|Yes|Allow|Allow once|Approve)/ }).first();
+      await until(t, async () => (await answer.count()) || ended(t.job(id)), 20_000).catch(() => {});
+      if (!(await answer.count())) {
+        if (await bar().count()) throw new Error(`no answer to click in the bar: ${(await bar().innerText()).replace(/\n+/g, ' · ')}`);
+        t.note('the decision was answered before the driver clicked (from another of the owner’s devices?)');
+      } else {
+      t.note(`answered: ${await answer.innerText()}`);
+      await answer.click();
+      await t.shot('answered');
+      }
+      // the rest of its asks (a permission to write the file) answered the same way, until it ends
+      const deadline = Date.now() + 10 * MIN;
+      while (!ended(t.job(id)) && Date.now() < deadline) {
+        if (await bar().count()) {
+          const more = bar().getByRole('button', { name: /^(yes|Yes|Allow|Allow once|Approve|Confirm|No check)/ }).first();
+          if (await more.count()) { await sleep(700); t.note(`then: ${(await bar().innerText()).replace(/\n+/g, ' · ')} → ${await more.innerText()}`); await more.click(); }
+        }
+        await sleep(2000);
+      }
+      const job = t.job(id);
+      t.note(`it ended ${job.status}, ${job.published ?? job.publishError ?? 'not published'}`);
+      await t.shot('ended');
+    },
+  },
+  {
+    id: 'edit-project',
+    title: 'Make a project, edit its repositories and name, then delete it',
+    contract: 'projects.md (PROJECTS-25 to 31)',
+    run: async (t) => {
+      await home(t);
+      const name = `Oby drive ${stamp.slice(11).replace(':', '')}`;
+      const add = t.page.getByRole('button', { name: 'New project' });
+      if (!(await add.count())) throw new Error('no New project in the side panel (projects off?)');
+      await add.first().click();
+      await t.page.locator('#project-name').fill(name);
+      await t.click('Add from GitHub…');
+      const repoItem = t.page.getByRole('menuitemcheckbox', { name: t.repo, exact: false });
+      await until(t, () => repoItem.count(), 15_000).catch(() => {});
+      if (!(await repoItem.count())) { await t.shot('no-repo'); throw new Error(`${t.repo} isn't in Add from GitHub…’s list`); }
+      await repoItem.first().click();
+      await t.shot('new');
+      await t.click('Create project');
+      const head = t.page.locator('.project-group', { hasText: name });
+      await head.first().waitFor({ timeout: 15_000 });
+      await t.shot('made');
+      // edit: its ⋮, Edit project…
+      await t.page.getByRole('button', { name: `More for ${name}` }).click();
+      await t.page.getByRole('menuitem', { name: 'Edit project…' }).click();
+      await t.see('Edit project', { ms: 5000 });
+      const rows = await t.page.locator('.project-sheet .project-row').allInnerTexts();
+      t.note(`its sheet shows: ${rows.map((r) => r.replace(/\n+/g, ' ')).join(' | ')}`);
+      await t.shot('edit');
+      await t.page.getByRole('button', { name: `Remove ${t.repo.split('/')[1]}` }).click();
+      await t.page.locator('#project-name').fill(`${name} edited`);
+      await t.shot('edited');
+      await t.click('Save');
+      await t.page.locator('.project-group', { hasText: `${name} edited` }).first().waitFor({ timeout: 15_000 });
+      // what obid kept, as the sheet shows it when opened again
+      await t.page.getByRole('button', { name: `More for ${name} edited` }).click();
+      await t.page.getByRole('menuitem', { name: 'Edit project…' }).click();
+      await t.see('Edit project', { ms: 5000 });
+      const kept = await t.page.locator('.project-sheet .project-row').count();
+      t.note(`opened again it has ${kept} folders and repositories`);
+      await t.shot('reopened');
+      await t.click('Delete project…');
+      await t.click('Delete project');
+      await until(t, async () => !(await t.page.locator('.project-group', { hasText: `${name} edited` }).count()), 15_000);
+      await t.shot('deleted');
+      if (kept) throw new Error(`the removed repository came back: ${kept} rows`);
+    },
+  },
+  {
+    id: 'maximized',
+    title: 'The window maximized: the conversation column grows, up to T3 Code’s wide width',
+    contract: 'chat-first.md (CHATFIRST-34)',
+    run: async (t) => {
+      // the latest conversation with words in it, in a normal window, then maximized
+      await home(t);
+      const row = t.page.locator('.convo-row').first();
+      if (await row.count()) await row.click();
+      await sleep(800);
+      const measure = () => t.page.evaluate(() => {
+        const col = [...document.querySelectorAll('.chat-column')].filter((e) => e.checkVisibility()).pop();
+        const box = [...document.querySelectorAll('.composer')].filter((e) => e.checkVisibility()).pop();
+        const side = document.querySelector('.sidebar');
+        // anything a person can't see: past the window's right edge
+        const past = [...document.querySelectorAll('.composer, .chat-column, .asks, .ask-card, .decision-bar')].filter((e) => e.checkVisibility())
+          .map((e) => Math.round(e.getBoundingClientRect().right - innerWidth)).filter((d) => d > 1);
+        return { window: innerWidth, column: Math.round(col?.getBoundingClientRect().width ?? 0), box: Math.round(box?.getBoundingClientRect().width ?? 0), boxRight: Math.round(box?.getBoundingClientRect().right ?? 0), sidebar: Math.round(side?.getBoundingClientRect().width ?? 0), pastRightEdge: past };
+      });
+      // a narrow window (700px, the side panel open: the app's least is 420), then the app's own
+      // (994 × 670), then maximized
+      await t.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(700, 670));
+      await sleep(1000);
+      const narrow = await measure();
+      t.note(`narrow: ${JSON.stringify(narrow)}`);
+      await t.shot('narrow');
+      await t.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(994, 670));
+      await sleep(1000);
+      const normal = await measure();
+      t.note(`normal: ${JSON.stringify(normal)}`);
+      await t.shot('normal');
+      await t.app.evaluate(({ BrowserWindow, screen }) => { const w = BrowserWindow.getAllWindows()[0]; w.maximize(); return screen.getPrimaryDisplay().workAreaSize; });
+      await sleep(1500);
+      const max = await measure();
+      t.note(`maximized: ${JSON.stringify(max)}`);
+      await t.shot('maximized');
+      await t.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].unmaximize());
+      await sleep(800);
+      if (max.window > normal.window && max.column <= normal.column) throw new Error(`the column didn't grow: ${normal.column} → ${max.column}px`);
+    },
+  },
+  {
+    id: 'stop-left',
+    title: 'Stop a task an earlier run left running, from its own thread (OBY_DRIVE_STOP names it)',
+    contract: 'live-task.md (LIVETASK-22)',
+    run: async (t) => {
+      const title = process.env.OBY_DRIVE_STOP;
+      if (!title) { t.note('nothing named in OBY_DRIVE_STOP'); return; }
+      await home(t);
+      // its conversation's row, unfolded, then its own row
+      const kid = t.page.locator('.convo-kid', { hasText: title }).first();
+      for (let i = 0; i < Math.min(15, await t.page.locator('.convo-nest').count()) && !(await kid.isVisible()); i++) {
+        const twist = t.page.locator('.convo-nest').nth(i).locator('.convo-twist[aria-expanded="false"]');
+        if (await twist.count()) { await twist.click(); await sleep(300); }
+      }
+      await kid.click();
+      await t.page.locator('.agent-layer').filter({ visible: true }).waitFor({ timeout: 10_000 });
+      await t.shot('its-thread');
+      await t.click('Stop', '.agent-layer');
+      await sleep(3000);
+      await t.shot('stopped');
+      t.note(`its row now: ${(await kid.innerText()).replace(/\n+/g, ' ')}`);
+    },
+  },
 ];
+
+// waits until f gives something (a scenario's own wait, not on the window's text)
+async function until(t, f, ms) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    try { const v = await f(); if (v) return v; } catch { /* not yet */ }
+    await sleep(400);
+  }
+  throw new Error(`waited ${Math.round(ms / 1000)} s for nothing`);
+}

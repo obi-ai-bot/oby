@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { writeOwn } from './device';
 import { ipc, type Trusted } from './ipc';
 import { boolean, orUndefined, type Decoder } from '../shared/decode';
+import { SCRATCH } from '../shared/build';
 
 // Oby's own settings in the app's own folder, one file main owns: Settings › Notifications' alerts
 // (notify.ts), About's Update automatically (updates.ts), whether Open at login's default was
@@ -62,7 +63,7 @@ export function localSettings(trusted: Trusted) {
 // The app's own login item (docs/contracts/live-state.md, LIVE-27 to 29), never obid's
 // launch agent entry (obid.ts). Only a packaged copy in Applications touches it: a disk-image or
 // translocated copy would register a path that goes away.
-const mayLogin = () => app.isPackaged && app.isInApplicationsFolder();
+const mayLogin = () => app.isPackaged && !SCRATCH && app.isInApplicationsFolder();
 
 // Open at login's default (on), applied once per install as the app starts: never again after it,
 // nor after the owner's own turn (`loginApplied`), so removing Oby in System Settings sticks. A

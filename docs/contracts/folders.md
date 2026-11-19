@@ -48,6 +48,7 @@ A path that fails is refused with `422` naming the folder by its name and why, i
 ### What a conversation keeps
 
 - `folders` on the conversation: canonical paths, in the order picked, at most 20. `POST /v1/plans` adds a request's `folders` to the conversation's (never removes); `PATCH /v1/conversations/{id}` `{"folders": [...]}` replaces the list (an empty list clears it).
+- A conversation in a project answers the project's folders, its own list kept underneath and its own folders not set meanwhile ([projects.md](projects.md)).
 - The brain's briefing names the conversation's folders by name and path. Its room gets each one read-only, as `room/repos` holds repository checkouts today (`Spec.frozen`), so it can read them.
 - Every task the brain starts in a conversation with folders works in them: **one task per folder, in parallel**, each its own job with its own worktree, check and result. Words that concern one folder ("only in the API") start one task; the brain decides which, as it picks repositories today.
 
@@ -115,6 +116,7 @@ All add-only. No new value in any enum the Swift apps decode as closed: job `sta
 - `POST /v1/plans`: `"folders": ["/Users/me/Projects/api", "/Users/me/Notes"]`, optional. With `new: true` they go on the new conversation; otherwise they're added to the conversation's.
 - `GET /v1/conversations` and the `conversation` event: each conversation has `"folders": [...]` (canonical paths), `[]` when none.
 - `PATCH /v1/conversations/{id}`: `{"folders": [...]}` alongside today's `title` and `pinned`.
+- Projects, named sets of folders a conversation belongs to, check their folders as this contract does ([projects.md](projects.md)).
 - Job JSON: `"folder": {"path": "/Users/me/Projects/api", "name": "api"}` or null; `"landed": {"how": "branch", "branch": "oby/build-ab12cd34"}`, `{"how": "files", "count": 7}` or null. `repo` may be `local/<slug>`.
 - Persistence: the conversation's folders with the conversation; `home/folders.json` for each folder's slug and remembered check; `home/clones/local/<slug>` and `home/folders/<slug>/snapshot.git`.
 - macOS: reading a folder in Desktop, Documents, Downloads, iCloud Drive or a removable volume needs obid to have been let in (Files and Folders); obid can't ask for it itself.

@@ -14,6 +14,7 @@ impl Jobs {
         link: Option<&crate::sphere::Link>,
         card: Option<crate::sphere::inbox::Item>,
     ) {
+        let card = self.one_more_card(id, card);
         let answered = card.as_ref().is_some_and(|c| {
             link.and_then(|l| l.item(&c.id))
                 .is_some_and(|i| i.done.is_some() && i.answer.is_some())

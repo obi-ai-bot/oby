@@ -429,8 +429,11 @@ fn a_done_job_publishes_by_itself_and_follows_its_pull_request() {
         body.contains("- Check: ` test -f hello.txt ` passed.\n- Secret scan: clean."),
         "{body}"
     );
+    // A signed POST /v1/jobs is the owner's own work: it merges by itself (PUBLISHING-42).
     assert!(
-        body.contains("Oby merges it only when its owner says so."),
+        body.ends_with(
+            "It's its owner's own work, so Oby merges it by itself after its own review."
+        ),
         "{body}"
     );
     // gh got no secret of obid's: not the API token, in its arguments or its environment.
@@ -490,6 +493,45 @@ fn a_done_job_publishes_by_itself_and_follows_its_pull_request() {
         remote_branch(&remote, "main").as_deref(),
         Some(main.as_str())
     );
+}
+
+/// PUBLISHING-39: an agent's summary that links its files by their full path in the worktree
+/// (Markdown, `file://` and `%20` links) goes to GitHub with the repository's paths: no folder of
+/// the Mac's, its user's name among them, is in the pull request's description, while the job's
+/// `summary`, the Mac's own, keeps them.
+#[test]
+fn publishing_39_the_pull_request_names_no_path_on_the_mac() {
+    let folder = Folder::new("publish-paths");
+    let bin = fake_gh(&folder.0);
+    let (obid, _remote, _) = obid_with(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: calc.py LINKED",
+               "check": "test -f calc.py"}),
+    );
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
+    assert_eq!(job["published"], PULL, "{job}");
+    let worktree = job["worktree"].as_str().unwrap().to_owned();
+    assert!(
+        job["summary"].as_str().unwrap().contains("/calc.py"),
+        "{job}"
+    );
+    // The description's invisible breaks (after `[` and `]`) aside.
+    let body = kept(&folder.0, "body").replace('\u{200B}', "");
+    assert!(
+        body.starts_with(
+            "The agent's summary:\n\n> Added [calc.py](calc.py), see calc.py:1 and `calc.py`."
+        ),
+        "{body}"
+    );
+    let real = std::fs::canonicalize(&worktree).unwrap();
+    for path in [worktree.as_str(), &real.to_string_lossy(), "file://"] {
+        assert!(!body.contains(path), "{path} in {body}");
+    }
+    for home in obid::jobs::person_homes() {
+        assert!(!body.contains(&*home.to_string_lossy()), "{body}");
+    }
 }
 
 /// A follow-up of a job whose pull request is still open goes on its branch: it starts at the
@@ -3668,6 +3710,16 @@ fn merging_8_a_follow_up_on_the_branch_at_round_one_leaves_it_to_the_owner() {
 }
 
 /// The review job of `id`'s published work at `nth` (oldest first), once there is one.
+/// The review of job `id` whose `key` is `value` (its `account`, its `agent`), once there is one:
+/// what tells two reviews apart when their `created`, in whole seconds, can't (#2553).
+fn review_by(obid: &Obid, id: &str, key: &str, value: &str) -> Value {
+    within(
+        120,
+        &format!("the review of {id} with {key} {value}"),
+        || reviews_of(obid, id).into_iter().find(|r| r[key] == value),
+    )
+}
+
 fn review_of(obid: &Obid, id: &str, nth: usize) -> Value {
     within(120, &format!("review {nth} of {id}"), || {
         reviews_of(obid, id).get(nth).cloned()
@@ -3887,7 +3939,14 @@ fn recovery_15_a_second_review_with_no_verdict_tries_no_other_reviewer() {
         let items = review_items(&obid, &id);
         (items.len() == 1).then_some(items)
     });
-    assert_eq!(review_of(&obid, &id, 1)["account"], "other");
+    // Codex's review and the second, on the other Claude Code account: told apart by their
+    // accounts, never by `created`, whose whole seconds two reviews can share (#2553).
+    review_by(&obid, &id, "account", "other");
+    let mut accounts: Vec<String> = (reviews_of(&obid, &id).iter())
+        .map(|r| r["account"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    accounts.sort();
+    assert_eq!(accounts, ["codex", "other"], "{}", obid.log());
     follow_passes(&folder.0, 3);
     assert_eq!(reviews_of(&obid, &id).len(), 2, "{}", obid.log());
     let open = open_items(&obid, &id);
@@ -3907,7 +3966,11 @@ fn recovery_15_a_second_review_the_owner_stopped_stays_stopped() {
         json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: AGENTS.md HOLD REVIEW",
                "check": "test -f AGENTS.md", "account": "stub"}),
     );
-    let review = review_of(&obid, &id, 1)["id"].as_str().unwrap().to_owned();
+    // The second review is Claude Code's, after Codex's (#2553: never by order).
+    let review = review_by(&obid, &id, "agent", "claude")["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     within(120, "the second review runs", || {
         let job = call(&obid, "GET", &format!("/v1/jobs/{review}"), None).body;
         (job["status"] == "running").then_some(())

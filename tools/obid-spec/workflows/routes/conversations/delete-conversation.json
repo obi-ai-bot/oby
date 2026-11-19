@@ -1,0 +1,137 @@
+{
+  "schemaVersion": "2",
+  "name": "DELETE /v1/conversations/{id}",
+  "version": "1.0.0",
+  "description": "Forgets a conversation: 204, its file gone and a deleted event; 404 for one obid doesn't have.",
+  "trigger": {
+    "http": {
+      "method": "DELETE",
+      "path": "/v1/conversations/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Fine.",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Fine."
+          }
+        }
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/conversations/${state.said.body.conversation}",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/conversations/00000000-0000-4000-8000-000000000000",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "deleted-204",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/conversations/${state.said.body.conversation}",
+        "expect": {
+          "status": 204
+        }
+      }
+    },
+    {
+      "id": "a-deleted-event",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "conversation",
+        "expect": {
+          "body": {
+            "id": "${state.said.body.conversation}",
+            "deleted": true
+          }
+        }
+      }
+    },
+    {
+      "id": "its-file-gone",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}.json",
+        "expect": {
+          "exists": false
+        }
+      }
+    },
+    {
+      "id": "not-listed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "again-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/conversations/${state.said.body.conversation}",
+        "expect": {
+          "status": 404
+        }
+      }
+    }
+  ]
+}

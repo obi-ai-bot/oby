@@ -16,6 +16,17 @@ describe('signed words', () => {
     }
   });
 
+  it('ask_39_main_signs_ask_only_for_owners_the_words_name', () => {
+    const plan = (said: string, ask: unknown) => wordsOf('POST', '/v1/plans', { said, new: true, ask });
+    expect(plan('@dana are you on billing?', ['dana'])).toEqual(['@dana are you on billing?']);
+    expect(plan('@Dana and @dmitry-grechko, lunch?', ['dana', 'dmitry-grechko'])).toEqual(['@Dana and @dmitry-grechko, lunch?']);
+    // someone the words don't @-name, a name inside a word or another's, or not an owner id: nothing is signed
+    for (const [said, ask] of [
+      ['@dana are you on billing?', ['dana', 'dima']], ['are you on billing, dana?', ['dana']], ['@danat hi', ['dana']],
+      ['@dana-x hi', ['dana']], ['me@dana hi', ['dana']], ['@dana hi', []], ['@dana hi', 'dana'], ['@dana hi', [1]], ['@a.b hi', ['a.b']],
+    ] as const) expect(plan(said, ask), `${said} ${JSON.stringify(ask)}`).toBeNull();
+  });
+
   it('words_15_a_notifications_allow_and_deny_sign', () => {
     const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
     for (const [path, body] of [
@@ -192,6 +203,25 @@ describe('signed words', () => {
     // one the page adds, or the home folder, isn't
     expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', plan(['/Users/me/app', '/Users/me']))).toBeNull();
     expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', { said: 'Fix the login', new: true })).not.toBeNull();
+  });
+
+  it('words_18_a_project_signs_only_with_folders_picked_this_run', () => {
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const plan = { said: 'Fix the login', new: true, project: 'pr1' };
+    // the shape: a project is signed with the body, never one of the words
+    expect(wordsOf('POST', '/v1/plans', plan)).toEqual(['Fix the login']);
+    expect(wordsOf('POST', '/v1/plans', { ...plan, id: 't1', attachments: [], jobs: [] })).toEqual(['Fix the login']);
+    for (const project of [7, null, ['pr1'], true]) expect(wordsOf('POST', '/v1/plans', { ...plan, project }), JSON.stringify(project)).toBeNull();
+    expect(wordsOf('PATCH', '/v1/conversations/c1', { project: 'pr1' })).toBeNull();
+    // the guard: the project's folders as main read them, each picked in its dialog this run
+    picked(['/Users/me/website']);
+    expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', plan, undefined, [])).not.toBeNull();
+    expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', plan, undefined, ['/Users/me/website'])).not.toBeNull();
+    expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', plan, undefined, ['/Users/me/website', '/Users/me/never-picked'])).toBeNull();
+    // one main couldn't read: unsigned
+    expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', plan)).toBeNull();
+    // words with no project go as before, whatever folders main read
+    expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', { said: 'Fix the login', new: true }, undefined, ['/Users/me/never-picked'])).not.toBeNull();
   });
 
   it('words_17_the_vault_signs_a_put_by_add_secret_and_a_bodiless_delete_by_remove_secret', () => {

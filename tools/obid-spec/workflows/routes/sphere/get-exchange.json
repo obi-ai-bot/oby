@@ -1,0 +1,251 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/obid/sphere/exchanges/{id}",
+  "version": "1.0.0",
+  "description": "One exchange by its correlation id, 404 for one obid doesn't have; an answer the other owner gives ends it done with their words as its result (SPHERE-5).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/obid/sphere/exchanges/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/00000000-0000-4000-8000-000000000000",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/00000000-0000-4000-8000-000000000000",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "asked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.dana-joined.obiId}",
+          "type": "question",
+          "body": {
+            "text": "What are you working on?"
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 202
+        }
+      }
+    },
+    {
+      "id": "sent",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.asked.body.correlationId}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "sent",
+            "type": "question",
+            "result": null
+          }
+        }
+      }
+    },
+    {
+      "id": "waiting-on-dana",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "obiRequest",
+                "obi": {
+                  "correlationId": "${state.asked.body.correlationId}"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "dana-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.dana}"
+      }
+    },
+    {
+      "id": "dana-answers-unsigned-403",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/inbox/obi-${state.asked.body.correlationId}/answer",
+        "body": {
+          "answer": "Billing retries, almost done."
+        },
+        "expect": {
+          "status": 403
+        }
+      }
+    },
+    {
+      "id": "dana-answers",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/inbox/obi-${state.asked.body.correlationId}/answer",
+        "body": {
+          "answer": "Billing retries, almost done."
+        },
+        "as": "device",
+        "device": "${state.dana-device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "sphere-5-done-with-the-answer",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.asked.body.correlationId}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "done",
+            "result": {
+              "by": "owner",
+              "text": "Billing retries, almost done."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-5"
+        ]
+      }
+    },
+    {
+      "id": "its-messages-in-order",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.asked.body.correlationId}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "messages.0.direction": "sent",
+            "messages.0.envelope.type": "question",
+            "messages": {
+              "$any": {
+                "direction": "received",
+                "envelope": {
+                  "type": "answer"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,146 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/accounts/{id}/sign-out",
+  "version": "1.0.0",
+  "description": "Signs an account out with its tool's own logout (ACCOUNTS-23): signed out, kept in the list with its name (ACCOUNTS-25); 404 for one obid doesn't have.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/accounts/{id}/sign-out"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "added",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "claude",
+          "name": "Work"
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "claude",
+            "name": "Work",
+            "signedIn": false
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.added.body.id}/sign-out",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/deadbeef/sign-out",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.added.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.added.body.id}/sign-in",
+        "body": {
+          "code": "good-code#fake"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "signedIn": true
+          }
+        }
+      }
+    },
+    {
+      "id": "accounts-23-signed-out",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.added.body.id}/sign-out",
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.added.body.id}",
+            "signedIn": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-23"
+        ]
+      }
+    },
+    {
+      "id": "accounts-25-kept-with-its-name",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.added.body.id}",
+                "name": "Work",
+                "signedIn": false
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-25"
+        ]
+      }
+    }
+  ]
+}

@@ -6,7 +6,7 @@ The business behavior contract for the one rule by which what obid has (its jobs
 
 - **Outcome:** The owner sees the same tasks, conversations, cards and Home as before. What changes is underneath: whether an object from obid replaces the one the app holds is decided in one place, a pure function tested on its own, instead of by hand at each event and each answer in `live.ts`. A late answer can't undo a newer event, a deleted task or conversation can't come back, and an older answer can't reopen an item the iPhone settled.
 - **Status:** **Implemented** (roadmap R06-06 for jobs, R06-07 for the other kinds): `apps/electron/src/shared/live-state.ts`, used by `apps/electron/src/renderer/src/live.ts`. Since R06-08 the rule runs in main: `apps/electron/src/main/live.ts`, main's one follower of obid's events, keeps the state the window and the Mac's alerts read (LIVE-10, LIVE-11). Related: #1707 (an answer applied over the state as it is when it comes) and #1709 (revisions and deleted jobs).
-- **Scope:** The `job`, `jobGone`, `conversation`, `conversationGone`, `turn`, `turnAsks`, `inbox`, `accounts` and `github` events; every job a call to obid answers with, the turns `GET /v1/conversation` answers with, and the status `GET /v1/status` answers with; and the reconnect's sync of jobs, conversations, the inbox, the status and GitHub's work; and main's follower of the events (`main/live.ts`), with its snapshot, live and load channels to the page (below, "Main's follower"). **Out of scope:** the `step`, `delta`, `roomPost` and `peerThread` events, a job's session (its transcript), the limit decisions (`limits`, which have their own revision and refresh), the repositories (`repos`), the jobs the app saw when it opened, the fields the cards and task actions write before obid answers (R06-11), any screen, and obid and its API ([runner-api.md](../runner-api.md) is unchanged).
+- **Scope:** The `job`, `jobGone`, `conversation`, `conversationGone`, `turn`, `turnAsks`, `turnDelivery`, `inbox`, `accounts` and `github` events; every job a call to obid answers with, the turns `GET /v1/conversation` answers with, and the status `GET /v1/status` answers with; and the reconnect's sync of jobs, conversations, the inbox, the status and GitHub's work; and main's follower of the events (`main/live.ts`), with its snapshot, live and load channels to the page (below, "Main's follower"). **Out of scope:** the `step`, `delta`, `roomPost` and `peerThread` events, a job's session (its transcript), the limit decisions (`limits`, which have their own revision and refresh), the repositories (`repos`), the jobs the app saw when it opened, the fields the cards and task actions write before obid answers (R06-11), any screen, and obid and its API ([runner-api.md](../runner-api.md) is unchanged).
 
 ## Behavior
 
@@ -32,7 +32,7 @@ The state is `ObidState`:
 - **`jobGone`:** removes the job and adds its id to `gone`.
 - **`conversation`:** one whose id is in `goneConversations` leaves the state unchanged; otherwise the comparison by id.
 - **`conversationGone`:** removes the conversation and its turns, and adds its id to `goneConversations`.
-- **`turn` and `turnAsks`** (the same, as far as what obid has goes): one with no `conversation`, or of a conversation in `goneConversations`, leaves the state unchanged; otherwise the comparison by turn id within that conversation's turns.
+- **`turn`, `turnAsks` and `turnDelivery`** (the same, as far as what obid has goes; `turnDelivery` moves the owner's words between the waiting row and the conversation, docs/contracts/composer.md, COMPOSER-19): one with no `conversation`, or of a conversation in `goneConversations`, leaves the state unchanged; otherwise the comparison by turn id within that conversation's turns.
 - **`inbox`:** a copy whose revision is lower than the item's `settledInbox` mark is refused; otherwise a held copy with a higher revision stays; otherwise an item with `state` `done` leaves `inbox` and, if it has a `revision`, sets its mark to it, and any other item replaces the held one and clears its mark. An item with no `revision` is taken as it comes, over a mark too.
 - **`accounts`:** sets the status's accounts when there is a status; with none, nothing changes.
 - **`github`:** replaces GitHub's work.
@@ -76,7 +76,7 @@ The answers go through the same rule: `answer(state, job)` takes a job a call re
 
 ## Interfaces and dependencies
 
-Reads the `job`, `conversation`, `turn`, `turnAsks`, `inbox`, `accounts` and `github` events (`deleted: true` parsed as `jobGone` or `conversationGone` by `parseEvent` in `apps/electron/src/shared/obid-wire.ts`) and the objects obid's routes answer with, as [runner-api.md](../runner-api.md) describes them, with the `revision` of [events.md](events.md) (EVENTS-7 to 10). No new route, key or value in obid's API.
+Reads the `job`, `conversation`, `turn`, `turnAsks`, `turnDelivery`, `inbox`, `accounts` and `github` events (`deleted: true` parsed as `jobGone` or `conversationGone` by `parseEvent` in `apps/electron/src/shared/obid-wire.ts`) and the objects obid's routes answer with, as [runner-api.md](../runner-api.md) describes them, with the `revision` of [events.md](events.md) (EVENTS-7 to 10). No new route, key or value in obid's API.
 
 ## Acceptance scenarios
 

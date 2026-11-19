@@ -1,4 +1,4 @@
-//! Waiting to try again (RECOVERY-1, RECOVERY-14): a turn the network cut, and a job's first fetch.
+//! Waiting to try again (RECOVERY-1, RECOVERY-14): a run cut with no result, and a job's first fetch.
 //! It owns those waits and the tries they count in `Job.recovery`; it saves no job itself and never
 //! writes a branch (docs/ARCHITECTURE.md, "State ownership").
 

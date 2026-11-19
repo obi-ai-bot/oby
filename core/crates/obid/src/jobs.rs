@@ -62,8 +62,15 @@ mod account_limits;
 mod after_pr;
 pub(crate) mod asks;
 mod authors;
+mod autofix;
 mod budget;
 mod by_github;
+pub(crate) mod cant_run;
+mod cant_take;
+pub(crate) mod changes;
+pub(crate) use cant_take::CantTake;
+mod routed;
+use routed::Routed;
 mod check_run;
 #[cfg(test)]
 use check_run::check_failed;
@@ -82,12 +89,14 @@ use lanes::{own_codex_settings, own_run_env, owners_for};
 mod logins;
 mod merge_by_owner;
 mod metering;
-mod moves;
+pub(crate) mod moves;
 mod obi_review;
+pub(crate) mod onto_pr;
 mod own_refs;
 pub(crate) use own_refs::OWN_COMMON;
 mod owner_run;
 mod permission_asks;
+mod profiles;
 mod publishing;
 mod research;
 mod retry;
@@ -97,9 +106,12 @@ mod routing;
 mod secrets;
 mod setup;
 mod slots;
+mod tuning;
 mod turns;
+use tuning::{on_tool, tune};
 mod unjudged;
 mod versions;
+mod words;
 mod worktree_git;
 pub use logins::person_homes;
 pub(crate) use logins::*;
@@ -152,8 +164,8 @@ const RETRY_WAITS: [Duration; 3] = [
     Duration::from_secs(2 * 60),
     Duration::from_secs(5 * 60),
 ];
-/// The waits before each continuation of a turn a passing error cut (RECOVERY-1), as Claude's
-/// desktop app waits on a lost connection. A waiting job keeps its slot (ADMISSION-4).
+/// The waits before each continuation of a run cut with no result or an unknown error (RECOVERY-1),
+/// as Claude's desktop app waits on a lost connection. A waiting job keeps its slot (ADMISSION-4).
 const CUT_WAITS: [Duration; 3] = [
     Duration::from_secs(60),
     Duration::from_secs(5 * 60),
@@ -418,9 +430,9 @@ fn waits_for_later(said: &str) -> bool {
 
 /// How many tries in a row a failed turn gets (RECOVERY-1): anything but a login (the tool's
 /// fields, else its `words`, whole, or Codex's refusal), a usage limit (the caller's: the account's
-/// usage, the tool's reset or its words), or a session too long or gone. A passing error
-/// ([`agent::Failure`]: a 5xx or 429, overloaded, a dropped connection) and a CLI that ended with
-/// no result get [`CUT_WAITS`]'; an unknown error one, in its `session`. The tool's own fields
+/// usage, the tool's reset or its words), a session too long or gone, or a passing error (a 5xx or
+/// 429, overloaded, a dropped connection: its CLI retried it, RECOVERY-19). A CLI that ended with no
+/// result gets [`CUT_WAITS`]'; an unknown error one, in its `session`. The tool's own fields
 /// decide first (RECOVERY-7): a 529 whose words hold `401` is still passing. A login refused on a
 /// run whose copy of it ended mid-run (`ended`: a boxed Claude Code run's) gets one: the next launch
 /// refreshes it first (KEYCHAIN-10). A login refused for any other reason (revoked) gets none.
@@ -433,8 +445,8 @@ fn retries(
 ) -> usize {
     use agent::Cause;
     match cause {
-        Some(Cause::Passing | Cause::Busy) => CUT_WAITS.len(),
         Some(Cause::Login) => usize::from(ended),
+        Some(Cause::Passing | Cause::Busy) => 0,
         Some(Cause::Limit | Cause::TooLong | Cause::SessionGone) => 0,
         _ if retrying_wont_mend(words) || codex_login_refused(words) => 0,
         _ if no_result => CUT_WAITS.len(),
@@ -659,6 +671,9 @@ pub struct NewJob {
     pub rounds: Option<u32>,
     pub check: Option<String>,
     pub model: Option<String>,
+    /// An effort the owner's chip named (brain::defaults): it holds over its account's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     /// The plan called it complex: it runs at its account's complex-task effort (#1574).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub complex: bool,
@@ -667,6 +682,7 @@ pub struct NewJob {
     pub mode: Option<String>,
     /// The conversation whose plan started it (#493).
     pub conversation: Option<String>,
+    pub profile: Option<String>, // the one it's made in (jobs::profiles, B00-40)
     /// The user's turn whose words started it ([`Job::turn`]).
     #[serde(default)]
     pub turn: Option<String>,
@@ -685,6 +701,8 @@ pub struct NewJob {
     /// Never from the API.
     #[serde(skip)]
     pub made_branch: bool,
+    #[serde(skip)] // [`Job::onto`], never from the API
+    pub onto: Option<String>,
     /// The routine whose run it is (crate::routines).
     #[serde(default)]
     pub routine: Option<crate::job::RoutineMark>,
@@ -703,6 +721,10 @@ pub struct NewJob {
     /// theirs signed ([`Job::own_conversation`]). Only obid's own code sets it, never the body.
     #[serde(default)]
     pub own_conversation: bool,
+    /// The owner asked for its account now: in `POST /v1/jobs`, or by their words to a task that
+    /// ended ([`Jobs::left_words`]); signed out, it's refused when they named it (ACCOUNTS-35).
+    #[serde(skip)]
+    pub named_now: bool,
     /// Why its words aren't on obid's allowlist from the start (crate::secretspec): Oby's
     /// conversation that wrote them read something that isn't. It keeps to a clone apart, and its
     /// check gets none of the owner's secrets.
@@ -838,35 +860,6 @@ fn room_step(wait: &Waiting) -> String {
     )
 }
 
-/// A job waiting for room goes to `tool`: a model of another tool's gives way to the new tool's
-/// own, as a move's does, and its version to the next round's read (CLIVERSIONS-6).
-fn on_tool(job: &mut Job, tool: Tool) {
-    if job.agent != tool.id() {
-        job.agent = tool.id().into();
-        job.model = None;
-        job.agent_version = None;
-        job.model_from_account = false;
-    }
-}
-
-/// The model and effort `job` runs on, on its account as it is now (#1574): a model it named
-/// itself stays; else its account's, as Settings › Agents set them (`tuning`, by account); neither,
-/// the tool's own. Again whenever it changes account. `offered` is that account's own list, empty
-/// while none was read since obid started (`ModelLists::to_check`): the saved model stands.
-fn tune(
-    job: &mut Job,
-    tuning: &std::collections::BTreeMap<String, crate::settings::Tuning>,
-    offered: &[crate::model_lists::Offered],
-) {
-    let kept = tuning.get(&job.account).cloned().unwrap_or_default();
-    if job.model.is_none() || job.model_from_account {
-        let model = kept.offered_model(offered);
-        job.model_from_account = model.is_some();
-        job.model = model.map(str::to_owned);
-    }
-    job.effort = kept.effort(job.complex).map(str::to_owned);
-}
-
 /// Who adds the inbox's Confirm items (crate::sphere::link).
 pub type ConfirmHook = Arc<dyn Fn(crate::sphere::inbox::Item) + Send + Sync>;
 
@@ -954,6 +947,8 @@ struct State {
     workers: HashMap<String, watch::Sender<Signal>>,
     /// The jobs whose agent had its last turn: they take no more words until they end.
     wrapping: std::collections::HashSet<String>,
+    /// The words each Claude Code job's turn under way takes as they come (crate::steer).
+    steers: HashMap<String, Arc<crate::steer::Steer>>,
     /// Each job's prompts waiting for the owner, the one shown first.
     asks: HashMap<String, VecDeque<Ask>>,
     /// The prompts a parked job's agent waited on ([`Jobs::park`]), held unanswered until its
@@ -1049,6 +1044,8 @@ pub struct Jobs {
     /// How many jobs run at once (Settings, `home/settings.json`).
     max_running: std::sync::atomic::AtomicUsize,
     shutting_down: std::sync::atomic::AtomicBool,
+    /// obid's last stop was clean, as it opened (`STOPPED_CLEANLY`): what a cut word's line says.
+    pub stopped_cleanly: bool,
     /// Who jobs' commits are by ([`commit_identity`], [`Jobs::identity`]).
     identity: Mutex<(String, String)>,
     /// One check at a time per repository, made on first use ([`Jobs::check`], PUBLISHING-25).
@@ -1103,6 +1100,8 @@ pub struct Jobs {
     usage_reads: Mutex<UsageReads>,
     /// Each account's last good model list, refreshed with those usage reads (crate::model_lists).
     pub model_lists: crate::model_lists::ModelLists,
+    /// Why each account's agent couldn't start, while kept (jobs::cant_run, ACCOUNTS-31).
+    pub cant_run: cant_run::CantRun,
     /// What the meter last read: the machine's memory, and each running job's ([`Jobs::meter`]).
     measured: Mutex<Measured>,
     /// Wakes the meter: a job started.
@@ -1115,15 +1114,6 @@ const MOST_SITES_ASKED: usize = 3;
 
 /// How often the meter reads while jobs run ([`Jobs::meter`]).
 const METER_TICK: Duration = Duration::from_secs(5);
-/// How often at most each account's usage is asked of its tool ([`Jobs::want_usage`]): every 10
-/// minutes, or `OBID_USAGE_EVERY_SECONDS` (obid's tests set less). A running job's own reports
-/// come between.
-fn usage_every() -> Duration {
-    std::env::var("OBID_USAGE_EVERY_SECONDS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .map_or(Duration::from_secs(600), Duration::from_secs)
-}
 /// How long one account's usage read may take: Claude Code's took 4 seconds.
 const USAGE_READ_LIMIT: Duration = Duration::from_secs(30);
 /// How long past now a Claude Code login copy must last to read with: twice the 5 minutes in which
@@ -1357,6 +1347,7 @@ impl Jobs {
                 jobs,
                 workers: HashMap::new(),
                 wrapping: std::collections::HashSet::new(),
+                steers: HashMap::new(),
                 asks: HashMap::new(),
                 held: HashMap::new(),
                 asked: HashMap::new(),
@@ -1375,6 +1366,7 @@ impl Jobs {
             transcripts,
             max_running: std::sync::atomic::AtomicUsize::new(max_running),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
+            stopped_cleanly,
             identity: Mutex::new(identity),
             checking: Mutex::new(HashMap::new()),
             base_runs: Mutex::new(HashMap::new()),
@@ -1400,6 +1392,7 @@ impl Jobs {
             usage_changed: Notify::new(),
             usage_reads: Mutex::default(),
             model_lists: crate::model_lists::ModelLists::default(),
+            cant_run: cant_run::CantRun::default(),
             measured: Mutex::new(Measured::default()),
             metering: Notify::new(),
         });
@@ -2215,19 +2208,7 @@ impl Jobs {
     }
 
     #[allow(clippy::type_complexity)]
-    fn vetted(
-        &self,
-        new: &NewJob,
-    ) -> Result<
-        (
-            Repo,
-            Tool,
-            crate::config::Account,
-            Option<Vec<String>>,
-            Option<Waiting>,
-        ),
-        Refused,
-    > {
+    fn vetted(&self, new: &NewJob) -> Result<(Repo, Routed, Option<Vec<String>>), Refused> {
         let repo = self
             .repo(&new.repo)
             .or_else(|| new.adding.clone().filter(|a| a.repo == new.repo))
@@ -2247,32 +2228,9 @@ impl Jobs {
         {
             return Err(Refused("title is one line of 1 to 60 characters.".into()));
         }
-        let named = new
-            .account
-            .as_deref()
-            .is_some_and(|a| !a.trim().is_empty() && !a.trim().eq_ignore_ascii_case("auto"));
         let background = new.unattended || new.routine.is_some();
-        let work = Work::new(new.model.as_deref(), None, background);
-        // Held back by weekly reserves alone, it waits for one to be lifted, or for room (#872); by
-        // limits, as a limit's job waits (LIMITS-18); by a ChatGPT login the owner hasn't said yes
-        // to alone, for their yes (CHATGPT-20).
-        let (tool, account, waiting) =
-            match self.pick_for(new.agent.as_deref(), new.account.as_deref(), &work) {
-                Ok((tool, account)) if background && self.waits_for_yes(tool, &account) => {
-                    let wait = consent_wait(&account, new.agent.as_deref());
-                    (tool, account, Some(wait))
-                }
-                Ok((tool, account)) => (tool, account, None),
-                Err(refused) if !named => match self
-                    .in_reserve(new.agent.as_deref(), background)
-                    .or_else(|| self.no_room(new.agent.as_deref(), &work))
-                    .or_else(|| background.then(|| self.first_not_yet(new.agent.as_deref()))?)
-                {
-                    Some(held) => held,
-                    None => return Err(refused),
-                },
-                Err(refused) => return Err(refused),
-            };
+        let work = self.work_for(new, background);
+        let routed = self.route_new(new, &work)?;
         let most = crate::settings::limits().rounds();
         if let Some(rounds) = new.rounds
             && !(1..=most).contains(&rounds)
@@ -2302,14 +2260,20 @@ impl Jobs {
         {
             return Err(Refused(format!(
                 "{model} isn't a model of {}.",
-                tool.name()
+                routed.tool.name()
             )));
         }
-        Ok((repo, tool, account, files, waiting))
+        Ok((repo, routed, files))
     }
 
     pub fn create(self: &Arc<Self>, new: NewJob) -> Result<Job, NotMade> {
-        let (repo, tool, account, files, waiting) = self.vetted(&new)?;
+        let (repo, routed, files) = self.vetted(&new)?;
+        let Routed {
+            tool,
+            account,
+            waiting,
+            line,
+        } = routed;
         let id = self.new_id();
         let mut job = Job::new(
             id.clone(),
@@ -2337,6 +2301,7 @@ impl Jobs {
         // included, and counted.
         job.rounds = new.rounds;
         job.model = new.model.map(|m| m.trim().to_owned());
+        job.effort_named = new.effort;
         job.complex = new.complex;
         let offered = Tool::from_id(&job.agent)
             .map(|tool| self.model_lists.to_check(tool, &job.account))
@@ -2348,7 +2313,7 @@ impl Jobs {
         );
         job.files = files;
         job.attachments = new.attachments;
-        job.conversation = new.conversation;
+        job.start_in(&self.config.home, new.profile, new.conversation);
         job.turn = new.turn.filter(|_| job.conversation.is_some());
         job.brief = new
             .brief
@@ -2360,6 +2325,7 @@ impl Jobs {
             .start_from
             .filter(|b| new.follow_up_of.is_some() && git::is_branch_name(b));
         job.made_branch = new.made_branch;
+        job.onto = new.onto; // publish refuses one that isn't its base (TASKCONV-31)
         job.follow_up_of = new.follow_up_of;
         job.routine = new.routine;
         job.unattended = new.unattended;
@@ -2441,6 +2407,7 @@ impl Jobs {
         job.phase = Some(Phase::Prepare);
         job.step = format!("Getting {} ready", job.repo_name());
         self.wait_as_vetted(&mut job, waiting);
+        job.routed = line; // why it runs where the owner's words didn't put it (ACCOUNTS-31)
         // A job starts only when nothing else moves its branch (PUBLISHING-4): checked and taken
         // under one lock (insert takes the same job again). Refused rather than put on a branch of
         // its own, so two jobs on one issue never make two pull requests for it.
@@ -2665,7 +2632,7 @@ impl Jobs {
         let publishing = self.lock().publishing.remove(id);
         let _ = std::fs::remove_file(self.temp_path(id).join(MCP_CONFIG_FILE));
         forget_login_secrets(&self.login_path(id));
-        self.drop_asks(id, false);
+        self.drop_asks(id, false, false);
         // It had ended (a panic in what comes after its run): it stays as it ended, the bug noted.
         if self.get(id).is_some_and(|j| !j.status.is_active()) {
             self.update(id, |job| {
@@ -2743,16 +2710,14 @@ impl Jobs {
     }
 
     /// The owner's one item about a job obid's own bug ended, or obid kept going down with
-    /// (#911, #915): one per such end, made again by no restart.
+    /// (#911, #915): one open per job, none while its task carries on (TASKS-26, 27).
     fn crash_item(&self, id: &str) {
         if let (Some(link), Some(job)) = (
             self.link.get().and_then(std::sync::Weak::upgrade),
             self.get(id),
         ) {
-            link.add_items(vec![crate::sphere::inbox::crash_item(
-                &job,
-                obi_protocol::time::now(),
-            )]);
+            let now = obi_protocol::time::now();
+            link.crash_items(id, crate::sphere::inbox::crash_item(&job, now));
         }
     }
 
@@ -2782,7 +2747,7 @@ impl Jobs {
             }
             None => false,
         };
-        self.drop_asks(id, false);
+        self.drop_asks(id, false, false);
         let stopped = self.update(id, |job| {
             job.status = Status::Stopped;
             job.stopped_by = Some(by);
@@ -2979,6 +2944,7 @@ impl Jobs {
                         owners: unheard,
                         // Words the owner typed; a Confirm's are what Oby proposed.
                         vetted: source == Source::Owner,
+                        named_now: true,
                         // Their word, signed, on it: they're following it now.
                         unattended: source == Source::Api && job.background(),
                         // Files may hold anyone's words, as a conversation's do (crate::secretspec).
@@ -3096,6 +3062,10 @@ impl Jobs {
                 {
                     heard(&mut job);
                     job.owners.extend(owners(false));
+                    // Its Claude Code hears them now, in the turn under way (TASKCONV-33).
+                    if let Some(steer) = state.steers.get(id) {
+                        steer.offer(text);
+                    }
                 } else if starting || (worker && source.direct()) {
                     job.notes.get_or_insert_with(Vec::new).push(text.to_owned());
                     job.heard.push(text.to_owned());
@@ -3331,50 +3301,6 @@ impl Jobs {
         ));
     }
 
-    /// The owner's words the agent hasn't heard yet, taken: what its next turn hears.
-    fn take_heard(&self, id: &str) -> Vec<String> {
-        self.take_words(id).0
-    }
-
-    /// [`Self::take_heard`], and whether the owner's own words were among them (#1661).
-    fn take_words(&self, id: &str) -> (Vec<String>, bool) {
-        let mut taken = (Vec::new(), false);
-        self.update(id, |job| {
-            taken = (
-                std::mem::take(&mut job.heard),
-                !std::mem::take(&mut job.owners).is_empty(),
-            );
-        });
-        taken
-    }
-
-    /// The agent's last turn is over: the owner's words that came meanwhile, taken (its next
-    /// turn), and whether the owner's own were among them, or none, and from now on the job
-    /// takes no more until it ends.
-    fn last_turn(&self, id: &str) -> (Vec<String>, bool) {
-        let (words, owners) = {
-            let mut state = self.lock();
-            let (words, owners) = state
-                .jobs
-                .get_mut(id)
-                .map(|job| {
-                    (
-                        std::mem::take(&mut job.heard),
-                        !std::mem::take(&mut job.owners).is_empty(),
-                    )
-                })
-                .unwrap_or_default();
-            if words.is_empty() {
-                state.wrapping.insert(id.to_owned());
-            }
-            (words, owners)
-        };
-        if !words.is_empty() {
-            self.update(id, |_| {});
-        }
-        (words, owners)
-    }
-
     /// Who is told about permissions (once; a second call changes nothing).
     /// The Sphere link a job that runs on a teammate's Mac goes through (once).
     pub fn set_link(&self, link: std::sync::Weak<crate::sphere::Link>) {
@@ -3549,7 +3475,7 @@ impl Jobs {
         Some(Ok(dismissed))
     }
 
-    /// Archives a job that ended and needs nothing, or unarchives it (`archived` false), adding
+    /// Archives a job that ended with no decision open, or unarchives it (`archived` false), adding
     /// `by` ("by you", "by Oby, in a conversation") to its changes. `Err` when it can't be.
     pub fn archive(&self, id: &str, archived: bool, by: &str) -> Option<Result<Job, Refused>> {
         let job = self.get(id)?;
@@ -3562,7 +3488,7 @@ impl Jobs {
                     "It's still running: stop it first, or archive it once it ends.".into(),
                 )));
             }
-            if job.needs_you() {
+            if job.decision() {
                 return Some(Err(Refused(
                     "It still needs you: dismiss it first, or publish it.".into(),
                 )));
@@ -4555,6 +4481,7 @@ impl Jobs {
                 return;
             }
             self.read_pull_requests().await;
+            self.follow_onto().await;
             self.let_go_ended();
             if self.settle_reviews() {
                 self.schedule();
@@ -4894,7 +4821,7 @@ impl Jobs {
             .as_deref()
             .and_then(|review| self.get(review))
             .is_some_and(|review| review.status.is_active());
-        let card = if at_work || self.red_round(id, gh, &head, &stop, &merging).await {
+        let card = if at_work || self.after_red(id, gh, &head, &stop, &merging).await {
             // Oby's own review is at work on it (MERGING-26), or its agent on its red checks
             // (MERGING-39): it's no one's to merge yet, and "nobody has approved" would be untrue.
             // One stopped, at its account's limit say, stays named until the owner decides.
@@ -6005,6 +5932,7 @@ pub fn follow_up(job: &Job, words: &str) -> NewJob {
         conversation: job.conversation.clone(),
         branch: carries.then(|| job.branch.clone()),
         made_branch: carries && job.made_branch,
+        onto: job.onto.clone(),
         start_from: unmerged.then(|| job.branch.clone()),
         follow_up_of: Some(job.id.clone()),
         earlier: Some(crate::secrets::known().redact(&did.join("\n"))),
@@ -6173,7 +6101,7 @@ fn standing_rules(job: &Job) -> Option<String> {
         lines.push(format!("If you can't commit, say why in your summary's first line: a {} job that ends with no commits counts as nothing committed.", job.kind));
     }
     if asks_goal_line(job) {
-        lines.push("End your summary with a last line that is exactly `GOAL MET` when the user's goal is fully met, or `GOAL NOT MET: <what's left>` when it isn't.".into());
+        lines.push("End your summary with a last line that is exactly `GOAL MET` when the user's goal is fully met, or `GOAL NOT MET: <what's left>` when it isn't. Pushing, the pull request and linking it to its issue are obid's, done after you end with `GOAL MET`, even when the task asks for them: they are never what's left.".into());
     }
     lines.push("To show the user something to look at (a page, a document, a chart, an image, a PDF), put it in .obi/artifacts/: one file, or one folder with an index.html, per thing. obid shows each one when the job ends; keep secrets out, or it shows none of it.".into());
     // Claude Code's own background tasks wake it when they end, and obid waits for them
@@ -6408,9 +6336,10 @@ mod tests {
     /// the job's folders with no settings or credential helper of the person's; the person's own
     /// `HOME` (the owner's hooks name `$HOME/…`), and `CLAUDE_CONFIG_DIR` only for an account with a
     /// `configDir` (the default one reads `~/.claude.json` as the terminal does); `env.sh` written
-    /// fresh, never through a link the job left; a `.claude.json` whose `env` sets what no agent gets
-    /// refused; and settings that keep its shell sandboxed for good, its reads to what the box reads,
-    /// its writes off the git pointers and `env.sh`, and code hosts out of reach.
+    /// fresh, never through a link the job left; a `.claude.json` whose `env` sets anything taken
+    /// (LANES-22); and settings that pin obid's own variables, set no sandbox, hook switch or ask
+    /// (LANES-23), deny the file tools obid's secrets and keep its edits off the git pointers and
+    /// `env.sh`.
     #[cfg(target_os = "macos")]
     #[test]
     fn own_sandbox_env_and_settings() {
@@ -6507,37 +6436,28 @@ mod tests {
             said.contains(&format!("export HOME='{}'", temp.display())),
             "{said}"
         );
-        for (set, refused) in [
-            (r#"{"env": {"GH_TOKEN": "x"}}"#, true),
-            (
-                r#"{"env": {"GIT_CONFIG_GLOBAL": "/Users/p/.gitconfig"}}"#,
-                true,
-            ),
-            (r#"{"env": {"DISABLE_TELEMETRY": "1"}}"#, false),
-        ] {
-            std::fs::write(root.join("account/.claude.json"), set).unwrap();
-            assert_eq!(
-                super::own_sandbox_env(&account, &spec, &login).is_err(),
-                refused,
-                "{set}"
-            );
-        }
+        // LANES-22: whatever the account's `.claude.json` sets in its `env` is the owner's.
+        std::fs::write(
+            root.join("account/.claude.json"),
+            r#"{"env": {"GH_TOKEN": "x", "GIT_CONFIG_GLOBAL": "/g"}}"#,
+        )
+        .unwrap();
+        assert!(super::own_sandbox_env(&account, &spec, &login).is_ok());
 
-        let settings: super::Value =
-            serde_json::from_str(&super::own_sandbox_settings(&spec, &login, &env).unwrap())
-                .unwrap();
-        let sandbox = &settings["sandbox"];
-        assert_eq!(sandbox["enabled"], true);
-        assert_eq!(sandbox["filesystem"]["disabled"], false);
-        assert_eq!(sandbox["enableWeakerNestedSandbox"], false);
-        assert_eq!(sandbox["enableWeakerNetworkIsolation"], false);
+        let secrets = [home.join("vault")];
+        let settings: super::Value = serde_json::from_str(
+            &super::own_sandbox_settings(&spec, &login, &env, &secrets).unwrap(),
+        )
+        .unwrap();
+        // LANES-23: no sandbox, hook switch or ask of obid's: the owner's settings decide.
+        for key in ["sandbox", "disableAllHooks", "hooks"] {
+            assert!(settings[key].is_null(), "{key}: {settings}");
+        }
+        assert!(settings["permissions"]["ask"].is_null(), "{settings}");
         assert_eq!(
             settings["env"][process::CLAUDE_TMPDIR].as_str(),
             temp.to_str()
         );
-        assert_eq!(sandbox["failIfUnavailable"], true);
-        assert_eq!(sandbox["allowUnsandboxedCommands"], false);
-        assert_eq!(sandbox["autoAllowBashIfSandboxed"], false);
         // LANES-5: obid's own values pinned over any settings file the run loads.
         for name in super::PINNED_ENV {
             assert_eq!(
@@ -6546,38 +6466,13 @@ mod tests {
                 "{name}"
             );
         }
-        let list = |key: &str| -> Vec<PathBuf> {
-            sandbox["filesystem"][key]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|path| PathBuf::from(path.as_str().unwrap()))
-                .collect()
-        };
-        // As own_sandbox_settings resolves them: a box that can't resolve the path keeps it as is.
         let real = |path: &PathBuf| path.canonicalize().unwrap_or_else(|_| path.clone());
-        assert!(list("denyRead").contains(&real(&home)));
-        // The box hides the shared temp folders; the own lane reads them as a terminal does.
-        let mut boxed = spec.clone();
-        boxed.hidden.extend(crate::sandbox::shared_temps());
-        let own: super::Value =
-            serde_json::from_str(&super::own_sandbox_settings(&boxed, &login, &env).unwrap())
-                .unwrap();
-        let denied: Vec<PathBuf> = own["sandbox"]["filesystem"]["denyRead"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|path| PathBuf::from(path.as_str().unwrap()))
-            .collect();
-        // As named where it can't be followed (a check's box hides `/Users/Shared`).
-        for temp in crate::sandbox::shared_temps() {
-            let temp = temp.canonicalize().unwrap_or(temp);
-            assert!(!denied.contains(&temp), "{}", temp.display());
-        }
-        assert!(list("denyRead").contains(&real(&root.join("account"))));
-        assert!(list("allowRead").contains(&real(&worktree)));
-        assert!(list("allowWrite").contains(&real(&worktree)));
-        assert!(!list("allowWrite").contains(&real(&home)));
+        let deny = settings["permissions"]["deny"].as_array().unwrap();
+        let denied = |rule: String| deny.contains(&serde_json::json!(rule));
+        assert!(denied(format!(
+            "Read(/{}/**)",
+            home.join("vault").display()
+        )));
         let pointers = [
             real(&worktree).join(".git"),
             real(&admin).join("commondir"),
@@ -6587,562 +6482,12 @@ mod tests {
             real(&login).join("env.sh"),
         ];
         for pointer in &pointers {
-            assert!(list("denyWrite").contains(pointer), "{}", pointer.display());
-            let rule = format!("Edit(/{})", pointer.display());
             assert!(
-                settings["permissions"]["deny"]
-                    .as_array()
-                    .unwrap()
-                    .contains(&serde_json::json!(rule))
+                denied(format!("Edit(/{})", pointer.display())),
+                "{pointer:?}"
             );
-        }
-        assert!(
-            sandbox["network"]["deniedDomains"]
-                .as_array()
-                .unwrap()
-                .contains(&serde_json::json!("github.com"))
-        );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// LANES-5: before an own run, the user's settings file it loads is read, and one that sets what
-    /// obid's `--settings` can't take back refuses the run, saying which file and key: commands let
-    /// out of the sandbox, a proxy of its own, Unix sockets, Mach lookups or Apple events, more
-    /// folders, a file tool's allow rule with no path or one outside the worktree (`Grep`, `Glob`
-    /// and `LS` too), an `env` key obid sets or no agent gets, a read or write opened in obid's
-    /// hidden folders. What stays inside the job's own folders, or sets nothing of that, runs.
-    #[test]
-    fn lanes_5_settings_that_undo_the_sandbox_refuse_the_run() {
-        let root = std::env::temp_dir().join(format!("obid-lanes-5-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let (home, account, worktree, temp) = (
-            root.join("obid"),
-            root.join("account"),
-            root.join("obid/worktrees/job"),
-            root.join("obid/tmp/job"),
-        );
-        for dir in [&account, &worktree, &temp] {
-            std::fs::create_dir_all(dir).unwrap();
-        }
-        let person = super::login_home().unwrap();
-        let spec = super::Spec {
-            worktree: worktree.clone(),
-            git_admin: None,
-            git_common: None,
-            commits: true,
-            temp: temp.clone(),
-            accounts: Vec::new(),
-            read_only: Vec::new(),
-            hidden: vec![home.clone(), account.clone(), person.clone()],
-            network: true,
-            loopback: false,
-            proxied: false,
-            frozen: Vec::new(),
-            fixed: Vec::new(),
-        };
-        let account = crate::config::Account {
-            id: "work".into(),
-            name: "Work".into(),
-            config_dir: Some(account),
-            payer: None,
-        };
-        let ours: Vec<(&'static str, OsString)> = vec![
-            ("CLAUDE_CONFIG_DIR", "/x".into()),
-            ("CLAUDE_ENV_FILE", "/x".into()),
-            (process::CLAUDE_TMPDIR, "/x".into()),
-        ];
-        let user = super::own_settings_file(&account).unwrap();
-        assert_eq!(user, root.join("account/settings.json"));
-        let obids = home.join("vault").display().to_string();
-        let (read_obids, said_obids) = (
-            format!(r#"{{"sandbox":{{"filesystem":{{"allowRead":["{obids}"]}}}}}}"#),
-            format!("{obids} in sandbox.filesystem.allowRead"),
-        );
-        let climbs = format!(
-            r#"{{"sandbox":{{"filesystem":{{"allowWrite":["{}/tmp/../vault"]}}}}}}"#,
-            home.display()
-        );
-        let refused: Vec<(&str, &str)> = vec![
-            // Ways out of the sandbox's network and the Mac's services, whatever their value.
-            (
-                r#"{"sandbox":{"network":{"allowUnixSockets":["/var/run/docker.sock"]}}}"#,
-                "sandbox.network.allowUnixSockets",
-            ),
-            (
-                r#"{"sandbox":{"network":{"allowAllUnixSockets":false}}}"#,
-                "sandbox.network.allowAllUnixSockets",
-            ),
-            (
-                r#"{"sandbox":{"network":{"allowMachLookup":["com.apple.x"]}}}"#,
-                "sandbox.network.allowMachLookup",
-            ),
-            (
-                r#"{"sandbox":{"allowAppleEvents":true}}"#,
-                "sandbox.allowAppleEvents",
-            ),
-            // obid's own, even with Claude Code's prefix.
-            (
-                r#"{"env":{"CLAUDE_CODE_TMPDIR":"/tmp/t"}}"#,
-                "CLAUDE_CODE_TMPDIR in its env",
-            ),
-            // Reads and writes past the worktree without asking, where obid's refusal never runs.
-            (
-                r#"{"permissions":{"additionalDirectories":["../.."]}}"#,
-                "permissions.additionalDirectories",
-            ),
-            (
-                r#"{"permissions":{"allow":["Read"]}}"#,
-                "Read in permissions.allow",
-            ),
-            (
-                r#"{"permissions":{"allow":["Edit()"]}}"#,
-                "Edit() in permissions.allow",
-            ),
-            (
-                r#"{"permissions":{"allow":["Grep"]}}"#,
-                "Grep in permissions.allow",
-            ),
-            (
-                r#"{"permissions":{"allow":["Glob"]}}"#,
-                "Glob in permissions.allow",
-            ),
-            (
-                r#"{"permissions":{"allow":["LS"]}}"#,
-                "LS in permissions.allow",
-            ),
-            (
-                r#"{"permissions":{"allow":["Grep(/**)"]}}"#,
-                "Grep(/**) in permissions.allow",
-            ),
-            (
-                r#"{"permissions":{"allow":["Read(~/.ssh/**)"]}}"#,
-                "Read(~/.ssh/**) in permissions.allow",
-            ),
-            (
-                r#"{"permissions":{"allow":["Write(//etc/**)"]}}"#,
-                "Write(//etc/**) in permissions.allow",
-            ),
-            (
-                r#"{"permissions":{"allow":["Read(../../vault/**)"]}}"#,
-                "Read(../../vault/**) in permissions.allow",
-            ),
-            (
-                r#"{"permissions":{"allow":["MultiEdit(/../../../**)"]}}"#,
-                "MultiEdit(/../../../**) in permissions.allow",
-            ),
-            (
-                r#"{"sandbox":{"excludedCommands":["git"]}}"#,
-                "sandbox.excludedCommands",
-            ),
-            (
-                r#"{"sandbox":{"network":{"httpProxyPort":8080}}}"#,
-                "sandbox.network.httpProxyPort",
-            ),
-            (
-                r#"{"sandbox":{"network":{"socksProxyPort":1080}}}"#,
-                "sandbox.network.socksProxyPort",
-            ),
-            (
-                r#"{"env":{"CLAUDE_ENV_FILE":"/tmp/mine"}}"#,
-                "CLAUDE_ENV_FILE in its env",
-            ),
-            (
-                r#"{"env":{"CLAUDE_CONFIG_DIR":"/tmp/c"}}"#,
-                "CLAUDE_CONFIG_DIR in its env",
-            ),
-            (
-                r#"{"env":{"GIT_SSH_COMMAND":"ssh"}}"#,
-                "GIT_SSH_COMMAND in its env",
-            ),
-            (r#"{"env":{"GIT_DIR":"/tmp/g"}}"#, "GIT_DIR in its env"),
-            (r#"{"env":{"GH_TOKEN":"x"}}"#, "GH_TOKEN in its env"),
-            (
-                r#"{"env":{"SSH_AUTH_SOCK":"/tmp/s"}}"#,
-                "SSH_AUTH_SOCK in its env",
-            ),
-            (r#"{"env":{"HOME":"/tmp"}}"#, "HOME in its env"),
-            (r#"{"env":{"PATH":"/tmp"}}"#, "PATH in its env"),
-            (&read_obids, &said_obids),
-            (
-                r#"{"sandbox":{"filesystem":{"allowWrite":["~/.ssh"]}}}"#,
-                "~/.ssh in sandbox.filesystem.allowWrite",
-            ),
-            // A folder holding one of them opens it too, and `..` doesn't hide one.
-            (
-                r#"{"sandbox":{"filesystem":{"allowRead":["//"]}}}"#,
-                "// in sandbox.filesystem.allowRead",
-            ),
-            (&climbs, "/tmp/../vault in sandbox.filesystem.allowWrite"),
-        ];
-        for (set, key) in &refused {
-            std::fs::write(&user, set).unwrap();
-            let why = super::own_settings_allowed(&user, &spec, &ours).unwrap_err();
-            assert!(
-                why.contains(&user.display().to_string()) && why.contains(key),
-                "{set}: {why}"
-            );
-        }
-        std::fs::write(&user, "{ not json").unwrap();
-        assert!(super::own_settings_allowed(&user, &spec, &ours).is_err());
-        std::fs::remove_file(&user).unwrap();
-        assert!(super::own_settings_allowed(&user, &spec, &ours).is_ok());
-        let notes = format!(
-            r#"{{"permissions":{{"allow":["Read(src/**)","Edit(./docs/*.md)","Write(/{}/notes/**)","mcp__x"]}}}}"#,
-            worktree.display()
-        );
-        let allowed = [
-            r#"{"sandbox":{"enabled":false,"excludedCommands":[]}}"#,
-            r#"{"env":{"DISABLE_TELEMETRY":"1","ANTHROPIC_MODEL":"opus"}}"#,
-            r#"{"sandbox":{"filesystem":{"allowWrite":["/tmp/cache"]}}}"#,
-            r#"{"hooks":{"Stop":[]},"permissions":{"allow":["Bash(ls)"]}}"#,
-            r#"{"env":{"CLAUDE_CODE_USE_BEDROCK":"1"},"permissions":{"additionalDirectories":[]}}"#,
-            &notes,
-        ];
-        for set in allowed {
-            std::fs::write(&user, set).unwrap();
-            let checked = super::own_settings_allowed(&user, &spec, &ours);
-            assert!(checked.is_ok(), "{set}: {checked:?}");
         }
         let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// A job of an obid home under the person's (`Library/Caches/obid-<name>-<pid>`), for a real
-    /// run of Claude Code in its own sandbox on this Mac's own login: a clone with the job's
-    /// worktree, and the `Spec` and environment a job's run gets (`own_sandbox_probes`, LANES-20).
-    #[cfg(target_os = "macos")]
-    struct OwnRun {
-        person: PathBuf,
-        root: PathBuf,
-        home: PathBuf,
-        worktree: PathBuf,
-        temp: PathBuf,
-        login: PathBuf,
-        spec: super::Spec,
-        extra: Vec<(&'static str, OsString)>,
-    }
-
-    #[cfg(target_os = "macos")]
-    impl OwnRun {
-        fn new(name: &str) -> Self {
-            use std::path::Path;
-            use std::process::Command;
-            let person = super::login_home().unwrap();
-            let root = person.join(format!("Library/Caches/obid-{name}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&root);
-            let home = root.join("home");
-            let clone = home.join("clones/r");
-            let worktree = home.join("worktrees/job");
-            let temp = home.join("tmp/job");
-            let git = |dir: &Path, args: &[&str]| {
-                let out = Command::new("git")
-                    .current_dir(dir)
-                    .args(args)
-                    .output()
-                    .unwrap();
-                assert!(out.status.success(), "git {args:?}: {out:?}");
-            };
-            std::fs::create_dir_all(&clone).unwrap();
-            std::fs::create_dir_all(&temp).unwrap();
-            git(&clone, &["init", "-q", "-b", "main"]);
-            git(
-                &clone,
-                &[
-                    "-c",
-                    "user.name=p",
-                    "-c",
-                    "user.email=p@example.com",
-                    "commit",
-                    "-q",
-                    "--allow-empty",
-                    "-m",
-                    "base",
-                ],
-            );
-            git(
-                &clone,
-                &[
-                    "worktree",
-                    "add",
-                    "-q",
-                    "-b",
-                    "job",
-                    worktree.to_str().unwrap(),
-                ],
-            );
-            // The job's own object folder, which obid makes before a job's first run.
-            std::fs::create_dir_all(clone.join(".git/worktrees/job/objects")).unwrap();
-            let spec = super::Spec {
-                worktree: worktree.clone(),
-                git_admin: Some(clone.join(".git/worktrees/job")),
-                git_common: Some(clone.join(".git")),
-                commits: true,
-                temp: temp.clone(),
-                accounts: Vec::new(),
-                read_only: Vec::new(),
-                hidden: {
-                    let mut hidden = vec![home.clone()];
-                    hidden.extend(super::person_homes());
-                    hidden
-                },
-                network: true,
-                loopback: false,
-                proxied: false,
-                frozen: Vec::new(),
-                fixed: Vec::new(),
-            };
-            let account = crate::config::Account {
-                id: "default".into(),
-                name: "Default".into(),
-                config_dir: None,
-                payer: None,
-            };
-            let mut extra = spec.git_env();
-            let login = home.join("logins/job");
-            extra.extend(super::own_sandbox_env(&account, &spec, &login).unwrap());
-            for key in ["GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"] {
-                extra.push((key, "Probe".into()));
-            }
-            for key in ["GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"] {
-                extra.push((key, "probe@example.com".into()));
-            }
-            extra.push((crate::process::CLAUDE_TMPDIR, temp.clone().into_os_string()));
-            OwnRun {
-                person,
-                root,
-                home,
-                worktree,
-                temp,
-                login,
-                spec,
-                extra,
-            }
-        }
-
-        /// The `--settings` a job's run gets ([`super::own_sandbox_settings`]).
-        fn settings(&self) -> String {
-            super::own_sandbox_settings(&self.spec, &self.login, &self.extra).unwrap()
-        }
-
-        /// Runs Claude Code (haiku, its Bash allowed) with `settings`, asked `prompt`, `commands`
-        /// in `probe.sh` in its worktree, one script the model runs as it is, so no probe depends
-        /// on its choosing to run it; then removes the job's home. Returns Claude Code's output and
-        /// its tool results, with what it said last.
-        fn run(&self, settings: String, commands: &[String], prompt: &str) -> (String, String) {
-            use std::process::Command;
-            let mut script = String::from(
-                "#!/bin/sh\n# Sandbox self-test: each line checks what Claude Code's sandbox lets through or\n# blocks, and prints only an exit code, a count or a short status word, never what it read.\n",
-            );
-            for command in commands {
-                script.push_str(command);
-                script.push('\n');
-            }
-            std::fs::write(self.worktree.join("probe.sh"), script).unwrap();
-            let env =
-                crate::process::sandbox_env(&crate::process::tools_path(), &self.temp, &self.extra);
-            // In a job obid answers each call (`permissions.ask`, LANES-14); here nobody does, so
-            // Bash runs as `--allowedTools` says, its commands still in the sandbox as set.
-            let mut settings: super::Value = serde_json::from_str(&settings).unwrap();
-            let ask = settings["permissions"]["ask"].as_array_mut().unwrap();
-            ask.retain(|tool| tool != "Bash");
-            let bin = crate::process::resolve_bin("claude").expect("claude on this Mac");
-            let mut child = Command::new(bin)
-                .args([
-                    "-p",
-                    "--model",
-                    "haiku",
-                    "--output-format",
-                    "stream-json",
-                    "--verbose",
-                ])
-                .args([
-                    "--permission-mode",
-                    "default",
-                    "--setting-sources",
-                    "",
-                    "--strict-mcp-config",
-                ])
-                // Not Read: it asks before reading outside the worktree, as obid's refusal answers.
-                .args(["--allowedTools", "Bash", "--settings"])
-                .arg(settings.to_string())
-                .current_dir(&self.worktree)
-                .env_clear()
-                .envs(env)
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .unwrap();
-            std::io::Write::write_all(&mut child.stdin.take().unwrap(), prompt.as_bytes()).unwrap();
-            let ran = child.wait_with_output().unwrap();
-            let out = String::from_utf8_lossy(&ran.stdout).into_owned();
-            let _ = std::fs::remove_dir_all(&self.root);
-            if !out.contains("tool_result") {
-                panic!(
-                    "Claude Code ran no tool: {} {}",
-                    String::from_utf8_lossy(&ran.stderr),
-                    &out[out.len().saturating_sub(2000)..]
-                );
-            }
-            let mut results = String::new();
-            for line in out.lines() {
-                let Ok(message) = serde_json::from_str::<super::Value>(line) else {
-                    continue;
-                };
-                for part in message["message"]["content"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                {
-                    if part["type"] == "tool_result" {
-                        results.push_str(&part["content"].to_string());
-                        results.push('\n');
-                    }
-                }
-                if message["type"] == "result" {
-                    results.push_str(&format!("(it said: {})\n", message["result"]));
-                }
-            }
-            (out, results)
-        }
-    }
-
-    /// Claude Code in its own sandbox (`claudeOwnSandbox`), run for real on this Mac's own login
-    /// with the environment and settings a job's gets, for a job of an obid home under the
-    /// person's: its commands can't read obid's API token (a decoy's, and the real one), reach the
-    /// Keychain (Claude Code's login there, obid's vault), get a password from git, push or call
-    /// `gh`, write outside the job, reach obid's API without its token or start an app through
-    /// LaunchServices; its Read tool can't read obid's home; and it still commits in its worktree.
-    /// Every probe prints an exit code or a count, never what it read.
-    /// `cargo test -p obid --lib own_sandbox_probes -- --ignored`.
-    #[cfg(target_os = "macos")]
-    #[test]
-    #[ignore = "runs the real Claude Code on this Mac's own login"]
-    fn own_sandbox_probes() {
-        use std::process::Command;
-        let security = |service: &str| {
-            Command::new("/usr/bin/security")
-                .args(["find-generic-password", "-s", service])
-                .output()
-                .unwrap()
-                .status
-                .success()
-        };
-        assert!(
-            security("Claude Code-credentials"),
-            "this Mac's Claude Code has no Keychain login: the Keychain probe would prove nothing"
-        );
-        let run = OwnRun::new("own-sandbox");
-        let (person, home, login) = (&run.person, &run.home, &run.login);
-        std::fs::create_dir_all(home.join("tmp/other")).unwrap();
-        let decoy = format!("DECOY-{}", std::process::id());
-        std::fs::write(home.join("api-token"), &decoy).unwrap();
-        std::fs::write(home.join("tmp/other/secret"), &decoy).unwrap();
-        let settings = run.settings();
-        // Made after the settings, as another job's folder or the vault can be mid-turn.
-        for later in ["tmp/later/secret", "vault/secrets.json"] {
-            std::fs::create_dir_all(home.join(later).parent().unwrap()).unwrap();
-            std::fs::write(home.join(later), &decoy).unwrap();
-        }
-        let real_token = crate::app::obid_home(person).join("api-token");
-        let commands = [
-            format!("cat {:?} >/dev/null 2>&1; echo decoy-token:$?", home.join("api-token")),
-            format!("cat {real_token:?} >/dev/null 2>&1; echo real-token:$?"),
-            "security find-generic-password -s 'Claude Code-credentials' >/dev/null 2>&1; echo keychain:$?".into(),
-            // The Swift runner's vault items, still in a Mac's Keychain (#1679 left them there).
-            "security find-generic-password -s com.deskree.oby.runner.vault >/dev/null 2>&1; echo vault:$?".into(),
-            "printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill 2>/dev/null | grep -c '^password=' | sed 's/^/fill:/'".into(),
-            format!("cat {:?} >/dev/null 2>&1; echo other-job:$?", home.join("tmp/other/secret")),
-            format!("echo x > {:?} 2>/dev/null; echo write-home:$?", person.join("obid-own-sandbox-probe")),
-            "echo ok > probe.txt && git add probe.txt && git commit -qm probe; echo commit:$?".into(),
-            "curl -s -m 5 -o probe-local.txt -w 'obid-api:%{http_code}\\n' http://127.0.0.1:7777/v1/status".into(),
-            "open -g -a Calculator 2>/dev/null; echo open:$?".into(),
-            // A dry run: were everything else to fail, it still changes nothing on GitHub.
-            "git push --dry-run https://github.com/obi-ai-bot/oby.git HEAD:refs/heads/obid-own-sandbox-probe >/dev/null 2>&1; echo push:$?".into(),
-            "gh api user >/dev/null 2>&1; echo gh:$?".into(),
-            format!("cat {:?} >/dev/null 2>&1; echo later-job:$?", home.join("tmp/later/secret")),
-            format!("cat {:?} >/dev/null 2>&1; echo later-vault:$?", home.join("vault/secrets.json")),
-            "printf 'gitdir: /tmp\\n' > .git 2>/dev/null; echo dotgit:$?".into(),
-            "printf '/tmp\\n' > \"$GIT_DIR/commondir\" 2>/dev/null; echo commondir:$?".into(),
-            "printf '/tmp\\n' > \"$GIT_DIR/gitdir\" 2>/dev/null; echo gitdir:$?".into(),
-            format!("ls {:?} >/dev/null 2>&1; echo keychains-read:$?", person.join("Library/Keychains")),
-            format!("ln -sfn /tmp/obid-probe-env {:?} 2>/dev/null; echo env-link:$?", login.join("env.sh")),
-            "mkdir -p \"$HOME/Library/Caches/go-build\" && echo caches:ok".into(),
-        ];
-        let prompt = format!(
-            "This is a self-test of your sandbox on my own Mac. probe.sh in this folder checks, line by line, that the sandbox blocks reading credentials and writing outside this folder; every line prints only an exit code or a count, never a secret (read it first if you like). Run `sh probe.sh` once with the Bash tool. Then use the Read tool on {:?}, a decoy file made for this test, which your permission settings should deny. Reply with the script's output.",
-            home.join("api-token")
-        );
-        let (out, results) = run.run(settings, &commands, &prompt);
-        assert!(!out.contains(&decoy), "a decoy was read: {results}");
-        for (said, want) in [
-            ("decoy-token:", "decoy-token:1"),
-            ("real-token:", "real-token:1"),
-            ("fill:", "fill:0"),
-            ("other-job:", "other-job:1"),
-            ("write-home:", "write-home:1"),
-            ("commit:", "commit:0"),
-            ("later-job:", "later-job:1"),
-            ("later-vault:", "later-vault:1"),
-            ("caches:", "caches:ok"),
-        ] {
-            assert!(results.contains(said), "{said} didn't run: {results}");
-            assert!(results.contains(want), "{said} isn't {want}: {results}");
-        }
-        // Loopback is open (LANES-20): obid's API answers 401 without its token, or nothing at all
-        // when obid isn't running; never a 2xx.
-        assert!(
-            ["obid-api:000", "obid-api:401"]
-                .iter()
-                .any(|want| results.contains(want)),
-            "obid-api: {results}"
-        );
-        assert!(!results.contains("obid-api:2"), "obid-api: {results}");
-        for (said, never) in [
-            ("keychain:", "keychain:0"),
-            ("vault:", "vault:0"),
-            ("open:", "open:0"),
-            ("push:", "push:0"),
-            ("gh:", "gh:0"),
-            ("dotgit:", "dotgit:0"),
-            ("commondir:", "commondir:0"),
-            ("gitdir:", "gitdir:0"),
-            ("keychains-read:", "keychains-read:0"),
-            ("env-link:", "env-link:0"),
-        ] {
-            assert!(results.contains(said), "{said} didn't run: {results}");
-            assert!(!results.contains(never), "{never}: {results}");
-        }
-        assert!(
-            out.contains(r#""name":"Read""#),
-            "the Read tool wasn't tried: {results}"
-        );
-    }
-
-    /// LANES-20 (docs/contracts/lanes.md): run for real on this Mac's own login with the settings
-    /// a job's gets, an own Claude Code job's command listens on 127.0.0.1, connects to it and
-    /// sends a byte through; a direct connection to another host (`192.0.2.1`, a documentation
-    /// address) is refused by the sandbox, and GitHub stays out of reach.
-    /// `cargo test -p obid --lib lanes_20_a_real -- --ignored`.
-    #[cfg(target_os = "macos")]
-    #[test]
-    #[ignore = "runs the real Claude Code on this Mac's own login"]
-    fn lanes_20_a_real_own_run_listens_on_loopback() {
-        let run = OwnRun::new("lanes-20");
-        let settings = run.settings();
-        let commands = [
-            r#"/usr/bin/perl -MIO::Socket::INET -e '$l = IO::Socket::INET->new(Listen => 1, LocalAddr => "127.0.0.1", LocalPort => 0, Proto => "tcp") or die "loopback:listen-$!\n"; $c = IO::Socket::INET->new(PeerAddr => "127.0.0.1", PeerPort => $l->sockport, Proto => "tcp") or die "loopback:connect-$!\n"; $a = $l->accept; print $c "x"; close $c; sysread($a, $b, 1); print "loopback:", ($b eq "x" ? "ok" : "empty"), "\n"' 2>&1"#.to_owned(),
-            r#"/usr/bin/perl -MSocket -e 'socket(my $s, PF_INET, SOCK_STREAM, 0) or die "other-host:socket-$!\n"; alarm 10; print "other-host:", (connect($s, pack_sockaddr_in(80, inet_aton("192.0.2.1"))) ? "connected" : "$!"), "\n"' 2>&1"#.to_owned(),
-            "echo github:$(curl -s -m 5 -o /dev/null -w '%{http_code}' https://github.com/)".to_owned(),
-        ];
-        let prompt = "This is a self-test of your sandbox on my own Mac. probe.sh in this folder checks that a command may listen and connect on this Mac's loopback address while other hosts and GitHub stay refused; every line prints only a short status word (read it first if you like). Run `sh probe.sh` once with the Bash tool and reply with its output.";
-        let (_, results) = run.run(settings, &commands, prompt);
-        for want in [
-            "loopback:ok",
-            "other-host:Operation not permitted",
-            "github:000",
-        ] {
-            assert!(results.contains(want), "not {want}: {results}");
-        }
     }
 
     #[test]
@@ -7431,8 +6776,9 @@ mod tests {
         }
     }
 
-    /// RECOVERY-1: overloaded, failing or dropped APIs get 3 tries, an unknown error one; an
-    /// account's usage limit, a login, and a session too long or gone get none.
+    /// RECOVERY-1, RECOVERY-19: an unknown error gets one try; overloaded, failing or dropped APIs
+    /// (the agent's: its CLI retried them), an account's usage limit, a login, and a session too
+    /// long or gone get none.
     #[test]
     fn transient_errors_are_the_ones_trying_again_mends() {
         use super::retries;
@@ -7448,7 +6794,7 @@ mod tests {
             "API Error: 429 rate limit exceeded",
             r#"API Error: 529 {"request_id":"req_401"}"#,
         ] {
-            assert_eq!(tries(error), 3, "{error}");
+            assert_eq!(tries(error), 0, "{error}");
         }
         for error in ["it broke", "the tests timed out after 500 ms"] {
             assert_eq!(tries(error), 1, "{error}");
@@ -7791,6 +7137,9 @@ mod tests {
             .to_string(),
         )
         .unwrap();
+        let login = root.join("home/accounts/a");
+        std::fs::create_dir_all(&login).unwrap();
+        std::fs::write(login.join(".credentials.json"), "{}").unwrap();
         let clone = crate::git::ensure_clone(&config.home, "o/r", &url, &[])
             .await
             .unwrap();
@@ -8967,6 +8316,29 @@ mod tests {
         assert!(!standing_rules(&job).unwrap().contains("GOAL MET"));
     }
 
+    /// ISSUETASK-6: a task that asks for a pull request (as the brain writes an issue's: "…and open
+    /// a pull request that references the issue") isn't told two things: its rules say the push,
+    /// the pull request and its link to the issue are obid's, after `GOAL MET`, never what's left.
+    #[test]
+    fn issuetask_6_the_pull_request_is_never_the_agents_goal() {
+        let mut job = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "build".into(),
+            "Resolve issue #6 as described in the issue, and open a pull request that references the issue.".into(),
+            "codex".into(),
+            "default".into(),
+        );
+        job.issue = Some(6);
+        let rules = standing_rules(&job).unwrap();
+        assert!(rules.contains("`GOAL NOT MET: <what's left>`"), "{rules}");
+        assert!(
+            rules.contains("Pushing, the pull request and linking it to its issue are obid's, done after you end with `GOAL MET`, even when the task asks for them: they are never what's left."),
+            "{rules}"
+        );
+        assert!(rules.contains("Don't push, open pull requests"), "{rules}");
+    }
+
     /// A follow-up starts from the first job's unmerged work: on its branch while its pull request
     /// is open, on one of its own otherwise; from its base when there's no such work. Bypass isn't
     /// carried.
@@ -9481,14 +8853,14 @@ mod tests {
             unattended: true,
             ..NewJob::default()
         };
-        let (_, _, account, _, waiting) = jobs.vetted(&new).unwrap();
-        assert_eq!((account.id.as_str(), waiting), ("plan", None));
+        let (_, routed, _) = jobs.vetted(&new).unwrap();
+        assert_eq!((routed.account.id.as_str(), routed.waiting), ("plan", None));
         let auto = NewJob {
             account: None,
             ..new
         };
-        let (_, _, _, _, waiting) = jobs.vetted(&auto).unwrap();
-        assert_eq!(waiting, None);
+        let (_, routed, _) = jobs.vetted(&auto).unwrap();
+        assert_eq!(routed.waiting, None);
     }
 
     /// CHATGPT-20: `oby_change_job` doesn't put work nobody's watching on a login with no yes.
@@ -11983,7 +11355,7 @@ mod tests {
         assert_eq!(jobs.lock().workers.len(), 1);
 
         // Its worker ends, as `work` ends it: only now does the agent's wait let go.
-        jobs.drop_asks("p", true);
+        jobs.drop_asks("p", true, false);
         assert!(matches!(reply.try_recv(), Err(TryRecvError::Closed)));
         let parked = jobs.get("p").unwrap().parked.unwrap();
         assert!(parked.answered && parked.allowed);
@@ -13942,7 +13314,7 @@ mod tests {
         let Ruling::Ask(dropped) = ask() else {
             panic!("the question went through by itself");
         };
-        jobs.drop_asks("j", false);
+        jobs.drop_asks("j", false, false);
         assert!(dropped.await.is_err());
         assert!(jobs.get("j").unwrap().permission.is_none());
         // A call with no question to ask is refused at once.

@@ -31,6 +31,9 @@ pub struct Work<'a> {
     pub family: Option<&'static str>,
     pub job: Option<&'a str>,
     pub background: bool,
+    /// The profile whose accounts may take it (B00-40): `Some(None)` the default's, `Some(id)`
+    /// another's; none for work that's no job's, which any account may take.
+    pub profile: Option<Option<String>>,
 }
 
 impl<'a> Work<'a> {
@@ -41,10 +44,18 @@ impl<'a> Work<'a> {
             family,
             job,
             background,
+            profile: None,
         }
     }
     pub fn of(job: &'a crate::job::Job) -> Self {
-        Self::new(job.model.as_deref(), Some(&job.id), job.background())
+        Self::new(job.model.as_deref(), Some(&job.id), job.background()).within(job.profile.clone())
+    }
+    /// The same work, kept to the accounts of the profile `profile` (none: the default's).
+    pub fn within(self, profile: Option<String>) -> Self {
+        Work {
+            profile: Some(profile),
+            ..self
+        }
     }
     /// The holds that keep it, and it alone, off an account: its family's and its job's.
     fn scopes(&self) -> impl Iterator<Item = Scope> {

@@ -79,6 +79,17 @@ pub fn argv(
 /// The MCP servers [`argv`] gives Codex, the only ones that may start or run.
 const OWN_SERVERS: [&str; 2] = ["oby", "tetrix"];
 
+/// What an own run (`approval_policy = "never"`, LANES-13 and LANES-18) is told so that Oby's own
+/// tools run (LANES-21): under `never` Codex asks nobody, and from codex-cli 0.163 it refuses an
+/// MCP call that would need approval ("MCP tool call requires approval, but approval policy is
+/// never"), `oby_dispatch` among them. Only Oby's server is approved, as obid approves its calls
+/// in every run anyway (each is checked by obid's rules as it's served); any other server keeps
+/// Codex's own default. Only for a run [`argv`] gave Oby's server: the key alone would make one.
+pub(crate) const OWN_OBY_TOOLS: [&str; 2] = [
+    "-c",
+    r#"mcp_servers.oby.default_tools_approval_mode="approve""#,
+];
+
 /// Runs one turn: starts the server, sends `prompt`, answers approvals with `decide`, reports with
 /// `on_event`, and ends the server once the turn completes. Ends it and everything it started when
 /// `stop` turns or `limit` passes.
@@ -91,14 +102,123 @@ pub async fn run_turn(
     decide: impl Fn(&str, &Value) -> Ruling,
     on_event: impl FnMut(Event),
 ) -> std::io::Result<Turn> {
-    let conn = Conn::spawn(&launch, limit, stop, false).await?;
+    run_turn_steered(launch, prompt, options, limit, stop, None, decide, on_event).await
+}
+
+/// [`run_turn`], the owner's words going into its turn as they come (`steer`, crate::steer,
+/// TASKCONV-36): `turn/steer` on the turn under way, and words that come as it ends start the
+/// thread's next turn in this same server (TASKCONV-37).
+#[allow(clippy::too_many_arguments)]
+pub async fn run_turn_steered(
+    launch: Launch,
+    prompt: &str,
+    options: &Options,
+    limit: impl Into<crate::conn::Limit>,
+    stop: watch::Receiver<process::Signal>,
+    steer: Option<std::sync::Arc<crate::steer::Steer>>,
+    decide: impl Fn(&str, &Value) -> Ruling,
+    on_event: impl FnMut(Event),
+) -> std::io::Result<Turn> {
+    let mut conn = Conn::spawn(&launch, limit, stop, false).await?;
+    conn.steer = steer;
+    conn.steer_into = conn::SteerInto::Held;
+    let server = Kept {
+        conn,
+        thread: None,
+        worktree: launch.cwd.clone(),
+        own: launch.own_sandbox,
+    };
+    Ok(turn_on(server, prompt, options, decide, on_event, false)
+        .await
+        .0)
+}
+
+/// What a kept server ([`Kept`]) may have written between two turns and still be given the next:
+/// its housekeeping notifications (its usage, its MCP servers' state), read and dropped. A request,
+/// or news of an item or a turn, isn't: something ran with nobody's turn under way, and the next
+/// turn starts a new server instead.
+pub fn between_turns(line: &Value) -> bool {
+    let method = line["method"].as_str().unwrap_or("");
+    line.get("id").is_none()
+        && !method.is_empty()
+        && !method.starts_with("item/")
+        && !method.starts_with("turn/")
+}
+
+/// A conversation's `codex app-server` between its turns (docs/fast-replies.md, CONVERSATION-AGENT-44):
+/// still running with its thread loaded, so the next turn is only a `turn/start` written to it, as
+/// a conversation's Claude Code waits on its stdin (crate::brain::harness). No start, no
+/// `initialize`, no reading the thread again.
+pub struct Kept {
+    pub conn: Conn,
+    /// Its thread, loaded; none before its first turn.
+    thread: Option<String>,
+    worktree: PathBuf,
+    own: bool,
+}
+
+/// Starts `launch` for a conversation's turn ([`run_turn`]), and hands its server back running when
+/// the turn answered, for the next one ([`Kept`]).
+pub async fn start_kept(
+    launch: Launch,
+    prompt: &str,
+    options: &Options,
+    limit: impl Into<crate::conn::Limit>,
+    stop: watch::Receiver<process::Signal>,
+    decide: impl Fn(&str, &Value) -> Ruling,
+    on_event: impl FnMut(Event),
+) -> std::io::Result<(Turn, Option<Kept>)> {
+    let mut conn = Conn::spawn(&launch, limit, stop, false).await?;
+    conn.steer_into = conn::SteerInto::Held;
+    let server = Kept {
+        conn,
+        thread: None,
+        worktree: launch.cwd.clone(),
+        own: launch.own_sandbox,
+    };
+    Ok(turn_on(server, prompt, options, decide, on_event, true).await)
+}
+
+/// The next turn on a server [`start_kept`] kept: `limit` from now, `stop` its stop signal, the turn
+/// started on its loaded thread (`options.resume` and the thread's own settings aren't read again:
+/// they're the thread's since it started). Handed back running again when it answered.
+pub async fn next_turn(
+    mut server: Kept,
+    prompt: &str,
+    options: &Options,
+    limit: impl Into<crate::conn::Limit>,
+    stop: watch::Receiver<process::Signal>,
+    decide: impl Fn(&str, &Value) -> Ruling,
+    on_event: impl FnMut(Event),
+) -> (Turn, Option<Kept>) {
+    server.conn.renew(limit, stop);
+    turn_on(server, prompt, options, decide, on_event, true).await
+}
+
+/// One turn on `server`, started already: `initialize` and the thread's start or resume first when
+/// it has no thread loaded. With `keep`, a turn that answered hands the server back running, its
+/// thread loaded; else, or when it didn't, the server ends.
+async fn turn_on(
+    server: Kept,
+    prompt: &str,
+    options: &Options,
+    decide: impl Fn(&str, &Value) -> Ruling,
+    on_event: impl FnMut(Event),
+    keep: bool,
+) -> (Turn, Option<Kept>) {
+    let Kept {
+        conn,
+        thread,
+        worktree,
+        own,
+    } = server;
     let mut run = Run {
         conn,
         decide,
         on_event,
-        worktree: launch.cwd.clone(),
+        worktree,
         plan: options.plan,
-        own: launch.own_sandbox,
+        own,
         files: HashMap::new(),
         calls: HashMap::new(),
         no_commands: options.no_commands,
@@ -107,7 +227,7 @@ pub async fn run_turn(
         tokens_before: None,
         priced: options.priced.clone(),
         fatal: None,
-        thread: None,
+        thread,
         helpers: Default::default(),
         told: Default::default(),
         turn: None,
@@ -142,6 +262,23 @@ pub async fn run_turn(
     if let Some((text, failed)) = &run.ended {
         turn.result = Some(agent::result(text, *failed, run.thread.as_deref()));
     }
+    // A conversation's server that answered waits for its next turn, its thread loaded.
+    if keep
+        && turn.succeeded()
+        && turn.fatal.is_none()
+        && !run.conn.stopped
+        && !run.conn.timed_out
+        && let Some(thread) = run.thread.clone()
+    {
+        turn.exit = "still running".into();
+        let server = Kept {
+            conn: run.conn,
+            thread: Some(thread),
+            worktree: run.worktree,
+            own: run.own,
+        };
+        return (turn, Some(server));
+    }
     // The turn is over: no more input, so the server exits. It gets what a Claude Code turn gets
     // after its result (`AFTER_RESULT`, #658) to read out and exit by itself, then is ended.
     run.conn.close_input();
@@ -163,7 +300,7 @@ pub async fn run_turn(
     } else {
         run.conn.finish().await
     };
-    Ok(turn)
+    (turn, None)
 }
 
 /// What `account/rateLimits/read` says of the account, from a server started for that alone: no
@@ -299,6 +436,59 @@ const NOT_TOOLS: &[&str] = &[
 
 impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
     async fn turn(&mut self, prompt: &str, options: &Options) -> Result<(), Stop> {
+        let thread = match self.thread.clone() {
+            // A kept server's thread is loaded: the turn is all that's left to start ([`Kept`]),
+            // once an own run's settings are asked again.
+            Some(thread) => {
+                self.own_settings_hold().await?;
+                (self.on_event)(Event::Session(thread.clone()));
+                thread
+            }
+            None => self.start_thread(options).await?,
+        };
+        let mut params = json!({"threadId": thread, "input": [text(prompt)]});
+        if let Some(model) = options.model.as_deref().filter(|m| !m.is_empty()) {
+            params["model"] = json!(model);
+        }
+        if let Some(effort) = &options.effort {
+            params["effort"] = json!(effort);
+        }
+        let started = self
+            .call("turn/start", params)
+            .await?
+            .map_err(|e| Stop::Failed(format!("Codex couldn't start the turn: {}", e.message)))?;
+        if let Some(id) = started["turn"]["id"].as_str() {
+            self.turn = Some(id.to_owned());
+        }
+        self.steer_into(&thread);
+        loop {
+            while self.ended.is_none() {
+                let message = self.conn.next().await?;
+                self.handle(message).await;
+            }
+            if !self.next_turn(&thread, options).await? {
+                return Ok(());
+            }
+        }
+    }
+
+    /// An own run's settings (LANES-13, LANES-18) are the ones that hold, as Codex says
+    /// (`config/read`): asked before every thread, and before every turn on a kept server.
+    async fn own_settings_hold(&mut self) -> Result<(), Stop> {
+        if !self.own {
+            return Ok(());
+        }
+        let cwd = self.worktree.to_string_lossy().into_owned();
+        let read = self.call("config/read", json!({"cwd": cwd})).await?;
+        let read = read.map_err(|e| Stop::Failed(format!("Codex didn't say which settings it runs with, so obid started no run outside its box: {}", e.message)))?;
+        match own_config_problem(&read, &cwd) {
+            Some(why) => Err(Stop::Failed(why)),
+            None => Ok(()),
+        }
+    }
+
+    /// `initialize`, then the thread started or picked up again, as `options` say: its id.
+    async fn start_thread(&mut self, options: &Options) -> Result<String, Stop> {
         let version = env!("CARGO_PKG_VERSION");
         let client = if options.chatgpt {
             crate::chatgpt::AGENT_NAME
@@ -333,13 +523,7 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
         }
 
         let cwd = self.worktree.to_string_lossy().into_owned();
-        if self.own {
-            let read = self.call("config/read", json!({"cwd": cwd})).await?;
-            let read = read.map_err(|e| Stop::Failed(format!("Codex didn't say which settings it runs with, so obid started no run outside its box: {}", e.message)))?;
-            if let Some(why) = own_config_problem(&read, &cwd) {
-                return Err(Stop::Failed(why));
-            }
-        }
+        self.own_settings_hold().await?;
         let mut params = thread_params(&cwd, self.own);
         if let Some(instructions) = &options.instructions {
             params["developerInstructions"] = json!(instructions);
@@ -376,26 +560,62 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
             .to_owned();
         self.thread = Some(thread.clone());
         (self.on_event)(Event::Session(thread.clone()));
+        Ok(thread)
+    }
 
-        let mut params = json!({"threadId": thread, "input": [text(prompt)]});
+    /// The owner's words go into the turn under way from now on, as `turn/steer` (TASKCONV-36).
+    fn steer_into(&mut self, thread: &str) {
+        let (Some(steer), Some(turn)) = (&self.conn.steer, &self.turn) else {
+            return;
+        };
+        self.conn.steer_into = conn::SteerInto::Turn(thread.to_owned(), turn.clone());
+        steer.opened();
+    }
+
+    /// The turn ended: the owner's words it didn't take, once Codex answered every one written,
+    /// start the thread's next turn in this same server (TASKCONV-37), true then. Only after a
+    /// turn that didn't fail, nor one obid ended for good: those leave the words to the job.
+    async fn next_turn(&mut self, thread: &str, options: &Options) -> Result<bool, Stop> {
+        let Some(steer) = self.conn.steer.clone() else {
+            return Ok(false);
+        };
+        // Written to the turn that ended, Codex refuses them: they wait for the next.
+        self.conn.steer_into = conn::SteerInto::Held;
+        while !self.conn.steering.is_empty() {
+            let message = self.conn.next().await?;
+            self.handle(message).await;
+        }
+        if self.fatal.is_some() || self.ended.as_ref().is_none_or(|(_, failed)| *failed) {
+            return Ok(false);
+        }
+        let words = steer.next_turn();
+        if words.is_empty() {
+            return Ok(false);
+        }
+        let mut params =
+            json!({"threadId": thread, "input": words.iter().map(|w| text(w)).collect::<Vec<_>>()});
         if let Some(model) = options.model.as_deref().filter(|m| !m.is_empty()) {
             params["model"] = json!(model);
         }
         if let Some(effort) = &options.effort {
             params["effort"] = json!(effort);
         }
-        let started = self
-            .call("turn/start", params)
-            .await?
-            .map_err(|e| Stop::Failed(format!("Codex couldn't start the turn: {}", e.message)))?;
-        if let Some(id) = started["turn"]["id"].as_str() {
-            self.turn = Some(id.to_owned());
+        let started = self.call("turn/start", params).await?;
+        for _ in &words {
+            steer.answered(started.is_ok());
         }
-        while self.ended.is_none() {
-            let message = self.conn.next().await?;
-            self.handle(message).await;
-        }
-        Ok(())
+        let Some(id) = started
+            .ok()
+            .and_then(|s| s["turn"]["id"].as_str().map(str::to_owned))
+        else {
+            return Ok(false);
+        };
+        self.turn = Some(id);
+        self.ended = None;
+        self.said = None;
+        self.failure = None;
+        self.steer_into(thread);
+        Ok(true)
     }
 
     /// Sends a request and reads until its answer comes, handling everything else on the way.
@@ -411,6 +631,17 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
     }
 
     async fn handle(&mut self, message: Value) {
+        // Codex's answer to the owner's words written into its turn (crate::steer): taken unless
+        // it's an error (its turn was over).
+        if let Some(&id) = self.conn.steering.front()
+            && let Some(answer) = conn::answer_to(&message, id)
+        {
+            self.conn.steering.pop_front();
+            if let Some(steer) = &self.conn.steer {
+                steer.answered(answer.is_ok());
+            }
+            return;
+        }
         if let Some(answer) = self
             .limits_read
             .and_then(|id| conn::answer_to(&message, id))
@@ -479,6 +710,9 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
         {
             tokens.priced.clone_from(&self.priced);
             (self.on_event)(Event::Tokens(tokens));
+            if let Some(context) = crate::usage::codex_context(&params["tokenUsage"]) {
+                (self.on_event)(Event::Context(context));
+            }
         }
         let item = &params["item"];
         // What an item obid never saw start did (LANES-13): its news first (a command's output) is
@@ -567,6 +801,17 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
             Some("item/agentMessage/delta") => {
                 if let Some(delta) = params["delta"].as_str().filter(|d| !d.is_empty()) {
                     (self.on_event)(Event::Delta(delta.to_owned()));
+                }
+            }
+            Some("item/commandExecution/outputDelta") => {
+                if let (Some(id), Some(delta)) = (
+                    params["itemId"].as_str(),
+                    params["delta"].as_str().filter(|d| !d.is_empty()),
+                ) {
+                    (self.on_event)(Event::Output {
+                        id: id.to_owned(),
+                        text: delta.to_owned(),
+                    });
                 }
             }
             Some("item/completed") if item["type"] == "agentMessage" => {
@@ -810,8 +1055,7 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
             self.conn
                 .request(
                     "turn/steer",
-                    json!({"threadId": thread, "expectedTurnId": turn,
-                           "input": [text(&format!("obid declined that: {why}"))]}),
+                    steer_params(thread, turn, &format!("obid declined that: {why}")),
                 )
                 .await;
         }
@@ -888,6 +1132,11 @@ fn thread_params(cwd: &str, own: bool) -> Value {
 }
 
 /// A text input item.
+/// What `turn/steer` takes to add `words` to `thread`'s turn `turn` under way.
+pub fn steer_params(thread: &str, turn: &str, words: &str) -> Value {
+    json!({"threadId": thread, "expectedTurnId": turn, "input": [text(words)]})
+}
+
 fn text(text: &str) -> Value {
     json!({"type": "text", "text": text, "text_elements": []})
 }
@@ -1309,6 +1558,27 @@ pub fn shipped_programs(bin: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    // CONVERSATION-AGENT-44: a waiting Codex's housekeeping leaves it quiet; a request, or news of
+    // an item or a turn, doesn't.
+    #[test]
+    fn conversation_agent_44_only_housekeeping_leaves_a_waiting_codex_quiet() {
+        for line in [
+            json!({"method": "thread/tokenUsage/updated", "params": {}}),
+            json!({"method": "account/rateLimits/updated", "params": {}}),
+        ] {
+            assert!(between_turns(&line), "{line}");
+        }
+        for line in [
+            json!({"id": 7, "method": "item/commandExecution/requestApproval", "params": {}}),
+            json!({"method": "item/started", "params": {}}),
+            json!({"method": "turn/started", "params": {}}),
+            json!({"id": 3, "result": {}}),
+            json!({}),
+        ] {
+            assert!(!between_turns(&line), "{line}");
+        }
+    }
+
     /// Codex's standalone package names the folder it ships `rg` in; one that leads out of the
     /// package is none.
     #[test]
@@ -1694,6 +1964,65 @@ exec sleep 30
         .await
         .unwrap();
         assert_eq!(*tools.lock().unwrap(), ["Agent", "Tool"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LIVETASK-34: what a job's command prints while it runs comes as it prints it, by the call.
+    #[tokio::test]
+    async fn livetask_34_a_commands_output_comes_while_it_runs() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("obid-codex-output-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let bin = root.join("codex");
+        std::fs::write(
+            &bin,
+            r#"#!/bin/sh
+read l; echo '{"id":1,"result":{}}'
+read l
+read l; echo '{"id":2,"result":{"thread":{"id":"t1"}}}'
+read l; echo '{"id":3,"result":{"turn":{"id":"u1"}}}'
+echo '{"method":"item/started","params":{"threadId":"t1","turnId":"u1","item":{"type":"commandExecution","id":"c1","command":"/bin/zsh -lc '"'"'slow'"'"'"}}}'
+echo '{"method":"item/commandExecution/outputDelta","params":{"threadId":"t1","turnId":"u1","itemId":"c1","delta":"line 1\\n"}}'
+echo '{"method":"item/commandExecution/outputDelta","params":{"threadId":"t1","turnId":"u1","itemId":"c1","delta":""}}'
+echo '{"method":"item/commandExecution/outputDelta","params":{"threadId":"t1","turnId":"u1","itemId":"c1","delta":"line 2\\n"}}'
+echo '{"method":"item/completed","params":{"threadId":"t1","turnId":"u1","item":{"type":"commandExecution","id":"c1","command":"slow","status":"completed","exitCode":0,"aggregatedOutput":"line 1\\nline 2\\n"}}}'
+echo '{"method":"turn/completed","params":{"threadId":"t1","turn":{"id":"u1","status":"completed","items":[{"type":"agentMessage","text":"Done."}]}}}'
+exec sleep 30
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let launch = Launch {
+            argv: vec![bin.into_os_string()],
+            env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+            cwd: root.clone(),
+            stderr: root.join("agent.log"),
+            own_sandbox: false,
+            group: None,
+        };
+        // (sh's echo turns `\\n` into the two characters JSON wants)
+        let (_stop, stop) = watch::channel(process::Signal::Run);
+        let seen = std::sync::Mutex::new(Vec::new());
+        run_turn(
+            launch,
+            "Do it.",
+            &Options::default(),
+            Duration::from_secs(60),
+            stop,
+            |_, _| Ruling::Now(Answer::Allow),
+            |event| match event {
+                Event::Output { id, text } => seen.lock().unwrap().push(format!("{id}: {text}")),
+                Event::ToolDone { id, .. } => seen.lock().unwrap().push(format!("{id} ended")),
+                _ => {}
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            ["c1: line 1\n", "c1: line 2\n", "c1 ended"]
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

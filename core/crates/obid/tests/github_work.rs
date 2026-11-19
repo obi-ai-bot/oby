@@ -47,6 +47,13 @@ fn id_of(feed: &Value, list: &str, number: u64) -> String {
 /// Turns `githubEveryRepo` on or off (`PUT /v1/settings/jobs`): with it on, the feed keeps work in
 /// every repository, not only the listed ones (docs/contracts/github-work.md).
 fn every_repo(obid: &Obid, on: bool) {
+    // obid's own read at its start ends first (its feed then has a next check): one that began
+    // with the old setting and read the fixture written after it would note only the connected
+    // repositories, and the next read would offer the rest as new.
+    within(30, "obid's first read of GitHub work", || {
+        let feed = call(obid, "GET", "/v1/github/work", None);
+        (!feed.body["nextCheck"].is_null()).then_some(())
+    });
     let set = call(
         obid,
         "PUT",
@@ -891,11 +898,14 @@ fn githubwork_7_a_repository_connected_later_is_offered_at_the_next_read() {
     assert_eq!(titles, [json!("Review requested: other #12")]);
 }
 
-/// Red checks on the owner's own pull request (#1119): one `CI failed` offer per red head, settled
-/// by itself when the head goes green or moves; Fix CI starts one fix job on that pull request's
-/// branch.
+/// GITHUBWORK-28 (docs/contracts/github-work.md): a red pull request of the owner's that no Oby
+/// task opened or pushed onto makes no `CI failed` card: it's someone's own to fix (a Claude Code
+/// session outside Oby, say), and Fix CI on it is the owner's to ask for, in words (GITHUBWORK-29)
+/// or with the feed's start. The feed still lists it, and two starts at once make one fix job on
+/// its branch. (A task's watcher that gave up still leaves its card: MERGING-21's, with One more
+/// round, `merge_api::autofix_9_the_same_failure_after_a_fix_gives_up_once_with_one_more_round`.)
 #[test]
-fn red_ci_on_your_own_pull_request_offers_fix_ci_once_per_head() {
+fn githubwork_28_a_red_pull_request_oby_didnt_open_makes_no_card() {
     let folder = Folder::new("github-work-ci");
     let remote = fixture(&folder.0.join("fixture"));
     let config = config(&folder.0, &remote, &agents().join("fake-claude"));
@@ -913,98 +923,37 @@ fn red_ci_on_your_own_pull_request_offers_fix_ci_once_per_head() {
     .unwrap();
     let (a, b) = ("a".repeat(40), "b".repeat(40));
     let serve_mine = |prs: Vec<Value>| write_work(&gh, "wellington", vec![], vec![], prs);
-    serve_mine(vec![
-        mine(5, &a, "SUCCESS"),
-        mine(6, &a, "PENDING"),
-        mine(7, &a, "SUCCESS"),
-    ]);
+    serve_mine(vec![mine(5, &a, "SUCCESS"), mine(7, &a, "SUCCESS")]);
     refresh(&obid);
-    assert!(github_items(&obid, "open").is_empty(), "a first read");
-
-    serve_mine(vec![
-        mine(5, &a, "FAILURE"),
-        mine(6, &a, "FAILURE"),
-        mine(7, &a, "ERROR"),
-    ]);
+    serve_mine(vec![mine(5, &a, "FAILURE"), mine(7, &a, "ERROR")]);
     let feed = refresh(&obid);
     assert_eq!(
         (&feed["mine"][0]["head"], &feed["mine"][0]["fork"]),
         (&json!(a), &json!(false)),
         "{feed}"
     );
-    let open = github_items(&obid, "open");
-    assert_eq!(open.len(), 3, "{open:?}");
-    let offer = open.iter().find(|i| i["github"]["number"] == 5).unwrap();
-    assert_eq!(offer["title"], "CI failed: fixture-app #5");
-    assert_eq!(
-        offer["text"],
-        "Checks failed on your pull request #5 in obi-e2e/fixture-app."
-    );
-    assert_eq!(offer["options"], json!(["Fix CI", "Dismiss"]));
-    assert_eq!(
-        (&offer["triage"], &offer["github"]["head"]),
-        (&json!("needs_you"), &json!(a))
-    );
-
-    // #6 goes green and #7's head moves: their offers are done by themselves; #7's new red head
-    // is a new offer, #5's same red head isn't.
-    serve_mine(vec![
-        mine(5, &a, "FAILURE"),
-        mine(6, &a, "SUCCESS"),
-        mine(7, &b, "FAILURE"),
-    ]);
+    assert!(github_items(&obid, "open").is_empty(), "no CI failed card");
+    serve_mine(vec![mine(5, &a, "FAILURE"), mine(7, &b, "FAILURE")]);
     refresh(&obid);
-    let mut open: Vec<(u64, String)> = github_items(&obid, "open")
-        .iter()
-        .map(|i| {
-            (
-                i["github"]["number"].as_u64().unwrap(),
-                i["github"]["head"].as_str().unwrap().to_owned(),
-            )
-        })
-        .collect();
-    open.sort();
-    assert_eq!(open, [(5, a.clone()), (7, b.clone())]);
-    let settled = github_items(&obid, "done");
-    assert_eq!(settled.len(), 2, "{settled:?}");
     assert!(
-        settled.iter().all(|i| i["answer"].is_null()),
-        "settled by themselves"
+        github_items(&obid, "open").is_empty() && github_items(&obid, "done").is_empty(),
+        "nor for a new red head"
     );
 
-    // A re-run's pending checks keep #5's offer, and its second failure on the same head is the
-    // same offer, never a second.
-    serve_mine(vec![
-        mine(5, &a, "PENDING"),
-        mine(6, &a, "SUCCESS"),
-        mine(7, &b, "FAILURE"),
-    ]);
-    refresh(&obid);
-    serve_mine(vec![
-        mine(5, &a, "FAILURE"),
-        mine(6, &a, "SUCCESS"),
-        mine(7, &b, "FAILURE"),
-    ]);
-    refresh(&obid);
-    assert_eq!(github_items(&obid, "open").len(), 2);
-    assert_eq!(github_items(&obid, "done").len(), 2);
-
-    // Fix CI, and a tap on the feed meanwhile: one fix job, on the pull request's branch.
+    // Two starts at once: one fix job, on the pull request's branch.
     std::fs::write(gh.join("slow"), "").unwrap();
-    let answer = format!("/v1/inbox/{}/answer", offer["id"].as_str().unwrap());
     let tap = format!("/v1/github/work/{}/start", id_of(&feed, "mine", 5));
-    let (answered, tapped) = std::thread::scope(|scope| {
-        let answered =
-            scope.spawn(|| call(&obid, "POST", &answer, Some(&json!({"answer": "Fix CI"}))));
+    let (first, second) = std::thread::scope(|scope| {
+        let first = scope.spawn(|| call(&obid, "POST", &tap, None));
         std::thread::sleep(Duration::from_millis(300));
-        let tapped = scope.spawn(|| call(&obid, "POST", &tap, None));
-        (answered.join().unwrap(), tapped.join().unwrap())
+        let second = scope.spawn(|| call(&obid, "POST", &tap, None));
+        (first.join().unwrap(), second.join().unwrap())
     });
     std::fs::remove_file(gh.join("slow")).unwrap();
-    assert_eq!(answered.status, 200, "{}", answered.text);
-    assert_eq!(tapped.status, 200, "{}", tapped.text);
-    assert_eq!(tapped.body["id"], answered.body["job"], "one job");
-    let job = &tapped.body;
+    assert_eq!(first.status, 201, "{}", first.text);
+    assert_eq!(second.status, 200, "{}", second.text);
+    assert_eq!(first.body["id"], second.body["id"], "one job");
+    let job = &first.body;
     assert_eq!(
         (&job["kind"], &job["pr"], &job["base"], &job["title"]),
         (
@@ -1016,7 +965,7 @@ fn red_ci_on_your_own_pull_request_offers_fix_ci_once_per_head() {
     );
     let task = job["task"].as_str().unwrap();
     assert!(
-        task.starts_with("Make pull request #5 in obi-e2e/fixture-app pass its checks")
+        task.starts_with("Fix what makes the failed checks on pull request #5 in obi-e2e/fixture-app fail, and commit the fix.")
             && !task.contains("Ignore"),
         "{task}"
     );
@@ -1082,6 +1031,325 @@ fn taskconv_2_a_task_from_github_gets_its_own_conversation() {
     let turns = turns.as_array().unwrap();
     assert!(turns.iter().all(|t| t["who"] != "user"), "{turns:?}");
     assert_eq!(turns.last().unwrap()["jobs"], json!([id]));
+}
+
+/// TASKCONV-29 (docs/contracts/task-conversations.md): Fix CI from the feed starts the fix job on
+/// the pull request's branch in a conversation of its own (TASKCONV-2), so the app shows it at
+/// once; its quoted file holds each failed check's name and
+/// the end of its log, as data.
+#[test]
+fn taskconv_29_fix_ci_starts_a_task_in_its_own_conversation() {
+    let folder = Folder::new("taskconv-29");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &agents().join("fake-claude"));
+    let obid = start(&folder.0, &config, Some(&agents()));
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(gh.join("logs")).unwrap();
+    std::fs::write(
+        gh.join("view.json"),
+        json!({"title": "Login fix", "body": "", "author": {"login": "wellington"},
+               "labels": [], "comments": [], "headRefName": "fix-login", "isCrossRepository": false,
+               "statusCheckRollup": [
+                   {"__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "FAILURE",
+                    "detailsUrl": format!("https://github.com/{REPO}/actions/runs/11/job/22")},
+                   {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "SUCCESS",
+                    "detailsUrl": format!("https://github.com/{REPO}/actions/runs/11/job/23")},
+                   {"__typename": "CheckRun", "name": "elsewhere", "status": "COMPLETED", "conclusion": "FAILURE",
+                    "detailsUrl": "https://github.com/someone/else/actions/runs/1/job/99"}]})
+        .to_string(),
+    )
+    .unwrap();
+    let log: String = (1..=300)
+        .map(|n| format!("2026-11-17T12:00:00.0000000Z line {n}\n"))
+        .collect::<String>()
+        + "2026-11-17T12:00:01.0000000Z \u{1b}[31;1mFAILED\u{1b}[0m test_calc.py::test_negate - assert 1 == -1\n";
+    std::fs::write(gh.join("logs/22"), log).unwrap();
+    std::fs::write(gh.join("logs/23"), "a passed check's log\n").unwrap();
+    std::fs::write(gh.join("logs/99"), "not this repository's\n").unwrap();
+    let a = "a".repeat(40);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "SUCCESS")],
+    );
+    refresh(&obid);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "FAILURE")],
+    );
+    refresh(&obid);
+    let id = fix_ci(&obid);
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(
+        (&job["kind"], &job["pr"], &job["base"]),
+        (&json!("fix"), &json!(5), &json!("fix-login"))
+    );
+    let conversation = job["conversation"]
+        .as_str()
+        .expect("a task from a Fix CI card has a conversation")
+        .to_owned();
+    let listed = call(&obid, "GET", "/v1/conversations", None).body;
+    let it = (listed.as_array().unwrap().iter())
+        .find(|c| c["id"] == conversation.as_str())
+        .expect("listed");
+    assert_eq!(it["title"], job["title"]);
+    let turns = call(
+        &obid,
+        "GET",
+        &format!("/v1/conversation?id={conversation}"),
+        None,
+    )
+    .body;
+    let turns = turns.as_array().unwrap();
+    assert!(turns.iter().all(|t| t["who"] != "user"), "{turns:?}");
+    assert_eq!(turns.last().unwrap()["jobs"], json!([id]));
+
+    let quoted = within(10, "the quoted file", || {
+        std::fs::read_dir(obid.home.join("attachments/github"))
+            .ok()?
+            .flatten()
+            .find_map(|dir| {
+                std::fs::read_to_string(dir.path().join("github-fixture-app-5.md")).ok()
+            })
+    });
+    assert!(quoted.contains("test: FAILURE"), "{quoted}");
+    assert_eq!(
+        quoted.matches("## The end of a failed check's log").count(),
+        1,
+        "only test's: {quoted}"
+    );
+    assert!(
+        quoted.contains("FAILED test_calc.py::test_negate - assert 1 == -1"),
+        "{quoted}"
+    );
+    assert!(
+        quoted.contains("line 300") && !quoted.contains("line 200\n"),
+        "only its end: {quoted}"
+    );
+    assert!(
+        !quoted.contains("2026-11-17T12:00:00"),
+        "no timestamps: {quoted}"
+    );
+    assert!(!quoted.contains('\u{1b}'), "no escape sequences: {quoted}");
+    assert!(
+        !quoted.contains("not this repository's"),
+        "a log is read only from the pull request's own repository: {quoted}"
+    );
+}
+
+/// ACCOUNTS-34: Fix CI's task goes where routing puts any task: past an account at 95% of its
+/// week, even the one new tasks go to, onto the account with room.
+#[test]
+fn accounts_34_fix_ci_is_routed_like_any_task() {
+    let folder = Folder::new("fix-ci-routed");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agents().join("fake-claude"));
+    let accounts = folder.0.join("home/accounts");
+    let ends = (obi_protocol::time::now() + 10 * 86_400) * 1000;
+    std::fs::create_dir_all(accounts.join("stub")).unwrap();
+    std::fs::write(
+        accounts.join("stub/.credentials.json"),
+        json!({"claudeAiOauth": {"accessToken": "tok-stub-plain-test-login", "expiresAt": ends}})
+            .to_string(),
+    )
+    .unwrap();
+    std::fs::create_dir_all(accounts.join("cx")).unwrap();
+    std::fs::write(accounts.join("cx/auth.json"), "{}").unwrap();
+    config["agents"]["codex"] = json!({"bin": agents().join("fake-codex"),
+        "accounts": [{"id": "cx", "name": "Room", "configDir": accounts.join("cx")}]});
+    let now = obi_protocol::time::now();
+    let window = |week: f64| {
+        json!({"fiveHour": 0.1, "sevenDay": week, "fiveHourResets": now + 3600,
+               "sevenDayResets": now + 86_400, "fiveHourObservedAt": now, "sevenDayObservedAt": now})
+    };
+    std::fs::write(
+        folder.0.join("home/usage.json"),
+        json!({"stub": window(0.97), "cx": window(0.08)}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        folder.0.join("home/settings.json"),
+        json!({"defaultAccount": "stub"}).to_string(),
+    )
+    .unwrap();
+    let obid = start(&folder.0, &config, Some(&agents()));
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(
+        gh.join("view.json"),
+        json!({"title": "Login fix", "body": "", "author": {"login": "wellington"},
+               "labels": [], "comments": [], "headRefName": "fix-login", "isCrossRepository": false,
+               "statusCheckRollup": [{"__typename": "StatusContext", "context": "ci/test",
+                                      "state": "FAILURE", "description": "1 test failed"}]})
+        .to_string(),
+    )
+    .unwrap();
+    let a = "a".repeat(40);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "SUCCESS")],
+    );
+    refresh(&obid);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "FAILURE")],
+    );
+    refresh(&obid);
+    let id = fix_ci(&obid);
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(
+        (&job["agent"], &job["account"]),
+        (&json!("codex"), &json!("cx")),
+        "{job}"
+    );
+}
+
+/// TASKCONV-30 (docs/contracts/task-conversations.md): a Fix CI task's goal is what its agent can
+/// meet before anything is pushed: fix the failed checks' cause and commit it. GitHub's checks run
+/// again only once Oby publishes the commit, so they're never part of the goal, which would keep a
+/// right fix unpublished (`GOAL NOT MET: GitHub checks on the new commit remain unverified`).
+#[test]
+fn taskconv_30_a_fix_ci_tasks_goal_is_the_fix_committed_not_githubs_checks() {
+    let folder = Folder::new("taskconv-30");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &agents().join("fake-claude"));
+    let obid = start(&folder.0, &config, Some(&agents()));
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(
+        gh.join("view.json"),
+        json!({"title": "Login fix", "body": "", "author": {"login": "wellington"},
+               "labels": [], "comments": [], "headRefName": "fix-login", "isCrossRepository": false,
+               "statusCheckRollup": [{"__typename": "StatusContext", "context": "ci/test", "state": "FAILURE"}]})
+        .to_string(),
+    )
+    .unwrap();
+    let a = "a".repeat(40);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "SUCCESS")],
+    );
+    refresh(&obid);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "FAILURE")],
+    );
+    refresh(&obid);
+    let id = fix_ci(&obid);
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    let task = job["task"].as_str().unwrap();
+    assert!(
+        task.starts_with(
+            "Fix what makes the failed checks on pull request #5 in obi-e2e/fixture-app fail, and commit the fix. Add commits on top of it; never rewrite or drop the ones it has."
+        ),
+        "{task}"
+    );
+    assert!(
+        task.contains("seeing them pass there isn't part of your goal"),
+        "{task}"
+    );
+    assert!(!task.contains("pass its checks"), "{task}");
+    assert!(
+        task.contains(
+            "the end of each failed check's log are quoted in .obi/inputs/github-fixture-app-5.md"
+        ),
+        "{task}"
+    );
+}
+
+/// TASKCONV-31 (docs/contracts/task-conversations.md): Fix CI on the owner's own pull request
+/// pushes its fix straight onto that pull request's branch, as T3 Code does, so its checks run
+/// again on the same pull request: no `oby/` branch, no pull request opened, and the owner's
+/// description untouched. Only a fast-forward: a branch that moved on is left alone, in plain words.
+#[test]
+fn taskconv_31_fix_ci_pushes_onto_the_owners_own_pull_requests_branch() {
+    let folder = Folder::new("taskconv-31");
+    let remote = fixture(&folder.0.join("fixture"));
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("--git-dir")
+            .arg(&remote)
+            .args(args)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    git(&["branch", "fix-login", "main"]);
+    git(&["update-ref", "refs/pull/5/head", "fix-login"]);
+    let started_at = git(&["rev-parse", "fix-login"]);
+    let config = config(&folder.0, &remote, &agents().join("fake-claude"));
+    let obid = start(&folder.0, &config, Some(&agents()));
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(
+        gh.join("view.json"),
+        json!({"title": "Login fix", "body": "COMMIT: fixed.txt", "author": {"login": "wellington"},
+               "labels": [], "comments": [], "headRefName": "fix-login", "isCrossRepository": false,
+               "statusCheckRollup": [{"__typename": "StatusContext", "context": "ci/test", "state": "FAILURE"}]})
+        .to_string(),
+    )
+    .unwrap();
+    let a = "a".repeat(40);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "SUCCESS")],
+    );
+    refresh(&obid);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "FAILURE")],
+    );
+    refresh(&obid);
+    let id = fix_ci(&obid);
+    let job = ended_within(&obid, &id, 120);
+    assert_eq!(job["status"], "done", "{}", job["summary"]);
+    assert_eq!(
+        (&job["pushed"], &job["published"]),
+        (&json!(1), &Value::Null),
+        "{job}"
+    );
+    assert_eq!(
+        git(&["log", "-1", "--format=%s", "fix-login"]),
+        "Fix fixed.txt"
+    );
+    assert_eq!(
+        git(&["rev-parse", "fix-login~1"]),
+        started_at,
+        "a fast-forward of the pull request's own branch"
+    );
+    assert_eq!(
+        git(&["for-each-ref", "refs/heads/oby/"]),
+        "",
+        "no oby/ branch"
+    );
+    let calls = std::fs::read_to_string(gh.join("calls")).unwrap_or_default();
+    assert!(
+        !calls.lines().any(|c| c == "pr create" || c == "pr edit"),
+        "no pull request opened or edited: {calls}"
+    );
 }
 
 /// MERGING-54 (docs/contracts/merging.md): GitHub work a tap starts isn't the owner's own work,
@@ -1270,7 +1538,7 @@ fn issuetask_4_whose_words_are_read_each_time_the_issue_is() {
         serde_json::from_slice::<Value>(&file).unwrap()["foreign"].clone()
     };
     let job = issue_job_ended(&obid, 140, "Do #140");
-    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["status"], "done", "{}", job["summary"]);
     assert!(foreign(job["id"].as_str().unwrap()).is_null(), "{job}");
 
     who_wrote(&gh, &["mallory"]);
@@ -1352,4 +1620,398 @@ fn issuetask_5_an_organization_members_comment_keeps_the_job_the_owners() {
             .is_some_and(|why| why.contains("issue #142") && why.contains("members")),
         "{file}"
     );
+}
+
+/// LIMITS-25 (docs/contracts/account-limits.md, #2484): Fix CI routes on usage obid read lately.
+/// obid reads an account's usage only while an app looks, so a click can come when what it kept is
+/// old: here Claude Code read 30% hours ago and is at 97% of its week now, Codex read 40% a minute
+/// ago. Routed on the old figure, Claude Code looked emptier and took it. Read first, it is past 95%
+/// and the task goes to Codex.
+#[test]
+fn limits_25_fix_ci_reads_a_stale_usage_before_it_routes() {
+    let folder = Folder::new("limits-25");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agents().join("fake-claude"));
+    let accounts = folder.0.join("home/accounts");
+    let ends = (obi_protocol::time::now() + 10 * 86_400) * 1000;
+    std::fs::create_dir_all(accounts.join("stub")).unwrap();
+    std::fs::write(
+        accounts.join("stub/.credentials.json"),
+        json!({"claudeAiOauth": {"accessToken": "tok-stub-nearly-full-test-login", "expiresAt": ends}})
+            .to_string(),
+    )
+    .unwrap();
+    std::fs::create_dir_all(accounts.join("cx")).unwrap();
+    std::fs::write(accounts.join("cx/auth.json"), "{}").unwrap();
+    config["agents"]["codex"] = json!({"bin": agents().join("fake-codex"),
+        "accounts": [{"id": "cx", "name": "Room", "configDir": accounts.join("cx")}]});
+    let now = obi_protocol::time::now();
+    let window = |week: f64, seen: i64| {
+        json!({"fiveHour": 0.1, "sevenDay": week, "fiveHourResets": now + 3600,
+               "sevenDayResets": now + 86_400, "fiveHourObservedAt": seen, "sevenDayObservedAt": seen})
+    };
+    std::fs::write(
+        folder.0.join("home/usage.json"),
+        json!({"stub": window(0.30, now - 3 * 3600), "cx": window(0.40, now - 60)}).to_string(),
+    )
+    .unwrap();
+    // Usage is read by obid itself here; no app looks (no `GET /v1/status`, no event stream).
+    let obid = start_with(
+        &folder.0,
+        &config,
+        Some(&agents()),
+        &[("OBID_USAGE_READS", "on")],
+    );
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(
+        gh.join("view.json"),
+        json!({"title": "Login fix", "body": "", "author": {"login": "wellington"},
+               "labels": [], "comments": [], "headRefName": "fix-login", "isCrossRepository": false,
+               "statusCheckRollup": [{"__typename": "StatusContext", "context": "ci/test",
+                                      "state": "FAILURE", "description": "1 test failed"}]})
+        .to_string(),
+    )
+    .unwrap();
+    let a = "a".repeat(40);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "SUCCESS")],
+    );
+    refresh(&obid);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "FAILURE")],
+    );
+    refresh(&obid);
+    let id = fix_ci(&obid);
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(
+        (&job["agent"], &job["account"]),
+        (&json!("codex"), &json!("cx")),
+        "{job}"
+    );
+    let usage: Value =
+        serde_json::from_slice(&std::fs::read(folder.0.join("home/usage.json")).unwrap()).unwrap();
+    assert_eq!(
+        usage["stub"]["sevenDay"],
+        json!(0.97),
+        "read before routing: {usage}"
+    );
+}
+
+/// The fixture repository's branch `fix-login`, the owner's own pull request #5, red on GitHub;
+/// its Fix CI clicked, and the task done and pushed onto that branch (TASKCONV-31). The obid,
+/// the job's id, the bare remote and the fake gh's folder.
+fn fix_ci_onto(folder: &Folder) -> (Obid, String, PathBuf, PathBuf) {
+    let remote = fixture(&folder.0.join("fixture"));
+    git_in(&remote, &["branch", "fix-login", "main"]);
+    git_in(&remote, &["update-ref", "refs/pull/5/head", "fix-login"]);
+    let config = config(&folder.0, &remote, &agents().join("fake-claude"));
+    let obid = start_with(
+        &folder.0,
+        &config,
+        Some(&agents()),
+        &[
+            ("OBID_FOLLOW_SECONDS", "1"),
+            ("OBID_RERUN_SETTLE_SECONDS", "0"),
+        ],
+    );
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(
+        gh.join("view.json"),
+        json!({"title": "Login fix", "body": "COMMIT: fixed.txt", "author": {"login": "wellington"},
+               "labels": [], "comments": [], "headRefName": "fix-login", "isCrossRepository": false,
+               "statusCheckRollup": [{"__typename": "StatusContext", "context": "ci/test", "state": "FAILURE"}]})
+        .to_string(),
+    )
+    .unwrap();
+    let a = "a".repeat(40);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "SUCCESS")],
+    );
+    refresh(&obid);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "FAILURE")],
+    );
+    refresh(&obid);
+    let id = fix_ci(&obid);
+    let job = ended_within(&obid, &id, 120);
+    assert_eq!(job["status"], "done", "{}", job["summary"]);
+    assert_eq!(job["pushed"], json!(1), "{job}");
+    (obid, id, remote, gh)
+}
+
+/// `git <args>` in the bare `remote`, its output.
+fn git_in(remote: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .arg("--git-dir")
+        .arg(remote)
+        .args(args)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+/// What the fake gh answers for pull request #5 from now on: open into main at `head`, `mergeable`
+/// as GitHub says it (`mergeStateStatus` with it), its checks `checks` (none for `[]`).
+fn pull_request_5(gh: &Path, head: &str, mergeable: (&str, &str), checks: Value) {
+    std::fs::write(
+        gh.join("view.json"),
+        json!({"state": "OPEN", "reviewDecision": null, "baseRefName": "main", "headRefOid": head,
+               "headRefName": "fix-login", "isCrossRepository": false, "author": {"login": "wellington"},
+               "mergeable": mergeable.0, "mergeStateStatus": mergeable.1, "statusCheckRollup": checks,
+               "title": "Login fix", "body": "", "labels": [], "comments": []})
+        .to_string(),
+    )
+    .unwrap();
+}
+
+/// The job `id`'s file as obid keeps it.
+fn kept_job(folder: &Folder, id: &str) -> Value {
+    let file = folder.0.join(format!("home/jobs/{id}.json"));
+    serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap()
+}
+
+/// The lines AUTOFIX said in the job `id`'s conversation, once `line` is among them.
+fn said_onto(folder: &Folder, id: &str, line: &str) -> Vec<String> {
+    within(90, line, || {
+        let lines: Vec<String> = (kept_job(folder, id)["autofix"]["lines"].as_array())
+            .map(|l| {
+                l.iter()
+                    .filter_map(|l| l.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        lines.iter().any(|l| l.contains(line)).then_some(lines)
+    })
+}
+
+/// AUTOFIX-14, 17: a Fix CI task that pushed onto the owner's own pull request follows it as its
+/// own. Red again at the head it pushed, the same task fixes it in its next round, with no new
+/// `CI failed` card for that head; its conversation hears it.
+#[test]
+fn autofix_14_a_fix_ci_task_takes_the_next_red_head_on_the_pull_request_it_pushed_onto() {
+    let folder = Folder::new("autofix-14");
+    let (obid, id, remote, gh) = fix_ci_onto(&folder);
+    let head = git_in(&remote, &["rev-parse", "fix-login"]);
+    let failed = json!([{"__typename": "CheckRun", "name": "test", "status": "COMPLETED",
+                         "conclusion": "FAILURE"}]);
+    pull_request_5(&gh, &head, ("MERGEABLE", "UNSTABLE"), failed);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &head, "FAILURE")],
+    );
+    refresh(&obid);
+    said_onto(
+        &folder,
+        &id,
+        "Its checks failed on GitHub. Fixing them: round 1 of 3.",
+    );
+    let job = within(90, "its next round", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["round"] == 2).then_some(job)
+    });
+    assert_eq!(job["pr"], 5, "{job}");
+    let offered = github_items(&obid, "open")
+        .into_iter()
+        .filter(|i| i["github"]["number"] == 5)
+        .count();
+    assert_eq!(offered, 0, "no new CI failed card for the head it pushed");
+    // AUTOFIX-17: green at a head it pushed is said once.
+    ended_within(&obid, &id, 120);
+    let now = git_in(&remote, &["rev-parse", "fix-login"]);
+    let passed = json!([{"__typename": "CheckRun", "name": "test", "status": "COMPLETED",
+                         "conclusion": "SUCCESS"}]);
+    pull_request_5(&gh, &now, ("MERGEABLE", "CLEAN"), passed);
+    let lines = said_onto(&folder, &id, "Its checks pass on GitHub now.");
+    let told = lines
+        .iter()
+        .filter(|l| *l == "Its checks pass on GitHub now.")
+        .count();
+    assert_eq!(told, 1, "{lines:?}");
+}
+
+/// AUTOFIX-18, 19, 20 (#2486): the owner's pull request a Fix CI task pushed onto conflicts with
+/// main, so GitHub runs none of its checks. Oby says so and the same task's next round merges main
+/// into it, never a rebase; still conflicting after, it says so once and its card says what to do.
+/// Its publish stage names the pull request it pushed onto.
+#[test]
+fn autofix_18_a_conflicting_pull_request_it_pushed_onto_gets_main_merged_in() {
+    let folder = Folder::new("autofix-18");
+    let (obid, id, remote, gh) = fix_ci_onto(&folder);
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    let publish = (job["pipeline"]["stages"].as_array().unwrap().iter())
+        .find(|s| s["id"] == "publish")
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        publish["detail"], "Secret scan clean · pushed onto pull request #5",
+        "AUTOFIX-20: {publish}"
+    );
+    // Its fake agent keeps every prompt it gets from now on: the round's words are taken as it
+    // starts, so they're read from what it got.
+    let worktree = PathBuf::from(job["worktree"].as_str().unwrap());
+    std::fs::create_dir_all(worktree.join(".obi")).unwrap();
+    std::fs::write(worktree.join(".obi/keep-prompts"), "").unwrap();
+    let head = git_in(&remote, &["rev-parse", "fix-login"]);
+    pull_request_5(&gh, &head, ("CONFLICTING", "DIRTY"), json!([]));
+    said_onto(
+        &folder,
+        &id,
+        "Its pull request conflicts with main, so GitHub runs none of its checks. Merging main into it.",
+    );
+    within(90, "its merge round", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["round"] == 2).then_some(())
+    });
+    ended_within(&obid, &id, 120);
+    let prompts = std::fs::read_to_string(worktree.join(".obi/prompts.log")).unwrap_or_default();
+    assert!(prompts.contains("run `git merge origin/main`"), "{prompts}");
+    assert!(prompts.contains("Never rebase"), "{prompts}");
+    // Still conflicting at the head it left: said once, and the card.
+    let now = git_in(&remote, &["rev-parse", "fix-login"]);
+    pull_request_5(&gh, &now, ("CONFLICTING", "DIRTY"), json!([]));
+    let lines = said_onto(&folder, &id, "still conflicts with main");
+    let card = within(60, "its card", || {
+        let all = call(&obid, "GET", "/v1/inbox?state=open&limit=1000", None).body;
+        let items = all
+            .as_array()
+            .or(all["items"].as_array())
+            .cloned()
+            .unwrap_or_default();
+        items.into_iter().find(|i| {
+            i["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("still conflicts with main"))
+        })
+    });
+    assert!(
+        card["text"]
+            .as_str()
+            .unwrap()
+            .contains("Merge main into its branch"),
+        "{card}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("resolving")),
+        "never resolved while it conflicts: {lines:?}"
+    );
+    let again = said_onto(&folder, &id, "still conflicts with main");
+    assert_eq!(
+        again
+            .iter()
+            .filter(|l| l.contains("still conflicts"))
+            .count(),
+        1,
+        "said once: {again:?}"
+    );
+}
+
+/// Fix CI on the owner's red pull request #5, started from the feed (`POST /v1/github/work/{id}/start`,
+/// GITHUBWORK-28: no card offers it): the job's id.
+fn fix_ci(obid: &Obid) -> String {
+    let feed = call(obid, "GET", "/v1/github/work", None).body;
+    let started = call(
+        obid,
+        "POST",
+        &format!("/v1/github/work/{}/start", id_of(&feed, "mine", 5)),
+        None,
+    );
+    assert_eq!(started.status, 201, "{}", started.text);
+    started.body["id"].as_str().unwrap().to_owned()
+}
+
+/// GITHUBWORK-29 (docs/contracts/github-work.md): Fix CI asked for in words starts the task the
+/// `CI failed` card did, by the same path: on the pull request's branch, its checks quoted, in the
+/// conversation that asked, its card on the answer.
+#[test]
+fn githubwork_29_fix_ci_asked_for_in_words_starts_the_cards_task() {
+    let folder = Folder::new("githubwork-29");
+    let remote = fixture(&folder.0.join("fixture"));
+    let harness = agents().join("fake-harness");
+    let mut config = config(&folder.0, &remote, &harness);
+    config["conversation"] = json!({"agent": "claude"});
+    let account = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(account.join(".credentials.json"), "{}").unwrap();
+    let obid = start(&folder.0, &config, Some(&agents()));
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(
+        gh.join("view.json"),
+        json!({"title": "Login fix", "body": "", "author": {"login": "wellington"},
+               "labels": [], "comments": [], "headRefName": "fix-login", "isCrossRepository": false,
+               "statusCheckRollup": [{"__typename": "StatusContext", "context": "ci/test", "state": "FAILURE"}]})
+        .to_string(),
+    )
+    .unwrap();
+    let a = "a".repeat(40);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "SUCCESS")],
+    );
+    refresh(&obid);
+    write_work(
+        &gh,
+        "wellington",
+        vec![],
+        vec![],
+        vec![mine(5, &a, "FAILURE")],
+    );
+    refresh(&obid);
+    let said = format!(
+        r#"OBY oby_dispatch {{"repo": "{REPO}", "task": "Fix CI on pull request 5", "kind": "fix", "pr": 5}}"#
+    );
+    let answer = call(
+        &obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": said, "new": true})),
+    );
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    let job = &answer.body["jobs"][0];
+    assert_eq!(
+        (&job["kind"], &job["pr"], &job["base"], &job["title"]),
+        (
+            &json!("fix"),
+            &json!(5),
+            &json!("fix-login"),
+            &json!("Fix CI fixture-app #5")
+        ),
+        "{job}"
+    );
+    assert!(
+        (job["task"].as_str().unwrap())
+            .starts_with("Fix what makes the failed checks on pull request #5"),
+        "{job}"
+    );
+    let conversation = answer.body["conversation"].as_str().unwrap_or_default();
+    assert!(!conversation.is_empty(), "{}", answer.text);
+    assert_eq!(
+        job["conversation"], conversation,
+        "in the conversation that asked"
+    );
+    assert!(github_items(&obid, "open").is_empty(), "no card on the way");
 }

@@ -35,8 +35,15 @@ The business behavior contract for `capabilities` on `GET /v1/status`, from [the
 
 ## Interfaces and dependencies
 
-- `GET /v1/status`: `"capabilities": ["folders-v1"]`, add-only (docs/runner-api.md, `GET /v1/status`, with its Capabilities table: Name, What it means, Since).
+- `GET /v1/status`: `"capabilities": ["ask-mentions-v1", "composer-v1", "conversation-marks-v1", "events-replay-v1", "folders-v1", "profile-projects-v1", "profile-scope-v1", "project-jobs-v1", "projects-v1", "revisions-v1"]`, add-only (docs/runner-api.md, `GET /v1/status`, with its Capabilities table: Name, What it means, Since).
+- `ask-mentions-v1`: obid takes `ask` on `POST /v1/plans`, the members the words `@`-mention, asked as `oby_ask` asks, since ASK-40 ([ask-an-oby.md](ask-an-oby.md)): an app sends it only to an obid that lists it.
+- `composer-v1`: obid takes the message box's chips (`defaults` on `POST /v1/plans`), drops one waiting message (`turn` on `POST /v1/plans/cancel`) and lists a conversation's files for `@` (`GET /v1/conversations/{id}/files`), since COMPOSER-3 ([composer.md](composer.md)): an app sends none of them to an obid that doesn't list it.
+- `conversation-marks-v1`: a conversation's `seen`, `unread` and `archived`, and `seen` and `archived` on `PATCH /v1/conversations/{id}` ([conversation-states.md](conversation-states.md)), since CHATSTATE-6: an app sends them only to an obid that lists it.
 - `folders-v1`: obid takes working folders (`folders` on `POST /v1/plans`, on conversations and on `PATCH /v1/conversations/{id}`), the behaviour `folders: true` announces, since #1572.
+- `profile-projects-v1`: obid reads the `Oby-Profile` header on the project routes and on `project` in `PATCH /v1/conversations/{id}` and `POST /v1/plans`, and keeps projects per profile ([profiles.md](profiles.md)), since A00-79: an app sends the header only to an obid that lists it.
+- `profile-scope-v1`: obid reads `Oby-Profile` on every `/v1` route and on `GET /v1/events`, and keeps conversations, jobs, helpers, accounts and vault secrets per profile ([profiles.md](profiles.md)), since B00-40. An older obid answers every profile's on those routes.
+- `project-jobs-v1`: obid keeps a job's `project` and answers `GET /v1/jobs?project=<id>` ([projects.md](projects.md)), since A00-73: an older obid ignores `project=` and answers every job, so an app trusts the filter only from an obid that lists it.
+- `projects-v1`: obid keeps projects and a conversation's `project` ([projects.md](projects.md)), since A00-70: an app sends `project` only to an obid that lists it.
 - Older clients ignore the key: the iPhone's `RunnerStatus` (Swift's `Decodable`) and the Electron app's `Status` ignore unknown keys.
 
 ## Acceptance scenarios

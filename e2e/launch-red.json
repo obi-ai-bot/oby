@@ -1,0 +1,4 @@
+{
+  "L7": "obid's Sphere link, unassigned in the launch plan: an ask sent while the Sphere is down is refused ('the Obysphere can't be reached') and isn't sent once the Sphere is back",
+  "L8": "The app's revoked line (#2515, SPHERE-22's obid half is on dev): after the admin's revoke obid says revoked (removed), but the app keeps the Obysphere as joined ('Just you so far') with no line saying you were taken out, 2 minutes on (two of its one-minute reads)"
+}

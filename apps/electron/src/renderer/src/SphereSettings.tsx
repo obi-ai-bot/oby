@@ -7,12 +7,16 @@ import { OwnerAvatar } from './ObyFace';
 import { api } from './obid';
 import { keyed } from './live';
 import type { InboxItem } from '../../shared/obid-wire';
-import { STARTER_RULE_ID } from '../../shared/policy';
+import { withStarterRule } from '../../shared/policy';
 import type { Policy, PolicyAnswer } from '../../shared/sphere';
 import RepoTicks from './RepoTicks';
 import { canAddProgress, canChangeRepos, canOpenRoom, confirmIsOff, repoTicks, whatItTells, type SharingRule } from './sharing';
 import { roomOpens, useRoom } from './room';
-import { ME, SUFFIX, cancelInvite, deleteSphere, memberCount, removeMember, ruleWords, trimSlug, slugOf, slugProblem, updateSphere, urlOf, useSpheres, type Sphere } from './spheres';
+import { ME, SUFFIX, cancelInvite, deleteSphere, memberCount, removeMember, revokedLine, ruleWords, trimSlug, slugOf, slugProblem, updateSphere, urlOf, useSpheres, type Sphere } from './spheres';
+import { JoinLink, useJoinLink } from './JoinLink';
+import InviteTeammates from './InviteTeammates';
+import { SoleAdmin, isSoleAdmin, useSphereAdmins } from './SphereAdmins';
+import AddSignIn, { needsSignin, useSigninStatus } from './AddSignIn';
 
 export const sphereSettingsLabel = (id: string, spheres: Sphere[]) => `${spheres.find((s) => s.id === id)?.name ?? ''} settings`;
 
@@ -80,8 +84,13 @@ function Settings({ sphere }: { sphere: Sphere }) {
     if (e.key === 'Escape') undo();
   };
   const [confirming, setConfirming] = useState(false);
+  // a live Obysphere's admins, as the Sphere says, with Make admin and Remove admin for its admins (SPHEREAPP-11)
+  const live = useSphereAdmins(!!sphere.live && !sphere.revoked);
+  const signin = useSigninStatus(!!sphere.live && !sphere.revoked && isSoleAdmin(live.admins, live.me));
+  const roleOf = (owner: string) => (live.admins?.includes(owner) ? 'Admin' : 'Member');
 
   return <>
+    {sphere.revoked && <Revoked sphere={sphere} />}
     <Group
       i={1}
       footer={admin ? 'Its URL is in every invite link: a new one stops the old links working.' : 'Only its admins can change these.'}
@@ -125,22 +134,27 @@ function Settings({ sphere }: { sphere: Sphere }) {
     {/* who's in it: you first, then the others, then who's been invited; an
         admin can take someone out (Remove) or an invite back (Cancel invite) */}
     <Group i={2} title={`Members · ${memberCount(sphere)}`}>
+      {isSoleAdmin(live.admins, live.me) && <SoleAdmin sphere={sphere.name} unsigned={needsSignin(signin.status)} />}
       <div className="set-row set-member">
         {/* a live Obysphere's: only what obid knows, your owner id (no name or address yet) */}
         <OwnerAvatar name={sphere.live ? sphere.me ?? 'You' : ME.name} size={28} badge={false} />
         {sphere.live
           ? <span className="set-label">{sphere.me ? `${sphere.me} (you)` : 'You'}</span>
           : <span className="set-label">{ME.name} (you)<span className="set-about">{ME.email}</span></span>}
-        <span className="set-role">{admin ? 'Admin' : 'Member'}</span>
+        <span className="set-role">{sphere.live && live.me ? roleOf(live.me) : admin ? 'Admin' : 'Member'}</span>
       </div>
       {sphere.members.map((m) => (
         <div key={m} className="set-row set-member">
           <OwnerAvatar name={m} size={28} badge={false} />
           <span className="set-label">{m}{!sphere.live && <span className="set-about">{m.toLowerCase()}@{sphere.domain ?? 'deskree.com'}</span>}</span>
-          <span className="set-role">Member</span>
+          <span className="set-role">{sphere.live ? roleOf(m) : 'Member'}</span>
           {admin && <button className="set-button is-danger set-member-action" onClick={() => removeMember(sphere.id, m)} aria-label={`Remove ${m}`}>Remove</button>}
+          {live.amAdmin && (live.admins!.includes(m)
+            ? <button className="set-button set-member-action" onClick={() => live.set(m, false)} aria-label={`Remove ${m} as admin`}>Remove admin</button>
+            : <button className="set-button set-member-action" onClick={() => live.set(m, true)} aria-label={`Make ${m} an admin`}>Make admin</button>)}
         </div>
       ))}
+      {live.problem && <Row label={<span className="set-problem" role="alert">{live.problem}</span>} />}
       {sphere.invited.map((e) => (
         <div key={e} className="set-row set-member">
           <span className="invited-mark set-invited"><Mail size={14} strokeWidth={1.8} /></span>
@@ -150,8 +164,8 @@ function Settings({ sphere }: { sphere: Sphere }) {
         </div>
       ))}
     </Group>
-    {sphere.live && window.app?.spherePolicy && <SphereRules />}
-    {sphere.live && <WhatItTells sphere={sphere} />}
+    {sphere.live && !sphere.revoked && window.app?.spherePolicy && <SphereRules />}
+    {sphere.live && !sphere.revoked && <WhatItTells sphere={sphere} />}
     {/* last, set apart: what it does, then its button under it at the left */}
     <Group i={5}>
       <div className="set-row set-danger">
@@ -164,6 +178,44 @@ function Settings({ sphere }: { sphere: Sphere }) {
     </Group>
     {confirming && <ConfirmModal sphere={sphere} onClose={() => setConfirming(false)} />}
   </>;
+}
+
+// A live Obysphere whose admin took this Oby out (SPHEREAPP-5): said where it is, with a new link's
+// field to come back; Leave, at the foot, lets it go
+function Revoked({ sphere }: { sphere: Sphere }) {
+  const link = useJoinLink();
+  return (
+    <Group i={0} title="You’re not in it any more" footer="To come back, ask its admin for a new invite link.">
+      <Row label={<span className="set-problem" role="status">{revokedLine(sphere)}</span>} />
+      <div className="set-row"><JoinLink link={link} /></div>
+    </Group>
+  );
+}
+
+// Settings › Obysphere (SPHEREAPP-4): the one you're in, by name and who you are in it, or the
+// field for an invite link. A revoked one says so (SPHEREAPP-5), with the field to come back.
+export function SphereJoinPage() {
+  const live = useSpheres().find((s) => s.live);
+  const link = useJoinLink();
+  // Add sign-in, so this owner can get back in by themselves (SPHEREAPP-13)
+  const signin = useSigninStatus(!!live && !live.revoked);
+  if (live && !live.revoked) {
+    return <>
+      <Group i={1} footer="Its settings are under its ⋮ in the side panel.">
+        <Row label="Your Obysphere"><Value>{live.name}</Value></Row>
+        {live.me && <Row label="You’re in it as"><Value>{live.me}</Value></Row>}
+      </Group>
+      <AddSignIn status={signin.status} onLinked={signin.linked} />
+      {/* its admin's links for teammates, as obid says who's admin (SPHEREAPP-10) */}
+      {window.app?.sphereInvitations && <InviteTeammates unsigned={needsSignin(signin.status)} />}
+    </>;
+  }
+  return (
+    <Group i={1} title="Join an Obysphere" footer="Your Oby can talk to your team’s Obys there. Ask its admin for the invite link.">
+      {live?.revoked && <Row label={<span className="set-problem" role="status">{revokedLine(live)}</span>} />}
+      <div className="set-row"><JoinLink link={link} /></div>
+    </Group>
+  );
 }
 
 // What your Oby tells the others by itself, from obid's rules, each with Remove. With nothing shared,
@@ -238,8 +290,8 @@ export function SphereRules() {
         return <Row key={n} label={label} about={about} />;
       })}
       {rules?.length === 0 && <Row label="Nobody may ask yet" about="Every question to another member’s Oby is refused." />}
-      {shown?.admin && !shown.policy.rules.some((r) => r.id === STARTER_RULE_ID) && (
-        <Row label="Members may ask each other’s Obys" about="Questions and reviews, in every repository.">
+      {shown?.admin && withStarterRule(shown.policy.rules) && (
+        <Row label="Members may ask each other’s Obys" about="Questions, reviews and handoffs, in every repository.">
           <button className="set-button set-member-action" onClick={() => letAsk(shown.policy.version)}>Let members ask</button>
         </Row>
       )}

@@ -124,6 +124,14 @@ pub enum Event {
         output: Option<String>,
         patches: Vec<(String, String)>,
     },
+    /// What the command `id` printed since the last of these, while it runs: Codex's
+    /// `item/commandExecution/outputDelta`, raw. Only a job's transcript keeps it, masked, and only
+    /// its last lines (LIVETASK-34).
+    Output { id: String, text: String },
+    /// Claude Code runs the command `id` as its task `task` (`system` `task_started`, a
+    /// `local_bash` one in the foreground): what it prints so far is in that task's output file,
+    /// which obid reads while it runs (crate::spill, LIVETASK-34).
+    Spilled { id: String, task: String },
     /// The agent's words between tool calls, whole (a job's transcript).
     Said(String),
     /// Its thinking, or a summary of its reasoning, when the tool reports it, and how long it
@@ -141,6 +149,12 @@ pub enum Event {
     /// What this turn used so far, in tokens and cost (crate::usage::Tokens): each one replaces
     /// the turn's last.
     Tokens(crate::usage::Tokens),
+    /// The MCP servers and claude.ai connectors its session has, but obid's own, by name and status,
+    /// from Claude Code's `init` line (crate::connectors, CONNECTORS-1).
+    Connectors(Vec<crate::connectors::Server>),
+    /// How full its session's context window is now, as its tool said (USAGE-15): each one
+    /// replaces the last.
+    Context(crate::usage::ContextWindow),
 }
 
 /// How a turn ended, for every adapter.
@@ -455,9 +469,32 @@ pub async fn run_turn(
     decide: impl Fn(&str, &Value) -> Ruling,
     on_event: impl FnMut(Event),
 ) -> std::io::Result<Turn> {
-    let conn = Conn::spawn(&launch, limit, stop, false).await?;
+    run_turn_steered(launch, prompt, limit, stop, None, decide, on_event).await
+}
+
+/// [`run_turn`], the owner's words written into it as they come (`steer`, crate::steer): its
+/// `launch` has `--replay-user-messages`, so obid sees each taken.
+pub async fn run_turn_steered(
+    launch: Launch,
+    prompt: &str,
+    limit: impl Into<crate::conn::Limit>,
+    stop: watch::Receiver<process::Signal>,
+    steer: Option<std::sync::Arc<crate::steer::Steer>>,
+    decide: impl Fn(&str, &Value) -> Ruling,
+    on_event: impl FnMut(Event),
+) -> std::io::Result<Turn> {
+    let mut conn = Conn::spawn(&launch, limit, stop, false).await?;
+    conn.steer = steer;
     Ok(turn_on(conn, prompt, decide, on_event, false).await.0)
 }
+
+/// What tells an own run's Claude Code, a conversation's or a job's, not to hold its first turn for
+/// the owner's MCP servers (CONVERSATION-AGENT-24, LANES-24). Given any `--mcp-config` server,
+/// Claude Code 2.1.325 holds a headless session's first turn until every MCP server answers or its
+/// 30 s timeout passes: one slow server of the owner's held each first turn 30 s. `0` lifts that
+/// hold, as in the owner's terminal, where a server that connects later adds its tools then;
+/// obid's own servers are still connected first (their `alwaysLoad`).
+pub const MCP_STARTUP_WAIT: (&str, &str) = ("CLAUDE_CODE_MCP_STARTUP_WAIT_MS", "0");
 
 /// The flags of Claude Code's own `/usage`, run by itself ([`read_usage`]): it answers from its
 /// account's usage without asking a model (claude 2.1.302), with no tool, setting or MCP server.
@@ -540,6 +577,8 @@ pub async fn turn_on(
     let mut thinking: Option<u64> = None;
     // Claude Code said it's retrying an API call, and hasn't been heard from since.
     let mut retrying = false;
+    // The usage of its own last message: what its context holds now (USAGE-15).
+    let mut last_usage: Option<Value> = None;
     loop {
         conn.holding = idle && !background.is_empty();
         let message = match conn.next().await {
@@ -614,6 +653,23 @@ pub async fn turn_on(
                     message["max_retries"].as_u64().unwrap_or(0) as usize,
                 )));
             }
+            // A command in the foreground: Claude Code keeps what it prints in its task's output
+            // file as it runs, and says nothing more until it ends (claude 2.1.325). Only the
+            // agent's own: a subagent's run is under its own call.
+            Some("system")
+                if message.get("subtype").and_then(Value::as_str) == Some("task_started")
+                    && message["task_type"] == "local_bash"
+                    && message["is_backgrounded"] != true =>
+            {
+                if let (Some(id), Some(task)) =
+                    (message["tool_use_id"].as_str(), message["task_id"].as_str())
+                {
+                    on_event(Event::Spilled {
+                        id: id.to_owned(),
+                        task: task.to_owned(),
+                    });
+                }
+            }
             Some("system") if message.get("subtype").and_then(Value::as_str) == Some("init") => {
                 idle = false;
                 if let Some(session) = message.get("session_id").and_then(Value::as_str) {
@@ -621,11 +677,15 @@ pub async fn turn_on(
                     on_event(Event::Session(session.to_owned()));
                 }
                 api_key_source = message["apiKeySource"].as_str().map(str::to_owned);
+                on_event(Event::Connectors(crate::connectors::named(&message)));
             }
             Some("assistant") => {
                 // A subagent's (Task's) messages carry the tool call they answer: their words are
                 // never the agent's own last ones.
                 let own = message.get("parent_tool_use_id").is_none_or(Value::is_null);
+                if own && message["message"]["usage"].is_object() {
+                    last_usage = Some(message["message"]["usage"].clone());
+                }
                 for block in message["message"]["content"]
                     .as_array()
                     .into_iter()
@@ -671,6 +731,12 @@ pub async fn turn_on(
                             input: Value::Null,
                         });
                     }
+                }
+            }
+            // A line obid wrote, which Claude Code took (crate::steer): never a tool's answer.
+            Some("user") if message["isReplay"] == true => {
+                if let Some(steer) = &conn.steer {
+                    steer.replayed();
                 }
             }
             // A tool's answer, in the user message that hands it back to the model.
@@ -758,6 +824,9 @@ pub async fn turn_on(
                     &message,
                     api_key_source.as_deref(),
                 )));
+                if let Some(context) = crate::usage::claude_context(last_usage.as_ref(), &message) {
+                    on_event(Event::Context(context));
+                }
                 turn.result = Some(message);
                 turn.failure = match turn.succeeded() {
                     true => None,
@@ -774,6 +843,10 @@ pub async fn turn_on(
                     } else {
                         format!("Waiting for {what}")
                     }));
+                    continue;
+                }
+                // Words it hasn't taken yet are its next turn, in this same process (crate::steer).
+                if conn.steer.as_ref().is_some_and(|steer| !steer.over()) {
                     continue;
                 }
                 // The turn is over: no more input (unless it's kept), and nothing more to read.
@@ -863,7 +936,23 @@ pub fn step(tool: &str, input: &Value) -> String {
         "Task" | "Agent" => text("description")
             .unwrap_or("Starting a helper")
             .to_owned(),
-        _ => format!("Using {tool}"),
+        // The agent's questions to the owner, in words: Claude Code's own, and Oby's (Claude Code
+        // names it `mcp__oby__oby_ask_owner`, Codex `oby_ask_owner`).
+        "AskUserQuestion" => "Asking you a question".into(),
+        "ExitPlanMode" => "Asking you to approve its plan".into(),
+        _ if mcp_name(tool) == crate::permissions::ASK_OWNER => "Asking you a question".into(),
+        _ if mcp_name(tool).to_ascii_lowercase().contains("permission") => {
+            "Asking for permission".into()
+        }
+        _ => format!("Using {}", mcp_name(tool).replace('_', " ")),
+    }
+}
+
+/// An MCP tool's own name, without Claude Code's `mcp__<server>__` before it.
+fn mcp_name(tool: &str) -> &str {
+    match tool.strip_prefix("mcp__") {
+        Some(rest) => rest.split_once("__").map_or(rest, |(_, name)| name),
+        None => tool,
     }
 }
 
@@ -1096,6 +1185,65 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// LIVETASK-34: a command Claude Code runs in the foreground names the task whose output file
+    /// obid reads while it runs; one in the background, or a task of another kind, doesn't.
+    #[tokio::test]
+    async fn livetask_34_a_foreground_command_names_its_output_task() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("obid-spilled-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let bin = root.join("claude");
+        let lines = [
+            r#"{"type":"system","subtype":"task_started","task_id":"b21taen9b","tool_use_id":"toolu_1","task_type":"local_bash","is_backgrounded":false}"#,
+            r#"{"type":"system","subtype":"task_started","task_id":"bg1","tool_use_id":"toolu_2","task_type":"local_bash","is_backgrounded":true}"#,
+            r#"{"type":"system","subtype":"task_started","task_id":"ag1","tool_use_id":"toolu_3","task_type":"local_agent","is_backgrounded":false}"#,
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"Done.","session_id":"s1"}"#,
+        ];
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\nread line\n{}\n",
+                lines
+                    .iter()
+                    .map(|l| format!("echo '{l}'"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let launch = Launch {
+            argv: vec![bin.into_os_string()],
+            env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+            cwd: root.clone(),
+            stderr: root.join("agent.log"),
+            own_sandbox: false,
+            group: None,
+        };
+        let (_stop, stop) = watch::channel(process::Signal::Run);
+        let spilled = std::sync::Mutex::new(Vec::new());
+        run_turn(
+            launch,
+            "Do it.",
+            Duration::from_secs(60),
+            stop,
+            |_, _| Ruling::Now(Answer::Allow),
+            |event| {
+                if let Event::Spilled { id, task } = event {
+                    spilled.lock().unwrap().push((id, task));
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *spilled.lock().unwrap(),
+            [("toolu_1".to_owned(), "b21taen9b".to_owned())]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// After its result Claude Code finishes its session file, which the next turn's `--resume`
     /// reads: obid lets it exit by itself (it took 0.8 to 3.1 seconds), never cutting it at once.
     #[tokio::test]
@@ -1308,6 +1456,26 @@ mod tests {
             "Looking for **/*.js"
         );
         assert_eq!(step("Mystery", &json!({})), "Using Mystery");
+        // A tool's name never shows raw: the owner's questions in words, an MCP tool's own name.
+        for asks in [
+            "AskUserQuestion",
+            "mcp__oby__oby_ask_owner",
+            "oby_ask_owner",
+        ] {
+            assert_eq!(step(asks, &json!({})), "Asking you a question", "{asks}");
+        }
+        assert_eq!(
+            step("ExitPlanMode", &json!({})),
+            "Asking you to approve its plan"
+        );
+        assert_eq!(
+            step("mcp__oby__request_permission", &json!({})),
+            "Asking for permission"
+        );
+        assert_eq!(
+            step("mcp__tetrix__search_entities", &json!({})),
+            "Using search entities"
+        );
     }
 
     /// RECOVERY-7: a 429's words say "rate limit", and that's no usage limit: the tool's fields

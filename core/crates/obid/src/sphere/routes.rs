@@ -54,6 +54,15 @@ pub async fn leave(State(shared): State<Arc<Shared>>) -> Result<Response, ApiErr
     Ok(json(StatusCode::OK, shared.link.leave().await?))
 }
 
+/// `PUT /v1/obid/sphere/owner`: who obid joins its first Sphere as (SPHERE-21). obid's token only:
+/// not on the gateway, and no other Oby reaches it.
+pub async fn set_owner(
+    State(shared): State<Arc<Shared>>,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    Ok(json(StatusCode::OK, shared.link.set_owner(&body)?))
+}
+
 /// `GET /v1/obid/sphere/pins`.
 pub async fn pins(State(shared): State<Arc<Shared>>) -> Response {
     json(StatusCode::OK, shared.link.pins_json())
@@ -150,6 +159,39 @@ pub async fn peer_ask(
     ))
 }
 
+/// Whether a `PUT …/unsealed` is refused: letting a member's Obys have words in the clear takes an
+/// app of the owner's signature (`signed`, asked only then: checking a signature uses it up);
+/// taking it back never does (SPHERE-19). Proved in `proofs/sealed.rs`.
+pub(crate) fn unsigned_unsealing(allowing: bool, signed: impl FnOnce() -> bool) -> bool {
+    allowing && !signed()
+}
+
+/// `PUT /v1/obid/sphere/peers/{owner}/unsealed`: whether obid may send that member's Obys words in
+/// the clear while their card has no seal key (SPHERE-19). Sealed is the default (SPHERE-18), so
+/// allowing it is the owner's word alone, signed by an app of theirs: obid's token, which the page
+/// reaches through main, isn't enough. Taking it back sends less, and needs no more.
+pub async fn allow_unsealed(
+    State(shared): State<Arc<Shared>>,
+    Path(owner): Path<String>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let allowing = serde_json::from_slice::<Value>(&body).is_ok_and(|b| b["allow"] == true);
+    if unsigned_unsealing(allowing, || {
+        crate::routes::signed_by(&shared, "PUT", &uri, &headers, &body).is_some()
+    }) {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Sending to them unsealed is only yours to allow: an app of yours signs it.",
+        ));
+    }
+    Ok(json(
+        StatusCode::OK,
+        shared.link.allow_unsealed(&owner, &body).await?,
+    ))
+}
+
 /// `GET /v1/obid/decisions`.
 pub async fn decisions(State(shared): State<Arc<Shared>>) -> Response {
     json(StatusCode::OK, shared.link.decisions_json())
@@ -211,6 +253,23 @@ pub async fn inbox(
     Ok(json(StatusCode::OK, shared.link.inbox_json(done, limit)))
 }
 
+/// Whether an answer is an Accept of another Oby's work that no hand of the owner's gave, so it is
+/// refused (SPHERE-17): `signed`, an app of the owner's signed this exact request (`X-Oby-Words`);
+/// `paired`, a phone paired through the gateway sent it; `request` the type of the open item's
+/// other-Oby request (none when no such item is open); `answer` the body's `answer`, both as bytes.
+/// Decline, Later and every other answer never need a hand here. Proved in `proofs/accept.rs`.
+pub(crate) fn unsigned_accept(
+    signed: bool,
+    paired: bool,
+    request: Option<&[u8]>,
+    answer: Option<&[u8]>,
+) -> bool {
+    !signed
+        && !paired
+        && matches!(request, Some(b"review_request" | b"handoff"))
+        && answer.is_some_and(super::inbox::accepts_bytes)
+}
+
 /// `POST /v1/inbox/{id}/answer`.
 pub async fn answer(
     State(shared): State<Arc<Shared>>,
@@ -239,6 +298,32 @@ pub async fn answer(
         return Err(ApiError::new(
             StatusCode::FORBIDDEN,
             super::link::NEEDS_YOUR_HAND,
+        ));
+    }
+    // Another Oby's review request or handoff is accepted, once or remembered, only by the owner's
+    // hand too (SPHERE-17, the Approvals non-negotiable): a signature of one of their devices, or a
+    // paired phone through the gateway, never obid's token alone. Decline and Later stay unsigned:
+    // saying no or putting it off starts nothing.
+    let open = (!typed && device.is_none())
+        .then(|| shared.link.item(&id))
+        .flatten()
+        .filter(|i| i.done.is_none());
+    let parsed = serde_json::from_slice::<Value>(&body).ok();
+    if unsigned_accept(
+        typed,
+        device.is_some(),
+        open.as_ref()
+            .and_then(|i| i.obi.as_ref())
+            .and_then(|o| o["type"].as_str())
+            .map(str::as_bytes),
+        parsed
+            .as_ref()
+            .and_then(|b| b["answer"].as_str())
+            .map(str::as_bytes),
+    ) {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            super::link::NEEDS_YOUR_ACCEPT,
         ));
     }
     // A job's permission, or its plan, is allowed only by the owner's signed words (PERMISSIONS-15):
@@ -352,6 +437,7 @@ pub async fn answer(
         // Not a Confirm of an open confirm item: answered as before (one already done says so).
         let Some(live) = confirm_item.filter(|i| confirming && i.done.is_none()) else {
             let answered = shared.link.answer_typed(&id, &rest, typed).await?;
+            started_in_its_conversation(&shared, &answered);
             return Ok((StatusCode::OK, answered, None));
         };
         let (item, checked) = as_checked(checked, live);
@@ -386,6 +472,22 @@ pub async fn answer(
     };
     let stored = crate::routes::stored;
     crate::routes::keyed(&shared, key.as_deref(), &route, &judged, stored, work).await
+}
+
+/// A `github` card answered with its start (`Review it`, `Fix it`, `Fix CI`): its task, started as
+/// the feed's tap starts it, is in a conversation of its own the same way (TASKCONV-2, 29), so the
+/// app shows it where tasks show, under that conversation. Its title is GitHub's, so the
+/// conversation counts as having read words from outside.
+fn started_in_its_conversation(shared: &Shared, answered: &Value) {
+    let start = answered["options"].get(0).and_then(Value::as_str);
+    let job = answered["job"].as_str().filter(|j| !j.is_empty());
+    if answered["kind"] != "github" || start.is_none() || answered["answer"].as_str() != start {
+        return;
+    }
+    if let Some(job) = job.and_then(|j| shared.jobs.get(j)) {
+        let foreign = format!("the title of job {}, which came from GitHub", job.id);
+        crate::task_conversation::give(shared, job, Some(foreign));
+    }
 }
 
 /// What a Confirm confirms (#776): the item as its approval was checked before the lookup, never as

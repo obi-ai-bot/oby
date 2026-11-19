@@ -793,6 +793,33 @@ fn a_wait_through_the_gateway_starts_at_once() {
     assert!(rest.contains(&id), "{rest}");
 }
 
+/// TASKS-29: a job's changes answer on the loopback API and not through the gateway, which
+/// passes the job's transcript for the same device token.
+#[test]
+fn tasks_29_the_gateway_refuses_a_jobs_changes() {
+    let folder = Folder::new("gateway-changes");
+    let obid = started(&folder);
+    let token = paired(&obid);
+    let job = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(&json!({"job": {
+        "repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"}})),
+    );
+    assert_eq!(job.status, 201, "{}", job.text);
+    let id = job.body["id"].as_str().unwrap().to_owned();
+    let changes = format!("/v1/jobs/{id}/changes");
+    let loopback = call(&obid, "GET", &changes, None);
+    assert_eq!(loopback.status, 200, "{}", loopback.text);
+    let phone = through(&obid, Some(&token), "GET", &changes, None);
+    assert_eq!(phone.status, 404, "{}", phone.text);
+    let transcript = format!("/v1/jobs/{id}/transcript");
+    let read = through(&obid, Some(&token), "GET", &transcript, None);
+    assert_ne!(read.status, 404, "{}", read.text);
+    call(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
+}
+
 /// RECEIPTS-5 through the gateway: a paired phone's `POST /v1/jobs` sent again with its
 /// `Idempotency-Key` gets the first job back, so the gateway passes the key on.
 #[test]
@@ -1962,6 +1989,170 @@ async fn folders_7_a_phone_on_the_relay_adds_no_folder() {
         .await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["folders"], json!([]));
+}
+
+/// A project and a conversation made on the Mac, for PROJECTS-10: the project's id and the
+/// conversation's path.
+fn mac_project(obid: &Obid, folder: &Folder) -> (String, String) {
+    let picked = folder.0.join("env-home/Projects/api");
+    std::fs::create_dir_all(&picked).unwrap();
+    let api = picked.canonicalize().unwrap().to_str().unwrap().to_owned();
+    let made = call(
+        obid,
+        "POST",
+        "/v1/projects",
+        Some(&json!({"name": "Oby", "folders": [api]})),
+    );
+    assert_eq!(made.status, 201, "{}", made.text);
+    let words = json!({"said": "tidy up", "new": true});
+    let started = call(obid, "POST", "/v1/plans", Some(&words));
+    assert_eq!(started.status, 200, "{}", started.text);
+    let path = format!(
+        "/v1/conversations/{}",
+        started.body["conversation"].as_str().unwrap()
+    );
+    (made.body["id"].as_str().unwrap().to_owned(), path)
+}
+
+/// PROJECTS-10: a paired phone reaches no project route, puts no conversation in a project and
+/// starts none in one; it may take a conversation out of its project.
+#[test]
+fn projects_10_a_paired_phone_only_takes_a_conversation_out() {
+    let folder = Folder::new("gateway-projects");
+    let remote = fixture(&folder.0.join("fixture"));
+    let harness = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-harness");
+    let mut config = config(&folder.0, &remote, &harness);
+    config["gateway"] = json!("127.0.0.1:0");
+    let account = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(account.join(".credentials.json"), "{}").unwrap();
+    let obid = start_at_home(&folder, &config);
+    let token = paired(&obid);
+    let (project, path) = mac_project(&obid, &folder);
+    let one = format!("/v1/projects/{project}");
+    let name = json!({"name": "Phone"});
+
+    for (method, target, body) in [
+        ("GET", "/v1/projects", None),
+        ("POST", "/v1/projects", Some(&name)),
+        ("PATCH", one.as_str(), Some(&name)),
+        ("DELETE", one.as_str(), None),
+    ] {
+        let refused = through(&obid, Some(&token), method, target, body);
+        assert_eq!(refused.status, 404, "{method} {target}: {}", refused.text);
+        assert_eq!(
+            refused.body["error"],
+            "That route isn't available through the gateway."
+        );
+    }
+    let chosen =
+        "Projects are chosen only on the Mac: from here you can take a conversation out of one.";
+    let putting = through(
+        &obid,
+        Some(&token),
+        "PATCH",
+        &path,
+        Some(&json!({"project": project})),
+    );
+    assert_eq!(putting.status, 422, "{}", putting.text);
+    assert_eq!(putting.body["error"], chosen);
+    let starting = through(
+        &obid,
+        Some(&token),
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "tidy up", "new": true, "project": project})),
+    );
+    assert_eq!(starting.status, 422, "{}", starting.text);
+    assert_eq!(starting.body["error"], chosen);
+
+    let mac = call(&obid, "PATCH", &path, Some(&json!({"project": project})));
+    assert_eq!(mac.status, 200, "{}", mac.text);
+    let out = through(
+        &obid,
+        Some(&token),
+        "PATCH",
+        &path,
+        Some(&json!({"project": null})),
+    );
+    assert_eq!(out.status, 200, "{}", out.text);
+    assert_eq!(out.body["project"], Value::Null);
+    let projects = call(&obid, "GET", "/v1/projects", None);
+    assert_eq!(
+        projects.body.as_array().unwrap().len(),
+        1,
+        "{}",
+        projects.text
+    );
+}
+
+/// PROJECTS-10 over the phone relay: the same, for a phone paired through the owner's Obysphere.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn projects_10_a_phone_on_the_relay_only_takes_a_conversation_out() {
+    let folder = Folder::new("relay-projects");
+    let sphere = FakeSphere::start().await;
+    let remote = fixture(&folder.0.join("fixture"));
+    let harness = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-harness");
+    let mut config = config(&folder.0, &remote, &harness);
+    config["gateway"] = json!("127.0.0.1:0");
+    let account = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(account.join(".credentials.json"), "{}").unwrap();
+    let obid = start_at_home(&folder, &config);
+    let membership =
+        tokio::task::block_in_place(|| join_a(&obid, &sphere, &Owner::new("wellington")));
+    assert_eq!(membership["state"], "joined");
+    let (mut phone, token, _) = relay_paired(&obid, &sphere, "Alice's iPhone").await;
+    let (project, path) = tokio::task::block_in_place(|| mac_project(&obid, &folder));
+    let one = format!("/v1/projects/{project}");
+    let name = json!({"name": "Phone"});
+
+    for (method, target, body) in [
+        ("GET", "/v1/projects", None),
+        ("POST", "/v1/projects", Some(&name)),
+        ("PATCH", one.as_str(), Some(&name)),
+        ("DELETE", one.as_str(), None),
+    ] {
+        let (status, answer) = phone.call(method, target, Some(&token), body).await;
+        assert_eq!(status, 404, "{method} {target}: {answer}");
+        assert_eq!(
+            answer["error"],
+            "That route isn't available through the gateway."
+        );
+    }
+    let (status, body) = phone
+        .call(
+            "PATCH",
+            &path,
+            Some(&token),
+            Some(&json!({"project": project})),
+        )
+        .await;
+    assert_eq!(status, 422, "{body}");
+    let (status, body) = phone
+        .call(
+            "POST",
+            "/v1/plans",
+            Some(&token),
+            Some(&json!({"said": "tidy up", "new": true, "project": project})),
+        )
+        .await;
+    assert_eq!(status, 422, "{body}");
+
+    let mac = tokio::task::block_in_place(|| {
+        call(&obid, "PATCH", &path, Some(&json!({"project": project})))
+    });
+    assert_eq!(mac.status, 200, "{}", mac.text);
+    let (status, body) = phone
+        .call(
+            "PATCH",
+            &path,
+            Some(&token),
+            Some(&json!({"project": null})),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["project"], Value::Null);
 }
 
 /// A stand-in gh for one pull request, open, green and clean into dev at `head`, whose merge waits

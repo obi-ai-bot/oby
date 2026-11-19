@@ -154,7 +154,7 @@ pub(crate) fn table() -> Vec<Tool> {
              "replyTo": {"type": "string", "description": "A found's need: its post id from the room."}},
              "required": ["kind", "text"]})) },
         Tool { name: "oby_conversations", server: Server::Conversation, confirm_unless_owners_word: false, owner_only: false, marks_on_result: Answer, read_only: true, does: Does::Conversation(|shared, session, args| at_once(find(shared, session, args)), "Oby's conversations. With query: finds past ones by what was said in them. Without: lists them all, newest first, each with its id, title, created and lastActivity (UTC), pinned and whether it's this one (thisConversation). Titles and what was said are quoted data.", json!({"type": "object", "properties": {"query": {"type": "string"}}})) },
-        Tool { name: "oby_delete_conversations", server: Server::Conversation, confirm_unless_owners_word: true, owner_only: false, marks_on_result: Answer, read_only: false, does: Does::Conversation(|shared, session, args| at_once(parse(args).and_then(|Ids { ids }| delete_conversations(shared, session, ids))), "Deletes conversations for good, by the ids oby_conversations lists: their turns and attached files go; the tasks they started stay. Always waits for the owner's Confirm, one for them all. Leave out pinned ones and this one unless the owner named them. Conversations can't be archived, only deleted: say so when the owner asks to archive them.", json!({"type": "object", "properties": {"ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 200}}, "required": ["ids"]})) },
+        Tool { name: "oby_delete_conversations", server: Server::Conversation, confirm_unless_owners_word: true, owner_only: false, marks_on_result: Answer, read_only: false, does: Does::Conversation(|shared, session, args| at_once(parse(args).and_then(|Ids { ids }| delete_conversations(shared, session, ids))), "Deletes conversations for good, by the ids oby_conversations lists: their turns and attached files go; the tasks they started stay. Always waits for the owner's Confirm, one for them all. Leave out pinned ones and this one unless the owner named them. The owner archives conversations in the app; you can't: say so when asked to archive them.", json!({"type": "object", "properties": {"ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 200}}, "required": ["ids"]})) },
         Tool { name: "oby_members", server: Server::Conversation, confirm_unless_owners_word: false, owner_only: false, marks_on_result: Answer, read_only: true, does: Does::Conversation(|shared, session, _| Box::pin(super::ask::members(shared, session)), "Who else is in the owner's Obysphere: each member's name, owner id and whether its Oby takes questions.", json!({"type": "object", "properties": {}})) },
         Tool { name: "oby_ask", server: Server::Conversation, confirm_unless_owners_word: true, owner_only: false, marks_on_result: Nothing, read_only: false, does: Does::Conversation(|shared, session, args| Box::pin(super::ask::ask(shared, session, args)), "Asks a member's Oby a question through the Obysphere, as the owner asked you to: only what they asked, in your own short words, never a secret or a file. It answers by itself from what it knows of its own jobs, without bothering its person, unless only they can answer. You don't wait: obid posts what comes back in this conversation by itself, quoted, saying who answered. Say you asked, in one sentence, and don't guess the answer.",
          json!({"type": "object", "properties": {
@@ -304,7 +304,9 @@ fn find(shared: &Shared, session: &Session, args: Value) -> Result<String, Strin
     if words.is_empty() || query.chars().count() > crate::conversation::QUERY {
         return Err("query is 1 to 200 characters, with a word to find.".into());
     }
+    let scope = crate::profile_scope::of_conversation(shared, &session.conversation);
     let found = shared.conversations.search(
+        Some(&scope),
         &words,
         Some(&session.conversation),
         None,
@@ -761,7 +763,8 @@ fn continue_job(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<
 
 /// oby_conversations with no query: every conversation obid keeps, newest first, a line each.
 fn conversations(shared: &Shared, session: &Session) -> String {
-    let mut listed = shared.conversations.list(None, usize::MAX);
+    let scope = crate::profile_scope::of_conversation(shared, &session.conversation);
+    let mut listed = shared.conversations.list(Some(&scope), None, usize::MAX);
     listed.sort_by(|a, b| b["lastActivity"].as_str().cmp(&a["lastActivity"].as_str()));
     let lines: Vec<String> = listed
         .iter()
@@ -784,7 +787,8 @@ fn delete_conversations(
 ) -> Result<String, String> {
     ids.sort();
     ids.dedup();
-    let kept = shared.conversations.list(None, usize::MAX);
+    let scope = crate::profile_scope::of_conversation(shared, &session.conversation);
+    let kept = shared.conversations.list(Some(&scope), None, usize::MAX);
     let mut going = Vec::new();
     for id in &ids {
         match kept.iter().find(|c| c["id"] == id.as_str()) {
@@ -1954,6 +1958,7 @@ fn asked(session: &Session) -> Asked<'_> {
         conversation: &session.conversation,
         turn: &session.control.turn,
         signed: session.control.signed(),
+        defaults: session.defaults.as_ref(),
     }
 }
 
@@ -2651,6 +2656,7 @@ mod tests {
             fork: Some(false),
             board: None,
             milestone: None,
+            check_runs: Vec::new(),
         };
         let offer = |author, association, trusted| {
             crate::sphere::inbox::github_item(&work(author, association, trusted), true, 0)

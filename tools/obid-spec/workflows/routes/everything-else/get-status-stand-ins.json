@@ -1,0 +1,71 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/status: a scratch obid reaches only stand-ins",
+  "version": "1.0.0",
+  "description": "A scratch obid runs no real CLI of the person's (OBIDSPEC-8): every tool it lists is a stand-in under core/crates/obid/tests/agents, by absolute path, and it finds no login on the Mac. (obid looks for a tool given by a bare name on its PATH, its login shell's and the usual install folders, /opt/homebrew/bin among them, so the suite never gives one: obid-start refuses it and obidspec_8 checks every workflow.)",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/status"
+    }
+  },
+  "steps": [
+    {
+      "id": "obid",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "obidspec-8-no-login-of-the-persons-found",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "OBIDSPEC-8"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.obid}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "body": {
+            "availableLogins": []
+          }
+        }
+      }
+    },
+    {
+      "id": "obidspec-8-the-tools-listed",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "OBIDSPEC-8"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.obid}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tools": {
+              "$count": [
+                {
+                  "path": {
+                    "$contains": "/core/crates/obid/tests/agents/"
+                  }
+                },
+                3
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

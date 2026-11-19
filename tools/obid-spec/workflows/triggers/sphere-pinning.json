@@ -1,0 +1,639 @@
+{
+  "schemaVersion": "2",
+  "name": "Sphere directory: a member's owner key changes",
+  "version": "1.0.0",
+  "description": "A Sphere serves a member's card signed by another owner key: obid leaves the member out and asks once, a Confirm titled with the new key's fingerprint, never twice, and a newer key replaces the card (SPHERE-8); unsigned Confirm is 403 and pins nothing, the device's signed Confirm trusts it and the member is back, and a Confirm after the waiting key moved on is 409 (SPHERE-9).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "real-sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-liar",
+      "inputs": {
+        "sphere": "${state.real-sphere}"
+      }
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.alex}"
+      }
+    },
+    {
+      "id": "dana-trusted-at-first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "owner": "dana"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "key-2",
+      "use": "runtime.rust:sphere-lie",
+      "inputs": {
+        "sphere": "${state.sphere}",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "sphere-8-dana-left-out",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-8"
+        ]
+      }
+    },
+    {
+      "id": "sphere-8-one-confirm-names-the-new-fingerprint",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 20,
+        "pick": {
+          "where": {
+            "kind": "confirm",
+            "state": "open",
+            "title": "New key for dana: compare with them (${state.key-2.keyId})",
+            "confirm": {
+              "action": "trust_key",
+              "target": "dana",
+              "payload": {
+                "owner": "dana",
+                "fingerprint": "${state.key-2.keyId}"
+              }
+            }
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "kind": "confirm",
+                  "state": "open",
+                  "confirm": {
+                    "action": "trust_key"
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-8"
+        ]
+      }
+    },
+    {
+      "id": "read-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "sphere-8-no-second-card-on-the-next-read",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "pick": {
+          "where": {
+            "kind": "confirm",
+            "state": "open",
+            "title": "New key for dana: compare with them (${state.key-2.keyId})",
+            "confirm": {
+              "action": "trust_key",
+              "target": "dana",
+              "payload": {
+                "owner": "dana",
+                "fingerprint": "${state.key-2.keyId}"
+              }
+            }
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "kind": "confirm",
+                  "state": "open",
+                  "confirm": {
+                    "action": "trust_key"
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-8"
+        ]
+      }
+    },
+    {
+      "id": "sphere-8-the-same-card",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.sphere-8-no-second-card-on-the-next-read.picked.id}",
+        "expect": {
+          "body": "${state.sphere-8-one-confirm-names-the-new-fingerprint.picked.id}"
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-8"
+        ]
+      }
+    },
+    {
+      "id": "key-3",
+      "use": "runtime.rust:sphere-lie",
+      "inputs": {
+        "sphere": "${state.sphere}",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "read-3",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "sphere-8-one-card-stands-for-the-third-key",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 20,
+        "pick": {
+          "where": {
+            "kind": "confirm",
+            "state": "open",
+            "title": "New key for dana: compare with them (${state.key-3.keyId})",
+            "confirm": {
+              "action": "trust_key",
+              "target": "dana",
+              "payload": {
+                "owner": "dana",
+                "fingerprint": "${state.key-3.keyId}"
+              }
+            }
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "kind": "confirm",
+                  "state": "open",
+                  "confirm": {
+                    "action": "trust_key"
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-8"
+        ]
+      }
+    },
+    {
+      "id": "sphere-9-an-unsigned-confirm-403",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.sphere-8-one-card-stands-for-the-third-key.picked.id}/answer",
+        "body": {
+          "answer": "Confirm"
+        },
+        "expect": {
+          "status": 403
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-9"
+        ]
+      }
+    },
+    {
+      "id": "sphere-9-the-card-stays",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "pick": {
+          "where": {
+            "kind": "confirm",
+            "state": "open",
+            "title": "New key for dana: compare with them (${state.key-3.keyId})",
+            "confirm": {
+              "action": "trust_key",
+              "target": "dana",
+              "payload": {
+                "owner": "dana",
+                "fingerprint": "${state.key-3.keyId}"
+              }
+            }
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "kind": "confirm",
+                  "state": "open",
+                  "confirm": {
+                    "action": "trust_key"
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-9"
+        ]
+      }
+    },
+    {
+      "id": "sphere-9-nothing-pinned",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/pins",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "owner": "dana",
+                "fingerprint": "${state.dana-key.keyId}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-9"
+        ]
+      }
+    },
+    {
+      "id": "sphere-9-a-signed-confirm-trusts-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.sphere-8-one-card-stands-for-the-third-key.picked.id}/answer",
+        "confirm": {
+          "device": "${state.device}",
+          "item": "${state.sphere-8-one-card-stands-for-the-third-key.picked.id}"
+        },
+        "expect": {
+          "status": 200
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-9"
+        ]
+      }
+    },
+    {
+      "id": "sphere-9-pinned-verified",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/pins",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "owner": "dana",
+                "fingerprint": "${state.key-3.keyId}",
+                "verified": true
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-9"
+        ]
+      }
+    },
+    {
+      "id": "sphere-9-dana-is-back",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "owner": "dana",
+              "verified": true
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-9"
+        ]
+      }
+    },
+    {
+      "id": "key-4",
+      "use": "runtime.rust:sphere-lie",
+      "inputs": {
+        "sphere": "${state.sphere}",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "read-4",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "card-4",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 20,
+        "pick": {
+          "where": {
+            "kind": "confirm",
+            "state": "open",
+            "title": "New key for dana: compare with them (${state.key-4.keyId})",
+            "confirm": {
+              "action": "trust_key",
+              "target": "dana",
+              "payload": {
+                "owner": "dana",
+                "fingerprint": "${state.key-4.keyId}"
+              }
+            }
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "kind": "confirm",
+                  "state": "open",
+                  "confirm": {
+                    "action": "trust_key"
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "key-5",
+      "use": "runtime.rust:sphere-lie",
+      "inputs": {
+        "sphere": "${state.sphere}",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "read-5",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "sphere-9-a-confirm-after-the-key-moved-on-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.card-4.picked.id}/answer",
+        "confirm": {
+          "device": "${state.device}",
+          "item": "${state.card-4.picked.id}",
+          "title": "${state.card-4.picked.title}"
+        },
+        "expect": {
+          "status": 409
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-9"
+        ]
+      }
+    },
+    {
+      "id": "sphere-9-it-pinned-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/pins",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "owner": "dana",
+                "fingerprint": "${state.key-3.keyId}",
+                "verified": true
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-9"
+        ]
+      }
+    },
+    {
+      "id": "sphere-9-the-pins-dont-name-key-4",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/pins",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "owner": "dana",
+                "fingerprint": "${state.key-4.keyId}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-9"
+        ]
+      }
+    }
+  ]
+}

@@ -5,15 +5,28 @@ import { dirname, join } from 'node:path';
 import { bridge, startObid, type Trusted } from './obid';
 import { living } from './live';
 import { confirming, ownersWords } from './device';
+import { worktrees } from './worktree';
 import { input, space, picked } from './words';
 import { notifying, windowLeft, windowSeen } from './notify';
 import { updating } from './updates';
 import { localSettings, loginDefault } from './settings';
 import { menu } from '../shared/menu';
 import { sphering } from './sphere';
+import { stays } from './navigate';
 import { ipc } from './ipc';
 import { childGone, quit, quitting, renderFailed, rendererGone, started, windowLoaded } from './runMarker';
 import { flag, https, string } from '../shared/decode';
+import { SCRATCH } from '../shared/build';
+import { ownFolder } from './appFolder';
+
+// A scratch install (scripts/run-dev.sh --port --home, shared/build.ts) and the app run from source
+// (npm run dev) keep their own folder and Keychain item, never the installed Oby's (main/appFolder.ts,
+// KEYCHAIN-11): set before anything reads them
+const own = ownFolder({ packaged: app.isPackaged, name: app.name, scratchHome: SCRATCH?.home ?? null, appData: () => app.getPath('appData') });
+if (own) {
+  app.setName(own.name);
+  app.setPath('userData', own.userData);
+}
 
 // One small window: Oby, what needs you, and a way to talk. The renderer gets
 // the cursor's position wherever it is on screen, so Oby can watch it outside
@@ -72,6 +85,7 @@ let last = '';
 const trusted: Trusted = (e) => !!win && e.sender === win.webContents && e.senderFrame === win.webContents.mainFrame;
 bridge(trusted, ownersWords);
 confirming(trusted);
+worktrees(trusted);
 const channels = ipc(trusted);
 // the page asks for both before it draws, to lay its title bar out around the lights
 channels.on('window-chrome', [], () => chrome, null);
@@ -167,10 +181,11 @@ function createWindow() {
   // Oby's alerts (notify.ts): none for what the window shows while it's in front
   win.on('focus', windowSeen);
   for (const ev of ['blur', 'hide', 'minimize'] as const) win.on(ev as 'blur', windowLeft);
-  // the page holds obid's API through main: it never leaves for another page or opens one (in dev,
-  // only to itself with other words after ?, like ?welcome)
+  // the page holds obid's API through main: it never leaves for another page or opens one, but may
+  // reload itself (another profile opened, PROFILES-42); in dev, also go to itself with other words
+  // after ?, like ?welcome (navigate.ts)
   win.webContents.on('will-navigate', (e, url) => {
-    if (!dev || new URL(url).origin !== new URL(win!.webContents.getURL()).origin) e.preventDefault();
+    if (!stays(url, win!.webContents.getURL(), dev)) e.preventDefault();
   });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   // its page loaded: this start counts as a good one (runMarker.ts)
@@ -212,8 +227,9 @@ app.whenReady().then(() => {
   notifying(trusted, () => win, front);
   // obid's events, followed once from here until Oby quits, for the alerts and the window (live.ts)
   living(trusted, () => win);
-  // Oby's own updates (updates.ts), told to About while the window is there
-  updating(trusted, () => win);
+  // Oby's own updates (updates.ts), told to About while the window is there; a scratch install
+  // never updates itself
+  if (!SCRATCH) updating(trusted, () => win);
   // Settings rows obid has no setting for yet, kept in settings.json (settings.ts)
   localSettings(trusted);
   // Open at login's default, once per install (settings.ts)

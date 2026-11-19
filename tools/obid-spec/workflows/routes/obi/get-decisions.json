@@ -1,0 +1,125 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/obid/decisions",
+  "version": "1.0.0",
+  "description": "What the owner decided once: none on a fresh home; a confirmed standing approval is listed with its id.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/obid/decisions"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/obid/decisions",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "none",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/obid/decisions",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "asked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/obid/decisions",
+        "body": {
+          "type": "host_approval",
+          "fromOwner": "dana",
+          "repo": "obi-e2e/fixture-app"
+        },
+        "expect": {
+          "status": 202,
+          "body": {
+            "kind": "confirm",
+            "state": "open",
+            "confirm": {
+              "action": "remember_approval",
+              "payload": {
+                "fromOwner": "dana",
+                "repo": "obi-e2e/fixture-app"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "confirmed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.asked.body.id}/answer",
+        "confirm": {
+          "device": "${state.device}",
+          "item": "${state.asked.body.id}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "listed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/obid/decisions",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": {
+                "$matches": "^d-[0-9a-f]{12}$"
+              },
+              "type": "host_approval",
+              "fromOwner": "dana",
+              "repo": "obi-e2e/fixture-app",
+              "decision": "accept",
+              "uses": 0,
+              "lastUsed": null
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

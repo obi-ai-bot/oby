@@ -1,0 +1,152 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/conversation/stop",
+  "version": "1.0.0",
+  "description": "Stops the turn under way: 400 for another body; 200 stopped, and the stopped turn's words answer what it said so far.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/conversation/stop"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Fine.",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Fine."
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/conversation/stop",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "another-body-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/conversation/stop",
+        "body": {
+          "turn": "x"
+        },
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "lingering",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "LINGER 30000",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "under-way",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "user",
+                "delivery": {
+                  "status": "running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/conversation/stop",
+        "body": {
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "stopped": true
+          }
+        }
+      }
+    },
+    {
+      "id": "its-words-answer-at-once",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.lingering}",
+        "seconds": 20,
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "nothing-running-still-200",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/conversation/stop",
+        "expect": {
+          "status": 200,
+          "body": {
+            "stopped": true
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,253 @@
+{
+  "schemaVersion": "2",
+  "name": "PUT /v1/obid/sphere/peers/{owner}/unsealed",
+  "version": "1.0.0",
+  "description": "The owner lets one member have words in the clear (SPHERE-19): allowing takes the owner's signed word (the token alone is 403); once allowed a request to that member goes in the clear and the members list says unsealed; taking it back takes the token alone, and the ask is refused again.",
+  "trigger": {
+    "http": {
+      "method": "PUT",
+      "path": "/v1/obid/sphere/peers/{owner}/unsealed"
+    }
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.alex}"
+      }
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}"
+      }
+    },
+    {
+      "id": "dana-has-no-seal-key",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "owner": "dana",
+              "sealed": false
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "PUT",
+        "path": "/v1/obid/sphere/peers/dana/unsealed",
+        "body": {
+          "allow": true
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "sphere-19-the-token-alone-403",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "PUT",
+        "path": "/v1/obid/sphere/peers/dana/unsealed",
+        "body": {
+          "allow": true
+        },
+        "expect": {
+          "status": 403
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-19"
+        ]
+      }
+    },
+    {
+      "id": "sphere-19-allowed-by-the-owners-word",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "PUT",
+        "path": "/v1/obid/sphere/peers/dana/unsealed",
+        "body": {
+          "allow": true
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "owner": "dana",
+            "unsealed": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-19"
+        ]
+      }
+    },
+    {
+      "id": "sphere-19-members-say-unsealed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "owner": "dana",
+              "unsealed": true
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-19"
+        ]
+      }
+    },
+    {
+      "id": "sphere-19-a-request-goes-in-the-clear",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.dana-joined.obiId}",
+          "type": "question",
+          "body": {
+            "text": "What are you working on?"
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 202,
+          "paths": {
+            "messages.0.envelope.seal": {
+              "$exists": false
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-19"
+        ]
+      }
+    },
+    {
+      "id": "sphere-19-taken-back-with-the-token",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "PUT",
+        "path": "/v1/obid/sphere/peers/dana/unsealed",
+        "body": {
+          "allow": false
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "owner": "dana",
+            "unsealed": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-19"
+        ]
+      }
+    },
+    {
+      "id": "sphere-19-refused-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.dana-joined.obiId}",
+          "type": "question",
+          "body": {
+            "text": "What are you working on?"
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 409,
+          "body": {
+            "reason": "not_sealed"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-19"
+        ]
+      }
+    }
+  ]
+}

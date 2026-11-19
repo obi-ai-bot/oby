@@ -1,11 +1,13 @@
 import { createPublicKey, generateKeyPairSync, verify, type KeyObject } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join as path } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
-  ACCEPTS, NotThisKey, SCOPES, addStarterRule, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, readPolicy,
+  ACCEPTS, NotThisKey, SCOPES, addSignin, addStarterRule, getBackIn, signinStatus, inviteLink, rebindOffer, setAdmin, listInvitations, makeInvitation, withdrawInvitation, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, readPolicy,
   starterRule, writePolicy, type Answer, type Call, type PolicyAnswer, type Rule,
 } from '../../../shared/sphere';
+import { withStarterRule } from '../../../shared/policy';
+import { sphereAddress } from '../../../shared/invite';
 import { canAddProgress, canChangeRepos, canOpenRoom, confirmIsOff, repoTicks, tickRepo, whatItTells, type SharingRule } from '../sharing';
 
 // docs/contracts/obysphere.md: each test is named after its scenario. SPHERE-5 (two real obids on
@@ -202,6 +204,7 @@ const BASE = 'https://sphere.example.com/v0.1';
 // runs before a PUT is checked, as another admin's write would, or answers in its place.
 function fakeSphere(o: { admins?: string[]; version?: number; rules?: Rule[]; onPut?: (p: { version: number; rules: Rule[] }) => Response | void } = {}) {
   const policy = { version: o.version ?? 0, rules: o.rules ?? [] };
+  const invitations: { invitation_id: string; max_uses: number; uses: number; secret: string; expires_at: string; asked: unknown }[] = [];
   const admins = o.admins ?? ['wellington'];
   const granted = new Map<string, string>();
   const requests: { url: string; init: RequestInit }[] = [];
@@ -218,6 +221,38 @@ function fakeSphere(o: { admins?: string[]; version?: number; rules?: Rule[]; on
     }
     const scope = granted.get(String((init.headers as Record<string, string>).authorization).replace('Bearer ', '')) ?? '';
     if (url === `${BASE}/spheres/demo`) return answer({ sphere: 'demo', admin_owner: 'dmytro', admins });
+    // its admins (sphere-api.md section 2): an admin token; only a joined owner; at least one kept
+    const adminOf = /\/spheres\/demo\/admins\/([^/]+)$/.exec(url);
+    if (adminOf) {
+      if (!scope.split(' ').includes('admin')) return answer({ error: { code: 'insufficient_scope' } }, 403);
+      const who = decodeURIComponent(adminOf[1]);
+      if (init.method === 'PUT') {
+        if (!JOINED_OWNERS.includes(who)) return answer({ error: { code: 'conflict' } }, 409);
+        if (!admins.includes(who)) admins.push(who);
+      } else if (admins.includes(who)) {
+        if (admins.length === 1) return answer({ error: { code: 'conflict' } }, 409);
+        admins.splice(admins.indexOf(who), 1);
+      }
+      admins.sort();
+      return answer({ sphere: 'demo', admin_owner: 'dmytro', admins });
+    }
+    // invitations (sphere-api.md section 4): an admin token only, as the Sphere's own check
+    if (url.startsWith(`${BASE}/spheres/demo/invitations`)) {
+      if (!scope.split(' ').includes('admin')) return answer({ error: { code: 'insufficient_scope', message: 'this call needs the scope admin' } }, 403);
+      if (init.method === 'POST') {
+        const b = JSON.parse(String(init.body)) as { expires_in: number; max_uses: number };
+        const made = { invitation_id: `9187a87a-3126-424c-8861-${String(invitations.length).padStart(12, '0')}`, sphere: 'demo', max_uses: b.max_uses, uses: 0, secret: 'S'.repeat(43), expires_at: '2026-12-02T12:00:00Z', asked: b };
+        invitations.unshift(made);
+        return answer(made, 201);
+      }
+      if (init.method === 'DELETE') {
+        const at = invitations.findIndex((i) => url.endsWith(`/${i.invitation_id}`));
+        if (at < 0) return answer({ error: { code: 'not_found' } }, 404);
+        invitations.splice(at, 1);
+        return new Response(null, { status: 204 });
+      }
+      return answer({ sphere: 'demo', invitations: invitations.map(({ secret: _, asked: __, ...i }) => i) });
+    }
     if (url !== `${BASE}/spheres/demo/policy`) return answer({}, 404);
     if (init.method !== 'PUT') return answer(now());
     if (!scope.split(' ').includes('admin')) return answer({ error: { code: 'insufficient_scope', message: 'this call needs the scope admin' } }, 403);
@@ -231,14 +266,15 @@ function fakeSphere(o: { admins?: string[]; version?: number; rules?: Rule[]; on
   const puts = () => requests.filter((r) => r.init.method === 'PUT');
   // the scope each exchange's assertion asked for, in order
   const asked = () => requests.filter((r) => r.url.endsWith('/oauth/token')).map((r) => part(new URLSearchParams(String(r.init.body)).get('subject_token')!.split('.')[1]));
-  return { http: http as unknown as typeof fetch, calls: http, requests, policy, granted, puts, asked };
+  return { http: http as unknown as typeof fetch, calls: http, requests, policy, granted, puts, asked, invitations };
 }
+const JOINED_OWNERS = ['dana', 'dmytro', 'wellington'];
 const OTHER: Rule = { id: 'dmytro-reviews', from_owner: 'dmytro', to_owner: '*', actions: ['review_request'], repos: ['acme/app'] };
 const THIRD: Rule = { id: 'ernesto-asks', from_owner: 'ernesto', to_owner: 'dmytro', actions: ['question'], repos: ['*'], note: { kept: true } };
 
 describe('the Obysphere\'s rules', () => {
   it('policy_1_the_starter_rule_lets_members_ask', async () => {
-    expect(starterRule()).toEqual({ id: 'members-ask', from_owner: '*', to_owner: '*', actions: ['question', 'review_request'], repos: ['*'] });
+    expect(starterRule()).toEqual({ id: 'members-ask', from_owner: '*', to_owner: '*', actions: ['question', 'review_request', 'handoff'], repos: ['*'] });
     expect(starterRule()).not.toBe(starterRule());
     // a new Sphere's policy, [] at version 0: one PUT, and version 1
     const fresh = fakeSphere();
@@ -388,7 +424,21 @@ describe('obysphere in the side panel', () => {
     // its id when the link's name isn't kept; nothing when obid isn't in one
     expect(spheres.liveSphere(joined, [], {})!.name).toBe('demo');
     expect(spheres.liveSphere({ state: 'none', url: null, sphere: null }, [], {})).toBeNull();
-    expect(spheres.liveSphere({ ...joined, state: 'revoked' }, [], {})).toBeNull();
+  });
+
+  it('sphereapp_5_a_revoked_obysphere_stays_and_says_its_admin_took_this_oby_out', () => {
+    const revoked = { state: 'revoked', url: 'https://sphere.example.com', sphere: 'demo', owner: 'wellington' };
+    // not gone: its tile stays, with no members, and its line says why
+    const s = spheres.liveSphere(revoked, [{ owner: 'dmytro' }], { demo: 'Demo team' })!;
+    expect(s).toMatchObject({ id: 'live:demo', name: 'Demo team', live: true, revoked: true, members: [] });
+    expect(s.why).toBeUndefined();
+    expect(spheres.revokedLine(s)).toBe('Demo team’s admin took your Oby out.');
+    // obid's code (add-only): `removed` says the same; a code this app doesn't know yet is never shown
+    expect(spheres.revokedLine(spheres.liveSphere({ ...revoked, revokedReason: 'removed' }, [], {})!)).toBe('demo’s admin took your Oby out.');
+    const unknown = spheres.liveSphere({ ...revoked, revokedReason: 'sphere_deleted' }, [], {})!;
+    expect(spheres.revokedLine(unknown)).toBe('Your Oby isn’t in demo any more.');
+    expect(spheres.revokedLine(unknown)).not.toContain('sphere_deleted');
+    expect(spheres.liveSphere({ ...revoked, revokedReason: null }, [], {})!.why).toBeUndefined();
   });
 
   it('sphere_7_a_live_obysphere_s_members_open_no_made_up_conversation', () => {
@@ -459,5 +509,274 @@ describe('what your Oby tells (docs/contracts/peer-thread.md)', () => {
     expect(whatItTells(rule, ['dana']).about).not.toContain('room');
     expect(whatItTells({ ...own, for: ['dana'] }, ['dana', 'ernesto']).about).not.toContain('room');
     expect(whatItTells({ ...own, for: ['dana', 'ernesto'] }, ['dana', 'ernesto']).about).toContain('in the room');
+  });
+});
+
+// docs/contracts/sphere-app.md: the app's side of the Obysphere for launch, each test named after its scenario
+describe('the app’s Obysphere (sphere-app.md)', () => {
+  it('sphereapp_1_the_members_rule_lets_members_hand_off_adding_only_what_is_missing', async () => {
+    expect(withStarterRule([])).toEqual([starterRule()]);
+    // a members rule from before handoffs: it gains handoff alone, kept where it is with all else in it
+    const before: Rule = { id: 'members-ask', from_owner: '*', to_owner: '*', actions: ['review_request', 'question'], repos: ['acme/app'] };
+    const old = fakeSphere({ version: 5, rules: [structuredClone(OTHER), structuredClone(before), structuredClone(THIRD)] });
+    const r = await addStarterRule(fakeObid('wellington', 'joined').call, () => key, 5, old.http);
+    const widened = { ...before, actions: ['review_request', 'question', 'handoff'] };
+    expect(JSON.parse(String(old.puts()[0].init.body))).toEqual({ expected_version: 5, rules: [OTHER, widened, THIRD] });
+    expect(r).toMatchObject({ refused: null, policy: { version: 6, rules: [OTHER, widened, THIRD] } });
+    // once it has them all: nothing written
+    const done = fakeSphere({ version: 6, rules: [OTHER, widened] });
+    expect(await addStarterRule(fakeObid('wellington', 'joined').call, () => key, 6, done.http)).toMatchObject({ refused: null, policy: { version: 6 } });
+    expect(done.puts()).toEqual([]);
+  });
+
+  it('sphereapp_10_the_admin_makes_lists_and_withdraws_invite_links_with_the_owners_own_token', async () => {
+    const sphere = fakeSphere();
+    const made = await makeInvitation(fakeObid('wellington', 'joined').call, () => key, sphere.http);
+    // one open invitation: 5 people, 14 days, asked for with an admin owner token
+    expect(sphere.invitations[0].asked).toEqual({ expires_in: 1_209_600, max_uses: 5 });
+    expect(sphere.asked().map((c) => c.scope)).toEqual(['admin']);
+    expect(made).toMatchObject({ refused: null, why: null, invitations: [{ id: sphere.invitations[0].invitation_id, uses: 0, maxUses: 5, expiresAt: '2026-12-02T12:00:00Z' }] });
+    // the link reads back as the join field and an oby:// link read it: same Sphere, host, id and secret
+    expect(made.link).toBe(`oby://join/sphere.example.com#sphere=demo&by=wellington&id=${sphere.invitations[0].invitation_id}&secret=${'S'.repeat(43)}`);
+    expect(parseInvite(made.link!)).toMatchObject({ url: 'https://sphere.example.com', host: 'sphere.example.com', sphere: 'demo', by: 'wellington', id: sphere.invitations[0].invitation_id, secret: 'S'.repeat(43) });
+    // the list never carries a secret
+    const listed = await listInvitations(fakeObid('wellington', 'joined').call, () => key, sphere.http);
+    expect(JSON.stringify(listed)).not.toContain('S'.repeat(43));
+    expect(listed.link).toBeNull();
+    // withdraw: that one gone; one already gone counts as withdrawn
+    const id = sphere.invitations[0].invitation_id;
+    expect(await withdrawInvitation(fakeObid('wellington', 'joined').call, () => key, id, sphere.http)).toMatchObject({ refused: null, invitations: [] });
+    expect(sphere.requests.some((r) => r.init.method === 'DELETE' && r.url.endsWith(`/invitations/${id}`))).toBe(true);
+    expect(await withdrawInvitation(fakeObid('wellington', 'joined').call, () => key, id, sphere.http)).toMatchObject({ refused: null });
+  });
+
+  it('sphereapp_10: the page takes only types from main’s engine, which needs Node', () => {
+    // a value from shared/sphere.ts in the renderer pulls node:crypto into the window, which then draws nothing
+    const dir = path(__dirname, '..');
+    const files = readdirSync(dir).filter((f) => /\.tsx?$/.test(f));
+    const bad = files.filter((f) => /^import (?!type )[^;]*from '\.\.\/\.\.\/shared\/sphere'/m.test(readFileSync(path(dir, f), 'utf8')));
+    expect(bad).toEqual([]);
+  });
+
+  it('sphereapp_10: a member who isn’t admin, or an Oby not in one, makes nothing', async () => {
+    const member = fakeSphere({ admins: ['dmytro'] });
+    expect(await makeInvitation(fakeObid('wellington', 'joined').call, () => key, member.http)).toEqual({ invitations: [], link: null, refused: 'not_admin', why: 'Only the Obysphere’s admins can invite.' });
+    expect(member.requests.some((r) => r.url.includes('/invitations'))).toBe(false);
+    const never = vi.fn();
+    expect(await makeInvitation(fakeObid('wellington', 'none').call, () => { throw new Error('no key'); }, never as unknown as typeof fetch)).toMatchObject({ refused: 'not_joined' });
+    expect(never).not.toHaveBeenCalled();
+    // a link that wouldn't read back is never handed out
+    expect(inviteLink('https://sphere.example.com', 'demo', 'wellington', 'not-a-uuid', 'S'.repeat(43))).toBeNull();
+  });
+
+  it('sphereapp_11_an_admin_makes_and_removes_admins_with_the_owners_own_token', async () => {
+    const sphere = fakeSphere({ admins: ['wellington'] });
+    const obid = () => fakeObid('wellington', 'joined').call;
+    // the rules' read says who administers it, and who this Oby acts for
+    expect(await readPolicy(obid(), () => key, sphere.http)).toMatchObject({ admin: true, admins: ['wellington'], me: 'wellington' });
+    // Make admin: PUT …/admins/dana with an admin token; the Sphere's admins come back
+    expect(await setAdmin(obid(), () => key, 'dana', true, sphere.http)).toEqual({ admins: ['dana', 'wellington'], refused: null, why: null });
+    expect(sphere.requests.some((r) => r.init.method === 'PUT' && r.url.endsWith('/admins/dana'))).toBe(true);
+    expect(sphere.asked().at(-1)!.scope).toBe('admin');
+    // Remove admin
+    expect(await setAdmin(obid(), () => key, 'dana', false, sphere.http)).toMatchObject({ admins: ['wellington'], refused: null });
+    // the last admin stays; someone who hasn't joined can't be made one: words, no change
+    expect(await setAdmin(obid(), () => key, 'wellington', false, sphere.http)).toEqual({ admins: null, refused: 'failed', why: 'An Obysphere keeps at least one admin.' });
+    expect(await setAdmin(obid(), () => key, 'ernesto', true, sphere.http)).toEqual({ admins: null, refused: 'failed', why: 'ernesto hasn’t joined with their own key yet.' });
+    // a member who isn't admin changes nothing
+    const member = fakeSphere({ admins: ['dmytro'] });
+    expect(await setAdmin(obid(), () => key, 'dana', true, member.http)).toEqual({ admins: null, refused: 'not_admin', why: 'Only the Obysphere’s admins can change who’s admin.' });
+    expect(member.requests.some((r) => r.url.includes('/admins/'))).toBe(false);
+  });
+
+  it('sphereapp_12_an_obysphere_s_address_is_an_invite_link_or_host_and_id', () => {
+    expect(sphereAddress(OPEN)).toEqual({ url: 'https://sphere.example.com', host: 'sphere.example.com', sphere: 'demo' });
+    expect(sphereAddress('obysphere.example.com/deskree')).toEqual({ url: 'https://obysphere.example.com', host: 'obysphere.example.com', sphere: 'deskree' });
+    expect(sphereAddress('https://obysphere.example.com:8443/spheres/deskree/')).toMatchObject({ url: 'https://obysphere.example.com:8443', sphere: 'deskree' });
+    expect(sphereAddress('http://127.0.0.1:7860/e2e')).toMatchObject({ url: 'http://127.0.0.1:7860', sphere: 'e2e' });
+    for (const no of ['http://obysphere.example.com/deskree', 'obysphere.example.com', 'obysphere.example.com/Not_A_Slug', 'hello']) expect(sphereAddress(no), no).toBeNull();
+  });
+
+  it('sphereapp_12_a_sign_in_shows_only_where_the_obysphere_offers_owner_rebind', async () => {
+    const at = (features: string[], signin?: Response) => vi.fn(async (url: string) => (url.endsWith('/features')
+      ? new Response(JSON.stringify({ features }), { status: 200 })
+      : signin ?? new Response(JSON.stringify({ providers: [{ id: 'google', name: 'Google' }, { id: 'acme-sso', name: 'Acme' }] }), { status: 200 }))) as unknown as typeof fetch;
+    expect(await rebindOffer(at(['card_runtime']), 'https://s.example.com')).toBeNull();
+    expect(await rebindOffer(at(['owner_rebind']), 'https://s.example.com')).toEqual([{ id: 'google', name: 'Google' }, { id: 'acme-sso', name: 'Acme' }]);
+    // a Sphere from before the providers' list signs in with Google alone
+    expect(await rebindOffer(at(['owner_rebind'], new Response('', { status: 404 })), 'https://s.example.com')).toEqual([{ id: 'google', name: 'Google' }]);
+    expect(await rebindOffer(vi.fn(async () => { throw new Error('down'); }) as unknown as typeof fetch, 'https://s.example.com')).toBeNull();
+  });
+
+  describe('sphereapp_12: getting back in', () => {
+    const WHERE = { url: 'https://sphere.example.com', sphere: 'demo' };
+    // the Obysphere: a sign-in started and a rebind, as obi-sphere answers them
+    function rebindSphere(answer: { status: number; body: unknown } = { status: 200, body: null }) {
+      const requests: { url: string; init: RequestInit }[] = [];
+      const http = vi.fn(async (url: string, init: RequestInit = {}) => {
+        requests.push({ url, init });
+        if (url === `${WHERE.url}/v0.1/signin/google`) return new Response(JSON.stringify({ url: 'https://accounts.example.com/auth?x', state: 'S1' }), { status: 201 });
+        if (url === `${WHERE.url}/v0.1/spheres/demo/owners/wellington/rebind`) {
+          const sent = JSON.parse(String(init.body)) as { owner_key: string };
+          return new Response(JSON.stringify(answer.body ?? { sphere: 'demo', owner: 'wellington', owner_key: sent.owner_key, owner_key_id: 'ed25519:x', admin: true, event: {} }), { status: answer.status });
+        }
+        return new Response('{}', { status: 404 });
+      }) as unknown as typeof fetch;
+      return { http, requests, sent: (end: string) => JSON.parse(String(requests.find((r) => r.url.endsWith(end))!.init.body)) as Record<string, unknown> };
+    }
+    function deps(back: { state?: string; code?: string; error?: string } = { state: 'S1', code: 'C1' }) {
+      const newKey = generateKeyPairSync('ed25519').privateKey;
+      const order: string[] = [];
+      return {
+        order, newKey,
+        d: {
+          newKey,
+          listen: async () => { order.push('listen'); return { returnTo: 'http://127.0.0.1:49152/oby-signin', back: Promise.resolve(back), close: () => order.push('close') }; },
+          open: async (url: string) => { order.push(`open ${url}`); },
+          keep: (k: KeyObject) => { order.push(k === newKey ? 'keep new' : 'keep other'); },
+        },
+      };
+    }
+    const obidFor = (state = 'none') => {
+      const o = fakeObid('wellington', state);
+      const call: Call = async (m, p, b) => (m === 'POST' && p === '/v1/obid/sphere/join' ? (o.calls.push({ method: m, path: p, body: b }), { status: 200, text: '{"state":"joined"}' }) : o.call(m, p, b));
+      return { ...o, call };
+    };
+
+    it('sphereapp_12_a_sign_in_binds_a_new_owner_key_and_this_oby_joins_with_it', async () => {
+      const sphere = rebindSphere(), obid = obidFor(), { d, order, newKey } = deps();
+      expect(await getBackIn(obid.call, sphere.http, WHERE, 'google', d)).toEqual({ kind: 'back', owner: 'wellington', admin: true });
+      // the sign-in, for the new key, back to main's listener; the browser opens the provider's page
+      expect(sphere.sent('/v0.1/signin/google')).toEqual({ owner_key: publicOf(newKey), return_to: 'http://127.0.0.1:49152/oby-signin' });
+      expect(order).toEqual(['listen', 'open https://accounts.example.com/auth?x', 'keep new', 'close']);
+      // the rebind: no Authorization, the sign-in's state and code, a card signed by the new key
+      const rebind = sphere.requests.find((r) => r.url.endsWith('/rebind'))!;
+      expect((rebind.init.headers as Record<string, string>).authorization).toBeUndefined();
+      const sent = sphere.sent('/rebind') as { owner_key: string; signin: unknown; card: Record<string, unknown> & { signatures: { protected: string; signature: string }[] } };
+      expect(sent.owner_key).toBe(publicOf(newKey));
+      expect(sent.signin).toEqual({ state: 'S1', code: 'C1' });
+      const { signatures, ...card } = sent.card;
+      expect(verifies(`${signatures[0].protected}.${Buffer.from(canonical(card)).toString('base64url')}`, signatures[0].signature, newKey)).toBe(true);
+      // obid: its key, the card with the new owner key, then the membership the rebind made, with a delegation from the new key
+      expect(obid.calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /v1/obid/sphere', 'POST /v1/obid/sphere/key', 'POST /v1/obid/sphere/card', 'POST /v1/obid/sphere/join']);
+      expect(obid.sent('/v1/obid/sphere/card')).toMatchObject({ ownerKey: publicOf(newKey), sphere: 'demo', accepts: ACCEPTS });
+      const join = obid.sent('/v1/obid/sphere/join') as { rebound: boolean; delegation: string; invitation?: unknown };
+      expect(join.rebound).toBe(true);
+      expect(join.invitation).toBeUndefined();
+      expect(part(join.delegation.split('.')[1])).toMatchObject({ sub: 'wellington', aud: 'obi-sphere:demo' });
+      expect(verifies(join.delegation.split('.').slice(0, 2).join('.'), join.delegation.split('.')[2], newKey)).toBe(true);
+    });
+
+    it('sphereapp_12: each refusal says why in words, and the new key is never kept', async () => {
+      for (const [status, code, words] of [
+        [404, 'not_found', 'This Obysphere has no owner by that id.'],
+        [403, 'forbidden', 'That sign-in can’t get you back in.'],
+        [409, 'conflict', 'That account is linked to someone else in this Obysphere'],
+        [429, 'rate_limited', 'Too many sign-ins at once'],
+        [400, 'card_invalid', 'The Obysphere didn’t take this Oby’s card.'],
+      ] as const) {
+        const sphere = rebindSphere({ status, body: { error: { code, message: 'raw words never shown' } } }), { d, order } = deps();
+        const r = await getBackIn(obidFor().call, sphere.http, WHERE, 'google', d);
+        expect(r.kind).toBe('failed');
+        expect((r as { why: string }).why).toContain(words);
+        expect((r as { why: string }).why).not.toContain('raw words');
+        expect(order).not.toContain('keep new');
+        expect(order.at(-1)).toBe('close');
+      }
+    });
+
+    it('sphereapp_13_an_owner_who_never_added_a_sign_in_is_told_to_ask_an_admin', async () => {
+      const sphere = rebindSphere({ status: 403, body: { error: { code: 'account_not_linked', message: 'raw' } } }), { d } = deps();
+      expect(await getBackIn(obidFor().call, sphere.http, WHERE, 'google', d)).toEqual({ kind: 'failed', why: 'This name never added a sign-in. Ask an admin to reset it.' });
+    });
+
+    it('sphereapp_12: a sign-in that didn’t finish, or came back for another state, rebinds nothing', async () => {
+      for (const back of [{ state: 'S1', error: 'failed' }, { state: 'OTHER', code: 'C1' }, { error: 'timeout' }]) {
+        const sphere = rebindSphere(), { d, order } = deps(back);
+        expect((await getBackIn(obidFor().call, sphere.http, WHERE, 'google', d)).kind).toBe('failed');
+        expect(sphere.requests.some((r) => r.url.endsWith('/rebind'))).toBe(false);
+        expect(order).not.toContain('keep new');
+      }
+      // an Oby already in an Obysphere: nothing starts
+      const sphere = rebindSphere(), { d, order } = deps();
+      expect(await getBackIn(obidFor('joined').call, sphere.http, WHERE, 'google', d)).toEqual({ kind: 'failed', why: expect.stringContaining('already in an Obysphere') });
+      expect(order).toEqual([]);
+      expect(sphere.requests).toEqual([]);
+    });
+  });
+
+  describe('sphereapp_13: Add sign-in', () => {
+    // the Obysphere: its features, providers, the owner's link state, a sign-in, and the link
+    function linkSphere(o: { offered?: boolean; linked?: boolean; put?: number } = {}) {
+      const sphere = fakeSphere();
+      const base = sphere.http as unknown as (u: string, i?: RequestInit) => Promise<Response>;
+      const requests: { url: string; init: RequestInit }[] = [];
+      const http = vi.fn(async (url: string, init: RequestInit = {}) => {
+        requests.push({ url, init });
+        if (url.endsWith('/v0.1/features')) return new Response(JSON.stringify({ features: o.offered === false ? [] : ['owner_rebind'] }), { status: 200 });
+        if (url.endsWith('/v0.1/signin')) return new Response(JSON.stringify({ providers: [{ id: 'google', name: 'Google' }] }), { status: 200 });
+        if (url.endsWith('/v0.1/signin/google')) return new Response(JSON.stringify({ url: 'https://accounts.example.com/auth', state: 'S1' }), { status: 201 });
+        if (url.endsWith('/owners/wellington') && !init.method) return new Response(JSON.stringify({ owner: 'wellington', account_linked: o.linked ?? false }), { status: 200 });
+        if (url.endsWith('/owners/wellington/account')) return new Response(JSON.stringify(o.put && o.put >= 400 ? { error: { code: 'x', message: 'raw' } } : { owner: 'wellington', account_linked: true }), { status: o.put ?? 200 });
+        return base(url, init);
+      }) as unknown as typeof fetch;
+      return { http, requests };
+    }
+    const listen = async () => ({ returnTo: 'http://127.0.0.1:49152/oby-signin', back: Promise.resolve({ state: 'S1', code: 'C1' }), close: () => {} });
+
+    it('sphereapp_13_an_owner_who_still_has_their_key_links_the_account_they_sign_in_with', async () => {
+      const sphere = linkSphere();
+      expect(await signinStatus(fakeObid('wellington', 'joined').call, () => key, sphere.http)).toEqual({ providers: [{ id: 'google', name: 'Google' }], linked: false });
+      const opened: string[] = [];
+      expect(await addSignin(fakeObid('wellington', 'joined').call, () => key, sphere.http, 'google', { listen, open: async (u) => { opened.push(u); } })).toEqual({ linked: true });
+      // the sign-in is for the key this app holds; the link goes with the owner's own token
+      const start = sphere.requests.find((r) => r.url.endsWith('/v0.1/signin/google'))!;
+      expect(JSON.parse(String(start.init.body))).toEqual({ owner_key: publicOf(key), return_to: 'http://127.0.0.1:49152/oby-signin' });
+      expect(opened).toEqual(['https://accounts.example.com/auth']);
+      const put = sphere.requests.find((r) => r.url.endsWith('/owners/wellington/account'))!;
+      expect(put.init.method).toBe('PUT');
+      expect(JSON.parse(String(put.init.body))).toEqual({ signin: { state: 'S1', code: 'C1' } });
+      expect(String((put.init.headers as Record<string, string>).authorization)).toMatch(/^Bearer token-/);
+    });
+
+    it('sphereapp_13: linked shows as linked; an Obysphere that doesn’t offer it, nothing; a refusal, words', async () => {
+      expect((await signinStatus(fakeObid('wellington', 'joined').call, () => key, linkSphere({ linked: true }).http)).linked).toBe(true);
+      expect(await signinStatus(fakeObid('wellington', 'joined').call, () => key, linkSphere({ offered: false }).http)).toEqual({ providers: null, linked: null });
+      const taken = await addSignin(fakeObid('wellington', 'joined').call, () => key, linkSphere({ put: 409 }).http, 'google', { listen, open: async () => {} });
+      expect(taken).toEqual({ why: 'That account already belongs to someone else in this Obysphere. Sign in with your own.' });
+      expect(await addSignin(fakeObid('wellington', 'none').call, () => key, linkSphere().http, 'google', { listen, open: async () => {} })).toEqual({ why: 'This Oby isn’t in an Obysphere.' });
+    });
+  });
+
+  it('sphereapp_2_a_membership_from_before_handoffs_renews_its_card_and_delegation_once', async () => {
+    const at = Date.parse('2026-10-30T12:00:00Z');
+    let m: Record<string, unknown> = {
+      state: 'joined', owner: 'wellington', url: 'https://sphere.example.com', sphere: 'demo', obiId: 'obi-x', sealing: 'on',
+      accepts: ['review_request', 'question', 'run_request'],
+      card: { name: 'Wellington’s Oby', capabilities: { extensions: [{ params: { owner_key: publicOf(key) } }] } },
+      delegation: { scope: 'send:review_request send:question send:run_request reply receive directory:read audit:read', expiresAt: '2026-11-25T12:00:00Z' },
+    };
+    const calls: { method: string; path: string; body?: Record<string, unknown> }[] = [];
+    const call: Call = async (method, p, body) => {
+      const b = body as Record<string, unknown>;
+      calls.push({ method, path: p, body: b });
+      if (p === '/v1/obid/sphere/card') return { status: 200, text: JSON.stringify({ card: { name: b.name, accepts: b.accepts } }) };
+      if (method === 'PUT') {
+        // obid keeps what was signed: the card's accepts and the delegation's scope
+        const claims = b.delegation ? part((b.delegation as string).split('.')[1]) : null;
+        m = { ...m, accepts: (b.card as { accepts?: string[] } | undefined)?.accepts ?? m.accepts, delegation: claims ? { scope: claims.scope, expiresAt: '2026-11-29T12:00:00Z' } : m.delegation };
+      }
+      return { status: 200, text: JSON.stringify(method === 'GET' ? m : {}) };
+    };
+    expect(await keepMembership(call, () => key, at)).toEqual(['card', 'delegation']);
+    // what it had, kept first (run_request too), and what this app's card takes added
+    expect(calls[1].body).toMatchObject({ accepts: ['review_request', 'question', 'run_request', 'handoff'], ownerKey: publicOf(key) });
+    const claims = part((calls[2].body!.delegation as string).split('.')[1]);
+    expect(String(claims.scope).split(' ')).toEqual(expect.arrayContaining(['send:handoff', 'send:run_request', ...SCOPES.split(' ')]));
+    expect(claims).toMatchObject({ sub: 'wellington', may_act: { sub: 'obi-x' } });
+    // the next keep: nothing signed
+    calls.length = 0;
+    expect(await keepMembership(call, () => key, at)).toEqual([]);
+    expect(calls.map((c) => c.method)).toEqual(['GET']);
   });
 });

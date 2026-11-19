@@ -49,7 +49,8 @@ rateLimit { cost remaining resetAt } viewer { login } } \
 fragment work on SearchResultItem { \
 ... on Issue { number title updatedAt state author { login } authorAssociation repository { nameWithOwner } labels(first: 20) { nodes { name } } milestone { title } BOARD } \
 ... on PullRequest { number title updatedAt state isDraft isCrossRepository reviewDecision author { login } authorAssociation repository { nameWithOwner } labels(first: 20) { nodes { name } } milestone { title } BOARD \
-commits(last: 1) { nodes { commit { oid statusCheckRollup { state } } } } } }";
+commits(last: 1) { nodes { commit { oid statusCheckRollup { state contexts(first: 50) { nodes { __typename \
+... on CheckRun { name status conclusion detailsUrl } ... on StatusContext { context state targetUrl } } } } } } } } }";
 
 /// Each item's boards, but those it's archived from, and their Status column: needs gh's
 /// `read:project` scope.
@@ -94,11 +95,25 @@ pub struct Item {
     /// On pull requests, whether its branch is a fork's.
     #[serde(default)]
     pub fork: Option<bool>,
+    /// On pull requests, each of the head's check runs and statuses (at most 50, GitHub's
+    /// order), which `checks` sums up; empty on issues and before this was read.
+    #[serde(default)]
+    pub check_runs: Vec<CheckRun>,
     /// Its board column, or null: on no board, or on none with a Status.
     pub board: Option<Board>,
     /// The milestone's title, or none.
     #[serde(default)]
     pub milestone: Option<String>,
+}
+
+/// One check of a pull request's head, GitHub's data shown as text: a check run's name or a
+/// status's context, its state as `checks` counts it (`FAILURE`, `PENDING` or `SUCCESS`,
+/// [`crate::github::check_state`]), and its page, only an `https` one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CheckRun {
+    pub name: String,
+    pub state: String,
+    pub url: Option<String>,
 }
 
 /// The board an item is on and its Status column there.
@@ -525,6 +540,28 @@ fn board(node: &Value) -> Option<Board> {
         })
 }
 
+/// A pull request's head's checks ([`CheckRun`]), those with a name, at most 50.
+fn check_runs(node: &Value) -> Vec<CheckRun> {
+    node["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| {
+            let name = c["name"].as_str().or(c["context"].as_str())?.trim();
+            (!name.is_empty()).then(|| CheckRun {
+                name: cut(name, 200),
+                state: crate::github::check_state(c).into(),
+                url: c["detailsUrl"]
+                    .as_str()
+                    .or(c["targetUrl"].as_str())
+                    .filter(|u| u.starts_with("https://") && u.len() <= 2000)
+                    .map(str::to_owned),
+            })
+        })
+        .take(50)
+        .collect()
+}
+
 fn item(list: &str, node: &Value) -> Option<Item> {
     let repo = node["repository"]["nameWithOwner"].as_str()?;
     let number = node["number"].as_u64().filter(|n| *n > 0)?;
@@ -590,6 +627,7 @@ fn item(list: &str, node: &Value) -> Option<Item> {
         } else {
             None
         },
+        check_runs: if pr { check_runs(node) } else { Vec::new() },
         board: board(node),
         milestone: text(&node["milestone"]["title"]),
     })
@@ -738,6 +776,10 @@ pub fn offers(
                     && i.fork == Some(false)
                     && knows(&i.repo)
                     && opened_by(jobs, &i.url).is_none()
+                    // A Fix CI task that pushed this head onto it takes its red checks (AUTOFIX-14).
+                    && (i.head.as_deref()).is_none_or(|head| {
+                        crate::jobs::onto_pr::follower(jobs, &i.repo, i.number, head).is_none()
+                    })
             }
         })
         .collect();
@@ -1351,15 +1393,21 @@ async fn begin(
     let task = match list {
         "reviews" => format!("Review pull request #{number} in {repo}."),
         "assigned" => format!("Fix issue #{number} in {repo}."),
+        // What its agent can meet before anything is pushed (TASKCONV-30): GitHub runs the checks
+        // again only once Oby publishes the commit, and a goal that waits on them is never met,
+        // so the right fix would stay unpublished.
         _ => format!(
-            "Make pull request #{number} in {repo} pass its checks. Add commits on top of it; never rewrite or drop the ones it has."
+            "Fix what makes the failed checks on pull request #{number} in {repo} fail, and commit the fix. Add commits on top of it; never rewrite or drop the ones it has. GitHub runs its checks again once Oby publishes your commits, so seeing them pass there isn't part of your goal: it's met when the cause is fixed, committed and checked here as far as you can."
         ),
     };
-    let task = match attachments {
-        Some(_) => {
+    let task = match (&attachments, list) {
+        (Some(_), "mine") => format!(
+            "{task} What people wrote on it on GitHub, each check's result and the end of each failed check's log are quoted in .obi/inputs/{file}."
+        ),
+        (Some(_), _) => {
             format!("{task} What people wrote on it on GitHub is quoted in .obi/inputs/{file}.")
         }
-        None => task,
+        (None, _) => task,
     };
     // A routine's job: its agent, account, mode, check, rounds, mark and request, and its task
     // after obid's own words. Its conversation is the feed's.
@@ -1375,12 +1423,17 @@ async fn begin(
         title: Some(cut(&format!("{verb} {name} #{number}"), 60)),
         pr: (list != "assigned").then_some(number),
         issue: (list == "assigned").then_some(number),
+        // The owner's own pull request (`mine`, never a fork's): its fix goes straight onto its
+        // branch, so its checks run again on it, as T3 Code does (TASKCONV-31).
+        onto: base.clone().filter(|_| list == "mine"),
         base,
         attachments,
         adding,
         conversation: None,
         ..routine
     };
+    // Routed on fresh usage: a reading obid hasn't taken lately isn't room (#2484, LIMITS-25).
+    jobs.fresh_usage().await;
     let job = jobs.create(new)?;
     Ok((job, true))
 }
@@ -1491,8 +1544,103 @@ pub(crate) async fn quote(list: &str, repo: &str, number: u64) -> Result<(String
     if let Some(association) = association(&gh, repo, number).await {
         value["authorAssociation"] = json!(association);
     }
+    if list == "mine" {
+        value[LOG_TAILS] = json!(log_tails(&gh, repo, &value).await);
+    }
     let quoted = render(list, repo, number, &value, &crate::brain::briefing::nonce());
     Ok((quoted, value))
+}
+
+/// obid's own key on what `gh pr view` printed: each failed check's name and the end of its log
+/// ([`log_tails`]), for [`render`].
+const LOG_TAILS: &str = "obyLogTails";
+/// At most this many failed checks' logs are read, and this many of each one's last lines kept.
+const LOG_CHECKS: usize = 3;
+const LOG_LINES: usize = 60;
+
+/// The end of each failed check's log on the owner's own pull request (TASKCONV-29), as
+/// `[{"name", "tail"}]`: a GitHub Actions job of `repo` itself only (its `detailsUrl` is
+/// `https://github.com/<repo>/actions/runs/<run>/job/<job>`), read with gh, at most
+/// [`LOG_CHECKS`] of them, each its last [`LOG_LINES`] lines without GitHub's timestamps. A log gh
+/// can't read (expired, too large, another CI) is left out: the check's name and result still are.
+async fn log_tails(gh: &std::path::Path, repo: &str, value: &Value) -> Vec<Value> {
+    let prefix = format!("https://github.com/{repo}/actions/runs/");
+    let failed = (value["statusCheckRollup"].as_array().into_iter().flatten()).filter_map(|c| {
+        let name = c["name"].as_str()?;
+        let failed = matches!(
+            c["conclusion"].as_str(),
+            Some("FAILURE" | "TIMED_OUT" | "STARTUP_FAILURE")
+        );
+        let url = c["detailsUrl"].as_str()?.strip_prefix(&prefix)?;
+        let (_, job) = url.split_once("/job/")?;
+        let job = job.split(['?', '#', '/']).next()?;
+        (failed && !job.is_empty() && job.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| (name.to_owned(), job.to_owned()))
+    });
+    let mut tails = Vec::new();
+    for (name, job) in failed.take(LOG_CHECKS) {
+        let path = format!("repos/{repo}/actions/jobs/{job}/logs");
+        let read = |args: &'static [&'static str]| {
+            let mut all = vec!["api", path.as_str()];
+            all.extend_from_slice(args);
+            async move {
+                let within = std::time::Duration::from_secs(20);
+                crate::github::run_bounded(gh, &all, 8 << 20, within).await
+            }
+        };
+        // A log's colours are escape sequences, which gh 2.100 and later print only when told
+        // to; an older gh doesn't know the flag, and prints them anyway.
+        let log = match read(&["--allow-escape-sequences"]).await {
+            Ok(log) => log,
+            Err(_) => match read(&[]).await {
+                Ok(log) => log,
+                Err(_) => continue,
+            },
+        };
+        let lines: Vec<&str> = log.lines().collect();
+        let tail = lines[lines.len().saturating_sub(LOG_LINES)..]
+            .iter()
+            .map(|l| plain(untimed(l)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        tails.push(json!({"name": name, "tail": tail}));
+    }
+    tails
+}
+
+/// A GitHub Actions log line without the timestamp it starts with (`2026-11-17T12:00:00.0000000Z `).
+fn untimed(line: &str) -> &str {
+    match line.split_once(' ') {
+        Some((at, rest)) if at.len() >= 20 && at.ends_with('Z') && at.as_bytes()[10] == b'T' => {
+            rest
+        }
+        _ => line,
+    }
+}
+
+/// `line` without its terminal escape sequences (a colour's `ESC [ 36;1 m`) or other control
+/// characters but tabs.
+fn plain(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            // a CSI sequence runs to its final byte, '@' to '~'; any other escape is one character
+            if chars.clone().next() == Some('[') {
+                chars.next();
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            } else {
+                chars.next();
+            }
+        } else if c == '\t' || !c.is_control() {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// The quoted file for `value`, what `gh … view --json title,body,author,labels,comments` printed
@@ -1566,6 +1714,17 @@ pub fn render(list: &str, repo: &str, number: u64, value: &Value, nonce: &str) -
             String::new(),
             "## Checks on its head commit".into(),
             fence(nonce, &checks.join("\n")),
+        ]);
+    }
+    for log in value[LOG_TAILS].as_array().into_iter().flatten() {
+        let (Some(name), Some(tail)) = (log["name"].as_str(), log["tail"].as_str()) else {
+            continue;
+        };
+        out.extend([
+            String::new(),
+            // the check's name is GitHub's: inside the fence, never in obid's heading
+            "## The end of a failed check's log".into(),
+            fence(nonce, &format!("{name}\n\n{tail}")),
         ]);
     }
     let comments = value["comments"].as_array().cloned().unwrap_or_default();
@@ -1811,6 +1970,62 @@ mod tests {
             Got::Read { lists, rate, .. } => (lists, rate),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// GITHUBWORK-8: a pull request's head comes with each of its checks, a check run's name or a
+    /// status's context, its state as `checks` counts it, and its page only when it's https; an
+    /// issue has none.
+    #[test]
+    fn githubwork_8_a_pull_request_lists_each_check_with_its_state_and_page() {
+        let mut pr = node("obi-ai-bot/obi", 702, "2026-10-18T08:40:11Z");
+        pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"] = json!({"state": "FAILURE", "contexts": {"nodes": [
+            {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "SUCCESS",
+             "detailsUrl": "https://github.com/obi-ai-bot/obi/actions/runs/1"},
+            {"__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "TIMED_OUT",
+             "detailsUrl": "https://github.com/obi-ai-bot/obi/actions/runs/2"},
+            {"__typename": "CheckRun", "name": "lint", "status": "IN_PROGRESS", "conclusion": null, "detailsUrl": "javascript:alert(1)"},
+            {"__typename": "StatusContext", "context": "ci/circleci", "state": "ERROR", "targetUrl": "https://circleci.com/x"},
+            {"__typename": "CheckRun", "name": "  ", "status": "COMPLETED", "conclusion": "FAILURE"}]}});
+        let (lists, _) = read(&answer(
+            vec![pr],
+            vec![node("obi-ai-bot/obi", 640, "2026-10-17T08:00:00Z")],
+            1,
+        ));
+        let runs: Vec<(&str, &str, Option<&str>)> = lists.reviews[0]
+            .check_runs
+            .iter()
+            .map(|c| (c.name.as_str(), c.state.as_str(), c.url.as_deref()))
+            .collect();
+        assert_eq!(
+            runs,
+            [
+                (
+                    "build",
+                    "SUCCESS",
+                    Some("https://github.com/obi-ai-bot/obi/actions/runs/1")
+                ),
+                (
+                    "test",
+                    "FAILURE",
+                    Some("https://github.com/obi-ai-bot/obi/actions/runs/2")
+                ),
+                ("lint", "PENDING", None),
+                ("ci/circleci", "FAILURE", Some("https://circleci.com/x")),
+            ]
+        );
+        assert!(
+            lists.assigned[0].check_runs.is_empty(),
+            "an issue has no checks"
+        );
+        // An answer from before (no contexts) reads as none, and it's sent as `checkRuns`.
+        let (old, _) = read(&answer(
+            vec![node("obi-ai-bot/obi", 7, "2026-10-18T08:40:11Z")],
+            vec![],
+            0,
+        ));
+        assert!(old.reviews[0].check_runs.is_empty());
+        let sent = serde_json::to_value(&lists.reviews[0]).unwrap();
+        assert_eq!(sent["checkRuns"][1]["name"], "test");
     }
 
     #[test]

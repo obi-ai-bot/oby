@@ -2659,6 +2659,41 @@ fn jobstate_2_try_again_resets_the_round() {
     try_again_clears("jobstate-2", obid::job::Status::Failed);
 }
 
+/// TASKS-31 (#2506): a task that ended `failed` or `interrupted` with no decision open archives
+/// (`200`), as a done one does: it asks nothing (TASKS-25). One whose merge still waits on the
+/// owner stays out of Archived (`409`, obid's words).
+#[test]
+fn tasks_31_a_failed_or_interrupted_task_archives() {
+    use obid::job::Status;
+    let folder = Folder::new("tasks-31");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote);
+    seeded(&folder.0, "aaaa0031", Status::Failed);
+    seeded(&folder.0, "aaaa0032", Status::Interrupted);
+    let mut waits = seeded(&folder.0, "aaaa0033", Status::Failed);
+    waits.merge_needs_you = true;
+    keep(&folder.0, &waits);
+    let obid = start(&folder.0, &config);
+    for id in ["aaaa0031", "aaaa0032"] {
+        let archived = request(
+            &obid,
+            "POST",
+            &format!("/v1/jobs/{id}/archive"),
+            Some(r#"{"archived": true}"#),
+        );
+        assert_eq!(archived.status, 200, "{id}: {}", archived.text);
+        assert!(!archived.body["archived"].is_null(), "{}", archived.text);
+    }
+    let refused = request(
+        &obid,
+        "POST",
+        "/v1/jobs/aaaa0033/archive",
+        Some(r#"{"archived": true}"#),
+    );
+    assert_eq!(refused.status, 409, "{}", refused.text);
+    assert!(refused.text.contains("still needs you"), "{}", refused.text);
+}
+
 /// JOBSTATE-9 (docs/contracts/job-state.md): Try again on an `interrupted` job.
 #[test]
 fn jobstate_9_try_again_after_interrupted_resets_the_round() {
@@ -3031,7 +3066,9 @@ fn recovery_9_a_changing_failure_goes_on_to_the_ceiling() {
 fn usage_limit_jobs_wait_for_room_and_ask_no_one() {
     let folder = Folder::new("limit-owner-decision");
     let remote = fixture(&folder.0.join("fixture"));
-    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let config = config(&folder.0, &remote);
+    support::signed_in(&config);
+    let obid = start(&folder.0, &config);
     let post = || {
         post_job(&obid, json!({"repo":"obi-e2e/fixture-app", "kind":"research", "task":"LIMITED WEEK: 86400", "account":"Stub"})).body["id"].as_str().unwrap().to_owned()
     };
@@ -4145,17 +4182,48 @@ fn uncommitted_work_gets_one_commit_turn() {
     assert_eq!(
         job["summaries"],
         // Its first turn ended without its GOAL line: told once (TASKS-19).
-        json!([
-            "Nothing to do.",
-            "Carried on.\n\nGOAL MET",
-            "Committed the draft."
-        ]),
+        json!(["Nothing to do.", "Carried on.", "Committed the draft."]),
         "{job}"
     );
     let branch = format!("oby/fix-{id}");
     assert_eq!(
         git(&remote, &["show", &format!("{branch}:draft.txt")]),
         "draft"
+    );
+}
+
+/// PUBLISHING-43 (docs/contracts/publishing.md): what a tool's run leaves behind that is never
+/// source (Python's `__pycache__/`, a test runner's cache, `node_modules/`, `.DS_Store`) doesn't hold
+/// a job's publish in a repository with no `.gitignore`: obid's own clone excludes them in its
+/// `.git/info/exclude`, never in the repository's files, so the check still vouches for the commits
+/// alone (PUBLISHING-5). Anything else left uncommitted still does.
+#[test]
+fn publishing_43_build_droppings_dont_hold_a_publish() {
+    let folder = Folder::new("droppings");
+    let remote = fixture(&folder.0.join("fixture"));
+    let bin = fake_gh(&folder.0);
+    let obid = start_with(&folder.0, &config(&folder.0, &remote), Some(&bin));
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix",
+               "task": "DRAFT: src/__pycache__/calc.cpython-312.pyc COMMIT: hello.txt",
+               "check": "test -f hello.txt"}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["reason"], Value::Null, "{job}");
+    assert!(job["published"].is_string(), "{job}");
+    let branch = format!("oby/fix-{id}");
+    let files = git(&remote, &["ls-tree", "-r", "--name-only", &branch]);
+    assert!(files.lines().any(|f| f == "hello.txt"), "{files}");
+    assert!(!files.contains("__pycache__"), "never committed: {files}");
+    assert!(
+        !files.contains(".gitignore"),
+        "the repository's files untouched: {files}"
     );
 }
 
@@ -4735,6 +4803,277 @@ fn tasks_13_a_let_go_tasks_crash_card_settles() {
         .find(|i| i["id"] == card["id"])
         .unwrap_or_else(|| panic!("not settled: {done}"));
     assert_eq!(settled["answer"], Value::Null, "{settled}");
+}
+
+/// A job of the owner's own that ended failed, `at` seconds after the others' start, following up
+/// `of`: one attempt of a task, kept for obid's start.
+fn attempt(id: &str, of: Option<&str>, at: i64) -> obid::job::Job {
+    let mut job = obid::job::Job::new(
+        id.into(),
+        "obi-e2e/fixture-app".into(),
+        "fix".into(),
+        "Look around".into(),
+        "claude".into(),
+        "stub".into(),
+    );
+    job.status = obid::job::Status::Failed;
+    job.follow_up_of = of.map(str::to_owned);
+    job.branch = format!("oby/fix-{id}");
+    job.reason = Some("It broke.".into());
+    job.created += at;
+    job.finished = Some(job.created);
+    job
+}
+
+/// An inbox item of `kind` about the job `job`, as obid keeps it.
+fn item_about(id: &str, kind: &str, job: &str) -> obid::sphere::inbox::Item {
+    obid::sphere::inbox::Item {
+        id: id.into(),
+        kind: kind.into(),
+        job: job.into(),
+        title: "Look around".into(),
+        text: "Pick one.".into(),
+        options: vec!["Go on".into()],
+        created: 1,
+        ..Default::default()
+    }
+}
+
+/// A `merge` card about the job `job`, as `merge::card` makes it.
+fn merge_card_of(job: &str) -> obid::sphere::inbox::Item {
+    obid::sphere::inbox::Item {
+        title: "Ready to merge: Look around".into(),
+        options: vec!["Merge".into()],
+        ..item_about(
+            &format!("merge-ready-{job}-{}", "a".repeat(40)),
+            "merge",
+            job,
+        )
+    }
+}
+
+/// obid started on `jobs` and `items`, kept where it finds them.
+fn start_on(folder: &Path, jobs: &[obid::job::Job], items: &[obid::sphere::inbox::Item]) -> Obid {
+    let remote = fixture(&folder.join("fixture"));
+    let config = config(folder, &remote);
+    let home = folder.join("home");
+    for dir in ["jobs", "inbox"] {
+        std::fs::create_dir_all(home.join(dir)).unwrap();
+    }
+    for job in jobs {
+        let file = home.join(format!("jobs/{}.json", job.id));
+        std::fs::write(file, serde_json::to_vec(job).unwrap()).unwrap();
+    }
+    for item in items {
+        let file = home.join(format!("inbox/{}.json", item.id));
+        std::fs::write(file, serde_json::to_vec(item).unwrap()).unwrap();
+    }
+    start(folder, &config)
+}
+
+/// The ids of the open items of `kind` about any of `jobs`, sorted.
+fn open_of(obid: &Obid, kind: &str, jobs: &[&str]) -> Vec<String> {
+    let mut ids: Vec<String> = (inbox(obid).as_array().unwrap().iter())
+        .filter(|i| i["kind"] == kind && jobs.iter().any(|j| i["job"] == *j))
+        .map(|i| i["id"].as_str().unwrap().to_owned())
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// The done item `id`, with its answer, or none.
+fn done_item(obid: &Obid, id: &str) -> Option<Value> {
+    let done = request(obid, "GET", "/v1/inbox?state=done", None).body;
+    done.as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == id)
+        .cloned()
+}
+
+/// TASKS-26: while a task's newest follow-up is queued or running, the task shows no `failed`
+/// card of obid's for any of its attempts: each earlier one is settled, with no answer, and the
+/// newest job's own line says where the task stands.
+#[test]
+fn tasks_26_a_task_at_work_shows_no_failed_card_per_attempt() {
+    let folder = Folder::new("tasks-26");
+    let jobs = [
+        attempt("a2600001", None, 0),
+        attempt("a2600002", Some("a2600001"), 1),
+        attempt("a2600003", Some("a2600002"), 2),
+    ];
+    let cards = [
+        obid::sphere::inbox::crash_item(&jobs[0], 1),
+        obid::sphere::inbox::reviews_ran_out_item(&jobs[1], "r2600002"),
+        obid::sphere::inbox::crash_item(&jobs[2], 3),
+    ];
+    let obid = start_on(&folder.0, &jobs, &cards);
+    let chain = ["a2600001", "a2600002", "a2600003"];
+    // Before it carries on, the task has one: its newest attempt's (TASKS-27).
+    support::within(30, "only the newest attempt's card", || {
+        (open_of(&obid, "failed", &chain) == [cards[2].id.as_str()]).then_some(())
+    });
+    let told = request(
+        &obid,
+        "POST",
+        "/v1/jobs/a2600003/messages",
+        Some(&json!({"text": "SLEEP"}).to_string()),
+    );
+    assert_eq!(told.status, 201, "{}", told.text);
+    let newest = told.body["id"].as_str().unwrap().to_owned();
+    let mut chain = chain.to_vec();
+    chain.push(&newest);
+    support::within(30, "no failed card while the task carries on", || {
+        open_of(&obid, "failed", &chain).is_empty().then_some(())
+    });
+    for card in &cards {
+        let settled = done_item(&obid, &card.id).unwrap_or_else(|| panic!("{}", card.id));
+        assert_eq!(settled["answer"], Value::Null, "{settled}");
+    }
+    let line = request(&obid, "GET", &format!("/v1/jobs/{newest}"), None).body;
+    assert!(
+        matches!(line["status"].as_str(), Some("queued" | "running")),
+        "{line}"
+    );
+    assert!(
+        !line["step"].as_str().unwrap_or_default().is_empty(),
+        "{line}"
+    );
+    request(&obid, "POST", &format!("/v1/jobs/{newest}/stop"), None);
+    wait(&obid, &newest);
+}
+
+/// TASKS-27: a task of three ended attempts, each with its review and merge card, keeps one of
+/// each open, the newest attempt's; and a job whose crash card is made again at start (obid kept
+/// going down with it, another end) keeps one open crash card.
+#[test]
+fn tasks_27_one_failed_and_one_merge_card_per_task() {
+    let folder = Folder::new("tasks-27");
+    let mut jobs = vec![
+        attempt("a2700001", None, 0),
+        attempt("a2700002", Some("a2700001"), 1),
+        attempt("a2700003", Some("a2700002"), 2),
+    ];
+    let mut items: Vec<_> = jobs
+        .iter()
+        .flat_map(|j| {
+            [
+                obid::sphere::inbox::reviews_ran_out_item(j, &format!("r{}", &j.id[1..])),
+                merge_card_of(&j.id),
+            ]
+        })
+        .collect();
+    let mut looped = attempt("a2700009", None, 3);
+    looped.reason = Some(obid::job::LOOPED.into());
+    // Its card from an earlier end, still open.
+    items.push(obid::sphere::inbox::Item {
+        id: "a2700009-crash-1".into(),
+        ..obid::sphere::inbox::crash_item(&looped, 1)
+    });
+    jobs.push(looped);
+    let obid = start_on(&folder.0, &jobs, &items);
+    let chain = ["a2700001", "a2700002", "a2700003"];
+    support::within(30, "one failed and one merge card for the task", || {
+        let failed = open_of(&obid, "failed", &chain);
+        let merge = open_of(&obid, "merge", &chain);
+        (failed == [items[4].id.as_str()] && merge == [items[5].id.as_str()]).then_some(())
+    });
+    for item in &items[..4] {
+        let settled = done_item(&obid, &item.id).unwrap_or_else(|| panic!("{}", item.id));
+        assert_eq!(settled["answer"], Value::Null, "{settled}");
+    }
+    let made = format!("a2700009-crash-{}", jobs[3].finished.unwrap());
+    let crashes = support::within(30, "the crash card made again", || {
+        let open = open_of(&obid, "failed", &["a2700009"]);
+        (open == [made.as_str()]).then_some(open)
+    });
+    assert_eq!(crashes.len(), 1);
+    assert!(
+        done_item(&obid, &items[6].id).is_some(),
+        "the older one settled"
+    );
+}
+
+/// TASKS-28: the task rule touches only obid's crash, review and merge cards about the owner's
+/// own jobs. On an older job of a task whose newest job is at work, a question, a permission and
+/// a limit stay open; the newest card of a task, one that asks for the owner's click, stays, one;
+/// and another Obi's job's card stays though a follow-up of it is at work.
+#[test]
+fn tasks_28_what_needs_the_owner_still_shows() {
+    let folder = Folder::new("tasks-28");
+    // At work: queued for an account's reset an hour away, so it never starts here.
+    let held = |id: &str, of: &str| {
+        let mut job = attempt(id, Some(of), 5);
+        job.status = obid::job::Status::Queued;
+        job.finished = None;
+        job.resumes_at = Some(job.created + 3600);
+        job
+    };
+    let mut theirs = attempt("a2800021", None, 0);
+    theirs.obi = Some(obid::job::ObiRef {
+        correlation_id: "c".into(),
+        from: "obi-ernesto".into(),
+        from_owner: "ernesto".into(),
+        request_id: "q".into(),
+    });
+    // Parked on its agent's ask, which its permission item shows: kept through a restart (#858).
+    let mut asking = attempt("a2800001", None, 0);
+    asking.status = obid::job::Status::Running;
+    asking.finished = None;
+    asking.parked = Some(
+        serde_json::from_value(json!({"tool": "Bash", "input": {"command": "make"}})).unwrap(),
+    );
+    asking.permission = Some(
+        serde_json::from_value(json!({"id": "p1", "tool": "Bash", "title": "Run make",
+            "detail": "make", "rule": null, "always": null}))
+        .unwrap(),
+    );
+    let jobs = [
+        asking,
+        held("a2800002", "a2800001"),
+        attempt("a2800011", None, 0),
+        attempt("a2800012", Some("a2800011"), 1),
+        theirs.clone(),
+        held("a2800022", "a2800021"),
+    ];
+    let untrusted = |job: &str| obid::sphere::inbox::Item {
+        title: "Not merged: Look around".into(),
+        text: "It needs two approving reviews of its head, or your click.".into(),
+        ..merge_card_of(job)
+    };
+    let asks = [
+        item_about("a2800001-question", "question", "a2800001"),
+        item_about("a2800001-permission-p1", "permission", "a2800001"),
+        item_about("a2800001-limit", "limit", "a2800001"),
+    ];
+    let mut items = asks.to_vec();
+    items.extend([
+        untrusted("a2800011"),
+        untrusted("a2800012"),
+        obid::sphere::inbox::crash_item(&theirs, 1),
+    ]);
+    let obid = start_on(&folder.0, &jobs, &items);
+    let line = request(&obid, "GET", "/v1/jobs/a2800002", None).body;
+    assert_eq!(line["status"], "queued", "{line}");
+    support::within(30, "the older click card settled", || {
+        done_item(&obid, &items[3].id).map(|_| ())
+    });
+    assert_eq!(
+        open_of(&obid, "merge", &["a2800011", "a2800012"]),
+        [items[4].id.as_str()]
+    );
+    for ask in &asks {
+        assert_eq!(
+            open_of(&obid, &ask.kind, &["a2800001"]),
+            [ask.id.as_str()],
+            "{}",
+            ask.kind
+        );
+    }
+    assert_eq!(
+        open_of(&obid, "failed", &["a2800021"]),
+        [items[5].id.as_str()]
+    );
 }
 
 /// A job in the default mode asks the owner nothing about what stays inside its sandbox (edits in
@@ -6372,10 +6711,8 @@ fn lanes_1_the_owners_job_runs_in_its_own_lane_and_another_obys_stays_boxed() {
 /// a branch and commit on it, and all of it stays in its worktree's own git folder: it never sees
 /// the owner's stash, the clone's `refs/heads` and `refs/stash` are unchanged, with no `try`, and
 /// another job sees neither its branch nor its stash. obid's view of the job is the clone's again
-/// after the run, its HEAD the commit on `try`. Where Seatbelt can run (not inside another sandbox)
-/// the fake runs them under the settings' writes, as Claude Code's sandbox does, and its writes to
-/// the clone's hooks, config, `refs/heads` and `refs/stash` and to its git folder's
-/// `config.worktree` and `commondir` fail; the settings keep them out of its writes everywhere.
+/// after the run, its HEAD the commit on `try`. obid sets no sandbox for it (LANES-23): its git
+/// keeps its branches and stash in the job's own folder through the environment obid pins.
 #[test]
 fn lanes_8_an_own_jobs_branches_and_stash_stay_in_its_worktree() {
     let folder = Folder::new("lanes-8");
@@ -6436,19 +6773,7 @@ fn lanes_8_an_own_jobs_branches_and_stash_stay_in_its_worktree() {
         .find_map(|word| word.strip_prefix("commit="))
         .unwrap_or_else(|| panic!("{said}"))
         .to_owned();
-    assert!(!said.contains("wrote"), "{said}");
-    // The denied writes were tried under Seatbelt wherever it can run here.
-    let seatbelt = Command::new("/usr/bin/sandbox-exec")
-        .args(["-p", "(version 1)(allow default)", "/usr/bin/true"])
-        .status()
-        .is_ok_and(|status| status.success());
-    let ran = if seatbelt { "seatbelt" } else { "none" };
-    assert!(said.contains(&format!("sandbox={ran}")), "{said}");
-    if !seatbelt {
-        eprintln!(
-            "LANES-8: Seatbelt can't run here (inside another sandbox, or not a Mac), so the writes it would deny weren't tried; the settings that deny them are still checked below"
-        );
-    }
+    assert!(said.contains("sandbox=none"), "{said}");
     // The clone's refs are obid's alone: no `try`, its stash the owner's, and every branch there
     // still a commit the clone has.
     assert_eq!(kept("refs/stash"), stash);
@@ -6480,28 +6805,6 @@ fn lanes_8_an_own_jobs_branches_and_stash_stay_in_its_worktree() {
     assert_eq!(admin.join(commondir.trim()).canonicalize().unwrap(), common);
     let head = std::fs::read_to_string(admin.join("HEAD")).unwrap();
     assert_eq!(head.trim(), on_try);
-    let (args, _) = last_launch(&folder.0);
-    let at = args.iter().position(|a| a == "--settings").unwrap();
-    let settings: Value = serde_json::from_str(&args[at + 1]).unwrap();
-    let has = |key: &str, path: PathBuf| {
-        settings["sandbox"]["filesystem"][key]
-            .as_array()
-            .unwrap()
-            .contains(&json!(path))
-    };
-    for closed in [
-        common.clone(),
-        common.join("refs"),
-        common.join("refs/heads"),
-        common.join("hooks"),
-        common.join("config"),
-    ] {
-        assert!(!has("allowWrite", closed.clone()), "{}", closed.display());
-    }
-    for kept in ["commondir", "config.worktree", "oby-common"] {
-        assert!(has("denyWrite", admin.join(kept)), "{kept}");
-    }
-
     // Another job sees neither: no `try` among its branches, so it makes its own, and only its own
     // stash.
     let (other, _) = job("STASH AND BRANCH");
@@ -6519,8 +6822,9 @@ fn lanes_8_an_own_jobs_branches_and_stash_stay_in_its_worktree() {
     assert_eq!(kept("refs/stash"), stash);
 }
 
-/// LANES-4 (docs/contracts/lanes.md): the owner's login shell exports a Bedrock gateway and its
-/// model: an own Claude Code job gets all three as written and obid names no model, while what
+/// LANES-4 and LANES-22 (docs/contracts/lanes.md): the owner's login shell exports a Bedrock
+/// gateway, its model and a `CLAUDE_CODE_*` name obid never heard of: an own Claude Code job gets
+/// all four as written and obid names no model, while what
 /// pushes stays out (LANES-2); once the job is foreign, its next run gets none and obid's model.
 #[test]
 fn lanes_4_an_own_job_gets_the_owners_login_environment() {
@@ -6535,7 +6839,8 @@ fn lanes_4_an_own_job_gets_the_owners_login_environment() {
         format!(
             "#!/bin/sh\nexport ANTHROPIC_BASE_URL=https://gateway.example/bedrock CLAUDE_CODE_USE_BEDROCK=1 \
              ANTHROPIC_MODEL={model} SSH_AUTH_SOCK=/tmp/agent.sock GH_TOKEN=not-a-token \
-             GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0=store LANES_4=kept\n\
+             GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0=store LANES_4=kept \
+             CLAUDE_CODE_LANES_21=kept\n\
              [ \"$1 $2\" = '-l -c' ] && exec /bin/sh -c \"$3\"\n"
         ),
     )
@@ -6556,7 +6861,7 @@ fn lanes_4_an_own_job_gets_the_owners_login_environment() {
     let own = format!(
         "ANTHROPIC_BASE_URL=https://gateway.example/bedrock CLAUDE_CODE_USE_BEDROCK=1 \
          ANTHROPIC_MODEL={model} SSH_AUTH_SOCK=none GH_TOKEN=none GIT_CONFIG_COUNT=none \
-         LANES_4=kept model=none"
+         LANES_4=kept CLAUDE_CODE_LANES_21=kept model=none"
     );
     assert!(said.contains(&own), "{job}");
 
@@ -6564,7 +6869,8 @@ fn lanes_4_an_own_job_gets_the_owners_login_environment() {
     assert_eq!(job["status"], "done", "{job}");
     let said = job["summary"].as_str().unwrap();
     let foreign = "ANTHROPIC_BASE_URL=none CLAUDE_CODE_USE_BEDROCK=none ANTHROPIC_MODEL=none \
-                   SSH_AUTH_SOCK=none GH_TOKEN=none GIT_CONFIG_COUNT=none LANES_4=none model=claude-";
+                   SSH_AUTH_SOCK=none GH_TOKEN=none GIT_CONFIG_COUNT=none LANES_4=none \
+                   CLAUDE_CODE_LANES_21=none model=claude-";
     assert!(said.contains(foreign), "{job}");
 }
 
@@ -6612,15 +6918,21 @@ fn lanes_10_a_foreign_job_keeps_the_box_and_its_copy() {
     assert!(!login.join(".credentials.json").exists());
 }
 
-/// LANES-5 (docs/contracts/lanes.md, the owner's decision LANE-6a): with a skill, an MCP server
-/// and `sandbox.enabled: false` in the owner's account folder, and a hook in the repository's
-/// `.claude/settings.json` and `.claude/settings.local.json` and an MCP server in its `.mcp.json`
-/// on its default branch, an own job's Claude Code loads the owner's only (`--setting-sources
-/// user`, no `--strict-mcp-config`), never the repository's, and obid's `--settings` keep its
-/// sandbox on; once marked untrusted, its next run loads none.
+/// The `loaded` report fake-claude wrote in job `id`'s worktree.
+fn loaded(obid: &Obid, id: &str) -> Value {
+    let report = obid.home.join(format!("worktrees/{id}/.obi/report.json"));
+    let report: Value = serde_json::from_slice(&std::fs::read(report).unwrap()).unwrap();
+    report["loaded"].clone()
+}
+
+/// LANES-23 (docs/contracts/lanes.md, the owner's decision of 2026-11-16): an own job's Claude
+/// Code loads every settings source as the owner's terminal does (no `--setting-sources`): the
+/// owner's skill and MCP server, and the repository's `.claude/settings.json`,
+/// `.claude/settings.local.json` and `.mcp.json`; the owner's `sandbox.enabled: false` stands, as
+/// obid's `--settings` set no sandbox. Once marked untrusted, its next run loads none (LANES-10).
 #[test]
-fn lanes_5_an_own_job_loads_the_owners_settings_never_the_repositorys() {
-    let folder = Folder::new("lanes-5");
+fn lanes_23_an_own_job_loads_every_settings_source_as_the_terminal_does() {
+    let folder = Folder::new("lanes-22");
     let remote = fixture(&folder.0.join("fixture"));
     let config = config(&folder.0, &remote);
     let (account, work) = (folder.0.join("home/accounts/stub"), folder.0.join("seed"));
@@ -6628,11 +6940,12 @@ fn lanes_5_an_own_job_loads_the_owners_settings_never_the_repositorys() {
     git(&folder.0, &["clone", "-q", remote_path, work_path]);
     let server = r#"{"mcpServers":{"owners-github":{"type":"http","url":"http://127.0.0.1:9/"}}}"#;
     let off = r#"{"sandbox":{"enabled":false}}"#;
-    let hook =
-        r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"touch /tmp/x"}]}]}}"#;
+    let hook = r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"true"}]}]}}"#;
     let repos = r#"{"mcpServers":{"repos-server":{"type":"http","url":"http://127.0.0.1:9/"}}}"#;
     for (file, text) in [
         (account.join("skills/owners-skill/SKILL.md"), "# Mine\n"),
+        // Signed in: its follow-up is named to it (ACCOUNTS-35).
+        (account.join(".credentials.json"), "{}"),
         (account.join("settings.json"), off),
         (account.join(".claude.json"), server),
         (work.join(".claude/settings.json"), hook),
@@ -6642,7 +6955,6 @@ fn lanes_5_an_own_job_loads_the_owners_settings_never_the_repositorys() {
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(file, text).unwrap();
     }
-    // Pushed to the path, not `origin`: in an agent's run its push URL is obid's invalid one.
     for args in [
         &["config", "user.name", "T"][..],
         &["config", "user.email", "t@example.com"],
@@ -6658,10 +6970,11 @@ fn lanes_5_an_own_job_loads_the_owners_settings_never_the_repositorys() {
     let posted = post_job(&obid, task);
     let id = posted.body["id"].as_str().unwrap();
     assert_eq!(wait(&obid, id)["status"], "done");
+    let all = json!(["user", "project", "local"]);
     assert_eq!(
         loaded(&obid, id),
-        json!({"sources": ["user"], "found": ["user"], "skills": ["owners-skill"],
-               "mcpServers": ["owners-github"], "sandbox": true})
+        json!({"sources": all, "found": all, "skills": ["owners-skill"],
+               "mcpServers": ["owners-github", "repos-server"], "sandbox": false})
     );
 
     let (obid, job) = marked_untrusted(&folder.0, &config, obid, id, "REPORT");
@@ -6672,25 +6985,23 @@ fn lanes_5_an_own_job_loads_the_owners_settings_never_the_repositorys() {
     assert_eq!(loaded["mcpServers"], json!([]), "{loaded}");
 }
 
-/// The `loaded` report fake-claude wrote in job `id`'s worktree.
-fn loaded(obid: &Obid, id: &str) -> Value {
-    let report = obid.home.join(format!("worktrees/{id}/.obi/report.json"));
-    let report: Value = serde_json::from_slice(&std::fs::read(report).unwrap()).unwrap();
-    report["loaded"].clone()
-}
-
-/// LANES-5: an owner's settings file that sets what obid's `--settings` can't take back
-/// (`sandbox.excludedCommands`, which runs those commands outside the sandbox) stops the run
-/// before Claude Code starts, saying which file and key.
+/// LANES-23: an owner's settings file with what obid used to refuse (commands out of the
+/// sandbox, more folders, a bare `Read` allow, a hook, any `CLAUDE_*` in its `env`) starts the
+/// run, and it ends `done`.
 #[test]
-fn lanes_5_a_settings_file_that_undoes_the_sandbox_stops_the_run() {
-    let folder = Folder::new("lanes-5-refused");
+fn lanes_23_an_own_job_starts_whatever_the_owners_settings_hold() {
+    let folder = Folder::new("lanes-22-starts");
     let remote = fixture(&folder.0.join("fixture"));
     let config = config(&folder.0, &remote);
     let account = folder.0.join("home/accounts/stub");
     std::fs::create_dir_all(&account).unwrap();
-    let set = r#"{"sandbox":{"excludedCommands":["git"]}}"#;
-    std::fs::write(account.join("settings.json"), set).unwrap();
+    let set = json!({
+        "sandbox": {"excludedCommands": ["git"], "network": {"allowUnixSockets": ["/tmp/s"]}},
+        "permissions": {"allow": ["Read", "Grep"], "additionalDirectories": ["/tmp"]},
+        "hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "true"}]}]},
+        "env": {"CLAUDE_CODE_MANAGED_SETTINGS_PATH": "/tmp/x.json", "CLAUDE_FOO": "1"},
+    });
+    std::fs::write(account.join("settings.json"), set.to_string()).unwrap();
     let obid = start(&folder.0, &config);
     let task = json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "REPORT"});
     let id = post_job(&obid, task).body["id"]
@@ -6698,14 +7009,9 @@ fn lanes_5_a_settings_file_that_undoes_the_sandbox_stops_the_run() {
         .unwrap()
         .to_owned();
     let job = wait(&obid, &id);
-    assert_ne!(job["status"], "done", "{job}");
-    let text = job.to_string();
-    assert!(
-        text.contains("settings.json sets sandbox.excludedCommands"),
-        "{job}"
-    );
+    assert_eq!(job["status"], "done", "{job}");
     let report = obid.home.join(format!("worktrees/{id}/.obi/report.json"));
-    assert!(!report.exists(), "Claude Code ran");
+    assert!(report.exists(), "Claude Code didn't run");
 }
 
 /// #626: routing skips an account whose login file isn't there (a login only in the macOS

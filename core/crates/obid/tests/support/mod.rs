@@ -175,6 +175,18 @@ pub fn config(folder: &Path, remote: &Path, agent: &Path) -> Value {
     })
 }
 
+/// `config`'s first Claude Code account signed in, as a person's is, with a login file: a task the
+/// owner names a signed-out account for is refused (ACCOUNTS-35).
+pub fn signed_in(config: &Value) {
+    let dir = Path::new(
+        config["agents"]["claude"]["accounts"][0]["configDir"]
+            .as_str()
+            .unwrap(),
+    );
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join(".credentials.json"), "{}").unwrap();
+}
+
 /// Puts `token` in obid's `home/api-token` (0600, in a 0700 `home`), where obid takes its token
 /// from: never from its environment (docs/runner-api.md, "obid only: configuration").
 pub fn put_token(config: &Value, token: &str) {
@@ -211,6 +223,39 @@ pub fn keep_sandbox(config: &Value) {
 /// The e2e stub agent.
 pub fn stub_agent() -> PathBuf {
     obi().join("e2e/stub-agent/stub-agent")
+}
+
+/// The test's own home (obid's `HOME` in tests): the person's home its obid checks folders against.
+pub fn home_of(folder: &Folder) -> PathBuf {
+    folder.0.join("env-home")
+}
+
+/// obid with the test's home as the person's only one (`OBID_PERSON_HOMES`), so the folders it
+/// picks there pass wherever the test runs: never this Mac's own home, whose `~/Library` or
+/// `/private/tmp` may hold cargo's folders (as in Oby's own jobs).
+pub fn start_at_home(folder: &Folder, config: &Value) -> Obid {
+    let home = home_of(folder);
+    std::fs::create_dir_all(&home).unwrap();
+    start_with(
+        &folder.0,
+        config,
+        None,
+        &[("OBID_PERSON_HOMES", home.to_str().unwrap())],
+    )
+}
+
+/// Folders the owner picks, in the test's home.
+pub fn picked(folder: &Folder, names: &[&str]) -> Vec<PathBuf> {
+    let root = home_of(folder).join("Projects");
+    let _ = std::fs::remove_dir_all(&root);
+    names
+        .iter()
+        .map(|name| {
+            let path = root.join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            path.canonicalize().unwrap()
+        })
+        .collect()
 }
 
 /// Starts obid with `config`, `PATH` the test's own with `path_first` before it.
@@ -776,10 +821,22 @@ pub fn ended_within(obid: &Obid, id: &str, seconds: u64) -> Value {
 
 /// Follows `GET /v1/events`: every event, `(name, data)`, as it comes.
 pub fn follow_events(obid: &impl Listens) -> std::sync::mpsc::Receiver<(String, Value)> {
+    follow_events_as(obid, &[])
+}
+
+/// [`follow_events`], the request carrying `headers` too (an `Oby-Profile`).
+pub fn follow_events_as(
+    obid: &impl Listens,
+    headers: &[(&str, &str)],
+) -> std::sync::mpsc::Receiver<(String, Value)> {
     let mut stream = TcpStream::connect(("127.0.0.1", obid.port())).unwrap();
+    let more: String = headers
+        .iter()
+        .map(|(n, v)| format!("{n}: {v}\r\n"))
+        .collect();
     stream
         .write_all(
-            format!("GET /v1/events HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}\r\n\r\n")
+            format!("GET /v1/events HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}\r\n{more}\r\n")
                 .as_bytes(),
         )
         .unwrap();
@@ -1382,6 +1439,9 @@ pub struct SphereState {
     pub url_aud: Option<String>,
     /// Every actor assertion's `aud`, in the order exchanged.
     pub actor_auds: Vec<String>,
+    /// What `GET …/owner-events` serves, oldest first (oby-sphere#102): what happened to owners'
+    /// keys. Empty unless a test adds some.
+    pub owner_events: Vec<Value>,
     /// The `token_type` the token endpoint answers, when not `Bearer`.
     pub token_type: Option<String>,
     /// What `GET /v0.1/features` answers instead, as a status and a body.
@@ -1455,6 +1515,7 @@ impl FakeSphere {
             .route("/v0.1/health", get(health))
             .route("/v0.1/features", get(features))
             .route("/v0.1/spheres/{sphere}/members", get(members))
+            .route("/v0.1/spheres/{sphere}/owner-events", get(owner_events))
             .route("/v0.1/spheres/{sphere}/messages", post(send))
             .route("/v0.1/spheres/{sphere}/deliveries", get(deliveries))
             .route("/v0.1/spheres/{sphere}/deliveries/ack", post(ack))
@@ -1706,7 +1767,14 @@ async fn token(
         .iter()
         .find(|m| m["obi"] == obi.as_str() && m["status"] == "active")
     else {
-        return oauth("invalid_grant");
+        // In the real Sphere's words (obi-sphere server/src/oauth.ts): a removed member's
+        // delegation is no longer exchanged (SPHERE-22).
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": "invalid_grant",
+                              "error_description": "the actor is not an active member owned by the subject"})),
+        )
+            .into_response();
     };
     let current = member["keys"]
         .as_array()
@@ -1765,6 +1833,45 @@ async fn features(State(state): State<Arc<Mutex<SphereState>>>) -> Response {
     } else {
         axum::Json(json!({"features": listed})).into_response()
     }
+}
+
+/// `GET …/owner-events?after=&limit=` (oby-sphere#102): the events after the one `after` names,
+/// oldest first, at most `limit`, to any member's token.
+async fn owner_events(
+    State(state): State<Arc<Mutex<SphereState>>>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let state = state.lock().unwrap();
+    if bearer(&state, &headers).is_none() {
+        return sphere_error(StatusCode::UNAUTHORIZED, "unauthorized", "no token");
+    }
+    let limit = query
+        .get("limit")
+        .and_then(|l| l.parse::<usize>().ok())
+        .unwrap_or(100);
+    let from = query
+        .get("after")
+        .and_then(|after| {
+            state
+                .owner_events
+                .iter()
+                // An id is a number, or text: the cursor matches it either way.
+                .position(|e| match &e["id"] {
+                    Value::String(id) => id == after,
+                    Value::Number(id) => after.parse::<u64>().ok() == id.as_u64(),
+                    _ => false,
+                })
+        })
+        .map_or(0, |at| at + 1);
+    let events: Vec<Value> = state
+        .owner_events
+        .iter()
+        .skip(from)
+        .take(limit)
+        .cloned()
+        .collect();
+    axum::Json(json!({"sphere": SPHERE, "events": events})).into_response()
 }
 
 async fn members(State(state): State<Arc<Mutex<SphereState>>>, headers: HeaderMap) -> Response {

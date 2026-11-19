@@ -42,7 +42,20 @@
 #   apps/ios/, apps/watch/, apps/shared/, apps/Oby.xcodeproj, character/
 #                         the touched iOSTests suites on a Simulator, else a build-for-testing
 #   apps/electron/        npm run typecheck, npm test and npm run build there (its node_modules from npm install)
+#   e2e/, obid's src/sphere/, the app's Obysphere code (shared/sphere.ts, policy.ts, invite.ts,
+#                         handoff.ts, main/sphere.ts)
+#                         the electron group above, then the Obysphere's (docs/contracts/test-rig.md,
+#                         RIG-27 to 34): the rig's own tests (node --test), obid built, the app's
+#                         join against a fake Sphere (test:sphere-join) and, outside a job's box, two
+#                         Obys on the pinned Sphere (test:sphere, e2e/sphere.ref) and the launch
+#                         list L1 to L8 in the real app (node e2e/launch.mjs --gate: its reds are
+#                         exactly those e2e/launch-red.json lists)
+#   tools/brain/, obid's src/, apps/electron/src, apps/shared/, docs/api/, docs/runner-api.md, AGENTS.md
+#                         tools/brain's npm test, in the electron group: the Brain's map read from the
+#                         code, so it can't drift (docs/contracts/ci.md, CI-56); in a job's box only for
+#                         a change to tools/brain itself
 #   scripts/oby-check*    scripts/oby-check-test.sh and the limits below
+#   scripts/oby-nightly*  scripts/oby-nightly-test.sh, the nightly's own tests (docs/contracts/ci.md, CI-53 to 55)
 #   AGENTS.md             the limits below, AGENTS.md's bytes among them (the root's only; CI-36 to 38)
 #   AGENTS.md, core/AGENTS.md, core/CLAUDE.md, docs/agents-rules-manifest.md and the files it names
 #                         AGENTS.md's rules: each line the manifest lists is in its home, with no cargo
@@ -63,9 +76,20 @@
 #
 # Builds and tests run as many jobs at once as obid says the Mac's memory leaves them (OBY_BUILD_JOBS,
 # CARGO_BUILD_JOBS, RUST_TEST_THREADS: one per 1.5 GiB of the room memory leaves, at most half the
-# cores), for Cargo, Rust's tests and xcodebuild (-jobs). Run by hand, outside obid,
-# every one gets 4, on purpose: obid runs one check at a time, and a Mac has other work.
+# cores), for Cargo, Rust's tests and xcodebuild (-jobs). Run by hand, outside obid, every one gets
+# 4, on purpose: obid runs one check at a time, and a Mac has other work. obid's test binaries are
+# the exception (test_binaries, docs/contracts/ci.md, CI-51): they mostly wait on stand-ins, so by
+# hand as many run at once as half the Mac's cores, 2 threads each, and a full run fits its limit.
 set -eo pipefail
+# The Mac's cores and its last minute's load average, as "<cores> <load>"; a load that can't be read
+# is 0.
+cpus_and_load() {
+    local cores load
+    cores=$(sysctl -n hw.ncpu 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
+    load=$({ sysctl -n vm.loadavg 2>/dev/null || true; } | awk '{ print $2 }')
+    [[ -n "$load" ]] || load=$(awk '{ print $1 }' /proc/loadavg 2>/dev/null || true)
+    echo "$cores ${load:-0}"
+}
 jobs="${OBY_BUILD_JOBS:-4}"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$jobs}" RUST_TEST_THREADS="${RUST_TEST_THREADS:-$jobs}"
 cd "$(dirname "$0")/.."
@@ -351,12 +375,14 @@ plan_group() {
 # first, every one to its end. `cargo test` runs them one after another and stops at the first that
 # fails, and most of their time is spent waiting on an agent's stand-in, not working. Each binary
 # runs with OBY_TEST_THREADS test threads (2 by default) and `--quiet`, half as many binaries at once
-# as `jobs` (at least one), so threads in all stay within obid's memory budget; its output comes
+# as obid's `jobs` (at least one), so threads in all stay within obid's memory budget, or by hand half
+# the Mac's cores (at least 2: CI-51); its output comes
 # whole: the ones that passed first, the ones that failed last, so a failure stays in the check's
-# tail. Stopped (the check's 45 minutes), it names the binaries still running.
+# tail, each with the seconds it ran, and a last line says how long they all took and which took
+# longest (CI-52). Stopped (the check's 45 minutes), it names the binaries still running.
 # ponytail: the longest first by its source's lines; keep each binary's last time if that's off.
 test_binaries() {
-    local dir list status=0 exe name want got flaky again test
+    local dir list status=0 exe name want got flaky again test at_once began
     # In TMPDIR, named: macOS's `mktemp -d` alone ignores TMPDIR, and a job's box can't write the
     # Mac's own temporary folder.
     dir=$(mktemp -d "${TMPDIR:-/tmp}/oby-check.XXXXXX")
@@ -387,9 +413,17 @@ test_binaries() {
         exit 143
     }
     trap stopped_binaries TERM
-    # Where cargo runs them: the crate's folder.
+    # Where cargo runs them: the crate's folder. A binary's seconds are written before its status,
+    # which says it ended.
+    if [[ -n "${OBY_BUILD_JOBS:-}" ]]; then
+        at_once=$(((jobs + 1) / 2))
+    else
+        at_once=$(cpus_and_load | awk '{ n = int($1 / 2); print (n < 2 ? 2 : n) }')
+    fi
+    began=$SECONDS
+    echo "oby-check: $got test binaries, $at_once at once with ${OBY_TEST_THREADS:-2} threads each ($(cpus_and_load | awk '{ print $1 " CPUs, a load average of " $2 }'))"
     (cd core/crates/obid && tr '\n' '\0' <"$list" | RUST_TEST_THREADS="${OBY_TEST_THREADS:-2}" \
-        xargs -0 -n 1 -P "$(((jobs + 1) / 2))" sh -c '"$2" --quiet >"$1/${2##*/}.out" 2>&1; echo $? >"$1/${2##*/}.status"' _ "$dir")
+        xargs -0 -n 1 -P "$at_once" sh -c 's=$(date +%s); "$2" --quiet >"$1/${2##*/}.out" 2>&1; e=$?; echo $(($(date +%s) - s)) >"$1/${2##*/}.seconds"; echo $e >"$1/${2##*/}.status"' _ "$dir")
     trap - TERM
     # Then, one at a time, a binary whose failed tests are all on the flaky list runs them once more,
     # and passes if they do (CI-26, CI-27).
@@ -414,7 +448,7 @@ test_binaries() {
                 [[ $pass == failed ]] || continue
                 status=1
             fi
-            echo "     Running ${name%-*}"
+            echo "     Running ${name%-*} ($(cat "$dir/$name.seconds" 2>/dev/null)s)"
             cat "$dir/$name.out"
             if [[ -f "$dir/$name.again" ]]; then
                 echo "     Running ${name%-*} again, its listed flaky tests only"
@@ -424,6 +458,11 @@ test_binaries() {
             [[ $pass == ok ]] || echo "oby-check: tests/${name%-*}.rs failed" >&2
         done <"$list"
     done
+    while IFS= read -r exe; do
+        name=${exe##*/}
+        printf '%s\t%s\n' "$(cat "$dir/$name.seconds" 2>/dev/null || echo 0)" "${name%-*}"
+    done <"$list" | sort -rn |
+        awk -F '\t' -v all=$((SECONDS - began)) 'NR == 1 { print "oby-check: obid'"'"'s test binaries took " all "s, the longest tests/" $2 ".rs at " $1 "s" }'
     rm -rf "$dir"
     return "$status"
 }
@@ -456,7 +495,7 @@ suites() {
 }
 
 # What each part needs, one per line.
-rust='' blok='' electron='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' check_script='' factory='' agents_md='' agents_rules=''
+rust='' blok='' electron='' sphere='' brain='' brain_own='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' check_script='' nightly_script='' factory='' agents_md='' agents_rules=''
 add() { printf '%s\n%s' "$1" "$2"; }
 while IFS= read -r file; do
     case "$file" in
@@ -515,8 +554,21 @@ while IFS= read -r file; do
         apps/ios/* | apps/watch/* | apps/shared/* | apps/Oby.xcodeproj/* | character/*) ios=1 ;;
     esac
     case "$file" in
+        e2e/* | core/crates/obid/src/sphere/* | apps/electron/src/main/sphere.ts | \
+            apps/electron/src/shared/sphere.ts | apps/electron/src/shared/policy.ts | \
+            apps/electron/src/shared/invite.ts | apps/electron/src/shared/handoff.ts)
+            electron=1 sphere=1 ;;
+    esac
+    case "$file" in
         apps/electron/*) electron=1 ;;
         scripts/oby-check*) check_script=1 ;;
+        scripts/oby-nightly*) nightly_script=1 ;;
+    esac
+    case "$file" in
+        tools/brain/*) brain=1 brain_own=1 ;;
+        core/crates/obid/src/* | apps/electron/src/* | apps/shared/* | docs/api/* | docs/runner-api.md | AGENTS.md) brain=1 ;;
+    esac
+    case "$file" in
         AGENTS.md) agents_md=1 agents_rules=1 ;;
         core/AGENTS.md | core/CLAUDE.md | docs/agents-rules-manifest.md) agents_rules=1 ;;
         factory/bin/* | factory/checks.sh | factory/tests/* | factory/config.json) factory=1 ;;
@@ -541,7 +593,7 @@ fi
 # Electron app and the Apple apps' build (no suites named: build-for-testing). The secret scan still
 # covers what changed against the base, which on the base itself is nothing.
 if [[ -n "${OBY_CHECK_ALL:-}" ]]; then
-    rust=1 blok=1 lib_all=1 check_script=1 electron=1 ios=1 factory=1 agents_rules=1
+    rust=1 blok=1 lib_all=1 check_script=1 nightly_script=1 electron=1 sphere=1 brain=1 ios=1 factory=1 agents_rules=1
     tests=$(ls core/crates/obid/tests/*.rs 2>/dev/null || true)
     crates=$(ls core/crates 2>/dev/null || true)
 fi
@@ -563,6 +615,7 @@ fi
 
 group=rust
 if [[ -n "$check_script" ]] && first_shard; then step bash scripts/oby-check-test.sh; fi
+if [[ -n "$nightly_script" ]] && first_shard; then step bash scripts/oby-nightly-test.sh; fi
 
 # OBY_CHECK_ONLY=limits runs this block alone, whatever changed (CI-35); a change to AGENTS.md alone
 # runs it too, with no cargo step (CI-38).
@@ -582,8 +635,8 @@ if { selected && first_shard && [[ -n "$rust$check_script$agents_md" ]]; } || [[
     fi
     jobs_lines=$(jobs_rs_lines)
     if ((jobs_lines > jobs_rs_limit)); then
-        echo "oby-check: jobs.rs has $jobs_lines production lines, past its limit of $jobs_rs_limit: it may only shrink: put new code in a module of its own, and lower jobs_rs_limit in this script when jobs.rs shrinks$(moved jobs_rs_limit)" >&2
-        failed+=("jobs.rs's line limit")
+        # Reported, never a failure (the owner's word, 2026-11-17): only build, tests, lint and the scan block.
+        echo "oby-check: jobs.rs has $jobs_lines production lines, past its limit of $jobs_rs_limit (reported, not a failure): it should only shrink: put new code in a module of its own, and lower jobs_rs_limit in this script when jobs.rs shrinks$(moved jobs_rs_limit)" >&2
     else
         echo "oby-check: jobs.rs has $jobs_lines production lines, within its limit of $jobs_rs_limit"
     fi
@@ -800,6 +853,41 @@ if selected && [[ -n "$electron" ]]; then
     step npm --prefix apps/electron run --silent typecheck
     step npm --prefix apps/electron run --silent test
     step npm --prefix apps/electron run --silent build
+fi
+# The Obysphere's (RIG-27 to 34), on this checkout's obid, built here. Two obids, a Sphere and the
+# app on loopback ports don't fit a job's box: the Mac's check runs those.
+if selected && [[ -n "$sphere" ]]; then
+    case "${CARGO_TARGET_DIR:-core/target}" in
+        /*) sphere_obid="${CARGO_TARGET_DIR}/debug/obid" ;;
+        *) sphere_obid="$PWD/${CARGO_TARGET_DIR:-core/target}/debug/obid" ;;
+    esac
+    step node --test e2e/rig.test.mjs e2e/lib/rig-guard.test.mjs e2e/lib/processes.test.mjs e2e/lib/node-version.test.mjs e2e/lib/snapshot.test.mjs
+    step cargo --quiet build --manifest-path core/Cargo.toml -p obid
+    step env OBY_TEST_OBID="$sphere_obid" npm --prefix apps/electron run --silent test:sphere-join
+    if [[ -n "$nested" ]]; then
+        plan_group
+        echo "oby-check: two Obys on the pinned Sphere and the launch list don't run in a job's box: the Mac's check runs them"
+    else
+        step env OBY_TEST_OBID="$sphere_obid" npm --prefix apps/electron run --silent test:sphere
+        step env OBID_BIN="$sphere_obid" node e2e/launch.mjs --gate
+    fi
+fi
+# The Brain's map (CI-56). In a job's box its node_modules and its extractor's crates may not be
+# there, so only a change to the Brain itself runs it; the Mac's check and the merge queue's run
+# it for the code it reads.
+if selected && [[ -n "$brain" ]]; then
+    if [[ -n "$nested" && -z "$brain_own" ]]; then
+        plan_group
+        echo "oby-check: the Brain's map isn't checked in a job's box: the Mac's check and the merge queue run it"
+    else
+        [[ -d tools/brain/node_modules ]] || echo "oby-check: tools/brain has no node_modules: run npm install there first" >&2
+        # Report only (the owner's word, 2026-11-17): a stale map is said, never a failure.
+        plan_group
+        echo "==> npm --prefix tools/brain run --silent test (reported, not a failure)"
+        if [[ -z "${OBY_CHECK_PLAN:-}" ]] && ! npm --prefix tools/brain run --silent test; then
+            echo "oby-check: the Brain's map is out of date with this change (reported, not a failure): fix tools/brain/brain.config.ts in a follow-up"
+        fi
+    fi
 fi
 
 # The factory's own tests (factory/tests), in a job's box too: they need no network, no lock and no

@@ -1,25 +1,28 @@
 import { copyPlain } from './room';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, File as FileIcon } from 'lucide-react';
+import { Check, ChevronRight, Ellipsis, File as FileIcon, X } from 'lucide-react';
 import { BrandMark } from './brands';
 import { ObyFace, PeerByline } from './ObyFace';
 import AskCard from './AskCard';
 import ObyFaceLive from './ObyFaceLive';
 import { markRead, say, useConvos } from './peers';
-import StatusDot from './StatusDot';
+import StatusDot, { TaskMark } from './StatusDot';
 import { AskBlock, resultLine } from './TaskCard';
+import DecisionBar, { type Pending } from './DecisionBar';
 import { useScrollThumb } from './useScrollThumb';
-import AgentThread, { WorkNow, openCards } from './AgentThread';
 import TaskMenu from './TaskMenu';
+import TaskLog from './TaskLog';
+import { ChangesPill } from './ChangesPanel';
 import { replyTarget, type Box } from './replyTarget';
-import { span } from './jobPage';
 import Composer, { typingIn } from './Composer';
 import Formatted from './Formatted';
 import Said from './Said';
 import { convoTitle, threadOf } from './mock';
 import { ENDED, agentOf, type Message } from './view';
-import { markSeen, tell, tellPlaceholder, useTasks, type Task } from './tasks';
-import { obys, ofObid, stopChat, tellChat, useChats, type Chat } from './chats';
+import { asksWaiting, markSeen, stop, tell, tellPlaceholder, useTasks, type Task } from './tasks';
+import { cancelQueued, obys, ofObid, seeChat, stopChat, tellChat, useChats, type Chat } from './chats';
+import CantRunLine from './CantRunLine';
+import Refusals from './Refusals';
 import SetupCard from './SetupCard';
 import OfferCard from './OfferCard';
 import { WELCOME, typedFirst } from './onboarding';
@@ -27,6 +30,7 @@ import { openConversation, talkReady, useLimitAsks } from './live';
 import { onObid } from './lean';
 import { box as draftBox } from './drafts';
 import { useHelpers } from './helpers';
+import FindBar from './FindBar';
 
 // how long the way out takes (the sink animation in app.css)
 const LEAVE_MS = 220;
@@ -39,9 +43,9 @@ export const clock = (ago: number) => {
   return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString([], { weekday: 'short' })} ${time}`;
 };
 
-// One entry in the thread: a message, or the decision the task needs from you
-// (Oby asking, so it sits on Oby's side).
-type Entry = Message | { who: 'oby'; ask: true; ago: number };
+// One entry in the thread: a message (the decision a task needs from you waits over the message box,
+// DecisionBar, never in the thread: LIVETASK-24)
+type Entry = Message;
 
 // A conversation. kind 'oby': one with Oby (chats.ts), opened from
 // Conversations or started on Home: what you asked, Oby's answers with the
@@ -52,17 +56,20 @@ type Entry = Message | { who: 'oby'; ask: true; ago: number };
 // agent. kind 'peer': one with someone else's Oby (or a few) in the Obysphere
 // (peers.ts): each Oby's words under its owner's picture and name. Whatever is
 // happening now comes last: an Oby at work, or the agent's line. It lies over
-// what was open; back (in the title bar, or Esc) returns to it. A task's card
-// opens in place, under it, into its agent's own conversation (AgentThread);
-// the message box at the foot never talks to a card's agent (replyTarget).
-export default function ChatView({ id, kind = 'task', leaving, covered = false, onBack, onGone, onOpenTask, onOpenMember }: {
+// what's open; back (in the title bar, or Esc) returns to it. A task's card is
+// its progress only; what it did shows under it, in the conversation (TaskLog),
+// and every way to a task opens here at its card (flash, LIVETASK-28). The
+// message box at the foot talks to Oby, or to one card's agent once its menu's
+// "Tell Claude Code…" has put that task's chip on it (replyTarget, LIVETASK-17).
+export default function ChatView({ id, kind = 'task', leaving, covered = false, flash, onFlashed, onBack, onGone, onOpenMember }: {
   id: string;
   kind?: 'task' | 'oby' | 'peer';
   leaving: boolean;
-  covered?: boolean;  // a task's page (from one of its cards) is open over it
+  covered?: boolean;  // something is open over it
+  flash?: { task: string; n: number };  // opened at a task: its card scrolled into view and lit a moment, once for each n
+  onFlashed?: () => void;  // and done
   onBack: () => void;
   onGone: () => void;
-  onOpenTask: (id: string) => void;       // a card in the thread: that task's page (its menu, View details)
   onOpenMember?: (owner: string) => void;  // a question's card: that person's thread
 }) {
   const tasks = useTasks();
@@ -82,21 +89,19 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   const name = task ? convoTitle(task.job) : talk ? talk.title : convo!.title;
   const j = task?.job;
   const { list, onScroll, thumbProps } = useScrollThumb<HTMLElement>();
-  // the cards the owner opened in place, and those needing them they folded during this need
-  // (deleted, a card goes with its task, opened or not: there's nobody left to tell)
-  const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
-  const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
   // a card's menu (right-click), at the pointer
   const [menu, setMenu] = useState<{ id: string; at: DOMRect } | null>(null);
   const menuTask = menu && tasks.find((t) => t.id === menu.id);
+  // the task the message box talks to, from its card's menu (Tell Claude Code…): its chip on the box
+  const [to, setTo] = useState<string | null>(null);
+  const toTask = to ? tasks.find((t) => t.id === to) : undefined;
+  // the card opened at, lit a moment; each opening at a task brings back what Later put off here
+  const [lit, setLit] = useState<string | null>(null);
+  const [openings, setOpenings] = useState(0);
   const agent = j ? agentOf(j.agent).name : 'Oby';
-  // a task's: what came before, the decision (if any) where things stand, then
-  // what's been said since (the decision has been waiting since Oby's last
-  // word, so no time of its own)
-  const before = j ? threadOf(j) : [];
+  // a task's: what came before, then what's been said since
   const thread: Entry[] = task ? [
-    ...before,
-    ...(task.status === 'needs' && j!.ask ? [{ who: 'oby' as const, ask: true as const, ago: before.at(-1)!.ago }] : []),
+    ...(j ? threadOf(j) : []),
     ...(task.said ?? []),
   ] : talk ? talk.said : convo!.messages.map((m): Message => (m.who === 'you'
     ? { who: 'you', text: m.text, ago: m.ago, jobs: [...(m.task ? [m.task] : []), ...(m.jobs ?? [])], files: m.files, obys: m.obys }
@@ -104,26 +109,6 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
     // person's Oby from the same side, under its owner's name (by). Only you, the
     // person, get a bubble
     : { who: 'oby', by: m.who === 'oby' ? undefined : m.who, text: m.text, ago: m.ago, jobs: m.task ? [m.task] : undefined, streaming: m.streaming }));
-  // the cards that need the owner open by themselves, but for one they folded (LIVETASK-16);
-  // a task's own card in its own thread is never a card to open
-  const needing = thread.flatMap((m) => ('jobs' in m ? m.jobs ?? [] : []))
-    .filter((jid) => !(kind === 'task' && jid === id) && tasks.find((t) => t.id === jid)?.status === 'needs');
-  const open = openCards(opened, folded, needing);
-  const without = (s: ReadonlySet<string>, jid: string) => new Set([...s].filter((x) => x !== jid));
-  const toggle = (jid: string) => {
-    if (open.has(jid)) {
-      setOpened((s) => without(s, jid));
-      if (needing.includes(jid)) setFolded((s) => new Set(s).add(jid));
-    } else {
-      setOpened((s) => new Set(s).add(jid));
-      setFolded((s) => without(s, jid));
-    }
-  };
-  // a fold lasts as long as the need: a later one opens it again
-  useEffect(() => {
-    const ended = [...folded].filter((f) => tasks.find((t) => t.id === f)?.status !== 'needs');
-    if (ended.length) setFolded((s) => new Set([...s].filter((f) => !ended.includes(f))));
-  }, [tasks, folded]);
   // an Oby at work on an answer, and what it's on (someone else's: writing)
   const typing = !!(task ?? talk ?? convo)!.typing, step = talk ? talk.step : convo?.typing ? 'Writing' : undefined;
   // who's writing, in a conversation with other people's Obys: the first in it
@@ -142,6 +127,9 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
 
   // opened, it's seen; it opens at the latest message, and anything new scrolls into view
   useEffect(() => { if (kind === 'task') markSeen(id); if (kind === 'peer') markRead(id); if (kind === 'oby' && ofObid(id)) void openConversation(id); }, [id, kind]);
+  // in sight, a conversation is seen: obid's unread goes, and a turn that comes while it shows is
+  // seen too (CHATSTATE-6)
+  useEffect(() => { if (talk && !covered && !leaving) seeChat(talk.id); }, [talk?.id, talk?.unread, talk?.seen, covered, leaving]);
   const first = useRef(true);
   useLayoutEffect(() => {
     const l = list.current;
@@ -161,6 +149,26 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
     return () => ro.disconnect();
   }, [list]);
 
+  // opened at a task (a notification, Waiting for you, its row): its card in view, lit a moment, once it's
+  // here (a conversation's turns can come in after it opens)
+  const flashed = useRef(0);
+  useEffect(() => {
+    if (!flash || flashed.current === flash.n) return;
+    const el = list.current?.querySelector<HTMLElement>(`[data-task="${CSS.escape(flash.task)}"]`);
+    if (!el) return;
+    flashed.current = flash.n;
+    atEnd.current = false;
+    el.scrollIntoView({ block: 'center' });
+    setLit(flash.task);
+    setOpenings((n) => n + 1);
+    onFlashed?.();
+  });
+  useEffect(() => {
+    if (!lit) return;
+    const t = setTimeout(() => setLit(null), 1600);
+    return () => clearTimeout(t);
+  }, [lit, flash?.n]);
+
   // a timer, not animationend: animations don't run while the window is hidden
   useEffect(() => {
     if (!leaving) return;
@@ -176,16 +184,50 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
     return () => removeEventListener('keydown', onKey);
   }, [onBack, covered]);
 
+  // the decisions waiting over the message box: this task's own, else those of the tasks this
+  // conversation started (each named by its task: carded here, or its job's conversation, its card
+  // not placed yet), then an account's limit stopping its work
+  const carded = [...new Set([...thread.flatMap((m) => m.jobs ?? []), ...(talk ? tasks.filter((t) => t.job.conversation === talk.id).map((t) => t.id) : [])])];
+  const inThread = new Set(thread.flatMap((m) => [(m as Message).confirm?.id, (m as Message).offer?.id].filter((x): x is string => !!x)));
+  const pending: Pending[] = [
+    ...(task ? (task.status === 'needs' && j!.ask ? [{ key: task.id, task }] : [])
+      : carded.flatMap((jid) => {
+        const t = tasks.find((x) => x.id === jid);
+        return t && t.status === 'needs' && t.job.ask ? [{ key: t.id, task: t, from: t.title }] : [];
+      })),
+    ...limits.map((a) => ({ key: a.id, task: { id: a.id, job: { ask: a.ask! } } })),
+    // and what this conversation asks with no task to show it on (a failure, a GitHub offer made
+    // here), unless its thread shows it already (a Confirm, an offer): never another conversation's
+    // (CHATFIRST-8)
+    ...(talk ? asksWaiting().filter((a) => a.talk === talk.id && a.ask && !inThread.has(a.id))
+      .map((a) => ({ key: a.id, task: { id: a.id, job: { ask: a.ask! } }, from: a.title })) : []),
+  ];
+
   // where the message box's words go: Oby, a task's own agent, or another Oby (replyTarget)
-  const foot: Box = { foot: task ? { kind: 'task', id: task.id } : talk ? { kind: 'oby', id: talk.id } : { kind: 'peer', id: convo!.id } };
+  const foot: Box = toTask ? { card: toTask.id } : { foot: task ? { kind: 'task', id: task.id } : talk ? { kind: 'oby', id: talk.id } : { kind: 'peer', id: convo!.id } };
   const sendFoot = (text: string, att: Parameters<typeof tellChat>[2]) => {
-    const to = replyTarget(foot);
-    return 'job' in to ? tell(to.job, text, att) : 'oby' in to ? (to.oby === WELCOME && typedFirst(text)) || tellChat(to.oby, text, att) : say(to.peer, text, att);
+    const at = replyTarget(foot);
+    // to a task's chip: once obid took the words the box talks to Oby again; refused, the chip and the
+    // words stay (ATTACH-20)
+    if (toTask && 'job' in at) {
+      const sent = tell(at.job, text, att);
+      if (!sent) { setTo(null); return; }
+      return sent.then((took) => { if (took) setTo(null); return took; });
+    }
+    return 'job' in at ? tell(at.job, text, att) : 'oby' in at ? (at.oby === WELCOME && typedFirst(text)) || tellChat(at.oby, text, att) : say(at.peer, text, att);
+  };
+  // the box's words for a task: its agent's, or a follow-up once it has ended
+  const toAgent = toTask && agentOf(toTask.job.agent).name;
+  const tellTo = (tid: string) => {
+    setTo(tid);
+    requestAnimationFrame(() => document.querySelector<HTMLElement>('.chat-layer:not(.is-covered):not(.is-leaving) > .composer [contenteditable="true"]')?.focus());
   };
 
   return (
     <div className={`chat-layer${leaving ? ' is-leaving' : ''}${covered ? ' is-covered' : ''}`} inert={covered}>
       <div className="chat-scroll">
+        {/* ⌘F: find in this conversation (SHORTCUTS-3) */}
+        <FindBar root={list} shown={thread.length} off={covered} />
         <section ref={list} className="chat" aria-label={task ? `Conversation about ${task.title}` : name} onScroll={(e) => { onScroll(); const el = e.currentTarget; atEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
           <div className="chat-column">
             <div role="list" onCopy={(e) => copyPlain(e)} className="chat-thread rise" style={{ '--i': 1 } as React.CSSProperties}>
@@ -205,10 +247,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                   ...('steps' in m && m.steps?.length ? [<Steps key="steps" steps={m.steps} looked={m.looked ?? m.steps.length} asked={m.asked} />] : []),
                   // what went with yours: photos and files (Obys are @mentions in the words; tasks: cards, below)
                   ...('files' in m && m.files?.length ? [<Attached key="att" files={m.files} />] : []),
-                  // the decision the task needs from you, as on its card
-                  'ask' in m ? (
-                    <div key="ask" className="msg-ask"><AskBlock task={task!} inChat /></div>
-                  ) : m.who === 'peer' ? (
+                  m.who === 'peer' ? (
                     // another Oby's answer to what Oby asked: quoted in Oby's turn,
                     // under its owner's picture and name
                     <blockquote key="text" className="msg-quote"><PeerByline name={(m as Message).by!} /><Said text={m.text} /></blockquote>
@@ -232,15 +271,11 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                   ...('jobs' in m ? m.jobs ?? [] : []).map((jid) => {
                     const t = tasks.find((x) => x.id === jid);
                     return t && (
-                      <ThreadTask
+                      <TaskEntry
                         key={jid}
                         task={t}
-                        current={kind === 'task' && jid === id}
-                        opened={open.has(jid)}
-                        onOpen={toggle}
+                        lit={lit === jid}
                         onMenu={(at) => setMenu({ id: jid, at })}
-                        // a follow-up its box started: its card opened, where this conversation lists it
-                        onFollowUp={(next) => setOpened((s) => new Set(s).add(next))}
                       />
                     );
                   }),
@@ -255,7 +290,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                       : <span className="msg-face"><Face live={working && i === head && !covered} talk={i === head && !covered ? talking?.text.length : undefined} color={helper?.color} /></span>)}
                     {parts}
                     {last && !(m as Message).streaming && !(typing && i === thread.length - 1 && side === 'oby') ? (
-                      <div className={`msg-end${end?.type === ThreadTask || end?.type === SetupCard || end?.type === OfferCard || end?.type === AskCard || 'ask' in m || (m as Message).confirm ? ' is-wide' : ''}`}>
+                      <div className={`msg-end${end?.type === TaskEntry || end?.type === SetupCard || end?.type === OfferCard || end?.type === AskCard || (m as Message).confirm ? ' is-wide' : ''}`}>
                         {end}
                         <time className="msg-time">{clock(m.ago)}</time>
                       </div>
@@ -287,8 +322,6 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                 </div>
               )}
             </div>
-            {/* an account's limit stopping this work: its decision, as on Home's stack */}
-            {limits.map((a) => <div key={a.id} className="msg-ask"><AskBlock task={{ id: a.id, job: { ask: a.ask! } }} inChat /></div>)}
           </div>
         </section>
         <div {...thumbProps} />
@@ -310,19 +343,48 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
           </div>
         </div>
       )}
-      <Composer
-        style={{ '--i': 2 } as React.CSSProperties}
-        placeholder={convo ? `Message ${convo.with.length > 1 ? 'the group' : `${writer}’s Oby`}…` : helper ? `Message ${helper.name}…` : !task ? 'Reply to Oby…' : tellPlaceholder(task, agent)}
-        label={convo ? `Message ${convo.title}` : helper ? `Message ${helper.name}` : task ? `Tell the agent about ${task.title}` : 'Reply to Oby'}
-        onSend={sendFoot}
-        repos={!!talk && !talk.local}
-        conversation={talk?.id}
-        talk={talk && !talk.local && (!onObid || talkReady(talk.id)) ? talk : undefined}
-        draft={task ? draftBox.task(task.id) : talk ? draftBox.conversation(talk.id) : draftBox.peer(convo!.id)}
-        onStop={talk && typing && ofObid(talk.id) && talkReady(talk.id) ? () => stopChat(talk.id) : undefined}
-      />
-      {/* a card's menu: its page, then Stop or Archive, and Delete */}
-      {menu && menuTask && <TaskMenu task={menuTask} at={menu.at} align="left" onClose={() => setMenu(null)} onViewDetails={() => onOpenTask(menu.id)} />}
+      {/* what this conversation's tasks, or this task, wait on the owner for, and an account's limit
+          stopping its work: one line each, over the message box (LIVETASK-24 to 27) */}
+      <DecisionBar key={openings} pending={pending} />
+      {/* what obid refused of a click here, until dismissed; and the account it goes to, when that
+          can't run (CHATSTATE-1 to 4) */}
+      <Refusals where={talk ? [talk.id, ...tasks.filter((t) => t.job.conversation === talk.id).map((t) => t.id)] : task ? [task.id] : []} />
+      {(talk && !talk.local && !talk.helper) || task ? <CantRunLine chat={talk ?? undefined} task={task ?? undefined} /> : null}
+      {toTask ? <>
+        {/* talking to one task's agent: its chip over the box, × back to Oby (LIVETASK-30) */}
+        <div className="composer-to" role="status">
+          <span className="composer-to-chip"><BrandMark brand={agentOf(toTask.job.agent).brand} size={12} />To {toAgent} · <b>{toTask.title}</b>
+            <button type="button" aria-label={`Back to Oby`} onClick={() => setTo(null)}><X size={12} strokeWidth={2} /></button>
+          </span>
+        </div>
+        <Composer
+          key={`to:${toTask.id}`}
+          style={{ '--i': 2 } as React.CSSProperties}
+          placeholder={tellPlaceholder(toTask, toAgent!)}
+          label={`Tell the agent about ${toTask.title}`}
+          onSend={sendFoot}
+          draft={draftBox.task(toTask.id)}
+          onStop={toTask.status === 'running' && !toTask.unknown ? () => stop(toTask.id) : undefined}
+        />
+      </> : (
+        <Composer
+          style={{ '--i': 2 } as React.CSSProperties}
+          placeholder={convo ? `Message ${convo.with.length > 1 ? 'the group' : `${writer}’s Oby`}…` : helper ? `Message ${helper.name}…` : !task ? 'Reply to Oby…' : tellPlaceholder(task, agent)}
+          label={convo ? `Message ${convo.title}` : helper ? `Message ${helper.name}` : task ? `Tell the agent about ${task.title}` : 'Reply to Oby'}
+          onSend={sendFoot}
+          repos={!!talk && !talk.local}
+          conversation={talk?.id}
+          talk={talk && !talk.local && (!onObid || talkReady(talk.id)) ? talk : undefined}
+          draft={task ? draftBox.task(task.id) : talk ? draftBox.conversation(talk.id) : draftBox.peer(convo!.id)}
+          onStop={task ? (task.status === 'running' && !task.unknown ? () => stop(task.id) : undefined) : talk && typing && ofObid(talk.id) && talkReady(talk.id) ? () => stopChat(talk.id) : undefined}
+          // words sent while Oby answers here, waiting their turn (COMPOSER-8 to 10)
+          queued={talk?.queued}
+          onCancelQueued={talk ? (q) => cancelQueued(talk.id, q.id) : undefined}
+        />
+      )}
+      {/* a card's menu: tell its agent something, Stop or Archive, and Delete */}
+      {/* (from its ⋯, at the card's right edge: it opens leftward; from a right-click, at the pointer) */}
+      {menu && menuTask && <TaskMenu task={menuTask} at={menu.at} align={menu.at.width > 0 ? 'right' : 'left'} onClose={() => setMenu(null)} onTell={() => tellTo(menu.id)} />}
     </div>
   );
 }
@@ -369,62 +431,80 @@ function Attached({ files = [] }: { files?: { name: string; preview?: string }[]
 // color: an agent's, in its own conversation
 const Face = ({ live = false, talk, color }: { live?: boolean; talk?: number; color?: string }) => <ObyFaceLive live={live} talk={talk} color={color} />;
 
-// A task started in the conversation, as a small card under Oby's message: its title, how it stands
-// and who has it, and its status mark (as in the side panel). While it works, under that, its to-dos
-// with the current one lit and the last things it did (WorkNow); ended, what it left behind, in one
-// line. A click opens it in place into the agent's own conversation (AgentThread; again: folds it),
-// and a right-click opens its menu (onMenu, at the pointer); in a task's own thread, its own card
-// just shows where it stands. A status this build doesn't know says no word and shows StatusDot's
-// neutral mark (docs/contracts/wire.md, WIRE-3).
-export function ThreadTask({ task, current, opened = false, onOpen, onMenu, onFollowUp }: {
-  task: Task;
-  current: boolean;
-  opened?: boolean;
-  onOpen: (id: string) => void;
-  onMenu?: (at: DOMRect) => void;
-  onFollowUp?: (id: string) => void;
-}) {
+// A task started in the conversation, as a card under Oby's message (Sangam's screen 03): its progress
+// only (LIVETASK-29): its agent, its title, how it stands, who has it and where ("Running · Claude Code ·
+// oby"), its stages as a bar, and its status mark at the right (as on its nested row in the side panel).
+// What it did shows under it, never in it (TaskLog). A click opens nothing: every way to a task opens
+// this conversation at this card (LIVETASK-28). Its ⋯, or a right-click, opens its menu (onMenu): tell
+// its agent something, Stop. Waiting on the owner, it stays its head: "Needs you", the stage it waits on
+// orange; the decision waits over the message box (DecisionBar, LIVETASK-9, LIVETASK-25). A status this
+// build doesn't know says no word and shows StatusDot's neutral mark (docs/contracts/wire.md, WIRE-3).
+export function ThreadTask({ task, onMenu }: { task: Task; onMenu?: (at: DOMRect) => void }) {
+  return (
+    <div
+      className="msg-task"
+      role="group"
+      aria-label={task.title}
+      onContextMenu={onMenu && ((e) => { e.preventDefault(); onMenu(new DOMRect(e.clientX, e.clientY, 0, 0)); })}
+    >
+      <TaskHead task={task} />
+      {onMenu && (
+        <button type="button" className="icon-button msg-task-more" aria-label={`More for ${task.title}`} aria-haspopup="menu" onClick={(e) => onMenu(e.currentTarget.getBoundingClientRect())}>
+          <Ellipsis size={16} strokeWidth={1.8} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+// A task in the conversation: its card, its Changes (CHANGES-4), and what it did under it, outside the card (TaskLog); data-task is
+// where opening the conversation at the task scrolls to (LIVETASK-28)
+export function TaskEntry({ task, lit = false, onMenu }: { task: Task; lit?: boolean; onMenu?: (at: DOMRect) => void }) {
+  return (
+    <div className={`msg-task-work${task.status === 'running' || task.status === 'needs' ? ' is-live' : ''}${lit ? ' is-lit' : ''}`} data-task={task.id}>
+      <ThreadTask task={task} onMenu={onMenu} />
+      {/* what it changed, in the side panel beside the conversation (CHANGES-4) */}
+      <ChangesPill task={task} />
+      <TaskLog task={task} />
+    </div>
+  );
+}
+
+// A task's head, as its card shows it (screen 03)
+export function TaskHead({ task }: { task: Task }) {
   const j = task.job;
-  const repo = j.repo.includes('/') ? j.repo.split('/')[1] : null;
-  const atWork = task.status === 'running' || task.status === 'needs';
+  const repo = j.repo.includes('/') ? j.repo.split('/')[1] : j.repo || null;
   const word = task.unknown ? null : task.status === 'running' ? (j.status === 'queued' ? 'Queued' : 'Running') : task.status === 'needs' ? 'Needs you' : j.nothingDone ? 'Nothing done' : ENDED[j.status] ?? 'Done';
-  const body = <>
-    <BrandMark brand={agentOf(j.agent).brand} size={16} mono />
+  return <>
+    <BrandMark brand={agentOf(j.agent).brand} size={16} />
     <span className="msg-task-text">
       <span className="msg-task-title">
         {task.who && <span className="tc-who">{task.who}</span>}
         {task.title}
       </span>
       <span className="msg-task-meta">
-        {word}{word && ' · '}{agentOf(j.agent).name} · {j.account}{j.on && <> · on {j.on}</>}{repo && <> · {repo}</>}
-        {task.status === 'running' && j.status !== 'queued' && <> · {span(j.created * 60)}</>}
+        {word}{word && ' · '}{agentOf(j.agent).name}{j.on && <> · on {j.on}</>}{repo && <> · {repo}</>}
       </span>
       {/* stopped: why, in obid's words, on one line */}
       {task.status === 'done' && ENDED[j.status] && j.reason && <span className="msg-task-meta">{j.reason.split('\n')[0]}</span>}
       {task.status === 'done' && !task.unknown && resultLine(task)}
+      {j.stages.length > 0 && task.status !== 'done' && <Stages task={task} />}
     </span>
     {/* stopped or failed isn't the check a finished one gets (Sangam's board "Stuck and failed") */}
-    {task.status === 'done' && ENDED[j.status] ? <span className="status" role="img" aria-label={ENDED[j.status]}><span className="status-dot is-failed" /></span> : <StatusDot task={task} />}
-    {!current && (opened ? <ChevronDown size={14} strokeWidth={1.8} className="msg-task-go" /> : <ChevronRight size={14} strokeWidth={1.8} className="msg-task-go" />)}
+    <TaskMark task={task} />
   </>;
+}
+
+// Its stages as a bar of six (screen 03): those done filled, the one it's on pulsing, or orange while
+// it waits on the owner, a failed one red
+function Stages({ task }: { task: Task }) {
+  const stages = task.job.stages;
+  const at = stages.findIndex((st) => st.state === 'current');
+  const needs = task.status === 'needs';
+  const label = at >= 0 ? `Stage ${at + 1} of ${stages.length}: ${stages[at].title}${needs ? ', needs you' : ''}` : `${stages.filter((st) => st.state === 'done').length} of ${stages.length} stages done`;
   return (
-    <div className={`msg-task-work${atWork ? ' is-live' : ''}${opened ? ' is-on' : ''}`}>
-      {current
-        ? <div className="msg-task">{body}</div>
-        : (
-          <button
-            className="msg-task is-link"
-            onClick={() => onOpen(task.id)}
-            onContextMenu={(e) => { e.preventDefault(); onMenu?.(new DOMRect(e.clientX, e.clientY, 0, 0)); }}
-            aria-label={`Open ${task.title}`}
-            aria-expanded={opened}
-          >
-            {body}
-          </button>
-        )}
-      {opened && !current
-        ? <AgentThread id={task.id} onFollowUp={(next) => onFollowUp?.(next)} />
-        : atWork && <WorkNow task={task} onClick={current ? undefined : () => onOpen(task.id)} />}
-    </div>
+    <span className="tc-progress msg-task-stages" role="img" aria-label={label}>
+      {stages.map((st, i) => <span key={i} className={st.state === 'done' ? 'is-done' : st.state === 'failed' ? 'is-failed' : st.state === 'current' ? (needs ? 'is-needs' : 'is-current') : undefined} />)}
+    </span>
   );
 }

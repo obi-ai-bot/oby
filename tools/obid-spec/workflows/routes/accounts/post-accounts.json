@@ -1,0 +1,267 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/accounts",
+  "version": "1.0.0",
+  "description": "Adds an account (ACCOUNTS-1): 400 for a body that isn't an object, 422 for another key, a missing or unknown tool, a name another account has; 201 with an 8-hex id, its folder 0700, kept in accounts.json 0600 with an accounts event; no name takes the tool's own.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/accounts"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "claude"
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "not-an-object-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "raw": "[]",
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "another-key-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "claude",
+          "configDir": "/tmp"
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": {
+              "$contains": "configDir isn't something an account has here"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "agent-missing-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "name": "x"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "agent-unknown-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "gemini"
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": {
+              "$contains": "agent is claude, codex or cursor"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "accounts-1-named",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "claude",
+          "name": "Work"
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "claude",
+            "name": "Work",
+            "signedIn": false,
+            "id": {
+              "$matches": "^[0-9a-f]{8}$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-1"
+        ]
+      }
+    },
+    {
+      "id": "an-accounts-event",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "accounts",
+        "expect": {
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.accounts-1-named.body.id}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "accounts-1-its-folder",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "accounts/${state.accounts-1-named.body.id}",
+        "expect": {
+          "exists": true,
+          "mode": "0700"
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-1"
+        ]
+      }
+    },
+    {
+      "id": "kept-0600",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "accounts.json",
+        "expect": {
+          "exists": true,
+          "mode": "0600",
+          "json": {
+            "paths": {
+              "added": {
+                "$any": {
+                  "id": "${state.accounts-1-named.body.id}",
+                  "name": "Work"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "accounts-1-a-name-taken-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "claude",
+          "name": "work"
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-1"
+        ]
+      }
+    },
+    {
+      "id": "accounts-1-no-name-the-tools-own",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "codex",
+            "name": {
+              "$matches": "^Codex( [0-9]+)?$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-1"
+        ]
+      }
+    },
+    {
+      "id": "listed-in-status",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.accounts-1-named.body.id}",
+                "name": "Work"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

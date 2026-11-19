@@ -6,6 +6,8 @@
 use crate::api::{ApiError, Shared};
 use crate::delivery::{Delivery, Move, Replay};
 use crate::events::Events;
+use crate::profiles::Scope;
+use crate::projects::{Event, Whose, answered, next};
 use axum::body::Bytes;
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::StatusCode;
@@ -16,10 +18,26 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+mod edit;
+mod marks;
+pub use edit::Edit;
+pub use marks::Marks;
+
 /// The turns kept per conversation, the oldest pruned.
 const KEPT: usize = 500;
 /// The conversations kept: past it, starting one forgets the oldest that isn't pinned.
 pub const CONVERSATIONS: usize = 200;
+
+/// Oby's line in a conversation whose words a stop cut (DELIVERY-7, DELIVERY-9): `clean` when obid
+/// was stopped (an update, a quit), else it went down. Not Sangam's words yet: the contract's.
+pub fn cut_line(clean: bool) -> &'static str {
+    if clean {
+        "Oby restarted before it finished answering that. Send it again to get an answer."
+    } else {
+        "Oby went down before it finished answering that. Send it again to get an answer."
+    }
+}
+
 /// The longest title a rename may set.
 const TITLE: usize = 100;
 /// The longest search a list takes, in characters (#593).
@@ -147,9 +165,20 @@ struct Thread {
     /// The helper whose one conversation it is (crate::helpers): kept aside as [`Self::from_obys`]'s.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     helper: Option<String>,
-    /// The folders its work is in (crate::folders): canonical paths, in the order picked.
+    /// The profile it was made in (crate::profile_scope, B00-40); none is the default's, as is
+    /// every conversation made before profiles. It never changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    profile: Option<String>,
+    /// The folders its work is in (crate::folders): canonical paths, in the order picked. Its own
+    /// list: while it's in a project it answers the project's, and this waits underneath.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     folders: Vec<String>,
+    /// The project it belongs to (crate::projects), by id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    project: Option<String>,
+    /// obid's copy of its project's folders, what it answers while in one: never answered alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    project_folders: Vec<String>,
     /// The files attached to its words, as obid keeps them (`attachments` on `POST /v1/plans`):
     /// they go when it does ([`Conversations::delete`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -167,6 +196,13 @@ struct Thread {
     /// What its queued words need to be sent again, by their turn's id: never served.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     replays: BTreeMap<String, Replay>,
+    /// When the owner last looked at it or spoke in it (marks.rs): a turn since is unread. None
+    /// for one kept before obid had marks, which reads as read until looked at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    seen: Option<marks::Seen>,
+    /// Put away by the owner (marks.rs): listed under Archived, until restored or spoken in.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    archived: bool,
     /// One more each time obid sends it changed (a `conversation` event), as a job's `revision`
     /// (EVENTS-7). Kept in its file.
     #[serde(default)]
@@ -174,6 +210,20 @@ struct Thread {
     /// Keys this obid doesn't know (a newer one's), kept as they were when it saves. Never shown.
     #[serde(flatten)]
     extra: serde_json::Map<String, Value>,
+    /// The turn under way there, as it goes ([`Underway`], CONVERSATION-AGENT-50): obid's own
+    /// memory, never kept, since a restart cuts the turn.
+    #[serde(skip)]
+    underway: Option<Underway>,
+}
+
+/// A conversation's turn under way (CONVERSATION-AGENT-50): the owner's words it answers (their
+/// user turn), its step now and the words it has said so far, so an app shows "working" from
+/// obid's own word, never guessed from events it may have missed.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Underway {
+    pub turn: String,
+    pub step: String,
+    pub text: String,
 }
 
 /// Where conversation `id`'s Cursor keeps its login copy and sessions: short, under `logins/` as a
@@ -319,7 +369,8 @@ impl Thread {
             "lastActivity": self.last_activity(),
             "cursor": self.key().to_string(),
             "tasks": shown(&self.tasks),
-            "folders": self.folders,
+            "folders": answered(&self.folders, &self.project_folders, self.whose()),
+            "project": self.project,
             "revision": self.revision,
         });
         // Only once there's something to say.
@@ -338,7 +389,39 @@ impl Thread {
         if let Some(helper) = &self.helper {
             summary["helper"] = json!(helper);
         }
+        if let Some(profile) = &self.profile {
+            summary["profile"] = json!(profile);
+        }
+        if let Some(underway) = &self.underway {
+            summary["underway"] = json!(underway);
+        }
+        self.show_marks(&mut summary);
         summary
+    }
+
+    /// Whether it's the profile `scope`'s; every one is, for none.
+    fn within(&self, scope: Option<&Scope>) -> bool {
+        scope.is_none_or(|scope| scope.holds(self.profile.as_deref()))
+    }
+
+    fn whose(&self) -> Whose {
+        if self.project.is_some() {
+            Whose::Project
+        } else {
+            Whose::Own
+        }
+    }
+
+    /// Its project after `event` (crate::projects::next): `to`, with its folders, on `Assign`.
+    fn moved(&mut self, event: Event, to: Option<(String, Vec<String>)>) {
+        let (whose, keeps) = next(self.whose(), event);
+        if keeps {
+            self.folders = std::mem::take(&mut self.project_folders);
+        }
+        (self.project, self.project_folders) = match (whose, to) {
+            (Whose::Project, Some((id, folders))) => (Some(id), folders),
+            _ => (None, vec![]),
+        };
     }
 
     /// Kept aside from the owner's: never counted or forgotten by [`Conversations::prune`], never
@@ -440,6 +523,8 @@ pub enum Error {
     Folder(String),
     /// A paired device's change would add a folder: only the owner's Mac app adds one.
     AddsFolders,
+    /// It's in a project, whose folders it works in: none of its own are set.
+    InProject,
     /// It's a helper's: it goes with its helper (crate::helpers).
     HelperConversation,
 }
@@ -498,6 +583,10 @@ impl From<Error> for ApiError {
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "Folders are added only on the Mac: from here you can take one off.",
             ),
+            Error::InProject => ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "This conversation works in its project's folders: change the project, or take the conversation out of it.",
+            ),
             Error::HelperConversation => ApiError::new(
                 StatusCode::CONFLICT,
                 "It's a helper's conversation: it goes when its helper is deleted.",
@@ -518,10 +607,12 @@ pub struct Conversations {
     dir: PathBuf,
     threads: Mutex<Vec<Thread>>,
     events: Events,
-    /// The id the next new conversation gets once obid named it ([`Conversations::next_id`]):
-    /// its folder may hold a Claude Code started for it already (crate::brain::harness). Kept in
-    /// `next-id`, so the folder is found again after obid restarts.
-    next: Mutex<Option<String>>,
+    /// The id the next new conversation of each profile gets once obid named it
+    /// ([`Conversations::next_id`]), by the profile's tag ("" for the default's): its folder may
+    /// hold a Claude Code started for it already (crate::brain::harness). Kept in `next-id` (the
+    /// default's) and `next-id-<profile id>`, so the folder is found again after obid restarts
+    /// (PROFILES-46).
+    next: Mutex<BTreeMap<String, String>>,
     /// What ends a conversation's waiting session before its folders go (LANES-16).
     ending: std::sync::OnceLock<Ending>,
     /// Forgotten under the lock, ended once it's let go ([`Conversations::end_forgotten`]).
@@ -534,8 +625,27 @@ fn runs_swept(place: &Path, idle: bool) -> bool {
     crate::conn::sweep_records(&temp, &room, &login, idle)
 }
 
-/// Where the next new conversation's id is kept.
+/// Where the default profile's next new conversation's id is kept.
 const NEXT: &str = "next-id";
+
+/// Where profile `tag`'s next new conversation's id is kept: `next-id` for the default's ("").
+fn next_file(tag: &str) -> String {
+    match tag {
+        "" => NEXT.to_owned(),
+        tag => format!("{NEXT}-{tag}"),
+    }
+}
+
+/// The profile whose next id the file `name` keeps ("" for the default's), or none for any other
+/// file: another profile's only by a lower-case UUID (crate::profiles::is_profile_id).
+fn profile_of_next(name: &str) -> Option<String> {
+    if name == NEXT {
+        return Some(String::new());
+    }
+    let tag = name.strip_prefix(NEXT)?.strip_prefix('-')?;
+    let id: [u8; 36] = tag.as_bytes().try_into().ok()?;
+    crate::profiles::is_profile_id(id).then(|| tag.to_owned())
+}
 
 impl Conversations {
     /// The conversations in `home/conversations`, after moving the single thread of obid before
@@ -559,10 +669,18 @@ impl Conversations {
                 named
             })
             .collect();
-        let next = std::fs::read_to_string(dir.join(NEXT))
-            .ok()
-            .map(|id| id.trim().to_owned())
-            .filter(|id| is_id(id) && !threads.iter().any(|t| &t.id == id));
+        let next: BTreeMap<String, String> = (std::fs::read_dir(&dir).into_iter().flatten())
+            .flatten()
+            .filter_map(|entry| {
+                let file = entry.file_name().to_string_lossy().into_owned();
+                let tag = profile_of_next(&file)?;
+                let id = std::fs::read_to_string(entry.path())
+                    .ok()?
+                    .trim()
+                    .to_owned();
+                (is_id(&id) && !threads.iter().any(|t| t.id == id)).then_some((tag, id))
+            })
+            .collect();
         let conversations = Conversations {
             ending: std::sync::OnceLock::new(),
             forgotten: Mutex::new(Vec::new()),
@@ -577,7 +695,10 @@ impl Conversations {
         // Every recorded run is swept (none runs yet); a deleted one's folders go once none is left.
         // One whose file was kept aside, named `<id>-<seconds>.json`, isn't deleted (HOME-13).
         let next = conversations.next.lock().map(|next| next.clone());
-        let next = next.unwrap_or_else(|e| e.into_inner().clone());
+        let next: Vec<String> = next
+            .unwrap_or_else(|e| e.into_inner().clone())
+            .into_values()
+            .collect();
         let aside = std::fs::read_dir(home.join("unreadable/conversations")).into_iter();
         let aside: Vec<_> = aside.flatten().flatten().map(|e| e.file_name()).collect();
         let entries = std::fs::read_dir(&conversations.dir).into_iter().flatten();
@@ -588,7 +709,7 @@ impl Conversations {
             let gone = json.is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound);
             let ours = is_id(&id) && place.is_dir();
             let gone = gone && !aside.iter().any(|n| n.to_string_lossy().starts_with(&*id));
-            if ours && runs_swept(&place, true) && gone && next.as_deref() != Some(&*id) {
+            if ours && runs_swept(&place, true) && gone && !next.iter().any(|n| *n == *id) {
                 let _ = std::fs::remove_dir_all(place);
             }
         }
@@ -674,10 +795,13 @@ impl Conversations {
     /// their folders were, and add none; otherwise a refusal is `Folder`, and nothing is added.
     /// `attachments`: the files' paths (checked: crate::brain::validate_attachments), kept with the
     /// conversation; the turn shows their names. The turn is `queued`, and what a replay needs
-    /// (the paths, `signed`) is kept with it in the same write (crate::delivery).
+    /// (the paths, `signed`) is kept with it in the same write (crate::delivery). `project`: the
+    /// project a new conversation starts in (crate::projects::joined), or why it's refused, as
+    /// `folders`; folders sent to one in a project are `InProject`.
     #[allow(clippy::too_many_arguments)]
     pub fn begin(
         &self,
+        scope: &Scope,
         target: Target,
         said: String,
         jobs: Vec<String>,
@@ -686,6 +810,7 @@ impl Conversations {
         foreign: Option<String>,
         folders: Result<Vec<String>, String>,
         signed: bool,
+        project: Result<Option<(String, Vec<String>)>, String>,
     ) -> Result<Begun, Error> {
         let mut threads = self.lock();
         if let Some(id) = id.as_deref()
@@ -696,7 +821,7 @@ impl Conversations {
             let thread = &threads[at];
             let in_target = match &target {
                 Target::Id(named) => thread.id == *named,
-                Target::Latest => latest(&threads) == Some(at),
+                Target::Latest => latest_in(&threads, Some(scope)) == Some(at),
                 Target::New => thread.turns.first().is_some_and(|t| t.id == id),
             };
             let same = thread
@@ -715,11 +840,15 @@ impl Conversations {
             });
         }
         let folders = folders.map_err(Error::Folder)?;
+        let project = project.map_err(Error::Folder)?;
         let found = match target {
-            Target::Id(id) => Some(index_of(&threads, &id)?),
-            Target::Latest => latest(&threads),
+            Target::Id(id) => Some(index_in(&threads, &id, Some(scope))?),
+            Target::Latest => latest_in(&threads, Some(scope)),
             Target::New => None,
         };
+        if found.is_some_and(|at| threads[at].project.is_some()) && !folders.is_empty() {
+            return Err(Error::InProject);
+        }
         let names: Vec<String> = attachments
             .iter()
             .map(|p| {
@@ -730,15 +859,17 @@ impl Conversations {
             .collect();
         let index = found.unwrap_or_else(|| {
             threads.push(Thread {
-                id: self.take_next().unwrap_or_else(new_id),
-                // Files with no words: named after the first.
-                title: titled(
-                    names
-                        .first()
-                        .filter(|_| said.trim().is_empty())
-                        .unwrap_or(&said),
-                ),
+                id: self
+                    .take_next(scope.tag().as_deref())
+                    .unwrap_or_else(new_id),
+                // Named after the owner's words, a few of them (CHATFIRST-36); files with no
+                // words, after the first.
+                title: match names.first().filter(|_| said.trim().is_empty()) {
+                    Some(name) => titled(name),
+                    None => short_title(&said),
+                },
                 created: obi_protocol::time::format(obi_protocol::time::now()),
+                profile: scope.tag(),
                 ..Thread::default()
             });
             threads.len() - 1
@@ -757,6 +888,9 @@ impl Conversations {
             return Err(Error::TooManyFolders);
         }
         threads[index].folders = more;
+        if let Some(project) = project.filter(|_| found.is_none()) {
+            threads[index].moved(Event::Assign, Some(project));
+        }
         for path in &attachments {
             if !threads[index].uploads.contains(path) {
                 threads[index].uploads.push(path.clone());
@@ -801,8 +935,31 @@ impl Conversations {
 
     /// The conversation with the latest turn, if there is one.
     pub fn latest_id(&self) -> Option<String> {
+        self.latest_id_in(None)
+    }
+
+    /// [`Self::latest_id`] of the profile `scope`'s (every profile's for none).
+    pub fn latest_id_in(&self, scope: Option<&Scope>) -> Option<String> {
         let threads = self.lock();
-        latest(&threads).map(|index| threads[index].id.clone())
+        latest_in(&threads, scope).map(|index| threads[index].id.clone())
+    }
+
+    /// The folders conversation `id` works in: its project's while it's in one, else its own
+    /// (crate::conversation_files, COMPOSER-15); none when obid has no such conversation.
+    pub fn working_folders(&self, id: &str) -> Option<Vec<String>> {
+        let threads = self.lock();
+        (threads.iter().find(|t| t.id == id))
+            .map(|t| answered(&t.folders, &t.project_folders, t.whose()).clone())
+    }
+
+    /// The profile conversation `id` was made in (none: the default's), or none when obid has no
+    /// such conversation (crate::profile_scope).
+    pub fn profile_of(&self, id: &str) -> Option<Option<String>> {
+        let threads = self.lock();
+        threads
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| t.profile.clone())
     }
 
     /// Adds a turn to the conversation `id`. `foreign`: why its text isn't on obid's allowlist
@@ -878,18 +1035,20 @@ impl Conversations {
     /// `id` (crate::delivery), in one write; a refused move leaves its turn as it was, and a turn
     /// with none (kept before deliveries) is left alone. Each turn moved goes out on a
     /// `turnDelivery`, never a `turn` again, which would take back the answer's alert.
-    pub fn deliver(&self, id: &str, turns: &[String], change: &Move) {
+    pub fn deliver(&self, id: &str, turns: &[String], change: &Move) -> Vec<String> {
         let mut threads = self.lock();
         let Some(thread) = threads.iter_mut().find(|t| t.id == id) else {
-            return;
+            return vec![];
         };
         let kept = thread.clone();
         let mut moved = vec![];
+        let mut ids = vec![];
         for turn in thread.turns.iter_mut().filter(|t| turns.contains(&t.id)) {
             let Some(delivery) = turn.delivery.as_mut() else {
                 continue;
             };
             if delivery.apply(change) {
+                ids.push(turn.id.clone());
                 moved.push(serde_json::to_value(turn.revised()).unwrap_or_default());
             } else {
                 let (turn, status) = (&turn.id, &delivery.status);
@@ -897,16 +1056,155 @@ impl Conversations {
             }
         }
         if moved.is_empty() {
-            return;
+            return vec![];
         }
         if let Err(e) = self.write(thread) {
             *thread = kept;
             tracing::warn!("conversation {id}: its words' delivery wasn't kept: {e}");
-            return;
+            return vec![];
         }
         for turn in moved {
             self.events.send("turnDelivery", turn);
         }
+        ids
+    }
+
+    /// The owner's words waiting in the conversation `id`, oldest first, each with what a turn
+    /// needs of it that the turn doesn't hold ([`Replay`]): those whose delivery reads `queued`,
+    /// the conversation's one queue (CONVERSATION-AGENT-49).
+    pub fn queued(&self, id: &str) -> Vec<(Turn, Replay)> {
+        let threads = self.lock();
+        let Some(thread) = threads.iter().find(|t| t.id == id) else {
+            return vec![];
+        };
+        (thread.turns.iter())
+            .filter(|t| t.delivery.as_ref().is_some_and(|d| d.status == "queued"))
+            .map(|t| {
+                let replay = thread.replays.get(&t.id).cloned().unwrap_or_default();
+                (t.clone(), replay)
+            })
+            .collect()
+    }
+
+    /// The conversation `id`'s turn for the owner's words of `turn` begins (CONVERSATION-AGENT-50):
+    /// it's under way at its first step.
+    pub fn begin_underway(&self, id: &str, turn: &str, step: &str) {
+        self.underway(id, |underway| {
+            *underway = Some(Underway {
+                turn: turn.to_owned(),
+                step: step.to_owned(),
+                text: String::new(),
+            });
+            true
+        });
+    }
+
+    /// The conversation `id`'s turn under way for `turn` is at `step` now.
+    pub fn underway_step(&self, id: &str, turn: &str, step: &str) {
+        self.underway(id, |underway| match underway {
+            Some(u) if u.turn == turn && u.step != step => {
+                u.step = step.to_owned();
+                true
+            }
+            _ => false,
+        });
+    }
+
+    /// The conversation `id`'s turn under way for `turn` said `words` more: kept, sent with its
+    /// `delta` and not again.
+    pub fn underway_words(&self, id: &str, turn: &str, words: &str) {
+        let mut threads = self.lock();
+        if let Some(Some(u)) = threads
+            .iter_mut()
+            .find(|t| t.id == id)
+            .map(|t| t.underway.as_mut())
+            && u.turn == turn
+        {
+            u.text.push_str(words);
+        }
+    }
+
+    /// The conversation `id`'s turn for `turn` ended, `end` saying why (`turn::End`): it's under way
+    /// no more, and an `underway` event with `ended` says so.
+    pub fn end_underway(&self, id: &str, turn: &str, end: &str) {
+        let mut threads = self.lock();
+        let Some(thread) = threads.iter_mut().find(|t| t.id == id) else {
+            return;
+        };
+        if thread.underway.as_ref().is_none_or(|u| u.turn != turn) {
+            return;
+        }
+        thread.underway = None;
+        drop(threads);
+        self.events.send(
+            "underway",
+            json!({"conversation": id, "turn": turn, "ended": true, "end": end}),
+        );
+    }
+
+    /// Changes the conversation `id`'s turn under way with `change`; when it says it changed, an
+    /// `underway` event sends it, never a `conversation` event: nothing of it is written, so no
+    /// revision moves (EVENTS-7).
+    fn underway(&self, id: &str, change: impl FnOnce(&mut Option<Underway>) -> bool) {
+        let mut threads = self.lock();
+        let Some(thread) = threads.iter_mut().find(|t| t.id == id) else {
+            return;
+        };
+        if !change(&mut thread.underway) {
+            return;
+        }
+        let Some(underway) = thread.underway.clone() else {
+            return;
+        };
+        drop(threads);
+        let mut event = json!(underway);
+        event["conversation"] = json!(id);
+        self.events.send("underway", event);
+    }
+
+    /// At start (DELIVERY-7 to 10): the owner's words a stop cut read `interrupted` (those that
+    /// were `starting` or `running`), and each conversation with any gets one Oby turn in obid's
+    /// words ([`cut_line`]: `clean` when obid was stopped, not gone down), in one write with them.
+    /// The conversations with words still `queued` come back, for their drains to answer
+    /// (`crate::brain::recover`, CONVERSATION-AGENT-49). A turn with no `delivery` is left as it is.
+    pub fn recover(&self, clean: bool) -> Vec<String> {
+        let mut threads = self.lock();
+        let mut queued = vec![];
+        for index in 0..threads.len() {
+            let thread = &mut threads[index];
+            if (thread.turns.iter())
+                .any(|t| t.delivery.as_ref().is_some_and(|d| d.status == "queued"))
+            {
+                queued.push(thread.id.clone());
+            }
+            let kept = thread.clone();
+            let mut cut = vec![];
+            for turn in &mut thread.turns {
+                if let Some(delivery) = turn.delivery.as_mut()
+                    && matches!(delivery.status.as_str(), "starting" | "running")
+                    && delivery.apply(&Move::Interrupted)
+                {
+                    cut.push(serde_json::to_value(turn.revised()).unwrap_or_default());
+                }
+            }
+            if cut.is_empty() {
+                continue;
+            }
+            // obid's own words: nothing the conversation read is in them.
+            let line = Turn::of("oby", cut_line(clean).to_owned());
+            if let Err(e) = self.add(&mut threads, index, line, None) {
+                tracing::warn!(
+                    "conversation {}: the cut words weren't kept: {e:?}",
+                    kept.id
+                );
+                threads[index] = kept;
+                continue;
+            }
+            for turn in cut {
+                self.events.send("turnDelivery", turn);
+            }
+        }
+        queued
     }
 
     /// Oby's turn telling the conversation `id` how the job `job` ended ([`job_report`], #351).
@@ -926,16 +1224,31 @@ impl Conversations {
     /// A new conversation titled `title`, with no turn yet: the one a routine's runs go to
     /// (crate::routines). Its first turn follows at once.
     pub fn start_for(&self, title: &str) -> Result<String, Error> {
-        self.start(title, None)
+        self.start(title, None, None)
+    }
+
+    /// [`Self::start_for`], in the profile `profile` (a job's task conversation is its job's).
+    pub fn start_in_profile(&self, title: &str, profile: Option<String>) -> Result<String, Error> {
+        self.start(title, None, profile)
     }
 
     /// [`Self::start_for`], the one conversation of the helper `helper` (crate::helpers): kept
     /// aside, so it forgets none of the owner's.
-    pub fn start_helper(&self, title: &str, helper: &str) -> Result<String, Error> {
-        self.start(title, Some(helper.to_owned()))
+    pub fn start_helper(
+        &self,
+        title: &str,
+        helper: &str,
+        profile: Option<String>,
+    ) -> Result<String, Error> {
+        self.start(title, Some(helper.to_owned()), profile)
     }
 
-    fn start(&self, title: &str, helper: Option<String>) -> Result<String, Error> {
+    fn start(
+        &self,
+        title: &str,
+        helper: Option<String>,
+        profile: Option<String>,
+    ) -> Result<String, Error> {
         let mut threads = self.lock();
         let mut thread = Thread {
             id: new_id(),
@@ -943,8 +1256,10 @@ impl Conversations {
             created: obi_protocol::time::format(obi_protocol::time::now()),
             sequence: next_sequence(&threads),
             helper,
+            profile,
             ..Thread::default()
         };
+        thread.seen_at(thread.created.clone());
         let summary = thread.revised();
         self.write(&thread).map_err(Error::Io)?;
         self.events.send("conversation", summary);
@@ -976,6 +1291,7 @@ impl Conversations {
             from_obys: true,
             ..Thread::default()
         };
+        thread.seen_at(thread.created.clone());
         let summary = thread.revised();
         self.write(&thread).map_err(Error::Io)?;
         self.events.send("conversation", summary);
@@ -1154,6 +1470,9 @@ impl Conversations {
             thread.replays.remove(&gone.id);
         }
         thread.sequence = sequence;
+        if turn.who == "user" {
+            thread.spoke(turn.at.clone());
+        }
         let summary = thread.revised();
         if let Err(error) = self.write(thread) {
             *thread = kept;
@@ -1195,18 +1514,20 @@ impl Conversations {
     /// of the conversation `id`, else of the one holding `before`, else of the latest.
     fn page(
         &self,
+        scope: Option<&Scope>,
         id: Option<&str>,
         before: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Turn>, Error> {
         let threads = self.lock();
         let thread = match (id, before) {
-            (Some(id), _) => &threads[index_of(&threads, id)?],
+            (Some(id), _) => &threads[index_in(&threads, id, scope)?],
             (None, Some(turn)) => threads
                 .iter()
+                .filter(|t| t.within(scope))
                 .find(|t| t.turns.iter().any(|t| t.id == turn))
                 .ok_or(Error::NoTurn)?,
-            (None, None) => match latest(&threads) {
+            (None, None) => match latest_in(&threads, scope) {
                 Some(index) => &threads[index],
                 None => return Ok(vec![]),
             },
@@ -1225,10 +1546,16 @@ impl Conversations {
     /// Up to `limit` conversations listed after `after` (or from the first): the pinned ones,
     /// then the rest, each newest first. A cursor is a place, not a conversation, so one that
     /// moved since is skipped or listed again, never anything else.
-    pub(crate) fn list(&self, after: Option<Cursor>, limit: usize) -> Vec<Value> {
+    pub(crate) fn list(
+        &self,
+        scope: Option<&Scope>,
+        after: Option<Cursor>,
+        limit: usize,
+    ) -> Vec<Value> {
         let threads = self.lock();
         ordered(&threads, after)
             .iter()
+            .filter(|t| t.within(scope))
             .take(limit)
             .map(|t| t.summary())
             .collect()
@@ -1241,6 +1568,7 @@ impl Conversations {
     /// are gone from the list, so they're never found.
     pub fn search(
         &self,
+        scope: Option<&Scope>,
         words: &[String],
         except: Option<&str>,
         after: Option<Cursor>,
@@ -1256,7 +1584,7 @@ impl Conversations {
         let threads = self.lock();
         ordered(&threads, after)
             .into_iter()
-            .filter(|t| except != Some(t.id.as_str()))
+            .filter(|t| except != Some(t.id.as_str()) && t.within(scope))
             .filter_map(|t| {
                 let hits: Vec<(usize, Turn)> = t
                     .turns
@@ -1281,19 +1609,33 @@ impl Conversations {
 
     /// Renames or pins the conversation `id`, or changes its folders: merged with those it has
     /// under the same lock that writes them, so a change can't put back one just taken off.
-    fn change(
-        &self,
-        id: &str,
-        title: Option<String>,
-        pinned: Option<bool>,
-        folders: Option<FolderChange>,
-        talk_account: Option<Option<String>>,
-    ) -> Result<Value, Error> {
+    /// `project`: the project it joins (crate::projects::joined), or none to take it out; its own
+    /// folders aren't set while it's in one.
+    fn change(&self, id: &str, edit: Edit) -> Result<Value, Error> {
+        let Edit {
+            title,
+            pinned,
+            folders,
+            talk_account,
+            project,
+            marks,
+        } = edit;
         let mut threads = self.lock();
         let index = index_of(&threads, id)?;
         let thread = &mut threads[index];
+        let in_project = project
+            .as_ref()
+            .map_or(thread.project.is_some(), Option::is_some);
+        if folders.is_some() && in_project {
+            return Err(Error::InProject);
+        }
         let folders = folders.map(|f| f.apply(&thread.folders)).transpose()?;
         let kept = thread.clone();
+        match project {
+            Some(Some(to)) => thread.moved(Event::Assign, Some(to)),
+            Some(None) => thread.moved(Event::TakeOff, None),
+            None => {}
+        }
         if let Some(title) = title {
             thread.title = title;
         }
@@ -1308,6 +1650,7 @@ impl Conversations {
             // the owner chose again: the pill names it at once, and a move off it is news again
             thread.moved_off = None;
         }
+        thread.mark(marks, obi_protocol::time::format(obi_protocol::time::now()));
         let summary = thread.revised();
         if let Err(e) = self.write(thread) {
             *thread = kept;
@@ -1315,6 +1658,33 @@ impl Conversations {
         }
         self.events.send("conversation", summary.clone());
         Ok(summary)
+    }
+
+    /// Each conversation in a project whose `change` (its project's id, the copy of its folders)
+    /// says so: `Some(Some(folders))`, its project's folders now; `Some(None)`, its project is gone
+    /// ([`Event::ProjectGone`]). Each is kept and announced; one not written is put back, and `Io`.
+    pub fn regroup(
+        &self,
+        change: impl Fn(&str, &[String]) -> Option<Option<Vec<String>>>,
+    ) -> Result<(), Error> {
+        let mut threads = self.lock();
+        for thread in threads.iter_mut() {
+            let asked = thread.project.as_deref();
+            let asked = asked.and_then(|p| change(p, &thread.project_folders));
+            let Some(folders) = asked else { continue };
+            let kept = thread.clone();
+            match folders {
+                Some(folders) => thread.project_folders = folders,
+                None => thread.moved(Event::ProjectGone, None),
+            }
+            let summary = thread.revised();
+            if let Err(e) = self.write(thread) {
+                *thread = kept;
+                return Err(Error::Io(e));
+            }
+            self.events.send("conversation", summary);
+        }
+        Ok(())
     }
 
     /// The task list of the conversation `id`, and whether a turn that read something untrusted
@@ -1345,38 +1715,43 @@ impl Conversations {
         Ok(())
     }
 
-    /// The id the next new conversation will get, named now and kept until one takes it.
-    pub fn next_id(&self) -> String {
+    /// The id the next new conversation of the profile `tag` (none: the default's) will get, named
+    /// now and kept until one made in that profile takes it (PROFILES-46).
+    pub fn next_id(&self, tag: Option<&str>) -> String {
+        let tag = tag.unwrap_or_default();
         let mut next = self.next.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(id) = &*next {
+        if let Some(id) = next.get(tag) {
             return id.clone();
         }
         let id = new_id();
-        if let Err(e) = crate::store::write_private(&self.dir.join(NEXT), id.as_bytes()) {
+        if let Err(e) = crate::store::write_private(&self.dir.join(next_file(tag)), id.as_bytes()) {
             tracing::warn!("the next conversation's id isn't kept: {e}");
         }
-        *next = Some(id.clone());
+        next.insert(tag.to_owned(), id.clone());
         id
     }
 
-    /// The next new conversation's id, when obid named one and none took it yet.
-    pub fn peek_next(&self) -> Option<String> {
-        self.next.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    /// Every profile's next new conversation's id that obid named and none took yet.
+    pub fn nexts(&self) -> Vec<String> {
+        let next = self.next.lock().unwrap_or_else(|e| e.into_inner());
+        next.values().cloned().collect()
     }
 
-    /// Whether `id` is the next new conversation's, not taken yet.
+    /// Whether `id` is a profile's next new conversation's, not taken yet.
     pub fn is_next(&self, id: &str) -> bool {
-        self.next
+        let next = self.next.lock().unwrap_or_else(|e| e.into_inner());
+        next.values().any(|n| n == id)
+    }
+
+    /// The profile `tag`'s next new conversation's id, taken by its conversation beginning now.
+    fn take_next(&self, tag: Option<&str>) -> Option<String> {
+        let tag = tag.unwrap_or_default();
+        let id = self
+            .next
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .as_deref()
-            == Some(id)
-    }
-
-    /// The next new conversation's id, taken by the conversation beginning now.
-    fn take_next(&self) -> Option<String> {
-        let id = self.next.lock().unwrap_or_else(|e| e.into_inner()).take()?;
-        let _ = std::fs::remove_file(self.dir.join(NEXT));
+            .remove(tag)?;
+        let _ = std::fs::remove_file(self.dir.join(next_file(tag)));
         Some(id)
     }
 
@@ -1441,10 +1816,11 @@ impl Conversations {
             .push(id.clone());
         // The revision after its last one, so no event from before reads as newer (EVENTS-7).
         let revision = gone.revision + 1;
-        self.events.send(
-            "conversation",
-            json!({"id": id, "deleted": true, "revision": revision}),
-        );
+        let mut deleted = json!({"id": id, "deleted": true, "revision": revision});
+        if let Some(profile) = &gone.profile {
+            deleted["profile"] = json!(profile);
+        }
+        self.events.send("conversation", deleted);
         Ok(gone.uploads)
     }
 
@@ -1537,6 +1913,10 @@ pub fn job_report(job: &Value) -> Option<(String, String)> {
     };
     let title = crate::brain::briefing::line(job["title"].as_str().unwrap_or("A job"), 80);
     let status = job["status"].as_str()?;
+    // Stopped only to move it (TASKS-32): it goes on there, and its move says so ([`move_report`]).
+    if status == "stopped" && job["stoppedBy"] == crate::jobs::moves::MOVING {
+        return None;
+    }
     let said = match (status, job["stalled"]["text"].as_str()) {
         // A stall says why in obid's words (`stalled.text`), whatever status it ended in.
         ("failed" | "interrupted", Some(why)) => format!(
@@ -1569,9 +1949,11 @@ pub fn job_report(job: &Value) -> Option<(String, String)> {
         },
         ("failed", _) => format!("{title} failed."),
         ("stopped", _) => format!("{title} was stopped."),
+        // Stopped, as its card's mark says: no decision waits on it (TASKS-25, TASKS-29), so
+        // its line never says it needs the owner; its reason says what can be done.
         ("interrupted", _) => match first_line("reason") {
-            Some(why) => format!("{title} needs you: {why}"),
-            None => format!("{title} needs you."),
+            Some(why) => format!("{title} stopped: {why}"),
+            None => format!("{title} stopped."),
         },
         _ => return None,
     };
@@ -1637,18 +2019,50 @@ fn whole_report(summary: &str) -> Option<String> {
     Some(format!("{cut}…"))
 }
 
+/// The line job `job`'s conversation hears when it moved to another tool or account (TASKS-32,
+/// #2485): its latest move, where it went and why, as a routed task's line says it (#2508), and
+/// never that it stopped. None for a job with no conversation or no move, a review or one put away.
+pub fn move_report(job: &Value) -> Option<(String, String)> {
+    let conversation = job["conversation"].as_str()?;
+    if !job["dismissed"].is_null() || !job["reviewOf"].is_null() {
+        return None;
+    }
+    let moved = job["moves"].as_array()?.last()?;
+    let title = crate::brain::briefing::line(job["title"].as_str().unwrap_or("A job"), 80);
+    let to = crate::brain::briefing::line(moved["to"].as_str()?, 80);
+    let why = moved["why"]
+        .as_str()
+        .map(|why| crate::brain::briefing::line(why.trim().trim_end_matches('.'), 200))
+        .filter(|why| !why.is_empty());
+    let text = match why.as_deref() {
+        None | Some("Moved by you") => format!("{title} moved to {to}, as you asked."),
+        Some(why) => format!("{title} moved to {to}: {why}."),
+    };
+    Some((
+        conversation.to_owned(),
+        crate::secrets::known().redact(&text),
+    ))
+}
+
 /// Follows obid's job events (#351): when a job a conversation's plan started goes from queued or
 /// running to an end, that conversation gets one Oby turn saying how ([`job_report`]), with the
 /// job's card, once ([`Job::told`](crate::job::Job::told)). What had ended before this obid first
 /// kept that mark says nothing, and neither does a dismissed job or one that no conversation
 /// started. What events missed (obid went down, or too far behind them) is found at start and when
 /// it falls behind (TASKCONV-18).
+/// A job that moves to another tool or account gets one Oby turn saying where and why
+/// ([`move_report`], TASKS-32), once per move: the moves made from this obid's start on.
 pub fn report_job_ends(shared: std::sync::Arc<Shared>) {
     let since = report_since(&shared.config.home);
     // Subscribed first: a job that ends from here on is an event, or found by the sweep, or both.
     let bus = shared.events.subscribe();
     let stopping = shared.stopping.clone();
-    let (jobs, told, reports) = (shared.clone(), shared.clone(), shared.clone());
+    let (jobs, told, reports, moves) = (
+        shared.clone(),
+        shared.clone(),
+        shared.clone(),
+        shared.clone(),
+    );
     tokio::spawn(follow_ends(
         bus,
         stopping,
@@ -1656,13 +2070,26 @@ pub fn report_job_ends(shared: std::sync::Arc<Shared>) {
             jobs.jobs
                 .list(usize::MAX)
                 .iter()
-                .map(|j| (j.id.clone(), j.status.is_active()))
+                .map(|j| (j.id.clone(), (j.status.is_active(), j.moves.len())))
                 .collect()
         },
         move || tell_unreported(&shared, since),
         move |id| told.jobs.get(id).is_some_and(|job| job.told_of_end()),
         move |id, data| tell(&reports, id, data),
+        move |id, data| tell_moved(&moves, id, data),
     ));
+}
+
+/// The conversation of job `id`, as `data` (its `job` event) says it is, hears that it moved
+/// ([`move_report`]).
+fn tell_moved(shared: &Shared, id: &str, data: &Value) {
+    let Some((conversation, text)) = move_report(data) else {
+        return;
+    };
+    let told = (shared.conversations).append(&conversation, "oby", text, vec![id.to_owned()], None);
+    if let Err(e) = told {
+        tracing::info!("job {id} moved; conversation {conversation} wasn't told: {e:?}");
+    }
 }
 
 /// Tells each job's end as `bus` says it, and `sweep`s at the start and whenever `bus` went on
@@ -1671,20 +2098,30 @@ pub fn report_job_ends(shared: std::sync::Arc<Shared>) {
 async fn follow_ends(
     mut bus: tokio::sync::broadcast::Receiver<crate::events::Event>,
     mut stopping: tokio::sync::watch::Receiver<bool>,
-    at_work: impl Fn() -> std::collections::HashMap<String, bool>,
+    at_work: impl Fn() -> std::collections::HashMap<String, (bool, usize)>,
     sweep: impl Fn(),
     told: impl Fn(&str) -> bool,
     tell: impl Fn(&str, &Value),
+    moved: impl Fn(&str, &Value),
 ) {
     use tokio::sync::broadcast::error::RecvError;
-    let mut active = at_work();
+    // Each job's moves, as its last event said: one more is a move to tell (TASKS-32).
+    let split = |all: std::collections::HashMap<String, (bool, usize)>| {
+        let moves = all.iter().map(|(id, (_, n))| (id.clone(), *n)).collect();
+        let active = all.into_iter().map(|(id, (at, _))| (id, at)).collect();
+        (active, moves)
+    };
+    let (mut active, mut moves): (
+        std::collections::HashMap<String, bool>,
+        std::collections::HashMap<String, usize>,
+    ) = split(at_work());
     sweep();
     loop {
         let event = tokio::select! {
             got = bus.recv() => match got {
                 Ok(event) => event,
                 Err(RecvError::Lagged(_)) => {
-                    active = at_work();
+                    (active, moves) = split(at_work());
                     sweep();
                     continue;
                 }
@@ -1695,6 +2132,13 @@ async fn follow_ends(
         let Some(id) = event.data["id"].as_str().filter(|_| event.name == "job") else {
             continue;
         };
+        let count = event.data["moves"].as_array().map_or(0, Vec::len);
+        if moves
+            .insert(id.to_owned(), count)
+            .is_some_and(|before| count > before)
+        {
+            moved(id, &event.data);
+        }
         let now = matches!(event.data["status"].as_str(), Some("queued" | "running"));
         if active.insert(id.to_owned(), now) != Some(true) || now || told(id) {
             continue;
@@ -1775,6 +2219,7 @@ pub fn report_merges_past_review(shared: std::sync::Arc<Shared>) {
     let sweep = |shared: &Shared| {
         for job in shared.jobs.list(usize::MAX) {
             tell_merged_past(shared, &job);
+            tell_autofix(shared, &job);
         }
     };
     tokio::spawn(async move {
@@ -1793,10 +2238,13 @@ pub fn report_merges_past_review(shared: std::sync::Arc<Shared>) {
             };
             let merged = event.data["pullRequest"]["state"] == "MERGED";
             if let Some(job) = (event.data["id"].as_str())
-                .filter(|_| event.name == "job" && merged)
+                .filter(|_| event.name == "job")
                 .and_then(|id| shared.jobs.get(id))
             {
-                tell_merged_past(&shared, &job);
+                if merged {
+                    tell_merged_past(&shared, &job);
+                }
+                tell_autofix(&shared, &job);
             }
         }
     });
@@ -1830,6 +2278,36 @@ fn tell_merged_past(shared: &Shared, job: &crate::job::Job) {
         Ok(_) => {}
     }
     shared.jobs.mark_told_merged_past(id, head);
+}
+
+/// Tells `job`'s conversation each AUTOFIX line it wasn't told yet (crate::autofix, AUTOFIX-1):
+/// Oby's own words, after the job's title, with no card and nothing of anyone else's, so it marks
+/// nothing. A line that couldn't be written is tried again at the job's next event; a conversation
+/// that's gone never will be.
+fn tell_autofix(shared: &Shared, job: &crate::job::Job) {
+    let Some(conversation) = job.conversation.as_deref() else {
+        return;
+    };
+    let title = crate::brain::briefing::line(&job.short_title(), 80);
+    let mut told = 0;
+    for line in job.autofix.untold() {
+        let text = format!("{title}: {line}");
+        match (shared.conversations).append(conversation, "oby", text, vec![], None) {
+            Err(Error::Io(e)) => {
+                tracing::warn!(
+                    "job {}: conversation {conversation} wasn't told: {e}",
+                    job.id
+                );
+                break;
+            }
+            Err(e) => tracing::info!("job {}: conversation {conversation}: {e:?}", job.id),
+            Ok(_) => {}
+        }
+        told += 1;
+    }
+    if told > 0 {
+        shared.jobs.mark_autofix_told(&job.id, told);
+    }
 }
 
 /// The conversations as the list orders them, after `after` (or from the first): the pinned
@@ -1893,11 +2371,21 @@ fn index_of(threads: &[Thread], id: &str) -> Result<usize, Error> {
         .ok_or(Error::NoConversation)
 }
 
-/// The conversation with the latest turn.
-fn latest(threads: &[Thread]) -> Option<usize> {
+/// The conversation with the latest turn: of the profile `scope`'s, or of every profile's for none.
+fn latest_in(threads: &[Thread], scope: Option<&Scope>) -> Option<usize> {
     (0..threads.len())
-        .filter(|&i| !threads[i].aside())
+        .filter(|&i| !threads[i].aside() && threads[i].within(scope))
         .max_by_key(|&i| threads[i].sequence)
+}
+
+/// [`index_of`], of a conversation of the profile `scope`'s: another profile's is none
+/// (`NoConversation`), as one obid doesn't have.
+fn index_in(threads: &[Thread], id: &str, scope: Option<&Scope>) -> Result<usize, Error> {
+    let index = index_of(threads, id)?;
+    match threads[index].within(scope) {
+        true => Ok(index),
+        false => Err(Error::NoConversation),
+    }
 }
 
 fn next_sequence(threads: &[Thread]) -> u64 {
@@ -1914,6 +2402,35 @@ pub fn is_id(id: &str) -> bool {
         && id
             .bytes()
             .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f' | b'-'))
+}
+
+/// The project the conversation `id` is in, as kept in `home/conversations/<id>.json`: none for a
+/// non-id, a file missing or unreadable, or no project. It only reads, without the conversations'
+/// lock: the file is written whole ([`crate::store::write_private`]), so a read sees one project.
+pub fn kept_project(home: &Path, id: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Kept {
+        project: Option<String>,
+    }
+    if !is_id(id) {
+        return None;
+    }
+    let bytes = std::fs::read(home.join("conversations").join(format!("{id}.json"))).ok()?;
+    serde_json::from_slice::<Kept>(&bytes).ok()?.project
+}
+
+/// The profile conversation `id` was made in, as kept in `home` (none: the default's, or no such
+/// conversation): a job started in it is that profile's (crate::job::Job::start_in, B00-40).
+pub fn kept_profile(home: &Path, id: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Kept {
+        profile: Option<String>,
+    }
+    if !is_id(id) {
+        return None;
+    }
+    let bytes = std::fs::read(home.join("conversations").join(format!("{id}.json"))).ok()?;
+    serde_json::from_slice::<Kept>(&bytes).ok()?.profile
 }
 
 /// Writes the folder's own entries (the names in it) to the disk.
@@ -1951,6 +2468,124 @@ pub fn titled(text: &str) -> String {
     }
 }
 
+/// What a first message often opens with that says nothing of what it's about: a greeting, the
+/// asking ("can you", "please"), "take a look at" and the like, and a leading article. Lower case,
+/// word by word, each taken off the front for as long as one matches.
+const OPENERS: &[&str] = &[
+    "hey oby",
+    "hi oby",
+    "hello oby",
+    "oby",
+    "hey",
+    "hi",
+    "hello",
+    "ok",
+    "okay",
+    "so",
+    "and",
+    "also",
+    "please",
+    "pls",
+    "plz",
+    "can you",
+    "could you",
+    "would you",
+    "will you",
+    "can u",
+    "could u",
+    "can we",
+    "could we",
+    "i want you to",
+    "i'd like you to",
+    "i would like you to",
+    "i need you to",
+    "i want to",
+    "i'd like to",
+    "i would like to",
+    "i need to",
+    "we need to",
+    "need to",
+    "let's",
+    "lets",
+    "let us",
+    "help me",
+    "go ahead and",
+    "quickly",
+    "take a look at",
+    "have a look at",
+    "look at",
+    "look into",
+    "a",
+    "an",
+    "the",
+];
+/// Words a title cut short shouldn't end on.
+const DANGLING: &[&str] = &[
+    "a", "an", "the", "and", "or", "but", "to", "of", "in", "on", "for", "with", "at", "from",
+    "by", "is", "are", "that", "this", "my", "our", "your", "its", "please", "so",
+];
+/// The most words a conversation's own title takes, about T3 Code's thread titles.
+const TITLE_WORDS: usize = 6;
+
+/// A new conversation's title from the owner's first words, a few words long as T3 Code titles its
+/// threads, but by rule, never a model call (docs/contracts/chat-first.md, CHATFIRST-36): the first
+/// line, less its openers ([`OPENERS`]), up to the end of its first clause (`.`, `?`, `!`, `;` or `,`
+/// before a space), at most [`TITLE_WORDS`] words, none left dangling ([`DANGLING`]) where it was cut,
+/// then as [`titled`] cuts and capitalises it. Nothing left, it's [`titled`]'s.
+pub fn short_title(text: &str) -> String {
+    let bare = |w: &str| {
+        w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '’')
+            .replace('’', "'")
+            .to_lowercase()
+    };
+    let line: String = text
+        .trim()
+        .split(breaks_line)
+        .next()
+        .unwrap_or("")
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let mut words: Vec<&str> = line.split_whitespace().collect();
+    while let Some(n) = OPENERS.iter().find_map(|o| {
+        let o: Vec<&str> = o.split(' ').collect();
+        (words.len() > o.len() && words.iter().zip(&o).all(|(w, o)| bare(w) == *o))
+            .then_some(o.len())
+    }) {
+        words.drain(..n);
+    }
+    // the first clause: up to a word that ends one
+    if let Some(end) = words
+        .iter()
+        .position(|w| w.ends_with(['.', '?', '!', ';', ',']))
+    {
+        words.truncate(end + 1);
+    }
+    let cut = words.len() > TITLE_WORDS;
+    words.truncate(TITLE_WORDS);
+    let last = words.len().saturating_sub(1);
+    let mut words: Vec<String> = words.into_iter().map(str::to_owned).collect();
+    if let Some(w) = words.get_mut(last) {
+        *w = w
+            .trim_end_matches(['.', '?', '!', ';', ',', ':'])
+            .to_owned();
+    }
+    while cut
+        && words.len() > 1
+        && words
+            .last()
+            .is_some_and(|w| DANGLING.contains(&bare(w).as_str()))
+    {
+        words.pop();
+    }
+    let title = words.join(" ");
+    if title.trim().is_empty() {
+        titled(text)
+    } else {
+        titled(&title)
+    }
+}
+
 fn limit(raw: Option<&str>) -> Result<usize, ApiError> {
     let limit = match raw {
         None => 50,
@@ -1977,12 +2612,17 @@ pub struct Page {
 /// `GET /v1/conversation?id=&before=&limit=`: one page of a conversation's turns, oldest first.
 pub async fn get(
     State(shared): State<std::sync::Arc<Shared>>,
+    scope: Option<axum::Extension<Scope>>,
     Query(query): Query<Page>,
 ) -> Result<Response, ApiError> {
     let limit = limit(query.limit.as_deref())?;
-    let turns = shared
-        .conversations
-        .page(query.id.as_deref(), query.before.as_deref(), limit)?;
+    let scope = crate::profile_scope::of(&shared, scope);
+    let turns = (shared.conversations).page(
+        Some(&scope),
+        query.id.as_deref(),
+        query.before.as_deref(),
+        limit,
+    )?;
     Ok((StatusCode::OK, axum::Json(json!(turns))).into_response())
 }
 
@@ -1998,8 +2638,10 @@ pub struct ListPage {
 /// turn that does (`turn`, null when only the title does), its text cut to [`EXCERPT`] (#593).
 pub async fn list(
     State(shared): State<std::sync::Arc<Shared>>,
+    scope: Option<axum::Extension<Scope>>,
     Query(query): Query<ListPage>,
 ) -> Result<Response, ApiError> {
+    let scope = crate::profile_scope::of(&shared, scope);
     let limit = limit(query.limit.as_deref())?;
     let after = match query.after.as_deref() {
         None => None,
@@ -2011,7 +2653,7 @@ pub async fn list(
         })?),
     };
     let Some(q) = query.q else {
-        let list = shared.conversations.list(after, limit);
+        let list = shared.conversations.list(Some(&scope), after, limit);
         return Ok((StatusCode::OK, axum::Json(json!(list))).into_response());
     };
     let words = search_words(&q);
@@ -2023,7 +2665,7 @@ pub async fn list(
     }
     let found: Vec<Value> = shared
         .conversations
-        .search(&words, None, after, limit)
+        .search(Some(&scope), &words, None, after, limit)
         .into_iter()
         .map(|found| {
             let mut item = found.summary;
@@ -2050,6 +2692,13 @@ struct Change {
     /// An account's id, `auto`, or null to follow the setting again.
     #[serde(default, rename = "talkAccount", deserialize_with = "present")]
     talk_account: Option<Option<String>>,
+    /// A project's id, or null to take it out of its project (crate::projects).
+    #[serde(default, deserialize_with = "present")]
+    project: Option<Option<String>>,
+    /// The owner looked at it now (true), or Mark unread (false): marks.rs.
+    seen: Option<bool>,
+    /// Put away under Archived (true), or restored (false): marks.rs.
+    archived: Option<bool>,
 }
 
 /// A key that's there, null too, as `Some`.
@@ -2059,29 +2708,37 @@ fn present<'de, D: serde::Deserializer<'de>>(to: D) -> Result<Option<Option<Stri
 
 /// `PATCH /v1/conversations/{id}`: a new title, pinned or not, the account it talks through from its
 /// next turn (`talkAccount`: an id, `auto`, or null to follow the setting), or the folders it works
-/// in from now on (an empty list clears them). Through the gateway or the phone relay, `folders` may only leave
-/// out folders the conversation has: only the owner's Mac app adds one (crate::folders).
+/// in from now on (an empty list clears them), or its `project` (an id, or null to take it out).
+/// Through the gateway or the phone relay, `folders` may only leave out folders the conversation
+/// has, and `project` may only be null: only the owner's Mac app adds one (crate::folders).
 pub async fn update(
     State(shared): State<std::sync::Arc<Shared>>,
     UrlPath(id): UrlPath<String>,
     paired: Option<axum::Extension<crate::gateway::PairedDevice>>,
     relayed: Option<axum::Extension<crate::gateway::Relayed>>,
+    headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let change: Change = serde_json::from_slice(&body).map_err(|_| {
         ApiError::new(
             StatusCode::BAD_REQUEST,
-            "The body is {\"title\": \"…\", \"pinned\": true or false, \"folders\": [\"/path\"], \"talkAccount\": an account's id, \"auto\" or null}.",
+            "The body is {\"title\": \"…\", \"pinned\": true or false, \"folders\": [\"/path\"], \"talkAccount\": an account's id, \"auto\" or null, \"project\": a project's id or null, \"seen\": true or false, \"archived\": true or false}.",
         )
     })?;
+    let marks = Marks {
+        seen: change.seen,
+        archived: change.archived,
+    };
     if change.title.is_none()
         && change.pinned.is_none()
         && change.folders.is_none()
         && change.talk_account.is_none()
+        && change.project.is_none()
+        && !marks.any()
     {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
-            "Send a title, pinned, folders, talkAccount, or more than one.",
+            "Send a title, pinned, folders, talkAccount, project, seen, archived, or more than one.",
         ));
     }
     if let Some(Some(account)) = &change.talk_account {
@@ -2089,6 +2746,9 @@ pub async fn update(
     }
     // Checked here, outside the conversations' lock; merged with those it has under it.
     let remote = paired.is_some() || relayed.is_some();
+    if remote && matches!(change.project, Some(Some(_))) {
+        return Err(crate::projects::chosen_on_the_mac());
+    }
     let places = crate::folders::Places::of(&shared);
     let folders = change.folders.map(|asked| FolderChange {
         asked: asked
@@ -2112,10 +2772,28 @@ pub async fn update(
             "title is one line of 1 to 100 characters.",
         ));
     }
-    let summary =
-        shared
-            .conversations
-            .change(&id, title, change.pinned, folders, change.talk_account)?;
+    // A project put in is one of the profile the request names, found before any lock is taken.
+    let asked = match change.project {
+        Some(Some(id)) => Some(Some((crate::profiles::root_of(&shared, &headers)?, id))),
+        other => other.map(|_| None),
+    };
+    // The projects' lock first, then the conversations': the project can't go meanwhile.
+    let mut projects = shared.projects.lock();
+    let project = match asked {
+        Some(Some((root, id))) => Some(Some(
+            crate::projects::joined(projects.at(&root), &id).map_err(Error::Folder)?,
+        )),
+        other => other.map(|_| None),
+    };
+    let edit = Edit {
+        title,
+        pinned: change.pinned,
+        folders,
+        talk_account: change.talk_account,
+        project,
+        marks,
+    };
+    let summary = shared.conversations.change(&id, edit)?;
     Ok((StatusCode::OK, axum::Json(summary)).into_response())
 }
 
@@ -2158,7 +2836,7 @@ pub async fn confirmed(shared: &Shared, item: &crate::sphere::inbox::Item) {
     else {
         return;
     };
-    let now = shared.conversations.list(None, usize::MAX);
+    let now = shared.conversations.list(None, None, usize::MAX);
     for named in asked.payload["conversations"]
         .as_array()
         .into_iter()
@@ -2178,7 +2856,8 @@ pub async fn confirmed(shared: &Shared, item: &crate::sphere::inbox::Item) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cursor, Error, FolderChange, Task, checked_tasks, follow_ends, job_report, titled,
+        Cursor, Error, FolderChange, Task, checked_tasks, follow_ends, job_report, short_title,
+        titled,
     };
 
     /// How many sweeps, and which jobs' ends were told, following `events` with room for `room`
@@ -2208,12 +2887,13 @@ mod tests {
             || {
                 ["a", "b"]
                     .into_iter()
-                    .map(|id| (id.to_owned(), true))
+                    .map(|id| (id.to_owned(), (true, 0)))
                     .collect()
             },
             || sweeps.set(sweeps.get() + 1),
             |id| told.contains(&id),
             |id, _| tells.borrow_mut().push(id.to_owned()),
+            |_, _| {},
         )
         .await;
         (sweeps.get(), tells.into_inner())
@@ -2225,6 +2905,71 @@ mod tests {
         let events = [("a", "running"), ("a", "running"), ("a", "running")];
         assert_eq!(followed(&events, 1, &[]).await.0, 2);
         assert_eq!(followed(&events, 8, &[]).await.0, 1);
+    }
+
+    /// TASKS-32: a job moved to another tool or account tells its conversation where and why, once
+    /// per move, as a routed task's line says it (#2508); the stop that moved it says nothing.
+    #[tokio::test]
+    async fn tasks_32_a_move_reads_as_a_move_never_a_stop() {
+        let moved = |to: &str, why: serde_json::Value| {
+            serde_json::json!({"id": "a", "title": "Fix CI oby #30", "conversation": "c1",
+                "status": "running", "moves": [{"from": "Claude Code · Default", "to": to, "why": why}]})
+        };
+        let limit = moved(
+            "Codex · Personal",
+            "Claude Code · Default hit its usage limit".into(),
+        );
+        assert_eq!(
+            super::move_report(&limit),
+            Some((
+                "c1".into(),
+                "Fix CI oby #30 moved to Codex · Personal: Claude Code · Default hit its usage limit."
+                    .into()
+            ))
+        );
+        let by_you = moved("Codex · Personal", "Moved by you".into());
+        assert_eq!(
+            super::move_report(&by_you).unwrap().1,
+            "Fix CI oby #30 moved to Codex · Personal, as you asked."
+        );
+        let stopped = serde_json::json!({"id": "a", "title": "Fix CI oby #30", "conversation": "c1",
+            "status": "stopped", "stoppedBy": crate::jobs::moves::MOVING});
+        assert_eq!(job_report(&stopped), None, "a move's stop says nothing");
+        let mut owner = stopped.clone();
+        owner["stoppedBy"] = "you".into();
+        assert_eq!(job_report(&owner).unwrap().1, "Fix CI oby #30 was stopped.");
+
+        // Once per move, from the events: none for the moves it had already.
+        let (sender, bus) = tokio::sync::broadcast::channel(8);
+        let (_stopping, stop) = tokio::sync::watch::channel(false);
+        let with = |n: usize| {
+            let all: Vec<_> = (0..n)
+                .map(|_| serde_json::json!({"to": "Codex · B"}))
+                .collect();
+            serde_json::json!({"id": "a", "status": "running", "moves": all})
+        };
+        for data in [with(1), with(1), with(2), with(2)] {
+            sender
+                .send(crate::events::Event {
+                    name: "job",
+                    data,
+                    id: None,
+                })
+                .unwrap();
+        }
+        drop(sender);
+        let told = std::cell::Cell::new(0);
+        follow_ends(
+            bus,
+            stop,
+            || [("a".to_owned(), (true, 0))].into_iter().collect(),
+            || {},
+            |_| false,
+            |_, _| {},
+            |_, _| told.set(told.get() + 1),
+        )
+        .await;
+        assert_eq!(told.get(), 2);
     }
 
     /// TASKCONV-18: an end told already, by a sweep after the bus went on without its reader, isn't
@@ -2386,16 +3131,22 @@ mod tests {
             job_report(&job("stopped")).unwrap().1,
             "Fix oby #351 was stopped."
         );
+        // TASKS-29: no decision waits on an interrupted task (TASKS-25), so its line says it
+        // stopped, never that it needs the owner.
         assert_eq!(
             job_report(&job("interrupted")).unwrap().1,
-            "Fix oby #351 needs you."
+            "Fix oby #351 stopped."
         );
-        let mut needs_you = job("interrupted");
-        needs_you["reason"] = json!("Stopped at a limit: the round ran past 45 minutes.");
+        let mut stopped = job("interrupted");
+        stopped["reason"] = json!(
+            "GOAL NOT MET: tests still fail The branch is kept and nothing was pushed: tell it what's left, or Publish it as it is."
+        );
+        let said = job_report(&stopped).unwrap().1;
         assert_eq!(
-            job_report(&needs_you).unwrap().1,
-            "Fix oby #351 needs you: Stopped at a limit: the round ran past 45 minutes."
+            said,
+            "Fix oby #351 stopped: GOAL NOT MET: tests still fail The branch is kept and nothing was pushed: tell it what's left, or Publish it as it is."
         );
+        assert!(!said.contains("needs you"), "{said}");
         let mut nothing = job("done");
         nothing["reason"] = json!("Nothing committed, so nothing was published.");
         assert_eq!(
@@ -2468,6 +3219,56 @@ mod tests {
             assert!(name.starts_with(&format!("{id}-")), "{name}");
             assert_eq!(std::fs::read(kept[0].path()).unwrap(), b"{");
         }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// PROFILES-46: each profile names its own next conversation's id, kept across a restart in a
+    /// file of its own; a conversation made in a profile takes that profile's and no other's.
+    #[test]
+    fn profiles_46_each_profile_names_its_own_next_conversation() {
+        const B: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        let home = std::env::temp_dir().join(format!("obid-profiles-46-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let open = || super::Conversations::open(&home, crate::events::Events::new());
+        let begin = |conversations: &super::Conversations, scope: &crate::profiles::Scope| {
+            (conversations.begin(
+                scope,
+                super::Target::New,
+                "Hi".into(),
+                vec![],
+                vec![],
+                None,
+                None,
+                Ok(vec![]),
+                false,
+                Ok(None),
+            ))
+            .unwrap()
+            .conversation
+        };
+        let conversations = open();
+        let ours = conversations.next_id(None);
+        let theirs = conversations.next_id(Some(B));
+        assert_ne!(ours, theirs);
+        assert_eq!(conversations.next_id(Some(B)), theirs);
+        let dir = home.join("conversations");
+        assert_eq!(std::fs::read_to_string(dir.join("next-id")).unwrap(), ours);
+        assert_eq!(
+            std::fs::read_to_string(dir.join(format!("next-id-{B}"))).unwrap(),
+            theirs
+        );
+        drop(conversations);
+
+        let conversations = open();
+        assert_eq!(conversations.next_id(None), ours);
+        assert_eq!(conversations.next_id(Some(B)), theirs);
+        let in_b = crate::profiles::Scope::of_profile_for_tests(B);
+        assert_eq!(begin(&conversations, &in_b), theirs);
+        assert!(!conversations.is_next(&theirs) && conversations.is_next(&ours));
+        assert!(!dir.join(format!("next-id-{B}")).exists());
+        let default = crate::profiles::Scope::before_profiles_for_tests();
+        assert_eq!(begin(&conversations, &default), ours);
+        assert!(conversations.nexts().is_empty());
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -2746,7 +3547,13 @@ mod tests {
         std::fs::write(&file, kept.to_string()).unwrap();
         let conversations = super::Conversations::open(&home, crate::events::Events::new());
         let summary = conversations
-            .change(&id, None, Some(true), None, None)
+            .change(
+                &id,
+                super::Edit {
+                    pinned: Some(true),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         let saved: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
@@ -2772,6 +3579,7 @@ mod tests {
         let start = || {
             conversations
                 .begin(
+                    &crate::profiles::Scope::before_profiles_for_tests(),
                     super::Target::New,
                     "Fix it".into(),
                     vec![],
@@ -2780,6 +3588,7 @@ mod tests {
                     None,
                     Ok(vec![]),
                     false,
+                    Ok(None),
                 )
                 .unwrap()
                 .conversation
@@ -2828,6 +3637,7 @@ mod tests {
         let conversations = super::Conversations::open(&home, events.clone());
         let id = conversations
             .begin(
+                &crate::profiles::Scope::before_profiles_for_tests(),
                 super::Target::New,
                 "Fix it".into(),
                 vec![],
@@ -2836,6 +3646,7 @@ mod tests {
                 None,
                 Ok(vec![]),
                 false,
+                Ok(None),
             )
             .unwrap()
             .conversation;
@@ -2868,6 +3679,7 @@ mod tests {
         );
         let unsigned = conversations
             .begin(
+                &crate::profiles::Scope::before_profiles_for_tests(),
                 super::Target::New,
                 "Fix it".into(),
                 vec![],
@@ -2876,6 +3688,7 @@ mod tests {
                 Some("words no app of the owner's signed".into()),
                 Ok(vec![]),
                 false,
+                Ok(None),
             )
             .unwrap()
             .conversation;
@@ -2913,6 +3726,46 @@ mod tests {
     }
 
     #[test]
+    fn chatfirst_36_a_new_conversation_is_titled_in_a_few_words() {
+        for (said, title) in [
+            (
+                "Can you please take a look at the failing login retry test in the oby repo and fix it, it started failing after yesterday's merge",
+                "Failing login retry test",
+            ),
+            (
+                "Hey Oby, what's on my plate today?",
+                "What's on my plate today",
+            ),
+            ("review oby PR #33\nand the vault one", "Review oby PR #33"),
+            (
+                "why did oberon’s build go from 4 to 11 minutes since the update?",
+                "Why did oberon’s build go",
+            ),
+            (
+                "I want you to split Engine/Jobs.swift in three",
+                "Split Engine/Jobs.swift in three",
+            ),
+            ("please fix it", "Fix it"),
+            ("First question", "First question"),
+            (
+                "Let’s plan the 0.9 release. Then the notes",
+                "Plan the 0.9 release",
+            ),
+            // nothing but openers: the line as it is
+            ("ok", "Ok"),
+            (" \n ", "New conversation"),
+        ] {
+            assert_eq!(short_title(said), title, "{said}");
+        }
+        // never longer than six words, nor than titled's 48 characters
+        let long = short_title(&"supercalifragilistic ".repeat(9));
+        assert!(
+            long.split(' ').count() <= 6 && long.chars().count() <= 48,
+            "{long}"
+        );
+    }
+
+    #[test]
     fn titles_are_the_first_line_as_the_design_cuts_it() {
         assert_eq!(
             titled("  review oby PR #33\nand the vault one"),
@@ -2947,6 +3800,7 @@ mod tests {
         let conversations = super::Conversations::open(&home, events.clone());
         let id = conversations
             .begin(
+                &crate::profiles::Scope::before_profiles_for_tests(),
                 super::Target::New,
                 "first".into(),
                 vec![],
@@ -2955,6 +3809,7 @@ mod tests {
                 None,
                 Ok(vec![]),
                 false,
+                Ok(None),
             )
             .unwrap()
             .conversation;
@@ -3014,6 +3869,7 @@ mod tests {
         ];
         let begun = conversations
             .begin(
+                &crate::profiles::Scope::before_profiles_for_tests(),
                 super::Target::New,
                 "Look at these".into(),
                 vec!["j1".into(), "j2".into()],
@@ -3022,6 +3878,7 @@ mod tests {
                 None,
                 Ok(vec![]),
                 true,
+                Ok(None),
             )
             .unwrap();
         let file = conversations
@@ -3039,7 +3896,7 @@ mod tests {
             json!({ begun.turn.as_str(): {"attachments": paths, "signed": true} })
         );
         let served = conversations
-            .page(Some(&begun.conversation), None, 10)
+            .page(None, Some(&begun.conversation), None, 10)
             .unwrap();
         for shown in [serde_json::to_value(&served[0]).unwrap(), json!(served)] {
             let text = shown.to_string();
@@ -3069,7 +3926,7 @@ mod tests {
         std::fs::write(&file, old.to_string()).unwrap();
         let events = crate::events::Events::new();
         let conversations = super::Conversations::open(&home, events.clone());
-        let turns = conversations.page(Some(&id), None, 10).unwrap();
+        let turns = conversations.page(None, Some(&id), None, 10).unwrap();
         assert!(turns[0].delivery.is_none());
         assert!(
             serde_json::to_value(&turns[0])
@@ -3102,7 +3959,13 @@ mod tests {
         let conversations = super::Conversations::open(&home, events.clone());
         let id = conversations.start_for("Talk").unwrap();
         conversations
-            .change(&id, None, None, None, Some(Some("gone".into())))
+            .change(
+                &id,
+                super::Edit {
+                    talk_account: Some(Some("gone".into())),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         let saved = home.join("saved");
         std::fs::rename(&conversations.dir, &saved).unwrap();
@@ -3150,7 +4013,7 @@ mod tests {
         assert_eq!(turn.revision, 1);
         let mut received = events.subscribe();
         let listed = |conversations: &super::Conversations| {
-            let page = conversations.page(Some(&id), None, 10).unwrap();
+            let page = conversations.page(None, Some(&id), None, 10).unwrap();
             page.iter().find(|t| t.id == turn.id).unwrap().revision
         };
         for revision in [2, 3] {

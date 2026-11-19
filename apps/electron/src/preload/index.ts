@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { WITHIN_MS, owners } from '../shared/words';
-import type { PolicyAnswer } from '../shared/sphere';
+import type { AdminsAnswer, InvitesAnswer, PolicyAnswer, SigninStatus } from '../shared/sphere';
+import type { HandoffAsk } from '../shared/handoff';
+import type { Joined } from '../shared/invite';
 import type { LoadWhat } from '../shared/decode';
 import { following, type LiveMessage, type LiveSnapshot } from '../shared/live-wire';
 
@@ -77,6 +79,12 @@ contextBridge.exposeInMainWorld('app', {
     ipcRenderer.on('full-screen', listener);
     return () => { ipcRenderer.off('full-screen', listener); };
   },
+  // a shortcut item of the Mac's menu bar, clicked (shared/menu.ts): its command (renderer shortcuts.ts)
+  onShortcut(fn: (command: string) => void) {
+    const listener = (_: unknown, command: string) => fn(command);
+    ipcRenderer.on('shortcut', listener);
+    return () => { ipcRenderer.off('shortcut', listener); };
+  },
   // the cursor in window coordinates, even when it's outside the window
   onCursor(fn: (p: Point) => void) {
     const listener = (_: unknown, p: Point) => fn(p);
@@ -135,12 +143,35 @@ contextBridge.exposeInMainWorld('app', {
     ipcRenderer.on('sphere', listener);
     return () => { ipcRenderer.off('sphere', listener); };
   },
+  // a task's worktree in the owner's Terminal or editor (main/worktree.ts, CHANGES-6): only its id
+  // goes; true once opened. The editor's name, for the menu
+  openWorktree: (job: string, where: 'terminal' | 'editor') => ipcRenderer.invoke('open-worktree', job, where) as Promise<boolean>,
+  editorName: () => ipcRenderer.invoke('worktree-editor') as Promise<string | null>,
   sphereLeave: () => ipcRenderer.invoke('sphere-leave') as Promise<string | null>,
+  // an invite link pasted in the app (first run, Settings › Obysphere), joined through main's one
+  // join path, its own dialog included, only right after the owner's click (SPHEREAPP-3, 4)
+  sphereJoin: (link: string) => ipcRenderer.invoke('sphere-join', link) as Promise<Joined>,
+  // a task handed to a member's Oby, right after the owner's click (SPHEREAPP-6): null once sent, else why not
+  sphereHandoff: (ask: HandoffAsk) => ipcRenderer.invoke('sphere-handoff', ask) as Promise<string | null>,
   // the Obysphere's rules (main/sphere.ts, docs/contracts/sphere-policy.md): read, and the members
   // rule added, right after the owner's click. The page sends only the version it read; main decides
   // what it signs. null: refused
   spherePolicy: () => ipcRenderer.invoke('sphere-policy') as Promise<PolicyAnswer | null>,
   sphereSetPolicy: (version: number) => ipcRenderer.invoke('sphere-set-policy', version) as Promise<PolicyAnswer | null>,
+  // the admin's invite links (main/sphere.ts, SPHEREAPP-10): the list; a new one and a withdrawal,
+  // right after the owner's click. Main holds the owner token; the page gets the link and the list
+  sphereInvitations: () => ipcRenderer.invoke('sphere-invitations') as Promise<InvitesAnswer | null>,
+  sphereInvite: () => ipcRenderer.invoke('sphere-invite') as Promise<InvitesAnswer | null>,
+  sphereWithdraw: (id: string) => ipcRenderer.invoke('sphere-withdraw', id) as Promise<InvitesAnswer | null>,
+  // Make admin (on) or Remove admin, right after the owner's click (main/sphere.ts, SPHEREAPP-11)
+  sphereAdmin: (owner: string, on: boolean) => ipcRenderer.invoke('sphere-admin', owner, on) as Promise<AdminsAnswer | null>,
+  // getting back in with a sign-in (main/sphere.ts, SPHEREAPP-12): what an Obysphere's address
+  // offers, and the sign-in itself, right after the owner's click (null once back in, else why not)
+  sphereRebindOffer: (address: string) => ipcRenderer.invoke('sphere-rebind-offer', address) as Promise<{ sphere: string; host: string; providers: { id: string; name: string }[] | null } | null>,
+  sphereRebind: (address: string, provider: string) => ipcRenderer.invoke('sphere-rebind', address, provider) as Promise<string | null>,
+  // Add sign-in (main/sphere.ts, SPHEREAPP-13): whether one is linked, and linking one right after the owner's click
+  sphereSigninStatus: () => ipcRenderer.invoke('sphere-signin-status') as Promise<SigninStatus | null>,
+  sphereAddSignin: (provider: string) => ipcRenderer.invoke('sphere-add-signin', provider) as Promise<string | null>,
   // obid, through main, which holds its token (main/obid.ts): one call; and what main's one follower
   // of obid's events holds (main/live.ts), then each message it sends, and what it reads for the page
   obid: {
@@ -151,6 +182,9 @@ contextBridge.exposeInMainWorld('app', {
     // Publish by hand, on the owner's click: main reads obid's sentence again and signs it
     publish: (job: string, action: string, choices: { anyway?: boolean; force?: boolean; to?: string }) =>
       ipcRenderer.invoke('obid-publish', job, action, choices) as Promise<Answer>,
+    // Undo this round, on the owner's click: main reads obid's sentence again, asks in its own
+    // dialog and signs it (CHANGES-14)
+    undo: (job: string, action: string) => ipcRenderer.invoke('obid-undo', job, action) as Promise<Answer>,
     limitAnswer: (item: string, revision: number, choice: string, account?: string) =>
       ipcRenderer.invoke('obid-limit-answer', item, revision, choice, account) as Promise<Answer>,
     // Pair a device: main signs the invitation with this Mac's device key
@@ -164,5 +198,7 @@ contextBridge.exposeInMainWorld('app', {
     }, () => ipcRenderer.invoke('obid-snapshot') as Promise<LiveSnapshot | null>, onSnapshot, onMessage),
     // a conversation's turns, a job, or the limit decisions, read and kept by main: true, else why not
     load: (what: LoadWhat) => ipcRenderer.invoke('obid-load', what) as Promise<true | string | null>,
+    // the profile the window has open, named on every call and the stream from now on (B00-40)
+    profile: (id: string | null) => ipcRenderer.invoke('obid-profile', id) as Promise<boolean | null>,
   },
 });

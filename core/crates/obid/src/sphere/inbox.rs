@@ -25,6 +25,18 @@ pub const DECLINE: &str = "Decline";
 pub const DECLINE_REMEMBER: &str = "Decline, and remember for this repo";
 pub const OBI_OPTIONS: [&str; 4] = [ACCEPT, ACCEPT_REMEMBER, DECLINE, DECLINE_REMEMBER];
 
+/// Whether `answer` accepts another Oby's request, once or remembered: the one match both the
+/// route's signature gate (SPHERE-17) and the code that carries the answer out read.
+pub fn accepts(answer: &str) -> bool {
+    accepts_bytes(answer.as_bytes())
+}
+
+/// [`accepts`], on the answer's bytes: the decision, which `proofs/accept.rs` proves for every byte
+/// string (a symbolic `&str` that long costs CBMC its UTF-8 check).
+pub(crate) fn accepts_bytes(answer: &[u8]) -> bool {
+    answer == ACCEPT.as_bytes() || answer == ACCEPT_REMEMBER.as_bytes()
+}
+
 /// The two answers to a `start` item.
 pub const START: &str = "Start";
 pub const CANCEL_START: &str = "Cancel";
@@ -159,20 +171,50 @@ pub mod action {
     pub const TRUST_KEY: &str = "trust_key";
 }
 
+/// A `trust_key` card's `reason` (SPHERE-23): what the Obysphere's owner event says changed the
+/// owner's key. A closed set, each with obid's own words; the Sphere's `rotated` (reserved, never
+/// sent in obi/0.1) and any value obid doesn't know are no reason.
+/// The owner signed in again and the Sphere bound their new key.
+pub const SIGNED_IN_AGAIN: &str = "signed_in_again";
+/// An admin of the Sphere reset the owner's key.
+pub const ADMIN_RESET: &str = "admin_reset";
+/// The Sphere's operator reset the owner's key.
+pub const OPERATOR_RESET: &str = "operator_reset";
+
+/// obid's own words for each reason it knows, as the Obysphere's claim (SPHERE-23).
+fn reason_words(owner: &str, reason: &str) -> Option<String> {
+    let what = match reason {
+        SIGNED_IN_AGAIN => format!("{owner} signed in again"),
+        ADMIN_RESET => "an admin reset their key".to_owned(),
+        OPERATOR_RESET => "the Obysphere's operator reset their key".to_owned(),
+        _ => return None,
+    };
+    Some(format!("The Obysphere says {what}. "))
+}
+
 /// Oby's ask to trust `owner`'s changed owner key (SPHERE-8): obid's own fixed words with only the
 /// owner id and the new key's fingerprint, so nothing the Sphere or a card says goes on the card.
-pub fn trust_key_item(owner: &str, fingerprint: &str, now: i64) -> Item {
+/// With a `reason` (SPHERE-23), its own fixed sentence for that code says what the Obysphere claims
+/// happened: a claim, never a fact, since the Sphere is who could swap a key, and the ask to
+/// compare stays.
+pub fn trust_key_item(owner: &str, fingerprint: &str, reason: Option<&str>, now: i64) -> Item {
+    let said = reason.and_then(|r| reason_words(owner, r));
+    let mut payload = json!({"owner": owner, "fingerprint": fingerprint});
+    if let (Some(reason), Some(_)) = (reason, &said) {
+        payload["reason"] = json!(reason);
+    }
+    let said = said.unwrap_or_default();
     let mut item = confirm_item(
         "",
         format!("New key for {owner}: compare with them ({fingerprint})"),
         // Home's card shows the title on one line: the fingerprint shows whole here.
         format!(
-            "{owner}'s owner key changed. Compare its fingerprint with them before you trust it: {fingerprint}."
+            "{said}{owner}'s owner key changed. Compare its fingerprint with them before you trust it: {fingerprint}."
         ),
         Confirmed {
             action: action::TRUST_KEY.into(),
             target: owner.into(),
-            payload: json!({"owner": owner, "fingerprint": fingerprint}),
+            payload,
         },
         now,
     );
@@ -425,6 +467,10 @@ pub struct Item {
     /// made in the same second. Kept, never shown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arrived: Option<u64>,
+    /// Settled by Oby while its task carried on (TASKS-26, 27), not by the owner: a review card
+    /// so settled opens again once nothing of its task is at work. Kept, never shown.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub carried_on: bool,
     /// The device whose signature came with the answer that settled it (#1825): a merge can be
     /// traced afterwards. None for an answer no app of the owner's signed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -615,6 +661,69 @@ fn condition_words(condition: &Value) -> String {
     }
 }
 
+/// A request's acceptance conditions (a `review_request`'s or a `handoff`'s), as its item shows
+/// them: obid's sentence of the typed ones (`Conditions: tests pass.`, and a word on any custom
+/// one), the typed fields alone, and each one's notes quoted.
+struct Conditions {
+    sentence: String,
+    typed: Vec<Value>,
+    quoted: Vec<Value>,
+}
+
+fn conditions(body: &Value, judged: &str) -> Conditions {
+    let conditions: Vec<&Value> = body["acceptance"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .collect();
+    let words: Vec<String> = conditions
+        .iter()
+        .filter(|c| c["kind"] != "custom")
+        .map(|c| condition_words(c))
+        .collect();
+    let custom = conditions.iter().filter(|c| c["kind"] == "custom").count();
+    let mut sentence = String::new();
+    if !words.is_empty() {
+        sentence.push_str(&format!(" Conditions: {}.", words.join(", ")));
+    }
+    if custom > 0 {
+        sentence.push_str(&format!(
+            " {custom} custom condition{}, quoted below: obid doesn't judge custom conditions, so the result will say {} met.",
+            if custom == 1 { "" } else { "s" },
+            if custom == 1 { "it isn't" } else { "they aren't" }
+        ));
+    }
+    sentence.push_str(judged);
+    let typed = conditions
+        .iter()
+        .enumerate()
+        .map(|(index, c)| {
+            let mut typed = json!({"index": index, "kind": c["kind"]});
+            if let Some(severity) = c.get("severity") {
+                typed["severity"] = severity.clone();
+            }
+            typed
+        })
+        .collect();
+    let quoted = conditions
+        .iter()
+        .enumerate()
+        .map(|(index, c)| {
+            let mut quoted =
+                json!({"index": index, "note": c.get("note").cloned().unwrap_or(Value::Null)});
+            if c["kind"] == "custom" {
+                quoted["text"] = c.get("text").cloned().unwrap_or(Value::Null);
+            }
+            quoted
+        })
+        .collect();
+    Conditions {
+        sentence,
+        typed,
+        quoted,
+    }
+}
+
 /// The `obiRequest` item for a `review_request` (its body already checked against the spec),
 /// from `from` of `from_owner`, expiring at `expires_at`.
 pub fn review_request_item(
@@ -632,58 +741,16 @@ pub fn review_request_item(
         text_of("head_branch"),
         text_of("head_sha"),
     );
-    let conditions: Vec<&Value> = body["acceptance"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .collect();
-    let typed: Vec<String> = conditions
-        .iter()
-        .filter(|c| c["kind"] != "custom")
-        .map(|c| condition_words(c))
-        .collect();
-    let custom = conditions.iter().filter(|c| c["kind"] == "custom").count();
+    let conditions = conditions(body, "");
     let change = match body["pr"].as_u64() {
         Some(pr) => format!("{repo} pull request #{pr}"),
         None => repo.clone(),
     };
-    let mut text = format!(
-        "{from_owner}'s Obi ({from}) asks for a review of {change}: {head} into {base} at {}.",
-        &sha[..sha.len().min(7)]
+    let text = format!(
+        "{from_owner}'s Obi ({from}) asks for a review of {change}: {head} into {base} at {}.{}",
+        &sha[..sha.len().min(7)],
+        conditions.sentence
     );
-    if !typed.is_empty() {
-        text.push_str(&format!(" Conditions: {}.", typed.join(", ")));
-    }
-    if custom > 0 {
-        text.push_str(&format!(
-            " {custom} custom condition{}, quoted below: obid doesn't judge custom conditions, so the result will say {} met.",
-            if custom == 1 { "" } else { "s" },
-            if custom == 1 { "it isn't" } else { "they aren't" }
-        ));
-    }
-    let acceptance: Vec<Value> = conditions
-        .iter()
-        .enumerate()
-        .map(|(index, c)| {
-            let mut typed = json!({"index": index, "kind": c["kind"]});
-            if let Some(severity) = c.get("severity") {
-                typed["severity"] = severity.clone();
-            }
-            typed
-        })
-        .collect();
-    let quoted_acceptance: Vec<Value> = conditions
-        .iter()
-        .enumerate()
-        .map(|(index, c)| {
-            let mut quoted =
-                json!({"index": index, "note": c.get("note").cloned().unwrap_or(Value::Null)});
-            if c["kind"] == "custom" {
-                quoted["text"] = c.get("text").cloned().unwrap_or(Value::Null);
-            }
-            quoted
-        })
-        .collect();
     Item {
         id: format!("obi-{correlation_id}"),
         kind: "obiRequest".into(),
@@ -709,11 +776,75 @@ pub fn review_request_item(
             "repo": repo,
             "headSha": sha,
             "expiresAt": expires_at,
-            "acceptance": acceptance,
+            "acceptance": conditions.typed,
             "quoted": {
                 "goal": body["goal"],
                 "summary": body.get("summary").cloned().unwrap_or(Value::Null),
-                "acceptance": quoted_acceptance,
+                "acceptance": conditions.quoted,
+            },
+        })),
+        ..Default::default()
+    }
+}
+
+/// The `obiRequest` item for a `handoff` (docs/contracts/handoff.md, HANDOFF-1; its body already
+/// checked against the spec), from `from` of `from_owner`, expiring at `expires_at`: its text from
+/// typed fields only, the goal, summary and notes quoted.
+pub fn handoff_item(
+    correlation_id: &str,
+    from: &str,
+    from_owner: &str,
+    body: &Value,
+    expires_at: &str,
+    now: i64,
+) -> Item {
+    let repo = body["repo"].as_str().unwrap_or("").to_owned();
+    let base = body["base_branch"].as_str().unwrap_or("").to_owned();
+    let judged = if body["acceptance"].as_array().is_some_and(|all| {
+        all.iter()
+            .any(|c| c["kind"] != "tests_pass" && c["kind"] != "custom")
+    }) {
+        " obid judges only tests pass, so the result will say the others aren't met."
+    } else {
+        ""
+    };
+    let conditions = conditions(body, judged);
+    let about = match (body["issue"].as_u64(), body["pr"].as_u64()) {
+        (Some(issue), _) => format!(", for {repo} issue #{issue}"),
+        (None, Some(pr)) => format!(", for {repo} pull request #{pr}"),
+        (None, None) => String::new(),
+    };
+    Item {
+        id: format!("obi-{correlation_id}"),
+        kind: "obiRequest".into(),
+        title: format!("Task from {from_owner}"),
+        text: format!(
+            "{from_owner}'s Obi ({from}) asks your Oby to do a task in {repo} from {base}{about}, quoted below.{}",
+            conditions.sentence
+        ),
+        options: OBI_OPTIONS.iter().map(|o| (*o).to_owned()).collect(),
+        details: Some(vec![
+            "Do it this time.".into(),
+            format!("Do it, and do {from_owner}'s tasks on {repo} from now on without asking."),
+            "Say no this time.".into(),
+            format!(
+                "Say no, and say no to {from_owner}'s tasks on {repo} from now on without asking."
+            ),
+        ]),
+        created: now,
+        obi: Some(json!({
+            "correlationId": correlation_id,
+            "from": from,
+            "fromOwner": from_owner,
+            "type": "handoff",
+            "repo": repo,
+            "baseBranch": base,
+            "expiresAt": expires_at,
+            "acceptance": conditions.typed,
+            "quoted": {
+                "goal": body["goal"],
+                "summary": body.get("summary").cloned().unwrap_or(Value::Null),
+                "acceptance": conditions.quoted,
             },
         })),
         ..Default::default()
@@ -888,6 +1019,21 @@ pub fn github_item_id(work: &crate::github_work::Item) -> String {
     }
 }
 
+/// Whether the feed's `work` gets a `github` item: never the owner's own red pull request
+/// (GITHUBWORK-28). One an Oby task opened or pushed onto is that task's to fix, with no card
+/// (AUTOFIX); one Oby didn't open is someone's own (a Claude Code session outside Oby, say), and
+/// Fix CI on it is the owner's to ask for in words (GITHUBWORK-29). The card a task's watcher leaves
+/// when it gives up is its merge card (MERGING-21, AUTOFIX-10), never this one.
+pub fn offered(work: &crate::github_work::Item) -> bool {
+    work.list != "mine"
+}
+
+/// Whether `item` is a `CI failed` card ([`github_item`] for a red pull request), from before
+/// GITHUBWORK-28: settled at the next read of GitHub work.
+pub fn is_ci_item(item: &Item) -> bool {
+    item.kind == "github" && item.id.starts_with("github-ci-")
+}
+
 /// The `github` item offering to do `work` (`known`: whether obid works in its repository):
 /// obid's own words from its typed fields (its author's login only for sorting it,
 /// crate::triage), GitHub's title quoted under `github.quoted`.
@@ -915,7 +1061,7 @@ pub fn github_item(work: &crate::github_work::Item, known: bool, now: i64) -> It
             format!("CI failed: {name} #{n}"),
             format!("Checks failed on your pull request #{n} in {repo}."),
             FIX_CI,
-            "Starts a fix job on your pull request's branch. It never pushes onto your branch: when its check passes, it opens a pull request into it.".to_owned(),
+            "Starts a task that fixes what failed and pushes the fix onto your pull request's branch, so its checks run again there.".to_owned(),
         ),
         _ => (
             format!("Assigned to you: {name} #{n}"),
@@ -952,7 +1098,8 @@ pub fn is_crash_item(item: &Item) -> bool {
 }
 
 /// The `failed` item on a job obid's own bug ended, or obid kept going down with (#911, #915):
-/// one per such end (its id names when it ended). Try again runs it again; Dismiss lets it go.
+/// its id names when it ended, and a newer one settles the job's older (`Link::crash_items`,
+/// TASKS-27). Try again runs it again; Dismiss lets it go.
 pub fn crash_item(job: &crate::job::Job, now: i64) -> Item {
     Item {
         id: format!("{}-crash-{}", job.id, job.finished.unwrap_or(now)),
@@ -1119,6 +1266,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// SPHERE-23: each reason obid keeps has its own fixed sentence, the owner's id the only thing put
+    /// in; `rotated` and anything else have none.
+    #[test]
+    fn sphere_23_each_kept_reason_has_obids_own_sentence() {
+        assert_eq!(
+            reason_words("ana", SIGNED_IN_AGAIN).as_deref(),
+            Some("The Obysphere says ana signed in again. ")
+        );
+        assert_eq!(
+            reason_words("ana", ADMIN_RESET).as_deref(),
+            Some("The Obysphere says an admin reset their key. ")
+        );
+        assert_eq!(
+            reason_words("ana", OPERATOR_RESET).as_deref(),
+            Some("The Obysphere says the Obysphere's operator reset their key. ")
+        );
+        for other in ["rotated", "", "Signed_in_again", "signed_in_again "] {
+            assert_eq!(reason_words("ana", other), None, "{other:?}");
+        }
+    }
+
     /// MERGING-28
     #[test]
     fn merging_28_only_the_answer_that_settled_it_names_a_device() {
@@ -1236,6 +1404,38 @@ mod tests {
     }
 
     use super::*;
+
+    /// GITHUBWORK-28: the owner's red pull request gets no `github` item; a review request and an
+    /// assigned issue still do. A `CI failed` card an older obid made is told apart, to settle it.
+    #[test]
+    fn githubwork_28_a_red_pull_request_gets_no_item() {
+        let work = |list: &str| crate::github_work::Item {
+            id: "0123456789abcdef".into(),
+            list: list.into(),
+            repo: "obi-ai-bot/oby".into(),
+            number: 7,
+            title: "Login fix".into(),
+            url: "https://github.com/obi-ai-bot/oby/pull/7".into(),
+            author: Some("wellington".into()),
+            association: Some("OWNER".into()),
+            trusted: true,
+            labels: vec![],
+            updated: String::new(),
+            state: "OPEN".into(),
+            draft: Some(false),
+            review_decision: None,
+            checks: Some("FAILURE".into()),
+            head: Some("a".repeat(40)),
+            fork: Some(false),
+            board: None,
+            milestone: None,
+            check_runs: Vec::new(),
+        };
+        assert!(!offered(&work("mine")));
+        assert!(offered(&work("reviews")) && offered(&work("assigned")));
+        assert!(is_ci_item(&github_item(&work("mine"), true, 0)));
+        assert!(!is_ci_item(&github_item(&work("reviews"), true, 0)));
+    }
 
     fn brief() -> Value {
         json!({

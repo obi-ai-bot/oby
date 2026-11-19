@@ -11,7 +11,7 @@ The owner connects Tetrix once, in Oby, and every agent on every account (Claude
  "connectedAt": "2026-10-18T14:02:11Z", "signIn": null, "error": null}
 ```
 
-- `connected`: obid holds a login for `url` that it can use or refresh. `url` is the MCP server it signed in to (or last tried), `preset` the preset's id or null for a URL the owner typed. `presets`: what Settings offers before a URL field, `config.json`'s `tetrixPresets`; `[]` when it names none.
+- `connected`: obid holds a login for `url` that it can use or refresh. `url` is the MCP server it signed in to (or last tried), `preset` the preset's id or null for a URL the owner typed. `presets`: `config.json`'s `tetrixPresets`, `[]` when it names none. The apps don't offer a Tetrix by name and read neither `preset` nor `presets` (docs/contracts/tetrix-url.md, TETRIX-URL-1): the person types the address of their own, and the keys stay for older clients (the API only grows).
 - `scopes`: what the authorization server granted, or null when signed out. `connectedAt`: when the sign-in finished, or null.
 - `signIn`: the sign-in under way, as `POST` answers it, or null. `error`: why the last sign-in or refresh failed, in a sentence (`Tetrix signed Oby out: sign in again.`), or null; it clears on the next sign-in, or the next refresh that works. With `connected` still true, it's a refresh the sign-in server didn't answer (below): Settings › Connectors shows Tetrix as needing attention, with Reconnect.
 - No token, code, verifier or client secret is ever in an answer, an event, a log line, a report or `config.json`.

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DELAY, KEPT, KEY, box, draft, forget, keep, keeper } from '../drafts';
+import { DELAY, FILE_KEPT, FILES_KEPT, KEPT, KEY, box, dataOf, draft, extras, fileOf, forget, hold, keep, keeper } from '../drafts';
 
 // The page's local storage, in memory (as apps/web's tests have it)
 function storage(entries: Record<string, string> = {}): Storage {
@@ -145,5 +145,92 @@ describe('a box\'s keeper', () => {
     keep(box.task('t1'), 'changed elsewhere', s);
     k.flush();
     expect(draft(box.task('t1'), s)).toBe('changed elsewhere');
+  });
+});
+
+// A draft keeps its tags and choices with its words (docs/contracts/drafts.md, DRAFTS-4 to 8)
+describe('DRAFTS-4 to 8: a draft keeps its files, tags and project', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('drafts_4_tasks_a_mac_and_a_repository_tagged_come_back_after_a_relaunch', () => {
+    const s = storage();
+    const k = keeper(s, DELAY);
+    k.show(box.conversation('c1'));
+    k.typed('Look at these');
+    k.carry({ tags: [{ kind: 'task', id: 't9' }, { kind: 'place', name: 'Studio Mac' }, { kind: 'repo', name: 'acme/app' }] });
+    vi.advanceTimersByTime(DELAY);
+    const again = keeper(storage({ [KEY]: s.getItem(KEY)! }), DELAY);
+    expect(again.show(box.conversation('c1'))).toBe('Look at these');
+    expect(again.more().tags).toEqual([{ kind: 'task', id: 't9' }, { kind: 'place', name: 'Studio Mac' }, { kind: 'repo', name: 'acme/app' }]);
+    // another box has its own, none here
+    expect(again.show(box.conversation('c2'))).toBe('');
+    expect(again.more()).toEqual({});
+  });
+
+  it('drafts_5_homes_project_and_folders_are_kept_with_its_words', () => {
+    const s = storage();
+    keep(box.home, 'Start the API', s, Date.now(), { project: 'p1', folders: ['/work/api'] });
+    expect(extras(box.home, s)).toEqual({ project: 'p1', folders: ['/work/api'] });
+    // typing on keeps them
+    keep(box.home, 'Start the API now', s);
+    expect(extras(box.home, s)).toEqual({ project: 'p1', folders: ['/work/api'] });
+  });
+
+  it('drafts_6_a_small_files_bytes_come_back_after_a_relaunch_a_big_one_only_this_run', async () => {
+    vi.useRealTimers();
+    const s = storage();
+    const small = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+    const data = await dataOf(small);
+    expect(data).toMatch(/^data:text\/plain;base64,/);
+    keep(box.task('t1'), '', s, Date.now(), { tags: [{ kind: 'file', name: 'notes.txt', type: 'text/plain', data }, { kind: 'file', name: 'big.mov', type: 'video/quicktime' }] });
+    // after a relaunch (nothing held): the small one is made again from its bytes, the big one is gone
+    hold(box.task('t1'), []);
+    const [one, two] = extras(box.task('t1'), storage({ [KEY]: s.getItem(KEY)! })).tags!;
+    const back = fileOf(box.task('t1'), one as never)!;
+    expect(back.name).toBe('notes.txt');
+    expect(await back.text()).toBe('hello');
+    expect(fileOf(box.task('t1'), two as never)).toBeUndefined();
+    // this run, the big one is held
+    const big = new File(['x'], 'big.mov');
+    hold(box.task('t1'), [{ name: 'big.mov', file: big }]);
+    expect(fileOf(box.task('t1'), two as never)).toBe(big);
+    // past FILE_KEPT no bytes are read; past FILES_KEPT all told a file keeps its name only
+    expect(await dataOf(new File([new Uint8Array(FILE_KEPT + 1)], 'huge.bin'))).toBeUndefined();
+    const full = 'data:x;base64,' + 'A'.repeat(FILES_KEPT - 20);
+    keep(box.task('t2'), '', s, Date.now(), { tags: [{ kind: 'file', name: 'a', data: full }, { kind: 'file', name: 'b', data: full }] });
+    expect(extras(box.task('t2'), s).tags).toEqual([{ kind: 'file', name: 'a', data: full }, { kind: 'file', name: 'b' }]);
+  });
+
+  it('drafts_7_a_box_with_tags_and_no_words_is_still_kept', () => {
+    const s = storage();
+    const k = keeper(s, DELAY);
+    k.show(box.conversation('c1'));
+    k.carry({ tags: [{ kind: 'task', id: 't1' }] });
+    vi.advanceTimersByTime(DELAY);
+    expect(draft(box.conversation('c1'), s)).toBe('');
+    expect(extras(box.conversation('c1'), s).tags).toEqual([{ kind: 'task', id: 't1' }]);
+  });
+
+  it('drafts_8_sending_or_deleting_lets_the_tags_go_with_the_words', () => {
+    const s = storage();
+    const k = keeper(s, DELAY);
+    k.show(box.conversation('c1'));
+    k.typed('With a task');
+    k.carry({ tags: [{ kind: 'task', id: 't1' }] });
+    vi.advanceTimersByTime(DELAY);
+    // sent: the box empties, its tags go
+    k.typed('');
+    k.carry({});
+    expect(s.getItem(KEY)).toBeNull();
+    keep(box.conversation('c2'), '', s, Date.now(), { tags: [{ kind: 'task', id: 't2' }] });
+    forget(box.conversation('c2'), s);
+    expect(s.getItem(KEY)).toBeNull();
+  });
+
+  it('drafts_8_a_foreign_tag_is_nothing_kept', () => {
+    const at = Date.now();
+    const s = storage({ [KEY]: JSON.stringify({ home: { text: 'ok', at, tags: [{ kind: 'task' }, { kind: 'file', name: 3 }, 'x', { kind: 'place', name: 'Mac' }], project: 7, folders: ['/a', 1] } }) });
+    expect(extras(box.home, s)).toEqual({ tags: [{ kind: 'place', name: 'Mac' }], folders: ['/a'] });
   });
 });

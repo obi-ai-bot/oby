@@ -1,0 +1,320 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans/cancel",
+  "version": "1.0.0",
+  "description": "Cancels words: 422 for a turn without its conversation; words waiting behind a turn under way are dropped by their turn's id (COMPOSER-9) while the turn under way still answers (COMPOSER-11); without a turn, everything waiting is cancelled (DELIVERY-3).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans/cancel"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Fine.",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Fine."
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans/cancel",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "turn-without-conversation-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans/cancel",
+        "body": {
+          "turn": "x"
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "Name the conversation the words are waiting in."
+          }
+        }
+      }
+    },
+    {
+      "id": "lingering",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "LINGER 15000",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "under-way",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "user",
+                "delivery": {
+                  "status": "running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "waiting",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY later",
+          "conversation": "${state.said.body.conversation}",
+          "id": "1b2c3d4e-0000-4000-8000-00000000c0de"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "queued",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "1b2c3d4e-0000-4000-8000-00000000c0de",
+                "delivery": {
+                  "status": "queued"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "composer-9-dropped-by-its-turn",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans/cancel",
+        "body": {
+          "conversation": "${state.said.body.conversation}",
+          "turn": "1b2c3d4e-0000-4000-8000-00000000c0de"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "cancelled": true,
+            "dropped": [
+              "1b2c3d4e-0000-4000-8000-00000000c0de"
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPOSER-9"
+        ]
+      }
+    },
+    {
+      "id": "composer-9-its-request-answers-none",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.waiting}",
+        "seconds": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "none"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPOSER-9"
+        ]
+      }
+    },
+    {
+      "id": "composer-11-the-turn-under-way-still-answers",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.lingering}",
+        "seconds": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPOSER-11"
+        ]
+      }
+    },
+    {
+      "id": "composer-9-its-delivery-cancelled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "1b2c3d4e-0000-4000-8000-00000000c0de",
+                "delivery": {
+                  "status": "cancelled"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPOSER-9"
+        ]
+      }
+    },
+    {
+      "id": "lingering-2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "LINGER 30000",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "under-way-2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "text": "LINGER 30000",
+                "delivery": {
+                  "status": "running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "delivery-3-cancel-everything",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans/cancel",
+        "body": {
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "cancelled": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-3"
+        ]
+      }
+    },
+    {
+      "id": "delivery-3-its-words-answer-none",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.lingering-2}",
+        "seconds": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "none"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-3"
+        ]
+      }
+    }
+  ]
+}

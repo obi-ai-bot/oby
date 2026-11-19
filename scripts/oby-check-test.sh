@@ -179,12 +179,14 @@ expect no 'jobs.rs has .* past' 'jobs.rs at its limit is within it'
 code "$jobs" "$((jobs_limit + 1))"
 expect 'jobs.rs has .* past its limit' 'jobs.rs one line past its limit'
 counted "$((jobs_limit + 1))" "jobs.rs's lines count in the Rust core's"
-if ran=$(env -u OBY_CHECK_PLAN scripts/oby-check.sh HEAD 2>&1); then
-    echo 'oby-check-test: a run with jobs.rs past its limit passed' >&2
+# Past its limit is reported, never a failure (the owner's word, 2026-11-17).
+ran=$(env -u OBY_CHECK_PLAN scripts/oby-check.sh HEAD 2>&1) || true
+grep -q "failed: jobs.rs's line limit" <<<"$ran" && {
+    echo "oby-check-test: a run with jobs.rs past its limit failed on it, which is reported only: $ran" >&2
     exit 1
-fi
-grep -q "failed: jobs.rs's line limit" <<<"$ran" || {
-    echo "oby-check-test: a run with jobs.rs past its limit failed without naming it: $ran" >&2
+}
+grep -q "past its limit of .* (reported, not a failure)" <<<"$ran" || {
+    echo "oby-check-test: a run with jobs.rs past its limit didn't report it: $ran" >&2
     exit 1
 }
 # A commit that shrinks jobs.rs and lowers its limit is held to that, against the base's copy.
@@ -606,6 +608,54 @@ said=$(OBY_CHECK_PATHS=apps/electron/src/renderer/src/test/x.test.ts OBY_CHECK_P
     exit 1
 }
 rm core/crates/obid/tests/routes_guard.rs
+# RIG-35: the Obysphere's code and the rig plan the rig's tests and the launch list in the electron
+# group; a job's box says it leaves the launch list to the Mac; other app code plans neither.
+for path in e2e/launch.mjs core/crates/obid/src/sphere/link.rs apps/electron/src/shared/sphere.ts apps/electron/src/main/sphere.ts; do
+    said=$(OBY_CHECK_PATHS=$path OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
+    grep -q -- '==> node --test e2e/rig.test.mjs' <<<"$said" && grep -q -- 'test:sphere-join' <<<"$said" \
+        && { grep -q -- 'node e2e/launch.mjs --gate' <<<"$said" || grep -q "launch list don't run in a job's box" <<<"$said"; } || {
+        echo "oby-check-test: RIG-35: a change to $path didn't plan the Obysphere's tests:" >&2
+        sed 's/^/| /' <<<"$said" >&2
+        exit 1
+    }
+done
+said=$(OBY_CHECK_PATHS=apps/electron/src/renderer/src/Sidebar.tsx OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
+! grep -q 'e2e/launch.mjs\|test:sphere' <<<"$said" || {
+    echo "oby-check-test: RIG-35: a change to the side panel planned the Obysphere's tests:" >&2
+    sed 's/^/| /' <<<"$said" >&2
+    exit 1
+}
+# CI-56: what the Brain reads plans its tests, in the electron group; a doc it doesn't read doesn't;
+# in a job's box only a change to the Brain itself runs them.
+for path in tools/brain/brain.config.ts core/crates/obid/src/jobs/lanes.rs apps/electron/src/renderer/src/Sidebar.tsx \
+    apps/shared/Runner.swift docs/api/jobs.md docs/runner-api.md AGENTS.md; do
+    said=$(OBY_CHECK_PATHS=$path OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
+    grep -q -- '==> npm --prefix tools/brain run --silent test' <<<"$said" && grep -qxF 'oby-check: group electron' <<<"$said" || {
+        echo "oby-check-test: CI-56: a change to $path didn't plan the Brain's tests in the electron group:" >&2
+        sed 's/^/| /' <<<"$said" >&2
+        exit 1
+    }
+done
+said=$(OBY_CHECK_PATHS=docs/decisions/x.md OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
+! grep -q 'tools/brain' <<<"$said" || {
+    echo "oby-check-test: CI-56: a change to a doc the Brain doesn't read planned its tests:" >&2
+    sed 's/^/| /' <<<"$said" >&2
+    exit 1
+}
+if /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null; then
+    said=$(OBY_CHECK_PATHS=core/crates/obid/src/jobs/lanes.rs nested)
+    grep -q "the Brain's map isn't checked in a job's box" <<<"$said" && ! grep -q -- '--prefix tools/brain' <<<"$said" || {
+        echo "oby-check-test: CI-56: nested, a change to obid planned the Brain's tests:" >&2
+        sed 's/^/| /' <<<"$said" >&2
+        exit 1
+    }
+    said=$(OBY_CHECK_PATHS=tools/brain/brain.config.ts nested)
+    grep -q -- '==> npm --prefix tools/brain run --silent test' <<<"$said" || {
+        echo "oby-check-test: CI-56: nested, a change to the Brain didn't plan its tests:" >&2
+        sed 's/^/| /' <<<"$said" >&2
+        exit 1
+    }
+fi
 
 # obid's test binaries run side by side, each to its end: one that fails doesn't stop the others,
 # its failure is named and comes last, each runs quietly, and a binary cargo didn't build fails the
@@ -661,6 +711,26 @@ done
     echo "oby-check-test: it named a binary that passed: $ran" >&2
     exit 1
 }
+# CI-52: each binary's seconds, and a last line with how long they all took and the longest.
+for said in 'Running slow ([0-9]*s)' "obid's test binaries took [0-9]*s, the longest tests/slow.rs at [0-9]*s"; do
+    grep -q "$said" <<<"$ran" || {
+        echo "oby-check-test: the test binaries' run didn't say \"$said\": $ran" >&2
+        exit 1
+    }
+done
+# CI-51: run by hand (no OBY_BUILD_JOBS), obid's test binaries run half the Mac's cores at once, at
+# least 2, whatever the load: 10 cores run 5, 6 run 3, 2 run 2.
+printf '#!/bin/bash\ncase "$*" in *hw.ncpu*) echo "$OBY_FAKE_CORES" ;; *vm.loadavg*) echo "{ 12.50 1.00 1.00 }" ;; *) exit 1 ;; esac\n' >"$fake/sysctl"
+chmod +x "$fake/sysctl"
+for cores_at_once in '10 5' '6 3' '2 2'; do
+    read -r cores at_once <<<"$cores_at_once"
+    ran=$(env -u OBY_CHECK_PLAN -u OBY_BUILD_JOBS PATH="$fake:$PATH" TMPDIR="$fake/tmp" OBY_FAKE_CORES="$cores" scripts/oby-check.sh HEAD 2>&1) || true
+    grep -q "oby-check: [0-9]* test binaries, $at_once at once with 2 threads each ($cores CPUs, a load average of 12.50)" <<<"$ran" || {
+        echo "oby-check-test: on $cores cores the check didn't run $at_once binaries at once: $ran" >&2
+        exit 1
+    }
+done
+rm "$fake/sysctl"
 rm core/crates/obid/tests/fails.rs
 if ran=$(run OBY_FAKE_BUILDS_NONE=1); then
     echo "oby-check-test: a check whose test binaries weren't built passed: $ran" >&2

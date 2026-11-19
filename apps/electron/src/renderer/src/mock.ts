@@ -1,6 +1,6 @@
 import { BRANDS, type Brand } from './brands';
 import { everything, onObid } from './lean';
-import type { Helper, Profile, RoomPost } from '../../shared/obid-wire';
+import type { Helper, Profile, Project, RoomPost } from '../../shared/obid-wire';
 import { agentOf, type Archived, type GitHubItem, type Job, type Message, type Peer, type PeerConvo, type Place, type Share, type Stage, type StageId, type StageState, type Turn } from './view';
 
 // Mock data until the app talks to Oby's engine. The shapes follow the Mac
@@ -37,7 +37,14 @@ const { github, slack, gmail, deskree } = BRANDS;
 
 const ROADMAP = 'Oby — Roadmap';
 export const GITHUB_WORK: GitHubItem[] = [
-  { id: 'g1', type: 'review', who: 'Ernesto', title: '#417 batch retries', repo: 'tetrix-ee', request: 'Ernesto asked you to review tetrix-ee #417.', action: 'Review it', updated: 12 },
+  { id: 'g1', type: 'review', who: 'Ernesto', title: '#417 batch retries', repo: 'tetrix-ee', request: 'Ernesto asked you to review tetrix-ee #417.', action: 'Review it', updated: 12,
+    // its head's checks (GITHUBWORK-9)
+    checks: [
+      { name: 'build', state: 'SUCCESS', url: 'https://github.com/deskree-inc/tetrix-ee/actions/runs/1' },
+      { name: 'test (ubuntu)', state: 'FAILURE', url: 'https://github.com/deskree-inc/tetrix-ee/actions/runs/2' },
+      { name: 'lint', state: 'PENDING', url: 'https://github.com/deskree-inc/tetrix-ee/actions/runs/3' },
+      { name: 'secret scan', state: 'SUCCESS', url: 'https://github.com/deskree-inc/tetrix-ee/actions/runs/4' },
+    ] },
   { id: 'g2', type: 'review', who: 'Dima', title: '#420 graph cache', repo: 'tetrix-ee', request: 'Dima asked you to review tetrix-ee #420.', action: 'Review it', updated: 55 },
   { id: 'g3', type: 'issues', title: '#266 Pin a task', repo: 'oby', request: 'Assigned to you in oby #266.', action: 'Fix it', board: { project: ROADMAP, column: 'In progress' }, updated: 64 },
   { id: 'g4', type: 'issues', title: '#262 Snooze a task', repo: 'oby', request: 'Assigned to you in oby #262.', action: 'Fix it', board: { project: ROADMAP, column: 'Todo' }, updated: 90 },
@@ -197,7 +204,10 @@ export const JOBS: Job[] = [
     ask: {
       kind: 'question', headline: 'Fold accents in the index or in the query?',
       text: 'Folding in the index means a one-time reindex (about 20 min on prod). Folding only the query is instant but misses "José" when you type "jose".',
-      options: ['Index (reindex once)', 'Query only', 'Both'], recommended: 0,
+      // as Claude Code's AskUserQuestion asks it: descriptions, and the recommended one's label
+      // marked (BYPASS-10); several may be picked (BYPASS-11)
+      options: ['Index (Recommended)', 'Query only', 'Both', 'Tell it something'], recommended: 0, multi: true,
+      about: ['A one-time reindex, about 20 min on prod', 'Instant, but misses “José” when you type “jose”', 'The reindex, and the query folded too', ''],
     },
   },
   {
@@ -587,6 +597,12 @@ export const MOCK_PROFILES: Profile[] = [
   { id: 'deskree', name: 'Deskree', color: '#2f7a6a', default: false, waiting: true },
   { id: 'acme', name: 'Acme', color: '#8c5a3a', default: false, waiting: false },
 ];
+// The projects on the mock (screens 01 to 03), in the order made: each holds the mock's conversations
+// whose first task is in one of its repositories (chats.ts)
+export const MOCK_PROJECTS: Project[] = [
+  { id: 'oby-app', name: 'Oby app', folders: ['/Users/me/Projects/oby'], repos: ['deskree-inc/oby', 'obi-ai-bot/obi'] },
+  { id: 'tetrix', name: 'Tetrix', folders: ['/Users/me/Projects/tetrix'], repos: ['deskree-inc/tetrix-ee', 'deskree-inc/tetrix-front-end', 'deskree-inc/api-gateway'] },
+];
 // The agents on the mock (screen 08), in the default profile, oldest first: each a helper of obid's
 // shape with its own conversation (chats.ts, the mock's helper chats)
 const helper = (id: string, name: string, color: string, instructions: string, connectors: string[], created: string): Helper => ({
@@ -741,3 +757,8 @@ export const MOCK_ROOM: { sphere: string; status: 'available' | 'unavailable'; p
   ],
 };
 export const mockRoomScene = ROOM_SCENE;
+
+// A conversation's files for @ in a browser (COMPOSER-14): obid lists the real ones
+export const FILES: { folder: string; path: string }[] = [
+  'src/app.tsx', 'src/auth/login.tsx', 'src/auth/signup.tsx', 'src/auth/session.ts', 'src/api/client.ts', 'README.md',
+].map((path) => ({ folder: '/Users/you/Projects/web', path }));

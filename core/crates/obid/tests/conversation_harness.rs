@@ -269,6 +269,46 @@ fn a_turn_streams_its_words_and_ends_in_a_turn() {
 }
 
 /// Later turns resume the conversation's own session, also after obid restarts.
+/// CONVERSATION-AGENT-47: a Claude Code conversation asks the owner with choices: its
+/// AskUserQuestion is the turn's answer, a question with its options as the apps show one, and the
+/// owner's pick comes back to the same session as their next words.
+#[test]
+fn conversation_agent_47_claude_code_asks_with_choices() {
+    let (_folder, obid) = obid("harness-ask", true);
+    let asked = said(
+        &obid,
+        json!({"said": "ASK English or French? | English | French", "new": true}),
+    );
+    assert_eq!(asked.body["kind"], "question", "{}", asked.text);
+    assert_eq!(asked.body["question"]["text"], "English or French?");
+    assert_eq!(
+        asked.body["question"]["options"],
+        json!(["English", "French"]),
+        "{}",
+        asked.text
+    );
+    let conversation = asked.body["conversation"].as_str().unwrap().to_owned();
+    let picked = said(
+        &obid,
+        json!({"said": "French", "conversation": conversation}),
+    );
+    assert_eq!(picked.body["kind"], "reply", "{}", picked.text);
+    let turns = turns(&obid);
+    assert_eq!(turns.len(), 2, "{turns:?}");
+    assert!(
+        turns[0]["argv"].as_array().unwrap().iter().any(|a| a
+            .as_str()
+            .is_some_and(|a| a.split(',').any(|t| t == "AskUserQuestion"))),
+        "its tools: {turns:?}"
+    );
+    assert!(
+        turns[1]["prompt"].as_str().unwrap().ends_with("French"),
+        "{turns:?}"
+    );
+    // The same session, waiting, took the pick.
+    assert_eq!(turns[1]["id"], turns[0]["id"], "{turns:?}");
+}
+
 #[test]
 fn a_conversation_resumes_its_session() {
     let (folder, obid) = obid("harness-resume", true);
@@ -483,6 +523,57 @@ fn a_new_conversation_finds_its_claude_code_started() {
     );
 }
 
+/// CONVERSATION-AGENT-25 (docs/contracts/conversation-agent.md): the next new conversation's Claude
+/// Code, started ahead, ran the owner's `SessionStart` hooks as it started and wrote their lines
+/// before any prompt; it still takes that conversation's first turn, with Oby's tools.
+// Own conversations, which run the owner's hooks, are macOS-only for now (LANES-12).
+#[cfg(target_os = "macos")]
+#[test]
+fn conversation_agent_25_a_claude_code_started_ahead_that_ran_its_hooks_takes_the_turn() {
+    let (_folder, obid) = obid_env(
+        "harness-agent-25",
+        true,
+        json!({"agent": "claude"}),
+        &[("OBID_PRESTART", "on")],
+        json!({}),
+    );
+    std::fs::write(obid.home.join("accounts/stub/startup-hooks"), "").unwrap();
+    let first = said(&obid, json!({"said": "SAY hi", "new": true}));
+    let one = first.body["conversation"].as_str().unwrap().to_owned();
+    let conversations = obid.home.join("conversations");
+    // The stand-in writes its hooks' lines before it records its start.
+    let (next, record) = within(30, "the next conversation's Claude Code started", || {
+        std::fs::read_dir(&conversations)
+            .ok()?
+            .flatten()
+            .filter(|e| e.path().is_dir() && e.file_name().to_string_lossy() != one)
+            .find_map(|e| {
+                let line = std::fs::read_to_string(e.path().join("config/started.jsonl")).ok()?;
+                let record: Value = serde_json::from_str(line.lines().next()?).ok()?;
+                Some((e.file_name().to_string_lossy().into_owned(), record))
+            })
+    });
+    let second = said(&obid, json!({"said": "OBY oby_jobs {}", "new": true}));
+    assert_eq!(
+        second.body["conversation"],
+        next.as_str(),
+        "{}",
+        second.text
+    );
+    let text = second.body["text"].as_str().unwrap_or_default();
+    assert!(
+        text.starts_with("oby: ") && !text.contains("refused"),
+        "{}",
+        second.text
+    );
+    let recorded = recorded(&conversations.join(format!("{next}/config/turns.jsonl")));
+    assert_eq!(recorded.len(), 1, "{recorded:?}");
+    assert_eq!(
+        recorded[0]["id"], record["id"],
+        "the turn went to the Claude Code started ahead"
+    );
+}
+
 /// A waiting Claude Code that wrote a line while it waited isn't given the next turn (the line
 /// would be taken for the turn's): a new one answers it.
 #[test]
@@ -557,8 +648,16 @@ fn nothing_waits_after_a_stop_or_the_budget() {
     );
     let first = said(&obid, json!({"said": "SAY hi", "new": true}));
     let conversation = first.body["conversation"].as_str().unwrap().to_owned();
-    let turn = |n: usize| turns(&obid)[n].clone();
-    let id = |n: usize| turn(n)["id"].clone();
+    // The last turn that took `words`: a session cut mid-turn answers the next process's first
+    // prompt with nothing, and its words go to it again (CONVERSATION-AGENT-46), so turns are
+    // found by their words, not counted.
+    let turn = |words: &str| {
+        turns(&obid)
+            .into_iter()
+            .rfind(|t| t["prompt"].as_str().is_some_and(|p| p.ends_with(words)))
+            .unwrap_or_else(|| panic!("no turn took {words}"))
+    };
+    let id = |words: &str| turn(words)["id"].clone();
     let late = said(
         &obid,
         json!({"said": "LINGER 15000", "conversation": conversation}),
@@ -571,13 +670,17 @@ fn nothing_waits_after_a_stop_or_the_budget() {
         "{}",
         late.text
     );
-    assert_eq!(id(0), id(1), "the turn went to the waiting one");
-    assert!(ends_soon(&turn(1)), "the budget ended it");
+    assert_eq!(
+        id("SAY hi"),
+        id("LINGER 15000"),
+        "the turn went to the waiting one"
+    );
+    assert!(ends_soon(&turn("LINGER 15000")), "the budget ended it");
     said(
         &obid,
         json!({"said": "SAY again", "conversation": conversation}),
     );
-    assert_ne!(id(2), id(1));
+    assert_ne!(id("SAY again"), id("LINGER 15000"));
     std::thread::scope(|scope| {
         let slow = scope.spawn(|| {
             said(
@@ -586,7 +689,12 @@ fn nothing_waits_after_a_stop_or_the_budget() {
             )
         });
         let give_up_at = Instant::now() + Duration::from_secs(15);
-        while turns(&obid).len() < 4 && Instant::now() < give_up_at {
+        while !turns(&obid).iter().any(|t| {
+            t["prompt"]
+                .as_str()
+                .is_some_and(|p| p.ends_with("LINGER 20000"))
+        }) && Instant::now() < give_up_at
+        {
             std::thread::sleep(Duration::from_millis(100));
         }
         let stopped = call(
@@ -598,13 +706,13 @@ fn nothing_waits_after_a_stop_or_the_budget() {
         assert_eq!(stopped.status, 200, "{}", stopped.text);
         slow.join().unwrap();
     });
-    assert_eq!(id(3), id(2));
-    assert!(ends_soon(&turn(3)), "the stop ended it");
+    assert_eq!(id("LINGER 20000"), id("SAY again"));
+    assert!(ends_soon(&turn("LINGER 20000")), "the stop ended it");
     said(
         &obid,
         json!({"said": "SAY last", "conversation": conversation}),
     );
-    assert_ne!(id(4), id(3));
+    assert_ne!(id("SAY last"), id("LINGER 20000"));
 }
 
 /// obid's stop ends every waiting Claude Code.
@@ -3129,8 +3237,9 @@ fn mcp_folder() -> &'static str {
     }
 }
 
-/// Whether `turn` ran in the own lane (LANES-12): on the account's own folder, with the owner's
-/// settings and MCP servers, Claude Code's own Bash and its sandbox's settings.
+/// Whether `turn` ran in the own lane (LANES-12): on the account's own folder, with every
+/// settings source and the owner's MCP servers (LANES-23), Claude Code's own Bash, and obid's
+/// `--settings` with no sandbox of obid's.
 fn ran_own(obid: &Obid, turn: &Value) -> bool {
     let argv: Vec<&str> = turn["argv"]
         .as_array()
@@ -3140,11 +3249,11 @@ fn ran_own(obid: &Obid, turn: &Value) -> bool {
         .collect();
     let after = |flag: &str| argv.iter().position(|a| *a == flag).map(|i| argv[i + 1]);
     turn["config"].as_str().map(PathBuf::from) == Some(obid.home.join("accounts/stub"))
-        && after("--setting-sources") == Some("user")
+        && !argv.contains(&"--setting-sources")
         && !argv.contains(&"--restricted")
         && !argv.contains(&"--strict-mcp-config")
         && after("--tools").is_some_and(|tools| tools.split(',').any(|t| t == "Bash"))
-        && after("--settings").is_some_and(|s| s.contains("failIfUnavailable"))
+        && after("--settings").is_some_and(|s| !s.contains("failIfUnavailable"))
 }
 
 /// LANES-12 (docs/contracts/lanes.md): the owner's conversation runs on its account's own folder
@@ -3168,6 +3277,33 @@ fn lanes_12_git_status_runs_through_claude_codes_own_bash_in_the_room() {
     // No login copy: the session ran on the account's own.
     let folder = obid.home.join(format!("conversations/{conversation}"));
     assert!(!folder.join("config/.credentials.json").exists());
+}
+
+/// CONVERSATION-AGENT-24 (docs/contracts/conversation-agent.md): a new own conversation answers
+/// without waiting for the owner's own MCP servers, as their terminal does: one of theirs that
+/// takes 20 s to answer doesn't hold the first turn, and Oby's own tools are there on it. The
+/// stand-in holds the first turn as Claude Code 2.1.325 does (tests/agents/fake-harness).
+// Own conversations are macOS-only for now (LANES-12).
+#[cfg(target_os = "macos")]
+#[test]
+fn conversation_agent_24_a_new_conversation_doesnt_wait_for_the_owners_mcp_servers() {
+    let (_folder, obid) = obid("harness-agent-24", true);
+    std::fs::write(obid.home.join("accounts/stub/slow-mcp-ms"), "20000").unwrap();
+    let began = Instant::now();
+    let answer = said(&obid, json!({"said": "OBY oby_jobs {}", "new": true}));
+    let took = began.elapsed();
+    let text = answer.body["text"].as_str().unwrap_or_default();
+    assert!(
+        text.starts_with("oby: ") && !text.contains("refused") && !text.contains("connected"),
+        "Oby's tools on the first turn: {}",
+        answer.text
+    );
+    assert!(
+        took < Duration::from_secs(10),
+        "the first turn waited {took:?} for the owner's MCP servers"
+    );
+    let recorded = turns(&obid);
+    assert!(ran_own(&obid, &recorded[0]), "{}", recorded[0]);
 }
 
 /// LANES-12, F-M2-63: a waiting Claude Code started with other flags (another model) ends, taking
@@ -3985,27 +4121,31 @@ fn oby_continue_job_continues_a_job_in_its_session() {
     );
 }
 
-/// oby_archive_job hides a job that ended and needs nothing, reversibly, at once even after the
-/// web; oby_delete_job always waits for the owner's Confirm, which removes the job, its worktree
-/// and its open items, and the REST routes do the same for the apps.
+/// oby_archive_job hides a job that ended with no decision open (a failed one too: TASKS-31),
+/// reversibly, at once even after the web; oby_delete_job always waits for the owner's Confirm,
+/// which removes the job, its worktree and its open items, and the REST routes do the same for the
+/// apps.
 #[test]
 fn archive_is_at_once_and_delete_waits_for_confirm() {
     let (_folder, obid) = obid_failing_jobs("harness-archive");
     let (id, conversation) = ended_job(&obid, None);
     let archive = format!(r#"OBY oby_archive_job {{"id": "{id}"}}"#);
-    let needs = said(
+    let failed = said(
         &obid,
         json!({"said": archive, "conversation": conversation}),
     );
     assert!(
-        oby_said(&needs).contains("It still needs you: dismiss it first"),
+        oby_said(&failed).contains("Archived Add a greeting."),
         "{}",
-        needs.text
+        failed.text
     );
-    assert_eq!(
-        call(&obid, "POST", &format!("/v1/jobs/{id}/dismiss"), None).status,
-        200
+    let unarchived = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/archive"),
+        Some(&json!({"archived": false})),
     );
+    assert_eq!(unarchived.status, 200, "{}", unarchived.text);
     let done = said(
         &obid,
         json!({"said": format!("WEB {archive}"), "conversation": conversation}),
@@ -4057,6 +4197,10 @@ fn archive_is_at_once_and_delete_waits_for_confirm() {
         422
     );
 
+    // Delete on a job that ended and was never put away: an archived one may have lost its
+    // worktree to the cleanup pass already (CLEANUP-5).
+    let (id, _) = ended_job(&obid, None);
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
     let worktree = PathBuf::from(job["worktree"].as_str().unwrap());
     assert!(worktree.is_dir());
     let branch = job["branch"].as_str().unwrap().to_owned();
@@ -4591,4 +4735,88 @@ fn oby_github_lists_the_owners_pull_requests_and_dispatch_takes_one() {
         "{}",
         wrong.text
     );
+}
+
+/// The owner's own servers the stand-in's `init` names after Oby's (tests/agents/fake-harness):
+/// a claude.ai connector, one that needs its sign-in, and a server of theirs that failed.
+// Only the macOS-only scenarios use it (own conversations, LANES-12).
+#[cfg(target_os = "macos")]
+fn own_servers(obid: &Obid) {
+    std::fs::write(
+        obid.home.join("accounts/stub/mcp-servers.json"),
+        json!([
+            {"name": "claude.ai Slack", "status": "connected"},
+            {"name": "claude.ai Gmail", "status": "needs-auth"},
+            {"name": "rea", "status": "failed"},
+        ])
+        .to_string(),
+    )
+    .unwrap();
+}
+
+/// CONNECTORS-1 (docs/contracts/connectors.md): an own Claude Code conversation keeps the
+/// connectors its session named, names and statuses only, but obid's own `oby`.
+// Own conversations are macOS-only for now (LANES-12).
+#[cfg(target_os = "macos")]
+#[test]
+fn connectors_1_an_own_conversation_keeps_its_claude_codes_connectors() {
+    let (_folder, obid) = obid("harness-connectors-1", true);
+    own_servers(&obid);
+    let answer = said(&obid, json!({"said": "SAY hi", "new": true}));
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    let listed = call(&obid, "GET", "/v1/connectors", None);
+    assert_eq!(listed.status, 200, "{}", listed.text);
+    let claude = &listed.body["claude"];
+    assert_eq!(
+        claude["servers"],
+        json!([
+            {"name": "claude.ai Slack", "status": "connected"},
+            {"name": "claude.ai Gmail", "status": "needs-auth"},
+            {"name": "rea", "status": "failed"},
+        ]),
+        "{}",
+        listed.text
+    );
+    assert!(
+        claude["seenAt"]
+            .as_str()
+            .is_some_and(|at| at.ends_with('Z')),
+        "{}",
+        listed.text
+    );
+    let kept = std::fs::metadata(obid.home.join("connectors.json")).unwrap();
+    assert_eq!(
+        std::os::unix::fs::PermissionsExt::mode(&kept.permissions()) & 0o777,
+        0o600
+    );
+}
+
+/// CONNECTORS-2: before any session named its connectors, there are none to show.
+#[test]
+fn connectors_2_none_before_any_was_seen() {
+    let (_folder, obid) = obid("harness-connectors-2", true);
+    let listed = call(&obid, "GET", "/v1/connectors", None);
+    assert_eq!(listed.status, 200, "{}", listed.text);
+    assert_eq!(listed.body, json!({"claude": null}));
+}
+
+/// CONNECTORS-3: a boxed session's list (obid's servers only) never replaces the own one's.
+// Own conversations are macOS-only for now (LANES-12).
+#[cfg(target_os = "macos")]
+#[test]
+fn connectors_3_a_boxed_session_never_replaces_them() {
+    let (_folder, obid, obys) = obid_with_obys_conversation("harness-connectors-3");
+    own_servers(&obid);
+    said(&obid, json!({"said": "SAY hi", "new": true}));
+    let before = call(&obid, "GET", "/v1/connectors", None).body;
+    assert_eq!(
+        before["claude"]["servers"].as_array().map(Vec::len),
+        Some(3),
+        "{before}"
+    );
+    let boxed = said(&obid, json!({"said": "SAY boxed", "conversation": obys}));
+    assert_eq!(boxed.status, 200, "{}", boxed.text);
+    let recorded = turns(&obid);
+    assert!(!ran_own(&obid, recorded.last().unwrap()), "{recorded:?}");
+    assert_eq!(call(&obid, "GET", "/v1/connectors", None).body, before);
 }

@@ -74,7 +74,7 @@ cd tools/brain && npm test
 every route read from its own line and its handler found; every module in an area; every app call reaching a route;
 every kept-locally choice owned, and every owed one tied to an issue; every rule tied to code that's still there and to
 a test; no internal host in the open-source code; every phone route served, every documented route served and
-every call of the Swift client served but the test's named exceptions (RETIRED-7 to RETIRED-9, docs/contracts/retired.md). `scripts/oby-check.sh` doesn't run them: run `npm test` by hand.
+every call of the Swift client served but the test's named exceptions (RETIRED-7 to RETIRED-9, docs/contracts/retired.md). `scripts/oby-check.sh` runs them when what the Brain reads changes, and so does GitHub's `brain` job in the merge queue (docs/contracts/ci.md, CI-56).
 
 The Brain reads every API doc `apiDocs` in `brain.config.ts` names: `docs/runner-api.md` and `docs/api/*.md`. A route
 any of them mentions is documented. The section "Routes obid does not serve" (`goneSection`), in whichever of them holds

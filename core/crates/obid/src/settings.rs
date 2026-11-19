@@ -105,6 +105,11 @@ pub const ACCOUNT_FAILOVER: bool = true;
 /// the owner didn't say (`githubEveryRepo`, docs/contracts/github-work.md): off.
 pub const GITHUB_EVERY_REPO: bool = false;
 
+/// Whether the owner's own task fixes its pull request's red checks by itself, when the owner
+/// didn't say (`autoFixChecks`, docs/contracts/autofix.md, AUTOFIX-4): on, the owner's decision of
+/// 2026-11-17.
+pub const AUTO_FIX_CHECKS: bool = true;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -142,6 +147,10 @@ pub struct Settings {
     /// the listed ones (#2402); [`GITHUB_EVERY_REPO`] when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_every_repo: Option<bool>,
+    /// Whether the owner's own task fixes its pull request's red checks by itself (AUTOFIX-4);
+    /// [`AUTO_FIX_CHECKS`] when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_fix_checks: Option<bool>,
     /// The repositories the owner answered No check for when Oby asked for one (#1062): it never
     /// asks there again, until the owner says to (`POST /v1/repos/check`). The `checksOffered` an
     /// older obid kept listed every repository it had asked about, answered or not, so it isn't
@@ -259,6 +268,10 @@ impl Settings {
 
     pub fn github_every_repo(&self) -> bool {
         self.github_every_repo.unwrap_or(GITHUB_EVERY_REPO)
+    }
+
+    pub fn auto_fix_checks(&self) -> bool {
+        self.auto_fix_checks.unwrap_or(AUTO_FIX_CHECKS)
     }
 }
 

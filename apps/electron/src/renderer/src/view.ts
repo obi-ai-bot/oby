@@ -1,5 +1,5 @@
 import { BRANDS, lettered, type Brand } from './brands';
-import { isAgent, type AskMark } from '../../shared/obid-wire';
+import { isAgent, type AskMark, type CheckRun } from '../../shared/obid-wire';
 
 // The app's view of Oby's work: the shapes its screens draw, their fixed words and the
 // helpers that read them. The demo data built from these is in mock.ts.
@@ -50,6 +50,8 @@ export type Page = {
   groups?: ToolGroup[];
   // this job's tokens and value, and its share of the account's windows
   usage?: { tokens: string; cost: string; fiveHour: number; job5: string; week: number; jobWeek: string };
+  // how full its agent's context window is (USAGE-15): tokens in use, of the window's size when known
+  context?: { used: number; size: number | null };
   outgoing?: { text: string; at: string }[];  // what went out, every outgoing action
 };
 
@@ -64,6 +66,11 @@ export type Ask = {
   text: string;       // what happened, or the agent's question
   options: string[];
   recommended?: number;
+  // an agent's question (#858): each option's description, in the options' order ('' for none),
+  // and whether several may be picked (answered as their labels with commas, as obid takes them)
+  about?: string[];
+  multi?: boolean;
+  checks?: CheckRun[];  // a GitHub offer's pull request's checks, each its own line (PrChecks.tsx, GITHUBWORK-9)
   detail?: string;    // the command, the diff stat, the plan
   label?: string;     // over the headline, in place of the kind's (a merge card's own: Ready to merge)
   always?: string;    // what Always allow saves, in obid's words: on its button's hover (proposed, Sangam's to change)
@@ -102,6 +109,7 @@ export type Job = {
   request: string;     // your own words, or the message it came from
   agent: Agent | (string & {});  // obid's; one this build doesn't know shows by agentOf
   account: string;     // which of the accounts it runs on (Personal, Deskree, or someone's shared one)
+  accountId?: string;  // obid's: that account's id
   on?: string;         // whose Mac it runs on, when not this one ("Wellington’s Mac")
   model: string;
   repo: string;
@@ -122,6 +130,8 @@ export type Job = {
   published?: string;  // the pull request it opened
   publish?: { label: string; anyway?: true; why?: string };  // obid only: Publish by hand (jobPage.ts, publishOf)
   nothingDone?: boolean;  // obid's: it ended with nothing done (TASKS-12)
+  routed?: string;     // obid's: why it runs on another agent than your words named (ACCOUNTS-31)
+  worktree?: boolean;  // obid's: it has a worktree on disk: Changes and Open in (CHANGES-4, 6)
   log?: LogLine[];
   page?: Page;         // the job page's extra data, once obid serves it
   conversation?: string;  // obid's: the conversation whose words started it
@@ -134,9 +144,10 @@ export type Job = {
 // An ended task's mark when it isn't a finished one's check (Sangam's board "Stuck and failed")
 export const ENDED: Partial<Record<Job['status'], string>> = { failed: 'Failed', stopped: 'Stopped', interrupted: 'Stopped' };
 // A failed or interrupted task's plain line (TASKS-25): the first line of obid's reason, else of
-// its summary, else its step
+// its summary, else its step, each path in it down to its last name: no home folder (ACCOUNTS-22)
 export const stoppedLine = (j: Job): string | undefined =>
-  j.status === 'failed' || j.status === 'interrupted' ? (j.reason || j.summary || '').split('\n')[0] || j.step : undefined;
+  j.status === 'failed' || j.status === 'interrupted' ? unpathed((j.reason || j.summary || '').split('\n')[0]) || j.step : undefined;
+const unpathed = (line: string) => line.replace(/(?<=\S)\/(?=\.?(?:[\s)'"`,;:]|$))/g, '').replace(/(^|[\s('"`])(?:~\/|\[oby\]\/|\[home\]\/|\/[^\s)'"`,;:/]+\/)(?:[^\s)'"`,;:]*\/)?([^\s/)'"`,;:]+)/g, '$1$2');
 
 // GitHub's work no job has yet (obid's GET /v1/github/work): a review asked of
 // you, an issue assigned to you, each with its project board's column when it's
@@ -154,6 +165,7 @@ export type GitHubItem = {
   url?: string;        // its page on GitHub
   board?: { project: string; column: string };
   updated: number;     // minutes ago
+  checks?: CheckRun[]; // a pull request's checks, each its own line (PrChecks.tsx, GITHUBWORK-9)
 };
 
 // Done and out of Home: the archive (Home's Archived), most recent first.
@@ -185,7 +197,10 @@ export type SetupStep = 'agents' | 'github' | 'extras' | 'first' | 'sphere' | 's
 // repo: the repository picked for it (obid's, Composer's repository tag)
 // folders: the working folders picked (folders.ts: obid's once it takes them, else the app's)
 // a file's file: what was picked or pasted; path: where obid keeps it, once uploaded (live.ts)
-export type Attachments = { files?: { name: string; preview?: string; file?: File; path?: string }[]; obys?: string[]; jobs?: string[]; on?: string; repo?: string; folders?: string[] };
+// project: the project Home's box chose for the conversation its words start (projects.ts)
+export type Attachments = { files?: { name: string; preview?: string; file?: File; path?: string }[]; obys?: string[]; jobs?: string[]; on?: string; repo?: string; folders?: string[]; project?: string;
+  // the box's chips (docs/contracts/composer.md, COMPOSER-3): the jobs these words start, never the account's
+  defaults?: { mode?: string; agent?: string; model?: string; effort?: string } };
 export const hasAttachments = (a?: Attachments) => !!(a?.files?.length || a?.obys?.length || a?.jobs?.length);
 
 // The Obysphere: the other Obys in your workspace (whose they are), and your conversations with them, each about a task. who: 'you',

@@ -1,0 +1,86 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/artifacts",
+  "version": "1.0.0",
+  "description": "An artifact a conversation published: what this route answers for it, and its refusals.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/artifacts"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "MAKEPAGE OBY oby_artifact {\"title\": \"Fixture functions\", \"path\": \"page\"}",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Published artifact"
+            },
+            "artifacts": [
+              {
+                "version": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "listed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.page.body.artifacts.0.id}",
+              "title": "Fixture functions",
+              "kind": "html",
+              "versions": [
+                {
+                  "version": 1
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

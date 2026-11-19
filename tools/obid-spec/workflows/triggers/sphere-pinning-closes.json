@@ -1,0 +1,507 @@
+{
+  "schemaVersion": "2",
+  "name": "Sphere directory: a changed-key card closes by itself",
+  "version": "1.0.0",
+  "description": "The card for a changed owner key closes with no answer and an inbox event when the owner accepts the key through POST /v1/obid/sphere/pins/{owner}, when a directory read lists no active member of that owner, and when obid leaves the Obysphere (SPHERE-10).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "real-sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-liar",
+      "inputs": {
+        "sphere": "${state.real-sphere}"
+      }
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "events",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.alex}"
+      }
+    },
+    {
+      "id": "key-2",
+      "use": "runtime.rust:sphere-lie",
+      "inputs": {
+        "sphere": "${state.sphere}",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "read-2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "card-2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 20,
+        "pick": {
+          "where": {
+            "kind": "confirm",
+            "state": "open",
+            "title": "New key for dana: compare with them (${state.key-2.keyId})",
+            "confirm": {
+              "action": "trust_key",
+              "target": "dana",
+              "payload": {
+                "owner": "dana",
+                "fingerprint": "${state.key-2.keyId}"
+              }
+            }
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "kind": "confirm",
+                  "state": "open",
+                  "confirm": {
+                    "action": "trust_key"
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "accept-through-pins",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/pins/dana",
+        "body": {
+          "fingerprint": "${state.key-2.keyId}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "sphere-10-closed-by-pins",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "kind": "confirm",
+                "state": "open",
+                "confirm": {
+                  "action": "trust_key"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-10"
+        ]
+      }
+    },
+    {
+      "id": "sphere-10-with-an-inbox-event",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.alex}",
+        "event": "inbox",
+        "seconds": 10,
+        "expect": {
+          "body": {
+            "id": "${state.card-2.picked.id}",
+            "state": {
+              "$ne": "open"
+            },
+            "answer": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-10"
+        ]
+      }
+    },
+    {
+      "id": "key-3",
+      "use": "runtime.rust:sphere-lie",
+      "inputs": {
+        "sphere": "${state.sphere}",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "read-3",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "card-3",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 20,
+        "pick": {
+          "where": {
+            "kind": "confirm",
+            "state": "open",
+            "title": "New key for dana: compare with them (${state.key-3.keyId})",
+            "confirm": {
+              "action": "trust_key",
+              "target": "dana",
+              "payload": {
+                "owner": "dana",
+                "fingerprint": "${state.key-3.keyId}"
+              }
+            }
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "kind": "confirm",
+                  "state": "open",
+                  "confirm": {
+                    "action": "trust_key"
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "dana-leaves",
+      "use": "runtime.rust:sphere-admin",
+      "inputs": {
+        "sphere": "${state.sphere}",
+        "method": "DELETE",
+        "path": "/v0.1/spheres/${state.sphere.sphere}/members/${state.dana-joined.obiId}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "read-with-dana-gone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "sphere-10-closed-when-they-left",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "kind": "confirm",
+                "state": "open",
+                "confirm": {
+                  "action": "trust_key"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-10"
+        ]
+      }
+    },
+    {
+      "id": "sphere-10-closed-with-an-inbox-event",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.alex}",
+        "event": "inbox",
+        "seconds": 10,
+        "expect": {
+          "body": {
+            "id": "${state.card-3.picked.id}",
+            "state": {
+              "$ne": "open"
+            },
+            "answer": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-10"
+        ]
+      }
+    },
+    {
+      "id": "dana-forgets-the-sphere",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "DELETE",
+        "path": "/v1/obid/sphere",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "invitation",
+      "use": "runtime.rust:sphere-invite",
+      "inputs": {
+        "sphere": "${state.sphere}"
+      }
+    },
+    {
+      "id": "dana-back",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "invitation": "${state.invitation}"
+      }
+    },
+    {
+      "id": "read-with-dana-back",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "within": 20,
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "card-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 20,
+        "pick": {
+          "where": {
+            "kind": "confirm",
+            "state": "open",
+            "title": "New key for dana: compare with them (${state.key-3.keyId})",
+            "confirm": {
+              "action": "trust_key",
+              "target": "dana",
+              "payload": {
+                "owner": "dana",
+                "fingerprint": "${state.key-3.keyId}"
+              }
+            }
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "kind": "confirm",
+                  "state": "open",
+                  "confirm": {
+                    "action": "trust_key"
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "alex-leaves",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "DELETE",
+        "path": "/v1/obid/sphere",
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "none"
+          }
+        }
+      }
+    },
+    {
+      "id": "sphere-10-closed-when-obid-leaves",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "kind": "confirm",
+                "state": "open",
+                "confirm": {
+                  "action": "trust_key"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-10"
+        ]
+      }
+    },
+    {
+      "id": "sphere-10-closed-on-leaving-with-an-inbox-event",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.alex}",
+        "event": "inbox",
+        "seconds": 10,
+        "expect": {
+          "body": {
+            "id": "${state.card-again.picked.id}",
+            "state": {
+              "$ne": "open"
+            },
+            "answer": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-10"
+        ]
+      }
+    }
+  ]
+}

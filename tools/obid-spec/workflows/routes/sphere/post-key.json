@@ -1,0 +1,108 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/obid/sphere/key",
+  "version": "1.0.0",
+  "description": "Makes the Obi's Ed25519 key and X25519 seal key once and answers the same every time after; both kept 0600 in home/keys, neither private half answered.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/obid/sphere/key"
+    }
+  },
+  "steps": [
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/key",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "made",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/key",
+        "expect": {
+          "status": 200,
+          "body": {
+            "keyId": {
+              "$matches": "^ed25519:"
+            },
+            "sealKeyId": {
+              "$matches": "^x25519:"
+            },
+            "publicKey": {
+              "$type": "string"
+            },
+            "sealPublicKey": {
+              "$type": "string"
+            }
+          },
+          "paths": {
+            "$": {
+              "$len": 4
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "the-same-every-time-after",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/key",
+        "expect": {
+          "status": 200,
+          "body": {
+            "keyId": "${state.made.body.keyId}",
+            "publicKey": "${state.made.body.publicKey}",
+            "sealKeyId": "${state.made.body.sealKeyId}",
+            "sealPublicKey": "${state.made.body.sealPublicKey}"
+          }
+        }
+      }
+    },
+    {
+      "id": "obi-key-0600",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.alex}",
+        "path": "keys/obi.key",
+        "expect": {
+          "exists": true,
+          "mode": "0600"
+        }
+      }
+    },
+    {
+      "id": "seal-key-0600",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.alex}",
+        "path": "keys/seal.key",
+        "expect": {
+          "exists": true,
+          "mode": "0600"
+        }
+      }
+    }
+  ]
+}

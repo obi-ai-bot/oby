@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { has } from '../../../shared/capabilities';
 import { liveBridge } from './liveBridge';
 
@@ -119,7 +119,10 @@ async function onObid(status: Record<string, unknown>, s: Storage) {
 const plans = () => calls.filter((c) => c.method === 'POST' && c.path === '/v1/plans');
 const patches = () => calls.filter((c) => c.method === 'PATCH');
 
-describe('working folders, gated on capabilities', { timeout: 15_000 }, () => {
+describe('working folders, gated on capabilities', () => {
+  // the app's first import is a cold transform that a busy Mac can stretch past a test's own time
+  // (#1839): it's done here, under vitest's hookTimeout, so each test's 30 s is its own work
+  beforeAll(async () => { await onObid({}, storage()); vi.unstubAllGlobals(); });
   afterEach(() => { vi.unstubAllGlobals(); });
 
   it('caps_4_an_obid_without_folders_v1_gets_no_folders', async () => {

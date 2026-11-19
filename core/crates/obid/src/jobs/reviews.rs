@@ -107,6 +107,13 @@ impl Jobs {
     /// a slot is free. With no account to run it on, the job says why (`noReviewer`), and
     /// [`Jobs::settle_reviews`] starts it once one fits.
     pub(super) fn start_review(&self, id: &str) {
+        // One start at a time: its check (`review_due`, `reviewing` none) and its `reviewing` set
+        // below are one step, so the verdict's start of a second review and a settle pass's at the
+        // same moment make one review, not two (#2553).
+        static STARTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _starting = STARTING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some((author, head)) = self.get(id).and_then(|job| {
             let head = job.review_due()?.to_owned();
             Some((job, head))
@@ -143,7 +150,11 @@ impl Jobs {
         review.round = Some(1);
         review.review_of = Some(id.to_owned());
         // In the reviewed job's conversation, adding nothing to it (TASKCONV-26 to 28).
-        review.conversation = author.conversation.clone();
+        review.start_in(
+            &self.config.home,
+            author.profile.clone(),
+            author.conversation.clone(),
+        );
         // It reads the commit obid pushed, which is in the reviewed job's own clone (crate::secretspec).
         review.apart = author.apart;
         review.clone_root = author.clone_root.clone();

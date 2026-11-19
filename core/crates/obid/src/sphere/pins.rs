@@ -40,6 +40,32 @@ pub fn fingerprint(key: &str) -> String {
     obi_protocol::keys::key_id_of(key).unwrap_or_default()
 }
 
+/// What a card signed with `key` is to the pin kept for its owner, `pinned` (its key, and a changed
+/// key already waiting for this owner's OK): only the pinned key, or a first key, is trusted; any
+/// other is a changed key, never trusted by itself, whatever the Sphere says changed it (SPHERE-8,
+/// SPHERE-23). Proved in `proofs/owner_key.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Sight {
+    /// The pinned key: trusted.
+    Pinned,
+    /// The first key seen for this owner: pinned now, and trusted.
+    First,
+    /// A different key, newly seen: noted for the owner's OK, not trusted.
+    Changed,
+    /// The different key already waiting for the owner's OK: not trusted.
+    StillChanged,
+}
+
+/// [`Sight`] of `key` against `pinned`.
+pub(crate) fn sight(pinned: Option<(&str, Option<&str>)>, key: &str) -> Sight {
+    match pinned {
+        None => Sight::First,
+        Some((pin, _)) if pin == key => Sight::Pinned,
+        Some((_, Some(waiting))) if waiting == key => Sight::StillChanged,
+        Some(_) => Sight::Changed,
+    }
+}
+
 /// What `home/sphere/pins.json` keeps.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -56,6 +82,10 @@ struct Kept {
     /// The owners whose changed key's card this owner cancelled: no card for them again until they
     /// leave the Sphere and come back (SPHERE-8).
     declined: BTreeSet<String>,
+    /// The owners this owner let obid send words to in the clear while their Oby's card has no seal
+    /// key (SPHERE-19): by default nothing goes to them (SPHERE-18). Their signed word only; an
+    /// accepted new key for that owner forgets it.
+    in_clear: BTreeSet<String>,
 }
 
 pub struct Pins {
@@ -99,23 +129,30 @@ impl Pins {
     /// first key seen for that owner; a different one is noted for the owner's OK, and isn't.
     pub fn check(&self, owner: &str, key: &str, now: i64) -> bool {
         let mut kept = self.pins.lock().unwrap();
+        let seen = sight(
+            kept.owners
+                .get(owner)
+                .map(|pin| (pin.key.as_str(), pin.changed_to.as_deref())),
+            key,
+        );
         let pins = &mut kept.owners;
-        match pins.get_mut(owner) {
-            Some(pin) if pin.key == key => true,
-            Some(pin) => {
-                if pin.changed_to.as_deref() != Some(key) {
-                    tracing::warn!(
-                        "sphere: {owner}'s owner key changed to {}: not trusted until you accept it",
-                        fingerprint(key)
-                    );
+        match seen {
+            Sight::Pinned => true,
+            Sight::StillChanged => false,
+            Sight::Changed => {
+                tracing::warn!(
+                    "sphere: {owner}'s owner key changed to {}: not trusted until you accept it",
+                    fingerprint(key)
+                );
+                if let Some(pin) = pins.get_mut(owner) {
                     pin.changed_to = Some(key.to_owned());
-                    let copy = kept.clone();
-                    drop(kept);
-                    self.save(&copy);
                 }
+                let copy = kept.clone();
+                drop(kept);
+                self.save(&copy);
                 false
             }
-            None => {
+            Sight::First => {
                 pins.insert(
                     owner.to_owned(),
                     Pin {
@@ -225,6 +262,8 @@ impl Pins {
             verified: true,
         };
         let answer = to_json(owner, pin);
+        // Someone with a new key isn't who the owner let have words in the clear (SPHERE-19).
+        kept.in_clear.remove(owner);
         let copy = kept.clone();
         drop(kept);
         self.save(&copy);
@@ -275,6 +314,27 @@ impl Pins {
     pub fn decline(&self, owner: &str) {
         let mut kept = self.pins.lock().unwrap();
         if kept.declined.insert(owner.to_owned()) {
+            let copy = kept.clone();
+            drop(kept);
+            self.save(&copy);
+        }
+    }
+
+    /// Whether this owner let obid send `owner`'s Obys words in the clear while their card has no
+    /// seal key (SPHERE-19).
+    pub fn allows_clear(&self, owner: &str) -> bool {
+        self.pins.lock().unwrap().in_clear.contains(owner)
+    }
+
+    /// Keeps whether this owner lets obid send `owner`'s Obys words in the clear (SPHERE-19).
+    pub fn allow_clear(&self, owner: &str, allow: bool) {
+        let mut kept = self.pins.lock().unwrap();
+        let changed = if allow {
+            kept.in_clear.insert(owner.to_owned())
+        } else {
+            kept.in_clear.remove(owner)
+        };
+        if changed {
             let copy = kept.clone();
             drop(kept);
             self.save(&copy);

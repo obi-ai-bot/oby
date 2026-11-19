@@ -3,6 +3,10 @@
 
 use super::*;
 
+/// How often the words being written and a running command's lines go out, when they changed
+/// (LIVETASK-32, 34): about as often as T3 Code batches its deltas.
+const STREAM_EVERY: Duration = Duration::from_millis(100);
+
 impl Jobs {
     /// Runs a job to its end, unless it is stopped or obid shuts down.
     pub(super) async fn work(self: &Arc<Self>, id: &str, signal: watch::Receiver<Signal>) {
@@ -111,7 +115,8 @@ impl Jobs {
             let _ = std::fs::remove_file(temp.join(MCP_CONFIG_FILE));
         }
         forget_login_secrets(&self.login_path(id));
-        self.drop_asks(id, *signal.borrow() == Signal::Shutdown);
+        let asked = matches!(outcome, Err(End::Asked(_)));
+        self.drop_asks(id, *signal.borrow() == Signal::Shutdown, asked);
         // It ended (a shutdown isn't an end): an old crash never counts against a later run.
         if *signal.borrow() != Signal::Shutdown
             && self.get(id).is_some_and(|j| !j.crash_resumes.is_empty())
@@ -119,7 +124,6 @@ impl Jobs {
             self.update(id, |job| job.crash_resumes.clear());
         }
         let stopped = *signal.borrow() != Signal::Run;
-        let asked = matches!(outcome, Err(End::Asked(_)));
         match outcome {
             // The owner stopped it: its exchange gets a failed result. A shutdown leaves it be.
             _ if stopped => {
@@ -153,9 +157,10 @@ impl Jobs {
                     _ => None,
                 };
                 if let End::AccountLimit { reason, .. } = &end {
+                    let alone = self.held_alone(&job);
                     self.update(id, |job| match (&failover, resume_at) {
                         (Some(failover), _) if job.status.is_active() => failover.apply(job, self),
-                        (_, Some(at)) => account_limits::start_wait(job, at),
+                        (_, Some(at)) => account_limits::start_wait(job, at, alone.as_deref()),
                         // It moved or waits (LIMITS-15), or Stop came as it ended (LIMITS-6).
                         _ => tracing::info!("job {id}: {reason}"),
                     });
@@ -327,6 +332,12 @@ impl Jobs {
         if owners.is_none() {
             self.note_change(&job.id, "Your login shell didn't answer within 10 seconds, so this run has none of its environment.".into());
         }
+        // An own Claude Code loads the owner's MCP servers: its first turn waits for none of them,
+        // only for obid's own, which are `alwaysLoad` (LANES-24).
+        if own && tool == Tool::Claude {
+            let (name, value) = crate::agent::MCP_STARTUP_WAIT;
+            extra.push((name, value.into()));
+        }
         match (&account.config_dir, tool) {
             // In the CLI's own sandbox, with the account's own folder and login: no copy.
             _ if own => extra.extend(own_run_env(
@@ -407,7 +418,9 @@ impl Jobs {
                 let mut argv: Vec<OsString> = vec![bin.into_os_string()];
                 argv.extend(flags);
                 if own {
-                    let settings = own_sandbox_settings(&spec, &self.login_path(&job.id), &extra)?;
+                    let login = self.login_path(&job.id);
+                    let secrets = self.secret_places();
+                    let settings = own_sandbox_settings(&spec, &login, &extra, &secrets)?;
                     argv.extend(["--tools", OWN_JOB_TOOLS, "--settings"].map(OsString::from));
                     argv.push(settings.into());
                 }
@@ -439,6 +452,10 @@ impl Jobs {
                 }
                 if own {
                     argv.splice(1..1, own_codex_settings(&spec)?);
+                    // Under `never` Codex asks nobody: Oby's own tools are approved (LANES-21).
+                    if broker.is_some() {
+                        argv.splice(1..1, codex::OWN_OBY_TOOLS.map(OsString::from));
+                    }
                 }
                 argv
             }
@@ -778,16 +795,20 @@ impl Jobs {
     ) -> Result<agent::Turn, String> {
         // What an owner's job's turn commits goes in obid's record of what it made, only while
         // its check would get values (crate::secretspec).
-        let records = matches!(gate, Gate::Owner { .. })
+        let owner = matches!(gate, Gate::Owner { .. });
+        let records = owner
             && self
                 .get(id)
                 .is_some_and(|job| job.someone_elses().is_none());
+        // Every owner's job's turn that may commit: where its round starts (CHANGES-1). A review
+        // only reads, so it makes no round.
+        let rounds = owner && self.get(id).is_some_and(|job| !job.read_only());
         // LANES-8: an own run's refs are its own; obid reads the clone's before and after it.
         let own_run = self.own_turn(id, launch.own_sandbox).await?;
-        let before = match records {
-            true => Box::pin(self.sandboxed_git(id, &["rev-parse", "--verify", "HEAD"], None))
-                .await
-                .ok(),
+        // Its HEAD read by obid's own git pinned to the job's git folders, as obid checked them: no
+        // box started for one ref before the agent's (TASKCONV-40).
+        let before = match records || rounds {
+            true => Some(self.worktree_head(id).await).filter(|head| git::is_sha(head)),
             false => None,
         };
         let started = obi_protocol::time::now();
@@ -800,7 +821,12 @@ impl Jobs {
             run.settle().await?;
         }
         if let Some(before) = before {
-            Box::pin(self.record_turn(id, String::from_utf8_lossy(&before).trim(), started)).await;
+            if records {
+                Box::pin(self.record_turn(id, &before, started)).await;
+            }
+            if rounds {
+                Box::pin(self.checkpoint(id, &before, started)).await;
+            }
         }
         turn
     }
@@ -828,6 +854,13 @@ impl Jobs {
             } => (false, mcp, park, session_only),
         };
         let worktree = launch.cwd.clone();
+        // Where Claude Code keeps what a running command prints (crate::spill, LIVETASK-34).
+        let spill_temp = launch
+            .env
+            .iter()
+            .rev()
+            .find(|(name, _)| name == process::CLAUDE_TMPDIR)
+            .map(|(_, temp)| std::path::PathBuf::from(temp));
         let job = self.get(id).ok_or("the job is gone")?;
         let jobs = self;
         // In Claude Code's own sandbox its tools run unboxed (LANES-14, `own_reach`).
@@ -886,6 +919,10 @@ impl Jobs {
         let over_budget = std::sync::atomic::AtomicBool::new(false);
         // What the job used before this turn: each report of the turn's own counts goes on top.
         let before = job.usage.clone().unwrap_or_default();
+        // The agent's latest step and the run's time so far, kept here and saved with the job's
+        // activity once a second and at the turn's end, never once per step: a step reaches the
+        // window within a second, and a crash loses at most that second of them, never a status.
+        let stepped: Mutex<Option<Stepped>> = Mutex::default();
         let on_event = |event: AgentEvent| {
             let entries = jobs
                 .transcripts
@@ -938,13 +975,15 @@ impl Jobs {
                     jobs.update(id, |job| job.session = Some(session));
                 }
                 AgentEvent::Step(step) | AgentEvent::Denied(step) => {
-                    jobs.update(id, |job| {
-                        job.step = step;
-                        // The run's time so far, kept as it goes: a crash loses little of it.
-                        if let Some(ran) = ran_secs {
-                            job.ran_secs = Some(ran());
-                        }
-                    });
+                    let ran = ran_secs.map(|ran| ran());
+                    Stepped::keep(
+                        &stepped,
+                        || jobs.get(id),
+                        |kept| {
+                            kept.step = Some(step);
+                            kept.ran = ran.or(kept.ran);
+                        },
+                    );
                 }
                 // The calls are the transcript's too; obid watches them for a loop.
                 AgentEvent::Tool {
@@ -953,7 +992,7 @@ impl Jobs {
                     input,
                 } => {
                     let doing = crate::agent::told_step(&name, &input);
-                    jobs.update(id, |job| job.doing = Some(doing));
+                    Stepped::keep(&stepped, || jobs.get(id), |kept| kept.doing = Some(doing));
                     looping.called(call, name, input);
                 }
                 AgentEvent::ToolDone {
@@ -966,12 +1005,21 @@ impl Jobs {
                         let _ = cut.send(Signal::Stop);
                     }
                 }
-                // The words and to-do list are the transcript's.
+                // How full its session's context is now (USAGE-15): the latest, whatever round
+                AgentEvent::Context(context) => {
+                    jobs.update(id, |job| job.context_window = Some(context));
+                }
+                // The words, to-do list and a running command's output are the transcript's.
                 AgentEvent::Delta(_)
+                | AgentEvent::Output { .. }
+                | AgentEvent::Spilled { .. }
                 | AgentEvent::Said(_)
                 | AgentEvent::Thought { .. }
                 | AgentEvent::Thinking { .. }
                 | AgentEvent::Plan(_) => {}
+                // What Settings shows is an own conversation's (crate::connectors): a job's
+                // session has the same owner's, with the job's broker in place of Oby's tools.
+                AgentEvent::Connectors(_) => {}
             }
         };
         let plan = Self::mode_of(&job) == Mode::Plan;
@@ -980,11 +1028,15 @@ impl Jobs {
         let run = async {
             match tool {
                 Tool::Claude => {
-                    agent::run_turn(
+                    // The owner's words go into it as they come, while its run opened that
+                    // (crate::steer, TASKCONV-33).
+                    let steer = self.lock().steers.get(id).cloned();
+                    agent::run_turn_steered(
                         launch,
                         prompt,
                         limit.clone(),
                         signal.clone(),
+                        steer,
                         decide,
                         on_event,
                     )
@@ -1013,12 +1065,17 @@ impl Jobs {
                             },
                             chatgpt,
                         };
-                    codex::run_turn(
+                    // The owner's words go into its turn as they come, as `turn/steer`, and those
+                    // that come as it ends are its thread's next turn, in the same server
+                    // (crate::steer, TASKCONV-36, 37).
+                    let steer = self.lock().steers.get(id).cloned();
+                    codex::run_turn_steered(
                         launch,
                         prompt,
                         &options,
                         limit.clone(),
                         signal.clone(),
+                        steer,
                         decide,
                         on_event,
                     )
@@ -1064,10 +1121,21 @@ impl Jobs {
             }
         };
         tokio::pin!(run);
+        // The words being written and a running command's lines stream about every tenth of a
+        // second (LIVETASK-32, 34); the job's activity once a second.
+        let mut streaming = tokio::time::interval(STREAM_EVERY);
+        streaming.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut activity =
+            tokio::time::interval_at(tokio::time::Instant::now() + ACTIVITY_EVERY, ACTIVITY_EVERY);
+        activity.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let ran = loop {
             tokio::select! {
                 ran = &mut run => break ran,
-                () = tokio::time::sleep(ACTIVITY_EVERY) => {
+                _ = streaming.tick() => {
+                    self.transcribed(id, self.transcripts.tick(id, spill_temp.as_deref()));
+                }
+                _ = activity.tick() => {
+                    self.stepped(id, &stepped);
                     self.glanced(id);
                     // A call of its agent's that waits for the owner past `parkAfter` parks it.
                     if parks {
@@ -1080,6 +1148,7 @@ impl Jobs {
             }
         };
         self.transcribed(id, self.transcripts.end_turn(id));
+        self.stepped(id, &stepped);
         self.glanced(id);
         self.transcripts.forget(id);
         forward.abort();
@@ -1338,6 +1407,12 @@ impl Jobs {
                 crate::transcript::Change::Append { n, text } => {
                     json!({"job": id, "n": n, "append": text})
                 }
+                crate::transcript::Change::Tail { n, text } => {
+                    json!({"job": id, "n": n, "tail": text})
+                }
+                crate::transcript::Change::Output { n, text, lines } => {
+                    json!({"job": id, "n": n, "output": {"text": text, "lines": lines}})
+                }
             };
             self.events.send("transcript", data);
         }
@@ -1355,6 +1430,37 @@ impl Jobs {
     }
 
     /// Keeps the job's `activity` and `context` up to date with its transcript, when they changed.
+    /// Saves the agent's latest step and the run's time so far, kept since the last save
+    /// (`stepped`), in one write and one `job` event: at most once a second while it works. A step
+    /// obid set since the first of them is newer, and stays.
+    fn stepped(&self, id: &str, stepped: &Mutex<Option<Stepped>>) {
+        let Some(Stepped {
+            step,
+            doing,
+            ran,
+            before,
+        }) = stepped.lock().unwrap_or_else(|e| e.into_inner()).take()
+        else {
+            return;
+        };
+        self.update(id, |job| {
+            // What it asked with `oby_ask_owner` waits on the owner (PERMISSIONS-22).
+            if let Some(step) = step
+                && job.step == before
+                && !job.question_call.as_ref().is_some_and(|c| c.ended_turn)
+            {
+                job.step = step;
+            }
+            if doing.is_some() {
+                job.doing = doing;
+            }
+            // The run's time so far, kept as it goes: a crash loses little of it.
+            if ran.is_some() {
+                job.ran_secs = ran;
+            }
+        });
+    }
+
     fn glanced(&self, id: &str) {
         let (activity, context) = self.transcripts.glance(id);
         let job = self.get(id);
@@ -1376,5 +1482,33 @@ impl Jobs {
     ) -> Option<(Vec<crate::transcript::Entry>, Option<u64>)> {
         self.get(id)?;
         Some(self.transcripts.read(id, after, limit))
+    }
+}
+
+/// What the agent did that isn't saved yet ([`Jobs::stepped`]): its latest step and call, the run's
+/// time so far, and the job's step when the first of them came.
+#[derive(Default)]
+struct Stepped {
+    step: Option<String>,
+    doing: Option<String>,
+    ran: Option<u64>,
+    before: String,
+}
+
+impl Stepped {
+    /// `change` made on what `kept` holds, started from the job as `job` reads it when nothing was
+    /// kept yet: a step obid sets after that (a permission, a plan, the owner's words) is newer.
+    fn keep(
+        kept: &Mutex<Option<Stepped>>,
+        job: impl FnOnce() -> Option<crate::job::Job>,
+        change: impl FnOnce(&mut Stepped),
+    ) {
+        let held = kept.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let mut held = held.unwrap_or_else(|| Stepped {
+            before: job().map(|job| job.step).unwrap_or_default(),
+            ..Stepped::default()
+        });
+        change(&mut held);
+        *kept.lock().unwrap_or_else(|e| e.into_inner()) = Some(held);
     }
 }

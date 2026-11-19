@@ -1,0 +1,130 @@
+{
+  "schemaVersion": "2",
+  "name": "DELETE /v1/memory/{id}",
+  "version": "1.0.0",
+  "description": "Forgets a memory: 204, gone; 404 for one obid doesn't have.",
+  "trigger": {
+    "http": {
+      "method": "DELETE",
+      "path": "/v1/memory/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "seeded",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "memory/suggestions.json",
+        "content": [
+          {
+            "id": "s0000000a",
+            "scope": "user",
+            "repo": null,
+            "kind": "preference",
+            "title": "Tests with every fix",
+            "text": "Write tests with every fix.",
+            "from": "You said it in 2 conversations",
+            "sources": [
+              {
+                "quote": "Write tests with every fix.",
+                "place": "You, in a conversation",
+                "link": null
+              }
+            ]
+          },
+          {
+            "id": "s0000000b",
+            "scope": "user",
+            "repo": null,
+            "kind": "preference",
+            "title": "Straight to main",
+            "text": "Push straight to main when it's green.",
+            "from": "You said it in 2 conversations",
+            "sources": [
+              {
+                "quote": "Push straight to main when it's green.",
+                "place": "You, in a conversation",
+                "link": null
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "remembered",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/memory/suggestions/s0000000a/remember",
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/memory/${state.remembered.body.id}",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/memory/m00000000",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "forgotten-204",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/memory/${state.remembered.body.id}",
+        "expect": {
+          "status": 204
+        }
+      }
+    },
+    {
+      "id": "gone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/memory",
+        "expect": {
+          "status": 200,
+          "body": {
+            "memories": []
+          }
+        }
+      }
+    }
+  ]
+}

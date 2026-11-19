@@ -1,0 +1,96 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/connectors",
+  "version": "1.0.0",
+  "description": "The MCP servers Claude Code says it has: none on a new obid (CONNECTORS-2); what home/connectors.json holds.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/connectors"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/connectors",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "connectors-2-none",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/connectors",
+        "expect": {
+          "status": 200,
+          "body": {
+            "claude": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONNECTORS-2"
+        ]
+      }
+    },
+    {
+      "id": "seen",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "connectors.json",
+        "content": {
+          "seenAt": "2026-11-18T10:00:00Z",
+          "servers": [
+            {
+              "name": "github",
+              "status": "connected"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "listed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/connectors",
+        "expect": {
+          "status": 200,
+          "body": {
+            "claude": {
+              "servers": [
+                {
+                  "name": "github",
+                  "status": "connected"
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

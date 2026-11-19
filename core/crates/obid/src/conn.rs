@@ -40,6 +40,10 @@ const CPU_SETTLE: Duration = Duration::from_secs(1);
 /// The nice a job's agent and everything it starts run at (PUBLISHING-30).
 const AGENT_NICE: i32 = 10;
 
+/// How long [`Conn::quiet_but`] gives a line it has begun to read to end: one an agent writes is
+/// whole in the pipe by then, as a hook's long output is.
+const HALF_LINE: Duration = Duration::from_millis(200);
+
 /// Something outside the agent the turn waits on (an Apple check on a Mac): while it says so, the
 /// turn isn't quiet, as while it waits for the owner.
 pub type Waiting = std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
@@ -105,6 +109,17 @@ pub struct RpcError {
     pub message: String,
 }
 
+/// How the owner's words reach an agent's turn under way (crate::steer).
+#[derive(Debug, Clone, PartialEq)]
+pub enum SteerInto {
+    /// Claude Code's stream-json `user` lines.
+    Lines,
+    /// Codex's `turn/steer` on this thread's turn under way (TASKCONV-36).
+    Turn(String, String),
+    /// Codex with no turn under way: the words wait (crate::steer, TASKCONV-37).
+    Held,
+}
+
 /// A running agent and its stdio.
 pub struct Conn {
     child: Child,
@@ -112,6 +127,13 @@ pub struct Conn {
     /// An own run's temp, working and `login` folders and its tag, to sweep it by (LANES-16).
     leftovers: Option<(PathBuf, PathBuf, PathBuf, PathBuf)>,
     stdin: Option<ChildStdin>,
+    /// Words written into its turn as they come (crate::steer, TASKCONV-33): a job's Claude Code
+    /// or Codex.
+    pub steer: Option<std::sync::Arc<crate::steer::Steer>>,
+    /// How those words go in: Claude Code's `user` lines, or Codex's `turn/steer` (TASKCONV-36).
+    pub steer_into: SteerInto,
+    /// Those `turn/steer` requests not answered yet, in the order sent.
+    pub steering: std::collections::VecDeque<u64>,
     lines: BufReader<ChildStdout>,
     copying: Option<tokio::task::JoinHandle<()>>,
     stop: watch::Receiver<process::Signal>,
@@ -228,6 +250,9 @@ impl Conn {
             pgid,
             leftovers,
             stdin,
+            steer: None,
+            steer_into: SteerInto::Lines,
+            steering: Default::default(),
             lines: BufReader::new(stdout),
             copying,
             stop,
@@ -311,14 +336,33 @@ impl Conn {
     }
 
     /// Nothing waits to be read and the agent hasn't closed its output, which is how a running
-    /// agent stays between turns: looked at without waiting. A line it wrote while idle would be
-    /// taken for the next turn's.
-    pub async fn quiet(&mut self) -> bool {
-        self.buffer.is_empty()
-            && self.lines.buffer().is_empty()
-            && tokio::time::timeout(Duration::ZERO, self.lines.fill_buf())
-                .await
-                .is_err()
+    /// agent stays between turns, looked at without waiting for lines to come: a line it wrote
+    /// while idle would be taken for the next turn's. The lines it wrote that `harmless` says can't
+    /// be a turn's (Claude Code's own hook lines, which it writes as it starts, before any prompt:
+    /// CONVERSATION-AGENT-25) are read and dropped first. Any other line, one that isn't JSON, one
+    /// still half written after [`HALF_LINE`], or an output the agent closed: not quiet, and what
+    /// was read of it is kept for [`Conn::next`].
+    pub async fn quiet_but(&mut self, harmless: impl Fn(&Value) -> bool) -> bool {
+        loop {
+            if !self.buffer.is_empty() {
+                return false;
+            }
+            match tokio::time::timeout(Duration::ZERO, self.lines.fill_buf()).await {
+                Err(_) => return true,
+                Ok(Ok([])) | Ok(Err(_)) => return false,
+                Ok(Ok(_)) => {}
+            }
+            // A line under way is written whole in a moment: one that isn't stays in `buffer`.
+            let read = self.lines.read_until(b'\n', &mut self.buffer);
+            match tokio::time::timeout(HALF_LINE, read).await {
+                Ok(Ok(_)) if self.buffer.ends_with(b"\n") => {}
+                _ => return false,
+            }
+            match serde_json::from_slice::<Value>(&self.buffer) {
+                Ok(line) if harmless(&line) => self.buffer.clear(),
+                _ => return false,
+            }
+        }
     }
 
     /// The next JSON message, or why none comes. Lines that aren't JSON are skipped.
@@ -330,6 +374,16 @@ impl Conn {
             if self.timed_out {
                 return Err(Cut::TimedOut);
             }
+            // A whole line [`Conn::quiet_but`] read and didn't take.
+            if self.buffer.ends_with(b"\n") {
+                let message = serde_json::from_slice::<Value>(&self.buffer);
+                self.buffer.clear();
+                if let Ok(message) = message {
+                    return Ok(message);
+                }
+                continue;
+            }
+            let steer = self.steer.clone();
             tokio::select! {
                 read = self.lines.read_until(b'\n', &mut self.buffer) => {
                     match read {
@@ -380,6 +434,23 @@ impl Conn {
                 changed = self.stop.changed() => {
                     if changed.is_err() || *self.stop.borrow() != process::Signal::Run {
                         self.stopped = true;
+                    }
+                }
+                // The owner's words to it, written as they come (crate::steer).
+                () = async { if let Some(steer) = &steer { steer.came().await } }, if steer.is_some() && self.steer_into != SteerInto::Held => {
+                    for text in steer.as_ref().map(|s| s.to_write()).unwrap_or_default() {
+                        match self.steer_into.clone() {
+                            SteerInto::Turn(thread, turn) => {
+                                let id = self
+                                    .request("turn/steer", crate::codex::steer_params(&thread, &turn, &text))
+                                    .await;
+                                self.steering.push_back(id);
+                            }
+                            // Never held here: this branch waits while it is.
+                            SteerInto::Lines | SteerInto::Held => {
+                                self.send(&crate::agent::user_message(&text)).await
+                            }
+                        }
                     }
                 }
             }
@@ -687,6 +758,47 @@ mod tests {
         let (_stop, stop) = watch::channel(process::Signal::Run);
         let mut conn = Conn::spawn(&launch, limit, stop, false).await.unwrap();
         assert_eq!(conn.next().await.unwrap(), json!({"a": "b", "c": 1}));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONVERSATION-AGENT-25: an idle agent's harmless lines are read and dropped, one longer than
+    /// the reader's buffer too, and it's quiet; one that wrote anything else isn't, and that line is
+    /// still the next message.
+    #[tokio::test]
+    async fn conversation_agent_25_only_harmless_idle_lines_leave_it_quiet() {
+        let dir = std::env::temp_dir().join(format!("obid-idle-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (_stop, stop) = watch::channel(process::Signal::Run);
+        let harmless = |line: &Value| line["h"] == true;
+        // Each writes its lines in one go, then waits; the test waits for them to be there.
+        for (script, quiet) in [
+            (
+                r#"l=$(printf 'x%.0s' $(seq 1 9000)); printf '{"h":true}\n{"h":true,"long":"%s"}\n' "$l"; exec sleep 30"#,
+                true,
+            ),
+            (
+                r#"printf '{"h":true}\n{"type":"result"}\n'; exec sleep 30"#,
+                false,
+            ),
+        ] {
+            let launch = crate::agent::Launch {
+                argv: vec!["/bin/sh".into(), "-c".into(), script.into()],
+                env: vec![("PATH".into(), "/bin:/usr/bin".into())],
+                cwd: dir.clone(),
+                stderr: dir.join("stderr"),
+                own_sandbox: false,
+                group: None,
+            };
+            let limit: Limit = Duration::from_secs(30).into();
+            let mut conn = Conn::spawn(&launch, limit, stop.clone(), false)
+                .await
+                .unwrap();
+            conn.lines.fill_buf().await.unwrap();
+            assert_eq!(conn.quiet_but(harmless).await, quiet, "{script}");
+            if !quiet {
+                assert_eq!(conn.next().await.unwrap(), json!({"type": "result"}));
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

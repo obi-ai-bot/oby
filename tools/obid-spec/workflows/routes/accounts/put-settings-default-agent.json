@@ -1,0 +1,103 @@
+{
+  "schemaVersion": "2",
+  "name": "PUT /v1/settings/default-agent",
+  "version": "1.0.0",
+  "description": "The tool new tasks go to: 400 for a body that isn't JSON, 422 for a tool obid doesn't run; 200, and status says it.",
+  "trigger": {
+    "http": {
+      "method": "PUT",
+      "path": "/v1/settings/default-agent"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/default-agent",
+        "body": {
+          "defaultAgent": "codex"
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "not-json-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/default-agent",
+        "raw": "x",
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "unknown-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/default-agent",
+        "body": {
+          "defaultAgent": "gemini"
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "defaultAgent is auto, claude, codex or cursor."
+          }
+        }
+      }
+    },
+    {
+      "id": "codex",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/default-agent",
+        "body": {
+          "defaultAgent": "codex"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "defaultAgent": "codex"
+          }
+        }
+      }
+    },
+    {
+      "id": "status-says-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "body": {
+            "defaultAgent": "codex"
+          }
+        }
+      }
+    }
+  ]
+}

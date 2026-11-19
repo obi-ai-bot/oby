@@ -1,0 +1,127 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/obid/sphere/pins",
+  "version": "1.0.0",
+  "description": "The owner keys obid pinned the first time it saw each owner, trusted on first sight and not yet verified.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/obid/sphere/pins"
+    }
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/pins",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "danas-key-pinned",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/pins",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "body": {
+            "$any": {
+              "owner": "dana",
+              "fingerprint": "${state.dana-key.keyId}",
+              "verified": false,
+              "changedTo": null,
+              "firstSeen": {
+                "$type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "pins-0600",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.alex}",
+        "path": "sphere/pins.json",
+        "expect": {
+          "exists": true,
+          "mode": "0600"
+        }
+      }
+    }
+  ]
+}

@@ -229,25 +229,31 @@ pub async fn answer_limit_decision(
 #[derive(serde::Deserialize)]
 pub struct Limit {
     limit: Option<String>,
+    project: Option<String>,
 }
 
-/// `GET /v1/jobs?limit=50`: the latest jobs, newest first.
+/// `GET /v1/jobs?limit=50`: the latest jobs, newest first; with `project=<id>`, that project's,
+/// queued and running first (PROJECTS-14).
 pub async fn jobs(
     State(shared): State<Arc<Shared>>,
+    scope: Option<axum::Extension<crate::profiles::Scope>>,
     Query(query): Query<Limit>,
 ) -> Result<Response, ApiError> {
+    let scope = crate::profile_scope::of(&shared, scope);
     let limit = match query.limit.as_deref() {
         None => 50,
         Some(text) => text
             .parse::<usize>()
             .map_err(|_| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "limit is a number."))?,
     };
-    let list: Vec<Value> = shared
-        .jobs
-        .list(limit.min(1000))
-        .iter()
-        .map(|j| j.to_json())
-        .collect();
+    // Only the profile's own (B00-40), then the latest of those.
+    let all = shared.jobs.list(usize::MAX).into_iter();
+    let all: Vec<_> = all.filter(|j| scope.holds(j.profile.as_deref())).collect();
+    let jobs = match &query.project {
+        Some(project) => crate::projects::listed(all, project, limit.min(1000)),
+        None => all.into_iter().take(limit.min(1000)).collect(),
+    };
+    let list: Vec<Value> = jobs.iter().map(|j| j.to_json()).collect();
     Ok(json(StatusCode::OK, Value::Array(list)))
 }
 
@@ -276,6 +282,96 @@ pub async fn report(
         .saved_report()
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "There's no saved research report."))?;
     Ok(json(StatusCode::OK, report))
+}
+
+#[derive(serde::Deserialize)]
+pub struct ChangesQuery {
+    path: Option<String>,
+    round: Option<usize>,
+    whitespace: Option<String>,
+}
+
+/// `GET /v1/jobs/{id}/changes?path=<path>&round=<n>&whitespace=ignore`: the files and the diff the
+/// job's branch makes against its base, or one of its task's rounds makes, and the task's rounds
+/// (docs/contracts/tasks.md, TASKS-23, 24, 29 and 30; docs/contracts/task-changes.md, CHANGES-1 to
+/// 4). `whitespace` is `ignore` or left out.
+pub async fn changes(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+    Query(query): Query<ChangesQuery>,
+) -> Result<Response, ApiError> {
+    let ignore_whitespace = match query.whitespace.as_deref() {
+        None => false,
+        Some("ignore") => true,
+        Some(_) => {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "\"whitespace\" is \"ignore\", or left out.",
+            ));
+        }
+    };
+    let ask = crate::jobs::changes::ChangesAsk {
+        path: query.path.as_deref(),
+        round: query.round,
+        ignore_whitespace,
+    };
+    let changes = shared
+        .jobs
+        .changes(&id, &ask)
+        .await
+        .ok_or_else(|| no_job(&shared, &id))?;
+    Ok(json(StatusCode::OK, changes))
+}
+
+/// `GET /v1/jobs/{id}/undo`: obid's own sentence for undoing the job's last round, `{"action",
+/// "from", "to", "branch", "push"}`, or `409` with why it can't (docs/contracts/task-changes.md,
+/// CHANGES-8 and 9).
+pub async fn undo_sentence(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    match shared.jobs.undo_sentence(&id).await {
+        None => Err(no_job(&shared, &id)),
+        Some(Err(why)) => Err(ApiError::new(StatusCode::CONFLICT, why)),
+        Some(Ok(undo)) => Ok(json(StatusCode::OK, undo.to_json())),
+    }
+}
+
+/// `POST /v1/jobs/{id}/undo`: undoes the job's last round, once a registered device approved
+/// obid's own sentence for it (`oby-undo`, crate::approval): the job, `403` for an approval that
+/// doesn't hold, `409` when it can't or its push failed (CHANGES-10 and 11).
+pub async fn undo(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let approval: crate::approval::Approval = serde_json::from_slice(&body).map_err(|_| {
+        ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "An approval is {\"device\", \"action\", \"signedAt\", \"signature\"}.",
+        )
+    })?;
+    let action = match shared.jobs.undo_sentence(&id).await {
+        None => return Err(no_job(&shared, &id)),
+        Some(Err(why)) => return Err(ApiError::new(StatusCode::CONFLICT, why)),
+        Some(Ok(undo)) => undo.action,
+    };
+    let key = shared.devices.public_key(&approval.device);
+    shared
+        .jobs
+        .approvals()
+        .check_undo(
+            &approval,
+            &id,
+            &action,
+            key.as_deref(),
+            obi_protocol::time::now(),
+        )
+        .map_err(|why| ApiError::new(StatusCode::FORBIDDEN, why))?;
+    match shared.jobs.undo(&id, &action).await {
+        Ok(job) => Ok(json(StatusCode::OK, job.to_json())),
+        Err(why) => Err(ApiError::new(StatusCode::CONFLICT, why)),
+    }
 }
 
 /// `GET /v1/jobs/{id}/transcript?after=<n>&limit=<k>`: the entries that came or changed after
@@ -586,6 +682,7 @@ pub async fn wait(
 pub async fn events(
     State(shared): State<Arc<Shared>>,
     device: Option<axum::Extension<crate::gateway::PairedDevice>>,
+    scope: Option<axum::Extension<crate::profiles::Scope>>,
     Query(query): Query<std::collections::HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
@@ -609,10 +706,15 @@ pub async fn events(
     // anything else, the stream ends (crate::events::Events::follow_from, docs/runner-api.md
     // "GET /v1/events").
     let epoch = shared.events.epoch();
-    let stream = shared.events.follow_from(after).map(move |event| {
-        let frame = SseEvent::default()
-            .event(event.name)
-            .data(event.data.to_string());
+    // Only the profile's own conversations, jobs and accounts (B00-40).
+    let scope = crate::profile_scope::of(&shared, scope);
+    let seen = shared.clone();
+    let stream = shared.events.follow_from(after).filter_map(move |event| {
+        let data = crate::profile_scope::shown(&seen, &scope, event.name, &event.data);
+        futures_util::future::ready(data.map(|data| (event, data)))
+    });
+    let stream = stream.map(move |(event, data)| {
+        let frame = SseEvent::default().event(event.name).data(data.to_string());
         Ok(match event.id {
             Some(id) => frame.id(format!("{epoch}-{id}")),
             None => frame,
@@ -686,8 +788,10 @@ pub async fn dispatch(
     State(shared): State<Arc<Shared>>,
     uri: axum::http::Uri,
     headers: HeaderMap,
+    scope: Option<axum::Extension<crate::profiles::Scope>>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
+    let scope = crate::profile_scope::of(&shared, scope);
     let value: Value = serde_json::from_slice(&body)
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, format!("The body isn't JSON: {e}")))?;
     let Some(job) = value.get("job").and_then(Value::as_object) else {
@@ -728,6 +832,10 @@ pub async fn dispatch(
             new_job(job).map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
         new.vetted = typed;
         new.own_conversation = typed;
+        // An account it names is the owner's choice now: signed out, it's refused (ACCOUNTS-35).
+        new.named_now = new.account.is_some();
+        // Made in the request's profile, on its accounts only (B00-40).
+        new.profile = scope.tag();
         // Only an app of the owner's signs: anything else with the token, nobody's said to watch.
         new.unattended = !new.vetted;
         if job.get("runsOn").is_some_and(|place| !place.is_null()) {
@@ -879,17 +987,21 @@ fn new_job(job: &Map<String, Value>) -> Result<NewJob, String> {
         rounds: rounds.map(|r| u32::try_from(r).unwrap_or(u32::MAX)),
         check: text("check")?,
         model: text("model")?,
+        // The chips' effort comes only with words to Oby (brain::defaults, COMPOSER-5).
+        effort: None,
         complex: false,
         files,
         attachments: None,
         mode: text("mode")?,
         conversation: None,
+        profile: None,
         turn: None,
         brief: None,
         follow_up_of: None,
         earlier: None,
         start_from: None,
         made_branch: false,
+        onto: None,
         routine: None,
         unattended: false,
         untrusted: false,
@@ -897,6 +1009,7 @@ fn new_job(job: &Map<String, Value>) -> Result<NewJob, String> {
         vetted: false,
         // `dispatch` sets it for signed words only (MERGING-44), never the body.
         own_conversation: false,
+        named_now: false,
         foreign: None,
         adding: None,
         heard: Vec::new(),
@@ -1034,6 +1147,7 @@ fn job_settings_json(shared: &Shared) -> Value {
         "maxRunning": shared.jobs.max_running(),
         "accountFailover": shared.jobs.account_failover(),
         "githubEveryRepo": crate::settings::load(&shared.config.home).github_every_repo(),
+        "autoFixChecks": shared.jobs.auto_fix_checks(),
         "defaultAccount": crate::settings::load(&shared.config.home).default_account,
         "talkAccount": crate::settings::load(&shared.config.home).talk_account,
         "limits": crate::settings::limits().to_json(),
@@ -1047,7 +1161,8 @@ pub async fn job_settings(State(shared): State<Arc<Shared>>) -> Response {
 }
 
 /// `PUT /v1/settings/jobs`: `{"maxRunning": 1…20, "accountFailover": true|false,
-/// "githubEveryRepo": true|false (docs/contracts/github-work.md), "defaultAccount":
+/// "githubEveryRepo": true|false (docs/contracts/github-work.md), "autoFixChecks": true|false
+/// (docs/contracts/autofix.md), "defaultAccount":
 /// "<account id>"|null, "talkAccount": "<account id>"|null (null is Auto), "limits": {"rounds", "maxRunning", "folders", "routines", "accounts"}}`,
 /// any of them, kept across restarts. Each limit is a whole number from 1, or null for its
 /// default (crate::settings::Limits); a lower `limits.maxRunning` lowers `maxRunning` with it.
@@ -1061,7 +1176,7 @@ pub async fn set_job_settings(
     let bad = || {
         ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
-            "The body is {\"maxRunning\": 1 to 20, \"accountFailover\": true or false, \"githubEveryRepo\": true or false, \"defaultAccount\": an account's id or null, \"talkAccount\": an account's id or null, \"limits\": {\"rounds\", \"maxRunning\", \"folders\", \"routines\", \"accounts\"}, each 1 or more, or null}, any of them.",
+            "The body is {\"maxRunning\": 1 to 20, \"accountFailover\": true or false, \"githubEveryRepo\": true or false, \"autoFixChecks\": true or false, \"defaultAccount\": an account's id or null, \"talkAccount\": an account's id or null, \"limits\": {\"rounds\", \"maxRunning\", \"folders\", \"routines\", \"accounts\"}, each 1 or more, or null}, any of them.",
         )
     };
     let max = match value.get("maxRunning") {
@@ -1077,6 +1192,10 @@ pub async fn set_job_settings(
         Some(on) => Some(on.as_bool().ok_or_else(bad)?),
     };
     let every_repo = match value.get("githubEveryRepo") {
+        None => None,
+        Some(on) => Some(on.as_bool().ok_or_else(bad)?),
+    };
+    let auto_fix = match value.get("autoFixChecks") {
         None => None,
         Some(on) => Some(on.as_bool().ok_or_else(bad)?),
     };
@@ -1146,6 +1265,7 @@ pub async fn set_job_settings(
     if max.is_none()
         && failover.is_none()
         && every_repo.is_none()
+        && auto_fix.is_none()
         && default_account.is_none()
         && talk_account.is_none()
         && limits.is_none()
@@ -1195,6 +1315,11 @@ pub async fn set_job_settings(
             crate::settings::update(&shared.config.home, |s| s.github_every_repo = Some(on))
                 .map_err(SettingsError::Unkept)
         }
+        None => Ok(()),
+    })
+    .and_then(|()| match auto_fix {
+        Some(on) => crate::settings::update(&shared.config.home, |s| s.auto_fix_checks = Some(on))
+            .map_err(SettingsError::Unkept),
         None => Ok(()),
     })
     .and_then(|()| match default_account {

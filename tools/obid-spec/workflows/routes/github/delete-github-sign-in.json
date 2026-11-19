@@ -1,0 +1,63 @@
+{
+  "schemaVersion": "2",
+  "name": "DELETE /v1/github/sign-in",
+  "version": "1.0.0",
+  "description": "Ends gh's sign-in under way: 204, also with none.",
+  "trigger": {
+    "http": {
+      "method": "DELETE",
+      "path": "/v1/github/sign-in"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/github/sign-in",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "none-under-way-204",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/github/sign-in",
+        "expect": {
+          "status": 204
+        }
+      }
+    },
+    {
+      "id": "still-none",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/github",
+        "expect": {
+          "status": 200,
+          "body": {
+            "signIn": null
+          }
+        }
+      }
+    }
+  ]
+}

@@ -143,7 +143,7 @@ impl Helpers {
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, Vec<Helper>> {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, Vec<Helper>> {
         self.helpers.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -243,16 +243,36 @@ fn changed(helper: &mut Helper, body: Body) -> Result<(), ApiError> {
     }
 }
 
-/// `GET /v1/helpers`: every helper, oldest first.
-pub async fn list(State(shared): State<Arc<Shared>>) -> Response {
-    answer(StatusCode::OK, &*shared.helpers.lock())
+/// `GET /v1/helpers`: the profile's helpers, oldest first (B00-40).
+pub async fn list(
+    State(shared): State<Arc<Shared>>,
+    scope: Option<axum::Extension<crate::profiles::Scope>>,
+) -> Response {
+    let scope = crate::profile_scope::of(&shared, scope);
+    let helpers = shared.helpers.lock();
+    let mine: Vec<&Helper> = (helpers.iter())
+        .filter(|h| scope.holds(Some(&h.profile)))
+        .collect();
+    answer(StatusCode::OK, &mine)
 }
 
-/// `POST /v1/helpers`: a helper in a profile, with its conversation.
-pub async fn create(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Response, ApiError> {
+/// `POST /v1/helpers`: a helper in a profile, with its conversation: the request's profile, which
+/// a `profile` sent must be (B00-40).
+pub async fn create(
+    State(shared): State<Arc<Shared>>,
+    scope: Option<axum::Extension<crate::profiles::Scope>>,
+    body: Bytes,
+) -> Result<Response, ApiError> {
     let body = parsed(&body)?;
-    let profile = (shared.profiles.id_of(body.profile.as_deref()))
-        .ok_or_else(|| unprocessable("profile is a profile on this Mac."))?;
+    let scope = crate::profile_scope::of(&shared, scope);
+    let named = body
+        .profile
+        .as_deref()
+        .or(Some(&scope.id))
+        .filter(|id| !id.is_empty());
+    let profile = (shared.profiles.id_of(named))
+        .filter(|id| scope.holds(Some(id)) || named.is_none())
+        .ok_or_else(|| unprocessable("profile is the profile this request is for."))?;
     let mut helper = Helper {
         id: uuid::Uuid::new_v4().to_string().to_lowercase(),
         profile,
@@ -264,7 +284,8 @@ pub async fn create(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Re
     if helpers.len() >= MOST {
         return Err(unprocessable("Oby keeps at most 50 helpers."));
     }
-    helper.conversation = (shared.conversations).start_helper(&helper.name, &helper.id)?;
+    let tag = scope.tag();
+    helper.conversation = (shared.conversations).start_helper(&helper.name, &helper.id, tag)?;
     helpers.push(helper.clone());
     if let Err(e) = shared.helpers.keep(&helpers) {
         helpers.pop();
@@ -511,7 +532,9 @@ mod tests {
         let home = std::env::temp_dir().join(format!("obid-helpers-11-{}", uuid::Uuid::new_v4()));
         let conversations =
             crate::conversation::Conversations::open(&home, crate::events::Events::new());
-        let helper = conversations.start_helper("Inbox helper", "h1").unwrap();
+        let helper = conversations
+            .start_helper("Inbox helper", "h1", None)
+            .unwrap();
         let mine: Vec<String> = (0..=crate::conversation::CONVERSATIONS)
             .map(|i| conversations.start_for(&format!("Mine {i}")).unwrap())
             .collect();

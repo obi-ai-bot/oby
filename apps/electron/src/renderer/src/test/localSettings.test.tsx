@@ -219,3 +219,29 @@ describe('ALERTS-18', () => {
     expect(merged.getAttribute('aria-checked')).toBe('false');
   });
 });
+
+describe('ALERTS-19', () => {
+  it('alerts_19_the_banners_button_asks_main_for_the_settings_with_no_argument', async () => {
+    // as contextBridge does: a call carrying the page's click event can't be cloned and throws
+    const asked: unknown[][] = [];
+    const openSystemSettings = vi.fn((...args: unknown[]) => {
+      if (args.length) throw new Error('An object could not be cloned.');
+      asked.push(args);
+    });
+    (window as { app?: unknown }).app = {
+      obid: async () => ({ status: 503, text: '{}' }),
+      settings: { local: async () => ({}), keep: async () => true },
+      notifications: { alerts: async () => true, kinds: async () => ({ finished: true, merged: true, limit: true }), openSystemSettings },
+    };
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    vi.stubGlobal('location', { search: '' });
+    const view = await import('../SettingsView');
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    await general(view);
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button.set-button')].find((b) => b.textContent === 'Open System Settings')!;
+    await act(async () => button.click());
+    expect(asked).toEqual([[]]);
+  });
+});

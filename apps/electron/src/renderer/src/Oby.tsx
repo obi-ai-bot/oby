@@ -14,6 +14,8 @@ declare global {
       chrome: { lightsCenterY: number; lightsRight: number } | null;
       fullScreen: boolean;
       onFullScreen(fn: (on: boolean) => void): () => void;
+      // the Mac's menu bar's shortcut items, clicked (shared/menu.ts, shortcuts.ts)
+      onShortcut?(fn: (command: string) => void): () => void;
       openExternal(url: string): void;
       renderError?(name: string, message: string, componentStack: string): void;  // a render error the root caught (preload, main/runMarker.ts)
       pickFolders?(from?: string): Promise<string[]>;  // the Mac's folder picker (main), several at once, opening in from
@@ -37,18 +39,40 @@ declare global {
       // an Obysphere joined by its invite link, and Leave (preload, main/sphere.ts)
       onSphere?(fn: (joined: { sphere: string; name: string }) => void): () => void;
       sphereLeave?(): Promise<string | null>;
+      // an invite link pasted in the app, joined through main's one join path; a task handed to a member's Oby (SPHEREAPP-3, 6)
+      sphereJoin?(link: string): Promise<import('../../shared/invite').Joined>;
+      sphereHandoff?(ask: import('../../shared/handoff').HandoffAsk): Promise<string | null>;
+      // a task's worktree in the owner's Terminal or editor, by its id, and that editor's name (preload, main/worktree.ts)
+      openWorktree?(job: string, where: 'terminal' | 'editor'): Promise<boolean>;
+      editorName?(): Promise<string | null>;
       // the Obysphere's rules, and the members rule added at the version read (preload, main/sphere.ts)
       spherePolicy?(): Promise<PolicyAnswer | null>;
       sphereSetPolicy?(version: number): Promise<PolicyAnswer | null>;
+      // the admin's invite links: the list, a new one, a withdrawal (preload, main/sphere.ts, SPHEREAPP-10)
+      sphereInvitations?(): Promise<import('../../shared/sphere').InvitesAnswer | null>;
+      sphereInvite?(): Promise<import('../../shared/sphere').InvitesAnswer | null>;
+      sphereWithdraw?(id: string): Promise<import('../../shared/sphere').InvitesAnswer | null>;
+      // Make admin or Remove admin (preload, main/sphere.ts, SPHEREAPP-11)
+      sphereAdmin?(owner: string, on: boolean): Promise<import('../../shared/sphere').AdminsAnswer | null>;
+      // getting back in with a sign-in: what an address offers, and the sign-in (preload, main/sphere.ts, SPHEREAPP-12)
+      sphereRebindOffer?(address: string): Promise<{ sphere: string; host: string; providers: { id: string; name: string }[] | null } | null>;
+      sphereRebind?(address: string, provider: string): Promise<string | null>;
+      // Add sign-in: whether one is linked, and linking one (preload, main/sphere.ts, SPHEREAPP-13)
+      sphereSigninStatus?(): Promise<import('../../shared/sphere').SigninStatus | null>;
+      sphereAddSignin?(provider: string): Promise<string | null>;
       // obid, through main (preload, main/obid.ts); its events, from main's one follower (main/live.ts)
       obid: {
         call(method: string, path: string, body?: unknown): Promise<{ status: number; text: string }>;
         confirm(item: string): Promise<{ status: number; text: string }>;
         publish(job: string, action: string, choices: { anyway?: boolean; force?: boolean; to?: string }): Promise<{ status: number; text: string }>;
+        // Undo this round: main asks in its own dialog and signs obid's sentence (CHANGES-14)
+        undo(job: string, action: string): Promise<{ status: number; text: string }>;
         limitAnswer(item: string, revision: number, choice: string, account?: string): Promise<{ status: number; text: string }>;
         pairInvite(): Promise<{ status: number; text: string }>;
         live(onSnapshot: (s: LiveSnapshot) => void, onMessage: (m: LiveMessage) => void): () => void;
         load(what: LoadWhat): Promise<true | string | null>;
+        // the profile the window has open: true when main changed to it (B00-40)
+        profile?(id: string | null): Promise<boolean | null>;
       };
     };
   }

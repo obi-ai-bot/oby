@@ -1,0 +1,134 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/routines/{id}/run",
+  "version": "1.0.0",
+  "description": "Run now: 201 with a job in the routine's conversation and an Oby line there; again while it runs, 409; 404 for one obid doesn't have.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/routines/{id}/run"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "made",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Nightly check",
+          "repo": "obi-e2e/fixture-app",
+          "kind": "investigate",
+          "task": "SLEEP",
+          "schedule": {
+            "every": "daily",
+            "at": "03:00"
+          },
+          "zone": "UTC"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines/${state.made.body.id}/run",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines/deadbeef/run",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "ran",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines/${state.made.body.id}/run",
+        "expect": {
+          "status": 201,
+          "body": {
+            "routine": {
+              "id": "${state.made.body.id}"
+            },
+            "job": {
+              "task": "SLEEP",
+              "routine": {
+                "id": "${state.made.body.id}"
+              },
+              "conversation": {
+                "$type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "its-line",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.ran.body.job.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "oby",
+                "routine": {
+                  "id": "${state.made.body.id}"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "still-going-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines/${state.made.body.id}/run",
+        "expect": {
+          "status": 409,
+          "body": {
+            "error": "Its previous run is still going."
+          }
+        }
+      }
+    }
+  ]
+}

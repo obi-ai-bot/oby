@@ -11,6 +11,36 @@ use serde_json::{Value, json};
 
 use super::*;
 
+/// How a request goes to a member, before anything is built (protocol.md section 9.1, SPHERE-18,
+/// SPHERE-19). Proved in `proofs/sealed.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Delivery {
+    /// Sealed for the seal key its card has.
+    Sealed,
+    /// In the clear: its card has no seal key, and this owner's signed word lets it go unsealed.
+    Clear,
+    /// Refused: the Obi is known to seal, and the card served now has no seal key obid trusts (an
+    /// older card, or a key list its card doesn't sign).
+    KnownToSeal,
+    /// Refused, sealed by default: its card has no seal key and this owner didn't let it go
+    /// unsealed ([`NOT_SEALED`]).
+    NotSealed,
+}
+
+/// [`Delivery`] for a member whose card `has_seal_key`, an Obi obid knows `seals`, whose owner this
+/// owner let have words in the clear (`allowed_clear`, `Pins::allows_clear`).
+pub(crate) fn delivery(has_seal_key: bool, seals: bool, allowed_clear: bool) -> Delivery {
+    if has_seal_key {
+        Delivery::Sealed
+    } else if seals {
+        Delivery::KnownToSeal
+    } else if allowed_clear {
+        Delivery::Clear
+    } else {
+        Delivery::NotSealed
+    }
+}
+
 impl Link {
     // -----------------------------------------------------------------------------------------
     // The review job's end: the publish gate and the result
@@ -43,28 +73,7 @@ impl Link {
             self.reply_failed(&cid, None).await;
             return;
         };
-        let texts = every_text(&body);
-        let scratch = self.config.home.join("tmp");
-        let verdict = scan::scan(&texts, &scratch).await;
-        let (scan_json, failure) = match &verdict {
-            scan::Verdict::Clean => (json!({"ran": true, "clean": true}), None),
-            scan::Verdict::Found(found) => {
-                let places: Vec<String> = found.iter().take(3).map(ToString::to_string).collect();
-                (
-                    json!({"ran": true, "clean": false}),
-                    Some(format!(
-                        "The publish gate found a possible secret in {}: no text was sent.",
-                        places.join(", ")
-                    )),
-                )
-            }
-            scan::Verdict::CouldNotRun(why) => (
-                json!({"ran": false, "clean": false}),
-                Some(format!(
-                    "The secret scan couldn't run ({why}): no text was sent."
-                )),
-            ),
-        };
+        let (scan_json, failure) = self.publish_gate(&body).await;
         if let Some(why) = failure {
             tracing::warn!("sphere: exchange {cid}: {why}");
             self.reply_failed(&cid, Some((scan_json, why))).await;
@@ -109,6 +118,33 @@ impl Link {
         };
         self.save_exchange(&queued);
         self.send_now(&cid).await;
+    }
+
+    /// The publish gate (protocol.md section 11, step 8): every text of a reply's `body` scanned.
+    /// Its scan's record, and why nothing with text may go when it found a possible secret or
+    /// couldn't run.
+    pub(super) async fn publish_gate(&self, body: &Value) -> (Value, Option<String>) {
+        let texts = every_text(body);
+        let scratch = self.config.home.join("tmp");
+        match scan::scan(&texts, &scratch).await {
+            scan::Verdict::Clean => (json!({"ran": true, "clean": true}), None),
+            scan::Verdict::Found(found) => {
+                let places: Vec<String> = found.iter().take(3).map(ToString::to_string).collect();
+                (
+                    json!({"ran": true, "clean": false}),
+                    Some(format!(
+                        "The publish gate found a possible secret in {}: no text was sent.",
+                        places.join(", ")
+                    )),
+                )
+            }
+            scan::Verdict::CouldNotRun(why) => (
+                json!({"ran": false, "clean": false}),
+                Some(format!(
+                    "The secret scan couldn't run ({why}): no text was sent."
+                )),
+            ),
+        }
     }
 
     /// The Obi answers a question by itself under `rule` (protocol.md section 11, "Questions"): a
@@ -945,15 +981,24 @@ impl Link {
                 if !member.accepts.contains(&kind) {
                     return Err(invalid(format!("{to}'s card doesn't accept {kind}.")));
                 }
-                // An Obi known to seal gets nothing in the clear: not when the Sphere serves an older
-                // card, or a key list its card doesn't sign (protocol.md section 9.1).
-                if member.seal.is_none() && self.pins.seals(&to) {
-                    return Err(api(
-                        StatusCode::CONFLICT,
-                        format!(
-                            "{to} seals, and obid trusts no seal key of its now: nothing was sent."
-                        ),
-                    ));
+                match delivery(
+                    member.seal.is_some(),
+                    self.pins.seals(&to),
+                    self.pins.allows_clear(&member.owner),
+                ) {
+                    Delivery::Sealed | Delivery::Clear => {}
+                    Delivery::KnownToSeal => {
+                        return Err(api(
+                            StatusCode::CONFLICT,
+                            format!(
+                                "{to} seals, and obid trusts no seal key of its now: nothing was sent."
+                            ),
+                        ));
+                    }
+                    Delivery::NotSealed => {
+                        return Err(api(StatusCode::CONFLICT, not_sealed(&member.owner))
+                            .because(NOT_SEALED));
+                    }
                 }
                 if matches!(kind.as_str(), "share_offer" | "run_request") {
                     return Err(invalid(

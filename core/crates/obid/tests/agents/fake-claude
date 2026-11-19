@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 // A stand-in for Claude Code in obid's tests: stream-json in and out, as obid runs `claude`. What
 // it does comes from the prompt (the job's task):
+//   .obi/inputs/handoff.json  (another Oby's task, HANDOFF-2) named in the prompt: exits 3 when the
+//                    request's goal reached the prompt; else commits the file its quoted goal's
+//                    `COMMIT: <file>` names, and ends "Added <file>." and `GOAL MET`
+//   .obi/inputs/github-<name>-<n>.md  (GitHub's quoted text) named in the prompt and holding
+//                    `COMMIT: <file>`: commits that file and ends "Fixed <file>." and `GOAL MET`
 //   COMMIT: <file>   writes the file in the worktree and commits it; with ENDS: <line>, its summary's
 //                    last line is that line (`GOAL NOT MET: …`). Told its last line didn't say
 //                    `GOAL MET`, it ends "Carried on." and `GOAL MET` (with SILENT ROUND, the
@@ -82,6 +87,10 @@
 //                    item, ticks it 5 seconds later, then the second 5 seconds after that, and ends
 //                    the turn with "Did the list." (scripts/test-live-task.mjs)
 //   PAUSE: <ms>      waits that long, then ends the turn with "Paused."
+//   STEPS: <n> <ms>  runs n Bash calls of <ms> each, then ends the turn with "Stepped."; run with
+//                    --replay-user-messages, as Claude Code 2.1.325 it writes its prompt back
+//                    (isReplay) and takes the user lines that come while it works at its next step,
+//                    writing each back as it takes it, and ends the turn "heard: <their words>"
 //   ARTIFACTS        writes .obi/artifacts/ in the worktree: a page (a folder with index.html,
 //                    a stylesheet and a hidden file), notes.md, chart.png (bytes that aren't
 //                    UTF-8), leak.md holding a made-up AWS key, and away.md, a link out of the
@@ -116,7 +125,7 @@
 //   STDERR LIMIT     prints a line about a rate limit to stderr, and goes on with the prompt
 //   LAST WORDS FAIL  says a stranger's words holding "API Error: 529", then ends the turn with an
 //                    error result with no text (RECOVERY-1)
-//   TRANSIENT SPEND: <n>  ends the turn with an overloaded API's error, having used <n> input
+//   FAIL SPEND: <n>  ends the turn with an error obid can't place ("it broke"), having used <n> input
 //                    tokens, and uses them again in each turn obid continues (reported as
 //                    Claude Code does: the session's so far)
 //   API RETRY: <n>   for <n> ms says only what Claude Code says while it retries an API call, then
@@ -125,9 +134,8 @@
 //   on; KEEP PROMPTS also logs how it was run in .obi/args.log.
 //   CHATTY: <ms>     streams a word every 100 ms for that long, then ends the turn with "Chatted."
 //   LAST WORDS LIMIT says a stranger's words holding "usage limit", then ends with an error of the
-//                    tool's own (RECOVERY-7); continued, ends with "Carried on."
-//   REJECTED 429     ends the turn as 2.1.302 does on a 429, its status only in `api_error_status`;
-//                    REJECTED 429 ALWAYS, in each turn obid continues by itself too
+//                    tool's own (RECOVERY-7)
+//   REJECTED 429     ends the turn as 2.1.302 does on a 429, its status only in `api_error_status`
 //   LONG WHEN TOLD   ends its first turn with a login error (never retried), then too long for its model
 //                    until told it has a new session (RECOVERY-8)
 //   TOO LONG         ends the turn too long for its model, until told it has a new session;
@@ -135,8 +143,7 @@
 //   LOOP             runs the same failing command 6 times, then waits until it is ended
 //   MAXTURNS         ends the turn as Claude Code's --max-turns does (error_max_turns), again in
 //                    each turn obid continues by itself; MAXTURNS ONCE, only this turn (RECOVERY-4)
-//   TRANSIENT        ends the turn with an overloaded API's error; TRANSIENT ALWAYS every turn after
-//                    too
+//   TRANSIENT        ends the turn with an overloaded API's error (RECOVERY-19)
 //   SPEND: <n>       ends the turn saying it used n input tokens
 //   BACKGROUND: <ms> starts a background task (Bash's run_in_background) and ends the turn waiting
 //                    on it; <ms> later the task ends (a task_notification, and an empty
@@ -171,7 +178,9 @@ import { execFileSync } from "node:child_process";
 import { randomFillSync } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { getPriority, homedir } from "node:os";
+import { dirname as folderOf } from "node:path";
 import { createInterface } from "node:readline";
+import { PassThrough } from "node:stream";
 
 // Its version, as `claude --version` prints it (docs/contracts/cli-versions.md).
 if (process.argv[2] === "--version") {
@@ -203,8 +212,8 @@ if (process.argv.includes("--no-session-persistence") && "CLAUDE_SECURESTORAGE_C
 // window and 44% of the week, the week resetting in 2 days, and a result that asked no model. By
 // a word in its login copy's access token ($CLAUDE_CONFIG_DIR/.credentials.json): `asks-model`
 // answers as a Claude Code without its own /usage (a model's turn, no report), `silent` with no
-// report, `offline` with an error result, `reserved` at 85% of its week, `week-only` with no 5-hour
-// window (a plan that has none, USAGE-10).
+// report, `offline` with an error result, `reserved` at 85% of its week, `nearly-full` at 97% of it,
+// `week-only` with no 5-hour window (a plan that has none, USAGE-10).
 if (process.argv[process.argv.indexOf("-p") + 1] === "/usage") {
   let token = "";
   try { token = JSON.parse(readFileSync(`${process.env.CLAUDE_CONFIG_DIR}/.credentials.json`, "utf8")).claudeAiOauth.accessToken; } catch {}
@@ -217,6 +226,7 @@ if (process.argv[process.argv.indexOf("-p") + 1] === "/usage") {
     for (const limit of limits) { limit.percent = 0; limit.resets_at = null; }
   }
   if (token.includes("reserved")) limits[1].percent = 85;
+  if (token.includes("nearly-full")) limits[1].percent = 97;
   if (token.includes("week-only")) limits.shift();
   const line = (value) => process.stdout.write(JSON.stringify(value) + "\n");
   const result = { type: "result", subtype: "success", is_error: false, num_turns: 0, total_cost_usd: 0, usage: { output_tokens: 0 }, modelUsage: {} };
@@ -236,6 +246,9 @@ if (process.argv[process.argv.indexOf("-p") + 1] === "/usage") {
 // Its own sign-in, as obid runs the tool's login (fake-login.mjs).
 if (process.argv[2] === "auth" && process.argv[3] === "status") {
   (await import(new URL("./fake-login.mjs", import.meta.url))).status("claude");
+}
+if (process.argv[2] === "auth" && process.argv[3] === "logout") {
+  (await import(new URL("./fake-login.mjs", import.meta.url))).logout("claude");
 }
 if (process.argv[2] === "auth" && process.argv[3] === "login") {
   await (await import(new URL("./fake-login.mjs", import.meta.url))).login("claude");
@@ -273,7 +286,7 @@ const background = () => {
 };
 
 const leaked = Object.keys(process.env).filter((name) =>
-  name === "CLAUDECODE" || (name.startsWith("CLAUDE_CODE_") && name !== "CLAUDE_CODE_TMPDIR" && name !== "CLAUDE_CODE_ENABLE_TODO_TOOLS") || name.startsWith("ANTHROPIC_") || name === "GH_TOKEN" || name === "GITHUB_TOKEN" || name === "OBID_API_TOKEN");
+  name === "CLAUDECODE" || (name.startsWith("CLAUDE_CODE_") && name !== "CLAUDE_CODE_TMPDIR" && name !== "CLAUDE_CODE_ENABLE_TODO_TOOLS" && name !== "CLAUDE_CODE_MCP_STARTUP_WAIT_MS") || name.startsWith("ANTHROPIC_") || name === "GH_TOKEN" || name === "GITHUB_TOKEN" || name === "OBID_API_TOKEN");
 
 // obid gives every job's Claude Code its to-do tools (docs/contracts/live-task.md, LIVETASK-14)
 if (process.env.CLAUDE_CODE_ENABLE_TODO_TOOLS !== "1") leaked.push("no CLAUDE_CODE_ENABLE_TODO_TOOLS");
@@ -290,7 +303,29 @@ const askNext = () => {
   asked = tool;
   emit({ type: "control_request", request_id: `r${said.length + 1}`, request: { subtype: "can_use_tool", tool_name: tool, input } });
 };
-const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+// As Claude Code 2.1.325, measured on a Mac on 2026-11-16 (LANES-24): a run that loads the owner's
+// own MCP servers (no --strict-mcp-config) and is given an --mcp-config holds its first turn until
+// each has answered, 30 s at most from its start, unless ToolSearch is among its --tools and
+// CLAUDE_CODE_MCP_STARTUP_WAIT_MS is 0. The owner's slowest server answers after the milliseconds
+// `slow-mcp-ms` in its config folder holds (none: at once). It reads no message until then.
+const tools = process.argv.includes("--tools") ? process.argv[process.argv.indexOf("--tools") + 1] : "";
+const lifted = tools.split(",").includes("ToolSearch") && process.env.CLAUDE_CODE_MCP_STARTUP_WAIT_MS === "0";
+const holds = process.argv.includes("--mcp-config") && !process.argv.includes("--strict-mcp-config") && !lifted;
+const slowest = (() => {
+  try {
+    return Number(readFileSync(`${process.env.CLAUDE_CONFIG_DIR ?? `${homedir()}/.claude`}/slow-mcp-ms`, "utf8")) || 0;
+  } catch {
+    return 0;
+  }
+})();
+const held = holds && slowest > 0 ? new PassThrough() : null;
+// The owner's messages it has had: with the hold lifted, an --mcp-config server that isn't
+// `alwaysLoad` isn't connected yet on the first.
+let heard = 0;
+// STEPS's words that came while its turn works, or null when none works.
+let stepping = null;
+if (held) setTimeout(() => process.stdin.pipe(held), Math.min(slowest, 30000));
+const rl = createInterface({ input: held ?? process.stdin, crlfDelay: Infinity });
 // Its stdin closed: obid is done with it or was killed, so a turn told to wait forever (QUIET, LOOP)
 // ends too. Not at once: Claude Code goes on with its turn, and a test watches it outlive a killed
 // obid until the next obid ends its group. Unref'd, so it holds nothing open by itself.
@@ -324,6 +359,9 @@ rl.on("line", (line) => {
     return;
   }
   if (message.type !== "user") return;
+  // STEPS's turn under way: the words wait for its next step (Claude Code 2.1.325).
+  if (stepping) return void stepping.push(message);
+  heard += 1;
   let prompt = typeof message.message.content === "string" ? message.message.content : "";
   const told = prompt;
   if (prompt.includes("What you were last sent")) prompt = prompt.slice(0, prompt.indexOf("What you were last sent"));
@@ -338,7 +376,7 @@ rl.on("line", (line) => {
   // LANES-4: what it got of a login shell's, and its --model, before `leaked` (an own run gets the
   // owner's gateway); then whether its self-update is off (CLIVERSIONS-5).
   if (prompt.includes("SHOW_ENV")) {
-    const names = ["ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_MODEL", "SSH_AUTH_SOCK", "GH_TOKEN", "GIT_CONFIG_COUNT", "LANES_4"];
+    const names = ["ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_MODEL", "SSH_AUTH_SOCK", "GH_TOKEN", "GIT_CONFIG_COUNT", "LANES_4", "CLAUDE_CODE_LANES_21"];
     const at = process.argv.indexOf("--model");
     return result(`${names.map((name) => `${name}=${process.env[name] ?? "none"}`).join(" ")} model=${at >= 0 ? process.argv[at + 1] : "none"} DISABLE_AUTOUPDATER=${process.env.DISABLE_AUTOUPDATER ?? "none"}`);
   }
@@ -374,15 +412,10 @@ rl.on("line", (line) => {
   }
   if (prompt.includes("LAST WORDS LIMIT")) {
     emit({ type: "assistant", session_id: session, message: { role: "assistant", content: [{ type: "text", text: "A stranger's comment says: You've hit your usage limit." }] } });
-    if (prompt.includes("Your run was cut")) return result("Carried on.");
     return emit({ type: "result", subtype: "error_during_execution", is_error: true, num_turns: 1, session_id: session, total_cost_usd: 0, errors: ["API Error: 529 Overloaded"] });
   }
   const rejected = prompt.includes("REJECTED 429");
-  if (prompt.includes("REJECTED 429 ALWAYS")) {
-    mkdirSync(".obi", { recursive: true });
-    writeFileSync(".obi/always-rejected", "");
-  }
-  if (existsSync(".obi/always-rejected") || (rejected && !prompt.includes("Your run was cut"))) {
+  if (rejected) {
     // What 2.1.302 says of an API that answers 429: its words name no status obid could read.
     return emit({ type: "result", subtype: "success", is_error: true, num_turns: 1, terminal_reason: "api_error", api_error_status: 429, result: "API Error: Request rejected (429) · This request would exceed your rate limit", session_id: session, total_cost_usd: 0 });
   }
@@ -402,16 +435,16 @@ rl.on("line", (line) => {
     // What 2.1.302 ends with when the prompt doesn't fit its model.
     return emit({ type: "result", subtype: "success", is_error: true, num_turns: 1, terminal_reason: "prompt_too_long", api_error_status: 400, result: "Prompt is too long · the request is ~250000 tokens (limit 200000)", session_id: session, total_cost_usd: 0 });
   }
-  const spent = prompt.match(/TRANSIENT SPEND: (\d+)/)?.[1];
+  const spent = prompt.match(/FAIL SPEND: (\d+)/)?.[1];
   if (spent) {
     mkdirSync(".obi", { recursive: true });
-    writeFileSync(".obi/transient-spend", spent);
+    writeFileSync(".obi/fail-spend", spent);
   }
-  if (existsSync(".obi/transient-spend")) {
-    const each = Number(readFileSync(".obi/transient-spend", "utf8"));
+  if (existsSync(".obi/fail-spend")) {
+    const each = Number(readFileSync(".obi/fail-spend", "utf8"));
     tokens = (existsSync(".obi/tokens-turn") ? Number(readFileSync(".obi/tokens-turn", "utf8")) : 0) + 1;
     writeFileSync(".obi/tokens-turn", String(tokens));
-    return emit({ type: "result", subtype: "success", is_error: true, num_turns: 1, result: "API Error: 529 overloaded", session_id: session, total_cost_usd: 0, modelUsage: { fake: { inputTokens: each * tokens, outputTokens: 0 } } });
+    return emit({ type: "result", subtype: "success", is_error: true, num_turns: 1, result: "it broke", session_id: session, total_cost_usd: 0, modelUsage: { fake: { inputTokens: each * tokens, outputTokens: 0 } } });
   }
   if (prompt.includes("TOKENS")) {
     mkdirSync(".obi", { recursive: true });
@@ -444,10 +477,6 @@ rl.on("line", (line) => {
     background();
     process.stdout.end(() => process.exit(0));
   }
-  if (prompt.includes("TRANSIENT ALWAYS")) {
-    mkdirSync(".obi", { recursive: true });
-    writeFileSync(".obi/always-transient", "");
-  }
   if (prompt.includes("DIE ALWAYS")) {
     mkdirSync(".obi", { recursive: true });
     writeFileSync(".obi/always-die", "");
@@ -471,7 +500,6 @@ rl.on("line", (line) => {
       setTimeout(() => result("Retried."), 200);
     }, Number(prompt.match(/API RETRY: (\d+)/)[1]));
   }
-  if (existsSync(".obi/always-transient")) return result('API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}', true);
   if (existsSync(".obi/limited-once")) {
     const at = process.argv.indexOf("--resume");
     return result(`went on: resume=${at >= 0 ? process.argv[at + 1] : "none"} marked=${told.startsWith("[From Oby, by itself")}`);
@@ -601,6 +629,26 @@ rl.on("line", (line) => {
     return result("Wrote the tests.");
   }
   if (prompt.startsWith("Your last line didn't say `GOAL MET`")) return result("Carried on.\n\nGOAL MET");
+  if (prompt.includes(".obi/inputs/handoff.json") && existsSync(".obi/inputs/handoff.json")) {
+    const request = JSON.parse(readFileSync(".obi/inputs/handoff.json", "utf8"));
+    if (prompt.includes(request.goal)) process.exit(3);
+    const file = String(request.goal).match(/COMMIT: (\S+)/)?.[1] ?? "handoff.txt";
+    writeFileSync(file, "hello\n");
+    execFileSync("git", ["add", file]);
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", `Add ${file}`]);
+    return result(`Added ${file}.\n\nGOAL MET`);
+  }
+  // A GitHub task's quoted file (.obi/inputs/github-<name>-<n>.md) named in the prompt and holding
+  // `COMMIT: <file>`: commits it (a Fix CI job's fix, TASKCONV-31)
+  const quotedGitHub = prompt.match(/\.obi\/inputs\/(github-[\w.-]+\.md)/)?.[1];
+  const quotedCommit = quotedGitHub && existsSync(`.obi/inputs/${quotedGitHub}`)
+    && readFileSync(`.obi/inputs/${quotedGitHub}`, "utf8").match(/COMMIT: (\S+)/)?.[1];
+  if (quotedCommit) {
+    writeFileSync(quotedCommit, "fixed\n");
+    execFileSync("git", ["add", quotedCommit]);
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", `Fix ${quotedCommit}`]);
+    return result(`Fixed ${quotedCommit}.\n\nGOAL MET`);
+  }
   const commit = prompt.match(/COMMIT: (\S+)/);
   const ask = prompt.match(/ASK: (\{.*\})/);
   const asks = prompt.match(/ASKS: (\[.*\])/);
@@ -608,7 +656,10 @@ rl.on("line", (line) => {
   const reach = prompt.match(/REACH: (.+)/);
   const plant = prompt.match(/PLANT: (\S+)/);
   const draft = prompt.match(/DRAFT: (\S+)/);
-  if (draft) writeFileSync(draft[1], "draft\n");
+  if (draft) {
+    mkdirSync(folderOf(draft[1]), { recursive: true });
+    writeFileSync(draft[1], "draft\n");
+  }
   const edit = prompt.match(/EDIT: (\S+)/);
   if (edit) {
     appendFileSync(edit[1], "// edited\n");
@@ -778,6 +829,30 @@ ${probes}`;
         result("Did the list.");
       }, 5000);
     }, 5000);
+  } else if (prompt.match(/STEPS: (\d+) (\d+)/)) {
+    const [, n, ms] = prompt.match(/STEPS: (\d+) (\d+)/).map(Number);
+    const replays = process.argv.includes("--replay-user-messages");
+    if (replays) emit({ ...message, session_id: session, isReplay: true });
+    stepping = [];
+    const step = (k) => {
+      const taken = replays ? stepping.splice(0) : [];
+      for (const words of taken) emit({ ...words, session_id: session, isReplay: true });
+      if (taken.length || k >= n) {
+        const left = stepping ?? [];
+        stepping = null;
+        result(taken.length ? `heard: ${taken.map((w) => w.message.content).join(" / ")}` : "Stepped.");
+        // Words that came too late for its turn are its next ones, in this process.
+        for (const words of left) rl.emit("line", JSON.stringify(words));
+        return;
+      }
+      const id = `s${k}`;
+      emit({ type: "assistant", session_id: session, message: { role: "assistant", content: [{ type: "tool_use", id, name: "Bash", input: { command: `sleep ${ms / 1000}; echo ${k}` } }] } });
+      setTimeout(() => {
+        emit({ type: "user", session_id: session, message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: "" }] } });
+        step(k + 1);
+      }, ms);
+    };
+    step(0);
   } else if (prompt.match(/PAUSE: (\d+)/)) {
     setTimeout(() => result("Paused."), Number(prompt.match(/PAUSE: (\d+)/)[1]));
   } else if (prompt.match(/HOG: (\d+) (\d+)/)) {
@@ -894,6 +969,10 @@ async function report(prompt) {
   const shapes = {};
   for (const [name, server] of Object.entries(mcp?.mcpServers ?? {})) {
     if (server.type !== "http") continue;
+    if (lifted && heard === 1 && server.alwaysLoad !== true) {
+      answers[name] = { error: { code: -32000, message: `MCP server ${name} isn't connected yet` } };
+      continue;
+    }
     try {
       const response = await fetch(server.url, {
         method: "POST",

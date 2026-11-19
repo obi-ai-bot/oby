@@ -966,9 +966,9 @@ fn chatgpt_13_a_usage_limit_waits_with_no_card() {
     );
 }
 
-/// CHATGPT-14: a 503 keeps the credentials and backs off; a 403 not-eligible goes to OpenAI once and
-/// ends the job saying so; a 401 far from the token's end, or a second straight after a refresh, ends
-/// the job with the request id and asks for no sign-in.
+/// CHATGPT-14: a 503 keeps the credentials and Codex backs off, obid sending the turn no more; a 403
+/// not-eligible goes to OpenAI once and ends the job saying so; a 401 far from the token's end, or a
+/// second straight after a refresh, ends the job with the request id and asks for no sign-in.
 #[test]
 fn chatgpt_14_a_503_backs_off_a_403_stops_and_a_repeated_401_ends_the_job() {
     let world = world("chatgpt-14");
@@ -1022,8 +1022,9 @@ fn chatgpt_14_a_503_backs_off_a_403_stops_and_a_repeated_401_ends_the_job() {
     assert_eq!(account(&world.obid, &id).unwrap()["signedIn"], true);
     world.openai.with(|s| s.refused.remove(&current));
 
-    // 503: credentials kept, and the round tried again by itself.
-    for _ in 0..30 {
+    // 503: credentials kept; Codex backs off by itself (its 6 tries), and a turn that still ends on
+    // it ends the job with OpenAI's words and Try again: obid sends it no more (RECOVERY-19).
+    for _ in 0..6 {
         world.openai.with(|s| {
             s.responses.push_back(Reply::Json(
                 503,
@@ -1031,17 +1032,26 @@ fn chatgpt_14_a_503_backs_off_a_403_stops_and_a_repeated_401_ends_the_job() {
             ))
         });
     }
-    let id503 = job(&world, &id, "RELAY");
-    let retrying = within(60, "it waits to try again", || {
-        let j = call(&world.obid, "GET", &format!("/v1/jobs/{id503}"), None).body;
-        j["step"]
+    let posted = posts(&world);
+    let done = ended(&world, &job(&world, &id, "RELAY"));
+    assert_eq!(done["status"], "interrupted", "{done}");
+    assert_eq!(done["nextStep"], "Try again", "{done}");
+    assert!(done["resumesAt"].is_null(), "{done}");
+    assert!(
+        done["reason"]
             .as_str()
-            .is_some_and(|s| s.starts_with("Trying again in"))
-            .then_some(j)
-    });
-    assert_eq!(retrying["status"], "running", "{retrying}");
-    assert_eq!(account(&world.obid, &id).unwrap()["signedIn"], true);
-    let _ = call(&world.obid, "POST", &format!("/v1/jobs/{id503}/stop"), None);
+            .unwrap()
+            .starts_with("ChatGPT is unavailable for now (503)."),
+        "{done}"
+    );
+    assert_eq!(
+        posts(&world) - posted,
+        6,
+        "Codex's own tries, and none of obid's"
+    );
+    let a = account(&world.obid, &id).unwrap();
+    assert_eq!(a["signedIn"], true, "{a}");
+    assert!(a["fullUntil"].is_null(), "not a usage limit: {a}");
 
     // A second 401 straight after a refresh: the job ends, the login stays.
     let world = self::world("chatgpt-14-again");
@@ -2531,10 +2541,10 @@ fn chatgpt_13_a_models_words_dont_name_a_holds_end() {
     );
 }
 
-/// CHATGPT-14: a stream with no end gets the job's bounded tries (RECOVERY-1), and then the job
-/// says what happened: never the model's words, whatever they say, and no hold on the account.
+/// CHATGPT-14: a stream with no end gets Codex's own tries and none of obid's (RECOVERY-19): the job
+/// ends saying what happened, never the model's words, whatever they say, and no hold on the account.
 #[test]
-fn chatgpt_14_a_cut_stream_gets_the_jobs_bounded_tries() {
+fn chatgpt_14_a_cut_stream_ends_the_job_with_what_happened() {
     let created = || vec![json!({"type": "response.created", "response": {"id": "r"}})];
     let unterminated = Reply::Sse(created());
     let cut = Reply::Cut(created());
@@ -2555,7 +2565,6 @@ fn chatgpt_14_a_cut_stream_gets_the_jobs_bounded_tries() {
         let folder = Folder::new(name);
         let openai = OpenAi::start();
         let mut config = configured(&folder.0);
-        // (recovery's waits are at most this long)
         config["stallAfter"] = json!(2);
         let obid = start_with(
             &folder.0,
@@ -2574,16 +2583,10 @@ fn chatgpt_14_a_cut_stream_gets_the_jobs_bounded_tries() {
             world.openai.with(|s| s.responses.push_back(stream.clone()));
         }
         let job = job(&world, &id, task);
-        within(30, "it waits to try again", || {
-            let j = call(&world.obid, "GET", &format!("/v1/jobs/{job}"), None).body;
-            j["step"]
-                .as_str()
-                .is_some_and(|s| s.starts_with("Trying again in"))
-                .then_some(())
-        });
         let done = ended(&world, &job);
         assert_eq!(done["status"], "interrupted", "{name}: {done}");
-        assert_eq!(posts(&world), 24, "{name}: four runs of Codex's six");
+        assert_eq!(done["nextStep"], "Try again", "{name}: {done}");
+        assert_eq!(posts(&world), 6, "{name}: one run of Codex's six tries");
         let reason = done["reason"].as_str().unwrap_or("");
         assert!(reason.contains("part way"), "{name}: {reason}");
         assert!(!reason.contains("rate limit"), "{name}: {reason}");

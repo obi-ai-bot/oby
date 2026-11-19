@@ -1,0 +1,74 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/profiles",
+  "version": "1.0.0",
+  "description": "The profiles: a fresh home has one, Default, kept 0600 in home/profiles.json.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/profiles"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/profiles",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "profiles-1-one-default",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/profiles",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "name": "Default",
+              "color": "#3a5a8c",
+              "default": true,
+              "waiting": false
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-1",
+          "PROF-1"
+        ]
+      }
+    },
+    {
+      "id": "kept-0600",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "profiles.json",
+        "expect": {
+          "exists": true,
+          "mode": "0600"
+        }
+      }
+    }
+  ]
+}

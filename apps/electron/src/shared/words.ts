@@ -35,6 +35,10 @@ export const BACKGROUND_YES = 'Yes, it can';
 export const VAULT_ADD = 'Add Secret';
 export const VAULT_REMOVE = 'Remove Secret';
 
+// whether `words` @-name `owner` (a whole word, case aside), as the message box sets a mention apart
+const named = (words: string, owner: string) =>
+  /^[a-z0-9-]{1,63}$/.test(owner) && new RegExp(`(?<![\\w@])@${owner}(?![\\w-])`, 'i').test(words);
+
 const MESSAGES = /^\/v1\/jobs\/[^/]+\/messages$/;
 const ROOM = /^\/v1\/spheres\/[^/]+\/room$/;
 const PEER_ASK = /^\/v1\/obid\/sphere\/peers\/[^/]+\/ask$/;
@@ -61,6 +65,12 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
     const ok = text(body.said) && shaped(body, {
       said: text, answer: (a) => isBody(a) && text(a.question) && text(a.option) && shaped(a, { question: text, option: text }),
       conversation: id, new: flag, folders: strings, id, attachments: strings, jobs: strings,
+      // the project the words start a conversation in: signed with the body, never one of the words
+      project: id,
+      // the box's chips (COMPOSER-3): signed with the body, never one of the words
+      defaults: (d) => isBody(d) && shaped(d, { mode: text, agent: text, model: text, effort: text }),
+      // the members the words @-name (ASK-39): only owners the words name, so a page can't add one
+      ask: (a) => strings(a) && (a as string[]).length > 0 && (a as string[]).every((o) => named(body.said as string, o)),
     });
     // an answer to Oby's question: the words it answers, and the owner's answer
     return ok ? [body.said as string, ...(isBody(answer) ? [answer.option as string] : [])] : null;

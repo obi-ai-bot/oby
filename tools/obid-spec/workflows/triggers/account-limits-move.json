@@ -1,0 +1,113 @@
+{
+  "schemaVersion": "2",
+  "name": "Account limits: a task at a limit moves to another account",
+  "version": "1.0.0",
+  "description": "A task whose account hits its limit moves by itself, with no card, to the signed-in account with room, on another tool (LIMITS-15), and finishes there; nothing waits on the owner.",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "codex": {
+              "bin": "${run.root}/core/crates/obid/tests/agents/fake-codex",
+              "accounts": [
+                {
+                  "id": "codex",
+                  "name": "Codex",
+                  "configDir": "${run.scratch}/o/home/accounts/codex"
+                }
+              ]
+            }
+          }
+        },
+        "files": {
+          "accounts/codex/auth.json": {
+            "OPENAI_API_KEY": "fake-codex"
+          }
+        }
+      }
+    },
+    {
+      "id": "w",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "LIMITED WEEK: 86400",
+            "agent": "claude"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "limits-15-moved-and-finished",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.w.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "agent": "codex",
+            "account": "codex",
+            "status": "done",
+            "moves": [
+              {
+                "from": {
+                  "$contains": "Claude Code"
+                },
+                "to": {
+                  "$contains": "Codex"
+                },
+                "why": {
+                  "$type": "string"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-15"
+        ]
+      }
+    },
+    {
+      "id": "limits-15-nothing-waits-on-the-owner",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/limit-decisions",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-15"
+        ]
+      }
+    }
+  ]
+}

@@ -1,8 +1,9 @@
 //! A job's task chain (docs/ARCHITECTURE.md, "State ownership"): whether a follow-up carries a
 //! job's branch on, decided once by [`holds`] over a follower's facts and found by
 //! [`branch_carrier`] (PUBLISHING-3, 32), and the walks along `follow_up_of` that make one line of
-//! follow-ups ([`chain_tip`], [`follows_up`]). They read only their arguments, never the clock,
-//! the disk, a lock or the log.
+//! follow-ups ([`chain_tip`], [`follows_up`]), and whether a task's card settles while it carries
+//! on ([`card_settles`], TASKS-26 to 28). They read only their arguments, never the clock, the
+//! disk, a lock or the log.
 
 use std::collections::HashMap;
 
@@ -127,6 +128,37 @@ pub(crate) fn chain_tip(jobs: &HashMap<String, Job>, of: &str) -> String {
         .map_or_else(|| of.to_owned(), |j| j.id.clone())
 }
 
+/// Which of obid's cards an inbox item is, as [`card_settles`] asks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardKind {
+    /// obid's crash or review card (`inbox::is_crash_item`, `inbox::is_review_item`).
+    Failed,
+    /// A `merge` card.
+    Merge,
+    /// Anything else: questions, permissions, limits, confirms, offers, GitHub's, another Obi's.
+    Other,
+}
+
+/// What [`card_settles`] reads of an open card and its task: a job and the owner's own jobs that
+/// follow it up, at any depth ([`follows_up`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChainCard {
+    /// Which card it is.
+    pub kind: CardKind,
+    /// About one of the owner's own jobs obid has (not another Obi's).
+    pub own: bool,
+    /// Its job, or a later job of its task, is queued or running.
+    pub at_work: bool,
+    /// A later job of its task has an open card of the same kind.
+    pub later_card: bool,
+}
+
+/// Whether the card settles for its task (TASKS-26 to 28): obid's crash, review or merge card
+/// about the owner's own job, while its task carries on or a later job of it has one of its own.
+pub fn card_settles(card: ChainCard) -> bool {
+    card.own && card.kind != CardKind::Other && (card.at_work || card.later_card)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,5 +249,76 @@ mod tests {
         assert!(branch_carrier(&jobs, &first, Holds::AtWork).is_none());
         assert!(branch_carrier(&jobs, &first, Holds::AtWorkOrDone).is_none());
         assert!(branch_carrier(&jobs, &first, Holds::Open).is_none());
+    }
+
+    /// TASKS-26 to 28: every one of the 24 cards settles exactly when it's obid's crash, review or
+    /// merge card about the owner's own job, and its task is at work or has a later card.
+    #[test]
+    fn tasks_26_to_28_card_settles_cases() {
+        for kind in [CardKind::Failed, CardKind::Merge, CardKind::Other] {
+            for bits in 0..8u8 {
+                let card = ChainCard {
+                    kind,
+                    own: bits & 1 != 0,
+                    at_work: bits & 2 != 0,
+                    later_card: bits & 4 != 0,
+                };
+                let settles = kind != CardKind::Other && bits & 1 != 0 && bits & 6 != 0;
+                assert_eq!(card_settles(card), settles, "{card:?}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod proofs {
+    #![cfg(kani)]
+    //! Kani's proofs of a task's cards (TASKS-26 to 28): `kani::any()` stands for every value of
+    //! the enum and bools of [`ChainCard`].
+
+    use super::*;
+
+    /// Any card, from a number and three bools.
+    fn any_card() -> ChainCard {
+        ChainCard {
+            kind: match kani::any::<u8>() {
+                0 => CardKind::Failed,
+                1 => CardKind::Merge,
+                _ => CardKind::Other,
+            },
+            own: kani::any(),
+            at_work: kani::any(),
+            later_card: kani::any(),
+        }
+    }
+
+    /// TASKS-26: obid's crash, review or merge card about the owner's own job settles whenever
+    /// its job or a later job of its task is queued or running.
+    #[kani::proof]
+    fn tasks_26_a_card_settles_while_its_task_is_at_work() {
+        let card = any_card();
+        if card.own && card.kind != CardKind::Other && card.at_work {
+            assert!(card_settles(card));
+        }
+    }
+
+    /// TASKS-27: such a card settles when a later job of its task has an open card of the same
+    /// kind, and one with nothing of its task at work and no later card stays open.
+    #[kani::proof]
+    fn tasks_27_only_the_newest_card_of_a_task_stays() {
+        let card = any_card();
+        if card.own && card.kind != CardKind::Other {
+            assert_eq!(card_settles(card), card.at_work || card.later_card);
+        }
+    }
+
+    /// TASKS-28: a card that isn't obid's crash, review or merge card, or is about a job that
+    /// isn't the owner's own, never settles for its task, whatever the task does.
+    #[kani::proof]
+    fn tasks_28_a_card_that_needs_the_owner_never_settles_for_its_task() {
+        let card = any_card();
+        if card.kind == CardKind::Other || !card.own {
+            assert!(!card_settles(card));
+        }
     }
 }

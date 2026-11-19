@@ -186,6 +186,16 @@ impl Jobs {
         "ListAgents", "EnterPlanMode", "Skill", "SubagentHandback",
     ];
 
+    /// obid's places an own Claude Code run's file tools never reach, whatever the owner's
+    /// settings allow (`own_sandbox_settings`' deny rules): its vault, its keys, its API token, the
+    /// runs' login folders and the accounts obid added. No agent gets a vault secret.
+    pub(crate) fn secret_places(&self) -> Vec<PathBuf> {
+        let home = &self.config.home;
+        ["vault", "keys", "api-token", "logins", "accounts"]
+            .map(|name| home.join(name))
+            .into()
+    }
+
     /// Every Claude Code account's folder: each `configDir`, and the person's `~/.claude`.
     pub(crate) fn claude_folders(&self) -> Vec<PathBuf> {
         let mut folders: Vec<PathBuf> = self
@@ -226,13 +236,10 @@ impl Jobs {
             .ok_or("obid can't find Claude Code's binary.")?;
         let spec = self.room_spec(room, temp, frozen);
         let mut extra = own_sandbox_env(account, &spec, login)?;
-        // The owner's user settings, which it loads (CONVO-4), held to an own job's rule: nothing
-        // obid's `--settings` can't take back, no file tool allowed outside the room.
-        own_settings_allowed(&own_settings_file(account)?, &spec, &extra)?;
         extra.extend(process::CLAUDE_RUN_SWITCHES.map(|name| (name, "1".into())));
         // Off as `--restricted` had it: what a turn read never lands in the account's memory.
         extra.push((process::NO_AUTO_MEMORY, "1".into()));
-        let settings = own_sandbox_settings(&spec, login, &extra)?;
+        let settings = own_sandbox_settings(&spec, login, &extra, &self.secret_places())?;
         let mut settings: Value = serde_json::from_str(&settings)
             .map_err(|e| format!("obid can't make Claude Code's settings: {e}"))?;
         if let Some(deny) = settings["permissions"]["deny"].as_array_mut() {
@@ -423,7 +430,7 @@ pub(super) fn launches_own(job: &Job, tool: Tool, account: &crate::config::Accou
 }
 
 /// What an own run of `tool` on `account` gets over a boxed run's environment: Claude Code's
-/// ([`own_sandbox_env`], the owner's user settings checked first, LANES-5); Codex's, the account's
+/// ([`own_sandbox_env`], nothing of the owner's refused, LANES-22); Codex's, the account's
 /// own folder as `CODEX_HOME` (its `configDir`, else `~/.codex`), with no login copy: Codex reads
 /// and refreshes its own login, config, skills and MCP servers there (LANES-18), and the person's
 /// own `HOME`, as Claude Code's: Codex and the MCP servers it starts run outside its sandbox, so
@@ -435,9 +442,7 @@ pub(super) fn own_run_env(
     login: &Path,
 ) -> Result<Vec<(&'static str, OsString)>, String> {
     if tool != Tool::Codex {
-        let env = own_sandbox_env(account, spec, login)?;
-        own_settings_allowed(&own_settings_file(account)?, spec, &env)?;
-        return Ok(env);
+        return own_sandbox_env(account, spec, login);
     }
     let home = login_home().ok_or("obid can't find the home Codex's login is in.")?;
     let folder = account.config_dir.clone().unwrap_or(home.join(".codex"));
@@ -629,9 +634,9 @@ mod tests {
     }
 
     /// LANES-12 (docs/contracts/lanes.md): an own conversation's Claude Code gets settings that
-    /// keep `repos/` and the room's own settings, MCP servers and CLAUDE.md read-only, hide obid's
-    /// home from its commands and keep them off the code hosts, on the account's own folder with
-    /// no proxy of obid's and its auto-memory off.
+    /// keep its file tools off `repos/`, the room's own settings, MCP servers and CLAUDE.md, and
+    /// obid's secret places, on the account's own folder with no proxy of obid's and its
+    /// auto-memory off.
     #[cfg(target_os = "macos")]
     #[test]
     fn lanes_12_an_own_conversations_settings_keep_it_in_its_room() {
@@ -692,42 +697,20 @@ mod tests {
                 .iter()
                 .any(|v| v.as_str() == Some(item))
         };
-        let fs = &settings["sandbox"]["filesystem"];
         let deny = &settings["permissions"]["deny"];
         // repos/ and the room's own settings: neither its commands nor its tools write them.
         let mut frozen = vec![repos.clone()];
         frozen.extend(Jobs::ROOM_CONFIG.map(|name| room.join(name)));
         for path in &frozen {
             let path = path.to_str().unwrap();
-            assert!(listed(&fs["denyWrite"], path), "{path}: {fs}");
             assert!(listed(deny, &format!("Edit(/{path}/**)")), "{path}: {deny}");
         }
-        assert!(listed(&fs["allowWrite"], room.to_str().unwrap()), "{fs}");
         // Its `login` folder, with the MCP configuration Claude Code starts servers from outside
-        // any box: no command of its writes there, nor its Edit and Write tools.
-        let config = login.join("oby-mcp.json");
-        assert!(listed(&fs["denyWrite"], login.to_str().unwrap()), "{fs}");
+        // any box: its Edit and Write tools never write there.
         assert!(
             listed(deny, &format!("Edit(/{}/**)", login.display())),
             "{deny}"
         );
-        let writable = fs["allowWrite"].as_array().unwrap().iter();
-        assert!(
-            !writable
-                .filter_map(Value::as_str)
-                .any(|w| config.starts_with(w)),
-            "{fs}"
-        );
-        // obid's home stays hidden from its commands: the vault, logins, other conversations.
-        assert!(listed(&fs["denyRead"], home.to_str().unwrap()), "{fs}");
-        assert!(!listed(&fs["allowRead"], home.to_str().unwrap()), "{fs}");
-        // Its commands reach no code host: only Publish pushes.
-        for host in super::CODE_HOSTS {
-            assert!(
-                listed(&settings["sandbox"]["network"]["deniedDomains"], host),
-                "{host}"
-            );
-        }
         let env = |name: &str| {
             launch
                 .env
@@ -754,7 +737,6 @@ mod tests {
         }
         // Its file tools never reach obid's secret places or an account's settings and hooks,
         // whatever the owner's settings allow: denied outright, as the room is not.
-        let user_settings = account.join("settings.json");
         let (home, account) = (home.display(), account.display());
         for rule in [
             format!("Read(/{home}/vault/**)"),
@@ -805,111 +787,82 @@ mod tests {
                 "{kept:?}: {deny}"
             );
         }
-        // The owner's user settings may not let a file tool past the room without asking.
-        let launch_with = |set: &str| {
-            std::fs::write(&user_settings, set).unwrap();
-            jobs.conversation_own_launch(
-                &claude,
-                &room,
-                &temp,
-                &login,
-                vec![repos.clone()],
-                Vec::new(),
-                place.join("agent.log"),
-            )
-        };
-        for set in [
-            r#"{"permissions": {"allow": ["Read"]}}"#,
-            r#"{"permissions": {"allow": ["Read(~/**)"]}}"#,
-            r#"{"permissions": {"allow": ["Edit(//etc/**)"]}}"#,
-            r#"{"permissions": {"allow": ["Grep"]}}"#,
-            r#"{"permissions": {"allow": ["Glob"]}}"#,
-            r#"{"permissions": {"allow": ["LS"]}}"#,
-            r#"{"permissions": {"additionalDirectories": ["/tmp"]}}"#,
-            r#"{"sandbox": {"excludedCommands": ["git"]}}"#,
-            // A `CLAUDE*` name off the gateway allow-list (`process::claude_gateway`, LANES-4a): a
-            // settings source that would outrank obid's `--settings`.
-            r#"{"env": {"CLAUDE_CODE_MANAGED_SETTINGS_PATH": "/tmp/x.json"}}"#,
-        ] {
-            assert!(launch_with(set).is_err(), "{set}");
-        }
-        for set in [
-            r#"{"permissions": {"allow": ["Read(./notes.md)", "Bash(git status)"]}}"#,
-            r#"{"hooks": {}}"#,
-        ] {
-            assert!(launch_with(set).is_ok(), "{set}");
-        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// LANES-20 (docs/contracts/lanes.md): an own Claude Code job's commands, and an own
-    /// conversation's, may bind, accept and connect on loopback; nothing else in their sandbox's
-    /// network changes, the code hosts still denied, and the sandbox stays on and required.
+    /// LANES-23 (docs/contracts/lanes.md, the owner's decision of 2026-11-16): an own
+    /// conversation's Claude Code starts whatever the owner's user settings hold (hooks, more
+    /// folders, commands out of its sandbox, a bare `Read` allow, any `CLAUDE_*` in their `env`),
+    /// and obid's `--settings` turn none of the owner's sandbox, hooks or permissions off or on:
+    /// they only add deny rules for obid's secret places and pin obid's own variables.
+    #[cfg(target_os = "macos")]
     #[test]
-    fn lanes_20_an_own_runs_commands_have_loopback() {
-        let root = std::env::temp_dir().join(format!("obid-lanes-20-{}", uuid::Uuid::new_v4()));
+    fn lanes_23_an_own_conversation_starts_whatever_the_owners_settings_hold() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("obid-lanes-22-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let root = root.canonicalize().unwrap();
-        let jobs = own_jobs(&root);
-        let [worktree, admin, common, temp, login] =
-            ["worktree", "admin", "common", "temp", "login"].map(|d| root.join(d));
-        let place = jobs.config.home.join("conversations/c");
-        let [room, room_temp] = ["room", "home"].map(|d| place.join(d));
-        for dir in [&worktree, &admin, &common, &temp, &login, &room, &room_temp] {
+        let session = root.join("session");
+        std::fs::write(&session, "#!/bin/sh\nshift 2\nexec \"$@\"\n").unwrap();
+        std::fs::set_permissions(&session, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let account = root.join("account");
+        std::fs::create_dir_all(&account).unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "agents": {"claude": {"bin": "/usr/bin/true",
+                    "accounts": [{"id": "a", "name": "A", "configDir": account}]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Sandbox::detect(&session),
+        )
+        .unwrap();
+        let home = jobs.config.home.canonicalize().unwrap();
+        let place = home.join("conversations/c");
+        let [room, temp, login] = ["room", "home", "login"].map(|d| place.join(d));
+        for dir in [&room, &temp] {
             std::fs::create_dir_all(dir).unwrap();
         }
-        let env: Vec<(&'static str, OsString)> = PINNED_ENV
-            .into_iter()
-            .map(|name| (name, OsString::from("/x")))
-            .collect();
-        let job = jobs.spec(&worktree, &admin, &common, &temp, true, Tool::Claude);
-        let job: Value =
-            serde_json::from_str(&own_sandbox_settings(&job, &login, &env).unwrap()).unwrap();
-        // A conversation's gitless room, as its own launch builds it (LANES-12).
+        let owners = json!({
+            "hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "true"}]}]},
+            "permissions": {"allow": ["Read", "Edit(//etc/**)"],
+                            "additionalDirectories": ["/tmp"]},
+            "sandbox": {"enabled": false, "excludedCommands": ["git"]},
+            "env": {"CLAUDE_CODE_MANAGED_SETTINGS_PATH": "/tmp/x.json", "CLAUDE_FOO": "1"},
+        });
+        std::fs::write(account.join("settings.json"), owners.to_string()).unwrap();
         let claude = jobs.accounts(Tool::Claude).remove(0);
         let launch = jobs
             .conversation_own_launch(
                 &claude,
                 &room,
-                &room_temp,
-                &place.join("login"),
+                &temp,
+                &login,
                 Vec::new(),
                 vec!["-p".into()],
                 place.join("agent.log"),
             )
             .unwrap();
-        let argv: Vec<&str> = launch.argv.iter().filter_map(|a| a.to_str()).collect();
-        let at = argv.iter().position(|a| *a == "--settings").unwrap();
-        let conversation: Value = serde_json::from_str(argv[at + 1]).unwrap();
-        for settings in [&job, &conversation] {
-            let sandbox = &settings["sandbox"];
-            assert_eq!(sandbox["network"]["allowLocalBinding"], true, "{settings}");
-            let network = sandbox["network"].as_object().unwrap();
-            let mut keys: Vec<&str> = network.keys().map(String::as_str).collect();
-            keys.sort_unstable();
-            assert_eq!(keys, ["allowLocalBinding", "deniedDomains"], "{settings}");
-            for host in CODE_HOSTS {
-                assert!(
-                    network["deniedDomains"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .any(|v| v.as_str() == Some(host)),
-                    "{host}: {settings}"
-                );
-            }
-            for (flag, want) in [
-                ("enabled", true),
-                ("failIfUnavailable", true),
-                ("allowUnsandboxedCommands", false),
-                ("autoAllowBashIfSandboxed", false),
-                ("enableWeakerNestedSandbox", false),
-                ("enableWeakerNetworkIsolation", false),
-            ] {
-                assert_eq!(sandbox[flag], want, "{flag}: {settings}");
-            }
-            assert_eq!(sandbox["filesystem"]["disabled"], false, "{settings}");
+        let argv: Vec<String> = launch
+            .argv
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let at = argv.iter().position(|a| a == "--settings").unwrap();
+        let settings: Value = serde_json::from_str(&argv[at + 1]).unwrap();
+        for key in ["sandbox", "disableAllHooks", "hooks"] {
+            assert!(settings[key].is_null(), "{key}: {settings}");
         }
+        assert!(settings["permissions"]["ask"].is_null(), "{settings}");
+        let deny = settings["permissions"]["deny"].as_array().unwrap();
+        let vault = format!("Read(/{}/vault/**)", home.display());
+        assert!(
+            deny.iter().any(|r| r.as_str() == Some(&vault)),
+            "{settings}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1757,34 +1710,12 @@ mod tests {
         Jobs::open(config, events, Sandbox::detect(&session)).unwrap()
     }
 
-    /// Claude Code 2.1.302's built-in tools, as its stream-json `init` event lists them with
-    /// `--tools` naming every tool it might have (`lanes_14_a_skills_grant_still_asks_obid` reads
-    /// a later Claude Code's list itself).
-    #[rustfmt::skip]
-    const INIT_TOOLS: [&str; 34] = [
-        "AskUserQuestion", "Bash", "CronCreate", "CronDelete", "CronList", "DesignSync", "Edit",
-        "EnterPlanMode", "EnterWorktree", "ExitPlanMode", "ExitWorktree", "Glob", "Grep",
-        "ListAgents", "Monitor", "NotebookEdit", "PushNotification", "Read", "RemoteTrigger",
-        "ReportFindings", "ScheduleWakeup", "SendMessage", "Skill", "Task", "TaskCreate",
-        "TaskGet", "TaskList", "TaskStop", "TaskUpdate", "ToolSearch", "WebFetch", "WebSearch",
-        "Workflow", "Write",
-    ];
-
-    /// LANES-14: every built-in tool of Claude Code's is one an own run asks obid about, and so is
-    /// every tool obid's lists name (the file tools' rules, the harmless ones it lets run).
-    #[test]
-    fn lanes_14_every_built_in_tool_asks_obid() {
-        for tool in INIT_TOOLS.iter().chain(&FILE_TOOLS).chain(&Jobs::OWN_QUIET) {
-            assert!(CLAUDE_TOOLS.contains(tool), "{tool}");
-        }
-    }
-
-    /// LANES-17: an own job's Claude Code runs none of the owner's hooks (`disableAllHooks`); and
-    /// (LANES-14) it has only the built-in tools obid answers (`--tools`), its MCP servers'
-    /// resources among them, never one obid doesn't know.
+    /// LANES-14: an own job's Claude Code has only the built-in tools obid answers (`--tools`), its
+    /// MCP servers' resources among them, never one obid doesn't know; and (LANES-17, LANES-23)
+    /// obid's `--settings` leave the owner's hooks and sandbox as they set them.
     #[cfg(target_os = "macos")]
     #[test]
-    fn lanes_17_an_own_job_has_only_the_tools_obid_answers_and_no_hooks() {
+    fn lanes_17_an_own_job_has_only_the_tools_obid_answers() {
         let root = std::env::temp_dir().join(format!("obid-lanes-14e-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let root = root.canonicalize().unwrap();
@@ -1832,23 +1763,15 @@ mod tests {
         }
         let at = argv.iter().position(|a| *a == "--settings").unwrap();
         let settings: Value = serde_json::from_str(argv[at + 1]).unwrap();
-        assert_eq!(settings["disableAllHooks"], true, "{settings}");
-        // LANES-16, RUNTAG-1a: the run is tagged, the tag's file is there, and only its sandbox
-        // may write it, by its --settings.
-        let tag = launch
+        for key in ["disableAllHooks", "sandbox"] {
+            assert!(settings[key].is_null(), "{key}: {settings}");
+        }
+        // LANES-16, RUNTAG-1a: the run is still tagged, for an owner's sandbox to keep it in.
+        let tagged = launch
             .env
             .iter()
-            .find(|(name, _)| name == crate::process::RUN_TAG);
-        let tag = tag
-            .map(|(_, path)| PathBuf::from(path))
-            .expect("no run tag in its env");
-        let writes = settings["sandbox"]["filesystem"]["allowWrite"]
-            .as_array()
-            .unwrap();
-        assert!(
-            writes.iter().any(|w| w.as_str() == tag.to_str()),
-            "{settings}"
-        );
+            .any(|(name, _)| name == crate::process::RUN_TAG);
+        assert!(tagged, "no run tag in its env");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1869,49 +1792,6 @@ mod tests {
         assert_eq!(reach("Monitor", json!({"command": "ls"})), None);
         let secret = json!({"file_path": root.join("home/vault/secrets.json")});
         assert!(matches!(reach("Read", secret), Some(Answer::Deny(_))));
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// LANES-14 (docs/contracts/lanes.md): an own run's Claude Code asks obid before every call of
-    /// a built-in or MCP tool, whatever the owner's skills, settings or hooks allow: its
-    /// `--settings` name them all as `ask` rules, which beat those.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn lanes_14_every_call_of_an_own_run_asks_obid() {
-        let root = std::env::temp_dir().join(format!("obid-lanes-14-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let root = root.canonicalize().unwrap();
-        let jobs = own_jobs(&root);
-        let place = jobs.config.home.join("conversations/c");
-        let [room, temp, login] = ["room", "home", "login"].map(|d| place.join(d));
-        for dir in [&room, &temp] {
-            std::fs::create_dir_all(dir).unwrap();
-        }
-        let claude = jobs.accounts(Tool::Claude).remove(0);
-        let launch = jobs
-            .conversation_own_launch(
-                &claude,
-                &room,
-                &temp,
-                &login,
-                Vec::new(),
-                Vec::new(),
-                place.join("log"),
-            )
-            .unwrap();
-        let at = launch.argv.iter().position(|a| a == "--settings").unwrap();
-        let settings: Value = serde_json::from_str(launch.argv[at + 1].to_str().unwrap()).unwrap();
-        // LANES-17: none of the owner's hooks, in a conversation as in a job.
-        assert_eq!(settings["disableAllHooks"], true, "{settings}");
-        let asked = &settings["permissions"]["ask"];
-        for tool in CLAUDE_TOOLS.iter().chain(&["mcp__*"]) {
-            assert!(
-                asked
-                    .as_array()
-                    .is_some_and(|a| a.iter().any(|t| t == tool)),
-                "{tool}: {asked}"
-            );
-        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1970,307 +1850,6 @@ mod tests {
         }
         // Claude Code reads it as the working folder's `out/secret`, the link's: not the temp's.
         assert!(!place("Read", Path::new("out/secret"), false));
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// LANES-14, measured on this Mac's real Claude Code: a skill whose `allowed-tools` grants
-    /// Write, a hook that answers `allow`, and an allow rule for an MCP tool each let a call through
-    /// without asking, unless obid's `ask` rules are there; then it asks, and with no one to answer
-    /// (`-p`) nothing happens. Every built-in tool its `init` event lists is one obid's rules name
-    /// (`NotebookRead` is no tool of 2.1.302's). Nothing of the login is read or printed.
-    /// `cargo test -p obid --lib lanes_14_a_skill -- --ignored`.
-    #[cfg(target_os = "macos")]
-    #[test]
-    #[ignore = "runs the real Claude Code on this Mac's own login"]
-    fn lanes_14_a_skills_grant_still_asks_obid() {
-        use std::io::{BufRead, Write};
-        use std::os::unix::fs::PermissionsExt;
-        let root = std::env::temp_dir().join(format!("obid-lanes-14c-{}", uuid::Uuid::new_v4()));
-        let [work, outside] = ["work", "outside"].map(|d| root.join(d));
-        let skill = work.join(".claude/skills/probe");
-        std::fs::create_dir_all(&skill).unwrap();
-        std::fs::create_dir_all(&outside).unwrap();
-        std::fs::write(
-            skill.join("SKILL.md"),
-            "---\nname: probe\ndescription: Writes any file the user names.\nallowed-tools: Edit, Write, Read\n---\nWrite the file the user names with the Write tool.\n",
-        )
-        .unwrap();
-        // A hook that allows every call, and an MCP server whose one tool leaves a file when called.
-        let script = |name: &str, text: String| {
-            let path = root.join(name);
-            std::fs::write(&path, text).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            path
-        };
-        let hook = script(
-            "allow.sh",
-            "#!/bin/sh\necho '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}'\n".into(),
-        );
-        let called = outside.join("mcp-called");
-        let server = script(
-            "mcp.pl",
-            format!(
-                r#"#!/usr/bin/perl
-                $| = 1;
-                while (<STDIN>) {{
-                  next unless /"id":\s*(\d+)/; my $id = $1; my $r = "{{}}";
-                  if (/"initialize"/) {{ $r = '{{"protocolVersion":"2025-06-18","capabilities":{{"tools":{{}},"resources":{{}}}},"serverInfo":{{"name":"probe","version":"1"}}}}' }}
-                  elsif (/"tools\/list"/) {{ $r = '{{"tools":[{{"name":"echo","description":"Echoes.","inputSchema":{{"type":"object"}}}}]}}' }}
-                  elsif (/"tools\/call"/) {{ open(my $f, ">", "{}"); close $f; $r = '{{"content":[{{"type":"text","text":"ok"}}]}}' }}
-                  print "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":$r}}\n";
-                }}
-"#,
-                called.display()
-            ),
-        );
-        let mcp = root.join("mcp.json");
-        let servers = json!({"mcpServers": {"probe": {"command": server}}});
-        std::fs::write(&mcp, servers.to_string()).unwrap();
-        // obid lets its harmless tools run at once (`OWN_QUIET`); with no one to answer here,
-        // `--allowedTools` stands in for that answer, and they're left out of the `ask` rules.
-        let quiet = |t: &&&str| !Jobs::OWN_QUIET.contains(t);
-        let ask: Vec<&str> = CLAUDE_TOOLS
-            .iter()
-            .filter(quiet)
-            .chain(&["mcp__*"])
-            .copied()
-            .collect();
-        // What Claude Code did with `settings` and `prompt`, and the built-in tools it had.
-        let run = |settings: Value, prompt: &str, tools: Option<&str>| -> Vec<String> {
-            let mut command = std::process::Command::new("claude");
-            command
-                .current_dir(&work)
-                .args([
-                    "-p",
-                    "--no-session-persistence",
-                    "--setting-sources",
-                    "project",
-                ])
-                .args(["--permission-mode", "default", "--model", "sonnet"])
-                .args([
-                    "--output-format",
-                    "stream-json",
-                    "--verbose",
-                    "--allowedTools",
-                ])
-                .arg(Jobs::OWN_QUIET.join(","))
-                .args(tools.map(|tools| ["--tools", tools]).into_iter().flatten())
-                .args(["--strict-mcp-config", "--mcp-config", mcp.to_str().unwrap()])
-                .args(["--settings", &settings.to_string()])
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped());
-            for (name, _) in std::env::vars() {
-                if name.starts_with("CLAUDE") || name.starts_with("ANTHROPIC_") {
-                    command.env_remove(name);
-                }
-            }
-            let mut child = command.spawn().unwrap();
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(prompt.as_bytes())
-                .unwrap();
-            let mut tools = Vec::new();
-            for line in std::io::BufReader::new(child.stdout.take().unwrap()).lines() {
-                let line: Value = serde_json::from_str(&line.unwrap()).unwrap_or_default();
-                if line["subtype"] == "init" {
-                    let names = line["tools"].as_array().cloned().unwrap_or_default();
-                    tools = names
-                        .iter()
-                        .filter_map(|t| t.as_str().map(str::to_owned))
-                        .collect();
-                }
-            }
-            child.wait().unwrap();
-            tools
-        };
-        let with = |settings: Value, asked: bool| match asked {
-            true => {
-                let mut settings = settings;
-                settings["permissions"]["ask"] = json!(ask);
-                settings
-            }
-            false => settings,
-        };
-        let write = |name: &str| {
-            format!(
-                "Use the Write tool to create {} containing the word x. If refused, stop.",
-                outside.join(name).display()
-            )
-        };
-        let hooked = json!({"hooks": {"PreToolUse": [{"matcher": "Write",
-            "hooks": [{"type": "command", "command": hook}]}]}});
-        let allowed = json!({"permissions": {"allow": ["mcp__probe__echo"]}});
-        for asked in [false, true] {
-            let tag = if asked { "asked" } else { "granted" };
-            let skill = format!(
-                "Invoke the probe skill with the Skill tool, then: {}",
-                write(tag)
-            );
-            let tools = run(with(json!({}), asked), &skill, None);
-            for tool in tools.iter().filter(|t| !t.starts_with("mcp__")) {
-                assert!(
-                    CLAUDE_TOOLS.contains(&tool.as_str()),
-                    "{tool} skips obid's rules"
-                );
-            }
-            assert_eq!(outside.join(tag).exists(), !asked, "a skill's grant, {tag}");
-            let hook = format!("hook-{tag}");
-            run(with(hooked.clone(), asked), &write(&hook), None);
-            assert_eq!(
-                outside.join(&hook).exists(),
-                !asked,
-                "a hook's allow, {tag}"
-            );
-            let _ = std::fs::remove_file(&called);
-            run(
-                with(allowed.clone(), asked),
-                "Call the MCP tool mcp__probe__echo once. If refused, stop.",
-                None,
-            );
-            assert_eq!(called.exists(), !asked, "an MCP allow rule, {tag}");
-        }
-        // LANES-17: neither a hook in the settings nor a skill's runs under obid's settings, which
-        // outrank the project's `disableAllHooks: false` as they do the user's; and with an own
-        // job's `--tools` the skills, the MCP tools and their resources stay.
-        let fired = [outside.join("settings-hook"), outside.join("skill-hook")];
-        let touch =
-            |at: &Path| json!([{"type": "command", "command": format!("touch {}", at.display())}]);
-        let settings = json!({"disableAllHooks": false,
-            "hooks": {"PreToolUse": [{"matcher": "Read", "hooks": touch(&fired[0])}]}});
-        std::fs::write(work.join(".claude/settings.json"), settings.to_string()).unwrap();
-        let hooked = work.join(".claude/skills/hooked");
-        std::fs::create_dir_all(&hooked).unwrap();
-        let skill_hook = format!(
-            "---\nname: hooked\ndescription: Reads a file.\nhooks:\n  PreToolUse:\n    - matcher: \"Read\"\n      hooks:\n        - type: command\n          command: \"touch {}\"\n---\nRead the file the user names.\n",
-            fired[1].display()
-        );
-        std::fs::write(hooked.join("SKILL.md"), skill_hook).unwrap();
-        std::fs::write(work.join("in.txt"), "in").unwrap();
-        let read = "Invoke the hooked skill with the Skill tool, then Read in.txt in this folder.";
-        run(json!({}), read, None);
-        assert!(
-            fired.iter().all(|f| f.exists()),
-            "no hook ran: the probe proves nothing"
-        );
-        fired.iter().for_each(|f| drop(std::fs::remove_file(f)));
-        let tools = run(json!({"disableAllHooks": true}), read, Some(OWN_JOB_TOOLS));
-        assert!(!fired.iter().any(|f| f.exists()), "a hook ran");
-        for tool in ["Skill", "mcp__probe__echo", "ReadMcpResourceTool"] {
-            assert!(tools.iter().any(|t| t == tool), "{tool}: {tools:?}");
-        }
-        assert!(!tools.iter().any(|t| t == "Monitor"), "{tools:?}");
-        // The empty memory folder Claude Code makes for its working folder, in the person's own.
-        let name: String = (work.canonicalize().unwrap().to_string_lossy().chars())
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-            .collect();
-        let projects = login_home().unwrap().join(".claude/projects");
-        let _ = std::fs::remove_dir_all(projects.join(name));
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// LANES-17: Claude Code's managed settings outrank obid's `disableAllHooks`, so an own run
-    /// doesn't start when they'd run a hook (`disableAllHooks: false`, `hooks`, in the managed
-    /// file, a drop-in, the organization's remote settings or a managed preferences plist), nor
-    /// when one can't be read; with none of them, or only `disableAllHooks: true`, it starts.
-    #[test]
-    fn lanes_17_managed_settings_that_would_run_hooks_stop_an_own_run() {
-        let root = std::env::temp_dir().join(format!("obid-lanes-17-{}", uuid::Uuid::new_v4()));
-        let [folder, account] = ["managed", "account"].map(|d| root.join(d));
-        let drop_ins = folder.join("managed-settings.d");
-        std::fs::create_dir_all(&drop_ins).unwrap();
-        std::fs::create_dir_all(&account).unwrap();
-        let (file, remote) = (
-            folder.join("managed-settings.json"),
-            account.join("remote-settings.json"),
-        );
-        let plist = root.join("com.anthropic.claudecode.plist");
-        let plists = [plist.to_str().unwrap()];
-        let allowed = || managed_hooks_allowed(&folder, &plists, &remote);
-        assert_eq!(allowed(), Ok(()));
-        let hook = json!({"PreToolUse": [{"hooks": [{"type": "command", "command": "x"}]}]});
-        std::fs::write(
-            &file,
-            json!({"disableAllHooks": true, "model": "m"}).to_string(),
-        )
-        .unwrap();
-        // Claude Code skips a drop-in whose name starts with a dot.
-        std::fs::write(
-            drop_ins.join(".off.json"),
-            json!({"hooks": hook}).to_string(),
-        )
-        .unwrap();
-        assert_eq!(allowed(), Ok(()));
-        let refused = |doc: &Path, set: Value, key: &str| {
-            std::fs::write(doc, set.to_string()).unwrap();
-            let why = allowed().unwrap_err();
-            assert!(
-                why.contains(&doc.display().to_string()) && why.contains(key),
-                "{why}"
-            );
-            std::fs::remove_file(doc).unwrap();
-        };
-        refused(&file, json!({"disableAllHooks": false}), "disableAllHooks");
-        refused(
-            &drop_ins.join("10-team.json"),
-            json!({"hooks": hook}),
-            "hooks",
-        );
-        refused(&remote, json!({"hooks": hook}), "hooks");
-        // A drop-in that's a link to a file, as Claude Code reads it.
-        let linked = root.join("linked.json");
-        std::fs::write(&linked, json!({"hooks": hook}).to_string()).unwrap();
-        std::os::unix::fs::symlink(&linked, drop_ins.join("30.json")).unwrap();
-        assert!(allowed().unwrap_err().contains("30.json"));
-        std::fs::remove_file(drop_ins.join("30.json")).unwrap();
-        // MANAGED-1: a plugin managed settings turn on (its hooks still run), a policy helper.
-        let plugins = json!({"enabledPlugins": {"off@org": false, "team-policy@org": true}});
-        refused(&file, plugins, "enabledPlugins");
-        refused(
-            &file,
-            json!({"policyHelper": {"path": "/usr/local/bin/p"}}),
-            "policyHelper",
-        );
-        refused(
-            &drop_ins.join("20.json"),
-            json!({"policyHelpers": []}),
-            "policyHelpers",
-        );
-        // Only what runs hooks: a variable named like one, a plugin left off, `allowManagedHooksOnly`
-        // (it turns no hook on) and a folder named `*.json` in the drop-ins, which Claude Code
-        // skips, don't stop it.
-        let env = json!({"env": {"WEBHOOK_URL": "u"}, "enabledPlugins": {"hookify@org": false},
-            "allowManagedHooksOnly": true});
-        std::fs::write(&file, env.to_string()).unwrap();
-        std::fs::create_dir_all(drop_ins.join("folder.json")).unwrap();
-        assert_eq!(allowed(), Ok(()));
-        std::fs::remove_file(&file).unwrap();
-        // One that isn't JSON, or can't be read, stops it too.
-        std::fs::write(&file, "{not json").unwrap();
-        assert!(allowed().is_err());
-        std::fs::remove_file(&file).unwrap();
-        std::fs::create_dir_all(&file).unwrap();
-        assert!(allowed().is_err());
-        std::fs::remove_dir(&file).unwrap();
-        #[cfg(target_os = "macos")]
-        {
-            let json = root.join("plist.json");
-            std::fs::write(&json, json!({"hooks": hook}).to_string()).unwrap();
-            let made = std::process::Command::new("/usr/bin/plutil")
-                .args(["-convert", "xml1", "-o"])
-                .args([&plist, &json])
-                .status()
-                .unwrap();
-            assert!(made.success());
-            let why = allowed().unwrap_err();
-            assert!(
-                why.contains("com.anthropic.claudecode.plist") && why.contains("hooks"),
-                "{why}"
-            );
-            std::fs::remove_file(&plist).unwrap();
-        }
-        assert_eq!(allowed(), Ok(()));
         let _ = std::fs::remove_dir_all(&root);
     }
 

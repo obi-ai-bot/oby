@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom';
 
 // How far a menu keeps from the window's edge, and from its button.
 const EDGE = 8, GAP = 4;
+// how far a menu sits from its button: the usage panel too, anchored to its gauge as a menu is (COMPOSER-18)
+export const MENU_GAP = GAP;
 
 // Where a menu goes: under its button if it fits there, else on the side with more room, never
 // taller than that room (it scrolls instead), so it always stays inside the window.

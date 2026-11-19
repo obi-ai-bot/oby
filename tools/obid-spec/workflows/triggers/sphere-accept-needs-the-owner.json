@@ -1,0 +1,219 @@
+{
+  "schemaVersion": "2",
+  "name": "Sphere deliveries: Accept needs the owner's hand",
+  "version": "1.0.0",
+  "description": "Another Oby's review request waits in the inbox; an Accept that isn't signed by the owner's device is 403, the item stays open and no job starts, while Later takes the token alone (SPHERE-17).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "dana-asks-for-a-review",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.alex-joined.obiId}",
+          "type": "review_request",
+          "expiresIn": 3600,
+          "body": {
+            "goal": "Add an average helper",
+            "repo": "obi-e2e/fixture-app",
+            "base_branch": "main",
+            "head_branch": "feature/average",
+            "head_sha": "6d20146f366b9fac8907b5066c30ee39aaec09b3",
+            "acceptance": [
+              {
+                "kind": "tests_pass"
+              }
+            ],
+            "summary": "Adds src/average.js."
+          }
+        },
+        "expect": {
+          "status": 202
+        }
+      }
+    },
+    {
+      "id": "the-request-in-alexs-inbox",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "obiRequest",
+                "title": "Review request from dana",
+                "options": [
+                  "Accept",
+                  "Accept, and remember for this repo",
+                  "Decline",
+                  "Decline, and remember for this repo"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "sphere-17-an-unsigned-accept-403",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/inbox/obi-${state.dana-asks-for-a-review.body.correlationId}/answer",
+        "body": {
+          "answer": "Accept"
+        },
+        "expect": {
+          "status": 403,
+          "body": {
+            "error": "Only you accept another Oby's work, from your own app: this Accept wasn't signed, so nothing started."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-17"
+        ]
+      }
+    },
+    {
+      "id": "sphere-17-the-item-stays-open",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "obi-${state.dana-asks-for-a-review.body.correlationId}",
+                "state": "open",
+                "answer": null
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-17"
+        ]
+      }
+    },
+    {
+      "id": "sphere-17-no-job-started",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-17"
+        ]
+      }
+    },
+    {
+      "id": "sphere-17-later-takes-the-token-alone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/inbox/obi-${state.dana-asks-for-a-review.body.correlationId}/answer",
+        "body": {
+          "later": "2030-01-01T10:00:00Z"
+        },
+        "expect": {
+          "status": 200
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-17"
+        ]
+      }
+    }
+  ]
+}

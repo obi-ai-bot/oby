@@ -2,11 +2,13 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, Copy, Search, X } from 'lucide-react';
 import { BRANDS, BrandMark, type Brand } from './brands';
-import { Group, Row, Select, useSetting } from './SettingsView';
+import { Group, Row, useSetting } from './SettingsView';
 import { Spinner } from './SetupCard';
 import { onObid } from './lean';
-import { api, type GitHub, type Tetrix, type TetrixTarget } from './obid';
+import { api, type Connectors as Seen, type GitHub, type Tetrix } from './obid';
+import { TetrixAddress, useTetrixAddress } from './TetrixAddress';
 import { say, useLive } from './live';
+import { signInWhy } from './signInWhy';
 
 // Settings › Connectors: what's connected, then what's available, with a search over both. On obid
 // (lean.ts) the ones obid has, as they stand; elsewhere Sangam's demo list.
@@ -15,7 +17,7 @@ export default function Connectors() {
 }
 
 // A row: its logo, name and line, and its buttons (Disconnect, or what it needs)
-type Connector = { name: string; about: string; brand: Brand; connected: boolean; control: React.ReactNode };
+type Connector = { name: string; about: string; brand: Brand; connected: boolean; control: React.ReactNode; key?: string };
 
 function List({ connectors }: { connectors: Connector[] }) {
   const [query, setQuery] = useState('');
@@ -33,7 +35,7 @@ function List({ connectors }: { connectors: Connector[] }) {
     {groups.map((g, k) => (
       <Group key={g.title} i={2 + k} title={g.title}>
         {g.items.map((c) => (
-          <Row key={c.name} label={<span className="set-connector"><BrandMark brand={c.brand} /><span className="set-label">{c.name}<span className="set-about">{c.about}</span></span></span>}>
+          <Row key={c.key ?? c.name} label={<span className="set-connector"><BrandMark brand={c.brand} /><span className="set-label">{c.name}<span className="set-about">{c.about}</span></span></span>}>
             {c.control}
           </Row>
         ))}
@@ -78,16 +80,18 @@ function Mock() {
 // What obid last said about both, kept: the page opens on it at once and reads again behind it.
 // Settings reads it as it opens (SettingsView), as obid's first GitHub answer takes a moment (it
 // asks gh: ~600ms; then it's quick)
-let last: { github: GitHub; tetrix: Tetrix } | null = null, lastAt = 0;
-let reading: Promise<{ github: GitHub; tetrix: Tetrix }> | null = null;
+type Read = { github: GitHub; tetrix: Tetrix; seen: Seen };
+let last: Read | null = null, lastAt = 0;
+let reading: Promise<Read> | null = null;
 // A read already on its way is shared; fresh (after a change: a Disconnect, a sign-in started) waits
 // for it and reads again, so what it shows is from after the change
 function readBoth(fresh = false) {
   if (reading && !fresh) return reading;
   const before = reading?.catch(() => {}) ?? Promise.resolve();
-  const mine: Promise<{ github: GitHub; tetrix: Tetrix }> = before
-    .then(() => Promise.all([api.github(), api.tetrix()]))
-    .then(([github, tetrix]) => { lastAt = Date.now(); return (last = { github, tetrix }); })
+  const mine: Promise<Read> = before
+    // the owner's own connectors: none from an obid without them (404), as before any was seen
+    .then(() => Promise.all([api.github(), api.tetrix(), api.connectors().catch((): Seen => ({ claude: null }))]))
+    .then(([github, tetrix, seen]) => { lastAt = Date.now(); return (last = { github, tetrix, seen }); })
     .finally(() => { if (reading === mine) reading = null; });
   return (reading = mine);
 }
@@ -97,13 +101,15 @@ export const readConnectors = () => { if (onObid && Date.now() - lastAt > 30_000
 function Live() {
   const [github, setGitHub] = useState<GitHub | null>(last?.github ?? null);
   const [tetrix, setTetrix] = useState<Tetrix | null>(last?.tetrix ?? null);
+  const [seen, setSeen] = useState<Seen | null>(last?.seen ?? null);
   const [problem, setProblem] = useState<string | null>(null);
   // each connector's sign-in on its way, apart (gh takes a few seconds to give its code)
   const [busy, setBusy] = useState({ GitHub: false, Tetrix: false });
-  // the window open, if any
+  // the window open, if any; and why Tetrix's last try didn't take (obid's reason, in words), under its field
   const [open, setOpen] = useState<'tetrix' | 'github-off' | null>(null);
+  const [said, setSaid] = useState<string | undefined>();
   const repos = useLive().repos.length;
-  const read = (fresh = false) => readBoth(fresh).then(({ github: g, tetrix: t }) => { setGitHub(g); setTetrix(t); setProblem(null); }, (e: Error) => setProblem(e.message));
+  const read = (fresh = false) => readBoth(fresh).then(({ github: g, tetrix: t, seen: c }) => { setGitHub(g); setTetrix(t); setSeen(c); setProblem(null); }, (e: Error) => setProblem(e.message));
   useEffect(() => { void read(); }, []);
   const signingIn = !!(github?.signIn || tetrix?.signIn);
   useEffect(() => {
@@ -150,11 +156,13 @@ function Live() {
     tetrixRow.control = <button className="set-button set-connect" onClick={() => setOpen('tetrix')}>Connect</button>;
   }
 
+  const own = ownRows(seen);
   return <>
-    <List connectors={[gitHub, tetrixRow]} />
+    <List connectors={[gitHub, tetrixRow, ...own]} />
+    {!own.length && <p className="set-foot">Your Claude Code’s connectors show here after your first conversation.</p>}
     {open === 'tetrix' && (
-      <TetrixWindow tetrix={t} waiting={!!t.signIn || busy.Tetrix} onClose={() => setOpen(null)}
-        onConnect={(to) => act(async () => page(await api.tetrixSignIn(to)), 'Tetrix')()}
+      <TetrixWindow tetrix={t} said={said} waiting={!!t.signIn || busy.Tetrix} onClose={() => { setOpen(null); setSaid(undefined); }}
+        onConnect={(to) => { setSaid(undefined); act(async () => { try { page(await api.tetrixSignIn(to)); } catch (e) { setSaid(signInWhy('Tetrix', e)); } }, 'Tetrix')(); }}
         onCancel={() => { act(api.tetrixCancel)(); setOpen(null); }} />
     )}
     {/* (closed: read again, in case gh was signed out meanwhile) */}
@@ -162,15 +170,46 @@ function Live() {
   </>;
 }
 
+// The owner's own Claude Code's MCP servers and claude.ai connectors (docs/contracts/connectors.md,
+// CONNECTORS-4): what an own conversation's session named, as obid kept it, after GitHub and Tetrix.
+// They're the owner's, in Claude Code and on claude.ai: Oby adds, signs in to and removes none, so a
+// claude.ai one waiting for its sign-in opens claude.ai's own page for it.
+const CLAUDE_AI = 'claude.ai ';
+const CLAUDE_AI_CONNECTORS = 'https://claude.ai/settings/connectors';
+function ownRows(seen: Seen | null): Connector[] {
+  return (seen?.claude?.servers ?? []).map((s, i) => {
+    const fromClaudeAi = s.name.startsWith(CLAUDE_AI);
+    const name = fromClaudeAi ? s.name.slice(CLAUDE_AI.length) : s.name;
+    const whose = fromClaudeAi ? 'Your claude.ai connector' : 'Your Claude Code’s MCP server';
+    const about = s.status === 'connected' ? whose
+      : s.status === 'needs-auth' ? (fromClaudeAi ? 'Sign in to it on claude.ai' : 'Sign in to it in Claude Code (/mcp)')
+      : s.status === 'pending' ? 'Connecting'
+      : s.status === 'failed' ? 'Couldn’t connect'
+      : s.status === 'disabled' ? 'Turned off in Claude Code'
+      : whose;
+    const control = fromClaudeAi && s.status === 'needs-auth'
+      ? <button className="set-button set-connect" onClick={() => window.app?.openExternal(CLAUDE_AI_CONNECTORS)}>Connect</button>
+      : null;
+    return { key: `own-${i}-${s.name}`, name, about, brand: brandOf(name), connected: s.status === 'connected', control };
+  });
+}
+
+// its logo when the app has one, else its first letter on a circle
+function brandOf(name: string): Brand {
+  const n = name.toLowerCase();
+  const known = n === 'slack' ? BRANDS.slack : n === 'gmail' ? BRANDS.gmail : n === 'google meet' ? BRANDS.meet
+    : n.startsWith('zoom') ? BRANDS.zoom : n === 'tetrix' ? BRANDS.tetrix : n.startsWith('deskree') ? BRANDS.deskree
+    : n === 'github' ? BRANDS.github : null;
+  return known ?? { ...BRANDS.circle, letter: (name.trim()[0] ?? '?').toUpperCase() };
+}
+
 // where a sign-in's page is: " at github.com"
 function at(url?: string) {
   try { return url ? ` at ${new URL(url).host}` : ''; } catch { return ''; }
 }
 
-// what the person calls the Tetrix Oby uses: its preset's name, else its address's host
+// what the person calls the Tetrix Oby uses: its address's host
 function serverName(t: Tetrix) {
-  const preset = t.presets.find((p) => p.id === t.preset);
-  if (preset) return preset.name;
   try { return new URL(t.url ?? '').host; } catch { return 'Tetrix'; }
 }
 
@@ -199,29 +238,25 @@ export function Window({ brand, title, onClose, alert, children }: { brand?: Bra
   );
 }
 
-// Which Tetrix Oby signs in to, and the sign-in: a preset (config.json's tetrixPresets, none by
-// default: GET /v1/tetrix's presets), or the owner's own Tetrix's MCP address (obid checks it: HTTPS, plain HTTP
-// only on 127.0.0.1). Connecting to another signs Oby in there in place of the one before. Picked,
-// Continue opens its page in the browser and this waits, until obid says it's in (then it closes
-// itself, and the row is under Connected) or Cancel. Setting up opens it too (SetupCard's
-// TetrixRow), so the person gives their Tetrix's address there.
-export function TetrixWindow({ tetrix: t, waiting, onConnect, onCancel, onClose }: {
-  tetrix: Tetrix; waiting: boolean; onConnect: (to: TetrixTarget) => void; onCancel: () => void; onClose: () => void;
+// Which Tetrix Oby signs in to, and the sign-in: the address of the person's own (obid checks it:
+// HTTPS, plain HTTP only on 127.0.0.1; Oby offers no Tetrix by name, TETRIX-URL-1), in the field the
+// first run's Tetrix row has too. Connecting to another signs Oby in there in place of the one
+// before. Continue opens its page in the browser and this waits, until obid says it's in (then it
+// closes itself, and the row is under Connected) or Cancel. Setting up has the field on its row
+// instead (SetupCard's TetrixRow).
+export function TetrixWindow({ tetrix: t, said, waiting, onConnect, onCancel, onClose }: {
+  tetrix: Tetrix; said?: string; waiting: boolean; onConnect: (to: { url: string }) => void; onCancel: () => void; onClose: () => void;
 }) {
-  // starting from the one Oby uses (or used last), else the first preset
-  const [pick, setPick] = useState(t.preset ?? (t.url ? 'url' : t.presets[0]?.id ?? 'url'));
-  const [url, setUrl] = useState(t.preset ? '' : t.url ?? '');
   // the server Continue was for: the window closes once obid is signed in there (an Edit's old
   // server being connected already says nothing); a sign-in that didn't take shows the form again
-  const [aim, setAim] = useState<TetrixTarget | null>(null);
-  const chosen: TetrixTarget | null = pick === 'url' ? (url.trim() ? { url: url.trim() } : null) : { preset: pick };
-  const same = t.connected && !t.error && (pick === 'url' ? !t.preset && url.trim() === t.url : pick === t.preset);
+  const [aim, setAim] = useState<string | null>(null);
+  const address = useTetrixAddress(said, { initial: t.url ?? '', onConnect: (url) => { setAim(url); onConnect({ url }); } });
+  const same = t.connected && !t.error && address.url === t.url;
   useEffect(() => {
     if (!aim || waiting) return;
-    const there = 'preset' in aim ? t.preset === aim.preset : !t.preset && t.url === aim.url;
-    if (t.connected && !t.error && there) onClose(); else setAim(null);
-  }, [aim, waiting, t.connected, t.error, t.preset, t.url]);
-  const server = pick === 'url' ? (() => { try { return new URL(url).host; } catch { return 'the server'; } })() : t.presets.find((p) => p.id === pick)?.name ?? 'Tetrix';
+    if (t.connected && !t.error && t.url === aim) onClose(); else setAim(null);
+  }, [aim, waiting, t.connected, t.error, t.url]);
+  const server = (() => { try { return new URL(address.url ?? '').host; } catch { return 'the server'; } })();
   // waiting: closing it ends the sign-in, once obid has one to end (while it starts, there's none yet)
   return (
     <Window brand={BRANDS.tetrix} title={t.connected ? 'Edit Tetrix' : 'Connect Tetrix'} onClose={waiting ? (t.signIn ? onCancel : () => {}) : onClose}>
@@ -230,12 +265,11 @@ export function TetrixWindow({ tetrix: t, waiting, onConnect, onCancel, onClose 
         <div className="modal-actions"><button type="button" className="set-button" disabled={!t.signIn} onClick={onCancel}>Cancel</button></div>
       </> : <>
         <p className="modal-lede">Oby signs in once, and all your agents can use it.</p>
-        <label className="modal-label">Server</label>
-        <span className="connector-select"><Select value={pick} onChange={setPick} label="Tetrix server" options={[...t.presets.map((p) => [p.id, p.name] as const), ['url', 'Another server']]} /></span>
-        {pick === 'url' && <input className="modal-field connector-address" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://tetrix.example.com/mcp" aria-label="Tetrix server address" autoComplete="off" spellCheck={false} autoFocus />}
+        <label className="modal-label">Your Tetrix URL</label>
+        <div className="connector-address"><TetrixAddress {...address} autoFocus /></div>
         <div className="modal-actions">
           <button type="button" className="set-button" onClick={onClose}>Cancel</button>
-          <button type="button" className="modal-primary" disabled={!chosen || same} onClick={() => { if (chosen) { setAim(chosen); onConnect(chosen); } }}>Continue in Browser</button>
+          <button type="button" className="modal-primary" disabled={!address.ready || same} onClick={address.connect}>Continue in Browser</button>
         </div>
       </>}
     </Window>

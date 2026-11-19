@@ -348,13 +348,13 @@ Every line of the root `AGENTS.md` at `3ff84b79` that states a rule (each bullet
 - `core/AGENTS.md`: Every Claude Code job of the owner's own (not another Oby's, not `untrusted`, not Oby's own review) runs unboxed by obid, on its account's own folder and Keychain login, with no copy and no egress proxy (LANE-1). Its check gets none of the declared secrets once its run skipped obid's proxy (LANE-3a).
 
 ### L174
-- `core/AGENTS.md`: Only its commands are kernel-sandboxed: Claude Code's own sandbox, which obid's settings keep out of obid's home, the person's home and every account's folder but the job's own paths, and off the git pointers.
+- `core/AGENTS.md`: Its commands and its Read, Edit and Write tools run as the owner's terminal runs them, under the owner's own Claude Code settings, sandbox, hooks and permissions ([why](docs/decisions/2026-11-16-own-lane-trusts-the-cli.md)): obid refuses no run for what those settings hold, and its `--settings` only pin obid's own variables (its no-publish settings, the job's git folders) and deny the file tools obid's vault, keys, token, logins and accounts.
 
 ### L175
-- `core/AGENTS.md`: Its Read, Edit and Write tools run in Claude Code's own process, outside any sandbox, and rely on Claude Code's own path checks and obid's refusal of any path outside the worktree, so a link swapped between that check and the open isn't stopped (docs/runner-api.md, `claudeOwnSandbox`; proven by `own_sandbox_probes`). That race is accepted: the kernel enforces commands only, and Oby's box stays for everything else ([why](docs/decisions/2026-10-27-own-lane-race-accepted.md)).
+- `core/AGENTS.md`: obid answers only what Claude Code asks it about, by the job's mode and its refusal of paths outside the worktree; an allow rule, a skill's `allowed-tools` or a hook of the owner's lets a call through without asking, as in their terminal. A command the owner's settings leave unsandboxed reaches what the owner's user can, obid's home included: the owner's decision, for their own work only.
 
 ### L176
-- `core/AGENTS.md`: On macOS, an owner's own Claude Code conversation runs the same way (LANES-12): on their own Claude Code login with no copy, its commands in Claude Code's own sandbox, which writes only its room. Reading something untrusted keeps it in the own lane and marks it (CONVO-1); elsewhere it stays boxed until the own lane is proven there.
+- `core/AGENTS.md`: On macOS, an owner's own Claude Code conversation runs the same way (LANES-12): on their own Claude Code login with no copy, its file tools denied obid's secret places, the stored threads and its room's `repos/`. Reading something untrusted keeps it in the own lane and marks it (CONVO-1); elsewhere it stays boxed until the own lane is proven there.
 
 ### L177
 - `core/AGENTS.md`: Another Oby's conversation, Codex's and Cursor's (no shell, CONVO-2) and the brain's planner (CONVO-5) stay boxed with a login copy.

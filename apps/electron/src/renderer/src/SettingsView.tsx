@@ -7,6 +7,7 @@ import { AGENTS, agentOf, type Agent } from './view';
 import { MODES, SANDBOX } from './modes';
 import { OwnerAvatar } from './ObyFace';
 import { useSpheres } from './spheres';
+import { SphereJoinPage } from './SphereSettings';
 import { everything, onObid } from './lean';
 import qrcode from 'qrcode-generator';
 import { ApiError, api, qrText, type CursorGroup, type Invitation, type PairedDevice, type ModelOptions, type Models, type SavedRule, type SignIn, type Status } from './obid';
@@ -19,7 +20,9 @@ import { Menu } from './Menu';
 import { liveState, lookAtUsage, patchStatus, say, useLive } from './live';
 import { AUTO, TALK_DEFAULT, talkChoices, tools } from './talk';
 import { isAgent } from '../../shared/obid-wire';
+import AgentBinaries from './AgentBinaries';
 import { version } from '../../../package.json';
+import { COMMIT, versionText } from '../../shared/build';
 import type { Update } from '../../shared/updates';
 
 // how long the way out takes (the sink animation in app.css)
@@ -35,11 +38,15 @@ const LEAVE_MS = 220;
 // Agents takes Accounts' and Models' place: each agent's accounts with its model and efforts,
 // and which one new tasks go to (the old two stay with ?everything)
 // On obid, Remote access shows only pairing an iPhone (Pairing), as the Swift Mac app's Settings › Runner had it;
-// the owner's order of 2026-11-01: no word a person sees says Runner, so that page went
-const LATER = new Set([...(onObid ? [] : ['remote']), 'sharing', 'vault', 'accounts', 'models']);
+// the owner's order of 2026-11-01: no word a person sees says Runner, so that page went.
+// Hidden on obid too while the iPhone app is off the table (the owner's word, 2026-11-18): it comes back
+// with the iPhone app; ?everything still shows it (PAIRING-12)
+const LATER = new Set(['remote', 'sharing', 'vault', 'accounts', 'models']);
 export const SETTINGS_PAGES = [
   { id: 'general', label: 'General' },
   { id: 'agents', label: 'Agents' },
+  // joining one from its invite link (SphereSettings.tsx, SPHEREAPP-4)
+  { id: 'obysphere', label: 'Obysphere' },
   { id: 'sharing', label: 'Sharing' },
   { id: 'remote', label: 'Remote access' },
   { id: 'accounts', label: 'Accounts' },
@@ -253,7 +260,8 @@ function Notifications() {
         <Row label="Finished tasks"><Switch on={kinds?.finished ?? true} onChange={turnKind('finished')} label="Finished tasks" /></Row>
         <Row label="Merged pull requests"><Switch on={kinds?.merged ?? true} onChange={turnKind('merged')} label="Merged pull requests" /></Row>
         <Row label="Accounts at their limit"><Switch on={kinds?.limit ?? true} onChange={turnKind('limit')} label="Accounts at their limit" /></Row>
-        <Row label="Banners, sounds and Focus"><button className="set-button" onClick={bridge.openSystemSettings}>Open System Settings</button></Row>
+        {/* no arguments: the bridge can't clone React's click event, and the press did nothing (ALERTS-19) */}
+        <Row label="Banners, sounds and Focus"><button className="set-button" onClick={() => bridge.openSystemSettings()}>Open System Settings</button></Row>
       </> : <Row label="Alerts"><Value>Allowed</Value></Row>}
     </Group>
   );
@@ -334,7 +342,7 @@ function MockRemote() {
 // session: the 5-hour window's use (null: none reported) and when it starts over; weekly: whether
 // used is the week's
 // chatgpt: signed in with Continue with ChatGPT (docs/contracts/chatgpt-sign-in.md)
-export type Account = { chatgpt?: boolean; background?: boolean; signingIn?: boolean; id: string; agent: Agent | (string & {}); name: string; payer: string; who?: string; used: number | null; resets: string; plan?: Plan; signedIn?: boolean; label?: string | null; session?: number | null; sessionResets?: string | null; weekly?: boolean; full?: boolean; models?: { id: string; name: string }[]; modelsRead?: boolean };
+export type Account = { chatgpt?: boolean; background?: boolean; signingIn?: boolean; id: string; agent: Agent | (string & {}); name: string; payer: string; who?: string; used: number | null; resets: string; plan?: Plan; signedIn?: boolean; label?: string | null; session?: number | null; sessionResets?: string | null; weekly?: boolean; full?: boolean; fullTill?: string | null; models?: { id: string; name: string }[]; modelsRead?: boolean; cantRun?: string };
 // how full an account (or an agent) is: past 80% yellow, past 90% red
 export const fullness = (used: number) => (used > 90 ? 'is-over' : used > 80 ? 'is-high' : '');
 // what a card's bar shows: its 5-hour session, else its week
@@ -347,6 +355,9 @@ export const weekWords = (a: Account) => (a.weekly && a.used != null ? `This wee
   : a.weekly === false && a.session != null ? 'No weekly use reported yet' : a.resets);
 // a reset this week by its day; further off (a monthly plan's), by its date
 const resetDay = (at: string, now: number) => new Date(at).toLocaleDateString([], Date.parse(at) - now < 7 * 86_400_000 ? { weekday: 'long' } : { month: 'short', day: 'numeric' });
+// when a full account takes work again: its time today, else its day and time
+const fullWords = (at: string, now: number) => new Date(at).toLocaleString([], Date.parse(at) - now < 86_400_000 && new Date(at).getDate() === new Date(now).getDate()
+  ? { hour: 'numeric', minute: '2-digit' } : { weekday: 'short', hour: 'numeric', minute: '2-digit' });
 // an account as obid's status says it (docs/contracts/usage.md, USAGE-1 and USAGE-6): its week's
 // share (else its session's), its 5-hour session (signed in only; a session past its reset reads
 // 0 with no week, and with one isn't shown) and when it starts over, and what to say when there's no figure ("No usage" for Cursor, whose
@@ -357,20 +368,25 @@ export function accountRow(a: Status['accounts'][number], now: number): Account 
   const used = a.sevenDay ?? (ultra ? null : a.fiveHour);
   const over = !!a.fiveHourResets && Date.parse(a.fiveHourResets) <= now;
   // a session that ended says nothing beside a week (an old reading, or a plan with no 5-hour window): the week is what's left
+  // obid holds it full (its `fullUntil` ahead), whatever its tool: a ChatGPT login or any other (USAGE-14)
+  const full = a.signedIn && !!a.fullUntil && Date.parse(a.fullUntil) > now;
   const session = ultra || !a.signedIn || a.fiveHour == null ? null : over ? (a.sevenDay != null ? null : 0) : Math.round(a.fiveHour * 100);
   return {
     id: a.id, agent: a.agent, name: a.name, payer: a.payer ?? 'You', who: [a.email, a.org, a.plan && a.plan[0].toUpperCase() + a.plan.slice(1)].filter(Boolean).join(' · ') || undefined, signedIn: a.signedIn, label: a.label ?? null, used: used == null ? null : Math.round(used * 100),
     chatgpt: a.login === 'chatgpt',
     background: a.backgroundConsent === true,
     signingIn: a.signingIn,
-    resets: !a.signedIn ? a.label ?? 'Not signed in' : a.login === 'chatgpt' && a.fullUntil ? LIMIT_REACHED : used == null ? (a.agent === 'cursor' ? 'No usage' : 'No use reported yet')
+    resets: !a.signedIn ? a.label ?? 'Not signed in' : a.login === 'chatgpt' && full ? LIMIT_REACHED : used == null ? (a.agent === 'cursor' ? 'No usage' : 'No use reported yet')
       : a.sevenDayResets ? `Resets ${resetDay(a.sevenDayResets, now)}` : 'No reset reported',
     session,
     sessionResets: session != null && !over && a.fiveHourResets ? new Date(a.fiveHourResets).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null,
     weekly: a.sevenDay != null && a.agent !== 'cursor',
-    full: !!a.fullUntil && Date.parse(a.fullUntil) > now,
+    full,
+    // when obid lets it take work again, in the Mac's time (USAGE-14)
+    fullTill: full ? fullWords(a.fullUntil!, now) : null,
     models: a.models,
     modelsRead: a.modelsRead,
+    cantRun: a.cantRun,
   };
 }
 const ACCOUNTS: Account[] = [
@@ -403,7 +419,9 @@ function useSignIns(accounts: Account[], setAccounts: (a: Account[]) => void) {
   // GET /v1/status has them, read as the page opens and after a change (obid also reads the usage
   // shown here then, which comes in its `accounts` event)
   const [offered, setOffered] = useState<Found[]>(onObid ? [] : [{ agent: 'codex', id: 'codex', name: 'Codex' }]);
-  const look = () => { if (onObid) api.status().then((s) => setOffered(s.availableLogins ?? []), () => {}); };
+  // and those another profile holds (an account is in one profile only, B00-40: PROFILES-50)
+  const [elsewhere, setElsewhere] = useState<NonNullable<Status['otherProfileLogins']>>([]);
+  const look = () => { if (onObid) api.status().then((s) => { setOffered(s.availableLogins ?? []); setElsewhere(s.otherProfileLogins ?? []); }, () => {}); };
   useEffect(look, []);
   // sign-ins under way, by account: opening, then its page (with Codex's code, or Claude Code's to
   // paste), then that code on its way ('sending') or sent with no answer in time ('sent')
@@ -482,7 +500,15 @@ function useSignIns(accounts: Account[], setAccounts: (a: Account[]) => void) {
       put(gone.id); look();
       if (said?.revoked === false) setProblems((p) => ({ ...p, [ADD]: `ChatGPT didn’t confirm ending ${gone.name}’s session. You can disconnect it in ChatGPT settings.` }));
     }))} onClose={() => setRemoving(null)} />;
-  return { offered, setOffered, look, signing, put, problems, busy, tried, signIn, signInChatGpt, sendCode, cancel, remove, removeWindow };
+  // signing one out (ACCOUNTS-23): the tool's own logout, the account staying, signed in again with
+  // Sign In; off obid, the mock's row only
+  const [outing, setOuting] = useState<string | null>(null);
+  const signOut = (a: Account) => tried(a.id, async () => {
+    if (!onObid) { setAccounts(accounts.map((x) => (x.id === a.id ? { ...x, signedIn: false, label: null } : x))); return; }
+    setOuting(a.id);
+    try { await api.signOut(a.id); } finally { setOuting(null); }
+  });
+  return { offered, setOffered, elsewhere, look, signing, put, problems, busy, tried, signIn, signInChatGpt, sendCode, cancel, remove, removeWindow, signOut, outing };
 }
 
 function Accounts() {
@@ -728,7 +754,7 @@ function Models() {
 // week) with the model and efforts its jobs run on, and its Remove; then Add an agent. obid keeps
 // the default agent and the models (#1573, #1574; docs/contracts/agents.md) once its status says
 // defaultAccount; an older obid, and the mock, keep them here (agent.default, models.mine)
-const EFFORT_NAMES: Record<string, string> = { none: 'None', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max', ultra: 'Ultra' };
+export const EFFORT_NAMES: Record<string, string> = { none: 'None', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max', ultra: 'Ultra' };
 const MOCK_MODELS: Models = {
   claude: { model: 'claude-opus-5-5', effort: 'xhigh', complexEffort: 'xhigh' },
   codex: { model: 'gpt-6.1-sol', effort: 'high', complexEffort: 'high' },
@@ -834,6 +860,22 @@ export async function moveKeptChoices(status: Status): Promise<boolean> {
   }
   return moved;
 }
+// Sign in from a conversation's line (CHATSTATE-2): Settings › Agents opens and starts that
+// account's own sign-in, as its Sign In does; one obid doesn't sign in (the tool's own login on this
+// Mac) opens at its row, which says how
+let signInNext: string | null = null;
+// what Sign in starts for an account, as its row's own button would: Continue with ChatGPT where it
+// offers that, else Sign In; none for the tool's own login (the tool signs it in) or one that can run
+export function signInAction(x: Account, chatgptOffered: boolean): 'signIn' | 'chatgpt' | null {
+  const out = x.signedIn === false, plan = x.agent === 'codex' && out && (!!x.chatgpt || (chatgptOffered && !x.label));
+  if (!isAgent(x.agent) || (ownLogin(x) && !plan) || !(out || x.cantRun)) return null;
+  return plan ? 'chatgpt' : 'signIn';
+}
+export function signInFromChat(id: string) {
+  signInNext = id;
+  dispatchEvent(new CustomEvent('oby:open-setting', { detail: everything ? 'accounts' : 'agents' }));
+}
+
 // a pop-up's choices, the one set kept even when the choices don't (yet) have it
 const choices = (list: { id: string; name: string }[], set: string | undefined) =>
   [...(set && !list.some((m) => m.id === set) ? [{ id: set, name: set }] : []), ...list].map((m) => [m.id, m.name] as const);
@@ -846,9 +888,23 @@ export function Agents() {
   const [chosen, setChosen] = useDefaultAccount();
   const [talking, setTalking] = useTalkDefault();
   // signing in, as Settings › Accounts does (useSignIns): its states, its problems, the tool's own login
-  const { offered, setOffered, look, signing, problems, signIn, signInChatGpt, sendCode, cancel, remove, removeWindow } = useSignIns(accounts, setAccounts);
+  const { offered, setOffered, elsewhere, look, signing, problems, signIn, signInChatGpt, sendCode, cancel, remove, removeWindow, signOut, outing } = useSignIns(accounts, setAccounts);
   const [adding, setAdding] = useState(false);
+  // under Add account: what was found on this Mac, and where each login another profile holds is
+  // (the words are proposals, Sangam's to rewrite)
+  const found = [
+    ...(offered.length ? [`Found on this Mac: ${offered.map((l) => agentOf(l.agent).name).join(', ')}`] : []),
+    ...elsewhere.map((l) => `${agentOf(l.agent).name}’s login on this Mac is in ${l.profileName}. Add another account to sign in with a different login here.`),
+  ];
   const { status } = useLive();
+  useEffect(() => {
+    const x = signInNext ? accounts.find((a) => a.id === signInNext) : undefined;
+    if (!x) return;
+    signInNext = null;
+    document.querySelector(`[data-account="${CSS.escape(x.id)}"]`)?.scrollIntoView({ block: 'center' });
+    const how = signInAction(x, offersChatGpt(status));
+    if (how) void (how === 'chatgpt' ? signInChatGpt(x.id) : signIn(x.id));
+  }, [accounts]);
   // the question again, when its switch is turned on: only its own button's click says yes
   const [asking, setAsking] = useState<Account | null>(null);
   const background = (x: Account, given: boolean) => {
@@ -859,7 +915,9 @@ export function Agents() {
   // obid's (docs/contracts/providers.md, PROVIDERS-5)
   const agents = tools(accounts).flatMap((a) => accounts.filter((x) => x.agent === a));
   const ready = agents.filter((x) => x.signedIn !== false);
-  const fallback = ready.find((x) => x.id === chosen) ?? ready[0];
+  // where new tasks go: one that can start (ACCOUNTS-21), as obid's routing passes the others by
+  const can = ready.filter((x) => !x.cantRun);
+  const fallback = can.find((x) => x.id === chosen) ?? can[0] ?? ready.find((x) => x.id === chosen) ?? ready[0];
   return <>
     <Group i={1} title="Default agent">
       {fallback
@@ -873,7 +931,7 @@ export function Agents() {
         </Row>
       )}
     </Group>
-    <Group i={2} footer={problems[ADD] ? <span className="set-problem" role="alert">{problems[ADD]}</span> : offered.length ? `Found on this Mac: ${offered.map((l) => agentOf(l.agent).name).join(', ')}` : undefined}>
+    <Group i={2} footer={problems[ADD] ? <span className="set-problem" role="alert">{problems[ADD]}</span> : found.length ? <>{found.map((line) => <span key={line} className="set-footer-line">{line}</span>)}</> : undefined}>
       {/* the card's action, not a row's: on the left */}
       <div className="set-row is-action">
         <button className="set-button is-primary" onClick={() => setAdding(true)}>Add account</button>
@@ -890,7 +948,7 @@ export function Agents() {
       const week = weekWords(x), bar = barOf(x);
       return (
         <Group key={x.id} i={3 + k} title={x.name}>
-          <div className="set-row set-usage">
+          <div className="set-row set-usage" data-account={x.id}>
             <BrandMark brand={agentOf(x.agent).brand} size={16} mono />
             <span className="set-label">
               <span className="set-usage-name">
@@ -899,6 +957,8 @@ export function Agents() {
               </span>
               {x.who && <span className="set-about">{x.who}</span>}
               {x.chatgpt && !out && <span className="set-about">{x.full ? LIMIT_REACHED : USING_PLAN} · <ManageUsage /></span>}
+              {/* any other tool's account obid holds full says so too, with when it takes work again (USAGE-14) */}
+              {x.full && !x.chatgpt && !out && !sign && <span className="set-about set-problem">{`${LIMIT_REACHED}${x.fullTill ? ` · until ${x.fullTill}` : ''}`}</span>}
               {sign
                 ? <span className="set-about">{sign === 'opening' ? `Opening ${tool}’s sign-in page` : sign.code ? `Signing in to ${tool}` : `Finish on ${tool}’s sign-in page${sign.userCode ? ` · enter ${sign.userCode}` : ''}`}</span>
                 : out ? <span className="set-about">{x.label ?? 'Not signed in'}{own && !x.label ? `: sign in with ${tool} itself on this Mac` : ''}</span>
@@ -912,6 +972,8 @@ export function Agents() {
                 : <span className="set-about">{week}</span>}
               {sign && sign !== 'opening' && sign.pasteCode && !sign.code && <PasteCode onCode={(code) => sendCode(x.id, sign, code)} />}
               {problems[x.id] && <span className="set-about set-problem" role="alert">{problems[x.id]}</span>}
+              {/* why obid couldn't start it (ACCOUNTS-21): obid's words, proposed */}
+              {x.cantRun && !out && !sign && <span className="set-about set-problem">{`${tool} can’t start: ${x.cantRun}`}</span>}
             </span>
             {/* (obid signs in only the accounts with a folder of their own: not the tool's own login) */}
             {out && known && (!own || plan) && <span className="set-control set-control-top">
@@ -938,13 +1000,18 @@ export function Agents() {
           {x.chatgpt && !out && known && <Row label={BACKGROUND_LABEL}>
             <Switch on={!!x.background} label={`${x.name}: ${BACKGROUND_LABEL}`} onChange={(on) => (on ? setAsking(x) : background(x, false))} />
           </Row>}
-          {/* the card's own action, on the left; red: it can't be undone (its sign-in goes with it) */}
+          {/* the card's own actions, on the left: Sign out, the tool's own logout, the account
+              staying (ACCOUNTS-23; the tool's own login is signed out with the tool itself, as it's
+              signed in); Remove, red: it can't be undone (its sign-in goes with it) */}
           <div className="set-row is-action">
+            {known && !out && !sign && !own && <button className="set-button" disabled={outing === x.id} onClick={() => void signOut(x)}>{outing === x.id ? 'Signing out…' : 'Sign out'}</button>}
             <button className="set-button is-danger" onClick={() => remove(x)}>Remove</button>
           </div>
         </Group>
       );
     })}
+    {/* where each tool runs from (ACCOUNTS-26) */}
+    <AgentBinaries agents={tools(accounts).filter((a) => accounts.some((x) => x.agent === a))} tools={status?.tools} i={3 + agents.length} />
     {asking && <BackgroundConsent name={asking.name} onClose={() => setAsking(null)} onAnswer={(given) => { background(asking, given); setAsking(null); }} />}
     {adding && <AddAccount accounts={accounts} setAccounts={setAccounts} found={offered}
       onFound={(l) => (onObid ? look() : setOffered(offered.filter((x) => x !== l)))} onClose={() => { setAdding(false); look(); }} />}
@@ -1134,13 +1201,22 @@ function Vault() {
   </>;
 }
 
+// About's Version on obid: this app's version and the commit it and obid were built from
+// (src/shared/build.ts, obid's runner.commit), so the owner can tell which dev they run
+function BuiltVersion() {
+  const [engine, setEngine] = useState<string | null>(null);
+  useEffect(() => { api.status().then((s) => setEngine(s.runner?.commit ?? null), () => {}); }, []);
+  return <Value>{versionText(version, COMMIT, engine)}</Value>;
+}
+
 // About in the Mac app: the version, and Oby's own updates in Sangam's rows (main/updates.ts
 // decides, shared/updates.ts; docs/contracts/updates.md)
 function Updates() {
   const app = window.app!;
   const [kept, setKept] = useState<{ auto: boolean; update: Update } | null>(null);
   useEffect(() => {
-    void app.updates!().then(setKept);
+    // a scratch install has no updater (main/index.ts): About keeps its Version row
+    void app.updates!().then(setKept, () => {});
     return app.onUpdate!((update) => setKept((k) => k && { ...k, update }));
   }, []);
   const ask = (a: 'check' | 'install' | boolean) => {
@@ -1151,7 +1227,7 @@ function Updates() {
   const found = u.state === 'available' || u.state === 'downloading' || u.state === 'ready' ? u : null;
   return (
     <Group i={1} footer={auto ? 'Oby downloads updates in the background and installs them when you quit.' : undefined}>
-      <Row label="Version"><Value>{version}</Value></Row>
+      <Row label="Version"><BuiltVersion /></Row>
       <Row label="Update automatically"><Switch on={auto} onChange={ask} label="Update automatically" /></Row>
       {found && (
         <Row label={`Oby ${found.version} is available`} about={found.date ? `Released ${new Date(found.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : undefined}>
@@ -1174,7 +1250,7 @@ function About() {
   const [auto, setAuto] = useSetting('updates.auto', true);
   const [found, setFound] = useState<'none' | 'current' | 'update'>('none');
   if (onObid && window.app?.updates) return <Updates />;
-  if (onObid) return <Group i={1}><Row label="Version"><Value>{version}</Value></Row></Group>;
+  if (onObid) return <Group i={1}><Row label="Version"><BuiltVersion /></Row></Group>;
   return <>
     <Group i={1} footer={auto ? 'Oby downloads updates in the background and installs them when you quit.' : undefined}>
       <Row label="Version"><Value>0.9.2 (412)</Value></Row>
@@ -1193,7 +1269,7 @@ function About() {
   </>;
 }
 
-const PAGES: Record<string, () => React.ReactNode> = { general: General, agents: Agents, sharing: Sharing, remote: Remote, accounts: Accounts, models: Models, connectors: Connectors, vault: Vault, about: About };
+const PAGES: Record<string, () => React.ReactNode> = { general: General, agents: Agents, obysphere: () => <SphereJoinPage />, sharing: Sharing, remote: Remote, accounts: Accounts, models: Models, connectors: Connectors, vault: Vault, about: About };
 
 // The default mode, with what it lets the agent do under it
 function ModeRow({ mode, setMode, modes = MODES }: { mode: string; setMode: (m: string) => void; modes?: typeof MODES }) {

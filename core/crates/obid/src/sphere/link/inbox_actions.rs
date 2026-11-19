@@ -803,8 +803,9 @@ impl Link {
     }
 
     /// Settles, with no answer, the open items about this Mac's own jobs that nothing waits on any
-    /// more ([`is_stale`], TASKS-13), each as [`Link::settle`] does (one answered meanwhile stays
-    /// answered): run when obid starts and on every job and inbox change
+    /// more ([`is_stale`], TASKS-13), or that settle for their task ([`Link::settle_carried_on`],
+    /// TASKS-26, 27), each as [`Link::settle`] does (one answered meanwhile stays answered): run
+    /// when obid starts and on every job and inbox change
     /// (`crate::settle_stale_items`), so Home never keeps them.
     pub fn settle_stale_items(&self) {
         let open: Vec<Item> = self
@@ -836,6 +837,8 @@ impl Link {
         for id in stale {
             self.settle(id);
         }
+        // obid's cards of a task that carries on, or whose later job has its own (TASKS-26, 27).
+        self.settle_carried_on(&open);
         // A Confirm whose action can no longer happen settles saying why (TASKS-13).
         if !open.iter().any(|i| i.confirm.is_some()) {
             return;
@@ -1728,15 +1731,16 @@ impl Link {
                     "That request expired before the answer.",
                 ));
             }
-            // Only a review request is accepted here: a question is answered in words (above).
-            if exchange.kind != "review_request" {
+            // Only a review request or a handoff is accepted here: a question is answered in
+            // words (above).
+            if exchange.kind != "review_request" && exchange.kind != "handoff" {
                 return Err(api(
                     StatusCode::CONFLICT,
                     "That request isn't a review request.",
                 ));
             }
             let chosen = answer.as_deref().unwrap_or(inbox::DECLINE);
-            let accept = chosen == inbox::ACCEPT || chosen == inbox::ACCEPT_REMEMBER;
+            let accept = inbox::accepts(chosen);
             let remember = chosen == inbox::ACCEPT_REMEMBER || chosen == inbox::DECLINE_REMEMBER;
             exchange.decided_by = Some("inbox".into());
             let mut declined = None;

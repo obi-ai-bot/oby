@@ -24,7 +24,7 @@ let ChatView: typeof import('../ChatView').default;
 const none = () => {};
 function shown(working: Record<string, string>) {
   page.chats = [live.chatOf({ ...live.liveState(), conversations: [convo], working } as never, convo) as Chat];
-  return renderToStaticMarkup(<ChatView kind="oby" id="c1" leaving={false} onBack={none} onGone={none} onOpenTask={none} onOpenMember={none} />);
+  return renderToStaticMarkup(<ChatView kind="oby" id="c1" leaving={false} onBack={none} onGone={none} onOpenMember={none} />);
 }
 
 beforeAll(async () => {

@@ -1,13 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowUp, Check, ChevronLeft, File, FolderGit2, FolderOpen, Gauge, Laptop, ListChecks, Plus, Search, Settings, Square, X } from 'lucide-react';
 import { ObyIcon, OwnerAvatar } from './ObyFace';
-import { OBYS, PLACES, SHARED_WITH_ME } from './mock';
+import { PLACES, SHARED_WITH_ME } from './mock';
+import { aboutOf, askableFor, useAskable, type Askable } from './askable';
 import { agentOf, type Attachments } from './view';
 
 import MessageEditor, { type EditorHandle, type MentionKey } from './MessageEditor';
 import { mentioned } from './textTokens';
 import StatusDot from './StatusDot';
-import { useClicksEverywhere } from './Menu';
+import { MENU_GAP, useClicksEverywhere } from './Menu';
+import { MENU_WIDTH } from './talk';
 import { useTasks, type Task } from './tasks';
 import { BrandMark } from './brands';
 import { barOf, fullness, useAccounts, weekWords } from './SettingsView';
@@ -19,9 +21,20 @@ import { usePrompt } from './prompts';
 import { leave, useGlide } from './glide';
 import { folderName, folderPlace, foldersOf, pickFolders, setFolders, useFolders, usedFolders, useRecentFolders } from './folders';
 import { everything } from './lean';
-import { keeper, leftInBox } from './drafts';
+import { dataOf, fileOf, hold, keeper, leftInBox, type KeptTag } from './drafts';
 import TalkPill from './TalkPill';
-import type { Chat } from './chats';
+import { useChats, type Chat } from './chats';
+import { useProjects, useProjectsOn } from './projects';
+import { ProjectChip } from './ProjectSheet';
+import TaskChips from './TaskChips';
+import QueuedWords from './QueuedWords';
+import { chipsOf, defaultsOf } from './chips';
+import { FOLDER_DROPPED, dropped, fileWords, isFileDrag, noCommands, slashOf, useMentionFiles, useStopping } from './composerInput';
+import { useLive } from './live';
+import { onObid } from './lean';
+import { has } from '../../shared/capabilities';
+import type { ConversationFile } from './obid';
+import type { Queued } from './chats';
 
 // What a message carries besides its words: files or photos (a photo with a
 // small preview of itself), tasks attached. (Other Obys are brought in by name,
@@ -69,12 +82,14 @@ export const stackedAt = (was: boolean, height: number, text: string) => was || 
 // Send is Stop while Oby answers and there's nothing to send (CHATFIRST-33)
 export const stopShows = (answering: boolean, filled: boolean, attached: number) => answering && !filled && !attached;
 
-export default function Composer({ placeholder, prompts = false, note, label, onSend, home = false, hidden = false, autoFocus = !home, className = '', style, repos: withRepos = false, conversation, talk, draft, say, onStop }: {
+export default function Composer({ placeholder, prompts = false, note, label, onSend, home = false, hidden = false, autoFocus = !home, className = '', style, repos: withRepos = false, conversation, talk, draft, say, onStop, queued = [], onCancelQueued }: {
   placeholder?: string;
   prompts?: boolean;  // no placeholder of its own: one of Oby's prompts, changing now and then (prompts.ts)
   note?: React.ReactNode;  // a line just over the box (Home's Settings tip), coming and going with it
   label: string;
-  onSend?: (text: string, attached: Attachments) => void;  // its words, and what went with them
+  // its words, and what went with them; a promise (words to a task) keeps them in the box until it
+  // settles, and all of them when it's false: obid refused them, and said why (ATTACH-20)
+  onSend?: (text: string, attached: Attachments) => unknown;
   // Words alone, which can be refused (the Sphere's room): no +, no @ list, no usage, no files pasted.
   // The box keeps them until they're answered, and for good on false
   say?: (text: string) => Promise<boolean>;
@@ -86,6 +101,10 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   talk?: Chat | true;  // who Oby talks through, by send: this conversation's, or (true, Home's) a new one's
   draft?: string;    // the box its unsent words are kept as (drafts.ts, box); none: not kept
   onStop?: () => void;  // Oby is answering here: with nothing to send, send is Stop (CHATFIRST-33)
+  // words sent while Oby answers, waiting their turn: over the box, with Edit and Cancel (COMPOSER-8 to 10).
+  // onCancelQueued answers whether obid dropped them
+  queued?: Queued[];
+  onCancelQueued?: (q: Queued) => Promise<boolean>;
   hidden?: boolean;
   autoFocus?: boolean;  // focused on opening (a conversation's is; Home's and a task page's aren't)
   className?: string;  // a page's own spacing around it
@@ -114,6 +133,24 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   }, [view]);
   const [attached, setAttached] = useState<Attached[]>([]);
   const stopping = stopShows(!!onStop, filled, attached.length);
+  // Stop pressed: "Stopping…" until the turn really ends (COMPOSER-12)
+  const [stopPending, askStop] = useStopping(!!onStop);
+  // The chips (COMPOSER-1 to 3): where words go to Oby (Home's, a conversation's), once obid takes them
+  const status = useLive().status;
+  const chipsShown = !!talk && !wordsOnly && (!onObid || has(status, 'composer-v1'));
+  // the whole text, for a / at its start (COMPOSER-16); Esc puts the commands' list away until the / goes
+  const [typed, setTyped] = useState('');
+  const slash = chipsShown ? slashOf(typed) : null;
+  const [slashClosed, setSlashClosed] = useState(false);
+  useEffect(() => { if (slash === null) setSlashClosed(false); }, [slash]);
+  // files dragged over the box, and what it says of folders dropped (COMPOSER-13)
+  const [dragging, setDragging] = useState(false);
+  const [dropNote, setDropNote] = useState('');
+  useEffect(() => {
+    if (!dropNote) return;
+    const t = setTimeout(() => setDropNote(''), 5000);
+    return () => clearTimeout(t);
+  }, [dropNote]);
   // its files going up: a second send waits
   const sending = useRef(false);
   const { repos, last } = useRepos(conversation);
@@ -126,7 +163,24 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   const canFolders = !everything && withRepos && !!window.app?.pickFolders;
   const kept = useFolders(conversation);
   const [homeFolders, setHomeFolders] = useState<string[]>([]);
-  const folders = !canFolders ? [] : conversation ? kept : homeFolders;
+  // The project (docs/contracts/projects.md, PROJECTS-19, 22 and 25): Home's chip picks the one its
+  // words start a conversation in, for this run only (one deleted since: none); a conversation in one
+  // works in its folders, which its title bar's chip stands for: the box shows no folder of it. Either
+  // way the box picks and sends no folders of its own
+  const projectsOn = useProjectsOn();
+  const projects = useProjects();
+  const [homeProject, setHomeProject] = useState<string | null>(null);
+  const project = home && projectsOn && projects.some((p) => p.id === homeProject) ? homeProject : null;
+  const chats = useChats();
+  const inProject = !!conversation && projectsOn && !!chats.find((c) => c.id === conversation)?.project;
+  const ownFolders = canFolders && !project && !inProject;
+  const folders = !canFolders || project || inProject ? [] : conversation ? kept : homeFolders;
+  // how many folders the conversation works in: a file of one of several is named after its folder
+  const chat = chats.find((c) => c.id === conversation);
+  const workFolders = inProject ? projects.find((p) => p.id === chat?.project)?.folders.length ?? 1 : kept.length;
+  // the tool the conversation talks through, for the commands' list when no chip names one
+  const [accounts] = useAccounts();
+  const accountAgent = accounts.find((a) => a.id === (chat?.talkedOn ?? chat?.talkAccount))?.agent;
   // from the list as it is when it's applied (a tag's × applies after its 140ms leave: two quick ×s
   // mustn't bring the first back)
   const putFolders = (next: (was: string[]) => string[]) => (conversation ? setFolders(conversation, next(foldersOf(conversation))) : setHomeFolders(next));
@@ -145,15 +199,24 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   const [at, setAt] = useState<string | null>(null);
   const [lit, setLit] = useState(0);
   const [atClosed, setAtClosed] = useState(false);
+  // whom @ asks: on obid, the Obysphere's members that take questions (ASK-37)
+  const askable = useAskable();
   // a name typed out in full is done: the list goes, and Enter sends
-  const fullName = at !== null && OBYS.some((o) => o.name.toLowerCase() === at.toLowerCase());
-  const matches = wordsOnly || at === null || atClosed || view || fullName ? [] : obysFor(at);
-  useClicksEverywhere(matches.length > 0);
+  const fullName = at !== null && askable.some((o) => o.name.toLowerCase() === at.toLowerCase());
+  const listing = !(wordsOnly || at === null || atClosed || view || fullName);
+  // after the Obys, the files of the conversation's folders (COMPOSER-14)
+  const atFiles = useMentionFiles(listing && conversation ? conversation : undefined, listing ? at : null);
+  const matches: ({ kind: 'oby' } & Askable | { kind: 'file'; file: ConversationFile })[] = listing
+    ? [...askableFor(at!, askable).map((o) => ({ kind: 'oby' as const, ...o })), ...atFiles.map((file) => ({ kind: 'file' as const, file }))] : [];
+  const slashShown = slash !== null && !slashClosed && !view;
+  useClicksEverywhere(matches.length > 0 || slashShown);
   const pickOby = (name: string) => { setView(null); box.current?.mention(name); box.current?.focus(); };
+  const pickMatch = (m: (typeof matches)[number]) => pickOby(m.kind === 'oby' ? m.name : fileWords(m.file, workFolders));
   const onMentionKey = (key: MentionKey) => {
+    if (slashShown && !matches.length) { if (key !== 'close') return false; setSlashClosed(true); return true; }
     if (!matches.length) return false;
     if (key === 'close') setAtClosed(true);
-    else if (key === 'pick') pickOby(matches[Math.min(lit, matches.length - 1)].name);
+    else if (key === 'pick') pickMatch(matches[Math.min(lit, matches.length - 1)]);
     else setLit((i) => (Math.min(i, matches.length - 1) + (key === 'down' ? 1 : matches.length - 1)) % matches.length);
     return true;
   };
@@ -215,13 +278,44 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   // quit loses nothing. Sending empties the box, which lets its draft go.
   const drafts = useRef<ReturnType<typeof keeper>>(null);
   drafts.current ??= keeper();
+  // which box the tags shown are of: none kept for a box until its own are put back
+  const [tagsOf, setTagsOf] = useState<string>();
   useLayoutEffect(() => {
     const d = drafts.current!, b = box.current;
     const text = d.show(draft ?? null);
     if (b && draft !== undefined && (text || b.text())) b.setText(text);
+    // its tags and choices come back with its words (DRAFTS-4 to 7): a file whose bytes weren't
+    // kept, after a relaunch, doesn't
+    if (draft !== undefined && !wordsOnly) {
+      const e = d.more();
+      setAttached((e.tags ?? []).flatMap((t): Attached[] => {
+        if (t.kind !== 'file') return t.kind === 'repo' ? [] : [t];
+        const file = fileOf(draft, t);
+        return file ? [{ kind: 'file', name: t.name, file, preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined }] : [];
+      }));
+      const r = e.tags?.find((t) => t.kind === 'repo');
+      setRepoPick(r && r.kind === 'repo' ? r.name : undefined);
+      if (home) { setHomeProject(e.project ?? null); setHomeFolders(e.folders ?? []); }
+      setTagsOf(draft);
+    }
     addEventListener('pagehide', d.flush);
     return () => { removeEventListener('pagehide', d.flush); d.flush(); };
   }, [draft]);
+  // and are kept as they change, the files' bytes read first (DRAFTS-4 to 8)
+  useEffect(() => {
+    if (draft === undefined || wordsOnly || tagsOf !== draft) return;
+    const files = attached.flatMap((a) => (a.kind === 'file' ? [a] : []));
+    hold(draft, files);
+    let gone = false;
+    void Promise.all(files.map((f) => (f.file ? dataOf(f.file) : undefined))).then((datas) => {
+      if (gone) return;
+      let n = 0;
+      const tags = attached.map((a): KeptTag => (a.kind === 'file' ? { kind: 'file', name: a.name, ...(a.file?.type ? { type: a.file.type } : {}), ...(datas[n++] ? { data: datas[n - 1] } : {}) } : a));
+      if (typeof repoPick === 'string') tags.push({ kind: 'repo', name: repoPick });
+      drafts.current!.carry({ tags, ...(home ? { project: homeProject, folders: homeFolders } : {}) });
+    });
+    return () => { gone = true; };
+  }, [attached, repoPick, homeProject, homeFolders, tagsOf, draft]);
   // Home's box stepping aside (a page opened over it) puts its panel away
   useEffect(() => { if (hidden) setView(null); }, [hidden]);
   // a click outside the box and its panel closes the panel (anywhere in the window)
@@ -254,15 +348,24 @@ export default function Composer({ placeholder, prompts = false, note, label, on
         if (!left) { setFilled(false); setStacked(false); }
         return;
       }
-      onSend?.(b.text(), {
+      const went = onSend?.(b.text(), {
         files,
         obys: mentioned(b.text()),
         jobs: attached.flatMap((a) => (a.kind === 'task' ? [a.id] : [])),
         on: attached.find((a) => a.kind === 'place')?.name,
         repo,
-        ...(folders.length ? { folders } : {}),
+        ...(folders.length && !inProject ? { folders } : {}),
+        ...(project ? { project } : {}),
+        // the chips go with the words, and stay for the next (COMPOSER-3)
+        ...(chipsShown && defaultsOf(chipsOf(draft)) ? { defaults: defaultsOf(chipsOf(draft)) } : {}),
       });
-      if (folders.length) usedFolders(folders);
+      if (went instanceof Promise) {
+        sending.current = true;
+        const taken = await went.catch(() => false);
+        sending.current = false;
+        if (taken === false) return;
+      }
+      if (folders.length && !inProject) usedFolders(folders);
       // Home's go with the conversation they start; a conversation keeps its own
       if (!conversation) setHomeFolders([]);
       b.clear();
@@ -280,9 +383,31 @@ export default function Composer({ placeholder, prompts = false, note, label, on
       } else b.focus();
     }}>
       {note}
+      {/* words sent while Oby answers, waiting their turn (COMPOSER-8 to 10) */}
+      {onCancelQueued && <QueuedWords queued={queued} onCancel={onCancelQueued} onEdit={async (q) => {
+        if (!(await onCancelQueued(q))) return;
+        const b = box.current, now = b?.text().trim() ?? '';
+        b?.setText(now ? `${q.text}\n\n${now}` : q.text);
+        b?.focus();
+      }} />}
+      {dropNote && <p className="composer-drop-note" role="status">{dropNote}</p>}
       <div
         ref={field}
-        className={`composer-field${stacked ? ' is-stacked' : ''}`}
+        className={`composer-field${stacked ? ' is-stacked' : ''}${dragging ? ' is-dropping' : ''}`}
+        // files dropped on the box are attached, as + › Add files does (COMPOSER-13); a box of
+        // words alone (the room) takes none
+        onDragEnter={wordsOnly ? undefined : (e) => { if (isFileDrag(e.dataTransfer)) { e.preventDefault(); setDragging(true); } }}
+        onDragOver={wordsOnly ? undefined : (e) => { if (isFileDrag(e.dataTransfer)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } }}
+        onDragLeave={wordsOnly ? undefined : (e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false); }}
+        onDrop={wordsOnly ? undefined : (e) => {
+          if (!isFileDrag(e.dataTransfer)) return;
+          e.preventDefault();
+          setDragging(false);
+          const got = dropped(e.dataTransfer);
+          addFiles(got.files);
+          if (got.folders && !got.files.length) setDropNote(FOLDER_DROPPED);
+          box.current?.focus();
+        }}
         // A click anywhere in the box is a click in the text (the room around it,
         // between the buttons, included), not just on the text itself; its
         // buttons, tags, panel and scrollbar keep their own clicks
@@ -294,7 +419,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
         // left with nothing typed (focus gone outside the box), it goes back to one row
         onBlur={(e) => { if (!field.current?.contains(e.relatedTarget as Node) && !box.current?.text().trim()) setStacked(false); }}
       >
-        {view === 'usage' && <UsagePanel onClose={closePanel} onBlur={onPanelBlur} />}
+        {view === 'usage' && <UsagePanel anchor={gauge} onClose={closePanel} onBlur={onPanelBlur} />}
         {view && view !== 'usage' && (
           <AddPanel
             opening={opening}
@@ -304,7 +429,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
             onBlur={onPanelBlur}
             onFiles={() => { closePanel(); files.current?.click(); }}
             // the first time, straight to the Mac's picker; after, the recent ones (and Choose another)
-            onFolders={canFolders ? () => { if (recentFolders.length) setView('folder'); else { closePanel(); void chooseFolders(); } } : undefined}
+            onFolders={ownFolders ? () => { if (recentFolders.length) setView('folder'); else { closePanel(); void chooseFolders(); } } : undefined}
             folders={{ recent: recentFolders, picked: folders, onToggle: toggleFolder, onChoose: () => { closePanel(); void chooseFolders(); } }}
             onPick={add}
             onPickOby={pickOby}
@@ -314,29 +439,41 @@ export default function Composer({ placeholder, prompts = false, note, label, on
           />
         )}
         {matches.length > 0 && (
-          <div className="add-panel mention-panel" role="listbox" aria-label="Obys">
-            {matches.map((o, i) => (
+          <div className="add-panel mention-panel" role="listbox" aria-label={atFiles.length ? 'Obys and files' : 'Obys'}>
+            {matches.map((m, i) => (
               <button
                 type="button"
                 role="option"
-                key={o.name}
+                key={m.kind === 'oby' ? m.name : `${m.file.folder}/${m.file.path}`}
                 aria-selected={i === Math.min(lit, matches.length - 1)}
-                className={i === Math.min(lit, matches.length - 1) ? 'is-lit' : ''}
+                className={`${i === Math.min(lit, matches.length - 1) ? 'is-lit' : ''}${m.kind === 'file' ? ' mention-file' : ''}`.trim()}
                 // the text keeps the focus (and its cursor)
                 onMouseDown={(e) => e.preventDefault()}
                 onMouseEnter={() => setLit(i)}
-                onClick={() => pickOby(o.name)}
+                onClick={() => pickMatch(m)}
+                title={m.kind === 'file' ? `${m.file.folder}/${m.file.path}` : undefined}
               >
-                <OwnerAvatar name={o.name} size={22} />
-                <span className="add-item-text">{o.name}’s Oby</span>
+                {m.kind === 'oby' ? <OwnerAvatar name={m.card ?? m.name} size={22} /> : <File size={16} strokeWidth={1.6} />}
+                {m.kind === 'oby'
+                  ? <ObyRow oby={m} />
+                  : <span className="add-item-text">{m.file.path.split('/').pop()}<span className="add-item-about">{fileWords(m.file, workFolders)}</span></span>}
               </button>
             ))}
           </div>
         )}
+        {/* a / at the start: the chosen agent's own commands, where obid can list them; it lists
+            none yet, so the list says what's missing (COMPOSER-16) */}
+        {slashShown && !matches.length && (
+          <div className="add-panel slash-panel" role="dialog" aria-label="Commands">
+            <p className="add-empty">{noCommands(agentOf(accountAgent ?? 'claude').name)}</p>
+          </div>
+        )}
         {/* no talking (v1): send before the usage gauge, which keeps the end */}
         <div className={`composer-grid${everything && !wordsOnly ? '' : ' is-send-first'}`}>
-          {(attached.length > 0 || repo || folders.length > 0) && (
+          {(attached.length > 0 || repo || folders.length > 0 || (home && projectsOn)) && (
             <div ref={tagRow} className={`composer-tags${hiddenAbove ? ' is-scrolled' : ''}`} onScroll={(e) => setHiddenAbove(e.currentTarget.scrollTop > 0)}>
+              {/* Home's project, first (choosing one lets go of the folders picked here) */}
+              {home && projectsOn && <ProjectChip chosen={homeProject} onChoose={(p) => { setHomeProject(p); if (p) setHomeFolders([]); }} className="composer-project" />}
               {folders.map((f) => (
                 <span key={f} data-glide={`folder:${f}`} className="composer-tag" title={f}>
                   <FolderOpen size={15} strokeWidth={1.7} />
@@ -393,7 +530,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
             autoFocus={autoFocus}
             placeholder={prompts ? prompt : placeholder ?? ''}
             label={label}
-            onText={(t) => { setFilled(!!t.trim()); setNamed(mentioned(t)); drafts.current!.typed(t); }}
+            onText={(t) => { setFilled(!!t.trim()); setNamed(mentioned(t)); setTyped(t); drafts.current!.typed(t); }}
             // each change narrows the list, so the first is lit again
             onMention={(q) => { setAt(q); setLit(0); if (q === null) setAtClosed(false); }}
             onMentionKey={onMentionKey}
@@ -402,7 +539,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
             onHeight={(h) => setStacked((was) => stackedAt(was, h, box.current?.text() ?? ''))}
             onPasteFiles={wordsOnly ? undefined : (list) => addFiles(list, true)}
           />
-          {talk && <div className="composer-talk"><TalkPill chat={talk === true ? undefined : talk} /></div>}
+          {talk && <div className="composer-talk">{chipsShown && <TaskChips box={draft} />}<TalkPill chat={talk === true ? undefined : talk} /></div>}
           {/* how much of the agents' accounts is used, session and week (UsagePanel on a click) */}
           {!wordsOnly && <UsageGauge ref={gauge} open={view === 'usage'} onClick={() => (view === 'usage' ? closePanel() : setView('usage'))} />}
           {/* at the end: talk instead of typing while the box is empty; once there's
@@ -417,7 +554,9 @@ export default function Composer({ placeholder, prompts = false, note, label, on
           {/* Oby answering, and nothing to send: Stop where send is (the owner's ask of 2026-11-10);
               words typed meanwhile are sent as ever, and wait their turn */}
           {stopping ? (
-            <button type="button" className="composer-button composer-send is-always is-ready" aria-label="Stop" onMouseDown={(e) => e.preventDefault()} onClick={onStop}>
+            // pressed, it says "Stopping…" until the turn really ends (COMPOSER-12)
+            <button type="button" className={`composer-button composer-send is-always is-ready${stopPending ? ' is-stopping' : ''}`} aria-label={stopPending ? 'Stopping…' : 'Stop'} title={stopPending ? 'Stopping…' : undefined}
+              disabled={stopPending} onMouseDown={(e) => e.preventDefault()} onClick={() => { askStop(); onStop?.(); }}>
               <Square size={13} strokeWidth={1.8} fill="currentColor" />
             </button>
           ) : (
@@ -449,6 +588,7 @@ function AddPanel({ view, opening, tasks, repos, onView, onBlur, onFiles, onFold
   isPicked: (a: Attached) => boolean;
   isNamed: (name: string) => boolean;  // already @named in the words
 }) {
+  const askable = useAskable();
   const [query, setQuery] = useState('');
   useEffect(() => setQuery(''), [view]);
   const { list, onScroll, thumbProps } = useScrollThumb<HTMLDivElement>();
@@ -483,7 +623,7 @@ function AddPanel({ view, opening, tasks, repos, onView, onBlur, onFiles, onFold
       <div ref={menu} className={`add-panel${opening ? ' is-opening' : ''}`} role="menu" onKeyDown={onMenuKey} onBlur={onBlur}>
         <button type="button" role="menuitem" tabIndex={-1} onClick={onFiles}><File size={16} strokeWidth={1.6} />Add files or photos</button>
         {/* no other Obys, or no Macs to run on (on obid, for now): not offered */}
-        {OBYS.length > 0 && <button type="button" role="menuitem" tabIndex={-1} data-view="oby" onClick={() => onView('oby')}><ObyIcon size={16} />Add other Obys<kbd className="add-hint">@</kbd></button>}
+        {askable.length > 0 && <button type="button" role="menuitem" tabIndex={-1} data-view="oby" onClick={() => onView('oby')}><ObyIcon size={16} />Add other Obys<kbd className="add-hint">@</kbd></button>}
         <button type="button" role="menuitem" tabIndex={-1} data-view="task" onClick={() => onView('task')}><ListChecks size={16} strokeWidth={1.6} />Attach tasks</button>
         {/* Sharing (a preview): run it on a teammate's Mac that's free, with your own accounts */}
         {PLACES.length > 0 && <button type="button" role="menuitem" tabIndex={-1} data-view="where" onClick={() => onView('where')}><Laptop size={16} strokeWidth={1.6} />Run on another Mac</button>}
@@ -495,7 +635,7 @@ function AddPanel({ view, opening, tasks, repos, onView, onBlur, onFiles, onFold
   }
 
   const q = query.trim().toLowerCase();
-  const obys = obysFor(q);
+  const obys = askableFor(q, askable);
   const found = tasks.filter((t) => `${t.who ?? ''} ${t.title}`.toLowerCase().includes(q));
   const places = PLACES.filter((p) => p.name.toLowerCase().includes(q));
   const inRepos = repos.filter((r) => r.toLowerCase().includes(q));
@@ -528,8 +668,8 @@ function AddPanel({ view, opening, tasks, repos, onView, onBlur, onFiles, onFold
       <div ref={list} className={`add-list${view === 'folder' ? ' is-folders' : ''}`} role="listbox" aria-multiselectable={view === 'folder' || undefined} onScroll={onScroll}>
         {view === 'oby' && obys.map((o) => (
           <button type="button" role="option" aria-selected={isNamed(o.name)} key={o.name} onClick={() => onPickOby(o.name)}>
-            <OwnerAvatar name={o.name} size={22} />
-            <span className="add-item-text">{o.name}’s Oby</span>
+            <OwnerAvatar name={o.card ?? o.name} size={22} />
+            <ObyRow oby={o} />
             {isNamed(o.name) && <Check size={14} strokeWidth={1.8} className="add-check" />}
           </button>
         ))}
@@ -591,11 +731,12 @@ function AddPanel({ view, opening, tasks, repos, onView, onBlur, onFiles, onFold
   );
 }
 
-// The Obys a name typed so far could be: those it starts, then those it's in
-function obysFor(typed: string) {
-  const q = typed.trim().toLowerCase();
-  const name = (o: { name: string }) => o.name.toLowerCase();
-  return [...OBYS.filter((o) => name(o).startsWith(q)), ...OBYS.filter((o) => !name(o).startsWith(q) && name(o).includes(q))];
+// An Oby in the @ list or + › Add other Obys: whose it is, by their card's name, their owner id beside
+// it when that differs, and, for a member whose owner id looks like another's, who it isn't (ASK-38),
+// as the ASK-34 Confirm says it. A mention picked is always the owner id
+function ObyRow({ oby }: { oby: Askable }) {
+  const about = aboutOf(oby);
+  return <span className="add-item-text">{oby.card ?? oby.name}’s Oby{about ? <span className="add-item-about">{about}</span> : null}</span>;
 }
 
 // Esc while there's something typed in a message box is the box's (it would
@@ -635,8 +776,21 @@ function UsageGauge({ ref, open, onClick }: { ref: React.Ref<HTMLButtonElement>;
 // (an account with no session figure: the bar is what it has, as in Settings › Agents); a gear at the top right goes to
 // Settings › Agents, and takes the focus on opening. Esc, a click outside or Tab out of it
 // closes it.
-export function UsagePanel({ onClose, onBlur }: { onClose: () => void; onBlur: (e: React.FocusEvent) => void }) {
+export function UsagePanel({ anchor, onClose, onBlur }: { anchor?: React.RefObject<HTMLButtonElement | null>; onClose: () => void; onBlur: (e: React.FocusEvent) => void }) {
   const [accounts] = useAccounts();
+  // as wide as the account menu, its right edge on the gauge's and MENU_GAP over it, as that menu
+  // sits on its pill (COMPOSER-18); placed in the box (.composer-field), which holds it
+  const panel = useRef<HTMLDivElement>(null);
+  const [place, setPlace] = useState<React.CSSProperties>({ width: MENU_WIDTH });
+  useLayoutEffect(() => {
+    const field = panel.current?.closest('.composer-field'), button = anchor?.current?.getBoundingClientRect(), box = field?.getBoundingClientRect();
+    // inside the Mac window, its 420px least too, as the account menu keeps (TalkPill)
+    const width = Math.min(MENU_WIDTH, innerWidth - 24);
+    if (!field || !button || !box) return setPlace({ width });
+    // right and bottom are from inside the box's border
+    const edge = getComputedStyle(field), [right, bottom] = [parseFloat(edge.borderRightWidth) || 0, parseFloat(edge.borderBottomWidth) || 0];
+    setPlace({ width, right: box.right - right - button.right, bottom: box.bottom - bottom - button.top + MENU_GAP });
+  }, [anchor]);
   const close = useRef(onClose);
   close.current = onClose;
   useEffect(lookAtUsage, []);
@@ -646,7 +800,7 @@ export function UsagePanel({ onClose, onBlur }: { onClose: () => void; onBlur: (
     return () => removeEventListener('keydown', onKey, true);
   }, []);
   return (
-    <div className="add-panel usage-panel" role="dialog" aria-label="Usage" onBlur={onBlur}>
+    <div ref={panel} className="add-panel usage-panel" role="dialog" aria-label="Usage" style={place} onBlur={onBlur}>
       <div className="usage-head">
         <span>Usage</span>
         <button type="button" autoFocus className="icon-button" aria-label="Manage accounts" title="Manage accounts" onClick={() => { onClose(); dispatchEvent(new CustomEvent('oby:open-setting', { detail: everything ? 'accounts' : 'agents' })); }}>

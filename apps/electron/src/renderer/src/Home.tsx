@@ -11,6 +11,7 @@ import Sidebar from './Sidebar';
 import TaskMenu from './TaskMenu';
 import ConvoMenu from './ConvoMenu';
 import Composer from './Composer';
+import NeedsYouNote from './NeedsYouNote';
 import SettingsTip, { dismissSettingsTip } from './SettingsTip';
 import { setFolders } from './folders';
 import AskStack from './AskStack';
@@ -24,15 +25,19 @@ import SphereSettings, { sphereSettingsLabel } from './SphereSettings';
 import KnowledgeView, { knowledgeLabel } from './KnowledgeView';
 import { outOfSphere, useSpheres } from './spheres';
 import { chatFirst, everything, onObid, welcome } from './lean';
-import { realId, shownId, useLive } from './live';
+import { realId, shownId, talkReady, useLive } from './live';
 import { WELCOME, setUp, startOnboarding } from './onboarding';
-import { askOby, chatOfTask, latestChat, renameChat, restingChat, tellAbout, useChats } from './chats';
+import { askOby, chatOfTask, latestChat, moveChat, renameChat, restingChat, tellAbout, useChats } from './chats';
+import { useProjectsOn } from './projects';
+import { ProjectChip } from './ProjectSheet';
 import { useConvos, useThreads, whoseOby } from './peers';
 import { AvatarStack, ObyFace } from './ObyFace';
 import { MOCK_SCHEDULE, convoTitle } from './mock';
 import { useHelpers } from './helpers';
 import { hasAttachments, type Attachments } from './view';
 import { box as draftBox } from './drafts';
+import { panelFit } from './panelFit';
+import { registerCommands } from './shortcuts';
 import { TYPES, renameTask, tell, countOf, runningCount, firstTab, hasFresh, toDoOf, useTasks, asksWaiting, type Tab } from './tasks';
 
 // the Settings tip over the message box: off for now (its bar, SettingsTip.tsx, kept for tips to come)
@@ -68,12 +73,11 @@ function rubberBand(w: number) {
 }
 
 // Where you are, as the steps that got you there (the title bar's trail): a
-// kind of work's cards, a task's page, a task's own thread, a conversation
-// with Oby, the archive, someone else's Oby, a conversation with it. Each
-// opens over the one before; the trail follows the way you came, not a fixed
-// hierarchy (a task from the side panel is just the task; from a chip, the kind
-// of work, then the task; from a conversation's card, the conversation, then
-// the task). Opening a step already in the trail goes back to it rather than
+// kind of work's cards, a task's page, a conversation with Oby, the archive,
+// someone else's Oby, a conversation with it. Each opens over the one before;
+// the trail follows the way you came, not a fixed hierarchy (a task from the
+// side panel is just the task; from a chip, the kind of work, then the task).
+// Opening a step already in the trail goes back to it rather than
 // adding it again, so a task and its conversation go back and forth.
 type Step =
   | { kind: 'group'; id: string; tab: Tab }
@@ -88,6 +92,7 @@ type Layer = Step & { key: string; leaving?: boolean };
 const same = (a: Step, b: Step) => a.kind === b.kind && a.id === b.id;
 let made = 0;
 const layer = (step: Step): Layer => ({ ...step, key: `${step.kind}:${step.id ?? ''}:${++made}` });
+let flashes = 0;
 
 export default function Home() {
   const tasks = useTasks();  // counts and dots follow tasks being added and opened
@@ -150,10 +155,14 @@ export default function Home() {
   // the task on top, if a task's page is: its ⋮ in the title bar, and renaming it in place there;
   // the same for a conversation with Oby
   const shown = top?.kind === 'task' ? tasks.find((t) => t.id === top.id) : undefined;
+  const onPage = top?.kind === 'task';
   const shownTalk = top?.kind === 'talk' ? chats.find((c) => c.id === top.id) : undefined;
   // an agent's conversation: its face and name in the bar, and no menu (it goes with its agent)
   const helpers = useHelpers();
   const shownAgent = shownTalk?.helper ? helpers.find((h) => h.id === shownTalk.helper) : undefined;
+  // its project's chip beside its title (screen 03), once obid has named it: never an agent's
+  const projectsOn = useProjectsOn();
+  const chipFor = shownTalk && projectsOn && !shownTalk.helper && !shownTalk.local && talkReady(shownTalk.id) ? shownTalk : undefined;
   const [barMenu, setBarMenu] = useState<DOMRect | null>(null);
   const [renaming, setRenaming] = useState(false);
   useEffect(() => { setBarMenu(null); setRenaming(false); }, [top?.key]);
@@ -192,7 +201,14 @@ export default function Home() {
     const c = chatOfTask(id);
     return c ? { kind: 'talk', id: c.id } : { kind: 'thread', id };
   };
-  const openTask = (id: string) => push({ kind: 'task', id });
+  // Every way to a task (a notification, Waiting for you, its row, Home's stack) opens the conversation
+  // that started it, scrolled to its card and lighting it a moment; one with no conversation (from
+  // GitHub, another Oby) its own thread, the same card and what it did under it (LIVETASK-28). how:
+  // over what's open (back returns to it), or a fresh start
+  const [flash, setFlash] = useState<{ task: string; n: number } | null>(null);
+  const openAt = (id: string, how: (step: Step) => void = start) => { how(conversationOf(id)); setFlash({ task: id, n: ++flashes }); };
+  // chat first, a task opens in its conversation; Home's earlier design (?home) keeps its page
+  const openTask = (id: string) => (chatFirst ? openAt(id, push) : push({ kind: 'task', id }));
   const goToConversation = (id: string) => push(conversationOf(id));
   // asked in Home's message box: a new conversation, open straight away
   const ask = (text: string, att: Attachments) => {
@@ -223,8 +239,9 @@ export default function Home() {
   }, [fresh]);
 
   // Oby's alerts (main/notify.ts): main hears what's on top (a task's page, a conversation, or Home),
-  // so nothing alerts for it; a clicked alert opens its task, its conversation, a Settings page,
-  // or Home, once that's here (a closed window opens again first)
+  // so nothing alerts for it; a clicked alert opens its task in its conversation at its card
+  // (LIVETASK-28), else its conversation, a Settings page, or Home, once that's here (a closed window
+  // opens again first)
   useEffect(() => {
     window.app?.showing?.(!top ? {} : top.kind === 'task' || top.kind === 'thread' ? { job: top.id } : top.kind === 'talk' ? { conversation: realId(top.id) } : null);
   }, [top?.kind, top?.id]);
@@ -233,7 +250,12 @@ export default function Home() {
   useEffect(() => {
     if (!opening) return;
     const talk = opening.conversation && shownId(opening.conversation);
-    if (opening.job) { if (!tasks.some((t) => t.id === opening.job)) return; start({ kind: 'task', id: opening.job }); }
+    if (opening.job) {
+      // its conversation listed first, when it has one, so it opens there and not in a thread of its own
+      const t = tasks.find((k) => k.id === opening.job), c = t?.job.conversation && shownId(t.job.conversation);
+      if (!t || (c && !chats.some((k) => k.id === c))) return;
+      openAt(opening.job);
+    }
     else if (talk) { if (!chats.some((c) => c.id === talk)) return; start({ kind: 'talk', id: talk }); }
     else if (opening.settings) start({ kind: 'settings', id: opening.settings });
     else home();
@@ -259,7 +281,7 @@ export default function Home() {
   const [sidebar, setSidebar] = useState(() => {
     try {
       if (!chatFirst) return localStorage.getItem('oby.sidebarOpen') === '1';
-      return localStorage.getItem(PANEL_KEPT) !== '0' && innerWidth >= SIDEBAR_DEFAULT + 420;
+      return localStorage.getItem(PANEL_KEPT) !== '0' && panelFit(innerWidth, SIDEBAR_DEFAULT, SIDEBAR_MIN).docked;
     } catch { return false; }
   });
   // lent: opened by setting up's Obysphere tour (onboarding.ts), which isn't your choice, so it
@@ -276,6 +298,25 @@ export default function Home() {
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     try { return Number(localStorage.getItem('oby.sidebarWidth')) || SIDEBAR_DEFAULT; } catch { return SIDEBAR_DEFAULT; }
   });
+  // how it fits beside the chat (panelFit.ts, CHATFIRST-35): docked while the chat keeps T3 Code's
+  // 640px, the panel giving way down to its narrowest; narrower, it floats over the chat, opened and
+  // closed on its own (and never remembered), the docked choice kept for when the window widens
+  const [windowWidth, setWindowWidth] = useState(() => innerWidth);
+  useEffect(() => {
+    const onResize = () => setWindowWidth(innerWidth);
+    addEventListener('resize', onResize);
+    return () => removeEventListener('resize', onResize);
+  }, []);
+  const fit = panelFit(windowWidth, sidebarWidth, SIDEBAR_MIN);
+  const [floating, setFloating] = useState(false);
+  useEffect(() => { if (fit.docked) setFloating(false); }, [fit.docked]);
+  // floating, a row's click takes you there and the panel goes, as T3 Code's sheet does
+  useEffect(() => { setFloating(false); }, [top?.key]);
+  const panelShown = fit.docked ? sidebar : floating;
+  const togglePanel = (open?: boolean) => {
+    lent.current = false;
+    if (fit.docked) setSidebar((v) => open ?? !v); else setFloating((v) => open ?? !v);
+  };
   const [resizing, setResizing] = useState(false);
   // let go: the edge eases to where it rests (--panel-settle, 640ms)
   const [settling, setSettling] = useState(false);
@@ -302,7 +343,7 @@ export default function Home() {
     const lend = (e: Event) => {
       const open = (e as CustomEvent<boolean>).detail;
       // only where it fits beside the view (--view-min, 420px); else the tour's picks stand in for it
-      if (open && !sidebar && innerWidth >= sidebarWidth + 420) { lent.current = true; setSidebar(true); }
+      if (open && !sidebar && panelFit(innerWidth, sidebarWidth, SIDEBAR_MIN).docked) { lent.current = true; setSidebar(true); }
       if (!open && lent.current) { lent.current = false; setSidebar(false); }
     };
     addEventListener('oby:sidebar', lend);
@@ -329,6 +370,14 @@ export default function Home() {
   // (the box can't take the focus while a page is still over it)
   const [focusHome, setFocusHome] = useState(false);
   const newChat = useCallback(() => { closeAll(); setFocusHome(true); }, [closeAll]);
+  // The window's shortcuts (SHORTCUTS-1, 2 and 4): ⌘N a new conversation, ⌘K the side panel's
+  // search, opened if it's shut, and ⌘, Settings (⌘F is the conversation's own, ChatView)
+  useEffect(() => registerCommands({
+    'chat.new': newChat,
+    // (docked, or floating over a narrow window, as the panel's toggle opens it)
+    'search.open': () => { togglePanel(true); dispatchEvent(new Event('oby:search')); },
+    'settings.open': () => start({ kind: 'settings', id: 'general' }),
+  }), [newChat, fit.docked]);
   useEffect(() => {
     if (!focusHome || layers.length) return;
     document.querySelector<HTMLElement>('.composer .composer-input')?.focus();
@@ -363,15 +412,16 @@ export default function Home() {
   const rootTask = top?.kind === 'task' || top?.kind === 'thread' ? top.id : top?.kind === 'talk' && under?.kind === 'task' ? under.id : null;
 
   return (
-    <div className={`app${sidebar ? ' has-sidebar' : ''}${resizing ? ' is-resizing' : ''}${settling ? ' is-settling' : ''}${noLights ? ' no-lights' : ''}`} style={{ '--sidebar': `${sidebarWidth}px`, '--sidebar-min': `${SIDEBAR_MIN}px` } as React.CSSProperties}>
+    <div className={`app${panelShown ? ' has-sidebar' : ''}${fit.docked ? '' : ' is-floating'}${resizing ? ' is-resizing' : ''}${settling ? ' is-settling' : ''}${noLights ? ' no-lights' : ''}`} style={{ '--sidebar': `${fit.width}px`, '--sidebar-min': `${SIDEBAR_MIN}px` } as React.CSSProperties}>
       <Sidebar
-        open={sidebar}
+        open={panelShown}
         atHome={!away}
-        onClose={() => { lent.current = false; setSidebar(false); }}
+        onClose={() => togglePanel(false)}
         onNewChat={newChat}
         onHome={home}
         onOpenGroup={(id) => start({ kind: 'group', id, tab: firstTab(id) })}
-        onOpenTask={(id) => start({ kind: 'task', id })}
+        onOpenTask={(id) => (chatFirst ? openAt(id) : start({ kind: 'task', id }))}
+        onOpenAgent={(id) => openAt(id)}
         onOpenChat={(id) => start({ kind: 'task', id }, conversationOf(id))}
         onOpenOby={(name) => start({ kind: 'oby', id: name })}
         onOpenMember={(owner) => start({ kind: 'member', id: owner })}
@@ -389,9 +439,11 @@ export default function Home() {
         active={rootTask}
         activeTalk={top?.kind === 'talk' ? top.id : null}
         activeOby={firstOby?.id ?? null}
-        width={sidebarWidth}
+        width={fit.width}
         onResize={resizeSidebar}
       />
+      {/* floating over the chat: a click beside it puts it away, as T3 Code's sheet */}
+      {floating && !fit.docked && <button type="button" className="panel-scrim" aria-label="Hide sidebar" tabIndex={-1} onClick={() => togglePanel(false)} />}
 
     <div className="home">
       <header className="bar">
@@ -437,6 +489,7 @@ export default function Home() {
                       {!onObid && MOCK_SCHEDULE[shownAgent.id] && <span className="bar-schedule">{MOCK_SCHEDULE[shownAgent.id]}</span>}
                     </> : <>
                       <Crumb>{label(l)}</Crumb>
+                      {chipFor && !leavingAll && <ProjectChip chosen={chipFor.project} onChoose={(p) => moveChat(chipFor.id, p)} className="bar-project" />}
                       {/* a task's or a conversation's menu, as on its side panel row */}
                       {(shown || shownTalk) && !leavingAll && (
                         <button
@@ -451,7 +504,7 @@ export default function Home() {
                       )}
                       {/* a task's: its conversation, beside its ⋮ too (by the title, where it's seen; the
                           button at the bar's right is easy to miss) */}
-                      {shown && !leavingAll && (
+                      {shown && onPage && !leavingAll && (
                         <button className="icon-button bar-chat" aria-label="Go to conversation" data-tip="Go to conversation" onClick={() => goToConversation(shown.id)}>
                           <ChatsCircleIcon size={17} />
                         </button>
@@ -474,7 +527,7 @@ export default function Home() {
           </div>
         )}
         {/* on a task's page, at the right: the way into its conversation */}
-        {shown && (
+        {shown && onPage && (
           <div className="bar-end">
             <button className="bar-convo" onClick={() => goToConversation(shown.id)}>
               Go to conversation
@@ -496,7 +549,7 @@ export default function Home() {
           <section className="attention" aria-label="Your tasks">
             {/* coming in from setting up: it waits till Oby has hopped up, then rises in (app.css) */}
             <span className={`attention-label${chatFirst || !(running || needsYou) ? ' is-idle' : ''}${enterIn ? (arriving ? ' is-waiting' : ' is-arrival') : ''}`}>{chatFirst ? HELLO : attention(running, needsYou, tasks.length === 0)}</span>
-            {/* what Oby is asking you, answered here; opening one goes to its task's page */}
+            {/* what Oby is asking you, answered here; opening one goes to its task (chat first: in its conversation, at its card) */}
             {(!chatFirst || !away) && <AskStack active={!away} onOpen={openTask} onOpenTalk={(id) => start({ kind: 'talk', id })} />}
             {/* every kind of work, in its usual order, whatever's going on in it (a
                 kind with nothing open opens on its completed ones), so the kinds
@@ -527,6 +580,8 @@ export default function Home() {
       </main>
 
       {onObid && <Connection />}
+      {/* another conversation needs you while the window is in front (ALERTS-21) */}
+      <NeedsYouNote open={top?.kind === 'talk' ? top.id : null} onOpen={(id) => start({ kind: 'talk', id })} />
       {/* asking Oby: a new conversation, opened at once */}
       <Composer
         home
@@ -559,8 +614,8 @@ export default function Home() {
         if (l.kind === 'group') return <GroupView key={l.key} group={TYPES.find((t) => t.id === l.id)!} tab={l.tab} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenTask={openTask} onOpenArchive={() => push({ kind: 'archive' })} />;
         if (l.kind === 'task') return <TaskView key={l.key} id={l.id} leaving={leaving} covered={covered} onBack={back} onHome={home} onGone={onGone} onTell={tellFromTask} onSession={(id) => push({ kind: 'session', id })} />;
         if (l.kind === 'session') return <SessionView key={l.key} id={l.id} leaving={leaving} covered={covered} onBack={back} onGone={onGone} onTell={tellFromTask} />;
-        if (l.kind === 'archive') return <ArchiveView key={l.key} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenTask={openTask} />;
-        if (l.kind === 'waiting') return <WaitingView key={l.key} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenTask={openTask} onOpenTalk={(id) => push({ kind: 'talk', id })} />;
+        if (l.kind === 'archive') return <ArchiveView key={l.key} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenTask={openTask} onOpenTalk={(id) => push({ kind: 'talk', id })} />;
+        if (l.kind === 'waiting') return <WaitingView key={l.key} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenTask={(id) => openAt(id, push)} onOpenTalk={(id) => push({ kind: 'talk', id })} />;
         if (l.kind === 'settings') return <SettingsView key={l.key} page={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;
         if (l.kind === 'sphere') return <SphereSettings key={l.key} id={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;
         if (l.kind === 'knowledge') return <KnowledgeView key={l.key} id={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;
@@ -568,18 +623,18 @@ export default function Home() {
         if (l.kind === 'member') return <PeerThreadView key={l.key} owner={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;
         if (l.kind === 'oby') return <ObyView key={l.key} name={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenConvo={(id) => push({ kind: 'peer', id })} />;
         const kind = l.kind === 'talk' ? 'oby' : l.kind === 'peer' ? 'peer' : 'task';
-        return <ChatView key={l.key} kind={kind} id={l.id} leaving={leaving} covered={covered} onBack={back} onGone={onGone} onOpenTask={openTask} onOpenMember={(owner) => push({ kind: 'member', id: owner })} />;
+        // opened at a task: the conversation on top lights its card
+        const at = flash && i === live.length - 1 && kind !== 'peer' ? flash : undefined;
+        return <ChatView key={l.key} kind={kind} id={l.id} leaving={leaving} covered={covered} flash={at} onFlashed={() => setFlash(null)} onBack={back} onGone={onGone} onOpenMember={(owner) => push({ kind: 'member', id: owner })} />;
       })}
-      {/* chat first: what Oby is asking you, over your conversation, answered there in one click
-          (with none open, on the stage, as on Home) */}
-      {chatFirst && top?.kind === 'talk' && (
-        <div className="asks-over"><AskStack active onOpen={openTask} onOpenTalk={(id) => start({ kind: 'talk', id })} /></div>
-      )}
+      {/* chat first: nothing over a conversation but its own: what it and its tasks ask waits in the
+          drawer over its box (ChatView, DecisionBar), what other conversations ask on their rows and
+          in Waiting for you; with none open, all of it on the stage, as on Home (CHATFIRST-8) */}
     </div>
       {/* stays next to the traffic lights whether the side panel is open or not.
           Last in the page on purpose: Electron reads drag areas in page order,
           so coming after the title bar keeps its click from being taken as a drag */}
-      <button className={`icon-button panel-toggle${enterIn ? (arriving ? ' is-waiting' : ' is-arrival') : ''}`} aria-label={sidebar ? 'Hide sidebar' : 'Show sidebar'} aria-expanded={sidebar} onClick={() => { lent.current = false; setSidebar((v) => !v); }}>
+      <button className={`icon-button panel-toggle${enterIn ? (arriving ? ' is-waiting' : ' is-arrival') : ''}`} aria-label={panelShown ? 'Hide sidebar' : 'Show sidebar'} aria-expanded={panelShown} onClick={() => togglePanel()}>
         <PanelLeft size={18} strokeWidth={1.6} />
       </button>
     </div>

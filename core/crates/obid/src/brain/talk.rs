@@ -85,12 +85,12 @@ pub(super) fn accounts(
         .into_iter()
         .map(|tool| (tool, shared.jobs.thinking_accounts(tool)))
         .collect();
-    // A turn is watched: a weekly reserve doesn't hold it (LIMITS-20).
-    let on = on.filter(|on| shared.jobs.has_room(on, false));
+    // A turn is watched: a weekly reserve doesn't hold it (LIMITS-20). One whose agent couldn't
+    // start comes after those that can (ACCOUNTS-20), the owner's choice still first.
+    let room = |id: &str| shared.jobs.has_room(id, false) && shared.jobs.cant_run_why(id).is_none();
+    let on = on.filter(|on| room(on));
     keep_apart(
-        order(chosen, on, lists, shared.jobs.account_failover(), |id| {
-            shared.jobs.has_room(id, false)
-        }),
+        order(chosen, on, lists, shared.jobs.account_failover(), room),
         &apart,
     )
 }
@@ -208,16 +208,21 @@ fn order(
     tried
 }
 
-/// The account a new conversation's first turn would talk through now.
-pub fn next(shared: &Shared) -> Option<String> {
+/// The account a new conversation of `scope`'s profile would talk through now: one of its
+/// accounts (B00-40, PROFILES-47).
+pub fn next(shared: &Shared, scope: &crate::profiles::Scope) -> Option<String> {
+    next_with(shared, scope).map(|(_, account)| account.id)
+}
+
+/// [`next`], with its tool and account.
+pub fn next_with(shared: &Shared, scope: &crate::profiles::Scope) -> Option<(Tool, Account)> {
     let chosen = crate::settings::load(&shared.config.home).talk_account;
     let chosen = chosen.filter(|id| {
         id != AUTO && crate::accounts::find(&shared.config.agents.get(), id).is_some()
     });
     accounts(shared, chosen.as_deref(), None, None)
         .into_iter()
-        .next()
-        .map(|(_, account)| account.id)
+        .find(|(_, account)| shared.profiles.accounts.holds(scope, &account.id))
 }
 
 /// The account the turn is off, having answered on `answered`: the one that failed this turn, else
@@ -245,7 +250,13 @@ pub(super) const ON_CURSOR_UNASKED: &str =
 /// Why a turn has no account to try, in one line: with failover off, why the chosen one can't run;
 /// else what holds each signed-in account back, every tool's or `only`'s; none signed in, why the
 /// first has none.
-pub(super) fn why_none(shared: &Shared, chosen: Option<&str>, only: Option<&str>) -> String {
+/// Only the accounts `mine` holds are named: the conversation's profile's (B00-40), never another's.
+pub(super) fn why_none(
+    shared: &Shared,
+    chosen: Option<&str>,
+    only: Option<&str>,
+    mine: impl Fn(&str) -> bool,
+) -> String {
     let now = obi_protocol::time::now();
     let held = |tool: Tool, account: &Account| {
         // OpenAI's limit names no time, and the hour obid inferred isn't one to say.
@@ -279,6 +290,7 @@ pub(super) fn why_none(shared: &Shared, chosen: Option<&str>, only: Option<&str>
     if !shared.jobs.account_failover()
         && let Some((tool, account)) =
             chosen.and_then(|id| crate::accounts::find(&shared.config.agents.get(), id))
+        && mine(&account.id)
     {
         let signed_in = shared.jobs.signed_in_accounts(tool);
         return if signed_in.iter().any(|a| a.id == account.id) {
@@ -294,11 +306,20 @@ pub(super) fn why_none(shared: &Shared, chosen: Option<&str>, only: Option<&str>
             let accounts = shared.jobs.signed_in_accounts(*tool);
             accounts
                 .into_iter()
+                .filter(|a| mine(&a.id))
                 .map(|a| held(*tool, &a))
                 .collect::<Vec<_>>()
         })
         .collect();
+    // A profile with none of its own: words for Sangam to change (docs/contracts/profiles.md).
+    let every: Vec<String> = (Tool::ALL.iter())
+        .flat_map(|t| shared.jobs.accounts(*t).into_iter().map(|a| a.id))
+        .collect();
+    let none_here = !every.is_empty() && !every.iter().any(|id| mine(id));
     match tools.first() {
+        Some(_) if said.is_empty() && none_here => {
+            return "this profile has no agent account yet: add one in Settings › Agents".into();
+        }
         Some(first) if said.is_empty() => return shared.jobs.none_signed_in(*first),
         None => return format!("{} can't talk here", only.unwrap_or_default()),
         Some(_) => {}
@@ -306,7 +327,9 @@ pub(super) fn why_none(shared: &Shared, chosen: Option<&str>, only: Option<&str>
     said.join("; ")
 }
 
-/// The line that says the turn moved: `left` by its name, then where to. Words for Sangam to change
+/// The line that says the turn moved: `left` by its name, why, then where to. One that couldn't
+/// start says why in plain words, its tool named (CONVERSATION-AGENT-26): what it last failed with
+/// ([`crate::jobs::Jobs::cant_run_why`]), else that it isn't signed in. Words for Sangam to change
 /// (docs/contracts/conversation-agent.md, proposed).
 pub(super) fn moved_line(
     shared: &Shared,
@@ -314,20 +337,30 @@ pub(super) fn moved_line(
     tool: Tool,
     account: &Account,
 ) -> Option<String> {
-    let (_, was) = crate::accounts::find(&shared.config.agents.get(), left)?;
+    let (was_on, was) = crate::accounts::find(&shared.config.agents.get(), left)?;
     let now = obi_protocol::time::now();
     let usage = shared.jobs.usage.get(left);
-    let why = if usage.full_until_at(now).is_some() || usage.held(now).is_some() {
-        "hit its limit"
-    } else {
-        "couldn't run"
-    };
-    Some(format!(
-        "{} {why}, so I moved to {} · {}.",
-        was.name,
-        tool.name(),
-        account.name
-    ))
+    let to = format!("so I moved to {} · {}.", tool.name(), account.name);
+    if usage.full_until_at(now).is_some() || usage.held(now).is_some() {
+        return Some(format!("{} hit its limit, {to}", was.name));
+    }
+    let home = crate::jobs::login_home();
+    let reason = shared.jobs.cant_run_why(left).or_else(|| {
+        (!crate::jobs::signed_in(was_on, &was, home.as_deref())).then(|| {
+            crate::jobs::cant_run::login_problem_of(was_on, &was, home.as_deref()).map_or_else(
+                || "it isn't signed in".into(),
+                |why| crate::jobs::cant_run::plain(&why),
+            )
+        })
+    });
+    Some(match reason {
+        Some(reason) => format!(
+            "{} · {} couldn't start: {reason}, {to}",
+            was_on.name(),
+            was.name
+        ),
+        None => format!("{} couldn't run, {to}", was.name),
+    })
 }
 
 #[cfg(test)]

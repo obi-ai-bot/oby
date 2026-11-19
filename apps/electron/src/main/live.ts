@@ -1,7 +1,8 @@
 import type { BrowserWindow } from 'electron';
-import { obid, reason, send, streamEnded, takesKeys, type Trusted } from './obid';
+import { chooseProfile, obid, openedProfile, reason, send, streamEnded, takesKeys, type Trusted } from './obid';
+import { settings, writeSettings } from './settings';
 import { ipc } from './ipc';
-import { loadWhat, type LoadWhat } from '../shared/decode';
+import { loadWhat, profileId, type LoadWhat } from '../shared/decode';
 import { LATEST_JOBS, answer, answerTurns, apply, synced, type ObidEvent, type ObidState } from '../shared/live-state';
 import { wired, type Connection, type LiveMessage } from '../shared/live-wire';
 import { parseEvent, sseReader, type Conversation, type Event, type GitHubWork, type InboxItem, type Job, type LimitDecision, type Status, type Turn } from '../shared/obid-wire';
@@ -120,7 +121,7 @@ function queueLimits() {
 
 // --- following obid
 
-const RULE = new Set<Event['kind']>(['job', 'jobGone', 'conversation', 'conversationGone', 'turn', 'turnAsks', 'inbox', 'accounts', 'github']);
+const RULE = new Set<Event['kind']>(['job', 'jobGone', 'conversation', 'conversationGone', 'turn', 'turnAsks', 'turnDelivery', 'inbox', 'accounts', 'github']);
 const ruled = (e: Event): e is ObidEvent => RULE.has(e.kind);
 // An event: through the rule when it's the rule's, then passed on; an item that waits on you
 // brings its job
@@ -174,6 +175,8 @@ async function follow() {
 // `starting` is only GET /v1/status's 503 while obid opens (core's Door): taken as no problem yet,
 // should the stream ever get it
 function refused(mine: number, status: number, text: string) {
+  // the profile kept is none of obid's (gone, or another obid): obid's default profile, followed again
+  if (status === 400 && openedProfile()) { openProfile(null); return; }
   if (status === 401) return down(mine, 'obid refused this Mac’s token (api-token).');
   let said: { error?: unknown; starting?: unknown } | null = null;
   try { said = JSON.parse(text); } catch { /* not obid's JSON */ }
@@ -240,12 +243,34 @@ async function load(what: LoadWhat): Promise<true | string> {
   return true;
 }
 
+// Another profile opened (B00-40): what main holds was the last one's, so it's dropped and obid's
+// stream followed again, whose sync brings the page this profile's snapshot; it's kept in
+// settings.json, so main names it from the next launch on. true when it changed, false when it was
+// open already
+function openProfile(id: string | null) {
+  if (!chooseProfile(id)) return false;
+  try { writeSettings({ profile: id }); } catch (e) { console.error(`Oby: couldn’t keep the open profile: ${e}`); }
+  state = EMPTY;
+  limits = [];
+  loaded.clear();
+  complete = false;
+  generation++;
+  stream?.abort();
+  stream = null;
+  void follow();
+  return true;
+}
+// the profile kept from the last launch, named from the first call on
+const keptProfile = () => profileId(settings().profile)?.value ?? null;
+
 export function living(trusted: Trusted, window: () => BrowserWindow | null) {
   page = window;
   const channels = ipc(trusted);
   // what main holds now, and the number of the last message it sent the page
   channels.handle('obid-snapshot', [], () => ({ ...now(), seq }), null);
   channels.handle('obid-load', [loadWhat], (_e, what) => load(what), null);
+  channels.handle('obid-profile', [profileId], (_e, id) => openProfile(id), null);
+  chooseProfile(keptProfile());
   setInterval(() => { if (connection.connection === 'live') void refreshLimits(); }, 15_000);
   void follow();
 }

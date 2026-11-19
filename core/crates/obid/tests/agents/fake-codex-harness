@@ -14,15 +14,20 @@ if (process.argv[2] === "debug" && process.argv[3] === "models") {
 // A stand-in for `codex app-server` as a conversation's agent (docs/runner-api.md, "obid only: the
 // conversation harness"): JSON-RPC over stdio, streamed words (`item/agentMessage/delta`), tool
 // items, and Oby's `oby` MCP server from its `-c mcp_servers.oby.*` arguments, each MCP tool call
-// approved first (`mcpServer/elicitation/request`), as Codex 0.162 does. Threads are kept in
-// $CODEX_HOME/threads, so `thread/resume` works across processes. Each turn is one line of
-// $CODEX_HOME/turns.jsonl: argv, cwd, HOME, CODEX_HOME, the prompt, the thread it resumed, its
-// settings, and what its CODEX_HOME holds.
+// approved first (`mcpServer/elicitation/request`), as Codex 0.162 does; under `never` (an own run)
+// refused unless its server was approved before the run, as codex-cli 0.163. Threads are kept in
+// $CODEX_HOME/threads, so `thread/resume` works across processes; one process takes turn after turn
+// on its thread, as Codex's own app-server does. Each turn is one line of $CODEX_HOME/turns.jsonl:
+// its process's own id, argv, cwd, HOME, CODEX_HOME, the prompt, the thread this process resumed, its settings,
+// and what its CODEX_HOME holds.
 // What a turn does comes from the last line of the owner's words:
 //   RELAY              a turn on a ChatGPT login: through obid's relay, as fake-codex's
 //   SLEEP              goes on until it's stopped
 //   HELLO              searches the web for "greetings" and streams "Hello there."
-//   REMEMBER           says "resume=<the thread it resumed, or none>"
+//   ASK <question> | <option> | <option>…  asks the owner (item/tool/requestUserInput), then
+//                      says "asked: <its answer's words>"
+//   REMEMBER           says "resume=<the thread it resumed, or went on with from an earlier turn
+//                      of this process, or none>"
 //   TOOLS              says "tools: <the oby tools, by name>"
 //   OBY <tool> <json>  calls the oby tool with the json and says "oby: <what it answered>"
 //   ELSEWHERE          calls a tool of another MCP server and says "elsewhere: <the answer>"
@@ -144,6 +149,10 @@ const ask = (method, params) => new Promise((done) => {
 });
 let thread = null;
 let resumed = null;
+// The turns this process has taken, and its own id: its pid inside a box with a pid namespace of
+// its own (bubblewrap's, on Linux) isn't the one outside, and may be another process's next time.
+let turnsHere = 0;
+const procId = randomUUID();
 let state = null;
 
 const save = () => writeFileSync(join(threads, `${thread}.json`), JSON.stringify(state));
@@ -170,11 +179,18 @@ async function oby(method, params) {
   return answer.json();
 }
 
+// Under `approval_policy="never"` (an own run), as codex-cli 0.163: Codex asks nobody, so a tool
+// of a server not approved before the run is refused, and one approved runs without asking.
+const NEVER = "MCP tool call requires approval, but approval policy is never";
+const approvedBefore = (server) => setting(`mcp_servers.${server}.default_tools_approval_mode`) === "approve";
+
 // An MCP tool call as Codex makes one: the item starts, Codex asks to run it, then runs it.
 async function mcpCall(turnId, server, tool, args, asked = tool) {
   const item = { type: "mcpToolCall", id: randomUUID(), server, tool, arguments: args, status: "inProgress" };
   event("item/started", turnId, { item });
-  const approved = await ask("mcpServer/elicitation/request", { threadId: thread, turnId, serverName: server, mode: "form",
+  const approved = state.approvalPolicy === "never"
+    ? (approvedBefore(server) ? { action: "accept" } : { action: NEVER })
+    : await ask("mcpServer/elicitation/request", { threadId: thread, turnId, serverName: server, mode: "form",
     _meta: { codex_approval_kind: "mcp_tool_call", tool_params: args }, message: `Allow the ${server} MCP server to run tool "${asked}"?`, requestedSchema: { type: "object", properties: {} } });
   if (approved.action !== "accept") {
     event("item/completed", turnId, { item: { ...item, status: "failed", error: { message: "declined" } } });
@@ -358,7 +374,15 @@ async function act(turnId, words) {
     event("item/completed", turnId, { item: search });
     return say(turnId, "Hello there.");
   }
-  if (words.startsWith("REMEMBER")) return say(turnId, `resume=${resumed ?? "none"}`);
+  if (words.startsWith("ASK ")) {
+    // As Codex's request_user_input: a question with options, answered by obid.
+    const [question, ...labels] = words.slice(4).split(" | ");
+    const answer = await ask("item/tool/requestUserInput", { threadId: thread, turnId, itemId: randomUUID(),
+      questions: [{ id: "q1", header: "Choice", question, isOther: false, isSecret: false,
+        options: labels.map((label) => ({ label, description: "" })) }] });
+    return say(turnId, `asked: ${JSON.stringify(answer?.answers?.q1?.answers ?? null)}`);
+  }
+  if (words.startsWith("REMEMBER")) return say(turnId, `resume=${resumed ?? (turnsHere > 1 ? thread : "none")}`);
   if (words.startsWith("TOOLS")) {
     const listed = await oby("tools/list", {});
     return say(turnId, `tools: ${listed.result.tools.map((t) => t.name).join(",")}`);
@@ -449,10 +473,11 @@ rl.on("line", (line) => {
       appendFileSync(join(home, "asked.jsonl"), JSON.stringify(params) + "\n");
       return send({ id, result: configRead() });
     case "turn/start": {
+      turnsHere += 1;
       const turnId = randomUUID();
       const prompt = params.input.map((i) => i.text).join("\n");
       mkdirSync(records, { recursive: true });
-      appendFileSync(join(records, "turns.jsonl"), JSON.stringify({ at: Date.now(), argv, cwd: process.cwd(), home: process.env.HOME,
+      appendFileSync(join(records, "turns.jsonl"), JSON.stringify({ at: Date.now(), proc: procId, argv, cwd: process.cwd(), home: process.env.HOME,
         codexHome: process.env.CODEX_HOME ?? null, holds: readdirSync(home).sort(), prompt, resumed,
         sandbox: state.sandbox, approvalPolicy: state.approvalPolicy, permissions: state.permissions ?? null,
         instructions: state.instructions, model: params.model ?? null }) + "\n");
