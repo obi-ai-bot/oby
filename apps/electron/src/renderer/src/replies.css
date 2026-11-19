@@ -23,10 +23,11 @@
 .msg-foot > .msg-copy { position: static; margin-left: -4px; }
 .msg-foot > .msg-time + .msg-copy { margin-left: 0; }
 /* An agent's words (under a task's card, in its session): their Copy beside their last line at the
-   right edge, laid out, so it never lies on the line under them; shown while the pointer is on those
-   words only, not on the whole message they're in */
+   right edge, laid out, so it never lies on the line under them. One Copy shows at a time, the one
+   for the words under the pointer: on an agent's words, theirs alone; anywhere else on the message
+   (its words, its card, its time), the reply's */
 .ss-said > .msg-copy { position: static; flex: none; align-self: flex-end; margin: -1px -4px -1px auto; }
-.msg:hover .msg-copy:not(.ss-said > .msg-copy), .ss-said:hover > .msg-copy { opacity: 1; }
+.msg:hover:not(:has(.ss-said:hover)) .msg-copy:not(.ss-said > .msg-copy), .ss-said:hover > .msg-copy { opacity: 1; }
 
 /* A code block's: at its top right, over the code, on the block's own ground */
 .code-block { position: relative; min-width: 0; }

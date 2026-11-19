@@ -3,8 +3,9 @@ import type { Browser, Locator, Page } from 'playwright-core';
 import { chrome, openMock, type Mock } from './layout/mock';
 import { measure, say } from './layout/measure';
 
-// CHATFIRST-37, as a person sees it: in every conversation of the mock, a message never shows two Copy
-// icons near each other, and no Copy lies on a button, a link or a task's card, at a normal window and a
+// CHATFIRST-37, as a person sees it: in every conversation of the mock, a message shows one Copy at a
+// time, the one for the words under the pointer (an agent's under its card, else the reply's), never two
+// Copy icons near each other, and no Copy lies on a button, a link or a task's card, at a normal window and a
 // narrow one. With the pointer on the message, then on each of an agent's words in it (the owner's
 // "Fix CI" case: Oby's reply, a task card whose agent's last words carry their own Copy, the next message).
 let browser: Browser | string;
@@ -37,7 +38,7 @@ async function eachSpot(page: Page, f: (where: string) => Promise<void>) {
 
 describe('a reply\'s Copy, laid out (CHATFIRST-37)', () => {
   for (const width of [1280, 900]) {
-    it(`CHATFIRST-37: no two Copies near each other, none on a control or a card, at ${width}px`, async (t) => {
+    it(`CHATFIRST-37: one Copy shows at a time, none near another, none on a control or a card, at ${width}px`, async (t) => {
       if (typeof browser === 'string') {
         if (ci) throw new Error(browser);
         console.warn(`skipped: ${browser}`);
@@ -47,16 +48,23 @@ describe('a reply\'s Copy, laid out (CHATFIRST-37)', () => {
       try {
         mock = await openMock(browser, { width });
         const found: string[] = [];
-        let spots = 0, copiesSeen = 0;
+        let spots = 0, copiesSeen = 0, one = 0;
         await eachSpot(mock.page, async (where) => {
           const r = await measure(mock!.page, '[data-measuring]');
           spots++;
           copiesSeen += await mock!.page.locator('[data-measuring] button[aria-label="Copy"]').count();
+          // the Copies showing with the pointer here: one at most
+          const shown = await mock!.page.evaluate(() => [...document.querySelectorAll('[data-measuring] button[aria-label="Copy"]')]
+            .filter((e) => { const b = e.getBoundingClientRect(); if (!b.width) return false; for (let a: Element | null = e; a; a = a.parentElement) if (Number(getComputedStyle(a).opacity) < 0.05) return false; return true; }).length);
+          if (shown > 1) found.push(`${where}: ${shown} Copies show at once`);
+          if (shown === 1) one++;
           for (const line of say({ overlaps: [], copiesNear: r.copiesNear, copyOver: r.copyOver })) found.push(`${where}: ${line}`);
         });
         // it looked at something: messages, and Copies in them
         expect(spots).toBeGreaterThan(40);
         expect(copiesSeen).toBeGreaterThan(20);
+        // and a Copy does show where the pointer is on words that have one
+        expect(one).toBeGreaterThan(20);
         expect([...new Set(found)]).toEqual([]);
       } finally {
         await mock?.close();
