@@ -22,6 +22,10 @@ const typed = (c?: Code) => (c?.userCode ? ` · enter ${c.userCode}` : '');
 // (onboarding.ts): a row for each thing to connect, with its button or how it
 // stands, then the picks that carry on (only while this step waits on you).
 // The Obysphere tour's cards (the sample's) become one line once it's put away.
+// A step that is only its picks (the first task's, the Obysphere's): answered, it has nothing left to
+// show, so the conversation draws no card for it (ChatView) and Oby's words end their message
+export const onlyPicks = (step: SetupStep) => step === 'first' || step === 'sphere';
+
 export default function SetupCard({ step }: { step: SetupStep }) {
   const s = useSetup();
   const repos = useLive().repos.length;
@@ -37,6 +41,7 @@ export default function SetupCard({ step }: { step: SetupStep }) {
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => { if (waiting) end.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }, [waiting, heard]);
 
+  if (!waiting && onlyPicks(step)) return null;
   if (s.sphere === 'gone' && SAMPLE_STEPS.some((x) => step.startsWith(x))) return <p className="setup-label setup-gone">Sample · put away</p>;
   let rows: ReactNode = null, body: ReactNode = null, cue = '', picks: { label: string; quiet?: boolean; ok?: boolean }[] = [];
   if (step === 'agents') {

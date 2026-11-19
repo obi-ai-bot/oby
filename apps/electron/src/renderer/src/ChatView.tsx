@@ -27,9 +27,9 @@ import Refusals from './Refusals';
 import RefusalFixes from './RefusalFixes';
 import ReplySelection from './ReplySelection';
 import { historyOf } from './recall';
-import SetupCard from './SetupCard';
+import SetupCard, { onlyPicks } from './SetupCard';
 import OfferCard from './OfferCard';
-import { WELCOME, typedFirst } from './onboarding';
+import { WELCOME, typedFirst, useSetup } from './onboarding';
 import { openConversation, talkReady, useLimitAsks } from './live';
 import { onObid } from './lean';
 import { box as draftBox } from './drafts';
@@ -78,6 +78,8 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
 }) {
   const tasks = useTasks();
   const chats = useChats();
+  // setting up's step waiting on the owner (SetupCard: an answered step that was only its picks draws nothing)
+  const setupAt = useSetup().at;
   const convos = useConvos();
   // deleted, it's gone while this sinks away: keep showing the last of it
   const keptTask = useRef<Task>(null), keptChat = useRef<Chat>(null);
@@ -275,7 +277,8 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                   // a task it couldn't start on the account named: Install or Sign in (ACCOUNTS-37)
                   ...((m as Message).fixes?.length && !(m as Message).streaming ? [<RefusalFixes key="fixes" fixes={(m as Message).fixes!} />] : []),
                   // setting up (Oby's first conversation): where you act, once its words are in
-                  ...((m as Message).setup && !(m as Message).streaming ? [<SetupCard key="setup" step={(m as Message).setup!} />] : []),
+                  // (a step that was only its picks, answered, draws nothing: no card, so its Copy stays under the words)
+                  ...((m as Message).setup && !(m as Message).streaming && (setupAt === (m as Message).setup || !onlyPicks((m as Message).setup!)) ? [<SetupCard key="setup" step={(m as Message).setup!} />] : []),
                   // work Oby offers to start: yours to start with a tap
                   ...((m as Message).offer ? [<OfferCard key="offer" offer={(m as Message).offer!} />] : []),
                   // a question to another Oby: one card, updating in place
