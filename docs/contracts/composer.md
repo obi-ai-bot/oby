@@ -100,7 +100,7 @@ The business behavior contract for what the message box takes besides typing, do
 
 ## Acceptance scenarios
 
-- **COMPOSER-1:** Given a box whose words go to Oby, when the owner picks a mode on the Mode chip, then the chip shows it, it's kept for that box (another box keeps its own), and nothing is sent to Settings. Test: `composer_1_the_mode_chip_is_the_boxs_own` (`apps/electron/src/renderer/src/test/composer.test.tsx`).
+- **COMPOSER-1:** Given a box whose words go to Oby, when the owner picks a mode on the Mode chip, then the chip shows it, it's kept for that box (another box keeps its own), and nothing is sent to Settings. Its menu, like every menu (`Menu.tsx`: `menuPlace`, `menuShift`), opens wholly inside the window, 8px from its edges, moved back in sideways where lined up with its chip it would run past the right edge (a 900px window). Tests: `composer_1_the_mode_chip_is_the_boxs_own` (`apps/electron/src/renderer/src/test/composer.test.tsx`), `menuLayout.test.ts` (the box's and the side panel's menus at 1280px and 900px).
 - **COMPOSER-2:** Retired by COMPOSER-17: there is no model chip.
 - **COMPOSER-3:** Given a mode set and an obid with `composer-v1`, when the owner sends words, then `POST /v1/plans` carries it as `defaults` and the chip stays; with none set, or an obid without `composer-v1`, no `defaults`. Tests: `composer_3_the_chips_go_with_the_words`, `composer_3_chips_are_kept_per_box`, `composer_3_only_the_mode_goes` (`chips.test.ts`).
 - **COMPOSER-4:** The chip's mode is the job's; Bypass only on signed words. Test: `composer_4_the_chips_mode_is_the_jobs` (`core/crates/obid/src/brain/defaults.rs`).
