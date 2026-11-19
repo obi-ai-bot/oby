@@ -32,6 +32,10 @@ impl Jobs {
             let Some(job) = state.jobs.get(id).cloned() else {
                 return Err(Refused("There's no such job.".into()));
             };
+            // Ended, with words that start no follow-up (Try again's): no new job to take them.
+            if !job.status.is_active() {
+                return Err(Refused(ENDED.into()));
+            }
             if job.status == Status::Queued && !state.workers.contains_key(id) {
                 let mut job = job;
                 let kept = job.attachments.get_or_insert_with(Vec::new);
@@ -74,6 +78,11 @@ impl Jobs {
 
 /// Why files can't go to a job now (ATTACH-23).
 pub const BUSY: &str = "It can't take files now: it's getting ready, waiting for your answer or wrapping up. Send them again once it's at work.";
+
+/// Why files can't go with words to an ended job that start no follow-up (Try again's,
+/// ATTACH-13).
+pub const ENDED: &str =
+    "Files go with a follow-up of a finished task or a new task: tell this one in words.";
 
 /// What marks a job its files reached (crate::secretspec).
 const ATTACHED: &str = "files the owner attached, which may hold anyone's words";
