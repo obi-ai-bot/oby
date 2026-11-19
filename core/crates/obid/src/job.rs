@@ -1949,9 +1949,13 @@ impl Job {
             value["checkPeakRss"] = json!(peak);
         }
         if !self.servers.is_empty() {
-            value["servers"] = json!(self.servers.iter().map(|s| json!({"port": s.port,
+            value["servers"] = json!(
+                self.servers
+                    .iter()
+                    .map(|s| json!({"port": s.port,
                 "process": s.process, "firstSeen": obi_protocol::time::format(s.first_seen)}))
-                .collect::<Vec<_>>());
+                    .collect::<Vec<_>>()
+            );
         }
         if let Some(freed) = &self.build_freed {
             value["buildFreed"] = json!({"bytes": freed.bytes, "at": date(Some(freed.at))});

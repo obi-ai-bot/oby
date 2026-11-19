@@ -84,9 +84,15 @@ fn taskservers_1_and_2_a_running_jobs_server_shows_and_goes_when_it_closes() {
     assert_eq!(shown["status"], "running", "{shown}");
     let server = &shown["servers"][0];
     assert_eq!(server["process"], "node", "{shown}");
-    assert!(server["firstSeen"].as_str().is_some_and(|at| !at.is_empty()), "{shown}");
+    assert!(
+        server["firstSeen"]
+            .as_str()
+            .is_some_and(|at| !at.is_empty()),
+        "{shown}"
+    );
     let carried = events_named(&events, "job", 30, |got| {
-        got.iter().any(|j| j["id"] == id.as_str() && ports(j) == [u64::from(port)])
+        got.iter()
+            .any(|j| j["id"] == id.as_str() && ports(j) == [u64::from(port)])
     });
     assert!(!carried.is_empty());
 

@@ -71,7 +71,8 @@ pub fn listening(pids: &[u32]) -> Option<Vec<Listening>> {
                     .and_then(|l| l.strip_prefix("socket:["))
                     .and_then(|l| l.strip_suffix(']'))
                     .and_then(|l| l.parse::<u64>().ok());
-                if let Some(&(_, port)) = inode.and_then(|i| sockets.iter().find(|(s, _)| *s == i)) {
+                if let Some(&(_, port)) = inode.and_then(|i| sockets.iter().find(|(s, _)| *s == i))
+                {
                     found.push(Listening {
                         pid,
                         process: process.clone(),

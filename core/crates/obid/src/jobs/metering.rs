@@ -407,7 +407,10 @@ fn listening(
             (id, crate::meter::tree_pids(table, &roots))
         })
         .collect();
-    let pids: Vec<u32> = trees.iter().flat_map(|(_, pids)| pids.iter().copied()).collect();
+    let pids: Vec<u32> = trees
+        .iter()
+        .flat_map(|(_, pids)| pids.iter().copied())
+        .collect();
     let found = crate::listening::listening(&pids)?;
     Some(
         trees
