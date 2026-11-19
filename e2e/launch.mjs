@@ -211,6 +211,44 @@ async function joined(seconds = 30) {
   return until("you joined", async () => (await you.get("/v1/obid/sphere")).state === "joined", seconds * 1000).catch(() => false);
 }
 
+// @dana and `question` in a new conversation's box, picked from the @ list and sent with a real click
+// on Send. dama, a look-alike of dana, joined in L2: then obid asks your Confirm first (ASK-34), naming
+// dana and not dama, the question quoted, and a click on its Confirm, in its own card, sends it. Waits
+// up to `ms` for `done` to answer something: that, and whether it took a Confirm.
+async function askByAt(question, done, ms) {
+  // a new conversation, as a person starts one: an earlier one (L2's) may be open on Home
+  await goHome();
+  await showSidebar(ctx.page);
+  const fresh = await firstVisible([ctx.page.getByRole("button", { name: "New conversation", exact: true }), ctx.page.getByText("New conversation", { exact: true })], 3000);
+  if (fresh) await fresh.click({ timeout: 5000 });
+  const box = homeBox();
+  await box.click({ timeout: 10_000 });
+  await ctx.page.keyboard.insertText("@dan");
+  const option = await until("dana in the @ list", async () => {
+    const o = ctx.page.locator(".mention-panel [role=\"option\"]").filter({ hasText: /dana/ });
+    return (await o.count()) ? o.first() : null;
+  }, 30_000).catch(async () => red(`the @ list shows no dana, a member of the joined Sphere (it shows: ${JSON.stringify(await ctx.page.locator(".mention-panel [role=\"option\"]").allInnerTexts().catch(() => []))}): the @ list reads no live members (the @ ask, ASK-37 to 41)`));
+  await option.click();
+  await ctx.page.keyboard.insertText(` ${question}`);
+  await sendFromHome();
+  let confirmed = false;
+  const got = await until("what the @ made", async () => {
+    const it = await done();
+    if (it) return it;
+    if (!confirmed) {
+      const card = ctx.page.locator("xpath=//*[.//button[normalize-space()='Confirm']]").filter({ hasText: question }).last();
+      if (await card.count() && /not dama/.test(await card.innerText())) {
+        await sleep(600);
+        await card.getByRole("button", { name: "Confirm", exact: true }).click();
+        confirmed = true;
+        ok("dama looks like dana, so obid asked your Confirm first, naming dana, not dama, with the question quoted; your click confirmed it");
+      }
+    }
+    return null;
+  }, ms);
+  return { done: got, confirmed };
+}
+
 // ---- the scenarios
 
 const SCENARIOS = [
@@ -389,40 +427,10 @@ const SCENARIOS = [
   { id: "L9", rig: "RIG-36", title: "@ in Home's box asks a member's Oby: picked from the joined Sphere's members, sent with a click, signed", run: async () => {
     await writePolicy(RULES);
     if ((await dana.get("/v1/obid/sphere")).state !== "joined") red("Dana isn't in the Sphere: L9 runs before L8");
-    // a new conversation, as a person starts one: an earlier one (L2's) may be open on Home
-    await goHome();
-    await showSidebar(ctx.page);
-    const fresh = await firstVisible([ctx.page.getByRole("button", { name: "New conversation", exact: true }), ctx.page.getByText("New conversation", { exact: true })], 3000);
-    if (fresh) await fresh.click({ timeout: 5000 });
-    const box = homeBox();
-    await box.click({ timeout: 10_000 });
-    await ctx.page.keyboard.insertText("@dan");
-    const option = await until("dana in the @ list", async () => {
-      const o = ctx.page.locator(".mention-panel [role=\"option\"]").filter({ hasText: /dana/ });
-      return (await o.count()) ? o.first() : null;
-    }, 30_000).catch(async () => red(`the @ list shows no dana, a member of the joined Sphere (it shows: ${JSON.stringify(await ctx.page.locator(".mention-panel [role=\"option\"]").allInnerTexts().catch(() => []))}): the @ list reads no live members (the @ ask, ASK-37 to 41)`));
-    await option.click();
     const question = `Which branch are you on? ${randomBytes(3).toString("hex")}`;
-    await ctx.page.keyboard.insertText(` ${question}`);
     const before = new Set((await exchangesOf(you)).map((e) => e.correlationId));
-    await sendFromHome();
-    // dama, a look-alike of dana, joined in L2: then obid asks your Confirm first (ASK-34), naming
-    // dana and not dama, the question quoted; a click on its Confirm, in its own card, sends it
-    let confirmed = false;
-    const sent = await until("the ask the @ made", async () => {
-      const went = (await exchangesOf(you)).find((e) => !before.has(e.correlationId) && textOf(e).includes(question));
-      if (went) return went;
-      if (!confirmed) {
-        const card = ctx.page.locator("xpath=//*[.//button[normalize-space()='Confirm']]").filter({ hasText: question }).last();
-        if (await card.count() && /not dama/.test(await card.innerText())) {
-          await sleep(600);
-          await card.getByRole("button", { name: "Confirm", exact: true }).click();
-          confirmed = true;
-          ok("dama looks like dana, so obid asked your Confirm first, naming dana, not dama, with the question quoted; your click confirmed it");
-        }
-      }
-      return null;
-    }, 90_000).catch(async () => red(`no ask went to dana within 90 s of Send (your inbox: ${JSON.stringify((await you.get("/v1/inbox")).filter((i) => i.state === "open").map((i) => [i.kind, i.title]))})`));
+    const { done: sent, confirmed } = await askByAt(question, async () => (await exchangesOf(you)).find((e) => !before.has(e.correlationId) && textOf(e).includes(question)), 90_000)
+      .catch(async (e) => red(e instanceof Red ? e.message : `no ask went to dana within 90 s of Send (your inbox: ${JSON.stringify((await you.get("/v1/inbox")).filter((i) => i.state === "open").map((i) => [i.kind, i.title]))})`));
     check(sent.type === "question" || sent.messages?.[0]?.envelope?.type === "question", `the ask went as ${sent.type ?? sent.messages?.[0]?.envelope?.type}, not a question`);
     check(!textOf(sent).includes("@dana"), "the question carries the @dana mention");
     ok(`your @dana and click on Send asked Dana's Oby${confirmed ? ", once you confirmed" : " at once, signed"} (${sent.correlationId})`);
@@ -471,6 +479,22 @@ const SCENARIOS = [
     const shown = (await threadText(ctx.page)).split(again).length - 1;
     check(shown === 1, `your thread shows the ask ${shown} times`);
     ok("exactly one exchange each side and one answer");
+    // @dana in Home's box with the Sphere down (ASK-42): its card says it isn't sent yet, and once the
+    // Sphere is back it goes once, by itself, and its answer lands on the card
+    const atWords = `Still on that branch? ${randomBytes(3).toString("hex")}`;
+    const atCard = () => ctx.page.locator(".ask-card").filter({ hasText: atWords.slice(0, 22) }).last();
+    const cardsNow = async () => JSON.stringify(await ctx.page.locator(".ask-card").allInnerTexts().catch(() => []));
+    rig("sphere", "stop");
+    await askByAt(atWords, async () => /Not sent yet/.test(await atCard().innerText().catch(() => "")), 60_000)
+      .catch(async (e) => red(e instanceof Red ? e.message : `with the Sphere down, an @ ask's card doesn't say it isn't sent yet within 60 s (the cards: ${await cardsNow()}; the conversation: "${(await ctx.page.locator("main").innerText().catch(() => "")).replace(/\s+/g, " ").slice(-200)}")`));
+    ok("with the Sphere down, the @ ask's card says Not sent yet");
+    rig("sphere", "start");
+    await until("the @ ask's answer on its card", async () => /wasn’t bothered|wasn't bothered/.test(await atCard().innerText().catch(() => "")), 180_000)
+      .catch(async () => red(`the @ ask made while the Sphere was down shows no answer on its card within 3 minutes of it coming back (the cards: ${await cardsNow()})`));
+    const atMine = (await exchangesOf(you)).filter((e) => textOf(e).includes(atWords));
+    const atTheirs = (await exchangesOf(dana)).filter((e) => textOf(e).includes(atWords));
+    check(atMine.length === 1 && atTheirs.length === 1, `the @ ask made ${atMine.length} exchanges on your obid and ${atTheirs.length} on Dana's`);
+    ok("the Sphere back, the @ ask went once by itself and its answer is on its card");
   } },
   { id: "L8", rig: "RIG-34", title: "Leave drops Dana and an ask says so; a revoke shows a line; a new link rejoins", run: async () => {
     const danaKey = () => createPrivateKey(rigState().ownerKeys.dana);

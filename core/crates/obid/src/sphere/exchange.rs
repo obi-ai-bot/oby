@@ -151,6 +151,17 @@ impl Exchange {
         })
     }
 
+    /// Whether it's a question of the owner's still waiting for the Sphere to take it (PEER-44,
+    /// ASK-42): its request is the first in its outbox.
+    pub fn unsent(&self) -> bool {
+        self.direction == "outgoing"
+            && !self.request["id"].is_null()
+            && self
+                .outbox
+                .first()
+                .is_some_and(|m| m["id"] == self.request["id"])
+    }
+
     /// The envelope ids it holds.
     pub fn envelope_ids(&self) -> impl Iterator<Item = &str> {
         self.messages

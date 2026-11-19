@@ -37,6 +37,8 @@ The asker's side. Each line is one turn of Oby's in the conversation, after the 
 | The person said no (`decline`, `owner_declined`) | "Dima said no to this one." | no |
 | Other declines | `busy`: "Dima's Oby is busy with other questions and didn't take this one. Ask again later."; `out_of_scope`: "Dima's Oby doesn't take questions like this one."; `policy`: "This Obysphere's rules stopped Dima's Oby answering. An admin can change them."; else "Dima's Oby declined without saying why." A decline's note, if it has one, is quoted first. | only with a note |
 | A day with no answer | "Dima's Oby never answered: the question expired." | no |
+| It waited for the Obysphere and went once it was back (ASK-42) | "The Obysphere is back, so I asked Dima's Oby." | no |
+| It waited for the Obysphere and couldn't go once it was back (ASK-42) | "Dima's Oby never got this question: it couldn't go once the Obysphere was back." | no |
 
 The question wasn't sent, which the brain says in the turn itself:
 
@@ -44,10 +46,12 @@ The question wasn't sent, which the brain says in the turn itself:
 |---|---|
 | The Sphere's rules (`policy_denied`) | "I can't ask Dima's Oby. This Obysphere's rules don't allow questions yet. An admin can change that." |
 | The Sphere refused otherwise | "I can't ask Dima's Oby: the Obysphere refused it (`<its code>`)." |
-| The Sphere can't be reached | "I can't ask Dima's Oby right now: the Obysphere can't be reached." |
+| The Sphere can't be reached, for someone its last read of the members didn't have | "I can't ask Dima's Oby right now: the Obysphere can't be reached." |
 | A possible secret, or a scan that can't run | What the scan said: nothing was sent. |
 | Any other reason obid won't send it (a card that dropped its seal key) | "I can't ask Dima's Oby: nothing was sent." |
 | No member goes by that name, or not in an Obysphere | That none does, with who is there, quoted, and the turn no longer the owner's own word (ASK-25), or that joining takes a private link from its admin. |
+
+**The Obysphere away.** A question to a member the last read of the members had, on the owner's word or their Confirm, doesn't need the Obysphere there as it goes, as a letter doesn't need the post office open. When the Sphere can't be reached, obid keeps it, built and signed, and the brain says so in the turn: "The Obysphere can't be reached right now, so your question to Dima's Oby hasn't gone yet: it goes by itself once the Obysphere is back." Its card reads `unsent`, which the Electron app says as `Not sent yet`, and nobody counts as quiet while it waits. Once the Sphere answers again it goes within seconds, the same signed message under the same id, so the Sphere has it once, checked again as it goes, as peer-thread.md's "The Sphere away" says; then the conversation reads "The Obysphere is back, so I asked Dima's Oby." and its card goes on as any question's. One that can't go then (its Oby now says it acts for someone else, has left, or the Sphere refuses it) never does: the conversation and its card say "Dima's Oby never got this question: it couldn't go once the Obysphere was back.", naming nothing a member chose (ASK-42).
 
 These name what the brain gave in `to`, never who that turned out to be, since they reach the brain. A question refused only once the owner clicked its Confirm answers the click with these words, naming the owner id, and says them as Oby's turn in the conversation too, after any turn under way, so it never ends on "waits for the owner's OK" with no card (marked `relayed`, like every turn about another Oby).
 
@@ -150,6 +154,7 @@ The owner's decision of 2026-11-18: no separate "asking" card in the conversatio
 - **ASK-39** Picking `@dana` and sending sends the words with `ask: ["dana"]` to an obid that lists `ask-mentions-v1`, each member once, and none to one that doesn't; main signs `ask` only when every owner id in it is `@`-named in the words. (`ask_39_a_mention_goes_as_ask`, and `ask_39_main_signs_ask_only_for_owners_the_words_name` in `test/words.test.ts`.)
 - **ASK-40** obid asks each owner in `ask` before the model runs, as `oby_ask` with that owner id, the words without their leading mentions as the question: on the owner's signed word it goes at once, its card in the conversation; a look-alike or unsigned words wait for the Confirm; the model hears it asked, once, and is told not to ask again. (`ask_40_a_mention_asks_that_member` in `core/crates/obid/src/brain/ask.rs`.)
 - **ASK-41** `ask` that isn't 1 to 10 owner ids, or whose words are only mentions, is `422` and nothing happens. (`ask_41_ask_is_owner_ids_with_a_question` in `core/crates/obid/src/brain/mod.rs`.)
+- **ASK-42** A question asked in a conversation while the Obysphere can't be reached, to a member its last read had, waits: the turn says it hasn't gone and its card reads `unsent` (`Not sent yet` in the Electron app); once the Sphere answers again it goes by itself, once, the conversation reads that it went, and its card goes `asking` then `answered`, one card throughout; one that can't go once the Sphere is back (its Oby now says it acts for someone else) never goes, and its card and the conversation say so in obid's words (`ask_42_…` in tests/ask_an_oby.rs and `askCard.test.tsx`).
 
 ### Test it when it's done
 

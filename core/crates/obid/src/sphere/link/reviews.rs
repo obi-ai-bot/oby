@@ -952,10 +952,11 @@ impl Link {
         meant: Option<Meant<'_>>,
     ) -> Result<Value, ApiError> {
         let invalid = |m: String| api(StatusCode::UNPROCESSABLE_ENTITY, m);
-        // The owner's own question from a member's thread doesn't need the Sphere there as they
-        // send it: built by the directory as last read, it waits for the Sphere and goes once it's
-        // back, the same signed message, so the Sphere takes it once (PEER-44).
-        let may_wait = meant.is_some_and(|m| m.by_owner) && kind == "question";
+        // A question to someone picked by their owner id, from a member's thread or a conversation,
+        // doesn't need the Sphere there as it's sent: built by the directory as last read, it waits
+        // for the Sphere and goes once it's back, the same signed message, so the Sphere takes it
+        // once (PEER-44, ASK-42).
+        let may_wait = meant.is_some() && kind == "question";
         // Built, sealed and sent; once more after a seal refusal, with the directory read again.
         let mut attempt = 0;
         loop {

@@ -341,13 +341,15 @@ impl Link {
         Ok(post.unwrap_or(Value::Null))
     }
 
-    /// Whether the owner's own question waits for the Sphere ([`NOT_SENT_YET`]): the sender then
-    /// tries more often.
+    /// Whether the question `cid` waits for the Sphere to take it ([`Exchange::unsent`]).
+    pub fn unsent(&self, cid: &str) -> bool {
+        self.lock().exchanges.get(cid).is_some_and(Exchange::unsent)
+    }
+
+    /// Whether a question waits for the Sphere ([`NOT_SENT_YET`]): the sender then tries more
+    /// often.
     pub(super) fn question_waits(&self) -> bool {
-        self.lock().exchanges.values().any(|e| {
-            e.direction == "outgoing"
-                && e.outbox.first().is_some_and(|m| m["id"] == e.request["id"])
-        })
+        self.lock().exchanges.values().any(Exchange::unsent)
     }
 
     /// Whether the owner's question waiting for the Sphere may still go, by the directory read

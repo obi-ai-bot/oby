@@ -1716,3 +1716,73 @@ fn questions_to(sphere: &FakeSphere) -> Vec<String> {
         .map(|send| send["to"].as_str().unwrap_or_default().to_owned())
         .collect()
 }
+
+/// The questions the Sphere has in its chain.
+fn questions_recorded(sphere: &FakeSphere) -> usize {
+    sphere
+        .lock()
+        .entries
+        .iter()
+        .filter(|e| e["envelope"]["type"] == "question")
+        .count()
+}
+
+/// A question asked in a conversation while the Obysphere can't be reached waits: Oby says it hasn't
+/// gone, and its card reads `unsent`. Once the Sphere is back it goes by itself, once, the
+/// conversation hears it went, and the answer comes as ever. One that can't go once the Sphere is
+/// back, as its Oby now says it acts for someone else, never does, and its card says so in obid's
+/// words.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ask_42_a_question_asked_while_the_obysphere_is_away_goes_once_it_is_back() {
+    let folder = Folder::new("ask-42");
+    let (sphere, obid, ernesto) = setup(&folder).await;
+    sphere.lock().down = true;
+    let (conversation, said) = tokio::task::block_in_place(|| ask(&obid, QUESTION));
+    assert!(said.contains("hasn't gone yet"), "{said}");
+    assert!(!said.contains("Asked ernesto"), "{said}");
+    let all = tokio::task::block_in_place(|| card_says(&obid, &conversation, "unsent"));
+    assert_eq!(all.len(), 1, "{all:?}");
+    assert_eq!(all[0].1["question"], QUESTION);
+    assert_eq!(questions_recorded(&sphere), 0, "nothing went yet");
+
+    sphere.lock().down = false;
+    let got = ernesto.receive(1, 20).await;
+    assert_eq!(got[0]["body"], json!({"text": QUESTION}));
+    tokio::task::block_in_place(|| told(&obid, &conversation, "The Obysphere is back, so I asked"));
+    ernesto
+        .send(&ernesto.reply(&got[0], "answer", json!({"by": "obi", "text": "On it."})))
+        .await;
+    let all = tokio::task::block_in_place(|| card_says(&obid, &conversation, "answered"));
+    let states: Vec<&str> = all
+        .iter()
+        .map(|(_, c)| c["state"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        states,
+        ["unsent", "asking", "answered"],
+        "in order, once each"
+    );
+    assert_eq!(questions_recorded(&sphere), 1, "the Sphere has it once");
+
+    // Back, and the Oby it was for now says it acts for someone else: it never goes.
+    let folder = Folder::new("ask-42-never");
+    let (sphere, obid, ernesto) = setup(&folder).await;
+    sphere.lock().down = true;
+    let (conversation, _) = tokio::task::block_in_place(|| ask(&obid, QUESTION));
+    tokio::task::block_in_place(|| card_says(&obid, &conversation, "unsent"));
+    let eve = ernesto.entry_as(&sphere, "eve");
+    {
+        let mut state = sphere.lock();
+        state.swap_member = Some((0, eve));
+        state.down = false;
+    }
+    let all = tokio::task::block_in_place(|| card_says(&obid, &conversation, "refused"));
+    let (_, card) = all.last().unwrap();
+    assert_eq!(
+        card["why"],
+        "ernesto's Oby never got this question: it couldn't go once the Obysphere was back.",
+        "obid's words only, naming no one it now says it acts for"
+    );
+    tokio::task::block_in_place(|| told(&obid, &conversation, "never got this question"));
+    assert_eq!(questions_recorded(&sphere), 0, "nothing went");
+}
