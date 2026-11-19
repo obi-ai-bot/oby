@@ -21,6 +21,9 @@ import { liveState, lookAtUsage, patchStatus, say, useLive } from './live';
 import { AUTO, TALK_DEFAULT, talkChoices, tools } from './talk';
 import { isAgent } from '../../shared/obid-wire';
 import AgentBinaries from './AgentBinaries';
+import RoutinesSettings from './RoutinesSettings';
+import RepositoriesSettings from './RepositoriesSettings';
+import { paceLine } from './pace';
 import { version } from '../../../package.json';
 import { COMMIT, versionText } from '../../shared/build';
 import type { Update } from '../../shared/updates';
@@ -52,6 +55,10 @@ export const SETTINGS_PAGES = [
   { id: 'accounts', label: 'Accounts' },
   { id: 'models', label: 'Models' },
   { id: 'connectors', label: 'Connectors' },
+  // ours until Sangam's screens come: a repository's setup command (SETUP-4), and the routines obid
+  // keeps (ROUTINES-18 to 21)
+  { id: 'repositories', label: 'Repositories' },
+  { id: 'routines', label: 'Routines' },
   { id: 'vault', label: 'Vault' },
   { id: 'about', label: 'About' },
 ].filter((p) => everything || !LATER.has(p.id));
@@ -342,7 +349,7 @@ function MockRemote() {
 // session: the 5-hour window's use (null: none reported) and when it starts over; weekly: whether
 // used is the week's
 // chatgpt: signed in with Continue with ChatGPT (docs/contracts/chatgpt-sign-in.md)
-export type Account = { chatgpt?: boolean; background?: boolean; signingIn?: boolean; id: string; agent: Agent | (string & {}); name: string; payer: string; who?: string; used: number | null; resets: string; plan?: Plan; signedIn?: boolean; label?: string | null; session?: number | null; sessionResets?: string | null; weekly?: boolean; full?: boolean; fullTill?: string | null; models?: { id: string; name: string }[]; modelsRead?: boolean; cantRun?: string };
+export type Account = { chatgpt?: boolean; background?: boolean; signingIn?: boolean; id: string; agent: Agent | (string & {}); name: string; payer: string; who?: string; used: number | null; resets: string; plan?: Plan; signedIn?: boolean; label?: string | null; session?: number | null; sessionResets?: string | null; weekly?: boolean; sessionEnds?: string | null; weekEnds?: string | null; full?: boolean; fullTill?: string | null; models?: { id: string; name: string }[]; modelsRead?: boolean; cantRun?: string };
 // how full an account (or an agent) is: past 80% yellow, past 90% red
 export const fullness = (used: number) => (used > 90 ? 'is-over' : used > 80 ? 'is-high' : '');
 // what a card's bar shows: its 5-hour session, else its week
@@ -381,6 +388,9 @@ export function accountRow(a: Status['accounts'][number], now: number): Account 
     session,
     sessionResets: session != null && !over && a.fiveHourResets ? new Date(a.fiveHourResets).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null,
     weekly: a.sevenDay != null && a.agent !== 'cursor',
+    // when each window ends, for its pace (USAGE-18): the session's while it shows, the week's
+    sessionEnds: session != null && !over ? a.fiveHourResets ?? null : null,
+    weekEnds: a.sevenDay != null && a.agent !== 'cursor' ? a.sevenDayResets ?? null : null,
     full,
     // when obid lets it take work again, in the Mac's time (USAGE-14)
     fullTill: full ? fullWords(a.fullUntil!, now) : null,
@@ -389,10 +399,12 @@ export function accountRow(a: Status['accounts'][number], now: number): Account 
     cantRun: a.cantRun,
   };
 }
+// the mock's windows' ends, hours from now, for their pace (USAGE-18)
+const inHours = (h: number) => new Date(Date.now() + h * 3_600_000).toISOString();
 const ACCOUNTS: Account[] = [
-  { id: 'a1', agent: 'claude', name: 'Deskree', payer: 'Deskree', who: 'doti@deskree.com · Deskree · Team', used: 36, resets: 'Resets Thursday', plan: 'seat', session: 12, sessionResets: '4:10 PM', weekly: true },
-  { id: 'a2', agent: 'claude', name: 'Personal', payer: 'Doti', who: 'doti@example.com · Max', used: 82, resets: 'Resets in 2 days', plan: 'personal', session: 86, sessionResets: '2:14 PM', weekly: true },
-  { id: 'a3', agent: 'codex', name: 'Deskree', payer: 'Deskree', used: 12, resets: 'Resets Monday', plan: 'seat', session: 5, sessionResets: '6:40 PM', weekly: true },
+  { id: 'a1', agent: 'claude', name: 'Deskree', payer: 'Deskree', who: 'doti@deskree.com · Deskree · Team', used: 36, resets: 'Resets Thursday', plan: 'seat', session: 12, sessionResets: '4:10 PM', weekly: true, sessionEnds: inHours(2.5), weekEnds: inHours(80) },
+  { id: 'a2', agent: 'claude', name: 'Personal', payer: 'Doti', who: 'doti@example.com · Max', used: 82, resets: 'Resets in 2 days', plan: 'personal', session: 86, sessionResets: '2:14 PM', weekly: true, sessionEnds: inHours(1.2), weekEnds: inHours(48) },
+  { id: 'a3', agent: 'codex', name: 'Deskree', payer: 'Deskree', used: 12, resets: 'Resets Monday', plan: 'seat', session: 5, sessionResets: '6:40 PM', weekly: true, sessionEnds: inHours(0.5), weekEnds: inHours(100) },
   { id: 'a4', agent: 'claude', name: 'Deskree API', payer: 'Deskree', used: 8, resets: '$32 of $400 this month', plan: 'api', session: null, weekly: false },
   { id: 'a5', agent: 'cursor', name: 'Personal', payer: 'Doti', used: 24, resets: 'Resets Nov 20', plan: 'personal', session: null, weekly: false },
 ];
@@ -945,7 +957,7 @@ export function Agents() {
       // Codex with no login on this Mac, or a ChatGPT one that ended
       const plan = a === 'codex' && out && (x.chatgpt || (offersChatGpt(status) && !x.label));
       // the bar: the 5-hour session; the week, in words under it
-      const week = weekWords(x), bar = barOf(x);
+      const week = weekWords(x), bar = barOf(x), pace = paceLine(x, Date.now());
       return (
         <Group key={x.id} i={3 + k} title={x.name}>
           <div className="set-row set-usage" data-account={x.id}>
@@ -967,6 +979,8 @@ export function Agents() {
                     <span className="set-meter" role="meter" aria-valuenow={bar} aria-valuemin={0} aria-valuemax={100} aria-label={x.session != null ? `${bar}% of the 5-hour session used` : x.weekly === false ? `${bar}% used` : `${bar}% of the week used`}>
                       <span className={fullness(bar)} style={{ width: `${bar}%` }} />
                     </span>
+                    {/* the bar's window against an even pace, and what's left of it (USAGE-18) */}
+                    {pace && <span className="set-about set-pace">{pace}</span>}
                     {x.session != null && <span className="set-about is-quiet">{week}</span>}
                   </>
                 : <span className="set-about">{week}</span>}
@@ -1269,7 +1283,7 @@ function About() {
   </>;
 }
 
-const PAGES: Record<string, () => React.ReactNode> = { general: General, agents: Agents, obysphere: () => <SphereJoinPage />, sharing: Sharing, remote: Remote, accounts: Accounts, models: Models, connectors: Connectors, vault: Vault, about: About };
+const PAGES: Record<string, () => React.ReactNode> = { general: General, agents: Agents, obysphere: () => <SphereJoinPage />, sharing: Sharing, remote: Remote, accounts: Accounts, models: Models, connectors: Connectors, repositories: RepositoriesSettings, routines: RoutinesSettings, vault: Vault, about: About };
 
 // The default mode, with what it lets the agent do under it
 function ModeRow({ mode, setMode, modes = MODES }: { mode: string; setMode: (m: string) => void; modes?: typeof MODES }) {

@@ -22,6 +22,7 @@ import type {
   Profile,
   Project,
   Repo,
+  Routine,
   RoomAnswer,
   RoomPost,
   SavedRule,
@@ -203,6 +204,16 @@ export const api = {
   // (ask, a set_check confirm item) unless there's nothing to keep
   changeCheck: (repo: string, check: string | null) =>
     call<{ repo: Repo; ask: InboxItem | null }>('POST', '/v1/repos/check', { repo, check }),
+  // obid only: the owner's setup for a repository (SETUP-2), or null to take it out: obid asks for
+  // it (ask, a set_setup confirm item) unless it's the setup the repository has
+  changeSetup: (repo: string, setup: string | null) =>
+    call<{ repo: Repo; ask: InboxItem | null }>('POST', '/v1/repos/setup', { repo, setup }),
+  // obid only: routines (docs/api/routines.md), Settings › Routines: pause or resume (enabled), Run
+  // now, Delete
+  routines: () => call<Routine[]>('GET', '/v1/routines'),
+  pauseRoutine: (r: string, enabled: boolean) => call<Routine>('PATCH', `/v1/routines/${id(r)}`, { enabled }),
+  runRoutine: (r: string) => call<{ routine: Routine; job: Job }>('POST', `/v1/routines/${id(r)}/run`),
+  deleteRoutine: (r: string) => call<null>('DELETE', `/v1/routines/${id(r)}`),
   // obid only: GitHub work, and starting work on an item (the owner's tap)
   githubWork: () => call<GitHubWork>('GET', '/v1/github/work'),
   startGitHubWork: (i: string) => call<Job>('POST', `/v1/github/work/${id(i)}/start`),

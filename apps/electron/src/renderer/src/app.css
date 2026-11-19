@@ -1917,6 +1917,8 @@ button.connector { width: 100%; text-align: left; }
 /* the session's words close over its bar (4px), the week's further under it (12px) */
 .set-usage .set-meter { max-width: none; margin-top: 4px; }
 .set-usage .set-about.is-quiet { margin-top: 12px; opacity: 0.75; }
+/* the bar's pace, just under it (USAGE-18) */
+.set-usage .set-pace { margin-top: 6px; }
 .set-meter { display: block; width: 100%; max-width: 280px; height: 4px; margin-top: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
 .set-meter > span { display: block; height: 100%; border-radius: 2px; background: var(--text); }
 .set-meter > span.is-high { background: var(--full); }

@@ -1277,6 +1277,19 @@ export async function changeCheck(repo: string, check: string | null) {
   }
 }
 
+// A repository's setup, from Settings › Repositories (SETUP-2): the owner's command, or none to take
+// it out. obid asks for it (POST /v1/repos/setup) and this Mac's signature over that ask's title,
+// given at once for the same click, keeps it, as Change check does. What obid refused is thrown,
+// for the field to say.
+export async function changeSetup(repo: string, setup: string | null) {
+  const changed = await api.changeSetup(repo, setup);
+  set({ repos: state.repos.map((r) => (r.repo === changed.repo.repo ? changed.repo : r)) });
+  if (!changed.ask) return;
+  take({ kind: 'inbox', item: changed.ask });
+  take({ kind: 'inbox', item: await api.confirm(changed.ask.id) });
+  set({ repos: (await api.repos()).repos });
+}
+
 // The owner's answer to another Oby's question, or their Decline (or a review request's answer,
 // AskStack.tsx): signed by main, or obid refuses it, and that refusal is the caller's to say, over
 // the words it keeps (QuestionCard.tsx).

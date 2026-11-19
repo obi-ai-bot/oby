@@ -43,6 +43,7 @@ The business behavior contract for the Usage panel by the message box and Settin
 - **USAGE-16:** Its numbers: Claude Code's are its own last message's `usage` (input, cache read and written, and output: what its next call carries; a subagent's messages don't count) against the largest `contextWindow` its `result`'s `modelUsage` names; Codex's are its `thread/tokenUsage/updated`'s `last.totalTokens` (else its input and output) against `modelContextWindow`.
 - **USAGE-17:** A working task shows it under its card in its conversation, at the foot of what it did (LIVETASK-31's log), and on its page under Usage where one opens (`?everything`), the T3 Code way: `Context`, a hairline bar, `41K / 200K · 21%`, yellow from 80% and red from 90%; with no size, the tokens alone and no bar; with no `contextWindow`, nothing (proposed words, Sangam's to rewrite).
 - **USAGE-9:** A Cursor figure holds nothing back, since a Cursor plan may go on past its included usage: at any number the account isn't full or reserved, has room, takes work as with no figure, gets no job's window share, and is no evidence of room for a Resume. It only orders Cursor's own accounts, the emptier first (CONVERSATION-AGENT-15: Cursor stays last on Auto).
+- **USAGE-18:** Settings › Agents adds one short line under an account's bar: whether its use is ahead of an even pace for the bar's window, on it or under it, and how much of that window is left (`Ahead of pace · 2h 10m of the session left`, `Under pace · 3d 4h of the week left`; proposed words, Sangam's to change), the T3 Code way. The app works it out from what obid already says, with no new obid data: the share used against the share of the window gone, the window being the 5-hour session while its bar shows (`fiveHourResets`), else the week (`sevenDayResets`), 5 hours and 7 days long. More than 5 points over even is ahead, more than 5 under is under, the rest on pace. No line for a window whose length obid doesn't say (Cursor's plan, an API key), no figure, or a window that ended.
 
 ### What it costs
 
@@ -76,6 +77,7 @@ The business behavior contract for the Usage panel by the message box and Settin
 | USAGE-14 | `apps/electron/src/renderer/src/test/fullEverywhere.test.tsx` (`usage_14_…`) |
 | USAGE-15, USAGE-16 | `usage::tests::usage_15_claude_codes_context_is_its_last_messages_usage_against_its_window`, `usage::tests::usage_16_codexs_context_is_its_last_calls_tokens_against_its_window` |
 | USAGE-17 | `apps/electron/src/renderer/src/test/contextMeter.test.tsx` (`usage_17_…`) |
+| USAGE-18 | `apps/electron/src/renderer/src/test/usage.test.ts` (`USAGE-18:`) |
 | USAGE-9 | `usage::tests::usage_9_a_cursor_figure_holds_nothing_whatever_it_reads`, `jobs::account_limits::tests::usage_9_a_cursor_figure_orders_only_cursors_own_accounts`, `jobs::tests::usage_9_a_cursor_figure_gives_a_running_job_no_window_share`, `jobs::tests::usage_9_the_emptier_cursor_account_comes_first`, `jobs::tests::usage_6_8_9_a_cursor_accounts_figure_from_its_login_to_what_is_kept` |
 
 ## Test it when it's done (on a real Mac)

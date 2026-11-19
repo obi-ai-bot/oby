@@ -1250,9 +1250,13 @@
         },
         "setup.md": {
           "obid": [
-            "SETUP-1"
+            "SETUP-1",
+            "SETUP-2",
+            "SETUP-3"
           ],
-          "elsewhere": {}
+          "elsewhere": {
+            "SETUP-4": "Electron Settings › Repositories' Setup command (apps/electron setupCommand.test.tsx)."
+          }
         },
         "teammate-review.md": {
           "obid": [
@@ -1384,7 +1388,12 @@
             "ROUTINES-16",
             "ROUTINES-17"
           ],
-          "elsewhere": {}
+          "elsewhere": {
+            "ROUTINES-18": "Electron Settings › Routines (apps/electron routinesSettings.test.tsx).",
+            "ROUTINES-19": "Electron Settings › Routines (apps/electron routinesSettings.test.tsx).",
+            "ROUTINES-20": "Electron Settings › Routines (apps/electron routinesSettings.test.tsx).",
+            "ROUTINES-21": "Electron Settings › Routines (apps/electron routinesSettings.test.tsx)."
+          }
         },
         "cleanup.md": {
           "obid": [
@@ -1908,7 +1917,8 @@
             "USAGE-9": "Keychain, Electron and unit tests.",
             "USAGE-10": "Keychain, Electron and unit tests.",
             "USAGE-14": "Electron.",
-            "USAGE-17": "Electron."
+            "USAGE-17": "Electron.",
+            "USAGE-18": "Electron Settings › Agents' pace line, worked out in the app (apps/electron usage.test.ts)."
           }
         },
         "remote-gate.md": {
