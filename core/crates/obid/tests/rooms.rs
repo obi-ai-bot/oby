@@ -1094,7 +1094,7 @@ async fn rooms_11_a_post_read_back_before_its_answer_counts_once() {
                 .iter()
                 .filter(|o| o["action"] == "roomPost")
                 .count();
-            both.then_some(sent)
+            (both && sent >= 2).then_some(sent)
         });
         assert_eq!(sent, 2);
         std::thread::sleep(std::time::Duration::from_secs(10));

@@ -19,8 +19,3 @@ path = "junit.xml"
 # the Mac runs it once more only when it failed and is listed at the merge base too. The list only
 # shrinks: a new entry comes with its task, factory/queue/tasks/<key>.md, in the same change, and
 # the fix takes its entry out.
-
-# B00-36: a job's outgoing and the room's posts, read one after the other, now and then a post apart
-[[profile.ci.overrides]]
-filter = 'binary_id(obid::rooms) & test(=rooms_11_a_post_read_back_before_its_answer_counts_once)'
-retries = 2
