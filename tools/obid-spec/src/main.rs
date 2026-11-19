@@ -165,6 +165,35 @@ fn build_obid(given: Option<PathBuf>) -> Result<PathBuf> {
     Ok(target.join("debug/obid"))
 }
 
+/// The app, built once from this checkout for the `app.*` workflows (`npm run build` in
+/// apps/electron, its packages installed offline when missing), on macOS and unless
+/// `OBID_SPEC_APP` names another build. Elsewhere those workflows are skipped (OBIDSPEC-15).
+fn build_app() -> Result<()> {
+    if obid_spec::app::unsupported().is_some() || std::env::var_os("OBID_SPEC_APP").is_some() {
+        return Ok(());
+    }
+    let dir = root().join("apps/electron");
+    eprintln!("obid-spec: building the app once (npm run build in apps/electron)");
+    let out = std::process::Command::new("npm")
+        .current_dir(&dir)
+        .args(["run", "--silent", "build"])
+        .stdin(Stdio::null())
+        .output()
+        .context("npm didn't start")?;
+    anyhow::ensure!(
+        out.status.success(),
+        "the app didn't build: {}{}",
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .rev()
+            .take(15)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(())
+}
+
 #[derive(Clone, Debug, serde::Serialize)]
 struct StepResult {
     id: String,
@@ -196,6 +225,10 @@ struct WorkflowResult {
     area: String,
     file: String,
     passed: bool,
+    /// Why it didn't run here (OBIDSPEC-15): a step answered `skipped` (no macOS, no permission, no
+    /// agent-desktop). A skipped workflow is neither passed nor failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    skipped: Option<String>,
     steps: Vec<StepResult>,
     seconds: f64,
     folder: String,
@@ -217,6 +250,12 @@ async fn run(a: Args) -> Result<i32> {
     }
     anyhow::ensure!(!workflows.is_empty(), "no workflow to run");
     let obid = build_obid(a.obid.clone())?.canonicalize()?;
+    if workflows
+        .iter()
+        .any(|w| w.steps.iter().any(|s| s.node.starts_with("app.")))
+    {
+        build_app()?;
+    }
     let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
     let base = std::env::var_os("TMPDIR")
         .map(PathBuf::from)
@@ -272,9 +311,9 @@ async fn run(a: Args) -> Result<i32> {
         serde_json::to_string_pretty(&results)?,
     )?;
     print_table(&results, started.elapsed());
-    let failed = results.iter().any(|r| !r.passed);
+    let failed = results.iter().any(failed);
     if !a.keep {
-        for r in results.iter().filter(|r| r.passed) {
+        for r in results.iter().filter(|r| !self::failed(r)) {
             let _ = std::fs::remove_dir_all(&r.folder);
         }
         if !failed {
@@ -323,6 +362,7 @@ async fn run_workflow(w: &Workflow, env: &RunEnv) -> WorkflowResult {
         area: w.area.clone(),
         file: w.file.display().to_string(),
         passed: false,
+        skipped: None,
         steps: vec![],
         seconds: 0.0,
         folder: env.scratch.display().to_string(),
@@ -384,7 +424,7 @@ async fn run_workflow(w: &Workflow, env: &RunEnv) -> WorkflowResult {
             result.steps.push(r);
             continue;
         }
-        if broken {
+        if broken || result.skipped.is_some() {
             r.result = "skipped".into();
             result.steps.push(r);
             continue;
@@ -392,6 +432,20 @@ async fn run_workflow(w: &Workflow, env: &RunEnv) -> WorkflowResult {
         let outcome = match workflow::resolve(&step.inputs, &ctx) {
             Ok(inputs) => execute(&mut client, &step.node, &inputs).await,
             Err(e) => Err(format!("{e:#}")),
+        };
+        // A step that can't run here (OBIDSPEC-15): the rest of the workflow is skipped and the
+        // workflow is marked skipped, never passed.
+        let outcome = match outcome {
+            Ok(out) if out["skipped"].is_string() => {
+                let why = out["skipped"].as_str().unwrap_or_default().to_string();
+                r.result = "skipped".into();
+                r.why = Some(why.clone());
+                result.skipped = Some(why);
+                r.seconds = t.elapsed().as_secs_f64();
+                result.steps.push(r);
+                continue;
+            }
+            other => other,
         };
         // The step's assertion proven able to fail (OBIDSPEC-6): the answer changed at each place
         // it looks fails it every time, and a step that proves a scenario asserts something.
@@ -453,7 +507,7 @@ async fn run_workflow(w: &Workflow, env: &RunEnv) -> WorkflowResult {
         result.steps.push(failed_step("cleanup", &e));
     }
     let _ = child.kill().await;
-    result.passed = result.steps.iter().all(|s| s.result != "failed");
+    result.passed = result.skipped.is_none() && result.steps.iter().all(|s| s.result != "failed");
     result.seconds = start.elapsed().as_secs_f64();
     result
 }
@@ -511,9 +565,24 @@ async fn execute(
     }
 }
 
+/// Failed: neither passed nor skipped.
+fn failed(r: &WorkflowResult) -> bool {
+    !r.passed && r.skipped.is_none()
+}
+
+fn mark(r: &WorkflowResult) -> &'static str {
+    match (r.passed, &r.skipped) {
+        (true, _) => "pass",
+        (false, Some(_)) => "skip",
+        (false, None) => "FAIL",
+    }
+}
+
 fn print_one(r: &WorkflowResult) {
-    let mark = if r.passed { "pass" } else { "FAIL" };
-    eprintln!("obid-spec: {mark} {} ({:.1} s)", r.name, r.seconds);
+    eprintln!("obid-spec: {} {} ({:.1} s)", mark(r), r.name, r.seconds);
+    if let Some(why) = &r.skipped {
+        eprintln!("    {} › {why}", r.name);
+    }
     for s in r.steps.iter().filter(|s| s.result == "failed") {
         eprintln!(
             "    {} › {}: {}",
@@ -549,7 +618,7 @@ fn print_table(results: &[WorkflowResult], took: Duration) {
             .count();
         println!(
             "{:<6} {:<10} {:<52} {:>7} {:>10} {:>7}",
-            if r.passed { "pass" } else { "FAIL" },
+            mark(r),
             r.area,
             r.name.chars().take(52).collect::<String>(),
             format!("{passed}/{}", r.steps.len()),
@@ -557,7 +626,15 @@ fn print_table(results: &[WorkflowResult], took: Duration) {
             red
         );
     }
-    let failed = results.iter().filter(|r| !r.passed).count();
+    let failed = results.iter().filter(|r| failed(r)).count();
+    let skipped: Vec<&WorkflowResult> = results.iter().filter(|r| r.skipped.is_some()).collect();
+    for r in &skipped {
+        println!(
+            "  skipped, not run here: {}: {}",
+            r.name,
+            r.skipped.as_deref().unwrap_or("")
+        );
+    }
     let reds: Vec<String> = results
         .iter()
         .flat_map(|r| {
@@ -588,9 +665,10 @@ fn print_table(results: &[WorkflowResult], took: Duration) {
         }
     }
     println!(
-        "\n{} workflows: {} passed, {failed} failed, in {:.0} s",
+        "\n{} workflows: {} passed, {failed} failed, {} skipped, in {:.0} s",
         results.len(),
-        results.len() - failed,
+        results.iter().filter(|r| r.passed).count(),
+        skipped.len(),
         took.as_secs_f64()
     );
 }

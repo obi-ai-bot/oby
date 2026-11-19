@@ -22,14 +22,15 @@ export async function until(label, f, ms = 60_000, every = 150) {
 // The built app with `userData` as its app folder (its device key and settings), through a launcher
 // written in `dir`. Hidden: never on the person's screen, no Dock icon and every window invisible
 // and unfocusable (Playwright drives it through DevTools, whose key and mouse events main still sees
-// as input).
-export function launch({ dir, userData, env, hidden = true }) {
+// as input). `main`: another build's out/main/index.js (an older checkout's, to see a check fail on
+// the code before its fix); this checkout's by default.
+export function launch({ dir, userData, env, hidden = true, main = join(appRoot, 'out/main/index.js') }) {
   const launcher = join(dir, 'electron-launcher.cjs');
   writeFileSync(launcher, `const { app } = require('electron');
 app.setPath('userData', ${JSON.stringify(userData)});
 ${hidden ? `app.dock?.hide();
 app.on('browser-window-created', (_e, win) => { win.setOpacity(0); win.setFocusable(false); win.setIgnoreMouseEvents(true); });` : ''}
-import(${JSON.stringify(pathToFileURL(join(appRoot, 'out/main/index.js')).href)});
+import(${JSON.stringify(pathToFileURL(main).href)});
 `);
   return electron.launch({ executablePath: electronBinary, args: [launcher], env });
 }

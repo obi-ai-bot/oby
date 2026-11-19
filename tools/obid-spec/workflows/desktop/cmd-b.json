@@ -1,0 +1,124 @@
+{
+  "schemaVersion": "2",
+  "name": "Desktop: ⌘B through the menu bar hides and shows the sidebar once each",
+  "version": "1.0.0",
+  "description": "⌘B pressed through macOS with agent-desktop, which runs the menu item that carries the chord (View › Toggle Sidebar) as the system does for a person's keys, with the app's window in front for that moment: the sidebar opens, and still open a moment later (once, not twice), then shuts the same way (SHORTCUTS-7, #2560). On the app's demo data: the sidebar needs no obid.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "launch"
+  ],
+  "steps": [
+    {
+      "id": "app",
+      "use": "runtime.rust:app.launch",
+      "inputs": {
+        "mock": true,
+        "focusable": true,
+        "size": {
+          "width": 994,
+          "height": 670
+        }
+      }
+    },
+    {
+      "id": "shut-at-first",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Show sidebar"
+        },
+        "attributes": [
+          "aria-expanded"
+        ],
+        "within": 10,
+        "expect": {
+          "paths": {
+            "count": 1,
+            "attributes.aria-expanded": "false"
+          }
+        }
+      }
+    },
+    {
+      "id": "cmd-b-opens",
+      "use": "runtime.rust:desktop.press",
+      "inputs": {
+        "app": "${state.app}",
+        "keys": "cmd+b"
+      }
+    },
+    {
+      "id": "open-once",
+      "use": "runtime.rust:app.read",
+      "ui": {
+        "proves": [
+          "SHORTCUTS-7"
+        ]
+      },
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Hide sidebar"
+        },
+        "attributes": [
+          "aria-expanded"
+        ],
+        "within": 5,
+        "hold": 1000,
+        "expect": {
+          "paths": {
+            "count": 1,
+            "attributes.aria-expanded": "true"
+          }
+        }
+      }
+    },
+    {
+      "id": "cmd-b-shuts",
+      "use": "runtime.rust:desktop.press",
+      "inputs": {
+        "app": "${state.app}",
+        "keys": "cmd+b"
+      }
+    },
+    {
+      "id": "shut-once",
+      "use": "runtime.rust:app.read",
+      "ui": {
+        "proves": [
+          "SHORTCUTS-7"
+        ]
+      },
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Show sidebar"
+        },
+        "attributes": [
+          "aria-expanded"
+        ],
+        "within": 5,
+        "hold": 1000,
+        "expect": {
+          "paths": {
+            "count": 1,
+            "attributes.aria-expanded": "false"
+          }
+        }
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:app.close",
+      "inputs": {
+        "app": "${state.app}"
+      }
+    }
+  ]
+}

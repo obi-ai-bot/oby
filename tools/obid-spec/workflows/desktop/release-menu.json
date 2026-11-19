@@ -1,0 +1,78 @@
+{
+  "schemaVersion": "2",
+  "name": "Desktop: a release's View menu has no Reload nor developer tools",
+  "version": "1.0.0",
+  "description": "The menu bar a person sees, read through agent-desktop from the real app's process: a built copy run outside the dev server, for which main builds its menu with dev false, the same template a packaged app gets (not a signed .app). Its View menu has no Reload, Force Reload nor Toggle Developer Tools, and keeps the sidebar's toggle, Actual Size, Zoom In, Zoom Out and full screen (SHORTCUTS-10, #2560). On the app's demo data: the menu needs no obid.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "launch"
+  ],
+  "steps": [
+    {
+      "id": "app",
+      "use": "runtime.rust:app.launch",
+      "inputs": {
+        "mock": true
+      }
+    },
+    {
+      "id": "no-developer-items",
+      "use": "runtime.rust:desktop.read",
+      "ui": {
+        "proves": [
+          "SHORTCUTS-10"
+        ]
+      },
+      "inputs": {
+        "app": "${state.app}",
+        "menu": "View",
+        "expect": {
+          "paths": {
+            "items": {
+              "$none": {
+                "$oneOf": [
+                  "Reload",
+                  "Force Reload",
+                  "Toggle Developer Tools"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "keeps-zoom-and-full-screen",
+      "use": "runtime.rust:desktop.read",
+      "ui": {
+        "proves": [
+          "SHORTCUTS-10"
+        ]
+      },
+      "inputs": {
+        "app": "${state.app}",
+        "menu": "View",
+        "expect": {
+          "body": {
+            "items": [
+              "Toggle Sidebar",
+              "Actual Size",
+              "Zoom In",
+              "Zoom Out",
+              "Toggle Full Screen"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:app.close",
+      "inputs": {
+        "app": "${state.app}"
+      }
+    }
+  ]
+}
