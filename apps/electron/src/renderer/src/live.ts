@@ -1166,12 +1166,13 @@ export async function startGitHubWork(id: string) {
 // Fix CI on the owner's own red pull request's checks (GITHUBWORK-30): the feed's start, whose job
 // is the same Fix CI task words and the old card started (github_work::begin). One click starts one
 // task (GITHUBWORK-31): while its start is on its way a click starts nothing more, and once a task is
-// on it (the feed's job, or the one this start answered: obid answers a running one instead of a
-// new one) a click opens that task. Answers the task to open, if any.
+// on it and still queued or running (the feed's job, or the one this start answered: obid answers a
+// running one instead of a new one) a click opens that task; one that ended starts a new one. Answers
+// the task to open, if any.
 const fixedFrom = new Map<string, string>(), fixing = new Set<string>();
 export async function fixCi(id: string): Promise<string | undefined> {
-  const on = state.github?.mine.find((g) => g.id === id)?.job ?? fixedFrom.get(id);
-  if (on && state.jobs[on]) return on;
+  const on = state.github?.mine.find((g) => g.id === id)?.job ?? fixedFrom.get(id), at = on ? state.jobs[on]?.status : undefined;
+  if (on && (at === 'queued' || at === 'running')) return on;
   if (fixing.has(id)) return undefined;
   fixing.add(id);
   try {

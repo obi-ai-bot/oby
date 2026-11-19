@@ -133,6 +133,12 @@ describe('GITHUBWORK-31: one click starts one task', () => {
     answer = async () => ({ status: 200, text: JSON.stringify(job({ id: 'j8' })) });
     expect(await live.fixCi('g3')).toBe('j8');
     expect(calls).toEqual([['POST', '/v1/github/work/g3/start']]);
+    // once that task ended, a click starts a new one (a new red head)
+    const now = live.liveState();  // a job taken makes a new state
+    now.jobs = { ...now.jobs, j8: job({ id: 'j8', status: 'done' }) };
+    answer = async () => ({ status: 201, text: JSON.stringify(job({ id: 'j9' })) });
+    expect(await live.fixCi('g3')).toBeUndefined();
+    expect(calls).toEqual([['POST', '/v1/github/work/g3/start'], ['POST', '/v1/github/work/g3/start']]);
   });
 });
 
