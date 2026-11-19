@@ -37,6 +37,8 @@ Every exchange with that owner's Obis since obid joined this Sphere, whichever w
 | They called their request off | `kind: cancel`, `exchange.state: cancelled` |
 | A review or a handoff | `kind: review_request` or `handoff`, the goal in `text`; its `result`, the summary in `text`. The findings stay on the exchange |
 | A request being sent | No post yet: a refusal removes it with no event, so it shows once the Sphere has it |
+| A question of yours the Sphere can't take yet | Its post, `state: waiting`, `exchange.state: sent`: it goes by itself once the Sphere is back, then reads `sent` (PEER-44) |
+| A waiting question that never went | Its post, `state: refused`, `error` in obid's words, `exchange.state: failed` (PEER-45) |
 | The Sphere refused a question | No exchange is kept, so no post (docs/runner-api.md, "obid only: Obi-to-Obi exchanges"). The refusal answers whoever asked |
 
 ### Asking from it
@@ -47,6 +49,8 @@ It's the owner's own act, signed, so it needs no Confirm, and none of what a tur
 
 obid reads the directory again as the question goes, and a Sphere's operator could serve that Oby by then as someone else's, under an owner key pinned at first sight and a seal key of its own. So it goes only while the Oby still says it acts for that owner id, and otherwise nothing goes. `oby_ask` holds to the same, on the owner's word and on their Confirm.
 
+**The Sphere away.** A question to a member the directory had at its last read doesn't need the Sphere there as the owner sends it, as a letter doesn't need the post office open. When the Sphere can't be reached (no answer, or one that says to try later), obid builds it by that read, sealed and signed, keeps it as an exchange whose post reads `waiting`, and sends it by itself once the Sphere is back, within seconds of it answering again: the same signed message under the same id, its request key, so a Sphere that already took it answers the retry with its first receipt and has it once (PEER-44). It's checked again as it goes, as when it was asked: only while that Oby is still an active member that says it acts for that owner id and takes questions, sealed, or let have words in the clear; otherwise, or when the Sphere then refuses it, nothing goes and its post reads `refused`, in obid's words (PEER-45). It waits at most its day. Only the owner's own question from the thread waits: a question from a conversation, `POST /v1/obid/sphere/requests` and a review are refused as before.
+
 | What stops it | What the owner reads (the route's answer) |
 |---|---|
 | Unsigned | `403`, nothing goes |
@@ -55,7 +59,7 @@ obid reads the directory again as the question goes, and a Sphere's operator cou
 | The card doesn't take questions | "Dima's Oby doesn't take questions." |
 | The Oby now says it acts for someone else, or dropped its seal key | "I can't ask Dima's Oby: nothing was sent." `409` |
 | The Sphere's rules (`policy_denied`) | "This Obysphere's rules don't allow questions yet. An admin can change that." The thread already says who, and no model of the owner's is there to say "I". No exchange is kept |
-| The Sphere refused otherwise, or can't be reached | The words ask-an-oby.md gives: of what the Sphere wrote, only its code |
+| The Sphere refused otherwise, or can't be reached for someone its last read didn't have | The words ask-an-oby.md gives: of what the Sphere wrote, only its code |
 
 ### In the Electron app
 
@@ -215,6 +219,8 @@ The owner's decision 28: an Oby tells what the owner chooses, asked once at the 
 - **PEER-41** `PUT /v1/obid/sharing/limits` with the token alone is `403`, up or down, and changes nothing; with the device's signature it takes (`peer_41_…`).
 - **PEER-42** The Obysphere's settings list the chosen repositories, with Change only on the rule the owner's yes made; the card shows their ticks, on the stack and in Settings, none at first, Confirm off with none, and each name as text (`peer_42_…`, `peer_38: …`).
 - **PEER-43** When the Oby answers a member's question by itself, the run's material holds at most the last done question and answer exchanged with that same member (never another member's, never the exchange being answered), each line cut short and quoted under the same fence as other Obys' words, never in the prompt; a secret in a line, or a scan that can't run, leaves that line or the exchange out, as `add_progress` does; it isn't a tell, names no repository, and doesn't widen what the sharing rule covers (`peer_43_…` in `answering.rs`).
+- **PEER-44** Asked from the thread while the Sphere can't be reached, a question to a member the last read had answers `202` with its post `waiting`; once the Sphere answers again it goes by itself within seconds, the same signed message under the same id, and reads `sent`; the Sphere has it once, also when its answer to the first send was lost and it went again, and one exchange holds it and its answer (`peer_44_…`; RIG-33 on the rig).
+- **PEER-45** A question that waited goes only while what it was asked of still holds when the Sphere is back: an Oby that now says it acts for someone else, or a Sphere that refuses it, gets nothing, its exchange `failed` and its post `refused` in obid's words, with nothing of what the Sphere wrote (`peer_45_…`).
 
 The fixed prompt's sentence, run for real on 2026-11-03 against Dana's real Claude Code account (Haiku, as a question's run is), with one job inside the rule in `material.json`, and nothing else in it. Asked "How many tasks does Dana have, in all?": "I can only see one of Dana's tasks: "Billing retries," which is running at the work stage and is currently editing retry.rs. I can't give a total beyond that." Asked whether Dana works on anything else or private: "… I can only speak to the work shared here, so I can't say anything about other repositories or private work." It never says or guesses there's more, though it says what it speaks for is what's shared. With no items, "What is Dana working on?" came back unanswerable, so it waits on the owner: that tells less than the prompt allows, and nothing outside the rule.
 

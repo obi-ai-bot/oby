@@ -47,8 +47,16 @@ impl Link {
                 backoff = Duration::from_secs(1);
                 Duration::from_secs(2)
             } else {
+                // The owner's own question waiting for the Sphere is tried more often: it goes
+                // within seconds of the Sphere coming back (PEER-44).
+                let most = if self.question_waits() {
+                    ASK_RETRY_MAX
+                } else {
+                    BACKOFF_MAX
+                };
+                backoff = backoff.min(most);
                 let wait = backoff;
-                backoff = (backoff * 2).min(BACKOFF_MAX);
+                backoff = (backoff * 2).min(most);
                 wait
             };
             tokio::select! {
@@ -107,15 +115,41 @@ impl Link {
                 .and_then(time::parse)
                 .unwrap_or(0);
             let first = next["id"].clone();
+            // The owner's own question that waited for the Sphere (PEER-44), not a reply.
+            let request = self.lock().exchanges.get(cid).is_some_and(|e| {
+                e.direction == "outgoing" && !e.request["id"].is_null() && e.request["id"] == first
+            });
             if expires <= time::now() {
                 self.update_exchange(cid, |e| {
                     // A cancel may have cleared the outbox meanwhile.
                     if e.outbox.first().is_some_and(|f| f["id"] == first) {
                         e.outbox.remove(0);
                     }
-                    e.error = Some("A reply expired before the Sphere took it.".into());
+                    e.error = Some(if request {
+                        "The question expired before the Sphere took it: nothing was sent.".into()
+                    } else {
+                        "A reply expired before the Sphere took it.".into()
+                    });
                 });
                 continue;
+            }
+            // It goes only while what it was asked of holds now, as when it was asked: the
+            // directory read again before each try.
+            if request {
+                match self.waiting_question_holds(cid).await {
+                    Ok(()) => {}
+                    Err(None) => return false,
+                    Err(Some(why)) => {
+                        tracing::warn!("sphere: exchange {cid}: {why}");
+                        self.update_exchange(cid, |e| {
+                            e.outbox.clear();
+                            e.tried = None;
+                            e.state = "failed".into();
+                            e.error = Some(why.clone());
+                        });
+                        return true;
+                    }
+                }
             }
             // Before its first try a reply is sealed for the peer and fitted to the most a message
             // may be (protocol.md section 9.1); once tried, it goes again as it is, so a retry
@@ -203,6 +237,9 @@ impl Link {
                             e.outbox.remove(0);
                         }
                         e.tried = None;
+                        if request {
+                            e.error = None;
+                        }
                         e.messages.push(Message {
                             direction: "sent".into(),
                             seq: Some(sent.seq),
@@ -226,6 +263,10 @@ impl Link {
                         e.outbox.clear();
                         e.tried = None;
                         e.error = Some(line.clone());
+                        // A question the Sphere never took: nothing was asked.
+                        if request {
+                            e.state = "failed".into();
+                        }
                     });
                     return true;
                 }

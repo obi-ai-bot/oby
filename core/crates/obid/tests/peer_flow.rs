@@ -966,3 +966,192 @@ async fn peer_6_no_conversation_is_marked() {
     assert!(!prompt.contains("PROBE-INJECT"), "{prompt}");
     assert!(!prompt.contains(QUESTION), "{prompt}");
 }
+
+/// The question's entries in the Sphere's chain: one per message it took, whoever sent it.
+fn recorded(sphere: &FakeSphere, id: &Value) -> usize {
+    sphere
+        .lock()
+        .entries
+        .iter()
+        .filter(|e| e["envelope"]["id"] == *id)
+        .count()
+}
+
+/// The owner's question, asked from the thread while the Sphere is away, waits and reads so; once
+/// the Sphere is back it goes by itself, the same signed message under the same id, and the Sphere
+/// has it once: also when the Sphere's answer to it is lost and it goes again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_44_a_question_asked_while_the_sphere_is_away_goes_once_it_is_back() {
+    let folder = Folder::new("peer-44");
+    let (sphere, obid, ernesto) = setup(&folder).await;
+    let exchanges = || call(&obid, "GET", "/v1/obid/sphere/exchanges", None).body;
+
+    sphere.lock().down = true;
+    let asked = tokio::task::block_in_place(|| ask(&obid, "ernesto", QUESTION));
+    assert_eq!(asked.status, 202, "{}", asked.text);
+    assert_eq!(asked.body["text"], QUESTION);
+    assert_eq!(asked.body["by"], "owner");
+    assert_eq!(asked.body["state"], "waiting", "{}", asked.body);
+    let id = asked.body["id"].clone();
+    let cid = asked.body["exchange"]["id"].as_str().unwrap().to_owned();
+    let (thread, kept) = tokio::task::block_in_place(|| {
+        (
+            thread_of(&obid, "ernesto"),
+            call(
+                &obid,
+                "GET",
+                &format!("/v1/obid/sphere/exchanges/{cid}"),
+                None,
+            )
+            .body,
+        )
+    });
+    assert_eq!(posts(&thread)[0]["state"], "waiting", "{thread}");
+    assert!(
+        kept["error"].as_str().unwrap().contains("can't be reached"),
+        "{kept}"
+    );
+    assert_eq!(recorded(&sphere, &id), 0, "the Sphere has nothing yet");
+
+    sphere.lock().down = false;
+    let got = ernesto.receive(1, 20).await;
+    assert_eq!(
+        got[0]["id"], id,
+        "the same message, under the id it was asked with"
+    );
+    assert_eq!(got[0]["body"]["text"], QUESTION);
+    let sent = tokio::task::block_in_place(|| {
+        within(20, "the question listed as sent", || {
+            let thread = thread_of(&obid, "ernesto");
+            (posts(&thread)[0]["state"] == "sent").then_some(thread)
+        })
+    });
+    assert_eq!(posts(&sent).len(), 1, "one post: {sent}");
+    assert_eq!(recorded(&sphere, &id), 1, "the Sphere has it once");
+    ernesto
+        .send(&ernesto.reply(&got[0], "answer", json!({"by": "obi", "text": "On it."})))
+        .await;
+    let answered = tokio::task::block_in_place(|| thread_with(&obid, "ernesto", "answer"));
+    assert_eq!(posts(&answered).len(), 2, "{answered}");
+    let all = tokio::task::block_in_place(exchanges);
+    assert_eq!(all.as_array().unwrap().len(), 1, "one exchange: {all}");
+    assert_eq!(all[0]["error"], Value::Null, "{all}");
+
+    // Back, its answer lost after the Sphere kept it: it goes again as it was, and the Sphere
+    // answers the retry with the first receipt instead of taking it twice.
+    let again = "And after that?";
+    sphere.lock().down = true;
+    let waiting = tokio::task::block_in_place(|| ask(&obid, "ernesto", again));
+    assert_eq!(waiting.body["state"], "waiting", "{}", waiting.text);
+    let id = waiting.body["id"].clone();
+    let lost = sphere.lose_next_answer("question");
+    sphere.lock().down = false;
+    let got = ernesto.receive(1, 20).await;
+    assert_eq!(got[0]["id"], id);
+    lost.notify_one();
+    tokio::task::block_in_place(|| {
+        within(30, "the second question listed as sent", || {
+            let thread = thread_of(&obid, "ernesto");
+            posts(&thread)
+                .iter()
+                .any(|p| p["id"] == id && p["state"] == "sent")
+                .then_some(())
+        })
+    });
+    let tries: Vec<String> = sphere
+        .lock()
+        .sends
+        .iter()
+        .filter(|(_, text, _)| text.contains(id.as_str().unwrap()))
+        .map(|(_, text, _)| text.clone())
+        .collect();
+    assert!(tries.len() >= 2, "it went again: {}", tries.len());
+    assert!(
+        tries.iter().all(|t| *t == tries[0]),
+        "the same bytes each time"
+    );
+    assert_eq!(recorded(&sphere, &id), 1, "the Sphere has it once");
+    assert_eq!(
+        tokio::task::block_in_place(exchanges)
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+/// A question that waited for the Sphere goes only while what it was asked of still holds: once
+/// back, an Oby that now says it acts for someone else gets nothing, nor does one the Sphere's
+/// rules now refuse; the thread reads it as not sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_45_a_waiting_question_goes_only_while_it_still_holds() {
+    let folder = Folder::new("peer-45");
+    let (sphere, obid, ernesto) = setup(&folder).await;
+    let refused = |id: &Value| {
+        tokio::task::block_in_place(|| {
+            within(20, "the question read as not sent", || {
+                let thread = thread_of(&obid, "ernesto");
+                posts(&thread)
+                    .into_iter()
+                    .find(|p| p["id"] == *id && p["state"] == "refused")
+            })
+        })
+    };
+
+    sphere.lock().down = true;
+    let swapped = tokio::task::block_in_place(|| ask(&obid, "ernesto", QUESTION));
+    assert_eq!(swapped.body["state"], "waiting", "{}", swapped.text);
+    let id = swapped.body["id"].clone();
+    let eve = ernesto.entry_as(&sphere, "eve");
+    {
+        let mut state = sphere.lock();
+        state.swap_member = Some((0, eve));
+        state.down = false;
+    }
+    let post = refused(&id);
+    assert!(
+        !post["error"].as_str().unwrap().contains("Sphere"),
+        "obid's words: {post}"
+    );
+    let cid = post["exchange"]["id"].as_str().unwrap();
+    let kept = tokio::task::block_in_place(|| {
+        call(
+            &obid,
+            "GET",
+            &format!("/v1/obid/sphere/exchanges/{cid}"),
+            None,
+        )
+        .body
+    });
+    assert_eq!(kept["state"], "failed", "{kept}");
+    assert!(
+        kept["error"].as_str().unwrap().contains("someone else"),
+        "{kept}"
+    );
+    assert_eq!(recorded(&sphere, &id), 0, "nothing went");
+
+    // Its Oby back as ernesto's, the Sphere's rules refuse questions by the time it's back.
+    let folder = Folder::new("peer-45-rules");
+    let (sphere, obid, _ernesto) = setup(&folder).await;
+    sphere.lock().down = true;
+    let ruled = tokio::task::block_in_place(|| ask(&obid, "ernesto", QUESTION));
+    let id = ruled.body["id"].clone();
+    {
+        let mut state = sphere.lock();
+        state.deny_requests = true;
+        state.down = false;
+    }
+    let post = tokio::task::block_in_place(|| {
+        within(20, "the refused question read as not sent", || {
+            let thread = thread_of(&obid, "ernesto");
+            posts(&thread)
+                .into_iter()
+                .find(|p| p["id"] == id && p["state"] == "refused")
+        })
+    });
+    assert!(
+        !post["error"].as_str().unwrap().contains("policy"),
+        "obid's words: {post}"
+    );
+    assert_eq!(recorded(&sphere, &id), 0, "the Sphere kept nothing");
+}

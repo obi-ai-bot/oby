@@ -196,6 +196,9 @@ impl Exchange {
             let (kind, body) = (envelope["type"].as_str().unwrap_or(""), &envelope["body"]);
             let sent = direction == "sent";
             let waiting = at.is_none();
+            // A question of the owner's that waited for the Sphere, which then never took it
+            // (PEER-45): it goes nowhere now.
+            let refused = waiting && self.direction == "outgoing" && self.state == "failed";
             json!({
                 "id": envelope["id"],
                 "seq": seq,
@@ -208,9 +211,13 @@ impl Exchange {
                 "replyTo": envelope["in_reply_to"],
                 "text": words_of(kind, body),
                 "about": if body["about"].is_array() { &body["about"] } else if body["refs"].is_array() { &body["refs"] } else { &empty },
-                "state": if waiting { "waiting" } else { "sent" },
+                "state": if refused { "refused" } else if waiting { "waiting" } else { "sent" },
                 // Never what a Sphere said: `GET /v1/obid/sphere/exchanges/{id}` has the exchange's own.
-                "error": waiting.then_some("Not confirmed yet: the Obysphere didn't answer."),
+                "error": if refused {
+                    Some("it never reached their Oby.")
+                } else {
+                    waiting.then_some("Not confirmed yet: the Obysphere didn't answer.")
+                },
                 "verified": sent || verified,
                 "direction": direction,
                 "status": (kind == "status").then(|| &body["state"]),
