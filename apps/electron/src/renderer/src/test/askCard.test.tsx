@@ -53,7 +53,7 @@ beforeAll(async () => {
   vi.stubGlobal('location', { search: '' });
   vi.stubGlobal('window', { app: { obid: { call: async () => ({ status: 404, text: '{}' }), ...liveBridge().obid } } });
   vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {}, removeItem: () => {} });
-  vi.stubGlobal('document', { createElement: () => ({}) });
+  vi.stubGlobal('document', { createElement: () => ({}), addEventListener: () => {}, removeEventListener: () => {} });
   vi.stubGlobal('addEventListener', () => {});
   vi.stubGlobal('removeEventListener', () => {});
   vi.stubGlobal('innerWidth', 1000);

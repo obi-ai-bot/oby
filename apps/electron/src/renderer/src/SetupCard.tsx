@@ -143,7 +143,7 @@ export function AgentRows({ bare = false }: { bare?: boolean }) {
 }
 
 // An agent's install command, the vendor's own, to copy and run in Terminal: Oby runs nothing
-function Install({ agent }: { agent: Agent }) {
+export function Install({ agent }: { agent: Agent }) {
   const [copied, setCopied] = useState(false);
   const name = AGENTS[agent].name;
   const copy = () => { void navigator.clipboard?.writeText(INSTALL[agent]).then(() => setCopied(true), () => { /* left to select by hand */ }); };

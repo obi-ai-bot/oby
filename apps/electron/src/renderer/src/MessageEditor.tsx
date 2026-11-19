@@ -6,9 +6,10 @@ import { LexicalErrorBoundary } from '@lexical/react/LexicalErrorBoundary';
 import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin';
 import { PlainTextPlugin } from '@lexical/react/LexicalPlainTextPlugin';
 import {
-  $createLineBreakNode, $createParagraphNode, $createTextNode, $getRoot, $getSelection, $isRangeSelection, $isTextNode, $setSelection, COMMAND_PRIORITY_HIGH,
+  $createParagraphNode, $getRoot, $getSelection, $isRangeSelection, $isTextNode, $setSelection, COMMAND_PRIORITY_HIGH,
   KEY_ARROW_DOWN_COMMAND, KEY_ARROW_UP_COMMAND, KEY_ENTER_COMMAND, KEY_ESCAPE_COMMAND, KEY_TAB_COMMAND, PASTE_COMMAND, type LexicalCommand,
 } from 'lexical';
+import { $putText, $quoteAtCaret, stepHistory, textOf, type Recalled } from './recall';
 import { registerTokens, TokenNode } from './textTokens';
 import { useScrollThumb } from './useScrollThumb';
 
@@ -17,19 +18,22 @@ import { useScrollThumb } from './useScrollThumb';
 // you go (see textTokens.ts). Enter sends; Shift+Enter starts a new line.
 // An @ at the start of a word starts naming another Oby: what follows it goes
 // to onMention for the box to offer the Obys it could be, and while it does,
-// the arrows, Enter, Tab and Esc are the list's (onMentionKey).
+// the arrows, Enter, Tab and Esc are the list's (onMentionKey). Otherwise, in an empty box, ↑ brings back the owner's
+// earlier words (history, oldest first) one by one, and ↓ goes forward to an empty box again
+// (recall.ts, COMPOSER-20 to 22); once the box holds their own words, the arrows move the caret.
 
 export type MentionKey = 'up' | 'down' | 'pick' | 'close';
 export type EditorHandle = {
   text(): string; clear(): void; focus(): void; blur(): void;
   setText(text: string): void;  // the words put back (a draft), the cursor at their end
   mention(name: string): void;  // @name in place of the @ being typed (or at the cursor)
+  quote(text: string): void;  // text as a Markdown quote above the cursor (COMPOSER-23)
 };
 // the @ being typed, right before the cursor: what's after it so far (an Oby's name, or a file's
 // path: COMPOSER-14)
 const AT = /(?:^|\s)@([\w./-]*)$/;
 
-export default function MessageEditor({ placeholder, label, autoFocus = false, onText, onEnter, onHeight, onPasteFiles, onMention, onMentionKey, handle }: {
+export default function MessageEditor({ placeholder, label, autoFocus = false, onText, onEnter, onHeight, onPasteFiles, onMention, onMentionKey, history, handle }: {
   placeholder: string;
   label: string;
   autoFocus?: boolean;
@@ -39,6 +43,7 @@ export default function MessageEditor({ placeholder, label, autoFocus = false, o
   onPasteFiles?: (files: File[]) => void;  // pasted files (a screenshot, say): attached, not typed
   onMention?: (query: string | null) => void;  // an @ being typed: what follows it (null: none)
   onMentionKey?: (key: MentionKey) => boolean;  // true: the list took the key
+  history?: string[];  // the owner's earlier words here, oldest first, for ↑ and ↓ (recall.ts)
   handle: React.Ref<EditorHandle>;
 }) {
   const { list, onScroll, thumbProps } = useScrollThumb<HTMLDivElement>();
@@ -61,14 +66,14 @@ export default function MessageEditor({ placeholder, label, autoFocus = false, o
       {/* next to the text, not in it, so the text's fade doesn't fade it */}
       <div {...thumbProps} />
       <HistoryPlugin />
-      <Behaviour autoFocus={autoFocus} onText={onText} onEnter={onEnter} onHeight={onHeight} onPasteFiles={onPasteFiles} onMention={onMention} onMentionKey={onMentionKey} handle={handle} />
+      <Behaviour autoFocus={autoFocus} onText={onText} onEnter={onEnter} onHeight={onHeight} onPasteFiles={onPasteFiles} onMention={onMention} onMentionKey={onMentionKey} history={history} handle={handle} />
     </LexicalComposer>
   );
 }
 
 // Inside the editor: spotting tokens, Enter to send, reporting changes and
 // height, and the handle Composer reads, clears, focuses and blurs it by.
-function Behaviour({ autoFocus, onText, onEnter, onHeight, onPasteFiles, onMention, onMentionKey, handle }: {
+function Behaviour({ autoFocus, onText, onEnter, onHeight, onPasteFiles, onMention, onMentionKey, history, handle }: {
   autoFocus: boolean;
   onText: (text: string) => void;
   onEnter: () => void;
@@ -76,28 +81,23 @@ function Behaviour({ autoFocus, onText, onEnter, onHeight, onPasteFiles, onMenti
   onPasteFiles?: (files: File[]) => void;
   onMention?: (query: string | null) => void;
   onMentionKey?: (key: MentionKey) => boolean;
+  history?: string[];
   handle: React.Ref<EditorHandle>;
 }) {
   const [editor] = useLexicalComposerContext();
   // the latest callbacks, without re-registering on every render
-  const cb = useRef({ onText, onEnter, onHeight, onPasteFiles, onMention, onMentionKey });
-  cb.current = { onText, onEnter, onHeight, onPasteFiles, onMention, onMentionKey };
+  const cb = useRef({ onText, onEnter, onHeight, onPasteFiles, onMention, onMentionKey, history });
+  cb.current = { onText, onEnter, onHeight, onPasteFiles, onMention, onMentionKey, history };
+  // the earlier words ↑ brought back, while the box still shows them as they were
+  const recalled = useRef<Recalled>(null);
 
   useImperativeHandle(handle, () => ({
     text: () => editor.getEditorState().read(() => $getRoot().getTextContent()),
     clear: () => editor.update(() => { const root = $getRoot(); root.clear(); root.append($createParagraphNode()); }),
     // in place of whatever was there, as one step with it in the undo history
     // (Cmd+Z doesn't take a draft back out)
-    setText: (text) => editor.update(() => {
-      const root = $getRoot(), p = $createParagraphNode();
-      root.clear();
-      text.split('\n').forEach((line, i) => {
-        if (i) p.append($createLineBreakNode());
-        if (line) p.append($createTextNode(line));
-      });
-      root.append(p);
-      p.selectEnd();
-    }, { tag: 'history-merge' }),
+    setText: (text) => editor.update(() => $putText(text), { tag: 'history-merge' }),
+    quote: (text) => editor.update(() => $quoteAtCaret(text)),
     focus: () => editor.focus(),
     // no cursor left behind to put back, so the editor doesn't take focus again
     blur: () => { editor.update(() => $setSelection(null)); editor.blur(); },
@@ -119,6 +119,14 @@ function Behaviour({ autoFocus, onText, onEnter, onHeight, onPasteFiles, onMenti
   }), [editor]);
 
   useEffect(() => {
+    const recall = (key: MentionKey, e: KeyboardEvent) => {
+      if ((key !== 'up' && key !== 'down') || e.altKey || e.metaKey || e.ctrlKey) return false;
+      const step = stepHistory(key === 'up' ? 'back' : 'forward', cb.current.history ?? [], recalled.current, textOf(editor));
+      if (!step) return false;
+      recalled.current = step.at;
+      editor.update(() => $putText(step.text), { tag: 'history-merge' });
+      return true;
+    };
     const offs = [
       ...registerTokens(editor),
       editor.registerCommand(KEY_ENTER_COMMAND, (e: KeyboardEvent | null) => {
@@ -138,10 +146,12 @@ function Behaviour({ autoFocus, onText, onEnter, onHeight, onPasteFiles, onMenti
         cb.current.onPasteFiles(files);
         return true;
       }, COMMAND_PRIORITY_HIGH),
-      // while an @ is being typed, the list's keys (Esc kept from the page, which would close)
+      // while an @ is being typed, the list's keys (Esc kept from the page, which would close);
+      // otherwise ↑ and ↓ in a box with none of the owner's own words, their earlier words
       ...([[KEY_ARROW_DOWN_COMMAND, 'down'], [KEY_ARROW_UP_COMMAND, 'up'], [KEY_TAB_COMMAND, 'pick'], [KEY_ESCAPE_COMMAND, 'close']] as const).map(([command, key]) =>
         editor.registerCommand(command as LexicalCommand<KeyboardEvent>, (e) => {
-          if (e.isComposing || e.shiftKey || !cb.current.onMentionKey?.(key)) return false;
+          if (e.isComposing || e.shiftKey) return false;
+          if (!cb.current.onMentionKey?.(key) && !recall(key, e)) return false;
           e.preventDefault();
           e.stopPropagation();
           return true;

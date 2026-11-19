@@ -1,11 +1,11 @@
-# The message box: chips, waiting words, drop, @ and /
+# The message box: chips, waiting words, drop, @, /, earlier words and quotes
 
 The business behavior contract for what the message box takes besides typing, done the way T3 Code's composer does it, from [the template](../business-contract-template.md). Scenarios are numbered `COMPOSER-n`; the tests that prove them are named after them (`composer_1_…`).
 
 ## Feature and status
 
 - **Outcome:** The owner sets the mode the tasks their words start will run in right in the box, before they start, without changing Settings, and picks the model and effort on the one account menu (one Auto); sees the words they sent while Oby was still answering, and can take them back or change them; sees Stop being honoured; and brings files in by dropping them or naming them with `@`.
-- **Status:** Implemented (COMPOSER-1 and 3 to 19; COMPOSER-2 retired by COMPOSER-17). The `/` list is honest about what's missing: obid lists no agent's own commands yet (COMPOSER-16).
+- **Status:** Implemented (COMPOSER-1 and 3 to 24; COMPOSER-2 retired by COMPOSER-17). The `/` list is honest about what's missing: obid lists no agent's own commands yet (COMPOSER-16).
 - **Scope:** The Electron app's message box on Home and in a conversation with Oby, and obid's `defaults` on `POST /v1/plans`, `turn` on `POST /v1/plans/cancel`, and `GET /v1/conversations/{id}/files`. **Out of scope:** a task's own box and a conversation with other people's Obys (no chips, no waiting row); running an agent's slash commands; the iPhone and Apple Watch apps (frozen).
 
 ## Behavior
@@ -30,6 +30,17 @@ The business behavior contract for what the message box takes besides typing, do
 - An account's `>` list holds its models, then, for a tool whose effort isn't in its model's name (Claude Code, Codex; not Cursor), a line, **Effort**, and that model's efforts as pills, four to a row, the one the account runs on checked.
 - Picking a model or an effort keeps it on the account (`PATCH /v1/accounts/{id}`, as Settings › Agents does) and talks through that account, as picking a model always has (CONVERSATION-AGENT-19).
 - A tool, model or effort an earlier build's model chip kept for a box is read as nothing: nothing on screen would show it, so it never goes with the words.
+
+### Earlier words (COMPOSER-20 to 22)
+
+- In an empty box, ↑ fills it with the owner's previous words in this conversation (or to this task), then, pressed again, the ones before, as T3 Code's composer does. ↓ goes forward, and past the newest it leaves the box empty again. The same words sent twice in a row come back once; words that were only files are skipped.
+- Once the box holds words the owner typed, or changed what ↑ brought back, the arrows move the caret as ever; with ⌥, ⌘ or ⌃ they're never the history's. While the `@` list is open, its arrows are the list's.
+- The app reads them from the conversation it shows; obid adds nothing.
+
+### Quoting a reply (COMPOSER-23, 24)
+
+- Selecting words in a reply, Oby's in a conversation or an agent's in its session, shows a small **Reply about this** button by the selection's end once the pointer lets go (T3 Code's Cite). Words of the owner's own, a task's card or a selection across two replies show none; Esc or a click elsewhere puts it away.
+- A click puts the words in the message box as a Markdown quote (`> ` on each line) on lines of their own above the caret, an empty line after it, the caret there and the box focused; with no caret in the box, at its end.
 
 ### The usage panel (COMPOSER-18)
 
@@ -96,6 +107,12 @@ The business behavior contract for what the message box takes besides typing, do
 - **COMPOSER-18:** Given the usage gauge pressed, then its panel is the account menu's width, its right edge on the gauge's, 4 px over it. Test: `composer_18_the_usage_panel_is_the_account_menus_width_on_its_gauge`.
 - **COMPOSER-19:** Given words sent while Oby answers, when obid sends their `turn` (queued) and the first words' `turnDelivery` moves (starting, running), then the later words show in the waiting row, not the thread, and move into the thread when their own `turnDelivery` says a turn took them; an older copy come late moves nothing back. Tests: `composer_19_waiting_words_follow_obids_delivery_events`, `composer_19_main_keeps_the_delivery_too` (`composerLive.test.ts`).
 
+- **COMPOSER-20:** Given a conversation where the owner said three things, when they press ↑ in its empty box, then the box holds their latest words, ↑ again the ones before, and at the oldest ↑ changes nothing. Tests: `composer_20_up_in_an_empty_box_brings_back_earlier_words`, `composer_20_history_is_the_owners_words_once_each` (`recall.test.tsx`).
+- **COMPOSER-21:** Given words ↑ brought back, when the owner presses ↓, then the next newer ones show, and past the newest the box is empty; in an empty box ↓ does nothing. Test: `composer_21_down_goes_forward_then_back_to_an_empty_box`.
+- **COMPOSER-22:** Given the owner's own words in the box (typed, or recalled and changed), or ↑ with a modifier, then the arrows aren't the history's; with the `@` list open, they're the list's. Tests: `composer_22_the_owners_own_words_keep_their_arrows`, `composer_22_an_open_at_list_keeps_its_arrows`.
+- **COMPOSER-23:** Given words selected in Oby's reply, then **Reply about this** shows; words of the owner's own, or across two replies, show none. Test: `composer_23_words_picked_in_a_reply_show_reply_about_this` (`replySelection.test.tsx`).
+- **COMPOSER-24:** Given Reply about this pressed, then the selected words go into the box as a Markdown quote above the caret, an empty line after it, on a line of their own under words already there, and the button and the selection go. Tests: `composer_24_the_words_go_in_as_a_quote_above_the_caret` (`recall.test.tsx`), `composer_24_a_click_quotes_the_words_into_the_box` (`replySelection.test.tsx`).
+
 ### Test it when it's done (real Mac)
 
 1. In a conversation, set Mode to Plan, and on the account chip open a Claude Code account's `>` and pick a model, then High under Effort; ask for a small change: the task starts in Plan on that model and effort; Settings › Agents shows that account's model and effort; Settings' mode is unchanged. The box shows one Auto.
@@ -104,3 +121,5 @@ The business behavior contract for what the message box takes besides typing, do
 4. Drop two files on the box: two tags. Type `@` and part of a file's name in a conversation with a folder: the file is listed; pick it.
 5. Type `/`: the list says what's missing.
 6. Press the usage gauge: its panel is as wide as the account chip's menu, over the gauge, not across the whole box.
+7. In a conversation where you've said a few things, press ↑ in the empty box: your last words come back; ↑ again, the ones before; ↓ until the box is empty. Type something, then ↑: the caret moves.
+8. Select a few words of Oby's reply: Reply about this shows by them; click it: they're in the box as a `>` quote, the caret under it.

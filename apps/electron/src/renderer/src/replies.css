@@ -63,3 +63,19 @@ a.tok-file:focus-visible { outline: 1px solid var(--line-focus); outline-offset:
   display: grid; place-items: center; background: var(--chip); color: var(--item); cursor: pointer;
 }
 .image-view-close:hover { background: var(--chip-hover); color: var(--ink); }
+
+/* Reply about this (ReplySelection.tsx, COMPOSER-23): by a reply's selected words, as T3 Code's
+   Cite, on the chip's ground */
+.reply-about {
+  position: fixed; z-index: 60; display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 9px; border: 0; border-radius: 8px; background: var(--chip); color: var(--ink);
+  font-size: var(--text-sm); white-space: nowrap; cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.reply-about:hover { background: var(--chip-hover); }
+.reply-about:focus-visible { outline: 1px solid var(--line-focus); outline-offset: 0; }
+
+/* What the owner can do about a task Oby couldn't start (RefusalFixes.tsx, ACCOUNTS-37): under
+   the reply, as the line over the box's (.cant-run-action) */
+.refusal-fixes { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.refusal-fixes .setup-install { flex-basis: 100%; }

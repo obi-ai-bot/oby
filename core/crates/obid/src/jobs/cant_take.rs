@@ -1,6 +1,12 @@
-//! Why an account can't take a task now (docs/contracts/accounts.md, ACCOUNTS-30, 32 and 35): what
-//! [`super::Jobs::cant_take`] found, in the words a refusal and a routing line say it with. It owns
-//! no state and never writes a job, a login or the configuration.
+//! Why an account can't take a task now (docs/contracts/accounts.md, ACCOUNTS-30, 32, 35 and 37):
+//! what [`super::Jobs::cant_take`] found, in the words a refusal and a routing line say it with,
+//! and the one thing the owner can do about it (Install, Sign in). It owns no state and never
+//! writes a job, a login or the configuration.
+
+use serde_json::{Value, json};
+
+use crate::agent::Tool;
+use crate::limits::holds::Work;
 
 /// What keeps an account from a task, each in plain words with no path or raw error.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +58,31 @@ impl CantTake {
         };
         format!("{}, so this task didn't start: {fix}.", self.clause())
     }
+
+    /// What the owner can do about it, for the app to show under the refusal (ACCOUNTS-37):
+    /// `{"action": "install" | "signIn", "agent", "account"}`; none for an agent that couldn't
+    /// start a moment ago, which nothing of theirs fixes.
+    pub fn fix(&self, tool: Tool, account: &str) -> Option<Value> {
+        let action = match self {
+            CantTake::Missing(_) => "install",
+            CantTake::SignedOut(_) | CantTake::Login(_) => "signIn",
+            CantTake::Failed(_) => return None,
+        };
+        Some(json!({"action": action, "agent": tool.id(), "account": account}))
+    }
+}
+
+impl super::Jobs {
+    /// What the owner can do about a task on the account they `named` (of `agent`'s, when they
+    /// named one too) that can't take it (ACCOUNTS-37): none when nothing named one, or it can.
+    pub fn fix_for(&self, agent: Option<&str>, named: Option<&str>) -> Option<Value> {
+        let named = named
+            .map(str::trim)
+            .filter(|n| !n.is_empty() && !n.eq_ignore_ascii_case("auto"))?;
+        let work = Work::new(None, None, false);
+        let (tool, account) = self.pick_for(agent, Some(named), &work).ok()?;
+        self.cant_take(tool, &account)?.fix(tool, &account.id)
+    }
 }
 
 #[cfg(test)]
@@ -92,5 +123,23 @@ mod tests {
         assert!(!missing.refuses(false, true, true));
         let failed = CantTake::Failed("Codex couldn't start: no binary".into());
         assert!(!failed.refuses(true, false, true) && !failed.refuses(false, false, true));
+    }
+
+    /// ACCOUNTS-37: a missing CLI's refusal carries Install, a signed-out account's Sign in, each
+    /// with its agent and account; one that couldn't start a moment ago carries none.
+    #[test]
+    fn accounts_37_a_refusal_carries_install_or_sign_in() {
+        let missing = CantTake::Missing("Cursor".into()).fix(Tool::Cursor, "u1");
+        assert_eq!(
+            missing,
+            Some(json!({"action": "install", "agent": "cursor", "account": "u1"}))
+        );
+        for out in [
+            CantTake::SignedOut("Codex".into()),
+            CantTake::Login("Codex can't run now: run codex login".into()),
+        ] {
+            assert_eq!(out.fix(Tool::Codex, "u2").unwrap()["action"], "signIn");
+        }
+        assert_eq!(CantTake::Failed("x".into()).fix(Tool::Claude, "u3"), None);
     }
 }

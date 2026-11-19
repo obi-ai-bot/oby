@@ -1871,6 +1871,7 @@ async fn dispatch(
     )?;
     let start: Start = parse(args)?;
     let dispatch = planned(start)?;
+    let named = (dispatch.agent.clone(), dispatch.account.clone());
     let bypass =
         dispatch.mode.is_some_and(|m| m.as_str() == "bypass") && shared.jobs.bypass_widens();
     let mut plan = Plan::of(Action::Dispatch, "");
@@ -1888,6 +1889,9 @@ async fn dispatch(
     };
     // A Bypass job the turn named waits for the owner's Confirm.
     if jobs.is_empty() && !bypass {
+        // An account named that can't take it: Install or Sign in under Oby's answer (ACCOUNTS-37).
+        let fix = shared.jobs.fix_for(Some(&named.0), Some(&named.1));
+        (session.fixes.lock().unwrap_or_else(|e| e.into_inner())).extend(fix);
         return Err(text);
     }
     let jobs: Vec<Value> = jobs.into_iter().map(|j| marked(shared, j, key)).collect();

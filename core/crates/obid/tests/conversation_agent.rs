@@ -778,6 +778,29 @@ fn accounts_32_a_task_named_to_an_account_that_cant_run_is_refused() {
     );
 }
 
+/// ACCOUNTS-37: a conversation's task named to an account whose CLI isn't on this Mac starts
+/// nothing, and Oby's answer, and its turn, carry Install for that agent and account; an answer
+/// with nothing refused carries none.
+#[test]
+fn accounts_37_a_refused_dispatch_carries_install() {
+    let folder = Folder::new("route-install");
+    let mut config = configured(&folder);
+    config["agents"]["cursor"]["bin"] = json!(folder.0.join("nowhere/cursor-agent"));
+    let obid = start(&folder.0, &config, None);
+    let id = conversation(&said(&obid, json!({"said": "HELLO", "new": true})));
+    let words = r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build", "agent": "cursor", "account": "Cursor stub"}"#;
+    let answer = said(&obid, json!({"said": words, "conversation": id}));
+    let fix = json!([{"action": "install", "agent": "cursor", "account": CURSOR}]);
+    assert_eq!(answer.body["fixes"], fix, "{}", answer.text);
+    let jobs = call(&obid, "GET", "/v1/jobs", None).body;
+    assert_eq!(jobs.as_array().unwrap().len(), 0, "nothing started: {jobs}");
+    let kept = call(&obid, "GET", &format!("/v1/conversation?id={id}"), None).body;
+    let turns = kept.as_array().unwrap();
+    assert_eq!(turns.last().unwrap()["fixes"], fix, "{kept}");
+    let hello = said(&obid, json!({"said": "HELLO", "conversation": id}));
+    assert!(hello.body.get("fixes").is_none(), "{}", hello.text);
+}
+
 /// A new task, its job body's `extra` added.
 fn post_task(obid: &Obid, extra: Value) -> Answer {
     let mut job =

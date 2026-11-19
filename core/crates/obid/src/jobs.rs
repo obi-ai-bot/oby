@@ -29,6 +29,7 @@ use crate::limits::holds::Work;
 use crate::permissions::{self, Call, Decision, Mode, Permission, Rule};
 use crate::process::{self, Signal};
 use crate::sandbox::{self, Sandbox, Spec};
+use crate::sphere::inbox::owners_part;
 use crate::store::{self, Store};
 use crate::{acp, codex, git, policy, review};
 
@@ -79,6 +80,7 @@ pub use check_run::{CheckRun, run_check};
 mod cleanup;
 mod codex_plan;
 use codex_plan::Asked;
+mod files_at_work;
 mod free;
 use free::{UNCOMMITTED, at_rest};
 mod keep;
@@ -2867,21 +2869,19 @@ impl Jobs {
         // Try again's words, and more after them (oby_continue_job's), pick its session up.
         let follows =
             !job.status.is_active() && !text.starts_with(crate::brain::actions::TRY_AGAIN);
-        // ponytail: files reach only a new job's inputs; a running agent's would need a copy mid-run.
-        if !attachments.is_empty()
-            && (!follows || (source != Source::Event && self.following(id).is_some()))
-        {
-            return Some(Err(Refused(
-                "Files go with a follow-up of a finished task or a new task: tell this one in words.".into(),
-            )));
-        }
+        // Files to a task at work go into its .obi/inputs now, named in what it hears (ATTACH-21).
+        let told = self.files_at_work(id, text, attachments, follows);
+        let text = match &told {
+            Err(why) => return Some(Err(why.clone())),
+            Ok(told) => told.as_deref().unwrap_or(text),
+        };
         if follows {
             // Its follow-up is working already: the words go to that one, never a second.
             if source != Source::Event
                 && let Some(next) = self.following(id)
             {
                 let sent = self
-                    .message_as(&next.id, text, source, &[], answers)?
+                    .message_as(&next.id, text, source, attachments, answers)?
                     .map_err(|why| {
                         Refused(format!("{} ({}): {}", next.short_title(), next.id, why.0))
                     });
@@ -3080,7 +3080,7 @@ impl Jobs {
             };
             self.events.send("job", job.to_json());
             if matches!(source, Source::Owner | Source::Api) {
-                self.transcribed(id, self.transcripts.you(id, text));
+                self.transcribed(id, self.transcripts.you(id, owners_part(text)));
             }
             self.heard_from_owner(id, text, source);
             self.changed.notify_waiters();
@@ -3654,11 +3654,11 @@ impl Jobs {
             Source::Owner | Source::Confirmed | Source::Untrusted
         ) && !text.starts_with(crate::brain::actions::TRY_AGAIN)
         {
-            self.owner_said(id, crate::sphere::inbox::owners_part(text).to_owned());
+            self.owner_said(id, owners_part(text).to_owned());
         }
         // Words through obid's API token, kept apart for Oby's review (MERGING-33).
         if source == Source::Api && !text.starts_with(crate::brain::actions::TRY_AGAIN) {
-            let words = crate::sphere::inbox::owners_part(text).to_owned();
+            let words = owners_part(text).to_owned();
             self.update(id, |job| {
                 if !words.is_empty() && job.api_said.last() != Some(&words) {
                     job.api_said.push(words);
@@ -5622,7 +5622,7 @@ fn hear(job: &mut Job, text: &str) {
     job.notes.get_or_insert_with(Vec::new).push(text.to_owned());
     job.heard.push(text.to_owned());
     // What the owner said; the agent's words quoted after it aren't theirs to show.
-    job.step = format!("You: {}", crate::sphere::inbox::owners_part(text));
+    job.step = format!("You: {}", owners_part(text));
 }
 
 /// The owner's own press or words: obid may carry `job` on by itself again (RECOVERY-1 to 4).

@@ -352,7 +352,7 @@ fn attach_12_an_upload_whose_words_never_went_can_go() {
 }
 
 #[test]
-fn attach_13_files_alone_follow_up_a_finished_task_but_not_a_running_one() {
+fn attach_13_files_alone_follow_up_a_finished_task() {
     let (_folder, obid) = obid("attach-13");
     let (_, done) = dispatch(&obid, "Look around", &[]);
     within(120, "the task is done", || {
@@ -376,23 +376,79 @@ fn attach_13_files_alone_follow_up_a_finished_task_but_not_a_running_one() {
     within(120, "the follow-up has the file", || {
         input.is_file().then_some(())
     });
+}
 
+/// ATTACH-21, 22: files sent to a task at work, with words, go into its `.obi/inputs` as at its
+/// start (secrets taken out), it hears the words with their names quoted after them, its line
+/// shows the words alone, and they mark it as an attachment does. No `422` any more (ATTACH-13).
+#[test]
+fn attach_21_files_reach_a_task_at_work() {
+    let (_folder, obid) = obid("attach-21");
     let (_, running) = dispatch(&obid, "STALLS-ALWAYS look", &[]);
     within(60, "the task is at work", || {
         (status(&obid, &running) == "running").then_some(())
+    });
+    let other = kept(&obid, "more.log", b"all good");
+    let sent = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{running}/messages"),
+        Some(&json!({"text": "Use this log", "attachments": [other]})),
+    );
+    assert!(sent.status < 300, "{}", sent.text);
+    let input = obid
+        .home
+        .join(format!("worktrees/{running}/.obi/inputs/more.log"));
+    assert_eq!(std::fs::read_to_string(&input).unwrap(), "all good");
+    let notes = sent.body["notes"].as_array().unwrap();
+    let told = notes.last().unwrap().as_str().unwrap();
+    assert!(told.starts_with("Use this log\n\n"), "{told}");
+    assert!(told.contains("\n.obi/inputs/more.log\n"), "{told}");
+    assert_eq!(sent.body["step"], "You: Use this log", "{}", sent.text);
+    let kept: Value = serde_json::from_slice(
+        &std::fs::read(obid.home.join(format!("jobs/{running}.json"))).unwrap(),
+    )
+    .unwrap();
+    assert!(kept["foreign"].is_string(), "{kept}");
+    assert_eq!(kept["attachments"][0], json!(other), "{kept}");
+}
+
+/// ATTACH-23: files to a task that isn't at work (here, waiting for the owner's answer) are
+/// refused in obid's words, and nothing is copied.
+#[test]
+fn attach_23_files_wait_for_a_task_at_work() {
+    let (_folder, obid) = obid("attach-23");
+    let posted = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "research",
+            "task": "Pick a store. JOB-ASKS-QUESTION", "mode": "ask"}}),
+        ),
+    );
+    assert_eq!(posted.status, 201, "{}", posted.text);
+    let asking = posted.body["id"].as_str().unwrap().to_owned();
+    within(90, "the task asks", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{asking}"), None).body;
+        job["permission"]["question"].is_object().then_some(())
     });
     let other = kept(&obid, "more.png", b"\x89PNG");
     let refused = call(
         &obid,
         "POST",
-        &format!("/v1/jobs/{running}/messages"),
+        &format!("/v1/jobs/{asking}/messages"),
         Some(&json!({"text": "", "attachments": [other]})),
     );
     assert_eq!(refused.status, 422, "{}", refused.text);
     assert_eq!(
         refused.body["error"],
-        "Files go with a follow-up of a finished task or a new task: tell this one in words."
+        "It can't take files now: it's getting ready, waiting for your answer or wrapping up. Send them again once it's at work."
     );
+    let input = obid
+        .home
+        .join(format!("worktrees/{asking}/.obi/inputs/more.png"));
+    assert!(!input.exists());
 }
 
 #[test]

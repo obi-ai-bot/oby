@@ -215,7 +215,7 @@ export function chatOf(s: Live, c: Conversation): Chat {
     const jobs = [...t.jobs, ...mine].filter((j) => !carded.has(j) && carded.add(j));
     // the files that went with your words: their tags (a photo's preview while this app has it)
     const files = t.attachments?.map((name) => { const p = s.previews[t.id]?.find((f) => f.name === name); return { name: p?.shown ?? name, preview: p?.preview }; });
-    const message: Message = { who: t.who === 'user' ? 'you' : 'oby', text: t.text, ago: minutesAgo(t.at), ...(jobs.length ? { jobs } : {}), ...(files?.length ? { files } : {}) };
+    const message: Message = { who: t.who === 'user' ? 'you' : 'oby', text: t.text, ago: minutesAgo(t.at), ...(jobs.length ? { jobs } : {}), ...(files?.length ? { files } : {}), ...(t.who === 'oby' && t.fixes?.length ? { fixes: t.fixes } : {}) };
     said.push(message);
     for (const offer of offers.filter((o) => o.id === answer)) said.push({ who: 'oby', text: '', ago: minutesAgo(t.at), offer });
     if (t.who === 'oby') confirm({ who: 'oby', text: '', ago: minutesAgo(t.at) }, t.at);

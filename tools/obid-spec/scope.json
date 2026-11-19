@@ -354,7 +354,12 @@
             "COMPOSER-16": "Electron `/` list.",
             "COMPOSER-17": "Electron box/efforts menu.",
             "COMPOSER-18": "Electron usage panel geometry.",
-            "COMPOSER-19": "Electron waiting row driven by `turn`/`turnDelivery` (obid half: the event order of section 1)."
+            "COMPOSER-19": "Electron waiting row driven by `turn`/`turnDelivery` (obid half: the event order of section 1).",
+            "COMPOSER-20": "Electron message box's ↑ through the owner's earlier words (recall.test.tsx); no obid API.",
+            "COMPOSER-21": "Electron message box's ↓ back to an empty box (recall.test.tsx); no obid API.",
+            "COMPOSER-22": "Electron message box keeps its arrows for the owner's own words and the @ list (recall.test.tsx); no obid API.",
+            "COMPOSER-23": "Electron Reply about this on a reply's selected words (replySelection.test.tsx); no obid API.",
+            "COMPOSER-24": "Electron quote into the box above the caret (recall.test.tsx, replySelection.test.tsx); no obid API."
           }
         },
         "drafts.md": {
@@ -385,7 +390,10 @@
             "ATTACH-12",
             "ATTACH-13",
             "ATTACH-14",
-            "ATTACH-17"
+            "ATTACH-17",
+            "ATTACH-21",
+            "ATTACH-22",
+            "ATTACH-23"
           ],
           "elsewhere": {
             "ATTACH-10": "Electron upload-then-send, retry with same id.",
@@ -934,7 +942,8 @@
             "ACCOUNTS-25",
             "ACCOUNTS-26",
             "ACCOUNTS-27",
-            "ACCOUNTS-28"
+            "ACCOUNTS-28",
+            "ACCOUNTS-37"
           ],
           "elsewhere": {
             "ACCOUNTS-10": "Electron add-account sheet.",

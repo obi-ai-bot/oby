@@ -1283,6 +1283,11 @@ fn words_from_a_task_page_join_its_conversation() {
     // Try again picks its own session up: no new job, so no files.
     let again = post(json!({"text": obid::brain::actions::TRY_AGAIN, "attachments": [path]}));
     assert_eq!(again.status, 422, "{}", again.text);
+    assert!(
+        again.text.contains("Files go with a follow-up"),
+        "{}",
+        again.text
+    );
     // Without "conversation": true, nothing joins the conversation, whatever the words do.
     post(json!({"text": "and one more", "conversation": false}));
     let after = call(
@@ -1294,7 +1299,7 @@ fn words_from_a_task_page_join_its_conversation() {
     .body;
     assert_eq!(after.as_array().unwrap().len(), turns.len(), "{after}");
 
-    // A job at work takes words, never files.
+    // A job at work takes words and files: the files go into its .obi/inputs (ATTACH-21).
     let running = call(
         &obid,
         "POST",
@@ -1315,12 +1320,13 @@ fn words_from_a_task_page_join_its_conversation() {
         &format!("/v1/jobs/{slow}/messages"),
         Some(&json!({"text": "look at this", "attachments": [path]})),
     );
-    assert_eq!(busy.status, 422, "{}", busy.text);
-    assert!(
-        busy.text.contains("Files go with a follow-up"),
-        "{}",
-        busy.text
-    );
+    assert_eq!(busy.status, 200, "{}", busy.text);
+    let input = obid
+        .home
+        .join(format!("worktrees/{slow}/.obi/inputs/shot.png"));
+    within(30, "the job at work has the file", || {
+        input.is_file().then_some(())
+    });
 }
 
 /// A job the owner let go (Dismiss) is finished too: "tell it…" starts a follow-up, and the job
