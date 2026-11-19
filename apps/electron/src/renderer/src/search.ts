@@ -49,3 +49,26 @@ export function tasksMatching(tasks: Task[], query: string): Set<string> {
   if (!q) return new Set();
   return new Set(tasks.filter((t) => `${t.title} ${t.job.request ?? ''}`.toLowerCase().includes(q) && t.job.conversation).map((t) => t.job.conversation!));
 }
+
+// ⌘K finds more than conversations (docs/contracts/shortcuts.md, SHORTCUTS-11), grouped under their
+// own headings as T3 Code's palette groups Threads, Settings and Actions (CommandPalette.logic.ts):
+// a Settings page by its name, and the few things the window does. Nothing is asked of obid.
+export type PaletteItem = { id: string; label: string };
+export const ACTIONS: PaletteItem[] = [
+  { id: 'chat.new', label: 'New conversation' },
+  { id: 'settings.open', label: 'Open Settings' },
+  { id: 'reveal-log', label: 'Reveal obid’s Log' },
+];
+
+// every word typed is in the item's words (case aside); no words, nothing
+const holds = (words: string, query: string) => {
+  const typed = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  return typed.length > 0 && typed.every((w) => words.toLowerCase().includes(w));
+};
+// A Settings page answers to its name, and to "settings" with it
+export function pickGroups(query: string, pages: PaletteItem[], actions: PaletteItem[] = ACTIONS): { settings: PaletteItem[]; actions: PaletteItem[] } {
+  return {
+    settings: pages.filter((p) => holds(`${p.label} settings`, query)),
+    actions: actions.filter((a) => holds(a.label, query)),
+  };
+}

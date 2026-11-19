@@ -1,16 +1,16 @@
 # Keyboard shortcuts: the window's keys
 
-The business behavior contract for the Electron window's keyboard shortcuts, from [the template](../business-contract-template.md), as T3 Code keeps its own (one table of keys, one listener, every label from the table). Scenarios are numbered `SHORTCUTS-n`; the tests that prove them are named after them (`shortcuts_1_…` to `shortcuts_6_…` in `apps/electron/src/renderer/src/test/shortcuts.test.tsx`).
+The business behavior contract for the Electron window's keyboard shortcuts, from [the template](../business-contract-template.md), as T3 Code keeps its own (one table of keys, one listener, every label from the table). Scenarios are numbered `SHORTCUTS-n`; the tests that prove them are named after them (`shortcuts_1_…` to `shortcuts_11_…` in `apps/electron/src/renderer/src/test/shortcuts.test.tsx`). The menu bar's Help items are [help.md](help.md)'s.
 
 ## Feature and status
 
-- **Outcome:** The owner reaches what they use most without the mouse: a new conversation, the search over every conversation, the words in the conversation in front of them, and Settings. Esc closes what's open over the page.
-- **Status:** **Implemented** in the Electron app. The keys are T3 Code's (`mod+n`, `mod+k`, `mod+f`) and the Mac's own for Settings (`⌘,`). Sangam's screens have none yet: the menu bar items and the hints are proposed words, his to change.
-- **Scope:** the window's page and the Mac's menu bar. **Out of scope:** keys the owner can change (T3 Code reads them from a file; Oby has one table), a command palette (⌘K opens the side panel's search, Sangam's search), and the message box's own keys.
+- **Outcome:** The owner reaches what they use most without the mouse: a new conversation, the search over every conversation (and a Settings page or an action by its name), the words in the conversation in front of them, Settings, the side panel, and the conversations it lists, one after another or by their place. Esc closes what's open over the page. The menu bar of the app they installed has no developer's items.
+- **Status:** **Implemented** in the Electron app. The keys are T3 Code's (`mod+n`, `mod+k`, `mod+f`, `mod+b`, `mod+shift+[`, `mod+shift+]`, `mod+1` to `mod+9`) and the Mac's own for Settings (`⌘,`). Sangam's screens have none yet: the menu bar items, the hints and ⌘K's headings and action names are proposed words, his to change.
+- **Scope:** the window's page and the Mac's menu bar. **Out of scope:** keys the owner can change (T3 Code reads them from a file; Oby has one table), a command palette of its own (⌘K opens the side panel's search, Sangam's search, which also lists Settings pages and actions), and the message box's own keys.
 
 ## Behavior
 
-- **Actors and ownership:** Only the app. obid isn't asked anything new: ⌘K's search asks obid's `GET /v1/conversations?q=` as the panel's search does (SEARCH-1 to 3, chat-first.md).
+- **Actors and ownership:** Only the app. obid isn't asked anything new: ⌘K's search asks obid's `GET /v1/conversations?q=` as the panel's search does (SEARCH-1 to 3, chat-first.md); its Settings pages and actions are the app's own.
 - **The keys** (`shared/shortcuts.ts`, the one table; ⌘ on a Mac, Ctrl elsewhere, no other modifier):
 
   | Key | What it does |
@@ -19,11 +19,16 @@ The business behavior contract for the Electron window's keyboard shortcuts, fro
   | ⌘K | The side panel's search: the panel opens if it's shut, on Chats, its field focused with what was typed selected |
   | ⌘F | Find in the conversation shown: a field over its top right, `2 of 5`, Return and the arrows to go through them (⇧Return back), each in view and lit; Esc closes it |
   | ⌘, | Settings, on General |
+  | ⌘B | The side panel shut or open, as its toggle does (docked, or floating over a narrow window) |
+  | ⌘1 to ⌘9 | The 1st to 9th conversation the side panel lists, from anywhere: pinned first, by project when it groups them, a folded project's left out; none past the last |
+  | ⇧⌘[ and ⇧⌘] | The conversation before or after the open one in that order; none open, ⇧⌘] the first and ⇧⌘[ the last; nothing past either end (T3 Code's) |
   | Esc | Closes what's open over the page: a menu, a sheet, the find bar, a page (as before) |
 
 - **How a key is heard:** one listener on the window runs the newest screen's command for that key (T3 Code's scopes): ⌘F is the conversation's while one is shown, and nothing with a page over it. The page takes a key it answered, so its menu item doesn't run it again; a key the page leaves alone reaches the Mac's menu bar, whose item sends the same command back. A word being composed (an input method) and an alert dialog keep their keys. The keys work in the message box too, as T3 Code's do: none of them types text.
-- **Where they show:** the Mac's menu bar (Oby › Settings…, File › New Conversation, Edit › Find › Search and Find in Conversation), each with its key, from the same table; the side panel's New conversation row (its key as the pointer is on it), Settings' tip and the account menu's Settings, and the Search button's tip.
-- **Invariants:** a menu never shows a key the window doesn't answer, and the window answers no key a menu doesn't show (but Esc). No key sends anything to obid by itself.
+- **⌘K finds more than conversations:** with words in the side panel's search, under the conversations it finds come the Settings pages whose name holds them (under **Settings**; the word "settings" lists them all) and the actions that do (under **Actions**: New conversation, Open Settings, and Reveal obid’s Log where main is, [help.md](help.md)), as T3 Code's palette groups Threads, Settings and Actions. A click runs it and closes the search: a page opens with the panel on Settings, as the account menu's Settings does. With no words, only the conversations; "No conversations match" shows only when no group has a row.
+- **Where they show:** the Mac's menu bar (Oby › Settings…, File › New Conversation, Edit › Find › Search and Find in Conversation, View › Toggle Sidebar, Go › Previous Conversation, Next Conversation and Conversation 1 to 9), each with its key, from the same table; the side panel's New conversation row (its key as the pointer is on it), Settings' tip and the account menu's Settings, and the Search button's tip.
+- **The menu bar a release gets:** Electron's View menu without its developer items: a packaged build has no Reload, Force Reload or Toggle Developer Tools (nor their keys); a run from source (`npm run dev`, where main has the dev server's address) keeps them. Actual Size, Zoom In, Zoom Out and Enter Full Screen stay in both.
+- **Invariants:** a menu never shows a key the window doesn't answer, and the window answers no key a menu doesn't show (but Esc, and Electron's own roles). No key sends anything to obid by itself.
 
 ## Acceptance scenarios
 
@@ -32,6 +37,11 @@ The business behavior contract for the Electron window's keyboard shortcuts, fro
 - **SHORTCUTS-3:** In a conversation, ⌘F opens its find bar; `retry` in a thread holding it three times says `1 of 3`, Return `2 of 3`, ⇧Return twice `3 of 3`; words it doesn't hold say `No results`; Esc closes it. With a page over the conversation, ⌘F isn't its. (`shortcuts_3_cmd_f_finds_the_words_in_the_conversation_and_esc_closes_it`, `shortcuts_3_with_a_page_over_the_conversation_cmd_f_is_not_its`)
 - **SHORTCUTS-4:** ⌘, opens Settings, and the page takes the key. (`shortcuts_1_2_4_new_conversation_search_and_settings_from_anywhere`)
 - **SHORTCUTS-5:** Esc closes an open menu. (`shortcuts_5_esc_closes_an_open_menu`)
-- **SHORTCUTS-6:** The Mac's menu bar has an item for each key with that very key, and only those carry one; the side panel shows ⌘N on New conversation, `Settings ⌘,` and `Search ⌘K` as tips. (`shortcuts_6_the_menus_show_the_keys_the_window_answers`)
+- **SHORTCUTS-6:** The Mac's menu bar has an item for each key with that very key, and only those carry one (`CmdOrCtrl+B`, `CmdOrCtrl+Shift+[`, `CmdOrCtrl+1` …); the side panel shows ⌘N on New conversation, `Settings ⌘,` and `Search ⌘K` as tips; a key with ⇧ reads `⇧⌘]` on a Mac and `Ctrl+Shift+]` elsewhere. (`shortcuts_6_the_menus_show_the_keys_the_window_answers`)
+- **SHORTCUTS-7:** ⌘B shuts the side panel when it's open and opens it when it's shut, and the page takes the key; ⇧⌘B does nothing. (`shortcuts_7_cmd_b_shuts_and_opens_the_side_panel`)
+- **SHORTCUTS-8:** With Release notes, a pinned Backoff and Flaky test, the panel lists Backoff, Release notes, Flaky test, and ⌘1, ⌘3, ⌘2 open Backoff, Flaky test, Release notes; ⌘9, ⇧⌘1 and ⌥⌘1 open nothing. Grouped by project, the order is each project's rows then No project's, a folded project's left out. (`shortcuts_8_cmd_1_to_9_open_the_conversations_in_the_panels_order`)
+- **SHORTCUTS-9:** With Backoff open between Release notes and Flaky test, ⇧⌘] opens Flaky test and ⇧⌘[ Release notes, whether the key reads `}` or `]`; ⌘] without ⇧ isn't it. At an end nothing opens; none open, ⇧⌘] opens the first and ⇧⌘[ the last. (`shortcuts_9_cmd_shift_brackets_go_to_the_previous_and_next_conversation`)
+- **SHORTCUTS-10:** The menu bar a packaged build gets has no Reload, Force Reload, Toggle Developer Tools nor Electron's `viewMenu` role, and keeps Actual Size, Zoom In, Zoom Out and Enter Full Screen; a run from source has the three; main builds it with `dev` from the dev server's address. (`shortcuts_10_a_packaged_build_has_no_reload_nor_developer_tools`)
+- **SHORTCUTS-11:** In the side panel's search, `gener` lists General under Settings and no "No conversations match"; `settings` lists the conversation Settings sync, then General, Agents, Obysphere, Connectors and About under Settings, then Open Settings under Actions; `log` lists Reveal obid’s Log, whose click asks main for it; `new conv`'s New conversation starts one; `connectors`' Connectors opens that page. (`shortcuts_11_cmd_k_finds_settings_pages_and_actions_under_their_own_headings`)
 
-**Test it when it's done (real Mac):** open Oby; press ⌘, (Settings), ⌘N (the empty chat), ⌘K (the search field, focused), type a word from an old conversation and see it listed; open a conversation, ⌘F, type a word, Return through the matches, Esc. Open the menu bar's Oby, File and Edit › Find menus and see the same keys.
+**Test it when it's done (real Mac):** open Oby; press ⌘, (Settings), ⌘N (the empty chat), ⌘K (the search field, focused), type a word from an old conversation and see it listed; open a conversation, ⌘F, type a word, Return through the matches, Esc. Open the menu bar's Oby, File, Edit › Find, View and Go menus and see the same keys; press ⌘B twice, ⌘1 and ⌘2, then ⇧⌘[ and ⇧⌘]. In ⌘K type `about` and open About. In the installed Oby (not `npm run dev`), View has no Reload nor Toggle Developer Tools, and ⌥⌘I does nothing.

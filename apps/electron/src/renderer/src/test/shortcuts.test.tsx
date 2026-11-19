@@ -1,11 +1,13 @@
 // @vitest-environment happy-dom
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { act, createRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Chat } from '../chats';
 import { liveBridge } from './liveBridge';
 
-// The window's keyboard shortcuts (docs/contracts/shortcuts.md, SHORTCUTS-1 to 6) and the side
+// The window's keyboard shortcuts (docs/contracts/shortcuts.md, SHORTCUTS-1 to 11) and the side
 // panel's search over every conversation (docs/contracts/chat-first.md, SEARCH-1 to 3): the real
 // Home, Sidebar and find bar, with main's bridge (window.app.obid.call) stood in for as obid.
 
@@ -60,6 +62,8 @@ const type = async (input: HTMLInputElement, value: string) => {
   });
 };
 const talks = () => [...host.querySelectorAll('.convo-row .connector-name')].map((n) => n.textContent);
+type Item = { label?: string; role?: string; accelerator?: string; submenu?: Item[] };
+const items = (list: Item[]): Item[] => list.flatMap((i) => [i, ...(Array.isArray(i.submenu) ? items(i.submenu) : [])]);
 const abouts = () => [...host.querySelectorAll('.convo-row .connector-about')].map((n) => n.textContent);
 
 async function showHome(o: ReturnType<typeof obid>, conversations: unknown[]) {
@@ -76,7 +80,7 @@ async function showHome(o: ReturnType<typeof obid>, conversations: unknown[]) {
   root = createRoot(host);
   await act(async () => root!.render(<Home />));
 }
-async function showSidebar(o: ReturnType<typeof obid>, chats: Chat[]) {
+async function showSidebar(o: ReturnType<typeof obid>, chats: Chat[], props: Record<string, unknown> = {}) {
   (window as { app?: unknown }).app = o.app;
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('location', { search: '' });
@@ -88,13 +92,13 @@ async function showSidebar(o: ReturnType<typeof obid>, chats: Chat[]) {
   const none = () => {};
   await act(async () => root!.render(
     <Sidebar open atHome width={362} onResize={none} onClose={none} onNewChat={none} onHome={none} onOpenGroup={none} onOpenTask={none} onOpenChat={none} onOpenOby={none} onOpenMember={none}
-      onOpenTalk={none} onOpenArchive={none} onOpenSetting={none} onOpenSphereSetting={none} onOpenKnowledge={none} onOpenRoom={none} />,
+      onOpenTalk={none} onOpenArchive={none} onOpenSetting={none} onOpenSphereSetting={none} onOpenKnowledge={none} onOpenRoom={none} {...props} />,
   ));
 }
 const talk = (id: string, title: string, more: Partial<Chat> = {}): Chat => ({ id, title, said: [], at: 5, ...more });
 
 // Home and the side panel render slowly on a busy Mac: each test may take minutes
-describe('SHORTCUTS: the window answers ⌘N, ⌘K, ⌘F, ⌘, and Esc', { timeout: 180_000 }, () => {
+describe('SHORTCUTS: the window answers ⌘N, ⌘K, ⌘F, ⌘,, ⌘B, ⌘1 to ⌘9, ⌘⇧[ ⌘⇧] and Esc', { timeout: 180_000 }, () => {
   it('shortcuts_1_2_4_new_conversation_search_and_settings_from_anywhere', async () => {
     const o = obid();
     await showHome(o, [convo('c1', 'Release notes')]);
@@ -186,14 +190,16 @@ describe('SHORTCUTS: the window answers ⌘N, ⌘K, ⌘F, ⌘, and Esc', { timeo
   });
 
   it('shortcuts_6_the_menus_show_the_keys_the_window_answers', async () => {
-    const { menu } = await import('../../../shared/menu');
-    const { KEYBINDINGS } = await import('../../../shared/shortcuts');
-    type Item = { label?: string; accelerator?: string; submenu?: Item[] };
-    const items = (list: Item[]): Item[] => list.flatMap((i) => [i, ...(Array.isArray(i.submenu) ? items(i.submenu) : [])]);
-    const all = items(menu as Item[]);
+    const { appMenu } = await import('../../../shared/menu');
+    const { KEYBINDINGS, accelerator } = await import('../../../shared/shortcuts');
+    const all = items(appMenu({ dev: false, help: { revealLog() {}, copyDiagnostics() {} } }) as Item[]);
     // every key the window answers is an item of the Mac's menu bar, with that very key
-    for (const b of KEYBINDINGS) expect(all.find((i) => i.label === b.label)?.accelerator, b.command).toBe(`CmdOrCtrl+${b.key.split('+')[1].toUpperCase()}`);
-    expect(all.filter((i) => i.accelerator).map((i) => i.label)).toEqual(['Settings…', 'New Conversation', 'Search', 'Find in Conversation']);
+    for (const b of KEYBINDINGS) expect(all.find((i) => i.label === b.label)?.accelerator, b.command).toBe(accelerator(b.command));
+    expect(all.filter((i) => i.accelerator).map((i) => [i.label, i.accelerator])).toEqual([
+      ['Settings…', 'CmdOrCtrl+,'], ['New Conversation', 'CmdOrCtrl+N'], ['Search', 'CmdOrCtrl+K'], ['Find in Conversation', 'CmdOrCtrl+F'],
+      ['Toggle Sidebar', 'CmdOrCtrl+B'], ['Previous Conversation', 'CmdOrCtrl+Shift+['], ['Next Conversation', 'CmdOrCtrl+Shift+]'],
+      ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`Conversation ${n}`, `CmdOrCtrl+${n}`]),
+    ]);
     // and the side panel's: New conversation's key, Settings' and Search's tips
     await showSidebar(obid(), [talk('c1', 'Release notes')]);
     // drawn by CSS, so the row's own text stays its label
@@ -201,6 +207,119 @@ describe('SHORTCUTS: the window answers ⌘N, ⌘K, ⌘F, ⌘, and Esc', { timeo
     expect(host.querySelector('.chat-new')?.textContent).toBe('New conversation');
     expect(host.querySelector('.rail-settings')?.getAttribute('data-tip')).toBe('Settings ⌘,');
     expect(host.querySelector('[aria-label="Search"]')?.getAttribute('title')).toBe('Search ⌘K');
+    // ⇧ in a label as the Mac writes it
+    const s = await import('../shortcuts');
+    expect([s.shortcutLabel('chat.next', true), s.shortcutLabel('chat.next', false), s.ariaKeys('chat.previous', true)]).toEqual(['⇧⌘]', 'Ctrl+Shift+]', 'Meta+Shift+[']);
+  });
+
+  it('shortcuts_7_cmd_b_shuts_and_opens_the_side_panel', async () => {
+    await showHome(obid(), [convo('c1', 'Release notes')]);
+    const shown = () => host.querySelector('.app')!.classList.contains('has-sidebar');
+    const before = shown();
+    const b = await press('b');
+    expect(b.defaultPrevented).toBe(true);
+    await until(() => expect(shown()).toBe(!before));
+    await press('b');
+    await until(() => expect(shown()).toBe(before));
+    // ⇧⌘B isn't it
+    expect((await press('b', { shiftKey: true })).defaultPrevented).toBe(false);
+  });
+
+  it('shortcuts_8_cmd_1_to_9_open_the_conversations_in_the_panels_order', async () => {
+    const opened = vi.fn();
+    // the panel lists the pinned one first: Backoff, Release notes, Flaky test
+    await showSidebar(obid(), [talk('c1', 'Release notes'), talk('c2', 'Backoff', { pinned: true }), talk('c3', 'Flaky test')], { onOpenTalk: opened });
+    expect(talks()).toEqual(['Backoff', 'Release notes', 'Flaky test']);
+    expect((await press('1')).defaultPrevented).toBe(true);
+    await press('3');
+    await press('2');
+    expect(opened.mock.calls.map((c) => c[0])).toEqual(['c2', 'c3', 'c1']);
+    // past the last row, nothing; with ⇧ or ⌥, not the shortcut
+    await press('9');
+    await press('1', { shiftKey: true });
+    await press('1', { altKey: true });
+    expect(opened).toHaveBeenCalledTimes(3);
+    // by project, as the Projects side groups them, a folded project's rows left out
+    const { panelOrder, projectGroups, pinnedFirst } = await import('../panelOrder');
+    const rows = pinnedFirst([talk('a', 'A', { project: 'p2' }), talk('b', 'B'), talk('c', 'C', { project: 'p1', pinned: true }), talk('d', 'D', { project: 'p1' })]);
+    const groups = projectGroups(rows, [{ id: 'p1', name: 'One' }, { id: 'p2', name: 'Two' }], true, false);
+    expect(panelOrder(rows, groups, new Set())).toEqual(['c', 'd', 'a', 'b']);
+    expect(panelOrder(rows, groups, new Set(['p1']))).toEqual(['a', 'b']);
+    expect(panelOrder(rows, [], new Set())).toEqual(['c', 'a', 'b', 'd']);
+  });
+
+  it('shortcuts_9_cmd_shift_brackets_go_to_the_previous_and_next_conversation', async () => {
+    const opened = vi.fn();
+    await showSidebar(obid(), [talk('c1', 'Release notes'), talk('c2', 'Backoff'), talk('c3', 'Flaky test')], { onOpenTalk: opened, activeTalk: 'c2' });
+    // ⇧] reads as "}" on a US keyboard, as "]" with ⌘ held on some: both are the key
+    expect((await press('}', { shiftKey: true })).defaultPrevented).toBe(true);
+    await press('{', { shiftKey: true });
+    await press(']', { shiftKey: true });
+    expect(opened.mock.calls.map((c) => c[0])).toEqual(['c3', 'c1', 'c3']);
+    // without ⇧, ⌘] isn't it
+    expect((await press(']')).defaultPrevented).toBe(false);
+    // at an end, nowhere; none open, the first going on and the last going back (T3 Code's)
+    const { adjacent } = await import('../panelOrder');
+    expect([adjacent(['a', 'b'], 'a', 'previous'), adjacent(['a', 'b'], 'b', 'next'), adjacent(['a', 'b'], null, 'next'), adjacent(['a', 'b'], null, 'previous'), adjacent([], null, 'next')])
+      .toEqual([null, null, 'a', 'b', null]);
+  });
+
+  it('shortcuts_10_a_packaged_build_has_no_reload_nor_developer_tools', async () => {
+    const { appMenu } = await import('../../../shared/menu');
+    const help = { revealLog() {}, copyDiagnostics() {} };
+    const roles = (dev: boolean) => items(appMenu({ dev, help }) as Item[]).map((i) => i.role).filter(Boolean);
+    const DEV = ['reload', 'forceReload', 'toggleDevTools'];
+    // the menu a release gets: no Reload, Force Reload, Toggle Developer Tools, nor Electron's View menu that has them
+    for (const role of [...DEV, 'viewMenu']) expect(roles(false), role).not.toContain(role);
+    // the rest of Electron's View menu stays
+    expect(roles(false)).toEqual(expect.arrayContaining(['resetZoom', 'zoomIn', 'zoomOut', 'togglefullscreen']));
+    // a run from source keeps them
+    expect(roles(true)).toEqual(expect.arrayContaining(DEV));
+    // main tells it which it is: a run from source has the dev server's address
+    const index = readFileSync(join(process.cwd(), 'src/main/index.ts'), 'utf8');
+    expect(index).toContain('const dev = !!process.env.ELECTRON_RENDERER_URL;');
+    expect(index).toContain('appMenu({ dev, help: helpActions })');
+  });
+
+  it('shortcuts_11_cmd_k_finds_settings_pages_and_actions_under_their_own_headings', async () => {
+    const newChat = vi.fn(), setting = vi.fn();
+    const o = obid();
+    const help = vi.fn(async () => null);
+    (o.app as Record<string, unknown>).help = help;
+    await showSidebar(o, [talk('c1', 'Release notes'), talk('c2', 'Settings sync')], { onNewChat: newChat, onOpenSetting: setting });
+    await act(async () => (host.querySelector('[aria-label="Search"]') as HTMLElement).click());
+    const field = host.querySelector<HTMLInputElement>('input[aria-label="Search"]')!;
+    const heads = () => [...host.querySelectorAll('.sidebar-convo-head')].map((h) => h.textContent);
+    const picks = () => [...host.querySelectorAll('.search-pick')].map((p) => p.textContent);
+    // a Settings page by its name
+    await type(field, 'gener');
+    expect(heads()).toEqual(['Settings']);
+    expect(picks()).toEqual(['General']);
+    expect(host.querySelector('.sidebar-empty')).toBeNull();
+    // the conversations first, then each group under its heading
+    await type(field, 'settings');
+    expect(talks()).toEqual(['Settings sync']);
+    expect(heads()).toEqual(['Settings', 'Actions']);
+    expect(picks()).toEqual(['General', 'Agents', 'Obysphere', 'Connectors', 'About', 'Open Settings']);
+    // the actions: New conversation, Reveal obid's Log (main's), Open Settings
+    await act(async () => (host.querySelector('[aria-label="Search"]') as HTMLElement).click());
+    await type(host.querySelector<HTMLInputElement>('input[aria-label="Search"]')!, 'log');
+    expect(picks()).toEqual(['Reveal obid’s Log']);
+    await act(async () => (host.querySelector('[data-pick="action:reveal-log"]') as HTMLElement).click());
+    expect(help).toHaveBeenCalledWith('reveal-log');
+    await act(async () => (host.querySelector('[aria-label="Search"]') as HTMLElement).click());
+    await type(host.querySelector<HTMLInputElement>('input[aria-label="Search"]')!, 'new conv');
+    await act(async () => (host.querySelector('[data-pick="action:chat.new"]') as HTMLElement).click());
+    expect(newChat).toHaveBeenCalledOnce();
+    // a page picked opens it (the panel on Settings, as its account menu's Settings)
+    await act(async () => (host.querySelector('[aria-label="Search"]') as HTMLElement).click());
+    await type(host.querySelector<HTMLInputElement>('input[aria-label="Search"]')!, 'connectors');
+    await act(async () => (host.querySelector('[data-pick="setting:connectors"]') as HTMLElement).click());
+    expect(setting).toHaveBeenLastCalledWith('connectors');
+    // nothing typed, no group; words match whatever their case
+    const { pickGroups, ACTIONS } = await import('../search');
+    expect(pickGroups('  ', [{ id: 'general', label: 'General' }])).toEqual({ settings: [], actions: [] });
+    expect(pickGroups('OPEN set', [], ACTIONS).actions.map((a) => a.id)).toEqual(['settings.open']);
   });
 });
 

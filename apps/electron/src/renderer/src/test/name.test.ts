@@ -1,6 +1,8 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { menu } from '../../../shared/menu';
+import { appMenu } from '../../../shared/menu';
+
+const menu = appMenu({ dev: false, help: { revealLog() {}, copyDiagnostics() {} } });
 
 const file = (path: string) => readFileSync(new URL(`../../../../${path}`, import.meta.url), 'utf8');
 const builder = file('electron-builder.yml');
@@ -14,7 +16,7 @@ describe('the name', () => {
     // the roles that say app.name unless told otherwise
     for (const [role, label] of [['about', 'About Oby'], ['hide', 'Hide Oby'], ['quit', 'Quit Oby']])
       expect(app.find((i) => i.role === role)?.label).toBe(label);
-    expect(file('src/main/index.ts')).toContain('Menu.setApplicationMenu(Menu.buildFromTemplate(menu))');
+    expect(file('src/main/index.ts')).toContain('Menu.setApplicationMenu(Menu.buildFromTemplate(appMenu({ dev, help: helpActions })))');
   });
 
   it('the_keychain_item_and_the_apps_folder_stay_named_oby_app', () => {
