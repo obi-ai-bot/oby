@@ -54,6 +54,13 @@
 #                         tools/brain's npm test, in the electron group: the Brain's map read from the
 #                         code, so it can't drift (docs/contracts/ci.md, CI-56); in a job's box only for
 #                         a change to tools/brain itself
+#   tools/obid-spec/      obid-spec, in the rust group (docs/contracts/ci.md, CI-66): the suite's
+#                         own fmt, clippy and tests, then obid and the suite built,
+#                         `obid-spec coverage --gate` and `obid-spec run`, every workflow against
+#                         this checkout's obid on stand-in agents and the pinned Sphere. In a job's
+#                         box only the suite's own steps: scratch obids and a Sphere on loopback
+#                         don't fit there. A change to obid alone doesn't plan it: GitHub's merge
+#                         queue runs the launch workflows, the nightly run all of them
 #   scripts/oby-check*    scripts/oby-check-test.sh and the limits below
 #   scripts/oby-nightly*  scripts/oby-nightly-test.sh, the nightly's own tests (docs/contracts/ci.md, CI-53 to 55)
 #   AGENTS.md             the limits below, AGENTS.md's bytes among them (the root's only; CI-36 to 38)
@@ -495,7 +502,7 @@ suites() {
 }
 
 # What each part needs, one per line.
-rust='' blok='' electron='' sphere='' brain='' brain_own='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' check_script='' nightly_script='' factory='' agents_md='' agents_rules=''
+rust='' blok='' electron='' sphere='' brain='' brain_own='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' check_script='' nightly_script='' factory='' agents_md='' agents_rules='' obidspec=''
 add() { printf '%s\n%s' "$1" "$2"; }
 while IFS= read -r file; do
     case "$file" in
@@ -564,6 +571,10 @@ while IFS= read -r file; do
         scripts/oby-check*) check_script=1 ;;
         scripts/oby-nightly*) nightly_script=1 ;;
     esac
+    # obid-spec itself (CI-66); obid's own changes are the merge queue's and the nightly's.
+    case "$file" in
+        tools/obid-spec/*) obidspec=1 ;;
+    esac
     case "$file" in
         tools/brain/*) brain=1 brain_own=1 ;;
         core/crates/obid/src/* | apps/electron/src/* | apps/shared/* | docs/api/* | docs/runner-api.md | AGENTS.md) brain=1 ;;
@@ -594,6 +605,7 @@ fi
 # covers what changed against the base, which on the base itself is nothing.
 if [[ -n "${OBY_CHECK_ALL:-}" ]]; then
     rust=1 blok=1 lib_all=1 check_script=1 nightly_script=1 electron=1 sphere=1 brain=1 ios=1 factory=1 agents_rules=1
+    obidspec=1
     tests=$(ls core/crates/obid/tests/*.rs 2>/dev/null || true)
     crates=$(ls core/crates 2>/dev/null || true)
 fi
@@ -820,6 +832,34 @@ if selected && [[ -n "$rust" ]]; then
     while IFS= read -r crate; do
         [[ "$crate" == obid ]] || ! first_shard || step "${cargo[@]}" test "${manifest[@]}" -p "$crate"
     done < <(each "$crates")
+fi
+
+# obid-spec (docs/contracts/ci.md, CI-66), for a change to the suite: every route and background
+# trigger of obid proven black-box, against this checkout's obid, on stand-in agents and the pinned
+# Sphere. The run starts
+# scratch obids and a Sphere on loopback ports, which don't fit a job's box: there only the suite's
+# own fmt, clippy and tests run, for a change to it, and the Mac's check and the merge queue run it.
+# Its expected reds and flaky steps (known bugs, each with its issue) don't fail it.
+if selected && first_shard && [[ -n "$obidspec" ]]; then
+    spec_cargo=(env CARGO_TARGET_DIR="$cache/obid-spec" cargo --quiet)
+    spec_manifest=(--manifest-path tools/obid-spec/Cargo.toml)
+    spec_bin=(env OBID_SPEC_ROOT="$PWD" "$cache/obid-spec/debug/obid-spec")
+    case "${CARGO_TARGET_DIR:-core/target}" in
+        /*) spec_obid="${CARGO_TARGET_DIR}/debug/obid" ;;
+        *) spec_obid="$PWD/${CARGO_TARGET_DIR:-core/target}/debug/obid" ;;
+    esac
+    step "${spec_cargo[@]}" fmt "${spec_manifest[@]}" --all -- --check
+    step "${spec_cargo[@]}" clippy "${spec_manifest[@]}" --all-targets -- -D warnings
+    step "${spec_cargo[@]}" test "${spec_manifest[@]}"
+    if [[ -n "$nested" ]]; then
+        plan_group
+        echo "oby-check: obid-spec's run doesn't fit a job's box: the Mac's check and the merge queue run it"
+    else
+        step "${spec_cargo[@]}" build "${spec_manifest[@]}" --bins
+        step cargo --quiet build --manifest-path core/Cargo.toml -p obid --bin obid
+        step "${spec_bin[@]}" coverage --gate
+        step "${spec_bin[@]}" run --obid "$spec_obid"
+    fi
 fi
 
 # Ad hoc signing with no team or profile.

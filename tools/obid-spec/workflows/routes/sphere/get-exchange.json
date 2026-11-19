@@ -9,6 +9,9 @@
       "path": "/v1/obid/sphere/exchanges/{id}"
     }
   },
+  "tags": [
+    "launch"
+  ],
   "steps": [
     {
       "id": "sphere",

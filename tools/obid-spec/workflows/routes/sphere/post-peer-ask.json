@@ -9,6 +9,9 @@
       "path": "/v1/obid/sphere/peers/{owner}/ask"
     }
   },
+  "tags": [
+    "launch"
+  ],
   "steps": [
     {
       "id": "alex",

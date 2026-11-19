@@ -9,6 +9,9 @@
       "path": "/v1/obid/sphere/pins/{owner}"
     }
   },
+  "tags": [
+    "launch"
+  ],
   "steps": [
     {
       "id": "sphere",

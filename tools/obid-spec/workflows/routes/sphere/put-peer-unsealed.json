@@ -9,6 +9,9 @@
       "path": "/v1/obid/sphere/peers/{owner}/unsealed"
     }
   },
+  "tags": [
+    "launch"
+  ],
   "steps": [
     {
       "id": "sphere",

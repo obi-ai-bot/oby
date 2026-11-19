@@ -5,7 +5,8 @@ The business behavior contract for `tools/obid-spec`, from [the template](../bus
 ## Feature and status
 
 - **Outcome:** Each route obid serves and each background trigger it runs is proven against the real obid binary, black-box, by a BLOK workflow whose steps name the contract scenarios they prove, so "implemented" in a contract means a workflow saw it happen.
-- **Status:** OBIDSPEC-1 to 10 are **implemented** in `tools/obid-spec`. Its workflows cover every route in `docs/api/routes.txt` and the eight background triggers (the Sphere long-poll and its deliveries, the Sphere directory read, restart recovery, account limits, the GitHub feed, CI autofix, cleanup and routines). `scope.json` classifies every scenario of every contract; `obid-spec coverage` lists the obid-owned ones not yet named by an assertion. It isn't wired into `scripts/oby-check.sh` or CI yet: that is a security path, its own pull request, on the owner's click.
+- **Status:** OBIDSPEC-1 to 12 are **implemented** in `tools/obid-spec`. Its workflows cover every route in `docs/api/routes.txt` and the eight background triggers (the Sphere long-poll and its deliveries, the Sphere directory read, restart recovery, account limits, the GitHub feed, CI autofix, cleanup and routines). `scope.json` classifies every scenario of every contract; `obid-spec coverage` lists the obid-owned ones not yet named by an assertion. The check runs it (docs/contracts/ci.md, CI-66 and 67): GitHub's merge queue the `launch` workflows (the Obysphere's and the launch flows'), the nightly and on-demand runs all of them, and a pull request all of them only when it changes `tools/obid-spec/` or carries `full-suite`; the Mac's `scripts/oby-check.sh` all of them for a change to the suite; each run gated by `obid-spec coverage --gate`.
+- **Frozen until launch** (the owner's decision of 2026-11-18, "wire it in and freeze it"): no new workflow or scenario beyond the launch flows until after launch. A workflow, or a step, may still be added only when it proves a bug fix (its issue's acceptance, the `expectedRed` that comes off) or a launch flow; anything else waits, and `obid-spec coverage`'s backlog stays a list, not work.
 - **Scope:** obid's HTTP API and its background triggers, from outside, on stand-in agents and a local Sphere. Out of scope: the Electron app's own behavior (its tests), the Obysphere server's own behavior (obi-sphere's), real agent CLIs and logins, and anything on the network past this Mac.
 
 ## Behavior
@@ -18,8 +19,8 @@ The business behavior contract for `tools/obid-spec`, from [the template](../bus
 
 ### Triggers and prerequisites
 
-- `obid-spec run [--only <area>] [--workflow <text>] [--jobs <n>] [--obid <path>] [--keep]`, from anywhere in the checkout. `cargo`, `git`, `node`, `pnpm` and `gitleaks` on `PATH`; the first run clones obi-sphere at the commit `e2e/sphere.ref` pins into `~/Library/Caches/obid-spec/` and installs its packages (`OBID_SPEC_SPHERE_CLONE` names another clone).
-- `obid-spec coverage [--only <area>]`, `obid-spec list`, `obid-spec nodes`.
+- `obid-spec run [--only <area>] [--tag <tag>] [--workflow <text>] [--jobs <n>] [--obid <path>] [--keep]`, from anywhere in the checkout. `cargo`, `git`, `node`, `pnpm` and `gitleaks` on `PATH`; the first run clones obi-sphere at the commit `e2e/sphere.ref` pins into `~/Library/Caches/obid-spec/` and installs its packages (`OBID_SPEC_SPHERE_CLONE` names another clone).
+- `obid-spec coverage [--only <area>] [--gate]`, `obid-spec list`, `obid-spec nodes`.
 
 ### States and transitions
 
@@ -62,3 +63,5 @@ The business behavior contract for `tools/obid-spec`, from [the template](../bus
 - **OBIDSPEC-8** A scratch obid gets only what's said under "Nothing of the owner's": its own config, home, token and port, a `PATH` of its stand-ins and the system's folders, a login shell that answers that `PATH`, every tool pinned to a stand-in, and no variable of the person's environment; `obid-stop` and the end of a workflow stop it by PID, and a PID the suite didn't start is never signalled (`obidspec_8_…`).
 - **OBIDSPEC-9** The lying Sphere passes every call through as it is, but serves the named owner's cards in the directory re-signed with a new owner key, the key the real Sphere never changes, so a changed owner key (SPHERE-8 to 10) is proven against the real server (`obidspec_9_…`).
 - **OBIDSPEC-10** A step marked `ui.flaky` with an intermittent bug's issue: its failure doesn't fail the run and is listed with the issue; its pass is a pass, so the mark comes off only when the issue is fixed (`obidspec_10_…`).
+- **OBIDSPEC-11** `obid-spec coverage --gate`, the check's gate, judges what must hold now: every route and trigger has a workflow, every scenario in scope is classified, no step names an unknown scenario and no workflow names a route obid doesn't serve; it exits 1 when any fails. The scenarios of obid's that no assertion names yet are the backlog: it prints how many, and they never fail it (`obidspec_11_…`).
+- **OBIDSPEC-12** A workflow may carry tags (`"tags": ["launch"]`); `obid-spec run --tag <tag>` runs only the workflows that carry it, and none is an error. The `launch` tag is on every Obysphere workflow (the `sphere` area and the `sphere-*` triggers) and on the launch flows' workflows, and on nothing else: the merge queue's set (`obidspec_12_…`).

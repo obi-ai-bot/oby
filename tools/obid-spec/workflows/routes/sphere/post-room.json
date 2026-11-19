@@ -9,6 +9,9 @@
       "path": "/v1/spheres/{sphere}/room"
     }
   },
+  "tags": [
+    "launch"
+  ],
   "steps": [
     {
       "id": "sphere",

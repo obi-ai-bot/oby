@@ -74,10 +74,21 @@ pub struct Report {
 }
 
 impl Report {
+    /// Everything holds: every route and trigger has a workflow, every scenario of obid's has an
+    /// assertion, and nothing in scope goes unread (OBIDSPEC-3, 4).
     pub fn ok(&self) -> bool {
+        self.gate_ok()
+            && self
+                .areas
+                .iter()
+                .all(|a| a.scenarios_obid.iter().all(|(_, w)| !w.is_empty()))
+    }
+
+    /// The check's gate (OBIDSPEC-11): what `ok` asks but the scenarios of obid's still waiting for
+    /// an assertion, which are the backlog, reported and never a failure.
+    pub fn gate_ok(&self) -> bool {
         self.areas.iter().all(|a| {
             a.routes.iter().all(|(_, w)| !w.is_empty())
-                && a.scenarios_obid.iter().all(|(_, w)| !w.is_empty())
                 && a.unclassified.is_empty()
                 && a.triggers.iter().all(|(_, w)| !w.is_empty())
                 && a.unknown_proves.is_empty()
@@ -245,7 +256,30 @@ pub fn report(
     Ok(report)
 }
 
+/// How many scenarios of obid's no assertion names yet: the backlog.
+pub fn backlog(report: &Report) -> usize {
+    report
+        .areas
+        .iter()
+        .flat_map(|a| &a.scenarios_obid)
+        .filter(|(_, w)| w.is_empty())
+        .count()
+}
+
 pub fn print(report: &Report) {
+    print_with(report, false);
+}
+
+/// The table, then what fails the check's gate, and the backlog as one line (OBIDSPEC-11).
+pub fn print_gate(report: &Report) {
+    print_with(report, true);
+    println!(
+        "  obid's scenarios with no assertion yet: {} (the backlog: reported, not a failure)",
+        backlog(report)
+    );
+}
+
+fn print_with(report: &Report, gate: bool) {
     println!(
         "{:<16} {:>9} {:>10} {:>18} {:>10} {:>13}",
         "area", "routes", "triggers", "obid's scenarios", "elsewhere", "unclassified"
@@ -294,7 +328,7 @@ pub fn print(report: &Report) {
             }
         }
         for (s, w) in &a.scenarios_obid {
-            if w.is_empty() {
+            if w.is_empty() && !gate {
                 println!("  no assertion: {s}");
             }
         }

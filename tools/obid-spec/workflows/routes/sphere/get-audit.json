@@ -9,6 +9,9 @@
       "path": "/v1/obid/sphere/audit"
     }
   },
+  "tags": [
+    "launch"
+  ],
   "steps": [
     {
       "id": "alex",

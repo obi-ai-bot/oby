@@ -18,9 +18,29 @@ tools/obid-spec/target/debug/obid-spec coverage
   workflows in parallel (at most 6), prints a pass/fail table and exits 1 on any failure. A failed
   workflow's folder (its obids' homes and logs, `report.json` with every step's output) is kept and
   named; `--keep` keeps them all.
+- `obid-spec run --tag launch` runs only the workflows tagged `launch` (`"tags": ["launch"]`):
+  the Obysphere's and the launch flows', the merge queue's set (OBIDSPEC-12).
 - `obid-spec coverage [--only <area>]` prints, per area, routes with a workflow, triggers with a
   workflow and obid's scenarios with an assertion, and exits 1 when anything is missing.
+  `--gate` is the check's: it fails only on a route or trigger without a workflow, an unclassified
+  scenario or an unknown one, and reports the scenarios still waiting for an assertion as the
+  backlog (OBIDSPEC-11).
+- The check runs it (docs/contracts/ci.md, CI-66 and 67): GitHub's merge queue the `launch`
+  workflows, nightly and on demand all of them, a pull request all of them only when it changes
+  `tools/obid-spec/` or carries `full-suite`; the Mac's `scripts/oby-check.sh` all of them for a
+  change to the suite.
 - `obid-spec list`, `obid-spec nodes`.
+
+## Frozen until launch
+
+The owner's decision of 2026-11-18: "wire it in and freeze it". Until after launch, no new
+workflow or scenario goes in beyond the launch flows. A workflow, or a step, may still be added
+only when it:
+
+- proves a bug fix: the fixed issue's acceptance, or the `expectedRed` that comes off; or
+- proves a launch flow (it then carries the `launch` tag).
+
+Anything else waits. `obid-spec coverage`'s backlog of unproven scenarios stays a list, not work.
 
 ## How it runs
 

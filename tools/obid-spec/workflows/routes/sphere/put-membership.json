@@ -9,6 +9,9 @@
       "path": "/v1/obid/sphere/membership"
     }
   },
+  "tags": [
+    "launch"
+  ],
   "steps": [
     {
       "id": "sphere",
