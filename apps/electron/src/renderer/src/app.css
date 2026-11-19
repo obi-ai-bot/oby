@@ -1538,8 +1538,10 @@ button.connector { width: 100%; text-align: left; }
    text (its label, what a click holds): a menu's always, the New conversation row's as the pointer's
    on it, so the panel stays as quiet as his design */
 .has-kbd::after { content: attr(data-kbd); flex: none; margin-left: auto; padding-left: 12px; color: var(--muted); font-size: var(--text-sm); }
-.sidebar-new.has-kbd::after { opacity: 0; transition: opacity var(--fade); }
-.sidebar-new.has-kbd:hover::after, .sidebar-new.has-kbd:focus-visible::after { opacity: 1; }
+/* (hidden, it holds no room: a label cut short beside an empty space reads as broken, at the
+   panel's narrowest above all; shown, it takes its room and the label fades under it) */
+.sidebar-new.has-kbd::after { opacity: 0; max-width: 0; padding-left: 0; overflow: hidden; transition: opacity var(--fade); }
+.sidebar-new.has-kbd:hover::after, .sidebar-new.has-kbd:focus-visible::after { opacity: 1; max-width: none; padding-left: 12px; }
 /* the search field slides open under the title */
 .sidebar-search-wrap {
   display: grid;
