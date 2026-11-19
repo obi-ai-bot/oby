@@ -190,13 +190,19 @@ jobs:
           # obid-spec (CI-67): the merge queue runs its `launch` workflows when the change reaches obid
           # (the rust lane) or the suite; nightly and on demand, every workflow; a pull request, every
           # workflow only for a change to tools/obid-spec/ or with full-suite, else none.
-          obid_spec=none suite_changed=false
+          obid_spec=none suite_changed=false contracts_changed=false
           if grep -q '^tools/obid-spec/' <<< "$files"; then suite_changed=true; fi
+          # (CI-68) a contract's scenarios or obid's routes: their coverage gate, with or without a run
+          if grep -qE '^docs/(contracts|api)/' <<< "$files"; then contracts_changed=true; fi
           case "$GITHUB_EVENT_NAME" in
             merge_group) if [ "$rust" = true ] || [ "$suite_changed" = true ]; then obid_spec=launch; fi ;;
             pull_request) if [ "$suite_changed" = true ] || [ "$FULL_SUITE" = true ]; then obid_spec=all; fi ;;
             *) obid_spec=all ;;
           esac
+          # (CI-68) a change to a contract or to obid's routes that no run covers still gets the
+          # coverage gate alone, on its pull request and in the merge queue: an unlisted scenario or
+          # route fails there, never first in the next pull request's queue run
+          if [ "$obid_spec" = none ] && [ "$contracts_changed" = true ]; then obid_spec=gate; fi
 
           # Which Rust tests: with the rust lane, the mode's (in a run that tests) or the guards (in
           # one that doesn't); without it, the guards when the change reaches what they read. A run
@@ -649,7 +655,7 @@ jobs:
     # passes, or any other failed step, does.
     name: obid-spec
     needs: plan
-    if: needs.plan.outputs.obid-spec == 'launch' || needs.plan.outputs.obid-spec == 'all'
+    if: needs.plan.outputs.obid-spec == 'launch' || needs.plan.outputs.obid-spec == 'all' || needs.plan.outputs.obid-spec == 'gate'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -666,6 +672,7 @@ jobs:
 
       # The Sphere at the one commit oby pins (e2e/sphere.ref), as the e2e job takes it.
       - name: The oby-sphere commit oby is tested with
+        if: env.OBID_SPEC_SET != 'gate'
         id: sphere
         run: |
           ref=$(tr -d '[:space:]' < e2e/sphere.ref)
@@ -673,6 +680,7 @@ jobs:
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.OBID_SPEC_SET != 'gate'
         with:
           repository: obi-ai-bot/oby-sphere
           ref: ${{ steps.sphere.outputs.ref }}
@@ -692,6 +700,7 @@ jobs:
 
       # obid runs each job's agent (here a stand-in) in its bubblewrap sandbox: see rust-test.
       - name: bubblewrap for obid's job sandbox
+        if: env.OBID_SPEC_SET != 'gate'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq bubblewrap slirp4netns
@@ -699,10 +708,12 @@ jobs:
           bwrap --ro-bind / / --unshare-all --die-with-parent true
 
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: env.OBID_SPEC_SET != 'gate'
         with:
           package_json_file: oby-sphere/server/package.json
 
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        if: env.OBID_SPEC_SET != 'gate'
         with:
           node-version: 22
           cache: pnpm
@@ -710,11 +721,13 @@ jobs:
 
       # OBID_SPEC_SPHERE_CLONE names a clone that is ready: its server's packages installed.
       - name: The Sphere's packages
+        if: env.OBID_SPEC_SET != 'gate'
         working-directory: oby-sphere/server
         run: pnpm install --frozen-lockfile
 
       # obid's own secret scan runs gitleaks; the suite clones it into each scratch obid's PATH.
       - name: Install gitleaks
+        if: env.OBID_SPEC_SET != 'gate'
         env:
           GITLEAKS_VERSION: 8.30.1
           GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
@@ -727,6 +740,7 @@ jobs:
           echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
 
       - name: Build obid
+        if: env.OBID_SPEC_SET != 'gate'
         run: cargo build --manifest-path core/Cargo.toml -p obid --bin obid --locked
 
       - name: The suite's own tests
@@ -742,6 +756,7 @@ jobs:
 
       # Four at a time on the runner's four cores; a failed workflow's folder is kept under TMPDIR.
       - name: obid-spec run
+        if: env.OBID_SPEC_SET != 'gate'
         env:
           TMPDIR: ${{ runner.temp }}
         run: |
