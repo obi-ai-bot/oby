@@ -1,5 +1,7 @@
 # Connectors: the owner's own, shown where Settings lists them
 
+Every connector this page lists follows [the connector pattern](connector-pattern.md) (`CONNECTOR-n`).
+
 The business behavior contract for Settings › Connectors on obid, from [the template](../business-contract-template.md). Asked for on 2026-11-17 ("The connectors seem not to be there").
 
 ## Feature and status

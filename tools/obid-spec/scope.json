@@ -2060,6 +2060,37 @@
             "OBIDSPEC-14": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)",
             "OBIDSPEC-15": "obid-spec's own behaviour, proven by its tests (tools/obid-spec/tests/suite.rs and src)"
           }
+        },
+        "connector-pattern.md": {
+          "obid": [],
+          "elsewhere": {
+            "CONNECTOR-1": "proposed: proven by phase A's lanes.",
+            "CONNECTOR-2": "proposed: proven by phase A's lanes.",
+            "CONNECTOR-3": "proposed: proven by phase A's lanes.",
+            "CONNECTOR-4": "proposed: proven by phase A's lanes.",
+            "CONNECTOR-5": "in force today; its CONNECTOR-named test comes with phase A's lanes.",
+            "CONNECTOR-6": "in force today; its CONNECTOR-named test comes with phase A's lanes.",
+            "CONNECTOR-7": "proposed: proven by phase A's lanes.",
+            "CONNECTOR-8": "in force today; its CONNECTOR-named test comes with phase A's lanes.",
+            "CONNECTOR-9": "in force today; its CONNECTOR-named test comes with phase A's lanes.",
+            "CONNECTOR-10": "proposed: proven by phase A's lanes.",
+            "CONNECTOR-11": "proposed: proven by phase A's lanes.",
+            "CONNECTOR-12": "proposed: proven by phase A's lanes.",
+            "CONNECTOR-13": "in force today; its CONNECTOR-named test comes with phase A's lanes.",
+            "CONNECTOR-14": "proposed: proven by phase A's lanes.",
+            "CONNECTOR-15": "proposed: proven by phase A's lanes.",
+            "CONNECTOR-20": "the conformance crate's tests (core/crates/oby-connectors, #2579).",
+            "CONNECTOR-21": "the conformance crate's tests (core/crates/oby-connectors, #2579).",
+            "CONNECTOR-22": "the conformance crate's tests (core/crates/oby-connectors, #2579).",
+            "CONNECTOR-23": "the conformance crate's tests (core/crates/oby-connectors, #2579).",
+            "CONNECTOR-24": "proposed: the conformance crate's tests (core/crates/oby-connectors), once #2579 adds its case.",
+            "CONNECTOR-25": "proposed: the conformance crate's tests (core/crates/oby-connectors), once #2579 adds its case.",
+            "CONNECTOR-26": "the conformance crate's tests (core/crates/oby-connectors, #2579).",
+            "CONNECTOR-27": "proposed: the conformance crate's tests (core/crates/oby-connectors), once #2579 adds its case.",
+            "CONNECTOR-28": "proposed: the conformance crate's tests (core/crates/oby-connectors), once #2579 adds its case.",
+            "CONNECTOR-29": "the conformance crate's tests (core/crates/oby-connectors, #2579).",
+            "CONNECTOR-30": "github_recorded (core/crates/obid/tests/github_recorded.rs, #2583)."
+          }
         }
       }
     }

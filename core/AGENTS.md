@@ -33,6 +33,7 @@ This file adds to the root [AGENTS.md](../AGENTS.md) and never overrides it. It 
 ## From outside
 
 - A source an Obysphere admin connects for everyone (Sangam's Knowledge) works for every member as his design shows, but the admin's secret never leaves where it was connected: the admin's Oby, or Oby Cloud, holds the connection, runs the members' requests against it (as an Obi-to-Obi request, typed and quoted like any other) and returns only the answer. No member's Oby, agent or device ever receives the admin's secret.
+- Every connector (a code host, an issue tracker, a knowledge or MCP connection, an agent) follows [docs/contracts/connector-pattern.md](../docs/contracts/connector-pattern.md) and passes its conformance suite before it merges ([why](../docs/decisions/2026-11-19-one-connector-pattern.md)).
 
 ## Logins and secrets
 
