@@ -7,12 +7,21 @@ const EDGE = 8, GAP = 4;
 export const MENU_GAP = GAP;
 
 // Where a menu goes: under its button if it fits there, else on the side with more room, never
-// taller than that room (it scrolls instead), so it always stays inside the window.
+// taller than that room (it scrolls instead), so it always stays inside the window (sideways: menuShift).
 export function menuPlace(at: DOMRect, height: number, windowHeight = innerHeight) {
   const below = windowHeight - at.bottom - GAP - EDGE, above = at.top - GAP - EDGE;
   const up = height > below && above > below;
   const room = Math.max(0, up ? above : below);
   return { up, maxHeight: room, scroll: height > room };
+}
+
+// How far to move a menu sideways so it stays inside the window, EDGE from either side: lined up with
+// its button, a menu wider than the room past the button would run off the window (the message box's
+// Mode menu in a narrow window). 0 when it fits.
+export function menuShift(left: number, right: number, windowWidth = innerWidth) {
+  if (right > windowWidth - EDGE) return Math.max(EDGE - left, windowWidth - EDGE - right);
+  if (left < EDGE) return EDGE - left;
+  return 0;
 }
 
 // A small menu under its ⋮ button (above it if there's more room there: menuPlace), e.g. a
@@ -39,6 +48,14 @@ export function Menu({ at, onClose, onEscape = onClose, height = 90, align = 'ri
   useClicksEverywhere(true);
   useLayoutEffect(() => {
     ref.current?.querySelector('[aria-checked="true"]')?.scrollIntoView?.({ block: 'nearest' });
+  }, []);
+  // sideways into the window, before it's painted (menuShift)
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    // (its laid-out box, not the drawn one: it comes in scaled down a moment)
+    const dx = menuShift(el.offsetLeft, el.offsetLeft + el.offsetWidth);
+    if (dx) el.style.translate = `${dx}px 0`;
   }, []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); onEscape(); } };
