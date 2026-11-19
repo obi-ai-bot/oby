@@ -10,7 +10,8 @@ import { input, space, picked } from './words';
 import { notifying, windowLeft, windowSeen } from './notify';
 import { updating } from './updates';
 import { localSettings, loginDefault } from './settings';
-import { menu } from '../shared/menu';
+import { appMenu } from '../shared/menu';
+import { helpActions, helping } from './help';
 import { sphering } from './sphere';
 import { stays } from './navigate';
 import { ipc } from './ipc';
@@ -86,6 +87,8 @@ const trusted: Trusted = (e) => !!win && e.sender === win.webContents && e.sende
 bridge(trusted, ownersWords);
 confirming(trusted);
 worktrees(trusted);
+// the Help menu's items, for ⌘K's Actions too (help.ts)
+helping(trusted);
 const channels = ipc(trusted);
 // the page asks for both before it draws, to lay its title bar out around the lights
 channels.on('window-chrome', [], () => chrome, null);
@@ -211,7 +214,7 @@ function createWindow() {
 app.whenReady().then(() => {
   // the Dock icon while developing (a packaged app takes apps/icon/AppIcon.icon, electron-builder.yml)
   if (process.platform === 'darwin' && !app.isPackaged) app.dock?.setIcon(join(__dirname, '../../../icon/exports/oby-1024.png'));
-  if (process.platform === 'darwin') Menu.setApplicationMenu(Menu.buildFromTemplate(menu));
+  if (process.platform === 'darwin') Menu.setApplicationMenu(Menu.buildFromTemplate(appMenu({ dev, help: helpActions })));
   // the app's own run records (runMarker.ts): how the last run ended, and this start
   started(process.argv.includes('--background'));
   startObid();

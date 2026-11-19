@@ -1,36 +1,42 @@
-// The window's keyboard shortcuts (docs/contracts/shortcuts.md, SHORTCUTS-1 to 6), as T3 Code keeps
+// The window's keyboard shortcuts (docs/contracts/shortcuts.md, SHORTCUTS-1 to 11), as T3 Code keeps
 // its own (packages/shared/src/keybindings.ts, apps/web/src/shortcuts/dispatcher.ts): one table of
 // keys to commands (shared/shortcuts.ts), one keydown listener on the window that runs the command of the newest screen
 // that handles it, and every label drawn from the same table, so a menu never says a key the window
 // doesn't answer. The Mac's menu bar (shared/menu.ts) shows them too: a key the page leaves alone
 // reaches its menu item, whose click comes here as the same command (window.app.onShortcut).
 
-import { KEYBINDINGS, type Command } from '../../shared/shortcuts';
+import { bindingOf, JUMPS, keyParts, KEYBINDINGS, type Command, type Jump } from '../../shared/shortcuts';
 
-export { KEYBINDINGS, type Command };
+export { JUMPS, KEYBINDINGS, type Command, type Jump };
 export const COMMANDS = new Set<Command>(KEYBINDINGS.map((b) => b.command));
 
 const mac = () => typeof navigator === 'undefined' || /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 
-// Whether a keydown is this binding: its one key with mod and no other modifier
+// What a key reads as without ⇧ on a US keyboard (T3's US_SHIFTED_TO_UNSHIFTED_KEYS): ⇧[ is "{"
+const UNSHIFTED: Record<string, string> = { '{': '[', '}': ']' };
+
+// Whether a keydown is this binding: its one key with mod, ⇧ only when the binding has it, and no other modifier
 export function matches(e: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>, key: string, onMac = mac()) {
-  const want = key.split('+').pop()!;
+  const want = keyParts(key);
   const mod = onMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
-  return mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === want;
+  const pressed = e.key.toLowerCase();
+  return mod && !e.altKey && e.shiftKey === want.shift && (UNSHIFTED[pressed] ?? pressed) === want.key;
 }
 export const commandOf = (e: Parameters<typeof matches>[0], onMac = mac()) =>
   KEYBINDINGS.find((b) => matches(e, b.key, onMac))?.command ?? null;
 
-// A command's key as a menu or a tooltip shows it: ⌘N on a Mac (T3's ⌃⌥⇧⌘ order), Ctrl+N elsewhere
+// A command's key as a menu or a tooltip shows it: ⌘N or ⇧⌘[ on a Mac (T3's ⌃⌥⇧⌘ order), Ctrl+N elsewhere
 export function shortcutLabel(command: Command, onMac = mac()) {
-  const key = KEYBINDINGS.find((b) => b.command === command)?.key;
-  if (!key) return '';
-  const name = key.split('+').pop()!.toUpperCase();
-  return onMac ? `⌘${name}` : `Ctrl+${name}`;
+  const binding = KEYBINDINGS.find((b) => b.command === command);
+  if (!binding) return '';
+  const { shift, key } = keyParts(binding.key);
+  return onMac ? `${shift ? '⇧' : ''}⌘${key.toUpperCase()}` : `Ctrl+${shift ? 'Shift+' : ''}${key.toUpperCase()}`;
 }
-// aria-keyshortcuts' words for it ("Meta+N")
-export const ariaKeys = (command: Command, onMac = mac()) =>
-  `${onMac ? 'Meta' : 'Control'}+${KEYBINDINGS.find((b) => b.command === command)!.key.split('+').pop()!.toUpperCase()}`;
+// aria-keyshortcuts' words for it ("Meta+N", "Meta+Shift+[")
+export const ariaKeys = (command: Command, onMac = mac()) => {
+  const { shift, key } = keyParts(bindingOf(command).key);
+  return `${onMac ? 'Meta' : 'Control'}+${shift ? 'Shift+' : ''}${key.toUpperCase()}`;
+};
 // "Settings ⌘,": a tooltip's words with the key after them
 export const withShortcut = (words: string, command: Command) => `${words} ${shortcutLabel(command)}`;
 

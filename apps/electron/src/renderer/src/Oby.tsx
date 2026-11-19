@@ -16,6 +16,7 @@ declare global {
       onFullScreen(fn: (on: boolean) => void): () => void;
       // the Mac's menu bar's shortcut items, clicked (shared/menu.ts, shortcuts.ts)
       onShortcut?(fn: (command: string) => void): () => void;
+      help?(what: 'reveal-log' | 'copy-diagnostics'): Promise<string | null>;  // the Help menu's items (main/help.ts)
       openExternal(url: string): void;
       renderError?(name: string, message: string, componentStack: string): void;  // a render error the root caught (preload, main/runMarker.ts)
       pickFolders?(from?: string): Promise<string[]>;  // the Mac's folder picker (main), several at once, opening in from

@@ -23,9 +23,11 @@ import { askCardLine, memberOpens, mockConvosWith, plainId, useConvos } from './
 import { roomOpens, useRoom } from './room';
 import { archivedChats, chatOfTask, lastAgo, latestChat, renameChat, useChats, type Chat } from './chats';
 import { chatFirst, everything, onObid } from './lean';
-import { tasksMatching, useObidSearch } from './search';
-import { ariaKeys, shortcutLabel, withShortcut } from './shortcuts';
-import { useWaitingCount } from './live';
+import { ACTIONS, pickGroups, tasksMatching, useObidSearch } from './search';
+import { ariaKeys, JUMPS, registerCommands, shortcutLabel, withShortcut } from './shortcuts';
+import { adjacent, panelOrder, pinnedFirst, projectGroups as groupsOf } from './panelOrder';
+import SearchMore from './SearchMore';
+import { say, useWaitingCount } from './live';
 import { loadProfiles, openProfile, profileChats, useProfiles } from './profiles';
 import type { Profile } from './obid';
 import ProfileMenu, { EditProfileModal, NewProfileModal } from './ProfileMenu';
@@ -369,12 +371,35 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   // chat first, under your Oby: all of them, in one list
   const latest = latestChat(chats);
   const inOrder = [...pinned, ...talks.filter((c) => !c.pinned)];
-  // each project's rows in that order, then those in none (or in one obid doesn't list); a project
-  // with none still shows, but not while searching, and No project only with rows. None listed: no groups
-  const projectGroups = !projectsOn || !projects.length ? [] : [
-    ...projects.map((p) => ({ id: p.id, name: p.name, rows: inOrder.filter((c) => c.project === p.id) })),
-    { id: '', name: 'No project', rows: inOrder.filter((c) => !projects.some((p) => p.id === c.project)) },
-  ].filter((g) => g.rows.length || (g.id && !q));
+  // each project's rows in that order, then those in none (panelOrder.ts)
+  const projectGroups = groupsOf(inOrder, projects, projectsOn, !!q);
+  // ⌘1 to ⌘9, ⌘⇧[ and ⌘⇧] (SHORTCUTS-8, 9): the conversations as the panel lists them unsearched
+  // (chat first; else pinned first, as Conversations lists them), from anywhere
+  const allInOrder = pinnedFirst(chats);
+  const order = panelOrder(allInOrder, chatFirst ? groupsOf(allInOrder, projects, projectsOn, false) : [], projectsFolded);
+  const jumping = useRef({ order, activeTalk, onOpenTalk });
+  jumping.current = { order, activeTalk, onOpenTalk };
+  useEffect(() => {
+    const go = (id: string | null | undefined) => { if (id) jumping.current.onOpenTalk(id); };
+    const step = (direction: 'previous' | 'next') => () => go(adjacent(jumping.current.order, jumping.current.activeTalk, direction));
+    return registerCommands({
+      ...Object.fromEntries(JUMPS.map((command, i) => [command, () => go(jumping.current.order[i])])),
+      'chat.previous': step('previous'),
+      'chat.next': step('next'),
+    });
+  }, []);
+  // ⌘K finds more than conversations (SHORTCUTS-11): Settings pages and a few actions, under their
+  // own headings below them; Reveal obid's Log only where main is
+  const finds = pickGroups(query, SETTINGS_PAGES, window.app?.help ? ACTIONS : ACTIONS.filter((a) => a.id !== 'reveal-log'));
+  const moreFound = finds.settings.length + finds.actions.length > 0;
+  const runPick = (kind: 'setting' | 'action', id: string) => {
+    setSearching(false); setQuery('');
+    if (kind === 'setting') { pick('settings'); onOpenSetting(id); }
+    else if (id === 'chat.new') onNewChat();
+    else if (id === 'settings.open') { pick('settings'); onOpenSetting('general'); }
+    else if (id === 'reveal-log') void window.app?.help?.('reveal-log').then((why) => { if (why) say(why); }, say);
+  };
+  const searchMore = q ? <SearchMore settings={finds.settings} actions={finds.actions} onPick={runPick} /> : null;
   const convoRow = (c: Chat) => {
     const kids = chatFirst ? kidsOf(tasks, c.id, chatIdOf) : [];
     // its one mark (CHATSTATE-5): needs you, working, unread, then how its latest task ended
@@ -713,7 +738,8 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
                 </section>
               );
             }) : inOrder.map(convoRow)}
-            {!talks.length && <p className="sidebar-empty">{q ? `No conversations match “${query.trim()}”` : 'No conversations yet'}</p>}
+            {!talks.length && !(q && moreFound) && <p className="sidebar-empty">{q ? `No conversations match “${query.trim()}”` : 'No conversations yet'}</p>}
+            {searchMore}
             {projectsOn && (
               <button className="sidebar-new chat-new project-new" aria-haspopup="dialog" onClick={() => setNewProject(true)}>
                 <FolderPlus size={16} strokeWidth={1.6} />
@@ -739,8 +765,9 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
             {talks.filter((c) => !c.pinned).map(convoRow)}
             {/* none at all: in the middle, as Home's; none matching a search: at the top, under it */}
             {!talks.length && (query.trim()
-              ? <p className="sidebar-empty">{`No conversations match “${query.trim()}”`}</p>
+              ? !moreFound && <p className="sidebar-empty">{`No conversations match “${query.trim()}”`}</p>
               : <p className="sidebar-empty is-middle">No conversations yet</p>)}
+            {searchMore}
           </div>
         )}
         {/* Home: each kind of work folds open to its tasks (running / needs you

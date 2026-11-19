@@ -370,13 +370,16 @@ export default function Home() {
   // (the box can't take the focus while a page is still over it)
   const [focusHome, setFocusHome] = useState(false);
   const newChat = useCallback(() => { closeAll(); setFocusHome(true); }, [closeAll]);
-  // The window's shortcuts (SHORTCUTS-1, 2 and 4): ⌘N a new conversation, ⌘K the side panel's
-  // search, opened if it's shut, and ⌘, Settings (⌘F is the conversation's own, ChatView)
+  // The window's shortcuts (SHORTCUTS-1, 2, 4 and 7): ⌘N a new conversation, ⌘K the side panel's
+  // search, opened if it's shut, ⌘, Settings and ⌘B the panel (⌘F is the conversation's own, ChatView;
+  // ⌘1 to ⌘9, ⌘⇧[ and ⌘⇧] the side panel's, Sidebar)
   useEffect(() => registerCommands({
     'chat.new': newChat,
     // (docked, or floating over a narrow window, as the panel's toggle opens it)
     'search.open': () => { togglePanel(true); dispatchEvent(new Event('oby:search')); },
     'settings.open': () => start({ kind: 'settings', id: 'general' }),
+    // ⌘B (SHORTCUTS-7): the side panel shut or open, as its toggle does
+    'sidebar.toggle': () => togglePanel(),
   }), [newChat, fit.docked]);
   useEffect(() => {
     if (!focusHome || layers.length) return;

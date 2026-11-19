@@ -85,6 +85,9 @@ contextBridge.exposeInMainWorld('app', {
     ipcRenderer.on('shortcut', listener);
     return () => { ipcRenderer.off('shortcut', listener); };
   },
+  // the Help menu's items, from ⌘K's Actions (main/help.ts, docs/contracts/help.md): null when done,
+  // else what went wrong
+  help: (what: 'reveal-log' | 'copy-diagnostics') => ipcRenderer.invoke('help', what) as Promise<string | null>,
   // the cursor in window coordinates, even when it's outside the window
   onCursor(fn: (p: Point) => void) {
     const listener = (_: unknown, p: Point) => fn(p);
