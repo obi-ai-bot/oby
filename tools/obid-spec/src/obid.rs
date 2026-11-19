@@ -93,13 +93,15 @@ fn tools(run: &Run) -> Result<PathBuf> {
         let found = which(name).with_context(|| format!("{name} isn't on PATH"))?;
         let found = std::fs::canonicalize(&found).unwrap_or(found);
         // A copy, cloned on APFS (free on disk), not a link: a job's box reads the tools on its
-        // PATH, never where a link points (a check's `node` living under ~/.nvm).
-        let cloned = std::process::Command::new("/bin/cp")
-            .arg("-c")
-            .arg(&found)
-            .arg(&link)
-            .status()
-            .is_ok_and(|s| s.success());
+        // PATH, never where a link points (a check's `node` living under ~/.nvm). `cp -c` is
+        // macOS's; elsewhere (Linux CI, no box) the link is enough.
+        let cloned = cfg!(target_os = "macos")
+            && std::process::Command::new("/bin/cp")
+                .arg("-c")
+                .arg(&found)
+                .arg(&link)
+                .status()
+                .is_ok_and(|s| s.success());
         if !cloned {
             std::os::unix::fs::symlink(&found, &link)?;
         }
