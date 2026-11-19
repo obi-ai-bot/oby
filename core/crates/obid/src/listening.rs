@@ -58,10 +58,13 @@ pub fn listening(pids: &[u32]) -> Option<Vec<Listening>> {
             let Ok(fds) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
                 continue;
             };
-            let process = std::fs::read_to_string(format!("/proc/{pid}/comm"))
-                .unwrap_or_default()
-                .trim()
-                .to_owned();
+            let process = process_name(
+                std::fs::read_link(format!("/proc/{pid}/exe"))
+                    .ok()
+                    .as_deref(),
+                &std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default(),
+                &std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default(),
+            );
             for fd in fds.flatten() {
                 let Ok(link) = std::fs::read_link(fd.path()) else {
                     continue;
@@ -83,6 +86,26 @@ pub fn listening(pids: &[u32]) -> Option<Vec<Listening>> {
         }
         Some(found)
     }
+}
+
+/// A Linux process's name as the owner knows it (TASKSERVERS-1): its executable's file name
+/// (`/proc/<pid>/exe`), else its command line's first word's, else `comm`. Not `comm` first: that's
+/// the main thread's name, which a program may change (Node names it `MainThread`).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn process_name(exe: Option<&std::path::Path>, cmdline: &[u8], comm: &str) -> String {
+    let file_name = |path: &std::path::Path| {
+        path.file_name()
+            .map(|n| {
+                n.to_string_lossy()
+                    .trim_end_matches(" (deleted)")
+                    .to_owned()
+            })
+            .filter(|n| !n.is_empty())
+    };
+    let first = cmdline.split(|b| *b == 0).next().unwrap_or_default();
+    exe.and_then(file_name)
+        .or_else(|| file_name(std::path::Path::new(&*String::from_utf8_lossy(first))))
+        .unwrap_or_else(|| comm.trim().to_owned())
 }
 
 /// Whether `localhost` reaches a listen on `host`: a loopback address, or every address (`*`,
@@ -195,6 +218,29 @@ mod tests {
         assert!(reachable("[::ffff:127.0.0.1]"));
         assert!(!reachable("[::ffff:192.168.1.2]"));
         assert!(!reachable("example.test"));
+    }
+
+    /// TASKSERVERS-1: on Linux a listener is named after its executable, not its main thread.
+    #[test]
+    fn taskservers_1_a_linux_listener_is_named_after_its_executable() {
+        use std::path::Path;
+        let exe = Path::new("/home/runner/.nvm/versions/node/v24.11.0/bin/node");
+        assert_eq!(
+            process_name(Some(exe), b"node\0-e\0x", "MainThread\n"),
+            "node"
+        );
+        let deleted = Path::new("/usr/bin/node (deleted)");
+        assert_eq!(process_name(Some(deleted), b"", "MainThread\n"), "node");
+        // No exe to read (another user's process, one that ended): the command line, then comm.
+        assert_eq!(
+            process_name(
+                None,
+                b"/usr/local/bin/vite\0--port\x005173\0",
+                "MainThread\n"
+            ),
+            "vite"
+        );
+        assert_eq!(process_name(None, b"", "python3\n"), "python3");
     }
 
     /// TASKSERVERS-5: Linux's table, in this machine's byte order, listens only.
