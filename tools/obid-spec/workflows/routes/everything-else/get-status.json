@@ -75,7 +75,8 @@
               "profile-scope-v1",
               "project-jobs-v1",
               "projects-v1",
-              "revisions-v1"
+              "revisions-v1",
+              "skills-v1"
             ]
           }
         }

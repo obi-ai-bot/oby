@@ -54,6 +54,8 @@ fn obid(name: &str, kept: &[(&str, Value)]) -> (Folder, Obid) {
     (folder, obid)
 }
 
+// Only the own lane's tests send words, and the own lane is macOS's for now (LANES-12).
+#[cfg(target_os = "macos")]
 fn said(obid: &Obid, body: Value) -> Answer {
     let answer = call(obid, "POST", "/v1/plans", Some(&body));
     assert_eq!(answer.status, 200, "{}", answer.text);
