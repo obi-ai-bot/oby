@@ -17,7 +17,7 @@ use crate::conn::Conn;
 use crate::process;
 
 /// The coding tools obid runs jobs on, each through its own adapter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Tool {
     /// Claude Code, stream-json (this module).
     Claude,
@@ -558,13 +558,25 @@ pub async fn read_usage(launch: &Launch, limit: Duration) -> Result<crate::usage
 /// Claude Code starts by itself when the task ends, the task standing for progress meanwhile as a
 /// change in the worktree does ([`Conn::holding`]), and the turn's `result` is that one's.
 pub async fn turn_on(
-    mut conn: Conn,
+    conn: Conn,
     prompt: &str,
+    decide: impl Fn(&str, &Value) -> Ruling,
+    on_event: impl FnMut(Event),
+    keep: bool,
+) -> (Turn, Option<Conn>) {
+    turn_with(conn, user_message(prompt), decide, on_event, keep).await
+}
+
+/// [`turn_on`] with the user message as it's written: one whose last text block starts a skill
+/// (crate::skills::claude_message, SKILLS-6).
+pub async fn turn_with(
+    mut conn: Conn,
+    message: Value,
     decide: impl Fn(&str, &Value) -> Ruling,
     mut on_event: impl FnMut(Event),
     keep: bool,
 ) -> (Turn, Option<Conn>) {
-    conn.send(&user_message(prompt)).await;
+    conn.send(&message).await;
 
     let mut turn = Turn::default();
     let mut api_key_source = None;

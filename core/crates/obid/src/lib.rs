@@ -78,6 +78,7 @@ pub mod scan;
 pub mod secrets;
 pub mod secretspec;
 pub mod settings;
+pub mod skills;
 pub mod sphere;
 pub mod spill;
 pub mod steer;

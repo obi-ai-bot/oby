@@ -1,0 +1,118 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/skills",
+  "version": "1.0.0",
+  "description": "The skills of the agent the owner's next words would reach (SKILLS-5): an account's own, from its own folder, each with its description and whether the owner may start it; 404 for an account it doesn't have, 400 for two targets at once.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/skills"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "files": {
+          "accounts/stand-in/skills/write-tests/SKILL.md": "---\ndescription: Writes the tests first.\n---\n\nDo it.\n",
+          "accounts/stand-in/skills/agent-only/SKILL.md": "---\ndescription: Only the agent starts it.\nuser-invocable: false\n---\n"
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/skills",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "unknown-account-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/skills?account=nobody",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "two-targets-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/skills?account=stand-in&job=x",
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "skills-5-an-accounts-own-skills",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "SKILLS-5"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/skills?account=stand-in",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tool": "claude",
+            "account": "stand-in",
+            "skills": {
+              "$len": 2
+            },
+            "skills.1.name": "write-tests",
+            "skills.1.description": "Writes the tests first.",
+            "skills.1.userInvocable": true,
+            "skills.1.source": "user",
+            "skills.0.name": "agent-only",
+            "skills.0.userInvocable": false
+          }
+        }
+      }
+    },
+    {
+      "id": "skills-5-home-names-its-agent",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "SKILLS-5"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/skills",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tool": "claude",
+            "account": "stand-in",
+            "skills": {
+              "$type": "array"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

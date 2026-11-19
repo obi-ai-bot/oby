@@ -82,6 +82,9 @@ struct Request {
     /// The members the words `@`-name, by exact owner id (docs/contracts/ask-an-oby.md, ASK-40):
     /// asked as `oby_ask` asks, before the model runs. Add-only (`ask-mentions-v1`).
     ask: Option<Vec<String>>,
+    /// The skill the owner picked in the box for these words (docs/api/skills.md, SKILLS-6 to 8):
+    /// given to the agent in its own form, only where it has it. Add-only (`skills-v1`).
+    skill: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -126,10 +129,21 @@ pub async fn plan(
     let jobs = attached_jobs(&shared, req.jobs.unwrap_or_default())?;
     let defaults = req.defaults.map(defaults::Defaults::checked).transpose()?;
     let ask = req.ask.map(|owners| mentioned(owners, words)).transpose()?;
+    // A name an agent calls a skill by, and nothing else (SKILLS-12).
+    if let Some(skill) = &req.skill
+        && !crate::skills::valid_name(skill)
+    {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "skill is a skill's name: letters, digits, `:`, `_` and `-`, at most 128.",
+        ));
+    }
+    let skill = req.skill.clone();
     // No length of obid's own, as in Claude Code: the request's body is at most axum's 2 MB, and
     // the model says when words are more than it can read at once ([`TOO_LONG`]). Files or tasks
     // attached are a message without words too (Sangam's message box sends them alone).
-    if words.is_empty() && attachments.is_empty() && jobs.is_empty() {
+    // A skill picked alone is a message too: `/write-tests` with nothing after it (SKILLS-6).
+    if words.is_empty() && attachments.is_empty() && jobs.is_empty() && req.skill.is_none() {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
             "There's no message to send.",
@@ -291,6 +305,7 @@ pub async fn plan(
     let asking = turn::Asking {
         defaults,
         ask,
+        skill,
         turns,
         back,
         now,
@@ -422,6 +437,7 @@ async fn answer(
     conversations.begin_underway(conversation, &words.turn, "Thinking");
     control.set_signed(words.signed);
     control.set_mentioned(asking.ask.clone());
+    control.set_skill(asking.skill.clone());
     let asked = Asked {
         said,
         attachments: &words.attachments,
