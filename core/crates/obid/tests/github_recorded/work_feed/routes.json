@@ -1,0 +1,19 @@
+[
+ {
+  "args": "api graphql *",
+  "when": "second",
+  "stdoutFile": "work-2.json"
+ },
+ {
+  "args": "api graphql *",
+  "stdoutFile": "work-1.json"
+ },
+ {
+  "args": "api user --jq .login",
+  "stdout": "o-owner"
+ },
+ {
+  "args": "api user/orgs *",
+  "stdout": "obi-e2e"
+ }
+]

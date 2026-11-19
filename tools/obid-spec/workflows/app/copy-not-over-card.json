@@ -1,0 +1,196 @@
+{
+  "schemaVersion": "2",
+  "name": "App: a reply's Copy never sits on the task card that follows its words",
+  "version": "1.0.0",
+  "description": "The real app on a scratch obid with stand-in agents: words on the empty chat start a task, so Oby's reply is its words followed by the task's card, and a next message follows it. With the pointer on the reply its Copy shows, and its box shares no area with the card's nor the next message's (CHATFIRST-37, #2572).",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "launch"
+  ],
+  "steps": [
+    {
+      "id": "obid",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "app",
+      "use": "runtime.rust:app.launch",
+      "inputs": {
+        "obid": "${state.obid}",
+        "size": {
+          "width": 994,
+          "height": 670
+        }
+      }
+    },
+    {
+      "id": "words",
+      "use": "runtime.rust:app.type",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".composer [contenteditable=\"true\"]",
+          "visible": true
+        },
+        "text": "OBY oby_dispatch {\"repo\":\"obi-e2e/fixture-app\",\"kind\":\"research\",\"title\":\"Where Copy goes\",\"task\":\"Look around\"}"
+      }
+    },
+    {
+      "id": "send",
+      "use": "runtime.rust:app.press",
+      "inputs": {
+        "app": "${state.app}",
+        "keys": "Enter"
+      }
+    },
+    {
+      "id": "card",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".msg-task",
+          "hasText": "Where Copy goes"
+        },
+        "within": 60,
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "more-words",
+      "use": "runtime.rust:app.type",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".chat-layer:not(.is-leaving):not(.is-covered) .composer [contenteditable=\"true\"]",
+          "visible": true
+        },
+        "text": "SAY Noted."
+      }
+    },
+    {
+      "id": "send-more",
+      "use": "runtime.rust:app.press",
+      "inputs": {
+        "app": "${state.app}",
+        "keys": "Enter"
+      }
+    },
+    {
+      "id": "next-message",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".msg.is-oby",
+          "hasText": "Noted."
+        },
+        "within": 60,
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "point-at-reply",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "hover": true,
+        "target": {
+          "css": "[role=listitem]:has(.msg-task)",
+          "hasText": "Where Copy goes"
+        }
+      }
+    },
+    {
+      "id": "copy-shows",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Copy",
+          "within": {
+            "css": "[role=listitem]:has(.msg-task)",
+            "hasText": "Where Copy goes"
+          },
+          "visible": true
+        },
+        "expect": {
+          "paths": {
+            "count": {
+              "$oneOf": [
+                1,
+                2
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "copy-clear-of-card-and-next",
+      "use": "runtime.rust:app.measure",
+      "ui": {
+        "proves": [
+          "CHATFIRST-37"
+        ]
+      },
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".msg-copy:not(.msg-task .msg-copy)",
+          "within": {
+            "css": "[role=listitem]:has(.msg-task)",
+            "hasText": "Where Copy goes"
+          }
+        },
+        "against": {
+          "card": {
+            "css": ".msg-task",
+            "within": {
+              "css": "[role=listitem]:has(.msg-task)",
+              "hasText": "Where Copy goes"
+            }
+          },
+          "next": {
+            "css": "[role=listitem]:has(.msg-task) + [role=listitem]"
+          }
+        },
+        "expect": {
+          "paths": {
+            "card.overlap": false,
+            "next.overlap": false
+          }
+        }
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:app.screenshot",
+      "inputs": {
+        "app": "${state.app}",
+        "name": "copy-not-over-card"
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:app.close",
+      "inputs": {
+        "app": "${state.app}"
+      }
+    }
+  ]
+}

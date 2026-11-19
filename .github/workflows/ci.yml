@@ -743,7 +743,9 @@ jobs:
         if: env.OBID_SPEC_SET != 'gate'
         run: cargo build --manifest-path core/Cargo.toml -p obid --bin obid --locked
 
+      # (CI-68) not for `gate`: some start a scratch obid, which `gate` doesn't build
       - name: The suite's own tests
+        if: env.OBID_SPEC_SET != 'gate'
         run: cargo test --manifest-path tools/obid-spec/Cargo.toml --locked
 
       - name: Build the suite

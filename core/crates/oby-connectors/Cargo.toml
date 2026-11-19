@@ -1,0 +1,16 @@
+[package]
+name = "oby-connectors"
+description = "One pattern for every connector: definitions, interfaces, capability flags and the conformance suite each adapter passes. No I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# No dependencies, on purpose: this crate does no I/O and starts no runtime. obid's adapters wrap
+# the I/O around these plain-data signatures.
+[dependencies]
+
+[lints]
+workspace = true

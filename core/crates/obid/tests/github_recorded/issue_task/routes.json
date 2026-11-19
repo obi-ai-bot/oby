@@ -1,0 +1,22 @@
+[
+ {
+  "args": "issue view 140 *",
+  "stdoutFile": "issue.json"
+ },
+ {
+  "args": "api repos/obi-e2e/fixture-app/issues/140 --jq .author_association",
+  "stdout": "CONTRIBUTOR"
+ },
+ {
+  "args": "api graphql *",
+  "stdoutFile": "who.json"
+ },
+ {
+  "args": "api user --jq .login",
+  "stdout": "o-owner"
+ },
+ {
+  "args": "api user/orgs *",
+  "stdout": "obi-e2e"
+ }
+]

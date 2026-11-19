@@ -1,0 +1,18 @@
+{
+  "id": "feed-review-r1b2c3d4",
+  "kind": "listen",
+  "job": "r1b2c3d4",
+  "title": "Review ready: r #31",
+  "text": "Post this review on pull request #31 in o/r as you? Approve posts the review shown here with Oby's verdict, from your GitHub login.",
+  "options": ["Approve", "Dismiss"],
+  "details": ["Posts this review on the pull request with Oby's verdict, from your GitHub login.", "Leaves it in Oby. Nothing is posted."],
+  "created": 1795000000,
+  "watch": {
+    "source": "github",
+    "url": "https://github.com/o/r/pull/31",
+    "pr": {"repo": "o/r", "number": 31, "sha": "3333333333333333333333333333333333333333",
+           "url": "https://github.com/o/r/pull/31"},
+    "review": "Approve: the change does what its title says, and its tests cover the new branch.",
+    "verdict": "approve"
+  }
+}

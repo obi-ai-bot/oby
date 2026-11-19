@@ -1,0 +1,7 @@
+[
+  {"args": "api user --jq *", "stdout": "1234+o-owner@users.noreply.github.com"},
+  {"args": "pr list *", "run": ". ./pr-list.sh"},
+  {"args": "pr create *", "stdout": "Creating pull request…\nhttps://github.com/obi-e2e/fixture-app/pull/7", "sets": "opened"},
+  {"args": "pr edit *"},
+  {"args": "pr view *", "stdout": "{\"state\":\"OPEN\",\"reviewDecision\":\"REVIEW_REQUIRED\",\"mergedAt\":null,\"baseRefName\":\"main\",\"headRefOid\":\"\"}"}
+]

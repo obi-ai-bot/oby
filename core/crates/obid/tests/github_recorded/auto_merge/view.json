@@ -1,0 +1,20 @@
+{
+  "state": "OPEN",
+  "reviewDecision": "",
+  "mergedAt": null,
+  "baseRefName": "dev",
+  "headRefOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "test",
+      "status": "IN_PROGRESS",
+      "conclusion": ""
+    }
+  ],
+  "mergeable": "MERGEABLE",
+  "mergeStateStatus": "BLOCKED",
+  "author": {
+    "login": "o-owner"
+  }
+}

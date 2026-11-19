@@ -2,9 +2,10 @@
 
 obid's endpoints and background triggers, proven black-box against the real obid binary, as BLOK
 workflows and Rust nodes ([docs/contracts/obid-spec.md](../../docs/contracts/obid-spec.md),
-OBIDSPEC-1 to 9). Like the Brain's map, but executable: each route in
+OBIDSPEC-1 to 15). Like the Brain's map, but executable: each route in
 [docs/api/routes.txt](../../docs/api/routes.txt) has a workflow, each step that asserts names the
-contract scenario it proves, and every assertion is shown able to fail on every run.
+contract scenario it proves, and every assertion is shown able to fail on every run. The same
+workflows drive the real Electron app and the Mac around it ("The real app and the Mac", below).
 
 ```bash
 cargo build --manifest-path tools/obid-spec/Cargo.toml --bins
@@ -64,8 +65,9 @@ never does, so obid's pinning is proven against the real server.
 ## Workflows
 
 BLOK v2 files, so BLOK Studio can show and edit them: `workflows/routes/<area>/` (one per route,
-its trigger `http` naming the method and path as routes.txt lists them) and `workflows/triggers/`
-(one per background trigger, its trigger `manual`). A step uses one of the nodes
+its trigger `http` naming the method and path as routes.txt lists them), `workflows/triggers/`
+(one per background trigger, its trigger `manual`), and `workflows/app/` and `workflows/desktop/`
+(the real app and the Mac around it, below; `manual`). A step uses one of the nodes
 (`runtime.rust:<node>`, `obid-spec nodes` lists them) with its `inputs`; its output is kept as
 `state.<id>`, and a later step's inputs read it as `${state.<id>.<path>}`.
 
@@ -100,6 +102,49 @@ its trigger `http` naming the method and path as routes.txt lists them) and `wor
 each place it looks, and each change must fail it; one that passes anyway is a vacuous assertion
 and fails the step. To see a step go red by hand, copy `workflows/`, make an expectation wrong and
 run with `OBID_SPEC_WORKFLOWS=<the copy>`.
+
+## The real app and the Mac
+
+The same workflows drive the real Electron app (`workflows/app/`, OBIDSPEC-13) and the macOS around
+it (`workflows/desktop/`, OBIDSPEC-14), as [docs/verification.md](../../docs/verification.md) asks:
+a change a person sees is proven by driving the app, from outside, red before green.
+
+- **`app.*`** (Playwright): `app.launch` starts this checkout's built app (the run builds it once
+  with `npm run build` in `apps/electron`) through the human drive's launcher
+  (`apps/electron/scripts/drive-lib.mjs`, `_electron.launch`), hidden, with its own user-data
+  folder, on the workflow's scratch obid (`"obid": "${state.obid}"`, as `OBID_PORT` and `OBID_HOME`)
+  or on the app's demo data (`"mock": true`, `?everything&chat`, a port nothing listens on).
+  Never the owner's obid on 7777, their Oby.app or their app folder. Then `app.click` (or
+  `"hover": true`), `app.type`, `app.press`, `app.read` (count, text, visible, attributes),
+  `app.measure` (an element's box and, `against` other targets, `overlap`, `sharedArea`, `gap`),
+  `app.screenshot` (into the workflow's `screens/`, and `OBID_SPEC_SHOTS` when set) and
+  `app.close`. A target is `{"role", "name"}`, `{"label"}`, `{"text"}` or `{"css"}`, with
+  `within`, `hasText`, `visible`, `nth`/`last`. `app.read` and `app.measure` take `expect`,
+  `within` (seconds, asked again until it holds) and `hold` (milliseconds: it must still hold
+  then, so a toggle that flips back fails). The Rust nodes only orchestrate: each app has one
+  helper, `apps/electron/scripts/drive-app.mjs`, one JSON line in and one out per step.
+- **`desktop.*`** (agent-desktop): `desktop.snapshot` (a surface's tree; for the menu bar, each
+  menu's items by name), `desktop.read` (one menu's items, or an element by role and name),
+  `desktop.click` (a menu item by path, `["View", "Toggle Sidebar"]`) and `desktop.press` (a chord,
+  `cmd+b`, which agent-desktop delivers by running the menu item that carries it, as macOS does).
+  The app is found by its PID, never by name. agent-desktop is installed into the workflow's folder
+  (`npm install --prefix`, `agent-desktop@1.3.1`, never globally) unless `OBID_SPEC_AGENT_DESKTOP`
+  names one. A menu item's click goes to the app's focused window, as a person's does, so `click`
+  and `press` bring the (still invisible) window forward for that moment and give the front back to
+  the app that had it.
+- **Skipped, never green** (OBIDSPEC-15): off macOS, with agent-desktop absent, or without the
+  Accessibility and Screen Recording permissions (granted once by the owner to the terminal that
+  runs the suite; no node asks for, grants or changes one), a step answers why and the workflow is
+  marked `skip`: neither passed nor failed, its later steps not run. GitHub's Linux runners skip
+  every `app.*` and `desktop.*` workflow; the Mac's check runs them.
+- **Red first.** `OBID_SPEC_APP=<another checkout>/apps/electron` (built, its `node_modules`
+  linked) drives that build instead: the code before a fix, to watch the workflow fail.
+
+```bash
+tools/obid-spec/target/debug/obid-spec run --workflow app/ --keep          # screenshots kept
+OBID_SPEC_APP=/tmp/before/apps/electron tools/obid-spec/target/debug/obid-spec run --workflow desktop/
+OBID_SPEC_AGENT_DESKTOP=/nowhere tools/obid-spec/target/debug/obid-spec run --workflow desktop/   # the skip
+```
 
 ## Coverage and scope.json
 

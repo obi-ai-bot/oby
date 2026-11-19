@@ -1,0 +1,3 @@
+[
+  {"args": "api user --jq *", "stdout": "1234+o-owner@users.noreply.github.com", "sets": "user-read"}
+]

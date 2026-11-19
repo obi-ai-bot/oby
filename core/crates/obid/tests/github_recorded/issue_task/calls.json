@@ -1,0 +1,101 @@
+[
+  {
+    "args": [
+      "issue",
+      "view",
+      "140",
+      "-R",
+      "obi-e2e/fixture-app",
+      "--json",
+      "title,body,author,labels,comments"
+    ],
+    "cwd": "<CRATE>",
+    "env": [
+      "GH_NO_UPDATE_NOTIFIER",
+      "GH_PROMPT_DISABLED",
+      "GH_SPINNER_DISABLED",
+      "GIT_TERMINAL_PROMPT",
+      "HOME",
+      "NO_COLOR",
+      "OBID_BASE_CHECK",
+      "OBID_GITHUB_REFRESH_SECONDS",
+      "OBID_LOAD",
+      "OBID_LOG",
+      "OBID_MEMORY_AVAILABLE",
+      "OBID_PRESTART",
+      "OBID_RECHECK_MS",
+      "OBID_SECURITY_BIN",
+      "OBID_USAGE_READS",
+      "PATH",
+      "TMPDIR"
+    ],
+    "files": {},
+    "stdin": ""
+  },
+  {
+    "args": [
+      "api",
+      "repos/obi-e2e/fixture-app/issues/140",
+      "--jq",
+      ".author_association"
+    ],
+    "cwd": "<CRATE>",
+    "env": [
+      "GH_NO_UPDATE_NOTIFIER",
+      "GH_PROMPT_DISABLED",
+      "GH_SPINNER_DISABLED",
+      "GIT_TERMINAL_PROMPT",
+      "HOME",
+      "NO_COLOR",
+      "OBID_BASE_CHECK",
+      "OBID_GITHUB_REFRESH_SECONDS",
+      "OBID_LOAD",
+      "OBID_LOG",
+      "OBID_MEMORY_AVAILABLE",
+      "OBID_PRESTART",
+      "OBID_RECHECK_MS",
+      "OBID_SECURITY_BIN",
+      "OBID_USAGE_READS",
+      "PATH",
+      "TMPDIR"
+    ],
+    "files": {},
+    "stdin": ""
+  },
+  {
+    "args": [
+      "api",
+      "graphql",
+      "-f",
+      "query=query($owner: String!, $name: String!, $number: Int!) { viewer { login } repository(owner: $owner, name: $name) { issueOrPullRequest(number: $number) { ... on Issue { author { login } authorAssociation body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } timelineItems(itemTypes: [RENAMED_TITLE_EVENT], first: 50) { pageInfo { hasNextPage } nodes { ... on RenamedTitleEvent { actor { login } } } } comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } authorAssociation body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } } } } ... on PullRequest { author { login } authorAssociation body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } timelineItems(itemTypes: [RENAMED_TITLE_EVENT], first: 50) { pageInfo { hasNextPage } nodes { ... on RenamedTitleEvent { actor { login } } } } comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } authorAssociation body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } } } reviews(first: 100) { pageInfo { hasNextPage } nodes { author { login } authorAssociation body state commit { oid } userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } authorAssociation body userContentEdits(first: 20) { pageInfo { hasNextPage } nodes { editor { login } } } } } } } } } } }",
+      "-f",
+      "owner=obi-e2e",
+      "-f",
+      "name=fixture-app",
+      "-F",
+      "number=140"
+    ],
+    "cwd": "<CRATE>",
+    "env": [
+      "GH_NO_UPDATE_NOTIFIER",
+      "GH_PROMPT_DISABLED",
+      "GH_SPINNER_DISABLED",
+      "GIT_TERMINAL_PROMPT",
+      "HOME",
+      "NO_COLOR",
+      "OBID_BASE_CHECK",
+      "OBID_GITHUB_REFRESH_SECONDS",
+      "OBID_LOAD",
+      "OBID_LOG",
+      "OBID_MEMORY_AVAILABLE",
+      "OBID_PRESTART",
+      "OBID_RECHECK_MS",
+      "OBID_SECURITY_BIN",
+      "OBID_USAGE_READS",
+      "PATH",
+      "TMPDIR"
+    ],
+    "files": {},
+    "stdin": ""
+  }
+]

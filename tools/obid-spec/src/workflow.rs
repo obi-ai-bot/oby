@@ -1,7 +1,8 @@
 //! The suite's workflows: BLOK v2 files (`schemaVersion` "2"), so BLOK Studio can show and edit
 //! them, under `workflows/routes/<area>/` (one per route, its trigger `http` naming the route's
-//! method and path) and `workflows/triggers/` (one per background trigger, its trigger
-//! `manual`). Steps are regular steps on this suite's nodes (`runtime.rust:<node>`) with their
+//! method and path), `workflows/triggers/` (one per background trigger, its trigger `manual`),
+//! and `workflows/app/` and `workflows/desktop/` (the real app and the Mac around it, `manual`). Steps
+//! are regular steps on this suite's nodes (`runtime.rust:<node>`) with their
 //! `inputs`; each step's output is kept as `state.<id>`, as BLOK keeps `ctx.state[id]`.
 //!
 //! What this host adds, in each step's free-form `ui`: `proves`, the contract scenarios
@@ -39,6 +40,10 @@ pub struct Step {
     pub active: bool,
 }
 
+/// The folders whose workflows have a `manual` trigger, not a route: obid's background triggers,
+/// and what drives the real app (`app/`, OBIDSPEC-13) and the Mac around it (`desktop/`, OBIDSPEC-14).
+pub const MANUAL_AREAS: [&str; 3] = ["triggers", "app", "desktop"];
+
 const UNSUPPORTED: [&str; 8] = [
     "branch",
     "subworkflow",
@@ -67,7 +72,7 @@ pub fn parse(text: &str, file: &Path, area: &str, nodes: &[&str]) -> Result<Work
         None if doc["trigger"].get("manual").is_some() => None,
         None => bail!("its trigger is neither http nor manual"),
     };
-    if area != "triggers" && route.is_none() {
+    if !MANUAL_AREAS.contains(&area) && route.is_none() {
         bail!("a route's workflow has an http trigger");
     }
     let tags = match &doc["tags"] {
@@ -153,12 +158,14 @@ pub fn load_all(dir: &Path, nodes: &[&str]) -> Result<Vec<Workflow>> {
             }
         }
     }
-    let triggers = dir.join("triggers");
-    if triggers.is_dir() {
-        for f in std::fs::read_dir(&triggers)? {
-            let f = f?.path();
-            if f.extension().is_some_and(|e| e == "json") {
-                files.push((f, "triggers".to_string()));
+    for area in MANUAL_AREAS {
+        let folder = dir.join(area);
+        if folder.is_dir() {
+            for f in std::fs::read_dir(&folder)? {
+                let f = f?.path();
+                if f.extension().is_some_and(|e| e == "json") {
+                    files.push((f, area.to_string()));
+                }
             }
         }
     }

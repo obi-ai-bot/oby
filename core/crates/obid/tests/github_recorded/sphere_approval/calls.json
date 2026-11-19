@@ -1,0 +1,136 @@
+[
+  {
+    "args": [
+      "pr",
+      "view",
+      "12",
+      "-R",
+      "obi-e2e/fixture-app",
+      "--json",
+      "state,headRefOid,baseRefName,url"
+    ],
+    "cwd": "<CRATE>",
+    "env": [
+      "GH_NO_UPDATE_NOTIFIER",
+      "GH_PROMPT_DISABLED",
+      "GH_SPINNER_DISABLED",
+      "GIT_TERMINAL_PROMPT",
+      "HOME",
+      "NO_COLOR",
+      "OBID_BASE_CHECK",
+      "OBID_GITHUB_REFRESH_SECONDS",
+      "OBID_LOAD",
+      "OBID_LOG",
+      "OBID_MEMORY_AVAILABLE",
+      "OBID_PRESTART",
+      "OBID_RECHECK_MS",
+      "OBID_SECURITY_BIN",
+      "OBID_USAGE_READS",
+      "PATH",
+      "TMPDIR"
+    ],
+    "files": {},
+    "stdin": ""
+  },
+  {
+    "args": [
+      "api",
+      "repos/obi-e2e/fixture-app",
+      "--jq",
+      ".permissions.push"
+    ],
+    "cwd": "<CRATE>",
+    "env": [
+      "GH_NO_UPDATE_NOTIFIER",
+      "GH_PROMPT_DISABLED",
+      "GH_SPINNER_DISABLED",
+      "GIT_TERMINAL_PROMPT",
+      "HOME",
+      "NO_COLOR",
+      "OBID_BASE_CHECK",
+      "OBID_GITHUB_REFRESH_SECONDS",
+      "OBID_LOAD",
+      "OBID_LOG",
+      "OBID_MEMORY_AVAILABLE",
+      "OBID_PRESTART",
+      "OBID_RECHECK_MS",
+      "OBID_SECURITY_BIN",
+      "OBID_USAGE_READS",
+      "PATH",
+      "TMPDIR"
+    ],
+    "files": {},
+    "stdin": ""
+  },
+  {
+    "args": [
+      "api",
+      "-X",
+      "POST",
+      "repos/obi-e2e/fixture-app/pulls/12/reviews",
+      "-f",
+      "commit_id=<commit-1>",
+      "-f",
+      "event=APPROVE",
+      "-F",
+      "body=@<FOLDER>/home/tmp/approve-<UUID>/review.md"
+    ],
+    "cwd": "<CRATE>",
+    "env": [
+      "GH_NO_UPDATE_NOTIFIER",
+      "GH_PROMPT_DISABLED",
+      "GH_SPINNER_DISABLED",
+      "GIT_TERMINAL_PROMPT",
+      "HOME",
+      "NO_COLOR",
+      "OBID_BASE_CHECK",
+      "OBID_GITHUB_REFRESH_SECONDS",
+      "OBID_LOAD",
+      "OBID_LOG",
+      "OBID_MEMORY_AVAILABLE",
+      "OBID_PRESTART",
+      "OBID_RECHECK_MS",
+      "OBID_SECURITY_BIN",
+      "OBID_USAGE_READS",
+      "PATH",
+      "TMPDIR"
+    ],
+    "files": {
+      "9": "Approved by Oby: its review of <commit-1> passed."
+    },
+    "stdin": ""
+  },
+  {
+    "args": [
+      "pr",
+      "view",
+      "12",
+      "-R",
+      "obi-e2e/fixture-app",
+      "--json",
+      "state,headRefOid,baseRefName,url"
+    ],
+    "cwd": "<CRATE>",
+    "env": [
+      "GH_NO_UPDATE_NOTIFIER",
+      "GH_PROMPT_DISABLED",
+      "GH_SPINNER_DISABLED",
+      "GIT_TERMINAL_PROMPT",
+      "HOME",
+      "NO_COLOR",
+      "OBID_BASE_CHECK",
+      "OBID_GITHUB_REFRESH_SECONDS",
+      "OBID_LOAD",
+      "OBID_LOG",
+      "OBID_MEMORY_AVAILABLE",
+      "OBID_PRESTART",
+      "OBID_RECHECK_MS",
+      "OBID_SECURITY_BIN",
+      "OBID_USAGE_READS",
+      "PATH",
+      "TMPDIR"
+    ],
+    "files": {},
+    "stdin": ""
+  }
+]

@@ -1,0 +1,112 @@
+{
+  "armed": {
+    "autoMerge": {
+      "at": "<TIME>",
+      "head": "<commit-1>"
+    },
+    "autoMergeOff": null,
+    "issue": null,
+    "issueUrl": null,
+    "mergeError": null,
+    "mergeNeedsYou": false,
+    "mergedBy": null,
+    "mergedStage": {
+      "detail": "GitHub will merge it when its checks pass",
+      "id": "merged",
+      "started": "<TIME>",
+      "state": "current",
+      "title": "Merged into dev",
+      "waited": "<TIME>"
+    },
+    "outgoing": [
+      {
+        "action": "push",
+        "branch": "oby/fix-7",
+        "date": "<TIME>",
+        "id": "<commit-1>",
+        "repo": "obi-e2e/fixture-app"
+      },
+      {
+        "action": "autoMerge",
+        "branch": "dev",
+        "date": "<TIME>",
+        "id": "https://github.com/obi-e2e/fixture-app/pull/7",
+        "repo": "obi-e2e/fixture-app"
+      }
+    ],
+    "published": "https://github.com/obi-e2e/fixture-app/pull/7",
+    "pullRequest": {
+      "base": "dev",
+      "checkedAt": "<TIME>",
+      "head": "<commit-1>",
+      "reviewDecision": null,
+      "state": "OPEN"
+    }
+  },
+  "mergeCards": [],
+  "merged": {
+    "autoMerge": {
+      "at": "<TIME>",
+      "head": "<commit-1>"
+    },
+    "autoMergeOff": null,
+    "issue": null,
+    "issueUrl": null,
+    "mergeError": null,
+    "mergeNeedsYou": false,
+    "mergedBy": {
+      "at": "<TIME>",
+      "by": "memory",
+      "memory": "m1a2b3c4d"
+    },
+    "mergedStage": {
+      "detail": "Merged into dev, as you like",
+      "finished": "<TIME>",
+      "id": "merged",
+      "seconds": "<TIME>",
+      "started": "<TIME>",
+      "state": "done",
+      "title": "Merged into dev",
+      "waited": "<TIME>"
+    },
+    "outgoing": [
+      {
+        "action": "push",
+        "branch": "oby/fix-7",
+        "date": "<TIME>",
+        "id": "<commit-1>",
+        "repo": "obi-e2e/fixture-app"
+      },
+      {
+        "action": "autoMerge",
+        "branch": "dev",
+        "date": "<TIME>",
+        "id": "https://github.com/obi-e2e/fixture-app/pull/7",
+        "repo": "obi-e2e/fixture-app"
+      },
+      {
+        "action": "merge",
+        "branch": "dev",
+        "date": "<TIME>",
+        "id": "https://github.com/obi-e2e/fixture-app/pull/7",
+        "repo": "obi-e2e/fixture-app"
+      },
+      {
+        "action": "branchDelete",
+        "branch": "oby/fix-7",
+        "date": "<TIME>",
+        "id": "oby/fix-7",
+        "repo": "obi-e2e/fixture-app"
+      }
+    ],
+    "published": "https://github.com/obi-e2e/fixture-app/pull/7",
+    "pullRequest": {
+      "base": "dev",
+      "checkedAt": "<TIME>",
+      "head": "<commit-1>",
+      "mergedAt": "2026-10-24T18:00:00Z",
+      "reviewDecision": null,
+      "state": "MERGED"
+    }
+  }
+}
