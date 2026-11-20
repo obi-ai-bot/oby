@@ -1,0 +1,328 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab artifacts: every owner act is refused unsigned",
+  "version": "1.0.0",
+  "description": "LAB-ARTIFACTS-19, the store's part (src/lab/artifacts.rs: Words). Renaming, deleting, importing and the words of a turn each need the device's signed words over the exact body: unsigned, signed by another key, by a device never registered, with no token or a wrong one, each is refused 401 with its reason, and nothing changed. Reading needs obid's token. Signed by the owner's device, the rename is done. (Sharing's acts join this list in the sharing PR.)",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.artifacts.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            },
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:lab.artifacts.device",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "fx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "page"
+      }
+    },
+    {
+      "id": "page",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab artifact",
+        "conversation": "c1",
+        "job": "j1",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "design-fx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "claude-design",
+        "zip": true
+      }
+    },
+    {
+      "id": "19-rename-unsigned",
+      "use": "runtime.rust:lab.artifacts.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "PATCH",
+        "path": "/v1/artifacts/${state.page.id}",
+        "body": {
+          "title": "Not this"
+        },
+        "device": "${state.d1}",
+        "as": "unsigned",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "unsigned"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-19"
+        ]
+      }
+    },
+    {
+      "id": "19-rename-badsig",
+      "use": "runtime.rust:lab.artifacts.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "PATCH",
+        "path": "/v1/artifacts/${state.page.id}",
+        "body": {
+          "title": "Not this"
+        },
+        "device": "${state.d1}",
+        "as": "badsig",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "bad_signature"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-19"
+        ]
+      }
+    },
+    {
+      "id": "19-rename-unknown-device",
+      "use": "runtime.rust:lab.artifacts.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "PATCH",
+        "path": "/v1/artifacts/${state.page.id}",
+        "body": {
+          "title": "Not this"
+        },
+        "device": "${state.d1}",
+        "as": "unknown-device",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "unknown_device"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-19"
+        ]
+      }
+    },
+    {
+      "id": "19-rename-none",
+      "use": "runtime.rust:lab.artifacts.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "PATCH",
+        "path": "/v1/artifacts/${state.page.id}",
+        "body": {
+          "title": "Not this"
+        },
+        "device": "${state.d1}",
+        "as": "none",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "no_token"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-19"
+        ]
+      }
+    },
+    {
+      "id": "19-rename-wrong",
+      "use": "runtime.rust:lab.artifacts.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "PATCH",
+        "path": "/v1/artifacts/${state.page.id}",
+        "body": {
+          "title": "Not this"
+        },
+        "device": "${state.d1}",
+        "as": "wrong",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "bad_token"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-19"
+        ]
+      }
+    },
+    {
+      "id": "19-delete-unsigned",
+      "use": "runtime.rust:lab.artifacts.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "DELETE",
+        "path": "/v1/artifacts/${state.page.id}",
+        "as": "unsigned",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "unsigned"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-19"
+        ]
+      }
+    },
+    {
+      "id": "19-import-unsigned",
+      "use": "runtime.rust:lab.artifacts.import",
+      "inputs": {
+        "api": "${state.up}",
+        "file": "${state.design-fx.zip}",
+        "as": "unsigned",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "unsigned"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-19"
+        ]
+      }
+    },
+    {
+      "id": "19-turn-unsigned",
+      "use": "runtime.rust:lab.artifacts.turn",
+      "inputs": {
+        "api": "${state.up}",
+        "text": "Hm.",
+        "artifact": {
+          "id": "${state.page.id}"
+        },
+        "as": "unsigned",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "unsigned"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-19"
+        ]
+      }
+    },
+    {
+      "id": "19-list-needs-the-token",
+      "use": "runtime.rust:lab.artifacts.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/artifacts",
+        "as": "none",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "no_token"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-19"
+        ]
+      }
+    },
+    {
+      "id": "19-nothing-was-renamed",
+      "use": "runtime.rust:lab.artifacts.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.page.id}",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.title": "Lab artifact"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-19"
+        ]
+      }
+    },
+    {
+      "id": "19-signed-it-is-done",
+      "use": "runtime.rust:lab.artifacts.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "PATCH",
+        "path": "/v1/artifacts/${state.page.id}",
+        "body": {
+          "title": "Signed"
+        },
+        "device": "${state.d1}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.title": "Signed"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-19"
+        ]
+      }
+    }
+  ]
+}

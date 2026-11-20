@@ -1,0 +1,327 @@
+{
+  "schemaVersion": "2",
+  "name": "App: every ask over the message box, one at a time: a CAPTCHA, a choice, a code, a passkey (board 9)",
+  "version": "1.0.0",
+  "description": "The real app on its demo data with the design's board 9 asks (BROWSERAPP-13), one at a time with 1 of 4 and the next arrow, each in the board's words; a choice's heading is the agent's first sentence and its choices its buttons; the code card has six boxes in blue. Board 9 is a sheet of the four cards side by side: here they're checked word by word and over the message box, not by the sheet's places.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "browser"
+  ],
+  "steps": [
+    {
+      "id": "app",
+      "use": "runtime.rust:app.launch",
+      "inputs": {
+        "mock": true,
+        "query": "browser=9",
+        "size": {
+          "width": 1280,
+          "height": 800
+        },
+        "storage": {
+          "oby.chatPanelOpen": "0"
+        }
+      }
+    },
+    {
+      "id": "captcha",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=asks] .tc-ask-line"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Check The page wants to know you’re a person · Codex 1 of 4"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-13"
+        ]
+      }
+    },
+    {
+      "id": "captcha-words",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=asks] .tc-ask-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Codex can’t answer this. Take control and solve it; Codex goes on when you give the tab back."
+          }
+        }
+      }
+    },
+    {
+      "id": "over-the-box",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=asks] .decision-card"
+        },
+        "against": {
+          "box": {
+            "css": ".chat-layer:not(.is-covered) .composer"
+          }
+        },
+        "expect": {
+          "paths": {
+            "box.overlap": false
+          }
+        },
+        "within": 5
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-13"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:app.screenshot",
+      "inputs": {
+        "app": "${state.app}",
+        "name": "browser-09"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:app.sidebyside",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "Asks",
+        "name": "browser-09-beside-board",
+        "label": "board 9 (a sheet): the CAPTCHA card"
+      }
+    },
+    {
+      "id": "to-choice",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Next decision"
+        }
+      }
+    },
+    {
+      "id": "choice",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=asks] .tc-ask-line"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Question Which plan should I pick at checkout? · Claude Code 2 of 4"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-13"
+        ]
+      }
+    },
+    {
+      "id": "choice-words",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=asks] .tc-ask-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "The test card works with both. Business adds SSO, which the next step checks."
+          }
+        }
+      }
+    },
+    {
+      "id": "choices",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=asks] .tc-options"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Team · $12 Business · $29 I’ll choose in the page"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-13"
+        ]
+      }
+    },
+    {
+      "id": "to-code",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Next decision"
+        }
+      }
+    },
+    {
+      "id": "code",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=asks] .tc-ask-line"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Code The code sent to your phone, for staging.acme.dev 3 of 4"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-13"
+        ]
+      }
+    },
+    {
+      "id": "code-boxes",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".code-boxes > span"
+        },
+        "expect": {
+          "paths": {
+            "count": 6
+          }
+        }
+      }
+    },
+    {
+      "id": "code-blue",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".tc-ask-kind.is-blue"
+        },
+        "expect": {
+          "paths": {
+            "styles.color.matches": true
+          }
+        },
+        "styles": {
+          "color": "--unread"
+        }
+      }
+    },
+    {
+      "id": "to-passkey",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Next decision"
+        }
+      }
+    },
+    {
+      "id": "passkey",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=asks] .tc-ask-line"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Passkey staging.acme.dev asks for your passkey · Codex 4 of 4"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-13"
+        ]
+      }
+    },
+    {
+      "id": "passkey-words",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=asks] .tc-ask-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Only you can do this. Take control; your Mac asks for Touch ID."
+          }
+        }
+      }
+    },
+    {
+      "id": "skip-passkey",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Skip"
+        }
+      }
+    },
+    {
+      "id": "three-left",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=asks] .tc-ask-line"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Code The code sent to your phone, for staging.acme.dev 3 of 3"
+          }
+        },
+        "within": 5
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:app.close",
+      "inputs": {
+        "app": "${state.app}"
+      }
+    }
+  ]
+}

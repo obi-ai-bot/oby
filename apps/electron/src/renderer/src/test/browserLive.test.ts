@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { owners, wordsOf, TAKE_CONTROL, GIVE_BACK } from '../../../shared/words';
+import { owners, wordsOf, TAKE_CONTROL, GIVE_BACK, SKIP, SAVE_A_COPY } from '../../../shared/words';
 import { mayInput, sawInput } from '../../../main/browserInput';
 import { connectLive, LINGER_MS, type Sinks } from '../browser/live';
 import type { BrowserState } from '../browser/view';
@@ -21,8 +21,9 @@ describe('BROWSERAPP-9: Take control and Give back are signed by their own label
     expect(wordsOf('POST', '/v1/browser/tabs/t1/close', {})).toBeNull();
     expect(wordsOf('POST', TAKE, undefined)).toBeNull();
   });
-  it('browserapp_9: a take is held by Take control, Take control to answer or Type the password; never by Give back or a card\'s words', () => {
-    for (const label of ['Take control', 'Take control to answer', 'Type the password']) expect(owners('POST', TAKE, {}, [label], [])).toEqual([0]);
+  it('browserapp_9: a take is held by Take control, Take control to answer or I’ll choose in the page; never by Give back, Type the password or a card\'s words', () => {
+    for (const label of ['Take control', 'Take control to answer', 'I’ll choose in the page']) expect(owners('POST', TAKE, {}, [label], [])).toEqual([0]);
+    expect(owners('POST', TAKE, {}, ['Type the password'], [])).toBeNull();
     expect(owners('POST', TAKE, {}, ['Give back'], [])).toBeNull();
     expect(owners('POST', TAKE, {}, ['Codex asks you to sign in here'], [])).toBeNull();
     expect(owners('POST', GIVE, {}, ['Give back'], [])).toEqual([0]);
@@ -74,11 +75,13 @@ function mockObid(lists: { tabs: BrowserTab[]; seq?: number; status?: number }) 
       calls.push({ method, path, body });
       if (lists.status) return { status: lists.status, text: '{"error":"Not found."}' };
       if (path === '/v1/browser') return { status: 200, text: JSON.stringify({ tabs: lists.tabs, settings: { agentsUseBrowser: true, agentsUseMac: true }, browsers: [], seq: lists.seq }) };
-      if (path === '/v1/browser/downloads') return { status: 200, text: JSON.stringify({ downloads: [], seq: lists.seq }) };
+      if (path === '/v1/browser/downloads') return { status: 200, text: JSON.stringify({ downloads: (lists as { downloads?: unknown[] }).downloads ?? [], seq: lists.seq }) };
+      if (path.endsWith('/saveCopy')) return { status: 200, text: JSON.stringify({ id: 'd1', savedAs: '/Users/someone/Downloads/invoices (1).csv' }) };
       return { status: 200, text: '{}' };
     }),
     follow: vi.fn((fn: (m: { name: string; data: string }) => void) => { push = fn; return () => { push = null; }; }),
     watch: vi.fn((tab: string, fn: (data: string) => void) => { frames.set(tab, fn); return () => frames.delete(tab); }),
+    fill: vi.fn(async (_tab: string, _field: string, _value: string, _ask?: string): Promise<string | null> => null),
   };
   return { api, calls, event: (e: object) => push?.({ name: (e as { type: string }).type, data: JSON.stringify(e) }), frame: (tab: string, f: object) => frames.get(tab)?.(JSON.stringify(f)), following: () => !!push };
 }
@@ -151,5 +154,58 @@ describe('BROWSERAPP-8: on obid, the panel follows obid\'s browser through main'
     expect(state?.tabs[0].holder).toBe('you');
     await live.giveBack('t1');
     expect(o.calls).toContainEqual({ method: 'POST', path: GIVE, body: {} });
+  });
+});
+
+describe('BROWSERAPP-13: an ask answered by its own button', () => {
+  const ANSWER = '/v1/browser/asks/a1/answer';
+  it('browserapp_13: a choice is signed by its own label; none is Skip, held by Skip or Skip this page', () => {
+    expect(wordsOf('POST', ANSWER, { choice: 'Team · $12' })).toEqual(['Team · $12']);
+    expect(owners('POST', ANSWER, { choice: 'Team · $12' }, ['Team · $12'], [])).toEqual([0]);
+    expect(owners('POST', ANSWER, { choice: 'Business · $29' }, ['Team · $12'], [])).toBeNull();
+    expect(wordsOf('POST', ANSWER, {})).toEqual([SKIP]);
+    expect(owners('POST', ANSWER, {}, ['Skip this page'], [])).toEqual([0]);
+    expect(owners('POST', ANSWER, {}, ['Take control'], [])).toBeNull();
+  });
+  it('browserapp_13: anything else in an answer, or a secret as words, signs nothing', () => {
+    expect(wordsOf('POST', ANSWER, { choice: 'Team', value: 'x' })).toBeNull();
+    expect(wordsOf('POST', ANSWER, { choice: '' })).toBeNull();
+    expect(wordsOf('POST', '/v1/browser/tabs/t1/secret', { field: '#pw', value: 'x' })).toBeNull();
+  });
+  it('browserapp_13: the live adapter posts the choice, or {} for Skip, to the ask\'s answer', async () => {
+    const o = mockObid({ tabs: [tab('t1')], seq: 1 });
+    const live = connectLive({ offered: () => {}, state: () => {}, frame: () => {}, problem: () => {} }, o.api);
+    await settle(); await settle();
+    await live.answer('a1', 'Team · $12');
+    await live.answer('a1');
+    expect(o.calls.filter((c) => c.method === 'POST')).toEqual([{ method: 'POST', path: ANSWER, body: { choice: 'Team · $12' } }, { method: 'POST', path: ANSWER, body: {} }]);
+  });
+});
+
+describe('BROWSERAPP-15 and 16: a script\'s mark, and the agent\'s downloads', () => {
+  let state: BrowserState | null = null;
+  const sinks: Sinks = { offered: () => {}, state: (x) => { state = x; }, frame: () => {}, problem: () => {} };
+  const act = (seq: number, tool: string) => ({ seq, type: 'action', tabId: 't1', job: 'j1', tool, text: 'Clicking Invite', pointer: null, outcome: 'started', reason: null });
+
+  it('browserapp_15: a script run marks its tab until the agent does something else there', async () => {
+    const o = mockObid({ tabs: [tab('t1')], seq: 1 });
+    connectLive(sinks, o.api);
+    await settle(); await settle();
+    o.event({ seq: 2, type: 'scriptRun', tabId: 't1', job: 'j1', expression: '1+1', result: { from: 'http://localhost:3000/', what: 'page data', note: 'outside', data: 2 } });
+    expect(state?.tabs[0].ran).toEqual({});
+    o.event(act(3, 'oby_browser_act'));
+    expect(state?.tabs[0].ran).toBeUndefined();
+  });
+  it('browserapp_16: Save a copy is signed by its label, an empty body; the copy\'s name in Downloads is kept for Show in Finder', async () => {
+    expect(wordsOf('POST', '/v1/browser/downloads/d1/saveCopy', {})).toEqual([SAVE_A_COPY]);
+    expect(wordsOf('POST', '/v1/browser/downloads/d1/saveCopy', { to: '/tmp' })).toBeNull();
+    const lists = { tabs: [tab('t1')], seq: 1, downloads: [{ id: 'd1', job: 'j1', tabId: 't1', name: 'invoices.csv', startedBy: 'agent', place: 'profile', bytes: 49152 }] };
+    const o = mockObid(lists);
+    const live = connectLive(sinks, o.api);
+    await settle(); await settle();
+    expect(state?.downloads[0]).toMatchObject({ name: 'invoices.csv', size: '48 KB', by: { kind: 'agent', agent: 'codex' }, saved: false });
+    await live.saveCopy('d1');
+    expect(o.calls).toContainEqual({ method: 'POST', path: '/v1/browser/downloads/d1/saveCopy', body: {} });
+    expect(state?.downloads[0]).toMatchObject({ saved: true, savedAs: 'invoices (1).csv' });
   });
 });

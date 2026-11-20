@@ -159,13 +159,14 @@ describe('the card', () => {
     ];
     mac.served = [
       served('n', { title: 'Question from d\\u{456}ma', body: 'Which‮ one? This?', item: 'n', answers: ['Decline'] }),
-      served('r', { title: 'Review request from alex', body: 'Have a look.', item: 'r' }),
+      // a teammate's review request whose words fit the banner: obid serves Accept and Decline (ALERTS-22)
+      served('r', { title: 'Review request from alex', body: 'Have a look.', item: 'r', answers: ['Accept', 'Decline'] }),
     ];
     await launch();
     // who by their owner id, and their words as plain text, as the card shows them; answered on its card
     expect(mac.posted[0]).toMatchObject({ title: 'Question from d\\u{456}ma', body: 'Which one?\nThis?', actions: [] });
     // obid's words on anything else, and nothing for an item obid sorted as not needing them
-    expect(mac.posted[1]).toMatchObject({ title: 'Review request from alex', body: 'Have a look.' });
+    expect(mac.posted[1]).toMatchObject({ title: 'Review request from alex', body: 'Have a look.', actions: ['Accept', 'Decline'] });
     expect(mac.posted).toHaveLength(2);
   });
 });

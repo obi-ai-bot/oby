@@ -1559,8 +1559,7 @@ impl Jobs {
         self.tetrix_for(job)?;
         let (url, token) = self.connections.get()?.open_tetrix(&job.id);
         let own = matches!(self.job_account(job), Ok((tool, _)) if Self::own_lane(job, tool));
-        let host = if own { "//127.0.0.1:" } else { "//10.0.2.2:" }; // an own run is on the host
-        Some((url.replace("//10.0.2.2:", host), token))
+        Some((Self::agent_api(&url, own), token))
     }
 
     /// Notes what the agent of job `id` got from Tetrix through obid.
@@ -8481,7 +8480,10 @@ mod tests {
 
     /// A cleanup test's home: obid's clone of `o/r` with one commit, `base`, on `origin/main`,
     /// and jobs whose sandbox starts processes through a stand-in for `obid __session`.
-    fn cleanup_home(name: &str, sandboxed: bool) -> (PathBuf, PathBuf, String, Arc<Jobs>) {
+    pub(super) fn cleanup_home(
+        name: &str,
+        sandboxed: bool,
+    ) -> (PathBuf, PathBuf, String, Arc<Jobs>) {
         let root = std::env::temp_dir().join(format!("obid-cleanup-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
@@ -11717,7 +11719,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    fn cleanup_git(dir: &Path, args: &[&str]) -> String {
+    pub(super) fn cleanup_git(dir: &Path, args: &[&str]) -> String {
         let out = std::process::Command::new("git")
             // These repositories own their objects, independently of the worktree running
             // the tests. Match obid's Git adapter when the caller pins its own object store.
@@ -11748,7 +11750,13 @@ mod tests {
     }
 
     /// A job `id` that ended done two days ago, with a worktree of its own at `base`.
-    fn ended(jobs: &Jobs, clone: &Path, base: &str, id: &str, now: i64) -> (Job, PathBuf) {
+    pub(super) fn ended(
+        jobs: &Jobs,
+        clone: &Path,
+        base: &str,
+        id: &str,
+        now: i64,
+    ) -> (Job, PathBuf) {
         let worktree = jobs.worktree_path(id);
         let path = worktree.to_str().unwrap();
         cleanup_git(clone, &["worktree", "add", "-q", "--detach", path, base]);
@@ -12611,7 +12619,7 @@ mod tests {
 
     /// `job`, published, its pull request `state` (`MERGED`, `CLOSED` or `OPEN`) as obid last read
     /// it, and ended an hour before `now`.
-    fn with_pr(mut job: Job, state: &str, now: i64) -> Job {
+    pub(super) fn with_pr(mut job: Job, state: &str, now: i64) -> Job {
         job.published = Some(format!("https://github.com/o/r/pull/{}", job.id.len()));
         job.pull_request = Some(crate::github::PullRequest {
             state: state.into(),

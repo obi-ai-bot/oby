@@ -1,0 +1,172 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab artifacts: a follow-up job in the same conversation versions the artifact; another conversation can't",
+  "version": "1.0.0",
+  "description": "LAB-ARTIFACTS-6 (src/lab/artifacts.rs: may_version). Job j1 of conversation c1 publishes a page. A follow-up job j2 of c1 (the artifact's chat starts a new job in its conversation) publishes a changed page as a new version of it: version 2, made by j2, the artifact still j1's and c1's. The same files again make no version. Job j3 of conversation c2 is refused made_elsewhere, and c1's own conversation tool (no job) makes version 3.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.artifacts.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            },
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:lab.artifacts.device",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "fx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "page"
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab artifact",
+        "conversation": "c1",
+        "job": "j1",
+        "expect": {
+          "paths": {
+            "ok": true,
+            "version": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "6-follow-up-job-versions-it",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab artifact",
+        "conversation": "c1",
+        "job": "j2",
+        "artifact": "${state.first.id}",
+        "write": {
+          "note.txt": "the follow-up's change"
+        },
+        "expect": {
+          "paths": {
+            "ok": true,
+            "version": 2,
+            "artifact.job": "j1",
+            "artifact.conversation": "c1",
+            "artifact.versions.1.job": "j2"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-6"
+        ]
+      }
+    },
+    {
+      "id": "6-same-files-no-version",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab artifact",
+        "conversation": "c1",
+        "job": "j2",
+        "artifact": "${state.first.id}",
+        "expect": {
+          "paths": {
+            "ok": true,
+            "version": 2,
+            "artifact.versions": {
+              "$len": 2
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-6"
+        ]
+      }
+    },
+    {
+      "id": "6-other-conversation-refused",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab artifact",
+        "conversation": "c2",
+        "job": "j3",
+        "artifact": "${state.first.id}",
+        "write": {
+          "note.txt": "another conversation's change"
+        },
+        "expect": {
+          "paths": {
+            "ok": false,
+            "reason": "made_elsewhere",
+            "error": {
+              "$contains": "belongs to another conversation"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-6"
+        ]
+      }
+    },
+    {
+      "id": "6-the-conversations-own-tool",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab artifact",
+        "conversation": "c1",
+        "artifact": "${state.first.id}",
+        "write": {
+          "note.txt": "the conversation's own change"
+        },
+        "expect": {
+          "paths": {
+            "ok": true,
+            "version": 3,
+            "artifact.versions.2.job": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-6"
+        ]
+      }
+    }
+  ]
+}

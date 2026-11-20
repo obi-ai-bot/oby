@@ -1,0 +1,252 @@
+{
+  "schemaVersion": "2",
+  "name": "T3 conversations: one turn's events, in order and once",
+  "version": "1.0.0",
+  "description": "T3 Code's streaming and ordering fixes (a final message lost or doubled, a turn left 'working'): one turn's events come in the contract's order, each once: queued, starting, running, Oby's reply and turn, then answered, the turn's revision one more each time (DELIVERY-1, EVENTS-8); its streamed pieces add up to the reply and none comes after it; what's under way ends once (CONVERSATION-AGENT-50).",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Hello there friend.",
+          "new": true,
+          "id": "7a3e0000-0000-4000-8000-000000000001"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Hello there friend."
+          }
+        }
+      }
+    },
+    {
+      "id": "delivery-1-in-order-once",
+      "use": "runtime.rust:t3.trail",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "events": [
+          "turn",
+          "turnDelivery",
+          "reply"
+        ],
+        "show": [
+          "who",
+          "delivery.status",
+          "revision"
+        ],
+        "until": {
+          "event": "turnDelivery",
+          "expect": {
+            "paths": {
+              "delivery.status": "answered"
+            }
+          }
+        },
+        "settle": 1000,
+        "expect": {
+          "paths": {
+            "trail": [
+              "turn user queued 1",
+              "turnDelivery user starting 2",
+              "turnDelivery user running 3",
+              "reply",
+              "turn oby 1",
+              "turnDelivery user answered 4"
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-1",
+          "EVENTS-8"
+        ]
+      }
+    },
+    {
+      "id": "streamed-pieces-are-the-reply-and-none-after-it",
+      "use": "runtime.rust:t3.trail",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "events": [
+          "delta",
+          "reply"
+        ],
+        "show": [],
+        "expect": {
+          "paths": {
+            "deltaText": "Hello there friend.",
+            "trail": [
+              "delta",
+              "delta",
+              "delta",
+              "reply"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-50-under-way-ends-once",
+      "use": "runtime.rust:t3.trail",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "events": [
+          "underway"
+        ],
+        "show": [
+          "ended",
+          "end"
+        ],
+        "expect": {
+          "paths": {
+            "trail": {
+              "$count": [
+                "underway true answered",
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-50"
+        ]
+      }
+    },
+    {
+      "id": "one-of-each",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 2
+            },
+            "0.delivery": {
+              "status": "answered",
+              "by": "7a3e0000-0000-4000-8000-000000000001"
+            },
+            "1.text": "Hello there friend."
+          }
+        }
+      }
+    },
+    {
+      "id": "next",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY And again.",
+          "conversation": "${state.said.body.conversation}",
+          "id": "7a3e0000-0000-4000-8000-000000000002"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "And again."
+          }
+        }
+      }
+    },
+    {
+      "id": "the-next-turn-gets-only-its-own-pieces",
+      "use": "runtime.rust:t3.trail",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "turn": "7a3e0000-0000-4000-8000-000000000002",
+        "events": [
+          "turnDelivery"
+        ],
+        "show": [
+          "delivery.status"
+        ],
+        "until": {
+          "event": "turnDelivery",
+          "expect": {
+            "paths": {
+              "id": "7a3e0000-0000-4000-8000-000000000002",
+              "delivery.status": "answered"
+            }
+          }
+        },
+        "expect": {
+          "paths": {
+            "trail": [
+              "turnDelivery starting",
+              "turnDelivery running",
+              "turnDelivery answered"
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-1"
+        ]
+      }
+    },
+    {
+      "id": "and-its-words-alone",
+      "use": "runtime.rust:t3.trail",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "events": [
+          "reply"
+        ],
+        "show": [
+          "text"
+        ],
+        "expect": {
+          "paths": {
+            "trail": [
+              "reply Hello there friend.",
+              "reply And again."
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

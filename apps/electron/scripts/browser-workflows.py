@@ -32,6 +32,9 @@ def launch(board, width, height, sidebar=False):
 
 
 def read(id, target, proves=None, **expect):
+    # words: the text with each run of white space one space (drive-app.mjs), as the lab reads its screens
+    if isinstance(expect.get("text"), str):
+        expect["words"] = " ".join(expect.pop("text").split())
     extra = {}
     if "styles" in expect:
         extra["styles"] = expect.pop("styles")
@@ -281,6 +284,217 @@ def board_06():
     )
 
 
+ASK_LINE = "Sign in Sign in to the staging admin · Codex 1 of 1"
+CARD = {"css": "[data-browser=asks] .decision-card"}
+
+
+def board_07():
+    workflow(
+        "browser-07-asks-sign-in.json",
+        "App: the agent asks you to sign in; Type the password fills the page (board 7)",
+        "The real app on its demo data at the design's board 7 (BROWSERAPP-11, BROWSERAPP-12): the agent's sign-in ask "
+        "sits over the message box, its heading the agent's first sentence; the strip turns orange and the tab's dot "
+        "orange (--needs). Type the password opens the password card (board 8); Fill in puts the dots in the page's "
+        "field, marked From Oby, and the card goes.",
+        [
+            launch(7, 1280, 800),
+            read("ask-head", {"css": "[data-browser=asks] .tc-ask-line"}, "BROWSERAPP-11", count=1, text=ASK_LINE),
+            read("ask-words", {"css": "[data-browser=asks] .tc-ask-text"}, "BROWSERAPP-11", count=1,
+                 text="The mail log is behind a sign-in. Take control and sign in yourself, or type the password here: it goes straight into the page, never to Codex."),
+            read("orange-strip", {"css": ".br-control-text"}, None, count=1, text="Codex asks you to sign in here"),
+            read("tab-dot-orange", {"css": ".br-tab .status-dot.is-needs"}, "BROWSERAPP-11", styles={"background-color": "--needs"}, **{"styles.background-color.matches": True}),
+            read("kind-orange", {"css": "[data-browser=asks] .tc-ask-kind"}, None, styles={"color": "--needs"}, **{"styles.color.matches": True}),
+            step("over-the-box", "app.measure", "BROWSERAPP-11", app=APP, target=CARD,
+                 against={"box": {"css": ".chat-layer:not(.is-covered) .composer"}}, expect={"paths": {"box.overlap": False}},
+                 within=5),  # asked again while the message box settles its height
+            compare("AsksYou", "BROWSERAPP-11", skip=BOARD_SKIPS[7]),
+            *pictures(7, "AsksYou", "board 7"),
+            click("type-the-password", {"role": "button", "name": "Type the password"}),
+            read("filling", {"css": ".br-control-text"}, "BROWSERAPP-12", count=1, text="You’re filling the password. Codex waits."),
+            step("type", "app.type", app=APP, target={"css": "[data-browser=secret-input]"}, text="0123456789"),
+            step("now-board-8", "app.compare", None, app=APP, board="Secret", skip=BOARD_SKIPS[8], expect={"paths": {"within": True, "sameWords": True}}, within=10),
+            click("fill-in", {"role": "button", "name": "Fill in"}),
+            read("page-field", {"css": "[data-browser=page-password]"}, "BROWSERAPP-12", count=1, text="••••••••••\nFrom Oby"),
+            read("card-gone", CARD, None, count=0, within=5),
+            close(),
+        ],
+    )
+
+
+def board_08():
+    secret = "app-secret-value-9271"
+    workflow(
+        "browser-08-password.json",
+        "App: a password goes straight into the page's field, never to the agent (board 8)",
+        "The real app on its demo data at the design's board 8 (BROWSERAPP-12): the password card says the value goes into "
+        "the page's Password field, that the agent never sees it and Oby doesn't keep it; Cancel goes back to the ask; typed "
+        "and filled, the page's field gets the dots and the value is nowhere in the window, nor left in any box.",
+        [
+            launch(8, 1280, 800),
+            read("card-line", {"css": "[data-browser=asks] .tc-ask-line"}, "BROWSERAPP-12", count=1, text="Password For staging.acme.dev · asked by Codex"),
+            read("never-sees", {"css": ".secret-note"}, "BROWSERAPP-12", count=1, text="It goes straight into the page’s Password field. Codex never sees it, and Oby doesn’t keep it."),
+            read("kind-blue", {"css": ".tc-ask-kind.is-blue"}, None, styles={"color": "--unread"}, **{"styles.color.matches": True}),
+            read("page-ringed", {"css": "[data-browser=page-password]"}, None, count=1, text="Password\nFrom Oby"),
+            step("over-the-box", "app.measure", "BROWSERAPP-12", app=APP, target=CARD,
+                 against={"box": {"css": ".chat-layer:not(.is-covered) .composer"}}, expect={"paths": {"box.overlap": False}},
+                 within=5),  # asked again while the message box settles its height
+            compare("Secret", "BROWSERAPP-12", skip=BOARD_SKIPS[8]),
+            *pictures(8, "Secret", "board 8"),
+            click("cancel", {"role": "button", "name": "Cancel"}),
+            read("back-to-ask", {"css": "[data-browser=asks] .tc-ask-line"}, None, count=1, text=ASK_LINE),
+            click("type-the-password", {"role": "button", "name": "Type the password"}),
+            step("type-secret", "app.type", app=APP, target={"css": "[data-browser=secret-input]"}, text=secret),
+            click("fill-in", {"role": "button", "name": "Fill in"}),
+            read("field-filled", {"css": "[data-browser=page-password]"}, "BROWSERAPP-12", count=1, text="•" * len(secret) + "\nFrom Oby"),
+            read("not-in-the-window", {"css": "html"}, "BROWSERAPP-12", count=1, text={"$not": {"$contains": secret}}),
+            read("no-box-left", {"css": "[data-browser=secret-input]"}, None, count=0),
+            close(),
+        ],
+    )
+
+
+def board_09():
+    nxt = {"role": "button", "name": "Next decision"}
+    line = {"css": "[data-browser=asks] .tc-ask-line"}
+    words = {"css": "[data-browser=asks] .tc-ask-text"}
+    workflow(
+        "browser-09-every-ask.json",
+        "App: every ask over the message box, one at a time: a CAPTCHA, a choice, a code, a passkey (board 9)",
+        "The real app on its demo data with the design's board 9 asks (BROWSERAPP-13), one at a time with 1 of 4 and the "
+        "next arrow, each in the board's words; a choice's heading is the agent's first sentence and its choices its buttons; "
+        "the code card has six boxes in blue. Board 9 is a sheet of the four cards side by side: here they're checked word "
+        "by word and over the message box, not by the sheet's places.",
+        [
+            launch(9, 1280, 800),
+            read("captcha", line, "BROWSERAPP-13", count=1, text="Check The page wants to know you’re a person · Codex 1 of 4"),
+            read("captcha-words", words, None, count=1, text="Codex can’t answer this. Take control and solve it; Codex goes on when you give the tab back."),
+            step("over-the-box", "app.measure", "BROWSERAPP-13", app=APP, target=CARD,
+                 against={"box": {"css": ".chat-layer:not(.is-covered) .composer"}}, expect={"paths": {"box.overlap": False}},
+                 within=5),  # asked again while the message box settles its height
+            *pictures(9, "Asks", "board 9 (a sheet): the CAPTCHA card"),
+            click("to-choice", nxt),
+            read("choice", line, "BROWSERAPP-13", count=1, text="Question Which plan should I pick at checkout? · Claude Code 2 of 4"),
+            read("choice-words", words, None, count=1, text="The test card works with both. Business adds SSO, which the next step checks."),
+            read("choices", {"css": "[data-browser=asks] .tc-options"}, "BROWSERAPP-13", count=1, text="Team · $12\nBusiness · $29\nI’ll choose in the page"),
+            click("to-code", nxt),
+            read("code", line, "BROWSERAPP-13", count=1, text="Code The code sent to your phone, for staging.acme.dev 3 of 4"),
+            read("code-boxes", {"css": ".code-boxes > span"}, None, count=6),
+            read("code-blue", {"css": ".tc-ask-kind.is-blue"}, None, styles={"color": "--unread"}, **{"styles.color.matches": True}),
+            click("to-passkey", nxt),
+            read("passkey", line, "BROWSERAPP-13", count=1, text="Passkey staging.acme.dev asks for your passkey · Codex 4 of 4"),
+            read("passkey-words", words, None, count=1, text="Only you can do this. Take control; your Mac asks for Touch ID."),
+            click("skip-passkey", {"role": "button", "name": "Skip"}),
+            # the last one answered, the one before it shows: three left
+            read("three-left", line, None, count=1, text="Code The code sent to your phone, for staging.acme.dev 3 of 3", within=5),
+            close(),
+        ],
+    )
+
+
+def board_10():
+    tab = lambda i: {"css": ".br-tab", "nth": i}
+    steps = [launch(10, 1280, 880)]
+    steps += [
+        read("loading-strip", {"css": ".br-control-text"}, "BROWSERAPP-14", count=1, text="Codex · Waiting for the page"),
+        read("loading-stop", {"role": "button", "name": "Stop loading"}, None, count=1),
+    ]
+    for i, (state, words, proves) in enumerate([
+        ("failed", "This page didn’t load localhost:3000 refused to connect. Is the app running? Try again", "BROWSERAPP-14"),
+        ("timedOut", "The page took too long Nothing came back from api.acme.dev in 30 seconds. Try again", "BROWSERAPP-14"),
+    ], start=1):
+        steps += [click(f"tab-{state}", tab(i)), read(state, {"css": f"[data-browser=page-{state}]"}, proves, count=1, text=words)]
+    steps += [
+        click("tab-dialog", tab(3)),
+        read("dialog", {"css": "[data-browser=page-dialog]"}, "BROWSERAPP-14", count=1,
+             text="localhost:3000 asks Leave this page? Changes you made may not be saved. Leave Stay Take control to answer"),
+        step("dialog-waits", "app.read", None, app=APP, target={"role": "button", "name": "Leave"}, attributes=["disabled"], expect={"paths": {"count": 1, "attributes.disabled": ""}}),
+        step("dialog-over-the-page", "app.measure", "BROWSERAPP-14", app=APP, target={"css": "[data-browser=page-dialog]"},
+             against={"view": {"css": ".br-view"}}, expect={"paths": {"view.overlap": True}}),
+        click("take-to-answer", {"role": "button", "name": "Take control to answer"}),
+        step("dialog-answerable", "app.read", "BROWSERAPP-14", app=APP, target={"role": "button", "name": "Leave"}, attributes=["disabled"], expect={"paths": {"count": 1, "attributes.disabled": None}}),
+        click("tab-certificate", tab(4)),
+        read("certificate", {"css": "[data-browser=page-certificate]"}, "BROWSERAPP-14", count=1,
+             text="This connection isn’t private The certificate for staging.acme.dev isn’t trusted. Codex stopped here and won’t go on by itself. Go back Go on anyway"),
+        read("certificate-address", {"css": ".br-address.is-warn"}, None, count=1),
+        click("tab-crashed", tab(5)),
+        read("crashed", {"css": "[data-browser=page-crashed]"}, "BROWSERAPP-14", count=1,
+             text="This page stopped working Its tab crashed, out of memory. Cursor was told and can open it again. Reload"),
+        *pictures(10, "PageStates", "board 10 (a sheet): the crashed page"),
+        close(),
+    ]
+    workflow(
+        "browser-10-page-states.json",
+        "App: a page that doesn't simply load: loading, failed, timed out, a dialog, a certificate, crashed (board 10)",
+        "The real app on its demo data with the design's board 10 tabs (BROWSERAPP-14), each state in the panel with the "
+        "board's words and its way out: loading's strip and Stop; failed and timed out, Try again; the page's own dialog "
+        "over the page, answerable only once you take control; an untrusted certificate, its address marked; a crashed "
+        "tab, Reload. Board 10 is a sheet of six small browsers: here each is checked in the panel, word by word, not by "
+        "the sheet's places. On obid the ways out wait for routes obid doesn't have yet (the contract's Open list).",
+        steps,
+    )
+
+
+def board_11():
+    workflow(
+        "browser-11-script.json",
+        "App: a script the agent ran in the page (board 11)",
+        "The real app on its demo data at the design's board 11 (BROWSERAPP-15): the page carries the agent's mark, Ran a "
+        "script and how long it took, and the strip says the agent ran a script in this page and is done. Its result as "
+        "outside text is the agent's log, under its card in the conversation (TaskLog), not the panel's.",
+        [
+            launch(11, 1280, 800),
+            read("strip", {"css": ".br-control-text"}, "BROWSERAPP-15", count=1, text="Codex ran a script in this page · done"),
+            read("ran", {"css": ".ran"}, "BROWSERAPP-15", count=1, text="Ran a script · 18 ms"),
+            step("mark-on-the-page", "app.measure", "BROWSERAPP-15", app=APP, target={"css": ".ran"}, against={"view": {"css": ".br-view"}}, expect={"paths": {"view.overlap": True}}),
+            compare("Script", "BROWSERAPP-15", skip=BOARD_SKIPS[11]),
+            *pictures(11, "Script", "board 11"),
+            close(),
+        ],
+    )
+
+
+def board_12():
+    workflow(
+        "browser-12-downloads.json",
+        "App: downloads, the agent's stay in its browser, yours come to your Mac (board 12)",
+        "The real app on its demo data at the design's board 12 (BROWSERAPP-16): the shelf at the panel's foot says whose "
+        "each file is and where it is; Save a copy puts the agent's into your Downloads and its row says so, with Show in "
+        "Finder.",
+        [
+            launch(12, 1280, 800),
+            read("agents-file", {"css": "[data-browser=file-csv] .br-file-about"}, "BROWSERAPP-16", count=1, text="Codex downloaded it · kept in its browser, not on your Mac"),
+            read("your-file", {"css": "[data-browser=file-pdf] .br-file-about"}, None, count=1, text="You downloaded it · in Downloads"),
+            step("shelf-at-the-foot", "app.measure", "BROWSERAPP-16", app=APP, target={"css": ".br-shelf"}, against={"view": {"css": ".br-view"}}, expect={"paths": {"view.overlap": False, "view.gap": 0}}),
+            compare("Downloads", "BROWSERAPP-16", skip=BOARD_SKIPS[12]),
+            *pictures(12, "Downloads", "board 12"),
+            click("save-a-copy", {"role": "button", "name": "Save a copy"}),
+            read("saved", {"css": "[data-browser=file-csv] .br-file-about"}, "BROWSERAPP-16", count=1, text="Codex downloaded it · in Downloads"),
+            read("finder-twice", {"role": "button", "name": "Show in Finder"}, None, count=2),
+            read("no-save-left", {"role": "button", "name": "Save a copy"}, None, count=0, within=5),
+            close(),
+        ],
+    )
+
+
+def board_14():
+    workflow(
+        "browser-14-another-computer.json",
+        "App: another computer, the browser shows that computer's localhost (board 14)",
+        "The real app on its demo data at the design's board 14 (BROWSERAPP-17): under the tabs the panel says the browser "
+        "runs on devbox and whose localhost it shows; the address says on devbox; New tab opens one there.",
+        [
+            launch(14, 1280, 800),
+            read("where", {"css": "[data-browser=where]"}, "BROWSERAPP-17", count=1, text="This browser runs on devbox. Its localhost is devbox’s, not this Mac’s."),
+            read("badge", {"css": ".br-where"}, "BROWSERAPP-17", count=1, text="on devbox"),
+            read("new-tab-there", {"role": "button", "name": "New tab on devbox"}, None, count=1),
+            step("where-under-the-tabs", "app.measure", "BROWSERAPP-17", app=APP, target={"css": "[data-browser=where]"}, against={"tabs": {"css": ".br-tabs"}}, expect={"paths": {"tabs.overlap": False, "tabs.gap": 0}}),
+            compare("OtherComputer", "BROWSERAPP-17", skip=BOARD_SKIPS[14]),
+            *pictures(14, "OtherComputer", "board 14"),
+            close(),
+        ],
+    )
+
+
 # The live workflows: the real app on a scratch obid that serves the browser (browser port 1, #2620),
 # its agent a stand-in job driving the browser through obid's agents' tools (browser-job, browser-mcp).
 OBID = "${state.obid}"
@@ -289,7 +503,9 @@ OBID = "${state.obid}"
 def browser_obid():
     return [
         step("obid", "obid-start", agent="fake-harness-jobs", browser=True),
-        step("app", "app.launch", obid=OBID, size={"width": 1280, "height": 800}),
+        # the side panel kept closed, as the boards have it: left to fit, it docks or not by the window's
+        # width at its first render, which races the resize to 1280px
+        step("app", "app.launch", obid=OBID, size={"width": 1280, "height": 800}, storage={"oby.chatPanelOpen": "0"}),
     ]
 
 
@@ -373,6 +589,16 @@ BOARD_SKIPS = {
     # across the window the tabs start after the traffic lights (--after-lights), where macOS put them: 5px right of the
     # board's, as the app's own panel toggle is
     5: [".br-tab"],
+    # the decision card over the message box sits where the app's composer is (52px title bar, the app's thread): its
+    # boxes are held to the board in their words, their places reported (today's composer, not the board's)
+    7: [".decision-card", ".tc-ask-line", ".tc-ask-text"],
+    8: [".decision-card", ".tc-ask-line", ".secret-row", ".secret-note"],
+    # the board draws a smaller set for a tab nobody is using (no Full width, no page menu, Take control without its
+    # hand); the app keeps board 2's set: one more button at the tabs' end, the address 30px shorter, the strip's
+    # Take control 20px wider and its words 20px narrower
+    11: [".br-tabs-end .icon-button", ".br-address", ".br-control-text", ".br-control .tc-option"],
+    12: [".br-tabs-end .icon-button", ".br-address", ".br-control-text", ".br-control .tc-option"],
+    14: [".br-tabs-end .icon-button", ".br-address", ".br-control-text", ".br-control .tc-option"],
 }
 
 
@@ -384,6 +610,13 @@ if __name__ == "__main__":
     board_04()
     board_05()
     board_06()
+    board_07()
+    board_08()
+    board_09()
+    board_10()
+    board_11()
+    board_12()
+    board_14()
     board_17()
     live_101()
     live_102()

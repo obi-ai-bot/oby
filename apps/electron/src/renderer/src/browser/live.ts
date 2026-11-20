@@ -4,7 +4,7 @@
 // frame only. Main holds obid's token and follows the streams (window.app.browser); calls go through
 // window.app.obid, the owner's acts signed by main on their own click (shared/words.ts).
 import {
-  BROWSER_DOWNLOADS, BROWSER_PATH, browserTabPath,
+  BROWSER_DOWNLOADS, BROWSER_PATH, browserAskPath, browserSaveCopyPath, browserTabPath,
   type BrowserAsk, type BrowserDownload, type BrowserDownloadsAnswer, type BrowserEvent, type BrowserFrame, type BrowserInput,
   type BrowserSettings, type BrowserTab, type BrowserTabsAnswer,
 } from '../../../shared/obid-wire';
@@ -15,6 +15,12 @@ export type Live = {
   giveBack(tab: string): Promise<void>;
   /** your mouse and keys on the page while you hold the tab (POST …/input), sent in order */
   input(tab: string, e: BrowserInput): Promise<void>;
+  /** a password or code into the page's field, through main on your click; true once filled */
+  fill(tab: string, field: string, value: string, ask?: string): Promise<boolean>;
+  /** an ask answered: a choice, or none (Skip) */
+  answer(ask: string, choice?: string): Promise<void>;
+  /** an agent's download copied into the owner's Downloads (POST …/saveCopy) */
+  saveCopy(download: string): Promise<void>;
   close(): void;
 };
 
@@ -31,6 +37,8 @@ type Calls = {
   call: (method: string, path: string, body?: unknown) => Promise<{ status: number; text: string }>;
   follow: (fn: (m: { name: string; data: string }) => void) => () => void;
   watch: (tab: string, fn: (data: string) => void) => () => void;
+  /** main fills the field on the owner's click (main/browser.ts): null once filled, else why not */
+  fill: (tab: string, field: string, value: string, ask?: string) => Promise<string | null>;
 };
 
 const AGENTS: AgentId[] = ['codex', 'claude', 'cursor'];
@@ -52,6 +60,11 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
   let settings: BrowserSettings = { agentsUseBrowser: true, agentsUseMac: true };
   let active: string | null = null;
   const doing = new Map<string, { text: string; pointer: { x: number; y: number } | null; seq: number }>();
+  // what Save a copy saved, by download: its name in Downloads (SaveCopyAnswer.savedAs); the
+  // agent's file stays in its profile, so obid keeps listing it there
+  const saved = new Map<string, string>();
+  // the tabs whose agent ran a script and has done nothing since (11)
+  const ran = new Set<string>();
   const streams = new Map<string, () => void>();
   // The last event each list reflects: a list answer older than an event already applied isn't
   // taken (it would roll the screen back), and an event a newer answer reflects isn't applied again
@@ -69,7 +82,7 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
     return (a.text ? JSON.parse(a.text) : null) as T;
   };
 
-  const askOf = (t: BrowserTab, a: BrowserAsk) => ({ id: a.id, tab: t.id, kind: a.kind, agent: t.owner.kind === 'agent' ? agentOf(t.owner.agent) : 'codex' as AgentId, host: shown(t.url).split('/')[0], field: a.field });
+  const askOf = (t: BrowserTab, a: BrowserAsk) => ({ id: a.id, tab: t.id, kind: a.kind, agent: t.owner.kind === 'agent' ? agentOf(t.owner.agent) : 'codex' as AgentId, host: shown(t.url).split('/')[0], field: a.field, reason: a.reason, choices: a.choices, job: a.job });
   const view = (): BrowserState => {
     const jobAgent = new Map(tabs.flatMap((t) => (t.owner.kind === 'agent' ? [[t.owner.job, agentOf(t.owner.agent)] as const] : [])));
     const mine: Tab[] = tabs.map((t) => {
@@ -88,6 +101,7 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
         computer: t.computer.id === 'local' ? undefined : { name: t.computer.name, os: '' },
         action: t.heldBy ? undefined : d?.text,
         pointer: t.heldBy ? undefined : d?.pointer ? { ...d.pointer, ring: true } : undefined,
+        ran: ran.has(t.id) && !d ? {} : undefined,
       };
     });
     if (!active || !mine.some((t) => t.id === active)) active = mine[0]?.id ?? null;
@@ -97,7 +111,8 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
       name: d.name,
       size: `${Math.max(1, Math.round(d.bytes / 1024))} KB`,
       by: d.startedBy === 'agent' ? { kind: 'agent', agent: jobAgent.get(d.job) ?? 'codex' } : { kind: 'you' },
-      saved: d.place === 'delivered',
+      saved: d.place === 'delivered' || saved.has(d.id),
+      savedAs: saved.get(d.id) ?? (d.place === 'delivered' ? d.name : undefined),
     }));
     return { tabs: mine, active, asks, downloads: dl, settings };
   };
@@ -153,7 +168,7 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
         if (e.tabId) {
           const tab = e.tabId;
           const mark = { text: e.text, pointer: e.pointer, seq: e.seq };
-          if (e.outcome === 'started') doing.set(tab, mark);
+          if (e.outcome === 'started') { doing.set(tab, mark); if (e.tool !== 'oby_browser_evaluate') ran.delete(tab); }
           else {
             if (!doing.has(tab)) doing.set(tab, mark);
             const seen = doing.get(tab)!.seq;
@@ -164,6 +179,7 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
       case 'ask': tabs = tabs.map((t) => (t.id === e.ask.tabId ? { ...t, ask: e.ask } : t)); break;
       case 'askAnswered': tabs = tabs.map((t) => (t.ask?.id === e.askId ? { ...t, ask: { ...t.ask, answered: true } } : t)); break;
       case 'download': downloads = [...downloads.filter((d) => d.id !== e.download.id), e.download]; break;
+      case 'scriptRun': ran.add(e.tabId); break;
       case 'settings': settings = e.settings; break;
       default: return;
     }
@@ -184,6 +200,24 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
     input: (t, e) => {
       inputs = inputs.catch(() => undefined).then(() => call('POST', browserTabPath(t, 'input'), e)).catch((err) => { sinks.problem((err as Error).message); });
       return inputs.then(() => undefined);
+    },
+    fill: async (t, field, value, ask) => {
+      const why = await calls.fill(t, field, value, ask);
+      sinks.problem(why);
+      await refresh();
+      return why === null;
+    },
+    answer: async (a, choice) => {
+      try { await call('POST', browserAskPath(a), choice === undefined ? {} : { choice }); sinks.problem(null); } catch (e) { sinks.problem((e as Error).message); }
+      await refresh();
+    },
+    saveCopy: async (d) => {
+      try {
+        const a = await call<{ savedAs?: string }>('POST', browserSaveCopyPath(d), {});
+        saved.set(d, (a?.savedAs ?? '').split('/').pop() || (downloads.find((x) => x.id === d)?.name ?? ''));
+        sinks.problem(null);
+      } catch (e) { sinks.problem((e as Error).message); }
+      await refresh();
     },
     close: () => { closed = true; following?.(); for (const stop of streams.values()) stop(); streams.clear(); },
   };

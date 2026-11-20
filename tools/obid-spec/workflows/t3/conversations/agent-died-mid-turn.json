@@ -1,0 +1,354 @@
+{
+  "schemaVersion": "2",
+  "name": "T3 conversations: an agent that dies mid-turn",
+  "version": "1.0.0",
+  "description": "T3 Code's dead-process fixes (an agent killed or crashed mid-turn left the turn running forever, or its next words unanswered): a conversation's agent killed in the middle of a turn is tried again on its own session, told its run was cut and sent the words again, and the turn is answered (CONVERSATION-AGENT-15); one that dies on every try ends the turn failed, saying why (DELIVERY-4), with nothing left under way; and the next words are answered. Each kill waits until the agent has read the words, so it cuts a turn under way, never a process not yet handed them; the turn that dies always is killed on every try obid makes, however many.",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Ready.",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Ready."
+          }
+        }
+      }
+    },
+    {
+      "id": "session",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/session.json",
+        "within": 10,
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "cut",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "LINGER 4000",
+          "conversation": "${state.said.body.conversation}",
+          "id": "7a3e0000-0000-4000-8000-000000000031"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "cut-under-way",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "user",
+                "delivery": {
+                  "status": "running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cut-heard",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "paths": {
+            "heard": {
+              "$count": [
+                {
+                  "last": "LINGER 4000"
+                },
+                1
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "killed",
+      "use": "runtime.rust:t3.kill-agent",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}"
+      }
+    },
+    {
+      "id": "the-cut-turn-is-answered",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.cut}",
+        "seconds": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "waited"
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-15-tried-again-on-its-session-told-it-was-cut",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "expect": {
+          "paths": {
+            "heard": {
+              "$any": {
+                "resumed": "${state.session.json.session}",
+                "cut": true,
+                "last": "LINGER 4000"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-15"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-15-never-on-a-new-session",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "expect": {
+          "paths": {
+            "heard": {
+              "$count": [
+                {
+                  "resumed": null,
+                  "last": "LINGER 4000"
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-15"
+        ]
+      }
+    },
+    {
+      "id": "its-words-answered",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "7a3e0000-0000-4000-8000-000000000031",
+                "delivery": {
+                  "status": "answered"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "dies-always",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "LINGER 30000",
+          "conversation": "${state.said.body.conversation}",
+          "id": "7a3e0000-0000-4000-8000-000000000032"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "dies-under-way",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "user",
+                "delivery": {
+                  "status": "running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "killed-every-try",
+      "use": "runtime.rust:t3.kill-agent",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "heard": "LINGER 30000",
+        "within": 20,
+        "quiet": 10
+      }
+    },
+    {
+      "id": "delivery-4-it-ends-saying-why",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.dies-always}",
+        "seconds": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": {
+              "$contains": "failed"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-4"
+        ]
+      }
+    },
+    {
+      "id": "delivery-4-its-words-read-failed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "7a3e0000-0000-4000-8000-000000000032",
+                "delivery": {
+                  "status": "failed",
+                  "error": {
+                    "$type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-4"
+        ]
+      }
+    },
+    {
+      "id": "nothing-left-under-way",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "underway": {
+              "$exists": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "alive",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Alive.",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Alive."
+          }
+        }
+      }
+    }
+  ]
+}

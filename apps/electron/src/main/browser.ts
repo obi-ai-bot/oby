@@ -1,7 +1,10 @@
-import type { BrowserWindow } from 'electron';
+import { app, shell, type BrowserWindow } from 'electron';
+import { existsSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import { send } from './obid';
 import { ipc, type Trusted } from './ipc';
-import { string } from '../shared/decode';
+import { flag, string } from '../shared/decode';
+import { fillSecret } from './device';
 import { BROWSER_EVENTS, browserTabPath, sseReader } from '../shared/obid-wire';
 
 // The browser, through main (docs/contracts/browser-app.md, BROWSERAPP-8 and 10). Main holds obid's
@@ -69,6 +72,17 @@ export function browsing(trusted: Trusted, page: Page) {
     streams.delete(tab);
     return true;
   }, null);
+  // a password or code into the page's field, on the owner's press of Fill in (device.ts, BROWSERAPP-12)
+  channels.handle('browser-fill', [string, string, string, string, flag], (_e, tab, field, value, ask, clicked) =>
+    fillSecret(tab, field, value, ask || undefined, clicked), 'Not this app’s page.');
+  // Show in Finder for a download in the owner's Downloads (BROWSERAPP-16): only a file of that name
+  // there, never another folder (its name's last part only); true once shown
+  channels.handle('browser-reveal', [string], (_e, name) => {
+    const file = join(app.getPath('downloads'), basename(name));
+    if (!basename(name) || !existsSync(file)) return false;
+    shell.showItemInFolder(file);
+    return true;
+  }, false);
   // the window gone: nothing followed for it
   return () => { events?.(); events = null; for (const stop of streams.values()) stop(); streams.clear(); };
 }

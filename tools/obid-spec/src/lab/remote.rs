@@ -885,51 +885,25 @@ pub mod computers {
 
     // ---------------------------------------------------------------- pairing over SSH
 
-    /// What `obid pair-computer` will do, the program SSH runs on the other computer on the
-    /// owner's click (placed there with obid, never installed over SSH): it reads the Mac's name
-    /// and its device key from stdin, one line each, names the key in obid's `home/pairing`
-    /// (which obid accepts within 2 minutes, once), registers it with obid's own API there, and
-    /// makes a one-time invitation the Mac redeems through the tunnel for its device token. obid's
-    /// API token never leaves that computer; the invitation's secret goes back over SSH only. Its
-    /// output is one JSON line, `{"device": …, "invite": …}`. Nothing else runs: anything else on
-    /// stdin is refused, so a key whose only command is this can do nothing but pair.
-    pub fn pair_computer_script(
-        home: &str,
-        api: &str,
-        gateway_url: &str,
-    ) -> Result<String, String> {
+    /// The pairing program SSH runs on the other computer on the owner's click: obid's own
+    /// `obid pair-computer` (core/crates/obid/src/remote/pair.rs, docs/api/remote.md, COMPUTERS-7),
+    /// placed with obid, never installed over SSH. It reads the Mac's name and its device key
+    /// from stdin, names the key in obid's `home/pairing`, registers it with obid's own API there
+    /// and makes a one-time invitation the Mac redeems through the tunnel for its device token,
+    /// answering one JSON line, `{"device": …, "invite": …}`. This file is only its one plain
+    /// path, so an `authorized_keys` line can make it a key's forced command and the other
+    /// computer's login shell (fish, on a Mac proven) parses nothing of ours.
+    pub fn pair_computer_script(obid: &str, config: &str) -> Result<String, String> {
         let plain = |s: &str| {
-            !s.is_empty()
+            s.starts_with('/')
                 && s.chars()
-                    .all(|c| c.is_ascii_alphanumeric() || "/._-:".contains(c))
+                    .all(|c| c.is_ascii_alphanumeric() || "/._-".contains(c))
         };
-        if !plain(home) || !plain(api) || !gateway_url.starts_with("http://") || !plain(gateway_url)
-        {
-            return Err("the other obid's home, API and gateway are plain paths".into());
+        if !plain(obid) || !plain(config) {
+            return Err("the other obid's program and configuration are plain paths".into());
         }
         Ok(format!(
-            r#"#!/bin/bash
-# obid-spec's stand-in for `obid pair-computer` (tools/obid-spec/src/lab/remote.rs).
-set -eu
-umask 077
-home='{home}'
-IFS= read -r name || name=''
-IFS= read -r key || key=''
-case "$key" in
-  ''|*[!A-Za-z0-9+/=]*) echo "That isn't a device key." >&2; exit 2 ;;
-esac
-[ "${{#key}}" -le 200 ] || {{ echo "That isn't a device key." >&2; exit 2; }}
-name=$(printf '%s' "$name" | tr -cd 'A-Za-z0-9 ._-' | cut -c1-100)
-dir=$(mktemp -d)
-trap 'rm -rf "$dir"' EXIT
-printf 'Authorization: Bearer %s\n' "$(cat "$home/api-token")" > "$dir/auth"
-printf '%s\n' "$key" > "$home/pairing"
-printf '{{"name":"%s","publicKey":"%s"}}' "$name" "$key" > "$dir/device"
-printf '{{"url":"%s","name":"%s"}}' '{gateway_url}' "$name" > "$dir/invite"
-curl -sS --max-time 20 -H @"$dir/auth" -H 'Content-Type: application/json' -X POST 'http://{api}/v1/devices' --data-binary @"$dir/device" > "$dir/device.out"
-curl -sS --max-time 20 -H @"$dir/auth" -H 'Content-Type: application/json' -X POST 'http://{api}/v1/pairing/invite' --data-binary @"$dir/invite" > "$dir/invite.out"
-printf '{{"device":%s,"invite":%s}}\n' "$(cat "$dir/device.out")" "$(cat "$dir/invite.out")"
-"#
+            "#!/bin/sh\n# obid's own pairing for another computer (docs/api/remote.md).\nexec '{obid}' pair-computer --config '{config}'\n"
         ))
     }
 
@@ -1190,18 +1164,15 @@ printf '{{"device":%s,"invite":%s}}\n' "$(cat "$dir/device.out")" "$(cat "$dir/i
         }
 
         #[test]
-        fn the_pairing_helper_takes_only_plain_paths_and_reads_the_key_from_stdin() {
-            let script = pair_computer_script(
-                "/home/oby/.oby/home",
-                "127.0.0.1:7811",
-                "http://127.0.0.1:8810",
-            )
-            .unwrap();
-            assert!(script.contains("> \"$home/pairing\""));
-            assert!(script.contains("IFS= read -r key"));
-            assert!(script.contains("That isn't a device key."));
-            assert!(pair_computer_script("/h'; rm -rf /", "a", "http://b").is_err());
-            assert!(pair_computer_script("/h", "a", "http://b' x").is_err());
+        fn the_pairing_program_is_obids_own_by_plain_paths() {
+            let script =
+                pair_computer_script("/home/oby/.oby/bin/obid", "/home/oby/.oby/config.json")
+                    .unwrap();
+            assert!(script.ends_with(
+                "exec '/home/oby/.oby/bin/obid' pair-computer --config '/home/oby/.oby/config.json'\n"
+            ));
+            assert!(pair_computer_script("/h'; rm -rf /", "/c").is_err());
+            assert!(pair_computer_script("/o", "c.json").is_err());
         }
 
         #[test]
@@ -1225,7 +1196,8 @@ use computers::{Change, Link, Pin, Route, RouteKind, Ssh, Supervisor, Tunnel, Vi
 pub const NODES: &[(&str, &str)] = &[
     ("lab.remote.window", "The Mac's window, as the node stands in for it: its device key (P-256), made once, as the Mac app's own."),
     ("lab.remote.pair-ssh", "Adds a computer over SSH on the owner's click: names the window's device key in that obid's home/pairing and registers it there, gets a one-time invitation back over SSH, and redeems it through an ssh -N -L tunnel for a device token."),
-    ("lab.remote.front", "The other computer's direct address, until obid serves HTTPS itself: a TLS front on every interface of that machine (its own self-signed certificate, made once or anew) to obid's gateway on its 127.0.0.1; answers its URL and pin."),
+    ("lab.remote.front", "A TLS front on every interface of a machine with no obid (its own self-signed certificate, made once or anew) to a port on its 127.0.0.1: another machine answering at an address, for the impostor steps; answers its URL and pin."),
+    ("lab.remote.direct", "The other computer's direct address as obid serves it (`direct` in its configuration, COMPUTERS-10): its URL on the machine's address and the pin obid's GET /v1/status names; with certificate \"new\", obid's certificate is taken out and obid started again with `config`, so it makes another."),
     ("lab.remote.invite", "On the other computer, as its owner there: registers that owner's device key, makes an invitation they approve, and shows the six-digit code and the link (its direct routes, each pinned)."),
     ("lab.remote.redeem", "Adds a computer with a code: the window reads the link, reaches its route with the certificate pinned, redeems the code for a device token and registers its own key through it."),
     ("lab.remote.address", "An address on this Mac (127.0.0.1:<port>) that leads to a machine's port, and can be moved to another machine's: the same address, another computer behind it."),
@@ -1306,6 +1278,7 @@ pub async fn run_node(run: &Run, name: &str, input: &Value) -> Result<Value> {
         }
         "lab.remote.pair-ssh" => pair_ssh(run, input).await,
         "lab.remote.front" => front(run, input).await,
+        "lab.remote.direct" => direct(run, input).await,
         "lab.remote.invite" => invite(run, input).await,
         "lab.remote.redeem" => redeem(input).await,
         "lab.remote.address" => address(input).await,
@@ -1829,6 +1802,53 @@ async fn local_call(run: &Run, input: &Value) -> Result<Value> {
     Ok(json!({"status": status, "body": body, "text": text.chars().take(4000).collect::<String>()}))
 }
 
+/// obid's own direct address on the machine (COMPUTERS-10): where it listens and the pin its
+/// status names. With `"certificate": "new"`, its certificate goes and obid starts again with
+/// `config`, making a new one, as a reinstall or a lost home would.
+async fn direct(run: &Run, input: &Value) -> Result<Value> {
+    let machine = &input["machine"];
+    let obid = &input["obid"];
+    if input["certificate"].as_str() == Some("new") {
+        let home = crate::sphere::str_of(obid, "home")?;
+        let (status, out, err) = machine_run(
+            run,
+            machine,
+            &format!("rm -f '{home}/keys/direct-certificate.der' '{home}/keys/direct-key.p8'"),
+            false,
+        )
+        .await?;
+        anyhow::ensure!(status == 0, "the certificate stays: {out}{err}");
+        super::machine::run_node(
+            run,
+            "lab.machine.obid",
+            &json!({"machine": machine, "config": input["config"]}),
+        )
+        .await?;
+    }
+    let (status, said, text) =
+        local_call_raw(run, machine, obid, "GET", "/v1/status", None, None).await?;
+    anyhow::ensure!(status == 200, "obid's status: {status} {text}");
+    let direct = &said["gateway"]["direct"][0];
+    anyhow::ensure!(
+        direct["state"] == "listening",
+        "obid serves no direct address: {}",
+        said["gateway"]
+    );
+    let pin = Pin::parse(crate::sphere::str_of(direct, "pin")?).map_err(anyhow::Error::msg)?;
+    let port: u16 = crate::sphere::str_of(direct, "address")?
+        .rsplit(':')
+        .next()
+        .and_then(|p| p.parse().ok())
+        .context("direct.address: <ip>:<port>")?;
+    let (status, out, err) =
+        machine_run(run, machine, "hostname -I | cut -d' ' -f1", false).await?;
+    anyhow::ensure!(status == 0, "the machine's address: {out}{err}");
+    let ip = out.trim().to_string();
+    Ok(
+        json!({"url": format!("https://{ip}:{port}"), "pin": pin.to_string(), "host": ip, "port": port}),
+    )
+}
+
 /// The other computer's owner, at that computer: their own device key registered there (its
 /// pairing file, as the Mac app writes it on their click), and an invitation they approve.
 async fn invite(run: &Run, input: &Value) -> Result<Value> {
@@ -2189,7 +2209,11 @@ async fn mac_computer(run: &Run, input: &Value) -> Result<Value> {
     let helper = folder.join("pair-computer");
     std::fs::write(
         &helper,
-        computers::pair_computer_script(home, api, gateway_base).map_err(anyhow::Error::msg)?,
+        computers::pair_computer_script(
+            &run.obid.display().to_string(),
+            &folder.join("config.json").display().to_string(),
+        )
+        .map_err(anyhow::Error::msg)?,
     )?;
     std::fs::set_permissions(&helper, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
     // This Mac's host key, as the person would check it: the system's own file.
@@ -2544,13 +2568,9 @@ cat "$d/obid.out"
     let helper = format!("{dir}/pair-computer");
     admin_put(
         &helper,
-        computers::pair_computer_script(
-            &home,
-            &format!("127.0.0.1:{api_port}"),
-            &format!("http://127.0.0.1:{gateway_port}"),
-        )
-        .map_err(anyhow::Error::msg)?
-        .as_bytes(),
+        computers::pair_computer_script(&format!("{dir}/bin/obid"), &format!("{dir}/config.json"))
+            .map_err(anyhow::Error::msg)?
+            .as_bytes(),
         "700",
     )
     .await?;
