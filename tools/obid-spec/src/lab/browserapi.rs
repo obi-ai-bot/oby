@@ -2726,7 +2726,7 @@ const FIXTURE_LEAVE: &str = r#"<!doctype html><html><head><title>Leave or stay</
 <button id="leave" onclick="if (confirm('Leave this page? Your changes will be lost.')) location.href='/'">Leave</button>
 </body></html>"#;
 
-async fn fixture(listener: tokio::net::TcpListener) {
+pub(crate) async fn fixture(listener: tokio::net::TcpListener) {
     let hits = Arc::new(std::sync::atomic::AtomicU64::new(0));
     loop {
         let Ok((mut conn, _)) = listener.accept().await else {
@@ -3040,12 +3040,12 @@ async fn https(input: &Value) -> Result<Value> {
 
 // ── The nodes' side: an HTTP client and the steps ───────────────────────────────────────────
 
-struct Reply {
-    status: u16,
-    body: Value,
+pub(crate) struct Reply {
+    pub(crate) status: u16,
+    pub(crate) body: Value,
 }
 
-async fn http(
+pub(crate) async fn http(
     port: u16,
     method: &str,
     path: &str,
@@ -3096,7 +3096,12 @@ fn token_of(input: &Value) -> Result<String> {
 }
 
 /// The headers a `call` step sends, by `as`.
-fn auth(input: &Value, method: &str, path: &str, body: &[u8]) -> Result<Vec<(String, String)>> {
+pub(crate) fn auth(
+    input: &Value,
+    method: &str,
+    path: &str,
+    body: &[u8],
+) -> Result<Vec<(String, String)>> {
     let bearer = |t: &str| ("Authorization".to_string(), format!("Bearer {t}"));
     let words = |id: &str, key: &crate::keys::DeviceKey| {
         let at = crate::keys::now_millis();
@@ -3177,7 +3182,7 @@ fn pick_ref(input: &Value) -> Result<Option<String>> {
     }
 }
 
-async fn mcp_call(input: &Value) -> Result<Value> {
+pub(crate) async fn mcp_call(input: &Value) -> Result<Value> {
     let port = port_of(input)?;
     let method = input["method"].as_str().unwrap_or("tools/call");
     let mut args = input.get("args").cloned().unwrap_or(json!({}));
@@ -3264,7 +3269,7 @@ fn parse_sse(text: &str) -> Vec<(String, Value)> {
         .collect()
 }
 
-async fn events(input: &Value) -> Result<Value> {
+pub(crate) async fn events(input: &Value) -> Result<Value> {
     let port = port_of(input)?;
     let token = token_of(input)?;
     let ms = input["ms"].as_u64().unwrap_or(1000);
@@ -3289,7 +3294,7 @@ async fn events(input: &Value) -> Result<Value> {
     )
 }
 
-async fn race(input: &Value) -> Result<Value> {
+pub(crate) async fn race(input: &Value) -> Result<Value> {
     let port = port_of(input)?;
     let mcp_in = json!({
         "api": input["api"], "token": input["token"], "tool": input["tool"], "args": input["args"],
@@ -3463,7 +3468,7 @@ async fn watch_one(
     )
 }
 
-async fn watch(input: &Value) -> Result<Value> {
+pub(crate) async fn watch(input: &Value) -> Result<Value> {
     let port = port_of(input)?;
     let token = token_of(input)?;
     let tab = input["tab"].as_str().context("tab")?;

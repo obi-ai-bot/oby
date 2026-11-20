@@ -54,6 +54,16 @@ pub const NODES: &[(&str, &str)] = &[
     ("desktop.read", "Reads one menu's items by name, or one element by role and name, in a surface of the app's, through agent-desktop; with expect."),
     ("desktop.click", "Runs one of the app's menu items through agent-desktop (its window brought forward for the moment, the front given back)."),
     ("desktop.press", "Presses a key chord through macOS with agent-desktop (cmd+b), which runs the app's menu item that carries it, as a person's keys do."),
+    ("browser-site", "Serves the browser API's fixture site on 127.0.0.1 (a free port) for this workflow: a sign-in form, a download, an animated counter, each at a fixed place: {url, port, name: {x, y}, download: {x, y}}."),
+    ("browser-job", "Has a scratch obid (started with `browser: true`) start a stand-in job that stays active, a Codex job whose stand-in sleeps and hands back its broker token: {job, token}. With `end: true` and `job`, stops that job and waits until it isn't running: {job, ended, status}."),
+    ("browser-mcp", "One MCP request to a scratch obid's browser server (`POST /v1/browser/mcp`) as a job's agent: `method` (initialize, tools/list, tools/call), `tool`, `args`, `token` (the job's broker token; or `as`: none, wrong). `refFor` {role, name} picks a ref from `snapshot`'s result. `within`: asked again while the browser is still starting (its first download). {status, rpc, result, isError, structured, toolNames}; with expect."),
+    ("browser-events", "Reads a scratch obid's browser events stream for `ms` (from `after`, default every event kept): {events, types, count, of, inOrder}; with expect."),
+    ("browser-race", "The agent's act sent, then `takeAfterMs` later the device's signed take while the act still waits to run (a scratch obid started with OBID_TEST_BROWSER_COMMIT_DELAY_MS): {act, take}; with expect."),
+    ("browser-watch", "Reads a tab's stream on a scratch obid for `ms` with each of `readers` ({readEveryMs, stallMs, chunk}): per reader frames read, dropped, first and last seq; with expect."),
+    ("browser-read", "Reads a field of a job's tab (`selector`) through its own agent's oby_browser_evaluate (`token`), giving the tab back first when `device` holds it and taking it again after: {value}; with expect and within."),
+    ("browser-secret", "Puts a fresh random secret into `field` of `tab` through `POST …/secret`, signed by `device` (`as`: device or unsigned); the value stays in this process. Then reads the field through the job's agent (`token`) by its length and a hash: {status, body, fieldHasIt, answerHasIt}; with expect."),
+    ("browser-scan", "Looks for every secret this workflow sent (as it is, base64 and hex) in every file under the scratch obid's folder (its home, its log), and in every answer and event this workflow's browser nodes read: {secrets, filesScanned, found, clean}; with expect."),
+    ("browser-downloads", "A job's downloads as files: those in its browser profile (`<home>/browser/jobs/<job>/profile/Downloads`) and those in the person's Downloads (the scratch obid's HOME): {inProfile, delivered}; with expect and within."),
 ];
 
 type Pending =
@@ -64,9 +74,15 @@ pub async fn run_node(run: &Run, name: &str, input: Value) -> Result<Value> {
     if name == "app.launch" {
         return crate::app::launch(run, &input).await;
     }
-    if name.starts_with("app.") || name.starts_with("desktop.") || name.starts_with("lab.") {
+    if name.starts_with("app.")
+        || name.starts_with("desktop.")
+        || name.starts_with("lab.")
+        || name.starts_with("browser-")
+    {
         let mut out = if name.starts_with("app.") {
             crate::app::act(run, name, &input).await?
+        } else if name.starts_with("browser-") {
+            crate::browser::run_node(name, &input).await?
         } else if name.starts_with("lab.") {
             crate::lab::run_node(run, name, &input).await?
         } else {
@@ -194,6 +210,10 @@ pub async fn run_node(run: &Run, name: &str, input: Value) -> Result<Value> {
         "cleanup" => Ok(json!({
             "stopped": crate::procs::stop_all().await,
             "lab": crate::lab::cleanup().await,
+            "browser": crate::browser::cleanup().await,
+            // Once every obid stopped: an engine one of them downloaded and checked, kept for the
+            // next workflows (obid-start's `browser`).
+            "browserCache": obid::keep_browser_engine(),
         })),
         // `within`: asked again until it holds, for a file obid writes a moment later.
         "home-file" => {

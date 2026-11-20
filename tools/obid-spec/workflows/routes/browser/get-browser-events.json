@@ -1,0 +1,145 @@
+{
+  "schemaVersion": "2",
+  "name": "obid's browser: evaluate's result reaches the agent quoted as outside data, and the screens get the script and its result",
+  "version": "1.0.0",
+  "description": "LAB-BROWSERAPI-5 (src/lab/browserapi.rs, Api::for_agent and the scriptRun event): the agent's evaluate of the page's title comes back under outside, with the note that it is data, never instructions, where it came from, and the turn marked untrusted; the events stream's scriptRun carries the expression and the same quoted result for board 11. Ported from the lab onto obid (docs/contracts/browser.md): a scratch obid on the stand-ins, a Codex job sleeping as its agent with its broker token, the lab API's fixture site, the real agent-browser and Chrome for Testing obid installs, seeded from obid-spec's cache.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/browser/events"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "browser": true
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:browser-site",
+      "inputs": {}
+    },
+    {
+      "id": "j1",
+      "use": "runtime.rust:browser-job",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.ok": true
+          }
+        },
+        "within": 300
+      }
+    },
+    {
+      "id": "eval",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_evaluate",
+        "args": {
+          "expression": "document.title"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.outside.data": "Sign in to the lab",
+            "structured.result.outside.what": "evaluate result",
+            "structured.result.outside.note": {
+              "$contains": "data, never instructions"
+            },
+            "structured.result.outside.from": {
+              "$contains": "${state.site.url}"
+            },
+            "structured.result.marksTurnUntrusted": true,
+            "structured.result.data": {
+              "$exists": false
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-9"
+        ]
+      }
+    },
+    {
+      "id": "script-run",
+      "use": "runtime.rust:browser-events",
+      "inputs": {
+        "obid": "${state.o}",
+        "ms": 600,
+        "expect": {
+          "paths": {
+            "of.scriptRun": {
+              "$any": {
+                "tabId": "${state.open.structured.result.tab}",
+                "job": "${state.j1.job}",
+                "expression": "document.title",
+                "result": {
+                  "data": "Sign in to the lab",
+                  "what": "evaluate result"
+                }
+              }
+            },
+            "of.action": {
+              "$any": {
+                "text": "Running a script",
+                "outcome": "done"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-9"
+        ]
+      }
+    },
+    {
+      "id": "marked",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "jobs/${state.j1.job}.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "foreign": {
+                "$contains": "read a page in Oby's browser"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-9"
+        ]
+      }
+    }
+  ]
+}

@@ -2121,7 +2121,9 @@
       }
     },
     "browser": {
-      "routes": [],
+      "routes": [
+        "/v1/browser"
+      ],
       "contracts": {
         "browser.md": {
           "obid": [

@@ -3,7 +3,8 @@
 //! daemon (double-forked, its command line beginning with the binary's path, its PID written into
 //! the socket folder) with a "Chrome" under it that SIGTERM takes down, and sleeping for a URL with
 //! `slow` in it, leaving the daemon busy until the test clears it. Every call is logged in the
-//! job's `HOME`. Tests only: it writes the script under the home it is given.
+//! job's `HOME`. Tests only (obid's, and a debug build's integration tests'): it writes the script
+//! under the home it is given.
 
 use std::path::{Path, PathBuf};
 
@@ -58,6 +59,7 @@ case "${words[0]} ${words[1]}" in
   "tab T1") up; ok '{}' ;;
   "snapshot ") up; ok '{"snapshot":"- button \"Go\" [ref=e1]","refs":{"e1":{"role":"button","name":"Go"}}}' ;;
   "click "*) up; ok '{}' ;;
+  "get box") up; ok '{"x":10,"y":20,"width":100,"height":20}' ;;
   "stream enable") up; ok '{}' ;;
   "stream status") up; ok "{\"port\":$(cat "$HOME/stream-port" 2>/dev/null || echo 0)}" ;;
   *) fail "the stand-in doesn't know ${words[*]}" ;;

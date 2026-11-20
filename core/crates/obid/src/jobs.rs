@@ -100,6 +100,7 @@ mod owner_run;
 mod permission_asks;
 mod profiles;
 mod publishing;
+mod reach;
 mod research;
 mod retry;
 mod review_reads;
@@ -1078,6 +1079,7 @@ pub struct Jobs {
     permissions: Mutex<permissions::Kept>,
     /// The connected-app broker: job-scoped MCP config and use records.
     connections: std::sync::OnceLock<Arc<crate::connections::Connections>>,
+    browser: std::sync::OnceLock<Arc<crate::browser::Service>>,
     /// The routines, for the owner's Confirm of one the brain planned (crate::routines).
     routines: std::sync::OnceLock<Arc<crate::routines::Routines>>,
     /// Oby's Tetrix login: every owner's job's agent gets Tetrix through obid (crate::tetrix).
@@ -1382,6 +1384,7 @@ impl Jobs {
             confirm_hook: std::sync::OnceLock::new(),
             permissions: Mutex::new(kept),
             connections: std::sync::OnceLock::new(),
+            browser: std::sync::OnceLock::new(),
             routines: std::sync::OnceLock::new(),
             tetrix: std::sync::OnceLock::new(),
             chatgpt: std::sync::OnceLock::new(),
@@ -1468,10 +1471,6 @@ impl Jobs {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
-    }
-
-    pub fn use_connections(&self, connections: Arc<crate::connections::Connections>) {
-        let _ = self.connections.set(connections);
     }
 
     /// One use of a connection that isn't a job's (a conversation's write on GitHub), in obid's
@@ -2560,9 +2559,7 @@ impl Jobs {
                     }
                     _ => None,
                 };
-                if let Some(connections) = jobs.connections.get() {
-                    connections.close_job(&id).await;
-                }
+                jobs.end_reach(&id).await;
                 jobs.drop_checkout(&id).await;
                 if let Some(egress) = jobs.egress.get() {
                     egress.close(&id);
