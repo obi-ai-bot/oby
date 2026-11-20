@@ -262,8 +262,7 @@ describe('T3: the message box', () => {
   });
 
   // composerMenuHighlight.test "clears the active result while async results are empty and resolves against restored results"
-  // known bug obi-ai-bot/oby#2727: it.fails until it's fixed, then the fix removes .fails
-  it.fails('t3_at_list_never_picks_from_the_answer_to_what_was_typed_before (known bug #2727)', async () => {
+  it('t3_at_list_never_picks_from_the_answer_to_what_was_typed_before', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     await box({ conversation: 'c1' });
     await type('look at @ap');
