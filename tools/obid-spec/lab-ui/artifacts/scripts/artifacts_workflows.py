@@ -509,6 +509,20 @@ wf(
     ],
 )
 
+# ── 20 ────────────────────────────────────────────────────────────────────────────────────────
+S20 = "LAB-ARTIFACTS-20"
+wf(
+    "claude-headless.json",
+    "Lab artifacts: Claude Code headless, whether its Artifact tool is offered, and what it makes from Oby's guide (informational, never red)",
+    f"{S20} (src/lab/artifacts.rs: claude_headless; lab-ui/artifacts/scripts/claude-headless.mjs; lab-ui/artifacts/guide.md). The owner's own Claude Code, on its own login as Oby's own lane runs it, headless in stream-json: its system/init says whether Claude's Artifact tool is offered, with and without --allowedTools Artifact (the bridge to Claude waits for it). Then it makes a design from Oby's guide alone, with Read, Write and Edit only, and its time, turns, tokens and cost are kept; Oby's own runtime then draws it (oby_artifact_check) and says each board's mistake. Nothing here can go red: the steps record what was offered and made. Without Claude Code on the computer, and no run to replay (OBID_SPEC_LAB_CLAUDE_HEADLESS_FROM), it is skipped.",
+    [
+        step("up", "up", expect={"token": {"$type": "string"}}),
+        {"id": "view", "use": "runtime.rust:lab.artifactview.up", "inputs": {"artifacts": "${state.up}"}},
+        step("20-what-claude-code-offers-headless", "claude_headless", {}, S20, {"init.artifact": {"$type": "boolean"}, "initWithArtifact.artifact": {"$type": "boolean"}, "make.turns": {"$type": "number"}}),
+        {"id": "20-oby-draws-what-it-made", "use": "runtime.rust:lab.artifactview.check", "inputs": {"path": "${state.20-what-claude-code-offers-headless.design}", "width": 390, "height": 844}},
+    ],
+)
+
 # ── cleanup ───────────────────────────────────────────────────────────────────────────────────
 wf(
     "cleanup.json",
