@@ -1053,6 +1053,7 @@ pub const NODES: &[(&str, &str)] = &[
     ("lab.browserapi.watch", "Reads a tab's stream for `ms` with each of `readers` ({readEveryMs, chunk}): per reader frames read, dropped, first and last seq; with expect."),
     ("lab.browserapi.alive", "Whether the API still answers on its port, and how many of its tasks are alive; with expect."),
     ("lab.browserapi.down", "Stops the API and everything it started, now rather than at the cleanup."),
+    ("lab.browserapi.serve", "Keeps the API up for a person to click through (lane B's screens, the owner's look): only with OBID_SPEC_LAB_BROWSERAPI_SERVE_MINUTES set, else skipped. `check: true` only checks that. Prints the URL, token and a device key on stderr, writes them to ~/Library/Caches/obid-spec/browserapi-serve.json (0600), and waits until the minutes pass or that file is deleted."),
 ];
 
 fn rules_here() -> Rules {
@@ -2980,6 +2981,70 @@ async fn job(run: &Run, input: &Value) -> Result<Value> {
     Ok(json!({"job": id, "agent": agent, "token": token, "engine": engine}))
 }
 
+/// Where `lab.browserapi.serve` says how to reach the API, for the screens and the person.
+fn serve_file() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(|h| PathBuf::from(h).join("Library/Caches/obid-spec/browserapi-serve.json"))
+}
+
+/// A device's private key as a JWK, so a page can import it with WebCrypto.
+fn device_jwk(d: &Value) -> Result<Value> {
+    use base64::Engine as _;
+    let public = base64::engine::general_purpose::STANDARD
+        .decode(d["publicKey"].as_str().context("device.publicKey")?)?;
+    anyhow::ensure!(
+        public.len() == 65 && public[0] == 4,
+        "an uncompressed P-256 point"
+    );
+    let secret = hex::decode(d["key"].as_str().context("device.key")?)?;
+    let b = crate::keys::b64url;
+    Ok(
+        json!({"kty": "EC", "crv": "P-256", "x": b(&public[1..33]), "y": b(&public[33..65]), "d": b(&secret)}),
+    )
+}
+
+async fn keep_up(input: &Value) -> Result<Value> {
+    let minutes = std::env::var("OBID_SPEC_LAB_BROWSERAPI_SERVE_MINUTES")
+        .ok()
+        .and_then(|m| m.parse::<u64>().ok())
+        .filter(|m| *m > 0);
+    let Some(minutes) = minutes else {
+        return Ok(
+            json!({"skipped": "set OBID_SPEC_LAB_BROWSERAPI_SERVE_MINUTES=<minutes> to keep the browser's API up for a click-through"}),
+        );
+    };
+    if input["check"] == true {
+        return Ok(json!({"minutes": minutes}));
+    }
+    let file = serve_file().context("no HOME")?;
+    let mut device = input["device"].clone();
+    device["jwk"] = device_jwk(&device)?;
+    let said = json!({
+        "url": input["api"]["url"], "port": input["api"]["port"], "token": input["api"]["token"],
+        "site": input["api"]["site"]["url"], "device": device,
+        "job": input["job"]["job"], "jobToken": input["job"]["token"], "tab": input["tab"],
+        "signing": "X-Oby-Words: <device.id> <signedAt> <base64 DER ECDSA-SHA256 over oby-words\\n<METHOD>\\n<path>\\n<sha256 hex of body>\\n<signedAt>>",
+        "until": (chrono::Utc::now() + chrono::Duration::minutes(minutes as i64)).to_rfc3339(),
+        "stop": "delete this file",
+    });
+    private_dir(file.parent().context("no folder")?)?;
+    crate::obid::private_file(&file, &serde_json::to_string_pretty(&said)?)?;
+    eprintln!(
+        "\nlab.browserapi.serve: the browser's API is up for {minutes} min\n  url    {}\n  token  {}\n  site   {}\n  device {}\n  all of it, with the device's key: {}\n  stop: delete that file, or Ctrl-C\n",
+        said["url"].as_str().unwrap_or_default(),
+        said["token"].as_str().unwrap_or_default(),
+        said["site"].as_str().unwrap_or_default(),
+        said["device"]["id"].as_str().unwrap_or_default(),
+        file.display()
+    );
+    let until = Instant::now() + Duration::from_secs(minutes * 60);
+    while Instant::now() < until && file.exists() {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    let _ = std::fs::remove_file(&file);
+    Ok(json!({"served": true, "minutes": minutes}))
+}
+
 /// Whether the API answers on its port, and what of it is alive.
 async fn alive(input: &Value) -> Result<Value> {
     let port = port_of(input)?;
@@ -3083,6 +3148,7 @@ async fn run_once(run: &Run, name: &str, input: &Value) -> Result<Value> {
         "lab.browserapi.watch" => watch(input).await,
         "lab.browserapi.alive" => alive(input).await,
         "lab.browserapi.down" => Ok(cleanup().await),
+        "lab.browserapi.serve" => keep_up(input).await,
         _ => bail!("{name} isn't a lab.browserapi node"),
     }
 }

@@ -1,0 +1,86 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser API: kept up for a click-through (only with OBID_SPEC_LAB_BROWSERAPI_SERVE_MINUTES)",
+  "version": "1.0.0",
+  "description": "Not a proof: the browser's API kept up on 127.0.0.1 (a free port) for lane B's screens and the owner's click-through. With OBID_SPEC_LAB_BROWSERAPI_SERVE_MINUTES=<minutes> it starts the API, registers a device, starts a job whose agent opens the fixture and asks the person to sign in, prints the URL, owner token and device on stderr, writes them to ~/Library/Caches/obid-spec/browserapi-serve.json, and waits until the minutes pass or the file is deleted; then the cleanup stops it all. Without the variable it is skipped.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "serve-asked",
+      "use": "runtime.rust:lab.browserapi.serve",
+      "inputs": {
+        "check": true
+      }
+    },
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.browserapi.up",
+      "inputs": {}
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:lab.browserapi.device",
+      "inputs": {}
+    },
+    {
+      "id": "j1",
+      "use": "runtime.rust:lab.browserapi.job",
+      "inputs": {
+        "api": "${state.up}",
+        "job": "j1",
+        "agent": "claude"
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.up.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "ask",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_ask_person",
+        "args": {
+          "kind": "signIn",
+          "reason": "Sign in to the lab",
+          "field": "#pw"
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "serve",
+      "use": "runtime.rust:lab.browserapi.serve",
+      "inputs": {
+        "api": "${state.up}",
+        "device": "${state.d1}",
+        "job": "${state.j1}",
+        "tab": "${state.open.structured.result.tab}"
+      }
+    }
+  ]
+}
