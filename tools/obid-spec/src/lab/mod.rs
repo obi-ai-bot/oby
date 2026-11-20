@@ -10,7 +10,10 @@
 //!
 //! Each feature owns one file and its node names (`lab.<feature>.<verb>`): `machine` (the
 //! machines themselves), `remote` (other computers), `browser` (the browser and the desktop),
-//! `lanes` (Linux lanes, Codex as T3 runs it), `sphere` (the Obysphere around them).
+//! `lanes` (Linux lanes, Codex as T3 runs it), `sphere` (the Obysphere around them), and for the
+//! browser's build (https://claude.ai/artifact/TVVtw8kq77vnm81B5UfcXq) `browserapi` (its API and
+//! agents' tools, with `browser_contract`), `ui` (its screens, driven) and `browsersphere` (the
+//! Obysphere around it).
 
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -18,24 +21,31 @@ use serde_json::{json, Value};
 use crate::obid::Run;
 
 pub mod browser;
+pub mod browser_contract;
+pub mod browserapi;
+pub mod browsersphere;
 pub mod desktop;
 pub mod lanes;
 pub mod machine;
 pub mod remote;
 pub mod sphere;
+pub mod ui;
 
 /// A lab workflow's area: `workflows/lab/<feature>/` → `lab-<feature>`.
 pub const AREA_PREFIX: &str = "lab-";
 /// The tag every lab workflow carries.
 pub const TAG: &str = "lab";
 
-const FEATURES: [&[(&str, &str)]; 6] = [
+const FEATURES: [&[(&str, &str)]; 9] = [
     machine::NODES,
     remote::NODES,
     browser::NODES,
     desktop::NODES,
     lanes::NODES,
     sphere::NODES,
+    browserapi::NODES,
+    ui::NODES,
+    browsersphere::NODES,
 ];
 
 /// Every lab node: its name, what it does.
@@ -61,16 +71,31 @@ pub async fn run_node(run: &Run, name: &str, input: &Value) -> Result<Value> {
         lanes::run_node(run, name, input).await
     } else if owns(sphere::NODES) {
         sphere::run_node(run, name, input).await
+    } else if owns(browserapi::NODES) {
+        browserapi::run_node(run, name, input).await
+    } else if owns(ui::NODES) {
+        ui::run_node(run, name, input).await
+    } else if owns(browsersphere::NODES) {
+        browsersphere::run_node(run, name, input).await
     } else {
         bail!("{name} isn't a lab node")
     }
 }
 
-/// What the lab made for this workflow and must take down at its end (the browsers, then the
-/// machines), whatever the workflow ended in.
+/// What the lab made for this workflow and must take down at its end, whatever the workflow ended
+/// in: the screens and the servers behind them first, then the browsers, then the machines.
 pub async fn cleanup() -> Value {
-    // Browsers first: one running on a lab machine is closed before its machine goes.
-    json!({"browsers": browser::cleanup().await, "machines": machine::cleanup().await})
+    let ui = ui::cleanup().await;
+    let browsersphere = browsersphere::cleanup().await;
+    let browserapi = browserapi::cleanup().await;
+    // Browsers before machines: one running on a lab machine is closed before its machine goes.
+    json!({
+        "ui": ui,
+        "browsersphere": browsersphere,
+        "browserapi": browserapi,
+        "browsers": browser::cleanup().await,
+        "machines": machine::cleanup().await,
+    })
 }
 
 #[cfg(test)]
