@@ -187,6 +187,10 @@ impl Driver {
             &self.options.idle_timeout,
         )?;
         let place = self.place().await;
+        tracing::info!(
+            "job {job}'s browser has its place; its daemon starts (session {})",
+            session.name
+        );
         session.make_folders()?;
         let mut file = LiveFile {
             job: job.into(),
@@ -305,7 +309,13 @@ impl Driver {
 
 impl Launch for Driver {
     async fn launch(&self, job: &str) -> Result<(), String> {
-        self.start(job).await
+        tracing::info!("starting job {job}'s browser");
+        let started = self.start(job).await;
+        match &started {
+            Ok(()) => tracing::info!("job {job}'s browser is up"),
+            Err(why) => tracing::warn!("job {job}'s browser didn't start: {why}"),
+        }
+        started
     }
 }
 

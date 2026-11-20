@@ -33,9 +33,13 @@ impl Installer {
     /// its own, so a caller that stops waiting doesn't stop it.
     pub async fn ensure(self: &Arc<Self>) -> Result<Installed, String> {
         let me = self.clone();
-        tokio::spawn(async move { me.ensure_here().await })
+        let done = tokio::spawn(async move { me.ensure_here().await })
             .await
-            .map_err(|e| format!("The browser's install stopped: {e}"))?
+            .map_err(|e| format!("The browser's install stopped: {e}"))?;
+        if let Err(why) = &done {
+            tracing::warn!("the browser's engine isn't installed: {why}");
+        }
+        done
     }
 
     async fn ensure_here(&self) -> Result<Installed, String> {
@@ -50,6 +54,10 @@ impl Installer {
             .and_then(|()| keep_private(&root, 0o700))
             .map_err(|e| format!("can't make {}: {e}", root.display()))?;
         remove_partials(&root);
+        tracing::info!(
+            "installing the browser's engine (agent-browser and Chrome for Testing) into {}",
+            root.display()
+        );
         let client = reqwest::Client::new();
         // agent-browser first: it is small, and one that doesn't match stops the install before
         // Chrome's 200 MB.
@@ -57,6 +65,7 @@ impl Installer {
             agent_browser: one(&client, &root, &agent_browser).await?,
             chrome: one(&client, &root, &chrome).await?,
         };
+        tracing::info!("the browser's engine is installed and matches its pins");
         *done = Some(installed.clone());
         Ok(installed)
     }
