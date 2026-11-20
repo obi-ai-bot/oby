@@ -22,6 +22,8 @@ const OWN_ENV: [(&str, &str); 2] = [
 
 /// How Claude Code ends a turn with no login it may read (tests/agents/fake-claude-bare-default).
 const NOT_LOGGED_IN: &str = "Not logged in · Please run /login";
+/// What a job whose plan login Claude Code refused says (ACCOUNTS-38), in Oby's words.
+const REFUSED: &str = "Claude Code's login was refused, so this task stopped: sign it in again from Settings › Accounts, then Try again, or ask for another account.";
 
 fn agent(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/agents/{name}"))
@@ -509,10 +511,10 @@ fn still_signed_in(obid: &Obid) {
     assert_eq!(accounts["accounts"][0]["signedIn"], true, "{accounts}");
 }
 
-/// KEYCHAIN-5, what obid does today the day `-p` runs bare by default (#1867's gap, not its fix):
-/// a job on a plan login stops after one launch, with no round or retry, and says Claude Code's
-/// own words, which tell the owner to run a `/login` that wouldn't help. Its next step is "Try
-/// again", and nothing says Claude Code changed.
+/// KEYCHAIN-5, what obid does the day `-p` runs bare by default: a job on a plan login stops after
+/// one launch, with no round or retry, and its line says in Oby's words that the login was refused
+/// and how to sign it in again from Oby (ACCOUNTS-38), never Claude Code's `/login`; its summary
+/// says the same, Claude Code's own words go to obid's log, and its next step is "Try again".
 #[test]
 fn issue_1867_a_bare_default_stops_a_job_in_claude_codes_words() {
     let folder = Folder::new("bare-default-job");
@@ -520,8 +522,9 @@ fn issue_1867_a_bare_default_stops_a_job_in_claude_codes_words() {
     let obid = start(&folder.0, &config, None);
     let ended = job_ended(&obid, None);
     assert_eq!(ended["status"], "interrupted", "{ended}");
-    assert_eq!(ended["summary"], NOT_LOGGED_IN, "{ended}");
-    assert_eq!(ended["reason"], NOT_LOGGED_IN, "{ended}");
+    assert_eq!(ended["summary"], REFUSED, "{ended}");
+    assert!(obid.log().contains(NOT_LOGGED_IN), "{}", obid.log());
+    assert_eq!(ended["reason"], REFUSED, "{ended}");
     assert_eq!(ended["nextStep"], "Try again", "{ended}");
     assert_eq!(ended["resumesAt"], Value::Null, "{ended}");
     assert_eq!(turns_after_a_while(&folder.0), 1);

@@ -2,7 +2,7 @@
   "schemaVersion": "2",
   "name": "T3 accounts: a login refused while it runs",
   "version": "1.0.0",
-  "description": "T3 Code's sign-in bugs (an expired or missing login, ACP sign-in failures that must tell the user to sign in): Claude Code says it isn't logged in mid-run. The task stops at once with Try again, not retried and not left running (KEYCHAIN-5, RECOVERY-1); the account keeps why (ACCOUNTS-19) and stays signed in; Auto passes over it to the Codex account that can run, though Claude Code is where new tasks go, while a task naming it still goes there (ACCOUNTS-20). Expected red: the owner is told to run Claude Code's own /login, which Oby has no way to do, instead of how to sign in again from Oby.",
+  "description": "T3 Code's sign-in bugs (an expired or missing login, ACP sign-in failures that must tell the user to sign in): Claude Code says it isn't logged in mid-run. The task stops at once with Try again, not retried and not left running (KEYCHAIN-5, RECOVERY-1); the account keeps why (ACCOUNTS-19) and stays signed in; Auto passes over it to the Codex account that can run, though Claude Code is where new tasks go, while a task naming it still goes there (ACCOUNTS-20). The task and the account say, in Oby's words, that the login was refused and how to sign it in again from Oby, never Claude Code's own /login, which Oby has no way to run (ACCOUNTS-38).",
   "tags": [
     "t3"
   ],
@@ -89,7 +89,7 @@
             "nextStep": "Try again",
             "resumesAt": null,
             "reason": {
-              "$contains": "Not logged in"
+              "$contains": "login was refused, so this task stopped: sign it in again from Settings › Accounts"
             }
           }
         }
@@ -117,7 +117,7 @@
                 "id": "stand-in",
                 "signedIn": true,
                 "cantRun": {
-                  "$contains": "Not logged in"
+                  "$contains": "login was refused, so this task stopped: sign it in again from Settings › Accounts"
                 }
               }
             }
@@ -127,7 +127,8 @@
       "ui": {
         "proves": [
           "ACCOUNTS-19",
-          "KEYCHAIN-5"
+          "KEYCHAIN-5",
+          "ACCOUNTS-38"
         ]
       }
     },
@@ -207,7 +208,9 @@
         }
       },
       "ui": {
-        "expectedRed": "#2647: a login refused mid-run tells the owner to run /login, which Oby has no way to do"
+        "proves": [
+          "ACCOUNTS-38"
+        ]
       }
     }
   ]
