@@ -1762,6 +1762,19 @@ impl Conversations {
     }
 
     /// Whether the conversation `id` is there.
+    /// What the owner last did in conversation `id`: pinned or not, and the turn of their latest
+    /// words. A Confirm to delete it compares this, not the cursor, which every turn moves, obid's
+    /// own too (a task's end report): only the owner's use keeps it (CONVERSATION-AGENT-23,
+    /// #2706). None once it's gone.
+    pub fn owners_use(&self, id: &str) -> Option<String> {
+        let threads = self.lock();
+        let thread = threads.iter().find(|t| t.id == id)?;
+        let words = (thread.turns.iter().rev())
+            .find(|t| t.who == "user")
+            .map_or("", |t| t.id.as_str());
+        Some(format!("{}:{words}", thread.pinned))
+    }
+
     pub fn exists(&self, id: &str) -> bool {
         self.lock().iter().any(|t| t.id == id)
     }
@@ -2844,15 +2857,16 @@ pub async fn confirmed(shared: &Shared, item: &crate::sphere::inbox::Item) {
     else {
         return;
     };
-    let now = shared.conversations.list(None, None, usize::MAX);
     for named in asked.payload["conversations"]
         .as_array()
         .into_iter()
         .flatten()
     {
-        let unchanged = now
-            .iter()
-            .any(|c| c["id"] == named["id"] && c["cursor"] == named["cursor"]);
+        // Only what the owner did since the card (their words, a pin) keeps one: obid's own
+        // turns there (a task's end report) don't. A card that kept no such mark deletes nothing.
+        let unchanged = (named["id"].as_str())
+            .zip(named["owners"].as_str())
+            .is_some_and(|(id, then)| shared.conversations.owners_use(id).as_deref() == Some(then));
         if let Some(id) = named["id"].as_str().filter(|_| unchanged)
             && let Err(why) = forget(shared, id, false).await
         {
