@@ -68,16 +68,13 @@
     },
     {
       "id": "attach-11-the-upload-went-with-it",
-      "use": "runtime.rust:call",
+      "use": "runtime.rust:home-file",
       "inputs": {
         "obid": "${state.o}",
-        "method": "DELETE",
-        "path": "/v1/attachments?path=${state.notes.body.path}",
+        "path": "${state.notes.body.path}",
+        "within": 10,
         "expect": {
-          "status": 422,
-          "body": {
-            "error": "That isn't a file the Oby app uploaded."
-          }
+          "exists": false
         }
       },
       "ui": {

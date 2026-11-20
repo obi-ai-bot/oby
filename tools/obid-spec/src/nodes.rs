@@ -608,10 +608,16 @@ async fn call(input: &Value) -> Result<Value> {
 
 fn home_file(input: &Value) -> Result<Value> {
     let home = std::path::PathBuf::from(sphere::str_of(&input["obid"], "home")?);
-    let rel = sphere::str_of(input, "path")?;
+    let given = sphere::str_of(input, "path")?;
+    // An answer's absolute path inside obid's home (an upload's `path`) names the same file.
+    let rel = std::path::Path::new(given)
+        .strip_prefix(&home)
+        .ok()
+        .and_then(|p| p.to_str())
+        .unwrap_or(given);
     anyhow::ensure!(
-        !rel.starts_with('/') && !rel.split('/').any(|p| p == ".."),
-        "{rel} isn't a path in obid's home"
+        !rel.is_empty() && !rel.starts_with('/') && !rel.split('/').any(|p| p == ".."),
+        "{given} isn't a path in obid's home"
     );
     let path = home.join(rel);
     let exists = path.exists();
@@ -775,4 +781,28 @@ fn device_sign(input: &Value) -> Result<Value> {
     };
     Ok(json!({"header": keys::words_header(
         &id, &key, &sphere::str_of(input, "method")?.to_uppercase(), sphere::str_of(input, "path")?, &body)}))
+}
+
+#[cfg(test)]
+mod home_file_tests {
+    use super::*;
+
+    #[test]
+    fn an_absolute_path_inside_obids_home_names_the_same_file_and_one_outside_is_refused() {
+        let home = std::env::temp_dir().join(format!("obid-spec-home-file-{}", std::process::id()));
+        std::fs::create_dir_all(home.join("attachments/app/ab")).unwrap();
+        std::fs::write(home.join("attachments/app/ab/a.txt"), "x").unwrap();
+        let obid = json!({"home": home.to_str().unwrap()});
+        let at = |path: &str| home_file(&json!({"obid": obid, "path": path}));
+        let inside = home.join("attachments/app/ab/a.txt");
+        assert_eq!(at(inside.to_str().unwrap()).unwrap()["exists"], true);
+        assert_eq!(at("attachments/app/ab/a.txt").unwrap()["exists"], true);
+        assert_eq!(
+            at(home.join("attachments/app/ab/gone.txt").to_str().unwrap()).unwrap()["exists"],
+            false
+        );
+        assert!(at("/etc/passwd").is_err(), "outside obid's home");
+        assert!(at("attachments/../../x").is_err());
+        let _ = std::fs::remove_dir_all(&home);
+    }
 }
