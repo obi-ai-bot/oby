@@ -1236,6 +1236,8 @@ pub const NODES: &[(&str, &str)] = &[
     ("lab.remote.local-call", "Calls a machine's obid on its own 127.0.0.1 with its own token, as its owner there (curl, on that machine); with expect."),
     ("lab.remote.mac-computer", "Another computer that is this Mac: a second scratch obid with its own home, port and user folder, reached over SSH to localhost with a key the workflow makes, which ~/.ssh/authorized_keys lets run only that obid's pairing program and open only its gateway's port, for an hour at most; the line goes at the cleanup. Skipped while macOS Remote Login is off: the owner decides that."),
     ("lab.remote.mac-forget", "Takes the lines this workflow added to ~/.ssh/authorized_keys out now (the cleanup does too), answering how many of them are left."),
+    ("lab.remote.mac-host", "Another computer that is a real second Mac, named by OBID_SPEC_LAB_REMOTE_MAC (user@host; never in a workflow): through the person's own SSH it puts a scratch obid, stand-in agents and Node in one scratch folder there, starts that obid on free ports of its own, and adds a key the workflow makes to its ~/.ssh/authorized_keys, restricted to that obid's pairing and gateway, for an hour at most. Skipped while the variable is unset."),
+    ("lab.remote.mac-host-done", "Takes down what lab.remote.mac-host put on the second Mac (its obid by process group, its authorized_keys line, its scratch folder; the cleanup does too), answering the authorized_keys hash before and after and whether anything of it is left."),
     ("lab.remote.tunnel", "Opens an SSH tunnel to a port on the other computer and asks for /v1/status through it, answering whether it got there and, if not, why."),
     ("lab.remote.find", "Finds files by name under a scratch obid's home on this Mac (a job's worktree), answering where."),
     ("lab.remote.ssh", "Runs one command on a computer over SSH as the window would (BatchMode, its ssh config), answering its status, output and what its error means; with expect."),
@@ -1314,9 +1316,11 @@ pub async fn run_node(run: &Run, name: &str, input: &Value) -> Result<Value> {
         "lab.remote.local-call" => local_call(run, input).await,
         "lab.remote.ssh" => ssh_run(input).await,
         "lab.remote.mac-computer" => mac_computer(run, input).await,
+        "lab.remote.mac-host" => mac_host(run, input).await,
+        "lab.remote.mac-host-done" => mac_host_done().await,
         "lab.remote.mac-forget" => Ok(json!({ "left": forget_authorized()? })),
         "lab.remote.tunnel" => tunnel_probe(input).await,
-        "lab.remote.find" => find(input),
+        "lab.remote.find" => find(input).await,
         other => bail!("{other} isn't a remote node"),
     }
 }
@@ -1363,9 +1367,9 @@ async fn ssh_output(
         pipe.write_all(bytes).await?;
         drop(pipe);
     }
-    let out = tokio::time::timeout(Duration::from_secs(90), child.wait_with_output())
+    let out = tokio::time::timeout(Duration::from_secs(600), child.wait_with_output())
         .await
-        .context("ssh took over 90 s")??;
+        .context("ssh took over 600 s")??;
     Ok((
         out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -1799,6 +1803,13 @@ cat "$d/o"
 async fn local_call(run: &Run, input: &Value) -> Result<Value> {
     let method = crate::sphere::str_of(input, "method")?.to_uppercase();
     let path = crate::sphere::str_of(input, "path")?;
+    // A scratch obid on the second Mac (lab.remote.mac-host): curl there, with its token there.
+    if input["obid"]["on"] == "mac-host" {
+        let (status, body, text) =
+            mac_host_call(&input["obid"], &method, path, input.get("body")).await?;
+        return Ok(json!({"status": status, "body": body,
+            "text": text.chars().take(4000).collect::<String>()}));
+    }
     // A scratch obid on this Mac (lab.remote.mac-computer): its own loopback, its own token.
     if input["machine"].is_null() {
         let a = crate::sphere::obid_call(&input["obid"], &method, path, input.get("body")).await?;
@@ -2294,9 +2305,23 @@ async fn tunnel_probe(input: &Value) -> Result<Value> {
     })
 }
 
-fn find(input: &Value) -> Result<Value> {
+async fn find(input: &Value) -> Result<Value> {
     let home = std::path::PathBuf::from(crate::sphere::str_of(&input["obid"], "home")?);
     let name = crate::sphere::str_of(input, "name")?;
+    if input["obid"]["on"] == "mac-host" {
+        anyhow::ensure!(
+            name.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)),
+            "name: a plain file name"
+        );
+        let (_, out, _) = admin(&format!(
+            "cd '{}' && find . -type f -name '{name}' | sed 's|^\\./||' | sort",
+            home.display()
+        ))
+        .await?;
+        let found: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
+        return Ok(json!({ "found": found, "count": found.len() }));
+    }
     let mut found = vec![];
     let mut stack = vec![home.clone()];
     while let Some(dir) = stack.pop() {
@@ -2320,6 +2345,358 @@ fn find(input: &Value) -> Result<Value> {
     }
     found.sort();
     Ok(json!({ "found": found, "count": found.len() }))
+}
+
+// -------------------------------------------------------------------- the other computer is a real second Mac
+
+/// What lab.remote.mac-host put on the second Mac, for its teardown.
+struct MacHost {
+    /// The scratch folder there (`$TMPDIR/obid-spec-lab-XXXXXX`).
+    dir: String,
+    /// The line added to its authorized_keys, with the newline put before it if the file lacked one.
+    added: String,
+    before: String,
+}
+
+static MAC_HOST: Mutex<Option<MacHost>> = Mutex::new(None);
+
+/// The variable naming the second Mac (`user@host`): never written in a workflow or the code.
+const MAC_HOST_VAR: &str = "OBID_SPEC_LAB_REMOTE_MAC";
+
+/// The person's own ssh to the second Mac, as their terminal runs it (their config, keys and
+/// agent), strict about its host key, never asking anything.
+fn admin_ssh() -> Result<(Ssh, String)> {
+    let dest = std::env::var(MAC_HOST_VAR).with_context(|| format!("{MAC_HOST_VAR} isn't set"))?;
+    computers::check_destination(&dest).map_err(anyhow::Error::msg)?;
+    Ok((
+        Ssh {
+            program: "/usr/bin/ssh".into(),
+            config: None,
+            env: None,
+        },
+        dest,
+    ))
+}
+
+/// A bash script on the second Mac, on stdin: its login shell (fish, there) never parses it.
+async fn admin(script: &str) -> Result<(i32, String, String)> {
+    let (ssh, dest) = admin_ssh()?;
+    ssh_output(&ssh, &dest, "/bin/bash -s", Some(script.as_bytes())).await
+}
+
+/// Bytes into a file on the second Mac, through `cat`.
+async fn admin_put(path: &str, bytes: &[u8], mode: &str) -> Result<()> {
+    let (ssh, dest) = admin_ssh()?;
+    let (status, out, err) = ssh_output(
+        &ssh,
+        &dest,
+        &format!("/bin/bash -c 'cat > {path} && chmod {mode} {path}'"),
+        Some(bytes),
+    )
+    .await?;
+    anyhow::ensure!(
+        status == 0,
+        "copying to the second Mac ({status}): {out}{err}"
+    );
+    Ok(())
+}
+
+async fn mac_host(run: &Run, _input: &Value) -> Result<Value> {
+    if std::env::var(MAC_HOST_VAR).is_err() {
+        return Ok(
+            json!({"skipped": format!("skipped: {MAC_HOST_VAR} names no second Mac (user@host)")}),
+        );
+    }
+    let (_, dest) = admin_ssh()?;
+    let (user, host) = dest.split_once('@').context("user@host")?;
+    // What's there now: the authorized_keys hash to compare at the end, whether it ends in a
+    // newline, the arch, and this obid's scratch folder.
+    let (status, out, err) = admin(
+        r#"set -eu
+umask 077
+mkdir -p ~/.ssh
+touch ~/.ssh/authorized_keys
+shasum -a 256 ~/.ssh/authorized_keys | cut -d' ' -f1
+if [ -s ~/.ssh/authorized_keys ] && [ "$(tail -c1 ~/.ssh/authorized_keys | xxd -p)" != 0a ]; then echo no-newline; else echo newline; fi
+uname -sm
+d=$(mktemp -d "${TMPDIR:-/tmp}/obid-spec-lab-XXXXXX")
+d=$(cd "$d" && pwd -P)
+mkdir -p "$d/bin" "$d/agents" "$d/node" "$d/home/accounts/stand-in" "$d/person" "$d/tmp" "$d/fixture" "$d/gh"
+echo "$d"
+cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub
+"#,
+    )
+    .await?;
+    anyhow::ensure!(status == 0, "the second Mac ({status}): {out}{err}");
+    let lines: Vec<&str> = out.lines().collect();
+    anyhow::ensure!(lines.len() >= 5, "the second Mac answered {out:?}");
+    let (before, newline, os, dir, host_key) = (lines[0], lines[1], lines[2], lines[3], lines[4]);
+    anyhow::ensure!(
+        os == "Darwin arm64",
+        "the second Mac is {os}, not Darwin arm64"
+    );
+    anyhow::ensure!(
+        dir.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-".contains(c)),
+        "its scratch folder {dir:?} isn't a plain path"
+    );
+    *MAC_HOST.lock().unwrap() = Some(MacHost {
+        dir: dir.into(),
+        added: String::new(),
+        before: before.into(),
+    });
+    // This Mac's obid, its stand-in agents and Node 22 go to the scratch folder only.
+    admin_put(
+        &format!("{dir}/bin/obid"),
+        &tokio::fs::read(&run.obid).await?,
+        "755",
+    )
+    .await?;
+    let agents = tokio::process::Command::new("/usr/bin/tar")
+        .arg("-C")
+        .arg(run.agents())
+        .args(["--no-xattrs", "-cf", "-", "."])
+        .env("COPYFILE_DISABLE", "1")
+        .output()
+        .await?;
+    anyhow::ensure!(agents.status.success(), "tar of the stand-ins");
+    let (ssh, _) = admin_ssh()?;
+    let (status, out, err) = ssh_output(
+        &ssh,
+        &dest,
+        &format!("/bin/bash -c 'tar -C {dir}/agents -xf -'"),
+        Some(&agents.stdout),
+    )
+    .await?;
+    anyhow::ensure!(status == 0, "the stand-ins ({status}): {out}{err}");
+    let node = super::machine::node_tarball("darwin", "arm64").await?;
+    admin_put(
+        &format!("{dir}/node.tar.gz"),
+        &tokio::fs::read(&node).await?,
+        "600",
+    )
+    .await?;
+    // The scratch obid: its own home, person's home, free ports, a stand-in Keychain and login
+    // shell; started in a session of its own, so its whole group goes at the end.
+    let expires = chrono::Utc::now().timestamp_millis() + 365 * 86_400_000;
+    let login =
+        json!({"claudeAiOauth": {"accessToken": "obid-spec-stand-in", "expiresAt": expires}});
+    let config = json!({
+        "listen": "127.0.0.1:0", "gateway": "127.0.0.1:0", "home": format!("{dir}/home"), "owner": "alex",
+        "telemetry": false, "allowFileRemotes": true, "claudeKeychain": true, "cursorKeychain": false,
+        "agents": {"claude": {"bin": format!("{dir}/agents/fake-harness-jobs"),
+            "accounts": [{"id": "stand-in", "name": "Stand-in", "configDir": format!("{dir}/home/accounts/stand-in")}]},
+            "codex": {"bin": format!("{dir}/agents/fake-codex"), "accounts": []},
+            "cursor": {"bin": format!("{dir}/agents/fake-cursor"), "accounts": []}},
+        "repos": [{"repo": "obi-e2e/fixture-app", "remote": format!("file://{dir}/fixture/remote.git"),
+            "defaultBranch": "main", "check": "node --test", "pullRequests": false}],
+    });
+    let path = format!("{dir}/agents:{dir}/node/bin:/usr/bin:/bin:/usr/sbin:/sbin");
+    let script = format!(
+        r#"set -eu
+umask 077
+d='{dir}'
+tar -C "$d/node" --strip-components=1 -xzf "$d/node.tar.gz" && rm "$d/node.tar.gz"
+cat > "$d/home/accounts/stand-in/.credentials.json" <<'OBY_JSON'
+{login}
+OBY_JSON
+cat > "$d/config.json" <<'OBY_JSON'
+{config}
+OBY_JSON
+cat > "$d/login-shell" <<'OBY_SH'
+#!/bin/sh
+PATH='{path}'
+export PATH
+exec /usr/bin/env -0
+OBY_SH
+chmod 700 "$d/login-shell"
+cd "$d/fixture" && mkdir -p seed/test && cd seed
+printf '# fixture-app\n' > README.md
+printf "const test = require('node:test');\ntest('ok', () => {{}});\n" > test/ok.test.js
+/usr/bin/git init -q -b main && /usr/bin/git add . && /usr/bin/git -c user.name=obid-spec -c user.email=obid-spec@example.invalid commit -q -m init
+cd .. && /usr/bin/git clone -q --bare seed remote.git
+cd "$d"
+/usr/bin/perl -e 'use POSIX; POSIX::setsid(); exec @ARGV' /usr/bin/env -i PATH='{path}' HOME="$d/person" USER=obid-spec LOGNAME=obid-spec \
+  TMPDIR="$d/tmp" GH_CONFIG_DIR="$d/gh" OBID_LOGIN_SHELL="$d/login-shell" OBID_LOG=info OBID_PERSON_HOMES="$d/person" \
+  OBID_MEMORY_AVAILABLE=1099511627776 OBID_GITHUB_REFRESH_SECONDS=0 OBID_SECURITY_BIN="$d/agents/fake-security" \
+  OBID_PRESTART=off OBID_USAGE_READS=off OBID_LOAD=0 OBID_BASE_CHECK=off OBID_RECHECK_MS=0 \
+  "$d/bin/obid" serve --config "$d/config.json" > "$d/obid.out" 2> "$d/obid.log" < /dev/null &
+echo $! > "$d/obid.pid"
+for i in $(seq 1 300); do grep -q 'gateway listening' "$d/obid.out" 2>/dev/null && break; sleep 0.1; done
+grep -q 'gateway listening' "$d/obid.out" || {{ tail -20 "$d/obid.log"; exit 1; }}
+cat "$d/obid.out"
+"#
+    );
+    let (status, out, err) = admin(&script).await?;
+    anyhow::ensure!(
+        status == 0,
+        "the scratch obid on the second Mac ({status}): {out}{err}"
+    );
+    let port = |prefix: &str| -> Result<u16> {
+        out.lines()
+            .find_map(|l| l.trim().strip_prefix(prefix))
+            .and_then(|p| p.trim().parse().ok())
+            .with_context(|| format!("no {prefix:?} in {out:?}"))
+    };
+    let api_port = port("obid listening on http://127.0.0.1:")?;
+    let gateway_port = port("obid gateway listening on http://127.0.0.1:")?;
+    let home = format!("{dir}/home");
+    let helper = format!("{dir}/pair-computer");
+    admin_put(
+        &helper,
+        computers::pair_computer_script(
+            &home,
+            &format!("127.0.0.1:{api_port}"),
+            &format!("http://127.0.0.1:{gateway_port}"),
+        )
+        .map_err(anyhow::Error::msg)?
+        .as_bytes(),
+        "700",
+    )
+    .await?;
+    // The window's own key on the second Mac: only that obid's pairing and gateway, an hour.
+    let access = super::machine::ssh_access(run, "lab-mac2", host, user, host_key)?;
+    let marker = format!("obid-spec-lab-{}", uuid::Uuid::new_v4());
+    let until = (chrono::Utc::now() + chrono::Duration::hours(1)).format("%Y%m%d%H%MZ");
+    let options = format!(
+        "restrict,port-forwarding,permitopen=\"127.0.0.1:{gateway_port}\",expiry-time=\"{until}\",command=\"{helper}\""
+    );
+    let key_part: Vec<&str> = access.public.split_whitespace().take(2).collect();
+    let added = format!(
+        "{}{options} {} {marker}\n",
+        if newline == "newline" { "" } else { "\n" },
+        key_part.join(" ")
+    );
+    if let Some(h) = MAC_HOST.lock().unwrap().as_mut() {
+        h.added = added.clone();
+    }
+    let (ssh, _) = admin_ssh()?;
+    let (status, out, err) = ssh_output(
+        &ssh,
+        &dest,
+        "/bin/bash -c 'cat >> ~/.ssh/authorized_keys'",
+        Some(added.as_bytes()),
+    )
+    .await?;
+    anyhow::ensure!(
+        status == 0,
+        "authorized_keys on the second Mac ({status}): {out}{err}"
+    );
+    let token = admin(&format!("cat '{home}/api-token'"))
+        .await?
+        .1
+        .trim()
+        .to_string();
+    Ok(json!({
+        "ssh": {"alias": "lab-mac2", "config": access.config, "home": access.home},
+        "obid": {"on": "mac-host", "dir": dir, "home": home, "token": token,
+                 "api": format!("127.0.0.1:{api_port}"), "gateway": format!("127.0.0.1:{gateway_port}"),
+                 "apiPort": api_port, "gatewayPort": gateway_port, "pairCommand": helper},
+        "authorized": {"options": options, "marker": marker},
+        "beforeHash": before,
+    }))
+}
+
+/// A call to the second Mac's scratch obid on its own loopback, with its own token, by curl there.
+async fn mac_host_call(
+    obid: &Value,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<(u16, Value, String)> {
+    let home = crate::sphere::str_of(obid, "home")?;
+    let api = crate::sphere::str_of(obid, "api")?;
+    anyhow::ensure!(
+        path.starts_with("/v1/")
+            && path
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "/-_.?=&".contains(c)),
+        "a path under /v1"
+    );
+    anyhow::ensure!(method.chars().all(|c| c.is_ascii_uppercase()), "a method");
+    let body = body.map(Value::to_string);
+    let script = format!(
+        r#"set -eu
+umask 077
+d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
+printf 'Authorization: Bearer %s\n' "$(cat '{home}/api-token')" > "$d/h"
+cat > "$d/b" <<'OBY_JSON'
+{body}
+OBY_JSON
+curl -sS --max-time 30 -o "$d/o" -w '%{{http_code}}' -H @"$d/h" -H 'Content-Type: application/json' -X {method} {data} 'http://{api}{path}'
+printf '\n'
+cat "$d/o"
+"#,
+        body = body.as_deref().unwrap_or(""),
+        data = if body.is_some() {
+            "--data-binary @\"$d/b\""
+        } else {
+            ""
+        },
+    );
+    let (status, out, err) = admin(&script).await?;
+    anyhow::ensure!(status == 0, "curl on the second Mac ({status}): {out}{err}");
+    let (code, text) = out.split_once('\n').unwrap_or((out.as_str(), ""));
+    Ok((
+        code.trim().parse().context("no HTTP status")?,
+        serde_json::from_str(text.trim()).unwrap_or(Value::Null),
+        text.to_string(),
+    ))
+}
+
+/// Takes down what lab.remote.mac-host put on the second Mac: its obid's whole process group,
+/// the authorized_keys line (exactly the bytes added, so the file is as it was), its scratch
+/// folder. Answers the hash before and after and what's left.
+async fn mac_host_done() -> Result<Value> {
+    let Some(h) = MAC_HOST.lock().unwrap().take() else {
+        return Ok(json!({"done": "nothing was put there"}));
+    };
+    let dir = &h.dir;
+    let script = format!(
+        r#"set -u
+d='{dir}'
+if [ -f "$d/obid.pid" ]; then
+  p=$(cat "$d/obid.pid")
+  kill -TERM -- "-$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null || true
+  for i in $(seq 1 50); do kill -0 "$p" 2>/dev/null || break; sleep 0.1; done
+  kill -KILL -- "-$p" 2>/dev/null || true
+fi
+if [ -n "${{OBY_ADDED:-}}" ]; then
+  /usr/bin/perl -0777 -ne 'my $a = $ENV{{OBY_ADDED}}; s/\Q$a\E//; print' ~/.ssh/authorized_keys > "$d.ak"
+  cat "$d.ak" > ~/.ssh/authorized_keys
+  rm -f "$d.ak"
+fi
+rm -rf "$d"
+echo "after $(shasum -a 256 ~/.ssh/authorized_keys | cut -d' ' -f1)"
+echo "lines $(grep -c 'obid-spec-lab-' ~/.ssh/authorized_keys || true)"
+echo "folder $(ls -d "$d" 2>/dev/null | wc -l | tr -d ' ')"
+echo "processes $(pgrep -f "$d" | wc -l | tr -d ' ')"
+"#
+    );
+    // The added line goes in the environment, never on a command line.
+    let (ssh, dest) = admin_ssh()?;
+    let full = format!("export OBY_ADDED={}\n{script}", shell_quote(&h.added));
+    let (status, out, err) = ssh_output(&ssh, &dest, "/bin/bash -s", Some(full.as_bytes())).await?;
+    anyhow::ensure!(
+        status == 0,
+        "taking it down on the second Mac ({status}): {out}{err}"
+    );
+    let field = |k: &str| {
+        out.lines()
+            .find_map(|l| l.strip_prefix(&format!("{k} ")))
+            .unwrap_or_default()
+            .to_string()
+    };
+    Ok(json!({
+        "beforeHash": h.before, "afterHash": field("after"),
+        "labLinesLeft": field("lines").parse::<u64>().unwrap_or(u64::MAX),
+        "folderLeft": field("folder") != "0", "processesLeft": field("processes").parse::<u64>().unwrap_or(u64::MAX),
+    }))
+}
+
+/// `text` as one single-quoted shell word.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
 }
 
 /// What the remote feature left running in this process: the supervisors, the addresses and
@@ -2351,9 +2728,13 @@ pub async fn cleanup() -> Value {
         }
     }
     ADDRESSES.lock().unwrap().clear();
+    let mac_host = match mac_host_done().await {
+        Ok(v) => v,
+        Err(e) => json!({ "error": format!("{e:#}") }),
+    };
     let authorized = match forget_authorized() {
         Ok(left) => json!({ "left": left }),
         Err(e) => json!({ "error": format!("{e:#}") }),
     };
-    json!({"tasks": stopped, "tunnels": tunnels, "authorizedKeys": authorized})
+    json!({"tasks": stopped, "tunnels": tunnels, "authorizedKeys": authorized, "macHost": mac_host})
 }

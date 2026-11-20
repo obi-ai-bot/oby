@@ -29,6 +29,20 @@ every other line is left as it was (its SHA-256 before and after each run here w
 ssh runs with the workflow's own config, known_hosts (this Mac's host key, from
 `/etc/ssh/ssh_host_ed25519_key.pub`) and `HOME`, never the person's keys or agent.
 
+**The other computer is a real second Mac** (`mac2-ssh-pair.json`, the owner's addition): the same
+flow against another Mac on the network, named only by `OBID_SPEC_LAB_REMOTE_MAC=user@host` and
+skipped while it's unset; the address and user never go in a file. The person's own ssh (their
+config, keys and agent, strict about the host key) sets it up: one scratch folder there
+(`$TMPDIR/obid-spec-lab-XXXXXX`) holds this Mac's arm64 obid, the stand-in agents and Node 22, a
+fixture repository and the scratch obid's home, and that obid starts on free ports of its own, in a
+session of its own, with a stand-in Keychain. Whatever else runs there (an Oby of the person's) is
+never touched. The window's key gets the same restricted, expiring, forced-command line as above,
+its host key taken over the person's own authenticated ssh. At the end, whatever the workflow ended
+in, the scratch obid's process group is stopped, exactly the bytes added to `authorized_keys` are
+taken out, and the scratch folder goes; the last step asserts the file's SHA-256 is what it was and
+that no folder or process of it is left. Everything sent there is a bash script on stdin
+(`/bin/bash -s`): the person's login shell there (fish, on the one proven) never parses it.
+
 The Linux obid is built once per `core/` tree and arch, in a machine of its own deleted right
 after, and cached in `$TMPDIR/obid-spec-lab/` (with nodejs.org's Node 22, SHA-256 checked): workflows
 running at once share one build. A cold build can take longer than a step's usual 300 s, so each
@@ -51,6 +65,12 @@ that one build; with the build cached the Linux three take about 90 s and the Ma
 | LAB-REMOTE-MAC-2 | Pairing that Mac over SSH: its pairing file used up, a device token through the tunnel, and a wider setting only with the window's key's signature. | `mac-ssh-pair.json` |
 | LAB-REMOTE-MAC-3 | A job the window starts runs in that obid's own worktree (`worktrees/<job>/`), and its result reaches the window. | `mac-ssh-pair.json` |
 | LAB-REMOTE-MAC-4 | After a revoke there, the window's token is refused, its signed words too. | `mac-ssh-pair.json` |
+| LAB-REMOTE-MAC2-1 | A real second Mac: pairing over SSH with the window's restricted, expiring, forced-command key (`id -un` gets only "That isn't a device key."), a host key never accepted refused, its pairing file used up. | `mac2-ssh-pair.json` |
+| LAB-REMOTE-MAC2-2 | The tunnel reaches that obid's gateway and no other port; the window's calls go through it. | `mac2-ssh-pair.json` |
+| LAB-REMOTE-MAC2-3 | The window's signed words are accepted there; unsigned, or signed by a key never registered, refused. | `mac2-ssh-pair.json` |
+| LAB-REMOTE-MAC2-4 | A stand-in task runs on the second Mac, in that obid's own worktree, and its result reaches this Mac. | `mac2-ssh-pair.json` |
+| LAB-REMOTE-MAC2-5 | After a revoke there, the window's token and signed words are refused. | `mac2-ssh-pair.json` |
+| LAB-REMOTE-MAC2-6 | Nothing is left on the second Mac: no scratch folder, no process of it, its `authorized_keys` hash as before, and the window's key opens nothing. | `mac2-ssh-pair.json` |
 | LAB-REMOTE-MAC-5 | The workflow's line leaves `~/.ssh/authorized_keys`, and its key then opens nothing ("accepts none of your SSH keys"). | `mac-ssh-pair.json` |
 
 ## What's portable
@@ -128,3 +148,7 @@ Each item is something the lab does in obid's place today.
     `pair-computer` needs a stable path, so `authorized_keys` can make it the key's forced command
     (`restrict`, `permitopen` to the gateway only, an `expiry-time`), as the lab does. A key with
     a shell is more than pairing needs.
+11. **A Mac reached over SSH has its own login shell.** The second Mac's is fish: a command line
+    sent over SSH is parsed by it, so `pair-computer` must be one plain path, and anything more is a
+    script on stdin to `/bin/bash -s`. obid on a Mac reached this way also needs what a job's agent
+    needs there (the stand-ins need Node 22; the real CLIs bring their own).
