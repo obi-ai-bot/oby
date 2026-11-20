@@ -17,49 +17,70 @@ export const normPath = (p: string) => p.split('?')[0].replace(/\{\*[^}]*\}/g, '
 export interface ApiDoc {
   /** The served routes' keys (`METHOD /normalized/path`) the docs mention outside their gone list, under any prefix. */
   documented: Set<string>;
-  /** Every `/v1/` route the docs mention outside their gone list, by key, where first, and whether obid routes it. */
-  docRoutes: Array<{ id: string; file: string; line: number; exists: boolean }>;
+  /**
+   * Every `/v1/` route the docs mention outside their gone list, by key, where first, and whether obid routes it;
+   * `proposed` when every mention of it is in a section marked proposed.
+   */
+  docRoutes: Array<{ id: string; file: string; line: number; exists: boolean; proposed?: boolean }>;
   checks: Check[];
 }
 
 /**
  * What the API docs say about obid's routes. Every backticked `METHOD /path` counts; those inside the section headed
  * `gone` (to the next heading of its level or higher), in whichever file holds it, are routes obid stopped serving,
- * and a mention of one in any file never counts as documenting it.
+ * and a mention of one in any file never counts as documenting it. A section holding a line that opens with
+ * `proposed` (`**Proposed: obid doesn't serve`, to the next heading of its level or higher; before any heading, the
+ * rest of its file) documents routes ahead of obid: one obid doesn't serve yet is listed, not a miss, and one it
+ * serves fails, so the mark comes off once the route lands (docs/contracts/retired.md, RETIRED-10).
  */
-export function readApiDocs(docs: Array<{ file: string; text: string }>, served: ReadonlySet<string>, gone: string): ApiDoc {
+export function readApiDocs(docs: Array<{ file: string; text: string }>, served: ReadonlySet<string>, gone: string, proposed?: string): ApiDoc {
   type At = { file: string; line: number };
   const mentions = new Map<string, At>();
+  const proposedAt = new Map<string, At>();
   const goneAt = new Map<string, At>();
   for (const { file, text } of docs) {
     let goneLevel = 0;
+    let level = 0;
+    let proposedLevel: number | null = null;
     let fenced = false;
     text.split('\n').forEach((line, i) => {
       if (line.trimStart().startsWith('```')) fenced = !fenced;
       const heading = fenced ? null : /^(#+)\s+(.*?)\s*$/.exec(line);
       if (heading) {
-        if (goneLevel && heading[1].length <= goneLevel) goneLevel = 0;
-        if (heading[2] === gone) goneLevel = heading[1].length;
+        level = heading[1].length;
+        if (goneLevel && level <= goneLevel) goneLevel = 0;
+        if (proposedLevel !== null && proposedLevel > 0 && level <= proposedLevel) proposedLevel = null;
+        if (heading[2] === gone) goneLevel = level;
       }
+      if (proposed && !fenced && line.trimStart().startsWith(proposed)) proposedLevel = level;
       for (const m of line.matchAll(/`(GET|POST|PUT|PATCH|DELETE) (\/[^`\s]*)`/g)) {
         const key = `${m[1]} ${normPath(m[2])}`;
-        const into = goneLevel ? goneAt : mentions;
+        const into = goneLevel ? goneAt : proposedLevel !== null ? proposedAt : mentions;
         if (!into.has(key)) into.set(key, { file, line: i + 1 });
       }
     });
   }
   const kept = [...mentions].filter(([key]) => !goneAt.has(key));
+  const ahead = [...proposedAt].filter(([key]) => !goneAt.has(key));
   const documented = new Set(kept.map(([key]) => key).filter(key => served.has(key)));
-  const docRoutes = kept.filter(([key]) => key.split(' ')[1].startsWith('/v1/')).map(([id, at]) => ({ id, ...at, exists: served.has(id) }));
+  const v1 = ([key]: [string, At]) => key.split(' ')[1].startsWith('/v1/');
+  const docRoutes: ApiDoc['docRoutes'] = [
+    ...kept.filter(v1).map(([id, at]) => ({ id, ...at, exists: served.has(id) })),
+    ...ahead.filter(v1).filter(([key]) => !mentions.has(key)).map(([id, at]) => ({ id, ...at, exists: served.has(id), proposed: true })),
+  ];
   const checks: Check[] = [];
-  for (const d of docRoutes) if (!d.exists) checks.push({ kind: 'doc-without-route', message: `${d.file} documents ${d.id}, which obid doesn't route`, source: { file: d.file, line: d.line }, ref: d.id });
+  for (const d of docRoutes) if (!d.exists && !d.proposed) checks.push({ kind: 'doc-without-route', message: `${d.file} documents ${d.id}, which obid doesn't route`, source: { file: d.file, line: d.line }, ref: d.id });
+  for (const [key, at] of ahead.filter(v1)) {
+    if (served.has(key)) checks.push({ kind: 'proposed-but-routed', message: `${at.file} documents ${key} as proposed, but obid routes it`, source: at, ref: key });
+    else if (!mentions.has(key)) checks.push({ kind: 'proposed-route', message: `${at.file} proposes ${key}, not yet served`, source: at, ref: key });
+  }
   for (const [key, at] of goneAt) if (served.has(key)) checks.push({ kind: 'gone-but-routed', message: `${at.file} lists ${key} as gone, but obid routes it`, source: at, ref: key });
   return { documented, docRoutes, checks };
 }
 
 /** One API doc alone: `readApiDocs` on a single file. */
-export function readApiDoc(text: string, served: ReadonlySet<string>, doc: { file: string; gone: string }): ApiDoc {
-  return readApiDocs([{ file: doc.file, text }], served, doc.gone);
+export function readApiDoc(text: string, served: ReadonlySet<string>, doc: { file: string; gone: string; proposed?: string }): ApiDoc {
+  return readApiDocs([{ file: doc.file, text }], served, doc.gone, doc.proposed);
 }
 
 /** The configured API docs' files, relative to root: each file as named, each `<folder>/*.md` as that folder's `.md` files, sorted. */
@@ -162,7 +183,7 @@ export function generateBrain(config: BrainConfig): BrainData {
 
   // ---- docs: every `METHOD /path` the API docs mention, and the routes they list as gone
   const docFiles = apiDocFiles(root, config.obid.apiDocs).map(file => ({ file, text: readFileSync(join(root, file), 'utf8') }));
-  const doc = readApiDocs(docFiles, rustKeys, config.obid.goneSection);
+  const doc = readApiDocs(docFiles, rustKeys, config.obid.goneSection, config.obid.proposedMark);
   checks.push(...doc.checks);
   const callersOf = new Map<string, Route['callers']>();
   const addCaller = (key: string, via: string, file: string, line: number) => {

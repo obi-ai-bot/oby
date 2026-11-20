@@ -119,7 +119,7 @@ The owner's decision of 2026-11-18: no separate "asking" card in the conversatio
 - **ASK-4** Words no app signed make a Confirm card with who and every word; nothing goes before the owner's click, and the click sends it.
 - **ASK-5** An answer by the other Oby posts once, after the turn's own words: its words quoted and "Asked Dima's Oby. Dima wasn't bothered." It goes by the name the owner knew when they asked, on their word or their Confirm, though the card changed since.
 - **ASK-6** An answer by the person says "Dima answered this one, not its Oby."
-- **ASK-7** `waiting_on_owner` says it's waiting on the person, once, marking nothing; 2 minutes with no word says it hasn't answered yet, once; an answer or expiry still comes after.
+- **ASK-7** `waiting_on_owner` says it's waiting on the person, once, marking nothing; 20 seconds with no word (`quietAt`) says it hasn't answered yet, once; an answer or expiry still comes after.
 - **ASK-8** A Sphere whose rules refuse says an admin can change them, keeps no exchange, and shows nothing of what the Sphere wrote but its code. A refusal hands the brain nothing a member chose, whatever the reason. Refused only after the click, it says so in the conversation, once.
 - **ASK-9** Each decline says who said no, and marks nothing unless it carries a note.
 - **ASK-10** Whatever another Oby writes stays in its quote, every line; it starts no job and adds no inbox item; the conversation is marked as having read something untrusted.

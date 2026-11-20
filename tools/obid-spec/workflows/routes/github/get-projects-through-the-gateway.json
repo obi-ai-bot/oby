@@ -1,0 +1,304 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/projects (through the gateway)",
+  "version": "1.0.0",
+  "description": "Through the gateway, with a paired phone's token, the four project routes are 404 in obid's words, a conversation can't be put in a project nor started in one (422), and can be taken out of one (200) (PROJECTS-10's gateway half; the relay's half is obid's Rust test).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/projects"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "person": {
+          "Projects/a/README.md": "x\n",
+          "Projects/b/README.md": "x\n",
+          "Projects/c/README.md": "x\n",
+          "Projects/d/README.md": "x\n"
+        },
+        "config": {
+          "gateway": "127.0.0.1:0"
+        }
+      }
+    },
+    {
+      "id": "invite",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/pairing/invite",
+        "body": {
+          "url": "https://mac.example.invalid",
+          "name": "Test Mac"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "phone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "x"
+        },
+        "method": "POST",
+        "path": "/v1/pairing",
+        "body": {
+          "credential": "${state.invite.body.secret}",
+          "name": "Test phone"
+        },
+        "as": "token",
+        "token": "x",
+        "expect": {
+          "status": 200,
+          "body": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "p",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "P",
+          "folders": [
+            "${state.o.person}/Projects/b"
+          ]
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "c",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY in p",
+          "new": true,
+          "project": "${state.p.body.id}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "projects-10-get-404",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-10"
+        ]
+      },
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.phone.body.token}"
+        },
+        "method": "GET",
+        "path": "/v1/projects",
+        "expect": {
+          "status": 404,
+          "text": {
+            "$contains": "That route isn't available through the gateway."
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-10-post-404",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-10"
+        ]
+      },
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.phone.body.token}"
+        },
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "x"
+        },
+        "expect": {
+          "status": 404,
+          "text": {
+            "$contains": "That route isn't available through the gateway."
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-10-patch-404",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-10"
+        ]
+      },
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.phone.body.token}"
+        },
+        "method": "PATCH",
+        "path": "/v1/projects/${state.p.body.id}",
+        "body": {
+          "name": "x"
+        },
+        "expect": {
+          "status": 404,
+          "text": {
+            "$contains": "That route isn't available through the gateway."
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-10-delete-404",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-10"
+        ]
+      },
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.phone.body.token}"
+        },
+        "method": "DELETE",
+        "path": "/v1/projects/${state.p.body.id}",
+        "expect": {
+          "status": 404,
+          "text": {
+            "$contains": "That route isn't available through the gateway."
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-10-put-in-a-project-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-10"
+        ]
+      },
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.phone.body.token}"
+        },
+        "method": "PATCH",
+        "path": "/v1/conversations/${state.c.body.conversation}",
+        "body": {
+          "project": "${state.p.body.id}"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "projects-10-plans-with-a-project-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-10"
+        ]
+      },
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.phone.body.token}"
+        },
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY x",
+          "new": true,
+          "project": "${state.p.body.id}"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "projects-10-taken-out-200",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-10"
+        ]
+      },
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.phone.body.token}"
+        },
+        "method": "PATCH",
+        "path": "/v1/conversations/${state.c.body.conversation}",
+        "body": {
+          "project": null
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "project": null
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-10-the-project-is-still-there",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-10"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/projects",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.p.body.id}",
+              "name": "P"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

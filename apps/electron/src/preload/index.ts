@@ -190,6 +190,45 @@ contextBridge.exposeInMainWorld('app', {
   // Add sign-in (main/sphere.ts, SPHEREAPP-13): whether one is linked, and linking one right after the owner's click
   sphereSigninStatus: () => ipcRenderer.invoke('sphere-signin-status') as Promise<SigninStatus | null>,
   sphereAddSignin: (provider: string) => ipcRenderer.invoke('sphere-add-signin', provider) as Promise<string | null>,
+  // an agent using the Mac (main/macPill.ts, BROWSERAPP-19): the window tells main who has it (null:
+  // nobody), and hears its Stop; the pill's own window hears who has it and sends its Stop
+  mac: {
+    pill: (use: { agent: string; action: string } | null) => ipcRenderer.invoke('mac-pill', use) as Promise<boolean | null>,
+    onStopped(fn: () => void) {
+      const listener = () => fn();
+      ipcRenderer.on('mac-stopped', listener);
+      return () => { ipcRenderer.off('mac-stopped', listener); };
+    },
+    onPill(fn: (use: { agent: string; action: string }) => void) {
+      const listener = (_: unknown, use: { agent: string; action: string }) => fn(use);
+      ipcRenderer.on('mac-pill', listener);
+      // who has it now, asked once listening (nothing is missed before it)
+      void (ipcRenderer.invoke('mac-pill-now') as Promise<{ agent: string; action: string } | null>).then((use) => { if (use) fn(use); });
+      return () => { ipcRenderer.off('mac-pill', listener); };
+    },
+    stop: () => ipcRenderer.send('mac-pill-stop'),
+  },
+  // the owner's own shell in a task's or conversation's working copy (main/terminal.ts,
+  // docs/contracts/terminal.md): opened right after the owner's click main saw, with only where and
+  // the size the page measured (main finds the folder); what's typed, which main lets through only as
+  // it saw it typed; a new size; closed; and each shell's output and end
+  terminal: {
+    open: (place: 'task' | 'conversation', id: string, cols: number, rows: number) =>
+      ipcRenderer.invoke('terminal-open', place, id, cols, rows) as Promise<{ term: string; cwd: string; name: string } | { error: string }>,
+    write: (term: string, data: string) => ipcRenderer.send('terminal-write', term, data),
+    resize: (term: string, cols: number, rows: number) => ipcRenderer.send('terminal-resize', term, cols, rows),
+    close: (term: string) => ipcRenderer.send('terminal-close', term),
+    onData(fn: (term: string, data: string) => void) {
+      const listener = (_: unknown, term: string, data: string) => fn(term, data);
+      ipcRenderer.on('terminal-data', listener);
+      return () => { ipcRenderer.off('terminal-data', listener); };
+    },
+    onExit(fn: (term: string, code: number, signal: number | null) => void) {
+      const listener = (_: unknown, term: string, code: number, signal: number | null) => fn(term, code, signal);
+      ipcRenderer.on('terminal-exit', listener);
+      return () => { ipcRenderer.off('terminal-exit', listener); };
+    },
+  },
   // obid's browser, followed by main, which holds the token (main/browser.ts, BROWSERAPP-8): its events
   // from now on (`open` each time the stream connects again), and a tab's frames while the page draws
   // it; each a function that stops listening
@@ -225,6 +264,10 @@ contextBridge.exposeInMainWorld('app', {
     // Undo this round, on the owner's click: main reads obid's sentence again, asks in its own
     // dialog and signs it (CHANGES-14)
     undo: (job: string, action: string) => ipcRenderer.invoke('obid-undo', job, action) as Promise<Answer>,
+    // A finishing action in a conversation's folder (WORKSPACE-4, 5), on the owner's click: main reads
+    // obid's sentence for it, asks in its own dialog and signs it
+    finish: (conversation: string, folder: string, action: string) =>
+      ipcRenderer.invoke('obid-finish', conversation, folder, action) as Promise<Answer>,
     limitAnswer: (item: string, revision: number, choice: string, account?: string) =>
       ipcRenderer.invoke('obid-limit-answer', item, revision, choice, account) as Promise<Answer>,
     // Pair a device: main signs the invitation with this Mac's device key

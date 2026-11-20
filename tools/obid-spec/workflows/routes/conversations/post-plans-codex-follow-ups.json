@@ -1,0 +1,235 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: a Codex conversation's follow-ups",
+  "version": "1.0.0",
+  "description": "A Codex conversation's app-server waits for its next turn: each follow-up is a turn/start on the thread it has loaded, in the same process, resuming nothing; it ends with its account's change, and the next turn starts Codex again on the same thread with thread/resume (CONVERSATION-AGENT-44).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "conversation": {
+            "agent": "codex"
+          },
+          "agents": {
+            "codex": {
+              "bin": "${run.root}/core/crates/obid/tests/agents/fake-codex-harness",
+              "accounts": [
+                {
+                  "id": "codex",
+                  "name": "Codex",
+                  "configDir": "${run.scratch}/o/home/accounts/codex"
+                }
+              ]
+            }
+          }
+        },
+        "files": {
+          "accounts/codex/auth.json": "{}"
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Hello there."
+          }
+        }
+      }
+    },
+    {
+      "id": "on-codex",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.said.body.conversation}",
+              "talkedOn": "codex"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "thread",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/session.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "session": {
+                "$type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-44-a-follow-up-on-the-loaded-thread",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REMEMBER",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "resume=${state.thread.json.session}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-44"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-44-and-the-next",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REMEMBER",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "resume=${state.thread.json.session}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-44"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-44-three-turns-none-resumed-a-thread",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "expect": {
+          "paths": {
+            "heard": {
+              "$count": [
+                {
+                  "resumed": null
+                },
+                3
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-44"
+        ]
+      }
+    },
+    {
+      "id": "renamed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/accounts/codex",
+        "body": {
+          "name": "Codex renamed"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-44-its-account-changed-a-new-codex-picks-the-thread-up",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REMEMBER",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "resume=${state.thread.json.session}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-44"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-44-the-waiting-one-ended-with-its-accounts-change",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "expect": {
+          "paths": {
+            "heard": {
+              "$count": [
+                {
+                  "last": "REMEMBER",
+                  "resumed": "${state.thread.json.session}"
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-44"
+        ]
+      }
+    }
+  ]
+}

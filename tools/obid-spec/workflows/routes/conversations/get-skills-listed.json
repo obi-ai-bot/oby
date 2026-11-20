@@ -1,0 +1,306 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/skills: what an account's Claude Code offers",
+  "version": "1.0.0",
+  "description": "An account's own skills, each by its folder's name, with its description and whether the owner may start it, another account's folder unread (SKILLS-1); an enabled plugin's skills as <plugin>:<skill>, named by its manifest and its declared folders too, none from one turned off or installed for another project (SKILLS-2); a skill turned off in the settings, or whose frontmatter doesn't read, is left out, and a value Claude Code doesn't know drops the file's overrides (SKILLS-3).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/skills"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "claude": {
+              "accounts": [
+                {
+                  "id": "stand-in",
+                  "name": "Stand-in",
+                  "configDir": "${run.scratch}/o/home/accounts/stand-in"
+                },
+                {
+                  "id": "other",
+                  "name": "Other",
+                  "configDir": "${run.scratch}/o/home/accounts/other"
+                }
+              ]
+            }
+          }
+        },
+        "files": {
+          "accounts/stand-in/skills/write-tests/SKILL.md": "---\nname: write-tests\ndescription: Writes the tests first.\n---\n",
+          "accounts/stand-in/skills/agent-only/SKILL.md": "---\ndescription: >\n  Only the agent\n  starts this.\nuser-invocable: false\n---\n",
+          "accounts/stand-in/skills/hidden/SKILL.md": "---\ndescription: Turned off.\n---\n",
+          "accounts/stand-in/skills/broken/SKILL.md": "---\nnot: [closed\n",
+          "accounts/other/.credentials.json": {
+            "claudeAiOauth": {
+              "accessToken": "obid-spec-other",
+              "expiresAt": 4102444800000
+            }
+          },
+          "accounts/other/skills/not-mine/SKILL.md": "---\ndescription: Someone else's.\n---\n",
+          "accounts/stand-in/plugins/installed_plugins.json": {
+            "plugins": {
+              "review@market": [
+                {
+                  "scope": "user",
+                  "installPath": "${run.scratch}/o/home/plugin-cache/review",
+                  "projectPath": null
+                }
+              ],
+              "quiet@market": [
+                {
+                  "scope": "user",
+                  "installPath": "${run.scratch}/o/home/plugin-cache/quiet",
+                  "projectPath": null
+                }
+              ],
+              "elsewhere@market": [
+                {
+                  "scope": "project",
+                  "installPath": "${run.scratch}/o/home/plugin-cache/elsewhere",
+                  "projectPath": "${run.scratch}/o/elsewhere"
+                }
+              ],
+              "named@market": [
+                {
+                  "scope": "user",
+                  "installPath": "${run.scratch}/o/home/plugin-cache/named",
+                  "projectPath": null
+                }
+              ]
+            }
+          },
+          "accounts/stand-in/settings.json": {
+            "enabledPlugins": {
+              "review@market": true,
+              "quiet@market": false,
+              "elsewhere@market": true,
+              "named@market": true
+            },
+            "skillOverrides": {
+              "hidden": "off"
+            }
+          },
+          "plugin-cache/review/.claude-plugin/plugin.json": {
+            "name": "review"
+          },
+          "plugin-cache/review/skills/check-diff/SKILL.md": "---\ndescription: Reads the diff.\n---\n",
+          "plugin-cache/quiet/.claude-plugin/plugin.json": {
+            "name": "quiet"
+          },
+          "plugin-cache/quiet/skills/check-diff/SKILL.md": "---\ndescription: Reads the diff.\n---\n",
+          "plugin-cache/elsewhere/.claude-plugin/plugin.json": {
+            "name": "elsewhere"
+          },
+          "plugin-cache/elsewhere/skills/check-diff/SKILL.md": "---\ndescription: Reads the diff.\n---\n",
+          "plugin-cache/named/.claude-plugin/plugin.json": {
+            "name": "renamed",
+            "skills": [
+              "./extra"
+            ]
+          },
+          "plugin-cache/named/skills/check-diff/SKILL.md": "---\ndescription: Reads the diff.\n---\n",
+          "plugin-cache/named/extra/lint/SKILL.md": "---\ndescription: Lints.\n---\n"
+        }
+      }
+    },
+    {
+      "id": "listed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/skills?account=stand-in",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "skills": {
+              "$len": 5
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "skills-1-2-3-the-names",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.listed.body.skills}",
+        "expect": {
+          "paths": {
+            "$": [
+              {
+                "name": "agent-only"
+              },
+              {
+                "name": "renamed:check-diff"
+              },
+              {
+                "name": "renamed:lint"
+              },
+              {
+                "name": "review:check-diff"
+              },
+              {
+                "name": "write-tests"
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SKILLS-1",
+          "SKILLS-2",
+          "SKILLS-3"
+        ]
+      }
+    },
+    {
+      "id": "skills-1-each-with-its-description",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/skills?account=stand-in",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "skills.4.description": "Writes the tests first.",
+            "skills.4.userInvocable": true,
+            "skills.0.description": "Only the agent starts this.",
+            "skills.0.userInvocable": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SKILLS-1"
+        ]
+      }
+    },
+    {
+      "id": "skills-1-anothers-folder-unread",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/skills?account=stand-in",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "skills": {
+              "$none": {
+                "name": "not-mine"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SKILLS-1"
+        ]
+      }
+    },
+    {
+      "id": "skills-1-the-other-has-its-own",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/skills?account=other",
+        "expect": {
+          "status": 200,
+          "body": {
+            "skills": [
+              {
+                "name": "not-mine",
+                "description": "Someone else's."
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SKILLS-1"
+        ]
+      }
+    },
+    {
+      "id": "skills-2-a-plugins-skill",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/skills?account=stand-in",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "skills": {
+              "$any": {
+                "name": "review:check-diff",
+                "source": "plugin",
+                "plugin": "review"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SKILLS-2"
+        ]
+      }
+    },
+    {
+      "id": "unknown-value",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/stand-in/settings.json",
+        "content": {
+          "skillOverrides": {
+            "hidden": "off",
+            "write-tests": "sometimes"
+          }
+        }
+      }
+    },
+    {
+      "id": "skills-3-an-unknown-value-drops-the-overrides",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/skills?account=stand-in",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "skills": {
+              "$any": {
+                "name": "hidden"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SKILLS-3"
+        ]
+      }
+    }
+  ]
+}

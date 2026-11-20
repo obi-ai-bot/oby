@@ -1,0 +1,218 @@
+{
+ "v": 3,
+ "createdOnFiles": {
+  "v": 1,
+  "at": "2026-11-20T12:00:00Z"
+ },
+ "title": "Oby Artifacts",
+ "launch": {
+  "view": "focused",
+  "file": "Prototype.dc.html"
+ },
+ "pages": [
+  {
+   "id": "design",
+   "name": "Design"
+  },
+  {
+   "id": "research",
+   "name": "Research"
+  }
+ ],
+ "boards": {
+  "Main.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 1440,
+   "h": 900,
+   "title": "The idea",
+   "page": "design"
+  },
+  "Conversation.dc.html": {
+   "x": 0,
+   "y": 1250,
+   "w": 1280,
+   "h": 800,
+   "title": "1a · Make it an Oby artifact",
+   "page": "design",
+   "is_interactive": true
+  },
+  "Viewer.dc.html": {
+   "x": 1360,
+   "y": 1250,
+   "w": 1280,
+   "h": 800,
+   "title": "1b · The artifact beside its conversation",
+   "page": "design",
+   "is_interactive": true
+  },
+  "ShareMenu.dc.html": {
+   "x": 2720,
+   "y": 1250,
+   "w": 1280,
+   "h": 800,
+   "title": "1c · Share and Export, in the artifact's tab",
+   "page": "design",
+   "is_interactive": true
+  },
+  "ClaudeBridge.dc.html": {
+   "x": 4080,
+   "y": 1250,
+   "w": 1280,
+   "h": 800,
+   "title": "1d · Bring it from Claude, send it back",
+   "page": "design",
+   "is_interactive": true
+  },
+  "BenHome.dc.html": {
+   "x": 0,
+   "y": 2400,
+   "w": 1280,
+   "h": 800,
+   "title": "2a · Ben's Oby: feedback in his own words",
+   "page": "design",
+   "is_interactive": true
+  },
+  "Choice.dc.html": {
+   "x": 1360,
+   "y": 2400,
+   "w": 1280,
+   "h": 800,
+   "title": "2b · Settings › Artifacts",
+   "page": "design",
+   "is_interactive": true
+  },
+  "PublicLink.dc.html": {
+   "x": 2720,
+   "y": 2400,
+   "w": 1280,
+   "h": 900,
+   "title": "2c · Outside Oby: a public link",
+   "page": "design",
+   "expand": "fill",
+   "is_interactive": true
+  },
+  "Research.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 1440,
+   "h": 2200,
+   "title": "Research: how others share artifacts",
+   "page": "research",
+   "expand": "fill"
+  },
+  "Compatibility.dc.html": {
+   "x": 1520,
+   "y": 0,
+   "w": 1440,
+   "h": 3200,
+   "title": "How Claude's artifacts work, and how Oby matches them",
+   "page": "research",
+   "expand": "fill"
+  },
+  "Prototype.dc.html": {
+   "x": 3700,
+   "y": 0,
+   "w": 1280,
+   "h": 800,
+   "title": "Prototype · click through it",
+   "page": "design",
+   "is_interactive": true
+  },
+  "Sphere.dc.html": {
+   "x": 5440,
+   "y": 1250,
+   "w": 1280,
+   "h": 800,
+   "title": "1e · Deskree: shared with Ben's Oby",
+   "page": "design",
+   "is_interactive": true
+  }
+ },
+ "order": [
+  "Prototype.dc.html",
+  "Main.dc.html",
+  "Conversation.dc.html",
+  "Viewer.dc.html",
+  "ShareMenu.dc.html",
+  "ClaudeBridge.dc.html",
+  "BenHome.dc.html",
+  "Choice.dc.html",
+  "PublicLink.dc.html",
+  "Research.dc.html",
+  "Compatibility.dc.html",
+  "Sphere.dc.html"
+ ],
+ "notes": {
+  "rowYou": {
+   "x": 0,
+   "y": 990,
+   "text": "1 · You make it, and share it",
+   "kind": "title1",
+   "maxW": 6720,
+   "page": "design"
+  },
+  "rowThem": {
+   "x": 0,
+   "y": 2140,
+   "text": "2 · They see it in their own Oby, or outside it",
+   "kind": "title1",
+   "maxW": 4000,
+   "page": "design"
+  },
+  "idea": {
+   "x": 1520,
+   "y": 0,
+   "w": 420,
+   "text": "Testing an idea, not a plan. Share has a button and an Export menu, as in Claude. What it doesn't have is approve or reject buttons: feedback, ideas and a yes are things people say to their own Oby. The words on these boards are proposals; Sangam owns the final ones.",
+   "fill": "orange",
+   "size": "m",
+   "page": "design"
+  },
+  "open": {
+   "x": 2020,
+   "y": 0,
+   "w": 520,
+   "text": "Open questions for Ben\n\n1. Public links: does the owner's own Obysphere serve a public copy (a Worker route), or does a public link wait for Oby Cloud?\n2. Is a shared artifact a new Sphere message kind, or a room post that carries one?\n3. People outside the Sphere: look only, or can they leave a suggestion that lands in the owner's Oby?\n4. Claude artifacts from Oby need Claude Code's Artifact tool in a headless run (off by default in claude -p). Spike first.",
+   "fill": "blue",
+   "size": "s",
+   "page": "design"
+  },
+  "store": {
+   "x": 2620,
+   "y": 0,
+   "w": 460,
+   "text": "Already in obid (docs/runner-api.md, artifacts): every version of a page, document, image, PDF or canvas, kept on the Mac, secret-scanned, served with a strict sandbox. This feature adds who it's shared with, a renderer for Claude's canvas format, and one artifact tool every agent gets.",
+   "fill": "green",
+   "size": "s",
+   "page": "design"
+  },
+  "anyAgent": {
+   "x": 3160,
+   "y": 0,
+   "w": 460,
+   "text": "No Claude account? “Make this an Oby artifact” works with Codex or Cursor too: every agent gets Oby's artifact tool and the same format guide, and Oby draws the result itself. Only “in Claude” needs Claude Code.",
+   "fill": "teal",
+   "size": "s",
+   "page": "design"
+  },
+  "proto": {
+   "x": 5060,
+   "y": 0,
+   "text": "Built from Oby's own app on origin/dev (its stylesheets and markup) with Sangam's Obysphere. The artifact sits under its conversation, with its tasks, and opens as a tab in the app's browser, full width. Show the conversation puts the canvas beside it, and the conversation's own message box is the artifact's chat. A few seconds after you share, Ben's answer comes back. Board 2a is Ben's own Oby.",
+   "w": 420,
+   "fill": "blue",
+   "size": "s",
+   "page": "design"
+  }
+ },
+ "designSystems": [
+  {
+   "title": "Oby",
+   "namespace": "oby",
+   "artifact": "https://example.invalid/artifact",
+   "version": "1795187531-2eeb",
+   "copiedAt": "2026-11-20T12:00:00Z"
+  }
+ ]
+}

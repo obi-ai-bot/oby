@@ -1,0 +1,203 @@
+{
+  "schemaVersion": "2",
+  "name": "DELETE /v1/accounts/{id}: a removed account is no choice",
+  "version": "1.0.0",
+  "description": "An account that's removed is no choice any more: the setting and every conversation's choice are cleared, and that conversation talks on Auto (CONVERSATION-AGENT-11).",
+  "trigger": {
+    "http": {
+      "method": "PATCH",
+      "path": "/v1/conversations/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "codex": {
+              "bin": "${run.root}/core/crates/obid/tests/agents/fake-codex-harness",
+              "accounts": [
+                {
+                  "id": "codex",
+                  "name": "Codex",
+                  "configDir": "${run.scratch}/o/home/accounts/codex"
+                }
+              ]
+            }
+          },
+          "conversation": {
+            "agent": "claude"
+          }
+        },
+        "files": {
+          "accounts/codex/auth.json": "{}"
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REMEMBER",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "resume=none"
+          }
+        }
+      }
+    },
+    {
+      "id": "chose-codex",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/conversations/${state.said.body.conversation}",
+        "body": {
+          "talkAccount": "codex"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "talkAccount": "codex"
+          }
+        }
+      }
+    },
+    {
+      "id": "the-setting-too",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "talkAccount": "codex"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "removed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/accounts/codex",
+        "expect": {
+          "status": 204
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-11-the-conversations-choice-cleared",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.said.body.conversation}",
+              "talkAccount": {
+                "$exists": false
+              }
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-11"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-11-the-setting-cleared",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/jobs",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "talkAccount": {
+              "$exists": false
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-11"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-11-it-talks-on-auto",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REMEMBER",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$matches": "^resume="
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-11"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-11-on-claude-code",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.said.body.conversation}",
+              "talkedOn": "stand-in"
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-11"
+        ]
+      }
+    }
+  ]
+}

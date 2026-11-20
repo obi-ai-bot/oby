@@ -1,0 +1,334 @@
+{
+  "schemaVersion": "2",
+  "name": "PATCH /v1/conversations/{id}: the account a conversation talks on",
+  "version": "1.0.0",
+  "description": "A choice takes effect at the next turn, on another tool in a new session, saying nothing of moving, and Auto then stays where the session is (CONVERSATION-AGENT-2); the chosen account fills: the turn is answered on another account of any tool with a line that says so, once, the choice stays, and the full account is passed by (CONVERSATION-AGENT-3).",
+  "trigger": {
+    "http": {
+      "method": "PATCH",
+      "path": "/v1/conversations/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "codex": {
+              "bin": "${run.root}/core/crates/obid/tests/agents/fake-codex-harness",
+              "accounts": [
+                {
+                  "id": "codex",
+                  "name": "Codex",
+                  "configDir": "${run.scratch}/o/home/accounts/codex"
+                }
+              ]
+            }
+          },
+          "conversation": {
+            "agent": "claude"
+          }
+        },
+        "files": {
+          "accounts/codex/auth.json": "{}"
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REMEMBER",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "resume=none"
+          }
+        }
+      }
+    },
+    {
+      "id": "on-claude",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.said.body.conversation}",
+              "talkedOn": "stand-in"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "chose-codex",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/conversations/${state.said.body.conversation}",
+        "body": {
+          "talkAccount": "codex"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "talkAccount": "codex"
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-2-the-next-turn-on-codex-in-a-new-session",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REMEMBER",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "resume=none"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-2"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-2-it-talked-on-codex",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.said.body.conversation}",
+              "talkedOn": "codex"
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-2"
+        ]
+      }
+    },
+    {
+      "id": "back-to-auto",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/conversations/${state.said.body.conversation}",
+        "body": {
+          "talkAccount": "auto"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "talkAccount": "auto"
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-2-auto-stays-where-the-session-is",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REMEMBER",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$matches": "^resume=\\S+$"
+            }
+          },
+          "paths": {
+            "text": {
+              "$ne": "resume=none"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-2"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-2-still-on-codex",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.said.body.conversation}",
+              "talkedOn": "codex"
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-2"
+        ]
+      }
+    },
+    {
+      "id": "chose-claude",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/conversations/${state.said.body.conversation}",
+        "body": {
+          "talkAccount": "stand-in"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "talkAccount": "stand-in"
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-3-a-full-account-moves-and-says-so",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "FULL ON stand-in",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Nothing to do.\nStand-in hit its limit, so I moved to Codex · Codex."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-3"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-3-answered-on-codex-the-choice-stays",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.said.body.conversation}",
+              "talkedOn": "codex",
+              "talkAccount": "stand-in"
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-3"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-3-said-once",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SOMETHING",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Nothing to do."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-3"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-3-the-full-account-is-held",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "stand-in",
+                "fullUntil": {
+                  "$type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-3"
+        ]
+      }
+    }
+  ]
+}

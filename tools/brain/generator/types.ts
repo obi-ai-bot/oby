@@ -131,7 +131,7 @@ export interface JumpState { id: string; label: string; group: string; url: stri
 // ---- checks ----------------------------------------------------------------------------------------------------------
 
 export type CheckKind =
-  | 'route-undocumented' | 'doc-without-route' | 'gone-but-routed' | 'phone-without-route' | 'call-without-route' | 'route-unused'
+  | 'route-undocumented' | 'doc-without-route' | 'gone-but-routed' | 'proposed-route' | 'proposed-but-routed' | 'phone-without-route' | 'call-without-route' | 'route-unused'
   | 'local-unclassified' | 'local-owed' | 'layering' | 'internal-host' | 'rule-unlinked' | 'wire' | 'extract';
 
 export interface Check { kind: CheckKind; message: string; source?: Source; ref?: string }
@@ -145,7 +145,7 @@ export interface BrainData {
   stats: Record<string, number>;
   routes: Route[];
   phoneRoutes: PhoneRoute[];
-  docRoutes: Array<{ id: string; file: string; line: number; exists: boolean }>;
+  docRoutes: Array<{ id: string; file: string; line: number; exists: boolean; proposed?: boolean }>;
   areas: Area[];
   modules: Module[];
   cycles: string[][];

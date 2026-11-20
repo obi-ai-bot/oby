@@ -1316,7 +1316,7 @@ pub fn find_shell(cache: &Path, platform: &str) -> Option<PathBuf> {
 /// chrome-headless-shell on this computer: the cache's, else downloaded, hash-checked and
 /// unpacked into it; or why not (a skip). A zip that doesn't match its pin is an error, never a
 /// skip.
-async fn install_shell() -> Result<std::result::Result<PathBuf, String>> {
+pub(crate) async fn install_shell() -> Result<std::result::Result<PathBuf, String>> {
     let Some(plat) = shell_platform() else {
         return Ok(Err(format!(
             "skipped: chrome-headless-shell has no build for {} {} (Google ships mac-arm64, mac-x64 and linux64 only)",

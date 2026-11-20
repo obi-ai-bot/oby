@@ -61,10 +61,9 @@ function slowSend() {
 }
 
 describe('drafts while a send is on its way (T3: drafts lost)', () => {
-  // Known bug #2640: Composer.tsx's onSubmit clears the whole box once the send settles
-  // (`b.clear()`), words typed after the send began included; the room's box (`say`) keeps them with
-  // leftInBox, the others don't. DRAFTS-1: a box keeps its words until they're sent.
-  it.fails('t3_drafts_words_typed_while_the_send_goes_stay_in_the_box (known bug #2640)', async () => {
+  // #2640: once the send settles, the box keeps what was typed after the words went (leftInBox), as
+  // the room's box does. DRAFTS-1: a box keeps its words until they're sent.
+  it('t3_drafts_words_typed_while_the_send_goes_stay_in_the_box', async () => {
     const s = slowSend();
     const { form } = await box({ onSend: s.onSend });
     await type('fix the login test');
@@ -76,11 +75,10 @@ describe('drafts while a send is on its way (T3: drafts lost)', () => {
     expect(field().value).toBe('and then the footer');
   });
 
-  // Known bug #2641: the conversation's box isn't keyed by its conversation (ChatView.tsx
-  // renders one Composer and changes its `draft`), so a send that settles after the owner opened
-  // another conversation clears that conversation's draft and its tags (Composer.tsx onSubmit:
-  // `b.clear()`, `setAttached([])`). DRAFTS-1 and DRAFTS-4: another box keeps its own words and tags.
-  it.fails('t3_drafts_a_send_that_settles_after_another_box_shows_leaves_that_box_alone (known bug #2641)', async () => {
+  // #2641: ChatView renders one Composer and changes its `draft`, so a send that settles after the
+  // owner opened another conversation leaves the box shown alone; the box the words went from keeps
+  // only what was typed after them (T3 Code 2b7fc890de). DRAFTS-1 and DRAFTS-4.
+  it('t3_drafts_a_send_that_settles_after_another_box_shows_leaves_that_box_alone', async () => {
     localStorage.setItem(KEY, JSON.stringify({ 'conversation:c2': { text: 'my half-written plan for c2', at: Date.now() } }));
     const s = slowSend();
     const { form, render } = await box({ onSend: s.onSend, draft: 'conversation:c1' });

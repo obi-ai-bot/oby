@@ -4,6 +4,7 @@ import { box as draftBox } from './drafts';
 import { askFromBox, boxShut, lineUnder, nextQuiet, openThread, useThreads, whoseOby, withWords } from './peers';
 import { atEnd } from './room';
 import { QuestionBlock } from './QuestionCard';
+import { ReviewBlock } from './ReviewRequestCard';
 import { HandOffButton } from './HandOff';
 import { RoomThread } from './RoomView';
 import { useSpheres } from './spheres';
@@ -25,9 +26,10 @@ export default function PeerThreadView({ owner, leaving, covered = false, onClos
   onGone: () => void;
 }) {
   const held = useThreads().get(owner) ?? {};
-  // what they asked that only you can answer: the same card as on Home, gone from both once settled
+  // what they asked that only you can answer, a question or a review request: the same card as on
+  // Home, gone from both once settled (a review request's, once closed if it closed unanswered, PEER-49)
   useTasks();
-  const asking = asksWaiting().flatMap((a) => (a.question?.from === owner ? [a.question] : []));
+  const asking = asksWaiting().filter((a) => (a.question ?? a.review)?.from === owner);
   const t = held.thread;
   const sphere = useSpheres().find((s) => s.live);
   const posts = useMemo(() => withWords(t?.posts ?? []), [t]);
@@ -86,7 +88,7 @@ export default function PeerThreadView({ owner, leaving, covered = false, onClos
         </section>
         <div {...thumbProps} />
       </div>
-      {asking.map((q) => <div key={q.id} className="room-card"><QuestionBlock question={q} /></div>)}
+      {asking.map((a) => <div key={a.id} className="room-card">{a.question ? <QuestionBlock question={a.question} /> : a.review && <ReviewBlock review={a.review} />}</div>)}
       {held.problem && <p className="room-problem" role="alert">{held.problem}</p>}
       {/* a task for their Oby, in the live Obysphere while they're in it (SPHEREAPP-6) */}
       {sphere && !sphere.revoked && t?.member !== false && <HandOffButton owner={owner} name={t?.name ?? owner} />}

@@ -1,0 +1,493 @@
+{
+  "schemaVersion": "2",
+  "name": "A member's question: the person's card",
+  "version": "1.0.0",
+  "description": "A question only the person can answer is one card needing the owner, its words only quoted, the same in their thread (PEER-30); a secret or words the protocol doesn't take send nothing, repeat nothing and leave it open (PEER-34); an older phone reads it as it always did and a paired phone answers it unsigned through the gateway, back as the owner's (PEER-36).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana",
+        "agent": "fake-answerer",
+        "config": {
+          "gateway": "127.0.0.1:0"
+        }
+      }
+    },
+    {
+      "id": "invite",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/pairing/invite",
+        "body": {
+          "url": "https://mac.example.invalid",
+          "name": "Test Mac"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "phone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.dana.gatewayBase}",
+          "token": "x"
+        },
+        "method": "POST",
+        "path": "/v1/pairing",
+        "body": {
+          "credential": "${state.invite.body.secret}",
+          "name": "Old phone"
+        },
+        "as": "token",
+        "token": "x",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "alex-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.alex}"
+      }
+    },
+    {
+      "id": "dana-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.dana}"
+      }
+    },
+    {
+      "id": "q1",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/peers/dana/ask",
+        "body": {
+          "text": "Which <b>branch</b> has the [fix](http://evil.example)?"
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 202
+        }
+      }
+    },
+    {
+      "id": "peer-30-one-card-on-the-stack",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "pick": {
+          "where": {
+            "kind": "obiRequest",
+            "state": "open"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "kind": "obiRequest"
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-30"
+        ]
+      }
+    },
+    {
+      "id": "peer-30-a-question-from-them-needing-the-owner",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.peer-30-one-card-on-the-stack.picked}",
+        "expect": {
+          "body": {
+            "title": "Question from alex",
+            "triage": "needs_you",
+            "options": [
+              "Decline",
+              "Decline, and remember for this repo"
+            ],
+            "obi": {
+              "type": "question",
+              "fromOwner": "alex",
+              "quoted": {
+                "text": "Which <b>branch</b> has the [fix](http://evil.example)?"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-30"
+        ]
+      }
+    },
+    {
+      "id": "peer-30-their-words-only-quoted-never-in-obids-text",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.peer-30-one-card-on-the-stack.picked}",
+        "expect": {
+          "paths": {
+            "text": {
+              "$not": {
+                "$contains": "branch"
+              }
+            },
+            "title": {
+              "$not": {
+                "$contains": "branch"
+              }
+            },
+            "options": {
+              "$none": {
+                "$contains": "branch"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-30"
+        ]
+      }
+    },
+    {
+      "id": "peer-30-the-same-card-in-their-thread",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/peers/alex",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "posts": {
+              "$any": {
+                "kind": "question",
+                "direction": "received",
+                "text": "Which <b>branch</b> has the [fix](http://evil.example)?",
+                "exchange": {
+                  "waitingOnThem": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-30"
+        ]
+      }
+    },
+    {
+      "id": "token-tail",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "peer-34-a-secret-sends-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.peer-30-one-card-on-the-stack.picked.id}/answer",
+        "body": {
+          "answer": "use ghp_${state.token-tail.seed}"
+        },
+        "device": "${state.dana-device}",
+        "as": "device",
+        "expect": {
+          "status": 422,
+          "text": {
+            "$not": {
+              "$contains": "${state.token-tail.seed}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-34"
+        ]
+      }
+    },
+    {
+      "id": "peer-34-the-card-stays-open",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.peer-30-one-card-on-the-stack.picked.id}",
+                "state": "open"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-34"
+        ]
+      }
+    },
+    {
+      "id": "peer-34-words-the-protocol-doesnt-take-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.peer-30-one-card-on-the-stack.picked.id}/answer",
+        "body": {
+          "answer": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        },
+        "device": "${state.dana-device}",
+        "as": "device",
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-34"
+        ]
+      }
+    },
+    {
+      "id": "peer-34-nothing-went",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/peers/dana",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "posts": {
+              "$none": {
+                "kind": "answer"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-34"
+        ]
+      }
+    },
+    {
+      "id": "peer-34-nothing-repeated-in-the-thread",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/peers/alex",
+        "expect": {
+          "status": 200,
+          "text": {
+            "$not": {
+              "$contains": "${state.token-tail.seed}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-34"
+        ]
+      }
+    },
+    {
+      "id": "peer-36-an-older-phone-reads-the-card-it-always-did",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.dana.gatewayBase}",
+          "token": "${state.phone.body.token}"
+        },
+        "method": "GET",
+        "path": "/v1/inbox",
+        "as": "token",
+        "token": "${state.phone.body.token}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.peer-30-one-card-on-the-stack.picked.id}",
+                "kind": "obiRequest",
+                "options": [
+                  "Decline",
+                  "Decline, and remember for this repo"
+                ],
+                "text": {
+                  "$type": "string"
+                },
+                "obi": {
+                  "quoted": {
+                    "text": {
+                      "$type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-36"
+        ]
+      }
+    },
+    {
+      "id": "peer-34-fixed-they-go-and-peer-36-a-paired-phone-answers-unsigned",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.dana.gatewayBase}",
+          "token": "${state.phone.body.token}"
+        },
+        "method": "POST",
+        "path": "/v1/inbox/${state.peer-30-one-card-on-the-stack.picked.id}/answer",
+        "body": {
+          "answer": "fix/billing, from my phone"
+        },
+        "as": "token",
+        "token": "${state.phone.body.token}",
+        "expect": {
+          "status": 200
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-34",
+          "PEER-36"
+        ]
+      }
+    },
+    {
+      "id": "peer-36-it-goes-back-as-the-owners",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/peers/dana",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "posts": {
+              "$any": {
+                "kind": "answer",
+                "by": "owner",
+                "text": "fix/billing, from my phone"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-34",
+          "PEER-36"
+        ]
+      }
+    }
+  ]
+}

@@ -2,7 +2,10 @@ import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { Menu } from './Menu';
-import { archiveChat, deleteChat, keepsMarks, markChatUnread, pinChat, useChats, type Chat } from './chats';
+import { archiveChat, deleteChat, keepsMarks, markChatUnread, ofObid, pinChat, useChats, type Chat } from './chats';
+import { useFolders } from './folders';
+import { realId } from './live';
+import { bridge as terminalBridge, openTerminal } from './terminal/store';
 
 // A conversation's menu, from its side panel row (⋮ or right-click) or its
 // page's title bar: pin it to the top (or unpin), rename, mark it unread (or read); last, set apart,
@@ -19,10 +22,14 @@ export default function ConvoMenu({ chat, at, align = 'right', onClose, onRename
   const said = chat.said.length > 0 || chat.at != null;
   // an obid that keeps no marks: no Mark unread, no Archive
   const marks = keepsMarks(chat.id);
+  // Terminal: the owner's shell in its first folder, in Oby's own panel (docs/contracts/terminal.md)
+  const folders = useFolders(chat.id);
+  const shell = ofObid(chat.id) && folders.length > 0 && !!terminalBridge();
   return (
-    <Menu at={at} align={align} onClose={onClose} height={200} width={180}>
+    <Menu at={at} align={align} onClose={onClose} height={200 + (shell ? 32 : 0)} width={180}>
       <button role="menuitem" onClick={pick(() => pinChat(chat.id, !chat.pinned))}>{chat.pinned ? 'Unpin' : 'Pin'}</button>
       <button role="menuitem" onClick={pick(onRename)}>Rename</button>
+      {shell && <button role="menuitem" onClick={pick(() => openTerminal('conversation', realId(chat.id), chat.title))}>Terminal</button>}
       {marks && (chat.unread || said) && <button role="menuitem" onClick={pick(() => markChatUnread(chat.id, !chat.unread))}>{chat.unread ? 'Mark as read' : 'Mark as unread'}</button>}
       <hr />
       {marks && <button role="menuitem" onClick={pick(() => archiveChat(chat.id, !chat.archived))}>{chat.archived ? 'Restore' : 'Archive'}</button>}

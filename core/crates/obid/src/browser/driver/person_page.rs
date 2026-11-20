@@ -18,6 +18,15 @@ const PERSON_LIMIT: Duration = Duration::from_secs(30);
 /// How long an accepted dialog may take to send the page on (a confirm's `location.href`).
 const AFTER_ACCEPT: Duration = Duration::from_millis(1500);
 const AFTER_ACCEPT_EVERY: Duration = Duration::from_millis(100);
+/// How long the page may take to answer again after a move that navigated under agent-browser.
+const AFTER_MOVE: Duration = Duration::from_secs(5);
+
+/// agent-browser's words when the page navigated while it was still asking it (its own
+/// `Runtime.evaluate` for Back or Reload): the page moved, the answer was lost (BROWSER-26).
+fn navigated_under(e: &str) -> bool {
+    e.contains("Inspected target navigated or closed")
+        || e.contains("Execution context was destroyed")
+}
 
 impl Driver {
     /// Runs the person's way out `verb` (the contract's `reload`, `back` or `dialog`, `accept` and
@@ -86,7 +95,20 @@ impl Driver {
                     .await,
             )?;
         }
-        read(session.call(&argv, PERSON_LIMIT).await)?;
+        match session.call(&argv, PERSON_LIMIT).await {
+            // The page navigated under agent-browser's own call: the move happened, and the URL
+            // read below says where the page is.
+            Call::Failed(e)
+                if matches!(verb, c::VERB_RELOAD | c::VERB_BACK) && navigated_under(&e) =>
+            {
+                tracing::info!(
+                    "the person's {verb} on tab {tab}: the page navigated under it ({e})"
+                );
+            }
+            other => {
+                read(other)?;
+            }
+        }
         if verb == c::VERB_DIALOG {
             self.core.lock().unwrap().dialog(tab, None);
             if accept {
@@ -94,10 +116,7 @@ impl Driver {
                 self.wait_for_another_url(&session, &known_url).await;
             }
         }
-        let url = read(session.call(&["get".into(), "url".into()], limit).await)?["url"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
+        let url = self.url_after_move(&session, limit).await?;
         let title = match session.call(&["get".into(), "title".into()], limit).await {
             Call::Ok(v) => v["title"].as_str().map(str::to_string),
             _ => None,
@@ -115,6 +134,22 @@ impl Driver {
             return Err(Refusal::Browser(format!("{verb}: {what}.")));
         }
         Ok((url, title))
+    }
+
+    /// The page's URL after the person's move: read again, up to [`AFTER_MOVE`], while the page
+    /// is still landing (agent-browser answering that it navigated under it).
+    async fn url_after_move(&self, session: &Session, limit: Duration) -> Result<String, Refusal> {
+        let until = Instant::now() + AFTER_MOVE;
+        loop {
+            match session.call(&["get".into(), "url".into()], limit).await {
+                Call::Ok(v) => return Ok(v["url"].as_str().unwrap_or_default().to_string()),
+                Call::Failed(e) if navigated_under(&e) && Instant::now() < until => {
+                    tokio::time::sleep(AFTER_ACCEPT_EVERY).await;
+                }
+                Call::Failed(e) => return Err(Refusal::Browser(e)),
+                Call::TimedOut(ms) => return Err(Refusal::TimedOut { ms }),
+            }
+        }
     }
 
     /// Up to [`AFTER_ACCEPT`], until the page's URL is another than `before`.
@@ -308,6 +343,57 @@ mod tests {
         for want in ["back", "reload", "dialog dismiss"] {
             assert!(calls.iter().any(|c| c.ends_with(want)), "{want}: {calls:?}");
         }
+        d.end("job-a").await;
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[tokio::test]
+    async fn browser_26_a_back_or_reload_the_page_navigated_under_still_moves_the_page() {
+        let home = stand_in::scratch("navclosed");
+        let d = driver(&home);
+        d.start("job-a").await.unwrap();
+        tool(
+            &d,
+            &home,
+            "job-a",
+            "oby_browser_open",
+            json!({"url": "http://127.0.0.1:1/"}),
+        )
+        .await;
+        tool(
+            &d,
+            &home,
+            "job-a",
+            "oby_browser_navigate",
+            json!({"url": "http://127.0.0.1:1/second"}),
+        )
+        .await;
+        // agent-browser's back and reload answer "Inspected target navigated or closed" when the
+        // page navigates under its own evaluate: the page moved all the same.
+        let session = d.session_of("job-a").unwrap();
+        std::fs::write(
+            session
+                .socket_dir
+                .join(format!("{}.navclosed", session.name)),
+            "",
+        )
+        .unwrap();
+        let (url, _) = d
+            .person_page("job-a", "tab-1", "T1", c::VERB_BACK, false, None)
+            .await
+            .unwrap();
+        assert_eq!(url, "http://127.0.0.1:1/");
+        let (url, _) = d
+            .person_page("job-a", "tab-1", "T1", c::VERB_RELOAD, false, None)
+            .await
+            .unwrap();
+        assert_eq!(url, "http://127.0.0.1:1/");
+        // Any other failure is still the browser's refusal.
+        let refused = d
+            .person_page("job-a", "tab-1", "T1", "nope", false, None)
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code(), "bad_args");
         d.end("job-a").await;
         let _ = std::fs::remove_dir_all(home);
     }

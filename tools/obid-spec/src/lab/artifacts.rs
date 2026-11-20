@@ -1081,7 +1081,7 @@ impl Words {
 pub const NODES: &[(&str, &str)] = &[
     ("lab.artifacts.up", "Starts the artifacts' store and its API (the contract's routes) on 127.0.0.1 (a free port), the store under the workflow's scratch folder: {url, port, token, home}. One per workflow."),
     ("lab.artifacts.device", "Registers a new device key of the owner's: {id, key, publicKey}, for `as: device` calls."),
-    ("lab.artifacts.fixture", "Writes a fixture into the scratch folder: `name` claude-design (a Claude Design project of the lab's own: canvas.json v3, three boards, a design system, fonts, video, and three uploads under _blob/, one with a token-like id), canvas-obid, canvas-swift, page, document, sized (`files`: [{path, bytes}], sparse) or many (`count` small files); `break` spoils a claude-design one way; `zip: true` also writes it as Claude Design's project zip. {path, zip, files, blobs}."),
+    ("lab.artifacts.fixture", "Writes a fixture into the scratch folder: `name` claude-design (a Claude Design project of the lab's own: canvas.json v3, three boards, a design system, fonts, video, and three uploads under _blob/, one with a token-like id), canvas (the Oby Artifacts canvas, lab-ui/artifacts/design), broken-design (a board that throws, one that doesn't parse), canvas-obid, canvas-swift, page, document, sized (`files`: [{path, bytes}], sparse) or many (`count` small files); `break` spoils a claude-design one way; `zip: true` also writes it as Claude Design's project zip. {path, zip, files, blobs}."),
     ("lab.artifacts.publish", "Publishes `path` as an agent's oby_artifact does (in-process, no route): `title`, `kind`, `conversation`, `job`, `artifact` (a new version); `write` ({name: text}) changes files of the source first; `repeat` publishes that many more versions, each with a changed version.txt. {ok, id, version, reason, error, artifact, sameAsSource}; with expect."),
     ("lab.artifacts.call", "One request to the API: `method`, `path`, `body`; `as` owner (the default), none, wrong, device, unsigned, badsig, unknown-device. {status, body}; with expect."),
     ("lab.artifacts.import", "POST /v1/artifacts/import with the bytes of `file` (`contentType`, default application/zip), signed by `device` unless `as` says otherwise: {status, body}; with expect."),
@@ -1333,9 +1333,39 @@ impl Store {
     }
 }
 
+/// One version of a stored artifact, read from the store's folder (`home/artifacts`): the artifact,
+/// that version and its files. The viewer (src/lab/artifactview.rs) serves from it.
+pub(crate) fn read_version(
+    dir: &Path,
+    id: &str,
+    version: u32,
+) -> Option<(Artifact, Version, Files)> {
+    if !is_id(id) {
+        return None;
+    }
+    let a: Artifact =
+        serde_json::from_slice(&std::fs::read(dir.join(id).join("artifact.json")).ok()?).ok()?;
+    let v = a.versions.iter().find(|v| v.version == version)?.clone();
+    let folder = dir.join(id).join(version.to_string());
+    let files = v
+        .files
+        .iter()
+        .map(|f| Some((f.clone(), std::fs::read(folder.join(f)).ok()?)))
+        .collect::<Option<Files>>()?;
+    Some((a, v, files))
+}
+
+/// A stored artifact as `artifact.json` says it.
+pub(crate) fn read_artifact(dir: &Path, id: &str) -> Option<Artifact> {
+    if !is_id(id) {
+        return None;
+    }
+    serde_json::from_slice(&std::fs::read(dir.join(id).join("artifact.json")).ok()?).ok()
+}
+
 /// An agent's file or folder as a version's files, never following a link: the sizes checked
 /// first ([`check_sizes`]), before a byte is read. Hidden names are left out.
-fn read_source(path: &Path, rules: &Rules) -> Result<(Files, bool), Refused> {
+pub(crate) fn read_source(path: &Path, rules: &Rules) -> Result<(Files, bool), Refused> {
     let shown = |p: &Path| {
         p.strip_prefix(path)
             .ok()
@@ -1522,7 +1552,7 @@ async fn write_answer(conn: &mut tokio::net::TcpStream, a: Answer) {
     let _ = conn.shutdown().await;
 }
 
-fn percent_decode(text: &str) -> Option<String> {
+pub(crate) fn percent_decode(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -2039,7 +2069,7 @@ async fn send(
     raw_http(port_of(input)?, method, path, &headers, body, content_type).await
 }
 
-async fn call(input: &Value) -> Result<Value> {
+pub(crate) async fn call(input: &Value) -> Result<Value> {
     let method = input["method"].as_str().unwrap_or("GET").to_uppercase();
     let path = input["path"].as_str().context("path")?;
     let body = match input.get("body") {
@@ -2381,12 +2411,12 @@ fn claude_design() -> Files {
     );
     let main = board(
         "Main",
-        &format!("<div style=\"padding: 32px; font-family: Lab\">\n  <h1>{{{{title}}}}</h1>\n  <img alt=\"\" src=\"/_blob/{LONG_BLOB_ID}\" width=\"64\" height=\"64\">\n  <dc-import name=\"Card\" hint-size=\"400px,300px\"></dc-import>\n  <a href=\"Media.dc.html\">Media</a>\n</div>"),
+        &format!("<div style=\"padding: 32px; font-family: Lab\">\n  <h1>{{{{title}}}}</h1>\n  <img alt=\"\" src=\"/_blob/{LONG_BLOB_ID}\" width=\"64\" height=\"64\">\n  <dc-import name=\"Card\" hint-size=\"400px,300px\"></dc-import>\n  <a href=\"Media.dc.html\">Media</a>\n  <a href=\"https://example.com/more\">More</a>\n  <a href=\"#end\">End</a>\n  <p id=\"end\">The end</p>\n</div>"),
         "  renderVals() { return { title: this.props.title ?? 'Lab design' }; }",
     );
     let card = board(
         "Card",
-        "<div class=\"card\" style=\"width: 400px; height: 300px\">\n  <sc-for list=\"{{items}}\" as=\"item\" hint-placeholder-count=\"2\"><p>{{item.label}}</p></sc-for>\n</div>",
+        "<div class=\"card\" style=\"width: 400px; height: 300px; display: flow-root\">\n  <sc-for list=\"{{items}}\" as=\"item\" hint-placeholder-count=\"2\"><p>{{item.label}}</p></sc-for>\n</div>",
         "  renderVals() { return { items: [{ label: 'One' }, { label: 'Two' }] }; }",
     );
     let media = board(
@@ -2518,6 +2548,27 @@ fn fixture(run: &Run, input: &Value) -> Result<Value> {
             ("img/pic.png".into(), PNG.to_vec()),
         ]),
         "document" => Files::from([("notes.md".into(), b"# Lab notes\n\nOne <b>line</b>.\n".to_vec())]),
+        // The Oby Artifacts canvas itself (lab-ui/artifacts/design/project), people's names replaced.
+        "canvas" => {
+            let from = run.root.join("tools/obid-spec/lab-ui/artifacts/design/project");
+            read_source(&from, &Rules::ALL)
+                .map_err(|e| anyhow::anyhow!("{}: {}", from.display(), e.message))?
+                .0
+        }
+        // Three boards for oby_artifact_check: one fine, one whose renderVals throws, one whose
+        // logic doesn't parse.
+        "broken-design" => {
+            let canvas = json!({"v": 3, "title": "Broken", "boards": {
+                "Good.dc.html": {"x": 0, "y": 0, "w": 400, "h": 300, "title": "Good"},
+                "Throws.dc.html": {"x": 500, "y": 0, "w": 400, "h": 300, "title": "Throws"},
+                "Unparsed.dc.html": {"x": 1000, "y": 0, "w": 400, "h": 300, "title": "Unparsed"}}});
+            Files::from([
+                ("canvas.json".into(), serde_json::to_vec_pretty(&canvas)?),
+                ("Good.dc.html".into(), board("Good", "<p class=\"good\">{{word}}</p>", "  renderVals() { return { word: 'Drawn' }; }").into_bytes()),
+                ("Throws.dc.html".into(), board("Throws", "<p>{{word}}</p>", "  renderVals() { throw new Error('the lab board broke'); }").into_bytes()),
+                ("Unparsed.dc.html".into(), board("Unparsed", "<p>{{word}}</p>", "  renderVals( { return {}; }").into_bytes()),
+            ])
+        }
         "sized" => {
             // Sparse files of the sizes asked for: nothing is written but their length.
             for f in input["files"].as_array().context("files")? {
@@ -2531,7 +2582,7 @@ fn fixture(run: &Run, input: &Value) -> Result<Value> {
             .map(|i| (format!("f/{i:04}.txt"), format!("{i}\n").into_bytes()))
             .chain([("index.html".to_string(), page("Many"))])
             .collect(),
-        other => bail!("fixture {other}? claude-design, canvas-obid, canvas-swift, page, document, sized or many"),
+        other => bail!("fixture {other}? claude-design, canvas, broken-design, canvas-obid, canvas-swift, page, document, sized or many"),
     };
     if let Some(how) = input["break"].as_str() {
         spoil(&mut files, how)?;

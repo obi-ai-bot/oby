@@ -10,7 +10,7 @@ const APP = 'apps/electron/src';
 export const config: BrainConfig = {
   name: 'Oby',
   root: resolve(fileURLToPath(new URL('.', import.meta.url)), '../..'),
-  obid: { extractor: 'tools/brain/obid-extract', crate: 'core/crates/obid', apiDocs: ['docs/runner-api.md', 'docs/api/*.md'], goneSection: 'Routes obid does not serve' },
+  obid: { extractor: 'tools/brain/obid-extract', crate: 'core/crates/obid', apiDocs: ['docs/runner-api.md', 'docs/api/*.md'], goneSection: 'Routes obid does not serve', proposedMark: "**Proposed: obid doesn't serve" },
   app: {
     renderer: `${APP}/renderer/src`,
     main: [`${APP}/main`, `${APP}/preload`],
@@ -35,7 +35,7 @@ export const config: BrainConfig = {
     { id: 'jobs', title: 'Jobs', summary: 'Starting, scheduling and running jobs, their records and checks.', modules: ['jobs', 'job', 'store', 'groups', 'facts', 'failures', 'routines', 'obi_dir', 'clear', 'meter', 'listening', 'power', 'receipts', 'delivery', 'helpers'] },
     { id: 'agents', title: 'Agents', summary: 'The agent CLIs: Claude Code, Codex, Cursor, how obid talks to them, and the browser they drive.', modules: ['agent', 'codex', 'acp', 'conn', 'steer', 'process', 'model_lists', 'cli_versions', 'providers', 'skills', 'browser'] },
     { id: 'accounts', title: 'Accounts and limits', summary: 'Accounts, sign-ins, usage, limits and the owner\'s limit decisions.', modules: ['accounts', 'usage', 'limits', 'account_limits', 'chatgpt', 'chatgpt_relay', 'cursor_usage'] },
-    { id: 'workspace', title: 'Workspace', summary: 'Clones, worktrees, repositories and working folders.', modules: ['git', 'repos', 'folders', 'projects'] },
+    { id: 'workspace', title: 'Workspace', summary: 'Clones, worktrees, repositories and working folders.', modules: ['git', 'repos', 'folders', 'projects', 'workspace'] },
     { id: 'publish', title: 'Publish and review', summary: 'Publishing, reviews, merging and the decision checks before them.', modules: ['publish', 'merge', 'autofix', 'review', 'decisions', 'teammates'] },
     { id: 'connectors', title: 'Connectors', summary: 'GitHub, Tetrix, the MCP broker agents reach them through, and the owner\'s own Claude Code connectors.', modules: ['github', 'github_login', 'github_work', 'tetrix', 'connections', 'connectors', 'mcp'] },
     { id: 'security', title: 'Security', summary: 'The box, egress, the secret scan, permissions, policy, the vault and approvals.', modules: ['sandbox', 'egress', 'scan', 'secrets', 'secretspec', 'permissions', 'policy', 'vault', 'approval', 'devices', 'token', 'proofs', 'local_paths'] },

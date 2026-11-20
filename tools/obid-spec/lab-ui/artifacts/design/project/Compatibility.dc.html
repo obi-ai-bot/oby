@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>How Claude's artifacts work, and how Oby matches them</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="oby.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;background:#0b0b0b}
+a{color:#64a8ff}a:hover{color:#8cbcff}
+</style>
+</helmet>
+<div class="oby" style="background: #0b0b0b; color: rgba(255,255,255,0.8); font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;">
+  <article style="max-width: 1040px; margin: 0 auto; padding: 64px 24px 80px; box-sizing: border-box; display: flex; flex-direction: column; gap: 44px;">
+    <header style="display: flex; flex-direction: column; gap: 12px;">
+      <p style="margin: 0; font-size: 13px; color: #6e6e74;">Research · how it works underneath · 20 November 2026</p>
+      <h1 style="margin: 0; font-size: 36px; line-height: 44px; font-weight: 600; color: #ececec;">Claude's artifacts are files. Oby can keep the same files, and draw them itself.</h1>
+      <p style="margin: 0; font-size: 16px; line-height: 25px; color: #a3a3a8;">Read from the files of this very canvas (its index, its boards, and the Design type's runtime and format guide, which every canvas serves), Claude Code's artifact docs and T3 Code's source. What's confirmed is marked; what needs a spike says so.</p>
+    </header>
+
+    <section style="display: flex; flex-direction: column; gap: 16px;">
+      <h2 style="margin: 0; font-size: 22px; font-weight: 600; color: #ececec;">1. Two kinds of Claude artifact</h2>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px;">
+        <div style="background: #161617; border-radius: 18px; padding: 20px; display: flex; flex-direction: column; gap: 10px;">
+          <p style="margin: 0; font-size: 15px; font-weight: 600; color: #ececec;">A page</p>
+          <p style="margin: 0; font-size: 14px; line-height: 21px; color: #a3a3a8;">One <span class="tok-path">.html</span> or <span class="tok-path">.md</span> file, versioned, at <span class="tok-path">claude.ai/code/artifact/&lt;id&gt;</span>. Claude wraps it in a shell on a sandboxed <span class="tok-path">claudeusercontent.com</span> origin under a strict policy: scripts only from cdnjs, unpkg, jsDelivr <span class="tok-path">/npm/</span>, Tailwind's and jQuery's CDNs; fonts from Google; images as data or SVG; 16 MiB at most. A page can also ask for runtime capabilities at publish (a shared database, who's viewing, comments, downloads, connectors, asking Claude) through <span class="tok-path">window.claude</span>: those exist only on Claude.</p>
+        </div>
+        <div style="background: #161617; border-radius: 18px; padding: 20px; display: flex; flex-direction: column; gap: 10px;">
+          <p style="margin: 0; font-size: 15px; font-weight: 600; color: #ececec;">An artifact made from a type</p>
+          <p style="margin: 0; font-size: 14px; line-height: 21px; color: #a3a3a8;">Design, Design System, Slides and others are types: a fixed editor page (its <span class="tok-path">index.html</span>, <span class="tok-path">app.js</span>, <span class="tok-path">dc-runtime.js</span>) that reads the artifact's own files under <span class="tok-path">project/</span>. A Claude Design canvas is exactly those files plus pictures kept by id in an asset store (<span class="tok-path">/_blob/&lt;id&gt;</span>). Confirmed: this canvas is one.</p>
+        </div>
+      </div>
+    </section>
+
+    <section style="display: flex; flex-direction: column; gap: 16px;">
+      <h2 style="margin: 0; font-size: 22px; font-weight: 600; color: #ececec;">2. A Claude Design canvas, file by file</h2>
+      <pre style="margin: 0; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 18px 20px; font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 13px; line-height: 20px; color: #d6d6d8; overflow-x: auto; white-space: pre;">project/
+  canvas.json          the index: title, pages, launch, notes, designSystems,
+                       boards { "Main.dc.html": { x, y, w, h, title, page,
+                       expand, print, paper, is_interactive, guides, radius } },
+                       order (back to front)
+  Main.dc.html         one file per board (the first is the entry)
+  Viewer.dc.html
+  oby.css              support files, linked relatively
+  ds/oby/tokens.json   a design system's copy, from designSystems
+  ds/oby/components/bundle.css
+assets                 pictures and fonts in the asset store, named /_blob/&lt;id&gt;</pre>
+      <p style="margin: 0; font-size: 14px; line-height: 21px; color: #a3a3a8;">Notes on the canvas are titles, stickies, the person's own shapes, and link cards to other artifacts (a deck or a motion made from the boards).</p>
+    </section>
+
+    <section style="display: flex; flex-direction: column; gap: 16px;">
+      <h2 style="margin: 0; font-size: 22px; font-weight: 600; color: #ececec;">3. One board: a .dc.html file</h2>
+      <pre style="margin: 0; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 18px 20px; font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 13px; line-height: 20px; color: #d6d6d8; overflow-x: auto; white-space: pre;">&lt;head&gt; &lt;script src="./support.js"&gt;&lt;/script&gt;   the runtime, served by the host
+       &lt;link rel="stylesheet" href="oby.css"&gt;
+&lt;x-dc&gt;                                         the template
+  &lt;helmet&gt;&lt;style&gt;…&lt;/style&gt;&lt;/helmet&gt;              head styles and fonts
+  &lt;h1&gt;{{lb}}title{{rb}}&lt;/h1&gt;                            holes: dotted lookups, no expressions
+  &lt;sc-for list="{{lb}}items{{rb}}" as="item"&gt;…&lt;/sc-for&gt;   repeat
+  &lt;sc-if value="{{lb}}open{{rb}}"&gt;…&lt;/sc-if&gt;              branch
+  &lt;button onClick="{{lb}}pick{{rb}}"&gt;                   events: functions from renderVals()
+  &lt;a href="Cart.dc.html"&gt;                        a link to another board (prototypes)
+  &lt;dc-import name="Card" item="{{lb}}it{{rb}}"&gt;           another board as a child
+  &lt;x-import component-from-global-scope="Ns.Button"&gt;   a design system's React component
+&lt;/x-dc&gt;
+&lt;script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color"},
+        "$preview":{"width":880,"height":560}}'&gt;
+class Component extends DCLogic {             React class lifecycle, state, setState
+  renderVals() { return { title: … } }        everything the template reads
+}
+&lt;/script&gt;</pre>
+      <p style="margin: 0; font-size: 14px; line-height: 21px; color: #a3a3a8;">The runtime (<span class="tok-path">dc-runtime.js</span>, 198 KB) is React 18, which is MIT, plus Anthropic's own code, which has no license. It parses the template into React elements, draws a template while it's still streaming in (the <span class="tok-path">hint-*</span> attributes), and talks to Claude's editor over <span class="tok-path">postMessage</span> (design mode, edits, errors). <span style="color: #ececec;">Oby doesn't copy it.</span> Oby writes its own runtime for the same format, open source, from the format alone.</p>
+    </section>
+
+    <section style="display: flex; flex-direction: column; gap: 16px;">
+      <h2 style="margin: 0; font-size: 22px; font-weight: 600; color: #ececec;">4. Compatible, level by level</h2>
+      <div style="overflow-x: auto; border: 1px solid rgba(255,255,255,0.08); border-radius: 14px;">
+        <table style="width: 100%; min-width: 820px; border-collapse: collapse; font-size: 13px; line-height: 19px;">
+          <thead><tr style="background: #161617; color: #6e6e74; text-align: left;"><th style="padding: 12px 14px; font-weight: 500;">Claude has</th><th style="padding: 12px 14px; font-weight: 500;">Oby keeps it as</th><th style="padding: 12px 14px; font-weight: 500;">Work</th></tr></thead>
+          <tbody style="color: #a3a3a8;">
+            <tr style="border-top: 1px solid rgba(255,255,255,0.05);"><td style="padding: 12px 14px; color: #ececec; vertical-align: top;">A page (.html, .md)</td><td style="padding: 12px 14px; vertical-align: top;">obid's <span class="tok-path">html</span> and <span class="tok-path">markdown</span> kinds, already there</td><td style="padding: 12px 14px; vertical-align: top;">obid allows no network; Claude allows five CDNs. On import, fetch the pinned CDN files into the version (secret-scanned) and point the page at them, so it still runs offline.</td></tr>
+            <tr style="border-top: 1px solid rgba(255,255,255,0.05);"><td style="padding: 12px 14px; color: #ececec; vertical-align: top;">A Claude Design canvas</td><td style="padding: 12px 14px; vertical-align: top;">obid's <span class="tok-path">canvas</span> kind, reading Claude's <span class="tok-path">canvas.json</span> as it is; the boards kept byte for byte</td><td style="padding: 12px 14px; vertical-align: top;">Oby's runtime served as <span class="tok-path">support.js</span>; <span class="tok-path">/_blob/</span> assets downloaded into the version; <span class="tok-path">ds/</span> copies kept. Sent back unchanged, it opens in Claude Design as it was.</td></tr>
+            <tr style="border-top: 1px solid rgba(255,255,255,0.05);"><td style="padding: 12px 14px; color: #ececec; vertical-align: top;">Runtime capabilities</td><td style="padding: 12px 14px; vertical-align: top;">Not portable</td><td style="padding: 12px 14px; vertical-align: top;">A page that uses Claude's database, viewers, connectors or asking Claude shows in Oby without them, and says so. Comments map to what people say through the Obysphere.</td></tr>
+            <tr style="border-top: 1px solid rgba(255,255,255,0.05);"><td style="padding: 12px 14px; color: #ececec; vertical-align: top;">Slides, Docs, Design Systems</td><td style="padding: 12px 14px; vertical-align: top;">A link to Claude, for now</td><td style="padding: 12px 14px; vertical-align: top;">Each type keeps its own files; Docs live behind a connector, not files. Later, one type at a time.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section style="display: flex; flex-direction: column; gap: 14px;">
+      <h2 style="margin: 0; font-size: 22px; font-weight: 600; color: #ececec;">5. Moving between Claude and Oby</h2>
+      <ul style="margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; font-size: 14px; line-height: 21px; color: #a3a3a8;">
+        <li>Claude has no public API for artifacts; its Compliance API is for admins. <span style="color: #ececec;">Claude Code's own Artifact tool is the way in and out</span>: it reads any file of an artifact by path, uploads assets, creates an artifact from a type (Design) with files under <span class="tok-path">project/</span>, and publishes new versions to the same link. Confirmed: this canvas was built that way.</li>
+        <li>So the owner's own Claude Code, on their own login, does the moving, as a job in the own lane. Oby never holds a Claude login.</li>
+        <li>Spike: Claude Code's docs say artifacts are off by default in <span class="tok-path">claude -p</span> runs, which is how Oby starts Claude Code. Find the setting that turns them on there, or carry the move another way.</li>
+      </ul>
+    </section>
+
+    <section style="display: flex; flex-direction: column; gap: 14px;">
+      <h2 style="margin: 0; font-size: 22px; font-weight: 600; color: #ececec;">6. Agents without Claude</h2>
+      <p style="margin: 0; font-size: 14px; line-height: 21px; color: #a3a3a8;">“Make this an Oby artifact” has to work with Codex or Cursor alone. T3 Code solved the same thing for every provider: its own MCP server gives each agent <span class="tok-path">html_preview</span> (render the page in a headless browser, return a picture, its height and the console) and <span class="tok-path">html_render</span> (show it in the thread). Its pages get the app's theme as CSS variables and speak the MCP Apps messages (<span class="tok-path">ui/notifications/size-changed</span>, <span class="tok-path">ui/open-link</span>, <span class="tok-path">host-context-changed</span>). MIT, read on main at 1c379b63.</p>
+      <ul style="margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; font-size: 14px; line-height: 21px; color: #a3a3a8;">
+        <li><span style="color: #ececec;">One tool for every agent.</span> obid already gives every owner's job its own MCP server (Tetrix's tools). Add <span class="tok-path">oby_artifact</span>, which conversations already have, and <span class="tok-path">oby_artifact_check</span>, so Claude Code, Codex and Cursor all publish the same way. Jobs keep <span class="tok-path">.obi/artifacts/</span>.</li>
+        <li><span style="color: #ececec;">One format guide.</span> Oby's own written guide to the canvas format, given to whichever agent makes the artifact. The format is plain HTML, a small template language and one JavaScript class: any good model can write it.</li>
+        <li><span style="color: #ececec;">Oby draws it.</span> Its runtime renders the result, so nothing needs Claude Design. Claude only comes in when the owner picks Claude artifacts, or sends one there.</li>
+        <li><span style="color: #ececec;">MCP Apps on the outside.</span> A page that speaks MCP Apps also shows inside Claude, ChatGPT and VS Code, so an Oby artifact isn't tied to Oby either.</li>
+      </ul>
+    </section>
+
+    <section style="display: flex; flex-direction: column; gap: 14px;">
+      <h2 style="margin: 0; font-size: 22px; font-weight: 600; color: #ececec;">7. Spikes, in order</h2>
+      <ol style="margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; font-size: 14px; line-height: 21px; color: #a3a3a8;">
+        <li>Oby's runtime draws this canvas's ten boards like Claude does, compared board by board in pictures.</li>
+        <li>Codex and Cursor each make a canvas from the guide alone, and it draws without errors.</li>
+        <li>Claude Code in a headless run reads a Claude canvas into obid, and publishes one back to the same link.</li>
+        <li>A Claude page that loads a CDN script runs in Oby offline, after its import.</li>
+        <li>With Ben: an artifact as something one Oby sends another in the Obysphere.</li>
+      </ol>
+      <p style="margin: 0; font-size: 12px; line-height: 18px; color: #6e6e74;">Reading a file format to stay compatible is ordinary; shipping Anthropic's runtime is not, so Oby's runtime is written fresh. Worth a short legal look before launch.</p>
+    </section>
+  </article>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":3200}}'>
+class Component extends DCLogic {
+  renderVals() { return { lb: "{{", rb: "}}" }; }
+}
+</script>
+</body>
+</html>

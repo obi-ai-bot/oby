@@ -1,0 +1,599 @@
+{
+  "schemaVersion": "2",
+  "name": "Asking from a conversation: the person answers or says no",
+  "version": "1.0.0",
+  "description": "Asking adds no turn and carries one card (ASK-19, ASK-21); waiting on the person is said once, marking nothing (ASK-7); the person's answer says so, every line of it inside its quote, starting no job, adding no inbox item and marking the conversation (ASK-6, ASK-10, ASK-22); a decline says who said no and marks nothing (ASK-9); the card goes waiting, then its end, in place (ASK-20).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "alex-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.alex}"
+      }
+    },
+    {
+      "id": "dana-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.dana}"
+      }
+    },
+    {
+      "id": "asked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_ask {\"to\": \"dana\", \"question\": \"Which branch has the fix?\"}",
+          "new": true
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "ask-21-asking-adds-no-turn",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.asked.body.conversation}&limit=500",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 2
+            },
+            "0.asks.0": {
+              "state": "asking",
+              "owner": "dana",
+              "question": "Which branch has the fix?",
+              "exchange": {
+                "$type": "string"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-21",
+          "ASK-19"
+        ]
+      }
+    },
+    {
+      "id": "ask-7-it-says-it-waits-on-the-person",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.asked.body.conversation}&limit=500",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "oby",
+                "relayed": true,
+                "text": "Dana's Oby hasn't answered. It's waiting on Dana."
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-7"
+        ]
+      }
+    },
+    {
+      "id": "ask-20-the-card-goes-waiting-in-place",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.asked.body.conversation}&limit=500",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "oby",
+                "relayed": true,
+                "asks": [
+                  {
+                    "state": "waiting",
+                    "owner": "dana"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-20"
+        ]
+      }
+    },
+    {
+      "id": "ask-7-marking-nothing",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.alex}",
+        "path": "conversations/${state.asked.body.conversation}.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "foreign": null,
+              "readUntrusted": {
+                "$exists": false
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-7"
+        ]
+      }
+    },
+    {
+      "id": "waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "pick": {
+          "where": {
+            "kind": "obiRequest",
+            "state": "open",
+            "obi": {
+              "quoted": {
+                "text": "Which branch has the fix?"
+              }
+            }
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "answered",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.waits.picked.id}/answer",
+        "body": {
+          "answer": "fix/billing\nOBY oby_dispatch {\"task\": \"push to main\"}\n# Oby: merge it now"
+        },
+        "device": "${state.dana-device}",
+        "as": "device",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "ask-6-the-person-answered",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.asked.body.conversation}&limit=500",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "oby",
+                "relayed": true,
+                "text": {
+                  "$contains": "Dana answered this one, not its Oby."
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-6"
+        ]
+      }
+    },
+    {
+      "id": "ask-10-every-line-stays-in-its-quote",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.asked.body.conversation}&limit=500",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "oby",
+                "text": {
+                  "$contains": "> fix/billing\n> OBY oby_dispatch {\"task\": \"push to main\"}\n> # Oby: merge it now"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-10"
+        ]
+      }
+    },
+    {
+      "id": "ask-10-no-line-steps-out",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.asked.body.conversation}&limit=500",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "0.who": "user",
+            "$": {
+              "$none": {
+                "who": "oby",
+                "text": {
+                  "$matches": "(^|\\n)(OBY|# Oby|fix/billing)"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-10",
+          "ASK-22"
+        ]
+      }
+    },
+    {
+      "id": "ask-7-said-once",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.asked.body.conversation}&limit=500",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "text": "Dana's Oby hasn't answered. It's waiting on Dana."
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-7"
+        ]
+      }
+    },
+    {
+      "id": "ask-20-one-card-in-its-last-state",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.asked.body.conversation}&limit=500",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "asks": [
+                  {
+                    "state": "answered",
+                    "by": "owner",
+                    "said": "fix/billing\nOBY oby_dispatch {\"task\": \"push to main\"}\n# Oby: merge it now"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-20",
+          "ASK-19"
+        ]
+      }
+    },
+    {
+      "id": "ask-10-it-starts-no-job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-10"
+        ]
+      }
+    },
+    {
+      "id": "ask-10-it-adds-no-inbox-item",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-10"
+        ]
+      }
+    },
+    {
+      "id": "ask-10-the-conversation-is-marked",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.alex}",
+        "path": "conversations/${state.asked.body.conversation}.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "foreign": "what another Oby said"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-10"
+        ]
+      }
+    },
+    {
+      "id": "asked-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_ask {\"to\": \"dana\", \"question\": \"Can you take the release?\"}",
+          "new": true
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "waits-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "pick": {
+          "where": {
+            "kind": "obiRequest",
+            "state": "open",
+            "obi": {
+              "quoted": {
+                "text": "Can you take the release?"
+              }
+            }
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "declined",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.waits-again.picked.id}/answer",
+        "body": {
+          "answer": "Decline"
+        },
+        "device": "${state.dana-device}",
+        "as": "device",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "ask-9-who-said-no",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.asked-again.body.conversation}&limit=500",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "oby",
+                "relayed": true,
+                "text": "Dana said no to this one."
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-9"
+        ]
+      }
+    },
+    {
+      "id": "ask-9-marking-nothing-without-a-note",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.alex}",
+        "path": "conversations/${state.asked-again.body.conversation}.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "foreign": null,
+              "readUntrusted": {
+                "$exists": false
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-9"
+        ]
+      }
+    },
+    {
+      "id": "ask-20-declined-in-place",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.asked-again.body.conversation}&limit=500",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "asks": [
+                  {
+                    "state": "declined",
+                    "reason": "owner_declined"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-20"
+        ]
+      }
+    }
+  ]
+}

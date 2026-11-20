@@ -5,7 +5,7 @@ The business behavior contract for the browser panel in the Electron app, from [
 ## Feature and status
 
 - **Outcome:** The owner watches their agents use a browser beside the conversation, takes control of a tab at any time and gives it back, answers what an agent asks (a sign-in, a password, a choice), and turns the browser off in Settings. A password typed in Oby goes straight into the page, never to an agent.
-- **Status:** BROWSERAPP-1 to 18 **implemented**: the panel and its tabs, on the demo data and on obid's browser, with Take control and Give back, the agents' asks and the password card, page states, a script's mark, downloads, another computer and Settings › General's two switches. On an obid without the browser (`GET /v1/browser` answers 404), nothing shows. BROWSERAPP-19 and 20 **proposed**, in their own pull request: the Mac's pill, Stop and the first-time sheet.
+- **Status:** BROWSERAPP-1 to 20 **implemented**: the panel and its tabs, on the demo data and on obid's browser, with Take control and Give back, the agents' asks and the password card, page states, a script's mark, downloads, another computer, Settings › General's two switches, and an agent using the Mac (its pill, Stop, the first-time sheet). On an obid without the browser (`GET /v1/browser` answers 404), nothing shows. The Mac's pill and sheet show on the demo data until desktop control's own contract (agent-desktop) says who has the Mac and takes its Stop.
 - **Design:** the approved design ([Oby's browser](https://claude.ai/artifact/Cs7t741EJKCD7JXNfzSRXb), 17 boards), built and driven first in the lab (`tools/obid-spec/lab-ui/browser`, LAB-UI-1 to 17); the port follows [the plan](https://claude.ai/artifact/TVVtw8kq77vnm81B5UfcXq), gate 5. Every word on the boards is the owner's approved words.
 - **Scope:** the Electron app (`apps/electron/src/renderer/src/browser/`, its mount in `Home.tsx`, main's follower and signing once live). **Out of scope:** obid's browser engine, API and agents' tools (`core/`, ported from `tools/obid-spec/src/lab/browserapi.rs`), whose routes follow the lab's contract (`tools/obid-spec/src/lab/browser_contract.rs`) exactly, add-only.
 
@@ -58,8 +58,8 @@ obid's `/v1/browser` routes as the lab's contract names them (`GET /v1/browser`,
 - **BROWSERAPP-16** (board 12) Downloads sit on the panel's shelf, each saying whose it is and where; an agent's stays in its browser until **Save a copy** (`…/saveCopy`, `{}`, signed by that label) puts a copy in Downloads; **Show in Finder** has main show that file, by its name, in the owner's Downloads and nowhere else.
 - **BROWSERAPP-17** (board 14) A browser on another computer says so under its tabs (**This browser runs on devbox. Its localhost is devbox’s, not this Mac’s.**), in its address (**on devbox**) and on its New tab button.
 - **BROWSERAPP-18** (board 13) Settings › General's **Browser** group (marked **New**, after Permissions on this Mac, where the browser is offered) has **Agents can use the browser** and **Agents can use this Mac**, both on by default, each with the board's words, and its footer; each is turned with `PUT /v1/browser/settings` of that one key, a boolean, signed by the switch's own label (held by its `aria-label`, a switch having no words of its own). With the browser off, its globe goes from the title bar.
-- **BROWSERAPP-19** (proposed, board 15) While an agent uses the Mac, Oby's pill says so with **Stop**; Stop, or Esc twice, ends it.
-- **BROWSERAPP-20** (proposed, board 16) The first time an agent would use the Mac, Oby says why macOS will ask, once.
+- **BROWSERAPP-19** (board 15) While an agent uses the Mac, main shows Oby's pill in a window of its own over every app and Space (**Claude Code is using your Mac · Typing in TextEdit**, esc esc, **Stop**), never taking the keyboard, and an orange frame around the screen in a click-through window; the conversation shows **Claude Code has your Mac. Press Esc twice to stop it.** with Stop. The pill's Stop (only from its own window), the card's, or Esc pressed twice (main's shortcut, only while the pill shows) puts all three away.
+- **BROWSERAPP-20** (board 16) The first time an agent would use the Mac, Oby's sheet says what that means (it sees the screen, it clicks and types, you stop it any time) and that macOS asks next, once, for agent-desktop, never Oby itself; Continue and Not now close it.
 
 ### Not matched within 4px, and why
 
@@ -71,12 +71,15 @@ Every browser piece is held to its board within 4px by `app.compare`. What it re
 - **Boards 11, 12 and 14**: the board draws a smaller set for a tab nobody is using (no Full width, no page's menu, Take control without its hand); the app keeps board 2's set, so the tabs' end has one more button, the address is 30px shorter and the strip's Take control 20px wider (`.br-tabs-end .icon-button`, `.br-address`, `.br-control-text`, `.br-control .tc-option`).
 - **Boards 7 and 8**: the decision card sits over the app's own message box, whose place is today's app, not the board's: its words are held to the board, its places reported (`.decision-card`, `.tc-ask-line`, `.tc-ask-text`, `.secret-row`, `.secret-note`).
 - **Board 13**: Settings › General is today's page, with more groups than the board draws: the Browser group is held by its words, its switches and its place after Permissions on this Mac, not by the board's places.
+- **Board 15** draws the Mac's own screen around the pill: the pill is checked in its own window, word by word; the card in Oby by its words and over the message box.
 - **Boards 9 and 10** are sheets of pieces side by side: their cards and small browsers are checked one at a time in the app, word by word, not by the sheet's places.
 - **Board 5**: across the window the tabs start after the traffic lights, where macOS put them, 5px right of the board's, as the app's own panel toggle is (`.br-tab`).
 
 ### Open
 
 - **The owner's ways out of a page state** (Try again, Reload, Go back, Go on anyway; a page dialog's Leave and Stay) need routes obid doesn't have for the owner: until then, on obid, a state's words show alone.
+- **Desktop control on obid**: who has the Mac, its Stop and the first-time answer come with desktop control's own contract (agent-desktop); until then the pill, the card and the sheet show on the demo data.
+- **Esc twice** is main's global shortcut while the pill shows: only macOS can press it, so it waits for a `desktop.*` workflow (the lab proved it on agent-desktop, LAB-UI-15).
 - **Skip answers the ask** (`{}`, which `docs/api/browser.md` calls Done): the agent goes on without what it asked for. Whether Skip should say so to the agent in other words is the owner's or Sangam's.
 - **Asks live** (BROWSERAPP-11 to 13 on a real obid) need an agent's ask: a stand-in agent that asks through `/v1/browser/mcp`, not written yet.
 - **⇧⌘B** (board 1's tip) needs a menu item whose words aren't on a board; it waits for the owner's or Sangam's words.

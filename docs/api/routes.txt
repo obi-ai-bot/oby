@@ -51,6 +51,8 @@ DELETE /v1/conversations/{id}
 PATCH /v1/conversations/{id}
 GET /v1/conversations/{id}/files
 POST /v1/conversations/{id}/restart
+GET /v1/conversations/{id}/workspace
+POST /v1/conversations/{id}/workspace
 POST /v1/devices
 DELETE /v1/devices/{id}
 GET /v1/devices/{id}/pairing
@@ -118,6 +120,7 @@ GET /v1/obid/sphere/audit
 POST /v1/obid/sphere/card
 GET /v1/obid/sphere/exchanges
 GET /v1/obid/sphere/exchanges/{id}
+POST /v1/obid/sphere/exchanges/{id}/cancel
 POST /v1/obid/sphere/join
 POST /v1/obid/sphere/key
 GET /v1/obid/sphere/members

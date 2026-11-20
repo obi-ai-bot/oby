@@ -409,13 +409,54 @@ fn tasks_25_an_unsigned_jobs_failure_a_retry_cant_fix_ends_with_its_reason_and_n
     let job = wait(&obid, &id);
     assert_eq!(job["status"], "interrupted", "{job}");
     assert!(
-        job["reason"].as_str().unwrap().contains("Not logged in"),
+        job["reason"]
+            .as_str()
+            .unwrap()
+            .contains("login was refused"),
         "{job}"
     );
     assert_eq!(prompts(&job).len(), 1, "{job}");
     no_inbox_item_for(&events, &id, "interrupted", || {
         call(&obid, "GET", "/v1/inbox", None).body
     });
+}
+
+/// ACCOUNTS-38: a login refused mid-run ("Not logged in: please run /login") ends the task saying,
+/// in Oby's words, that the account's login was refused and how to fix it from Oby, never the
+/// tool's `/login`, which Oby has no way to run; the account's `cantRun` says the same.
+#[test]
+fn accounts_38_a_login_refused_mid_run_says_how_to_sign_in_from_oby() {
+    let (_folder, obid) = obid("accounts-38");
+    let id = post_job(&obid, "DIE LOGIN KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(job["nextStep"], "Try again", "{job}");
+    let reason = job["reason"].as_str().unwrap();
+    let account = job["account"].as_str().unwrap();
+    let status = call(&obid, "GET", "/v1/status", None).body;
+    let accounts = status["accounts"].as_array().unwrap();
+    let account = accounts.iter().find(|a| a["id"] == account).unwrap();
+    let who = match accounts
+        .iter()
+        .filter(|a| a["agent"] == account["agent"])
+        .count()
+    {
+        1 => "Claude Code".to_owned(),
+        _ => format!("Claude Code · {}", account["name"].as_str().unwrap()),
+    };
+    assert_eq!(
+        reason,
+        format!(
+            "{who}'s login was refused, so this task stopped: sign it in again from Settings › Accounts, then Try again, or ask for another account."
+        ),
+        "{job}"
+    );
+    assert!(!reason.contains("/login"), "{job}");
+    assert_eq!(
+        account["cantRun"],
+        reason.trim_end_matches('.'),
+        "{account}"
+    );
 }
 
 /// RECOVERY-1: tries count together: 3 in a row, then today's end with the real reason. The
@@ -486,7 +527,10 @@ fn recovery_1_a_login_or_a_limit_is_not_retried() {
     let job = wait(&obid, &id);
     assert_eq!(job["status"], "interrupted", "{job}");
     assert!(
-        job["reason"].as_str().unwrap().contains("Not logged in"),
+        job["reason"]
+            .as_str()
+            .unwrap()
+            .contains("login was refused"),
         "{job}"
     );
     assert_eq!(prompts(&job).len(), 1, "{job}");

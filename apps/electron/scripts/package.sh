@@ -80,9 +80,18 @@ for arch in $archs; do
   npx node-gyp rebuild --silent --directory native/window-style --arch="$arch" --target="$electron" --dist-url=https://electronjs.org/headers
   [[ "$(lipo -archs native/window-style/build/Release/window_style.node)" == "${arch/x64/x86_64}" ]] || die "window-style isn't built for $arch"
   rm -rf dist/mac*(N)
+  # the terminal's node-pty (main/terminal.ts): its package ships spawn-helper without its execute bit
+  pty=node_modules/node-pty/prebuilds/darwin-$arch
+  [[ -f $pty/pty.node && -f $pty/spawn-helper ]] || die "node-pty has no build for $arch: npm ci"
+  chmod 755 $pty/spawn-helper
   npx electron-builder --mac dir "--$arch" --publish never
   app=(dist/mac*/"$name".app)
   codesign --verify --deep --strict "$app" || die "$name.app's signature doesn't verify"
+  unpacked="$app/Contents/Resources/app.asar.unpacked/$pty"
+  [[ -x "$unpacked/spawn-helper" && -f "$unpacked/pty.node" ]] || die "$name.app's terminal has no node-pty for $arch"
+  for helper in "$unpacked/spawn-helper" "$unpacked/pty.node"; do
+    [[ "$(codesign -dv "$helper" 2>&1)" == *"TeamIdentifier=$team"* ]] || die "${helper:t} isn't signed by team $team"
+  done
   for helper in Helpers/obid MacOS/gh MacOS/gitleaks; do
     [[ "$(codesign -dv "$app/Contents/$helper" 2>&1)" == *"TeamIdentifier=$team"* ]] || die "$helper isn't signed by team $team"
   done

@@ -1674,6 +1674,18 @@ button.connector { width: 100%; text-align: left; }
 .cant-run, .refusal { display: flex; align-items: center; gap: 8px; box-sizing: border-box; width: calc(100% - 2 * var(--gutter)); max-width: var(--column); margin: 8px auto 0; padding: 8px 10px 8px 12px; border-radius: 12px; font-size: var(--text-sm); animation: rise 280ms var(--warm) both; }
 .cant-run { background: var(--hover); color: var(--item); }
 .cant-run > svg { flex: none; }
+/* finishing the work in a conversation's folders (WORKSPACE-4, 5) */
+.finish-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; box-sizing: border-box; width: calc(100% - 2 * var(--gutter)); max-width: var(--column); margin: 8px auto 0; font-size: var(--text-sm); }
+.finish-place { display: inline-flex; align-items: center; gap: 6px; }
+.finish-name { color: var(--item); }
+.finish-action { padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: none; color: inherit; font: inherit; cursor: pointer; }
+.finish-action:hover:not(:disabled) { background: var(--hover); }
+.finish-action:disabled { opacity: 0.5; cursor: default; }
+.finish-said { color: var(--item); }
+/* where a new conversation works: This folder or A new worktree (WORKSPACE-3) */
+.composer-workspace { display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px; background: var(--hover); }
+.composer-workspace button { padding: 2px 8px; border: 0; border-radius: 999px; background: none; color: var(--item); font: inherit; font-size: var(--text-sm); cursor: pointer; }
+.composer-workspace button[aria-checked="true"] { background: var(--surface); color: inherit; }
 .cant-run-text, .refusal-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cant-run-action { flex: none; padding: 3px 9px; border-radius: 8px; color: var(--ink); background: rgba(255, 255, 255, 0.08); font-size: var(--text-sm); }
 .cant-run-action:hover { background: rgba(255, 255, 255, 0.14); }

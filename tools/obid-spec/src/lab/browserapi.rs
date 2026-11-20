@@ -843,6 +843,8 @@ impl Api {
                     ask: None,
                     dialog: None,
                     certificate: None,
+                    kind: c::TabKind::Page,
+                    artifact: None,
                 },
                 inflight: 0,
                 last_error: None,

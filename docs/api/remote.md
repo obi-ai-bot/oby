@@ -25,6 +25,31 @@ With `direct` in obid's configuration ([configuration.md](configuration.md)), ob
 - **`GET /v1/status`** names each address under `gateway.direct`: `{"address": "0.0.0.0:8443", "state": "listening", "pin": "sha256:<64 hex>"}`, or `{"address", "state": "down", "detail"}` when it can't listen there (a warning in the log, never a stop). obid's log says `obid direct listening` with each address and pin; stdout keeps only its two lines, which launchers read first.
 - **A handshake** has 10 seconds; one that doesn't finish, or fails, is dropped and holds up no other.
 
+## `obid invite-computer`
+
+What the other computer's owner runs at it to add it to their Mac with a code (COMPUTERS-13), as the user obid runs as there.
+
+```bash
+obid invite-computer --config /path/to/config.json
+obid invite-computer          # macOS, Oby.app's own obid
+```
+
+- **What it does:** reads the running obid's status for its direct addresses ([Direct addresses](#direct-addresses)), writes a one-time `home/invite-computer` (0600, good for 2 minutes and once) as the owner's presence at this machine, and asks for `POST /v1/pairing/invite` `{"url", "name", "computer": true, "presence"}`.
+- **stdout:** one JSON line, `{"code": "123456", "link": "oby-computer:…", "name", "fingerprint": "ABCD 1234 …", "expiresAt"}`. `fingerprint` is the pin's first 16 bytes in groups of four hex digits, to compare by eye; the link carries the whole pin.
+- **Exit 1,** one line on stderr: obid isn't running or never started here; or `This computer has no address another computer can reach. Set "direct" in obid's configuration, or add it over SSH instead.`; or obid refused.
+
+## A computer's invitation
+
+`POST /v1/pairing/invite` with `"computer": true` ([phone-pairing.md](phone-pairing.md)):
+
+- **`computerLink`** in the answer, when obid serves direct addresses: `oby-computer:` and base64url JSON, `{"v": 1, "name", "routes": [{"id", "kind": "lan" | "tailnet" | "vpn" | "public" | "loopback", "via": {"type": "https", "host", "port", "pin": "sha256:<hex>"}}]}`. An address on every interface (`0.0.0.0`, `[::]`) is each of the machine's own addresses but loopback and IPv6 link-local; at most 8, in the owner's order.
+- **Its own slot:** a computer's invitation replaces the computer's before it, never a phone's, and a phone's never replaces it. It lasts 10 minutes. A wrong code counts against every open invitation; the fifth ends it.
+- **`presence`:** what `obid invite-computer` wrote in `home/invite-computer`. When it holds, or with the owner's device's `approval`, the computer it pairs may add its own key (`POST /v1/devices` through the gateway, for 10 minutes); otherwise it pairs one that can't.
+
+## Adding a computer with a code, the Mac's side
+
+`obid::remote::code::redeem(link, code, name, key)`: it decodes the link, reaches its first route that answers (`GET /v1/status`) with that route's pin, then sends `POST /v1/pairing` `{"credential": <code>, "name"}` there and `POST /v1/devices` `{"name", "publicKey"}` with the token it got. No route reached is `Oby can't reach {name} right now. It tried …`, each route with why: a certificate not the pinned one says `another computer answered: its certificate is …`. The window's endpoint for it comes with the computers this Mac keeps.
+
 ## `home/addresses.json`
 
 obid writes it (0600) each time it starts, once its API, gateway and direct addresses are bound: `{"api": "127.0.0.1:<port>", "gateway": "127.0.0.1:<port>", "direct": ["0.0.0.0:<port>"]}`, `gateway` and `direct` left out when there are none. Only `obid pair-computer` reads it.

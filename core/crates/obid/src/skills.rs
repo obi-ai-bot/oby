@@ -744,8 +744,7 @@ pub fn boxed_why(tool: Tool) -> String {
     match tool {
         Tool::Cursor => "Cursor runs in Oby's box here, without your skills.".into(),
         Tool::Codex => {
-            "Codex runs your skills only in Bypass on a codex login: here it runs in Oby's box."
-                .into()
+            "Codex runs your skills only on a codex login: here it runs in Oby's box.".into()
         }
         Tool::Claude => "This runs in Oby's box, without your skills.".into(),
     }

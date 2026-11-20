@@ -425,7 +425,7 @@ mod tests {
                 usage, peak_rss, agent_peak_rss, check_peak_rss, servers, build_freed, worktree_freed,
                 usage_seen, context_window,
                 window_share, ran_secs, budget_from, changes, moves, routed, named, routine, unattended,
-                untrusted, own_lane, ran_unproxied, unsigned, client_request_id,
+                untrusted, own_lane, own_mode, ran_unproxied, unsigned, client_request_id,
                 memory_from_others, foreign, foreign_by_api, withheld, check_withheld,
                 check_withheld_was, reached, made, apart, clone_root, vetted, own_conversation,
                 merge_error, told, told_merged_past, merge_needs_you, merged_by, sending,
