@@ -1,0 +1,128 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: a new conversation doesn't wait for the owner's MCP servers",
+  "version": "1.0.0",
+  "description": "The owner's own Claude Code conversation answers its first words once its Claude Code has started and connected Oby's own servers: it never waits for the owner's own MCP servers, however slow, Oby's tools are there on that first turn, and a ToolSearch lookup doesn't mark the turn (CONVERSATION-AGENT-24).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "files": {
+          "accounts/stand-in/slow-mcp-ms": "30000"
+        }
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "TOOLS",
+          "new": true
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "conversation-agent-24-answered-without-waiting-for-the-slow-server",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.first}",
+        "seconds": 20,
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$matches": "^tools: .*oby_dispatch"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-24"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-24-a-lookup",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "TOOLSEARCH",
+          "conversation": "${state.conversation-agent-24-answered-without-waiting-for-the-slow-server.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "searched"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-24"
+        ]
+      }
+    },
+    {
+      "id": "dispatched",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Add a greeting\", \"kind\": \"build\"}",
+          "conversation": "${state.conversation-agent-24-answered-without-waiting-for-the-slow-server.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-24-the-lookup-left-no-mark",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.dispatched.body.jobs.0.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "untrusted": {
+              "$ne": true
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-24"
+        ]
+      }
+    }
+  ]
+}

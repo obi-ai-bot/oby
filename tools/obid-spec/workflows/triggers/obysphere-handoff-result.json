@@ -1,0 +1,294 @@
+{
+  "schemaVersion": "2",
+  "name": "A handoff's result",
+  "version": "1.0.0",
+  "description": "The job a handoff started, ended done with its check passed, sends one result for the handoff, outcome done, tests_pass met, its branch, head commit, pull request and summary (HANDOFF-3).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "github": {
+          "routes.json": {
+            "fixture": "github/routes.json"
+          },
+          "pull-request.js": {
+            "fixture": "github/pull-request.js"
+          }
+        },
+        "env": {
+          "OBID_FOLLOW_SECONDS": "1"
+        }
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "alex-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.alex}"
+      }
+    },
+    {
+      "id": "dana-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.dana}"
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.alex-joined.obiId}",
+          "type": "handoff",
+          "body": {
+            "goal": "COMMIT: average.js",
+            "repo": "obi-e2e/fixture-app",
+            "base_branch": "main",
+            "acceptance": [
+              {
+                "kind": "tests_pass"
+              }
+            ],
+            "summary": "Adds a file."
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 202
+        }
+      }
+    },
+    {
+      "id": "first-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "obi-${state.first.body.correlationId}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "accepted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/inbox/obi-${state.first.body.correlationId}/answer",
+        "body": {
+          "answer": "Accept"
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "the-job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "within": 30,
+        "pick": {
+          "where": {
+            "kind": "build"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "job-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.the-job.picked.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "checks": [
+              {
+                "steps": [
+                  {
+                    "passed": true
+                  }
+                ]
+              }
+            ],
+            "outgoing": {
+              "$any": {
+                "action": "pullRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "handoff-3-one-result-goes-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.first.body.correlationId}",
+        "within": 90,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "messages": {
+              "$count": [
+                {
+                  "direction": "received",
+                  "envelope": {
+                    "type": "result"
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "HANDOFF-3"
+        ]
+      }
+    },
+    {
+      "id": "handoff-3-for-handoff-with-its-branch-head-and-pull-request",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.first.body.correlationId}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "messages": {
+              "$any": {
+                "direction": "received",
+                "envelope": {
+                  "type": "result",
+                  "body": {
+                    "for": "handoff",
+                    "outcome": "done",
+                    "acceptance": [
+                      {
+                        "index": 0,
+                        "kind": "tests_pass",
+                        "met": true
+                      }
+                    ],
+                    "repo": "obi-e2e/fixture-app",
+                    "head_branch": "${state.the-job.picked.branch}",
+                    "head_sha": "${state.job-done.body.outgoing.0.id}",
+                    "pr": 7,
+                    "summary": "Added average.js.\n\nGOAL MET"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "HANDOFF-3"
+        ]
+      }
+    }
+  ]
+}

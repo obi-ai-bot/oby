@@ -1,0 +1,143 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/conversations/{id}/workspace",
+  "version": "1.0.0",
+  "description": "A conversation's workspace (WORKSPACE-3): chosen with its first message, folder by default, kept after; later words naming one are 422; 401 without the token, 404 for a conversation obid doesn't have. Its folders' finishing actions are proved with real git folders in core/crates/obid/tests/workspace.rs (WORKSPACE-2, 4 to 6).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/conversations/{id}/workspace"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "plain",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY ok",
+          "new": true
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "tree",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY ok",
+          "new": true,
+          "workspace": "worktree"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations/${state.tree.body.conversation}/workspace",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations/00000000-0000-4000-8000-000000000000/workspace",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "workspace-3-folder-by-default",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "WORKSPACE-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations/${state.plain.body.conversation}/workspace",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "workspace": "folder"
+          }
+        }
+      }
+    },
+    {
+      "id": "workspace-3-later-words-cant-change-it",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "WORKSPACE-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY again",
+          "conversation": "${state.tree.body.conversation}",
+          "workspace": "folder"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "workspace-3-the-choice-is-kept",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "WORKSPACE-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations/${state.tree.body.conversation}/workspace",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "workspace": "worktree"
+          }
+        }
+      }
+    }
+  ]
+}

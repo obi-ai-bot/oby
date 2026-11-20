@@ -6,6 +6,7 @@ import { openChanges } from './ChangesPanel';
 import { api } from './obid';
 import { onObid } from './lean';
 import { undoJob } from './live';
+import { bridge as terminalBridge, openTerminal } from './terminal/store';
 
 // A task's menu, from its side panel row (⋮ or right-click), its page's title
 // bar or its card in a conversation (⋯ or right-click): its page (where it isn't
@@ -40,7 +41,9 @@ export default function TaskMenu({ task, at, align = 'right', onClose, onViewDet
     return () => { live = false; };
   }, [task.id, tree]);
   const open = (where: 'terminal' | 'editor') => () => { void window.app?.openWorktree?.(task.id, where); onClose(); };
-  const extra = (tree ? 32 * (editor ? 3 : 2) + 9 : 0) + (undo ? 32 : 0) + (onTell ? 32 : 0);
+  // Terminal: the owner's shell in its worktree, in Oby's own panel (docs/contracts/terminal.md)
+  const shell = tree && onObid && !!terminalBridge();
+  const extra = (tree ? 32 * ((editor ? 3 : 2) + (shell ? 1 : 0)) + 9 : 0) + (undo ? 32 : 0) + (onTell ? 32 : 0);
   return (
     <Menu at={at} align={align} onClose={onClose} height={(again ? 244 : 180) + extra} width={tree ? 188 : 168}>
       {onViewDetails && <button role="menuitem" onClick={pick(onViewDetails)}>View details</button>}
@@ -49,6 +52,7 @@ export default function TaskMenu({ task, at, align = 'right', onClose, onViewDet
       {onTell && !task.unknown && <button role="menuitem" onClick={pick(onTell)}>{tellPlaceholder(task, agentOf(task.job.agent).name)}</button>}
       {tree && <>
         <button role="menuitem" onClick={pick(() => openChanges(task.id))}>Changes</button>
+        {shell && <button role="menuitem" onClick={pick(() => openTerminal('task', task.id, task.title))}>Terminal</button>}
         <button role="menuitem" onClick={open('terminal')}>Open in Terminal</button>
         {editor && <button role="menuitem" onClick={open('editor')}>Open in {editor}</button>}
         {undo && <button role="menuitem" onClick={pick(() => void undoJob(task.id, undo))}>Undo this round…</button>}

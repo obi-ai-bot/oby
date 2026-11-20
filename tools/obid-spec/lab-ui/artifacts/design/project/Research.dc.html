@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Research: how others share artifacts</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="oby.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;background:#0b0b0b}
+a{color:#64a8ff}a:hover{color:#8cbcff}
+</style>
+</helmet>
+<div class="oby" style="background: #0b0b0b; color: rgba(255,255,255,0.8); font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;">
+  <article style="max-width: 1040px; margin: 0 auto; padding: 64px 24px 80px; box-sizing: border-box; display: flex; flex-direction: column; gap: 44px;">
+    <header style="display: flex; flex-direction: column; gap: 12px;">
+      <p style="margin: 0; font-size: 13px; color: #6e6e74;">Research · 20 November 2026</p>
+      <h1 style="margin: 0; font-size: 36px; line-height: 44px; font-weight: 600; color: #ececec;">How artifacts are shared today, and where Oby fits</h1>
+      <p style="margin: 0; font-size: 16px; line-height: 25px; color: #a3a3a8;">Claude makes great artifacts, but they live and get shared inside Claude: an org, a list of invitees, or a public link that can only be looked at. Nobody's agent can answer anybody else's. Oby already keeps artifacts on the Mac, and already has a way for Obys to talk. Joining the two is a small step, and it's the part nobody else has.</p>
+    </header>
+
+    <section style="display: flex; flex-direction: column; gap: 16px;">
+      <h2 style="margin: 0; font-size: 22px; font-weight: 600; color: #ececec;">The verdict, so far</h2>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px;">
+        <div style="background: #161617; border-radius: 18px; padding: 20px; display: flex; flex-direction: column; gap: 8px;"><p style="margin: 0; font-size: 14px; font-weight: 500; color: #30d158;">Worth testing</p><p style="margin: 0; font-size: 14px; line-height: 20px; color: #a3a3a8;">Sharing across people, tools and companies, with answers coming back as words, is a gap in Claude, T3 Code and MCP Apps alike. It fits Oby's own idea: trust between different people's agents.</p></div>
+        <div style="background: #161617; border-radius: 18px; padding: 20px; display: flex; flex-direction: column; gap: 8px;"><p style="margin: 0; font-size: 14px; font-weight: 500; color: #ececec;">Mostly built</p><p style="margin: 0; font-size: 14px; line-height: 20px; color: #a3a3a8;">obid stores versioned artifacts (html, markdown, image, pdf, canvas), secret-scans them and serves them sandboxed. The Sphere already carries sealed asks and answers. Missing: an artifact as something one Oby sends another.</p></div>
+        <div style="background: #161617; border-radius: 18px; padding: 20px; display: flex; flex-direction: column; gap: 8px;"><p style="margin: 0; font-size: 14px; font-weight: 500; color: #ff9f0a;">Risks to check</p><p style="margin: 0; font-size: 14px; line-height: 20px; color: #a3a3a8;">Claude has no public artifacts API; the bridge has to go through the owner's own Claude Code, and its artifacts are off by default in headless runs. Public links need a host; local first says the owner's own Sphere.</p></div>
+      </div>
+    </section>
+
+    <section style="display: flex; flex-direction: column; gap: 16px;">
+      <h2 style="margin: 0; font-size: 22px; font-weight: 600; color: #ececec;">Side by side</h2>
+      <div style="overflow-x: auto; border: 1px solid rgba(255,255,255,0.08); border-radius: 14px;">
+        <table style="width: 100%; min-width: 860px; border-collapse: collapse; font-size: 13px; line-height: 19px;">
+          <thead>
+            <tr style="background: #161617; color: #6e6e74; text-align: left;"><th style="padding: 12px 14px; font-weight: 500;">Product</th><th style="padding: 12px 14px; font-weight: 500;">What it makes</th><th style="padding: 12px 14px; font-weight: 500;">Where it lives</th><th style="padding: 12px 14px; font-weight: 500;">Who can see it</th><th style="padding: 12px 14px; font-weight: 500;">Feedback</th></tr>
+          </thead>
+          <tbody style="color: #a3a3a8;">
+            <tr style="border-top: 1px solid rgba(255,255,255,0.05);"><td style="padding: 12px 14px; color: #ececec; vertical-align: top;">Claude Code artifacts</td><td style="padding: 12px 14px; vertical-align: top;">One .html or .md page per artifact, versioned, at claude.ai/code/artifact/…; types for designs, docs, sheets</td><td style="padding: 12px 14px; vertical-align: top;">Anthropic's servers; viewer on a sandboxed claudeusercontent.com origin, strict CSP, 16 MiB</td><td style="padding: 12px 14px; vertical-align: top;">Private by default; org members or folders (Team, Enterprise); a public read-only link, which an Owner must allow on Team and Enterprise</td><td style="padding: 12px 14px; vertical-align: top;">Comment threads for org members only; Claude answers threads someone sends to it</td></tr>
+            <tr style="border-top: 1px solid rgba(255,255,255,0.05);"><td style="padding: 12px 14px; color: #ececec; vertical-align: top;">Claude Design</td><td style="padding: 12px 14px; vertical-align: top;">Canvases of artboards, prototypes, decks; design systems; handoff to Claude Code; /design and /design-sync</td><td style="padding: 12px 14px; vertical-align: top;">Claude; the standalone site closes 14 December 2026 and moves into Claude as an artifact type</td><td style="padding: 12px 14px; vertical-align: top;">Only you, your org, invited emails (up to 50 outside, each with a Claude account), or anyone with the link</td><td style="padding: 12px 14px; vertical-align: top;">Comments, and a group chat with Claude for editors; multi-person editing still basic</td></tr>
+            <tr style="border-top: 1px solid rgba(255,255,255,0.05);"><td style="padding: 12px 14px; color: #ececec; vertical-align: top;">Claude Motion</td><td style="padding: 12px 14px; vertical-align: top;">Short code-driven explainer animations from your material (beta since 8 October 2026)</td><td style="padding: 12px 14px; vertical-align: top;">Claude; downloads as MP4</td><td style="padding: 12px 14px; vertical-align: top;">Team and Enterprise; sharing as Claude's</td><td style="padding: 12px 14px; vertical-align: top;">Chat edits only</td></tr>
+            <tr style="border-top: 1px solid rgba(255,255,255,0.05);"><td style="padding: 12px 14px; color: #ececec; vertical-align: top;">T3 Code</td><td style="padding: 12px 14px; vertical-align: top;">“Visual replies”: a self-contained HTML page above the agent's reply, for every provider; MCP Apps too</td><td style="padding: 12px 14px; vertical-align: top;">The thread, on the machine; deleted with it</td><td style="padding: 12px 14px; vertical-align: top;">The owner; a beta guest link shows one thread for 24 hours</td><td style="padding: 12px 14px; vertical-align: top;">None; outside agents can message threads over MCP</td></tr>
+            <tr style="border-top: 1px solid rgba(255,255,255,0.05);"><td style="padding: 12px 14px; color: #ececec; vertical-align: top;">MCP Apps (open standard)</td><td style="padding: 12px 14px; vertical-align: top;">Interactive HTML views (ui:// resources) that tools return</td><td style="padding: 12px 14px; vertical-align: top;">The MCP server; rendered in a sandboxed iframe by Claude, ChatGPT, VS Code, Goose and others</td><td style="padding: 12px 14px; vertical-align: top;">Whoever runs the host and has the server connected; no share links in the spec</td><td style="padding: 12px 14px; vertical-align: top;">The view can call tools and post messages to the host's chat</td></tr>
+            <tr style="border-top: 1px solid rgba(255,255,255,0.05); background: rgba(48,209,88,0.05);"><td style="padding: 12px 14px; color: #ececec; vertical-align: top;">Oby, today</td><td style="padding: 12px 14px; vertical-align: top;">html, markdown, image, pdf, canvas, from a job's .obi/artifacts or a conversation's oby_artifact</td><td style="padding: 12px 14px; vertical-align: top;">obid's home on the Mac, every version, secret-scanned, CSP with no network</td><td style="padding: 12px 14px; vertical-align: top;">The owner, and their paired iPhone</td><td style="padding: 12px 14px; vertical-align: top;">None yet</td></tr>
+            <tr style="border-top: 1px solid rgba(255,255,255,0.05); background: rgba(255,159,10,0.06);"><td style="padding: 12px 14px; color: #ececec; vertical-align: top;">Oby, proposed</td><td style="padding: 12px 14px; vertical-align: top;">The same, plus a copy of any Claude artifact the owner brings in</td><td style="padding: 12px 14px; vertical-align: top;">Still the Mac; or in Claude, if the owner picks it</td><td style="padding: 12px 14px; vertical-align: top;">One person or everyone in the owner's Obysphere; a public link when asked; Export as Claude has it</td><td style="padding: 12px 14px; vertical-align: top;">Words to their own Oby, carried back quoted: ideas, questions, a yes, a no</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section style="display: flex; flex-direction: column; gap: 14px;">
+      <h2 style="margin: 0; font-size: 22px; font-weight: 600; color: #ececec;">What makes it “100% Claude compatible”</h2>
+      <ul style="margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; font-size: 14px; line-height: 21px; color: #a3a3a8;">
+        <li><span style="color: #ececec;">Keep Claude's own files.</span> A Claude Design canvas is a canvas.json plus one .dc.html file per artboard; a Claude Code artifact is one .html or .md file. Oby keeps them as they are, so they can go back to Claude unchanged. Oby's own canvas kind needs to read Claude's canvas.json, or keep it beside its own.</li>
+        <li><span style="color: #ececec;">Move them with the owner's Claude Code.</span> Claude has no public API for artifacts (only an admin Compliance API). Claude Code's Artifact tool reads and publishes them on the owner's own login, so that's the bridge, and Oby still never touches a Claude login. Artifacts are off by default in claude -p runs: the first spike.</li>
+        <li><span style="color: #ececec;">Render Claude's runtime.</span> A .dc.html board needs Claude's support.js runtime to draw. Oby can show a Claude canvas through a public Claude link, or render a static export (Claude Design exports standalone HTML and a project zip). Which one is the second spike.</li>
+        <li><span style="color: #ececec;">Speak MCP Apps.</span> It's the open way agents show interactive UI, in Claude, ChatGPT and VS Code. Showing an MCP App as an Oby artifact keeps Oby vendor agnostic.</li>
+      </ul>
+    </section>
+
+    <section style="display: flex; flex-direction: column; gap: 14px;">
+      <h2 style="margin: 0; font-size: 22px; font-weight: 600; color: #ececec;">The smallest test</h2>
+      <ol style="margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; font-size: 14px; line-height: 21px; color: #a3a3a8;">
+        <li>“Send this to Ben”, or Share › Ben: one artifact version for one member, as a new typed exchange on the Sphere (Ben's protocol). His Oby keeps the copy in its own store and shows it on Home.</li>
+        <li>What Ben says comes back through the ask and answer that already exist (ASK, PEER contracts): quoted, never acted on. A yes, a no and ideas are just answers; there's no approval workflow.</li>
+        <li>“Bring this in”: the owner's Claude Code reads a claude.ai artifact link and obid stores the files, scanned like any artifact.</li>
+        <li>Later: send back to Claude, public links from the owner's Sphere, and the animated Oby invite.</li>
+      </ol>
+    </section>
+
+    <section style="display: flex; flex-direction: column; gap: 10px;">
+      <h2 style="margin: 0; font-size: 22px; font-weight: 600; color: #ececec;">Sources</h2>
+      <ul style="margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; line-height: 19px; color: #a3a3a8;">
+        <li><a href="https://code.claude.com/docs/en/artifacts">Claude Code docs: Artifacts</a> and <a href="https://claude.com/blog/artifacts-in-claude-code">Claude Code now supports artifacts</a> (the launch post says org-only; the current docs add public links)</li>
+        <li><a href="https://www.anthropic.com/news/claude-design-anthropic-labs">Introducing Claude Design</a>, <a href="https://support.claude.com/en/articles/14604416-get-started-with-claude-design">Get started with Claude Design</a>, <a href="https://support.claude.com/en/articles/14604406-claude-design-admin-guide-for-team-and-enterprise-plans">Claude Design admin guide</a>, <a href="https://support.claude.com/en/articles/17440474">Moving from standalone Claude Design</a>, <a href="https://support.claude.com/en/articles/9547008">Sharing</a></li>
+        <li><a href="https://runway.com/news/company-news/runway-claude-motion">Runway on Claude Motion</a> (secondary; Anthropic's own page not read)</li>
+        <li><a href="https://github.com/pingdotgg/t3code/blob/main/docs/user/html-renders.md">T3 Code: Visual replies</a>, <a href="https://github.com/pingdotgg/t3code/blob/main/docs/user/guest-links.md">Guest links</a>, <a href="https://github.com/pingdotgg/t3code">pingdotgg/t3code</a> (MIT)</li>
+        <li><a href="https://github.com/modelcontextprotocol/ext-apps">MCP Apps (ext-apps)</a>, <a href="https://blog.modelcontextprotocol.io">MCP blog</a>, <a href="https://developers.openai.com/apps-sdk/mcp-apps-in-chatgpt/">MCP Apps in ChatGPT</a></li>
+        <li>Oby: docs/runner-api.md (“obid only: artifacts”), docs/conversation-harness.md section 4, docs/contracts/ask-an-oby.md, peer-thread.md, room-app.md</li>
+      </ul>
+    </section>
+  </article>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":2200}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

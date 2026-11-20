@@ -378,19 +378,6 @@ pub(super) fn own_sandbox_settings(
     Ok(json!({"env": pinned, "permissions": {"deny": rules}}).to_string())
 }
 
-/// What an own run's commands never read, of a [`Spec::canonical`] `spec`: what its box hides (obid's
-/// home, the person's, every account's folder) but the shared temp folders, which they read as the
-/// owner's terminal does (docs/contracts/lanes.md).
-pub(super) fn own_hidden(spec: &Spec) -> Vec<PathBuf> {
-    let real = |p: &PathBuf| p.canonicalize().unwrap_or_else(|_| p.clone());
-    let temps: Vec<PathBuf> = crate::sandbox::shared_temps().iter().map(real).collect();
-    spec.hidden
-        .iter()
-        .filter(|p| !temps.contains(&real(p)))
-        .cloned()
-        .collect()
-}
-
 /// The variables obid's `--settings` gives an own run's Claude Code in its `env`, as obid set them
 /// in its environment, so no settings file it loads sets them otherwise (LANES-5): the empty GitHub
 /// CLI configuration and git's no-publish settings (LANES-2), git pinned to the job's own folders,

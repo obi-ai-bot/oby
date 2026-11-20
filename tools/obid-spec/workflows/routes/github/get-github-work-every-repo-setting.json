@@ -1,0 +1,142 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/github/work (githubEveryRepo, kept)",
+  "version": "1.0.0",
+  "description": "The owner's GitHub work in every repository is a setting: off on a fresh obid, on after PUT and still on after a restart, and anything but a boolean is 422 with nothing changed (GITHUBWORK-6).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/github/work"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "githubwork-6-off-on-a-fresh-obid",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-6"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/jobs",
+        "expect": {
+          "status": 200,
+          "body": {
+            "githubEveryRepo": false
+          }
+        }
+      }
+    },
+    {
+      "id": "githubwork-6-on",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-6"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "githubEveryRepo": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "githubEveryRepo": true
+          }
+        }
+      }
+    },
+    {
+      "id": "stopped",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "githubwork-6-still-on-after-a-restart",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-6"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/settings/jobs",
+        "expect": {
+          "status": 200,
+          "body": {
+            "githubEveryRepo": true
+          }
+        }
+      }
+    },
+    {
+      "id": "githubwork-6-yes-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-6"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "githubEveryRepo": "yes"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "githubwork-6-the-422-changed-nothing",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-6"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/settings/jobs",
+        "expect": {
+          "status": 200,
+          "body": {
+            "githubEveryRepo": true
+          }
+        }
+      }
+    }
+  ]
+}

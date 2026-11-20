@@ -1,0 +1,360 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/github/work (a repository connected later)",
+  "version": "1.0.0",
+  "description": "With githubEveryRepo off, a review request in a repository obid doesn't work in is left out and offers nothing; once obid restarts with that repository in its configuration, the next read offers it (GITHUBWORK-7).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/github/work"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "person": {
+          "github/work.json": {
+            "data": {
+              "reviews": {
+                "issueCount": 1,
+                "nodes": [
+                  {
+                    "number": 702,
+                    "title": "Thing 702",
+                    "updatedAt": "2026-10-18T08:42:00Z",
+                    "state": "OPEN",
+                    "author": {
+                      "login": "sangam"
+                    },
+                    "repository": {
+                      "nameWithOwner": "obi-e2e/fixture-app"
+                    },
+                    "labels": {
+                      "nodes": [
+                        {
+                          "name": "bug"
+                        }
+                      ]
+                    },
+                    "isDraft": false,
+                    "reviewDecision": "REVIEW_REQUIRED",
+                    "commits": {
+                      "nodes": [
+                        {
+                          "commit": {
+                            "statusCheckRollup": {
+                              "state": "PENDING"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              "assigned": {
+                "issueCount": 0,
+                "nodes": []
+              },
+              "mine": {
+                "issueCount": 0,
+                "nodes": []
+              },
+              "rateLimit": {
+                "remaining": 4900,
+                "resetAt": "2030-10-18T10:00:00Z"
+              },
+              "viewer": {
+                "login": "alex"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "first-read-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/github/work",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "nextCheck": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/refresh",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-review-elsewhere",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "github/work.json",
+        "content": {
+          "data": {
+            "reviews": {
+              "issueCount": 2,
+              "nodes": [
+                {
+                  "number": 702,
+                  "title": "Thing 702",
+                  "updatedAt": "2026-10-18T08:42:00Z",
+                  "state": "OPEN",
+                  "author": {
+                    "login": "sangam"
+                  },
+                  "repository": {
+                    "nameWithOwner": "obi-e2e/fixture-app"
+                  },
+                  "labels": {
+                    "nodes": [
+                      {
+                        "name": "bug"
+                      }
+                    ]
+                  },
+                  "isDraft": false,
+                  "reviewDecision": "REVIEW_REQUIRED",
+                  "commits": {
+                    "nodes": [
+                      {
+                        "commit": {
+                          "statusCheckRollup": {
+                            "state": "PENDING"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "number": 12,
+                  "title": "Thing 12",
+                  "updatedAt": "2026-10-18T08:44:00Z",
+                  "state": "OPEN",
+                  "author": {
+                    "login": "sangam"
+                  },
+                  "repository": {
+                    "nameWithOwner": "obi-e2e/other"
+                  },
+                  "labels": {
+                    "nodes": [
+                      {
+                        "name": "bug"
+                      }
+                    ]
+                  },
+                  "isDraft": false,
+                  "reviewDecision": "REVIEW_REQUIRED",
+                  "commits": {
+                    "nodes": [
+                      {
+                        "commit": {
+                          "statusCheckRollup": {
+                            "state": "PENDING"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "assigned": {
+              "issueCount": 0,
+              "nodes": []
+            },
+            "mine": {
+              "issueCount": 0,
+              "nodes": []
+            },
+            "rateLimit": {
+              "remaining": 4900,
+              "resetAt": "2030-10-18T10:00:00Z"
+            },
+            "viewer": {
+              "login": "alex"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "githubwork-7-left-out-while-unlisted",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-7"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/refresh",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "reviews": {
+              "$none": {
+                "repo": "obi-e2e/other"
+              }
+            },
+            "counts.reviews": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "githubwork-7-no-offer",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-7"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox?state=open&limit=1000",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "kind": "github"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "stopped",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "repos": [
+            {
+              "repo": "obi-e2e/fixture-app",
+              "remote": "file://${state.o.folder}/../fixture/remote.git",
+              "defaultBranch": "main",
+              "check": "node --test",
+              "pullRequests": false
+            },
+            {
+              "repo": "obi-e2e/other",
+              "remote": "file://${state.o.folder}/../fixture/remote.git",
+              "defaultBranch": "main"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "listed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/repos",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "repos": {
+              "$any": {
+                "repo": "obi-e2e/other"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "read-after-restart",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/github/work/refresh",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "reviews": {
+              "$any": {
+                "repo": "obi-e2e/other",
+                "number": 12
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "githubwork-7-offered-at-the-next-read",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-7"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/inbox?state=open&limit=1000",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "kind": "github"
+                },
+                1
+              ]
+            }
+          },
+          "body": [
+            {
+              "kind": "github",
+              "title": "Review requested: other #12"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

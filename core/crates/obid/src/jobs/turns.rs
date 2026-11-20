@@ -321,7 +321,7 @@ impl Jobs {
         {
             chatgpt.runs.begin(&job.id);
         }
-        self.launched(&job.id, own)?;
+        self.launched(&job.id, own, Self::mode_of(job))?;
         // The owner's environment under obid's (LANES-4): a shell that doesn't answer leaves the run
         // obid's allowlist, and the job says so.
         let owners = if own {
@@ -451,8 +451,9 @@ impl Jobs {
                     argv.splice(1..1, crate::chatgpt_relay::codex_settings(base));
                 }
                 if own {
-                    argv.splice(1..1, own_codex_settings(&spec)?);
-                    // Under `never` Codex asks nobody: Oby's own tools are approved (LANES-21).
+                    let settings = codex::own::policy(Self::mode_of(job)).settings();
+                    argv.splice(1..1, settings.map(OsString::from));
+                    // Codex may ask nobody (Bypass): Oby's own tools are approved (LANES-21).
                     if broker.is_some() {
                         argv.splice(1..1, codex::OWN_OBY_TOOLS.map(OsString::from));
                     }
@@ -1080,6 +1081,12 @@ impl Jobs {
                                 self.usage.get(&job.account).priced
                             },
                             chatgpt,
+                            // An own run's threads are held to its mode's settings (LANES-18),
+                            // the mode it launched in (`Job::own_mode`).
+                            own: own.then(|| {
+                                let launched = job.own_mode.as_deref().and_then(Mode::parse);
+                                codex::own::policy(launched.unwrap_or_else(|| Self::mode_of(&job)))
+                            }),
                         };
                     // The owner's words go into its turn as they come, as `turn/steer`, and those
                     // that come as it ends are its thread's next turn, in the same server
@@ -1158,7 +1165,7 @@ impl Jobs {
                     if parks {
                         self.park(id);
                     }
-                    if self.left_own_lane(id, tool) {
+                    if self.narrowed_own_run(id, tool) {
                         let _ = cut.send(Signal::Stop);
                     }
                 }

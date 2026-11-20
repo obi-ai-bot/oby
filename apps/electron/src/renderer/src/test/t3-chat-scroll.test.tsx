@@ -52,7 +52,13 @@ async function open(flash?: { task: string; n: number }) {
   const scrollBy = async (to: number) => act(async () => { list.scrollTop = to; list.dispatchEvent(new Event('scroll')); });
   // the next words of the reply streaming in
   const stream = async (reply: string) => { page.chats = [said(reply, true)]; await act(async () => root!.render(view())); };
-  return { list, moves, scrollBy, stream, top: () => top };
+  // the owner's own next words, after the reply
+  const ask = async (text: string) => {
+    const c = said('It fails because the token expired', false);
+    page.chats = [{ ...c, typing: false, said: [...c.said, { who: 'you', text, ago: 0 }] }];
+    await act(async () => root!.render(view()));
+  };
+  return { list, moves, scrollBy, stream, ask, top: () => top };
 }
 
 describe('the thread while a reply streams (T3: scroll jumps)', () => {
@@ -65,11 +71,9 @@ describe('the thread while a reply streams (T3: scroll jumps)', () => {
     expect(c.moves.at(-1)).toBe(3000);
   });
 
-  // Known bug #2643: ChatView.tsx's layout effect (`l.scrollTo({ top: l.scrollHeight … })`,
-  // keyed on the last message's text length) scrolls to the end on every word that comes in, without
-  // asking whether the owner is there (`atEnd`, which only the ResizeObserver beside it asks): scrolled up
-  // to read, they're pulled back down each tenth of a second while Oby answers.
-  it.fails('t3_scroll_scrolled_up_to_read_the_words_coming_in_leave_the_reader_where_they_are (known bug #2643)', async () => {
+  // #2643: the words coming in follow only while the owner is at the end (`atEnd`), as the
+  // ResizeObserver beside them does
+  it('t3_scroll_scrolled_up_to_read_the_words_coming_in_leave_the_reader_where_they_are', async () => {
     const c = await open();
     await c.scrollBy(2500);
     // the owner scrolls up to read what was said before
@@ -79,5 +83,13 @@ describe('the thread while a reply streams (T3: scroll jumps)', () => {
     await c.stream('It fails because the token expired before the check');
     expect(c.moves.slice(before)).toEqual([]);
     expect(c.top()).toBe(800);
+  });
+
+  it('t3_scroll_scrolled_up_the_owners_own_words_take_them_to_the_end', async () => {
+    const c = await open();
+    await c.scrollBy(800);
+    await c.ask('and the signup test?');
+    expect(c.moves.at(-1)).toBe(3000);
+    expect(c.top()).toBe(2500);
   });
 });

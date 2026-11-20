@@ -1,0 +1,424 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/routines/{id} (behind a job waiting for you)",
+  "version": "1.0.0",
+  "description": "A due run whose previous run's job waits for the owner (left interrupted after obid went down three times under it) is skipped, saying so, starts no job and counts no failure, while Run now still starts one; once the owner dismissed that job, the next due run starts (ROUTINES-2).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/routines/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "clock",
+      "use": "runtime.rust:clock",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "sleeps",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP",
+            "account": "stand-in"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "running-1",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.sleeps.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "killed-1",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}",
+        "kill": true
+      }
+    },
+    {
+      "id": "up-1",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "running-2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.up-1}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.sleeps.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "killed-2",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.up-1}",
+        "kill": true
+      }
+    },
+    {
+      "id": "up-2",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "running-3",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.up-2}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.sleeps.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "killed-3",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.up-2}",
+        "kill": true
+      }
+    },
+    {
+      "id": "routine-behind-it",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "routines/a2000001.json",
+        "content": {
+          "id": "a2000001",
+          "name": "Check a2000001",
+          "repo": "obi-e2e/fixture-app",
+          "kind": "investigate",
+          "task": "Say what the README covers.",
+          "agent": "auto",
+          "account": "auto",
+          "mode": null,
+          "check": null,
+          "rounds": 1,
+          "schedule": {
+            "every": "daily",
+            "at": "00:00"
+          },
+          "zone": "UTC",
+          "enabled": true,
+          "created": "${state.clock.tenDaysAgo}",
+          "createdBy": "mac",
+          "conversation": null,
+          "lastFire": "${state.clock.yesterday}",
+          "failuresInARow": 0,
+          "runs": [
+            {
+              "scheduled": "${state.clock.tenDaysAgo}",
+              "at": "${state.clock.tenDaysAgo}",
+              "outcome": "started",
+              "reason": null,
+              "job": "${state.sleeps.body.id}",
+              "catchUp": false,
+              "ended": null
+            }
+          ],
+          "lastJob": "${state.sleeps.body.id}"
+        },
+        "in": "home"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "left-interrupted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.sleeps.body.id}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted"
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-2-skipped",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/routines/a2000001",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "runs": {
+              "$len": 2
+            },
+            "runs.0.outcome": "skipped",
+            "runs.0.reason": "The previous run still waits for you.",
+            "runs.0.job": null
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-2-no-failure-counted",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/routines/a2000001",
+        "expect": {
+          "status": 200,
+          "body": {
+            "enabled": true,
+            "failuresInARow": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-2-no-job-started",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-2-run-now-still-starts-one",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/routines/a2000001/run",
+        "expect": {
+          "status": 201,
+          "body": {
+            "job": {
+              "id": {
+                "$type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "run-now-ends",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.routines-2-run-now-still-starts-one.body.job.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "done",
+                "failed",
+                "stopped"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "dismissed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.sleeps.body.id}/dismiss",
+        "expect": {
+          "status": [
+            200,
+            204
+          ]
+        }
+      }
+    },
+    {
+      "id": "stopped-again",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.again}"
+      }
+    },
+    {
+      "id": "due-again",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "routines/a2000002.json",
+        "content": {
+          "id": "a2000002",
+          "name": "Check a2000002",
+          "repo": "obi-e2e/fixture-app",
+          "kind": "investigate",
+          "task": "Say what the README covers.",
+          "agent": "auto",
+          "account": "auto",
+          "mode": null,
+          "check": null,
+          "rounds": 1,
+          "schedule": {
+            "every": "daily",
+            "at": "00:00"
+          },
+          "zone": "UTC",
+          "enabled": true,
+          "created": "${state.clock.tenDaysAgo}",
+          "createdBy": "mac",
+          "conversation": null,
+          "lastFire": "${state.clock.yesterday}",
+          "failuresInARow": 0,
+          "runs": [
+            {
+              "scheduled": "${state.clock.tenDaysAgo}",
+              "at": "${state.clock.tenDaysAgo}",
+              "outcome": "started",
+              "reason": null,
+              "job": "${state.sleeps.body.id}",
+              "catchUp": false,
+              "ended": null
+            }
+          ],
+          "lastJob": "${state.sleeps.body.id}"
+        },
+        "in": "home"
+      }
+    },
+    {
+      "id": "third",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "routines-2-a-dismissed-job-holds-nothing",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.third}",
+        "method": "GET",
+        "path": "/v1/routines/a2000002",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "runs": {
+              "$len": 2
+            },
+            "runs.0.outcome": "started",
+            "runs.0.job": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

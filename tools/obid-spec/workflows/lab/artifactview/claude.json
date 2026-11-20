@@ -1,0 +1,327 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab artifact view: each board of the canvas looks as Claude draws it (only with Claude's runtime at hand)",
+  "version": "1.0.0",
+  "description": "LAB-ARTVIEW-8, against Claude (src/lab/artifactview.rs: vs_claude). Each board of the Oby Artifacts canvas drawn by Oby's runtime and by Claude Design's own (a copy named by OBID_SPEC_CLAUDE_DC_RUNTIME, which this repository never holds and Oby's runtime was never written from), at the board's size: its picture taken once its animations have ended, at most 0.2% of the pixels differ by more than 16 in a channel. Skipped without the variable.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.artifacts.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "view",
+      "use": "runtime.rust:lab.artifactview.up",
+      "inputs": {
+        "artifacts": "${state.up}",
+        "expect": {
+          "paths": {
+            "port": {
+              "$type": "number"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cfx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "canvas"
+      }
+    },
+    {
+      "id": "canvas",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.cfx.path}",
+        "title": "Oby Artifacts",
+        "conversation": "c2",
+        "job": "j2",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "8-like-claude-main",
+      "use": "runtime.rust:lab.artifactview.vsclaude",
+      "inputs": {
+        "id": "${state.canvas.id}",
+        "version": 1,
+        "path": "Main.dc.html",
+        "width": 1440,
+        "height": 900,
+        "most": 0.002,
+        "expect": {
+          "paths": {
+            "within": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-8"
+        ]
+      }
+    },
+    {
+      "id": "8-like-claude-conversation",
+      "use": "runtime.rust:lab.artifactview.vsclaude",
+      "inputs": {
+        "id": "${state.canvas.id}",
+        "version": 1,
+        "path": "Conversation.dc.html",
+        "width": 1280,
+        "height": 800,
+        "most": 0.002,
+        "expect": {
+          "paths": {
+            "within": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-8"
+        ]
+      }
+    },
+    {
+      "id": "8-like-claude-viewer",
+      "use": "runtime.rust:lab.artifactview.vsclaude",
+      "inputs": {
+        "id": "${state.canvas.id}",
+        "version": 1,
+        "path": "Viewer.dc.html",
+        "width": 1280,
+        "height": 800,
+        "most": 0.002,
+        "expect": {
+          "paths": {
+            "within": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-8"
+        ]
+      }
+    },
+    {
+      "id": "8-like-claude-sharemenu",
+      "use": "runtime.rust:lab.artifactview.vsclaude",
+      "inputs": {
+        "id": "${state.canvas.id}",
+        "version": 1,
+        "path": "ShareMenu.dc.html",
+        "width": 1280,
+        "height": 800,
+        "most": 0.002,
+        "expect": {
+          "paths": {
+            "within": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-8"
+        ]
+      }
+    },
+    {
+      "id": "8-like-claude-claudebridge",
+      "use": "runtime.rust:lab.artifactview.vsclaude",
+      "inputs": {
+        "id": "${state.canvas.id}",
+        "version": 1,
+        "path": "ClaudeBridge.dc.html",
+        "width": 1280,
+        "height": 800,
+        "most": 0.002,
+        "expect": {
+          "paths": {
+            "within": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-8"
+        ]
+      }
+    },
+    {
+      "id": "8-like-claude-benhome",
+      "use": "runtime.rust:lab.artifactview.vsclaude",
+      "inputs": {
+        "id": "${state.canvas.id}",
+        "version": 1,
+        "path": "BenHome.dc.html",
+        "width": 1280,
+        "height": 800,
+        "most": 0.002,
+        "expect": {
+          "paths": {
+            "within": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-8"
+        ]
+      }
+    },
+    {
+      "id": "8-like-claude-choice",
+      "use": "runtime.rust:lab.artifactview.vsclaude",
+      "inputs": {
+        "id": "${state.canvas.id}",
+        "version": 1,
+        "path": "Choice.dc.html",
+        "width": 1280,
+        "height": 800,
+        "most": 0.002,
+        "expect": {
+          "paths": {
+            "within": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-8"
+        ]
+      }
+    },
+    {
+      "id": "8-like-claude-publiclink",
+      "use": "runtime.rust:lab.artifactview.vsclaude",
+      "inputs": {
+        "id": "${state.canvas.id}",
+        "version": 1,
+        "path": "PublicLink.dc.html",
+        "width": 1280,
+        "height": 900,
+        "most": 0.002,
+        "expect": {
+          "paths": {
+            "within": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-8"
+        ]
+      }
+    },
+    {
+      "id": "8-like-claude-research",
+      "use": "runtime.rust:lab.artifactview.vsclaude",
+      "inputs": {
+        "id": "${state.canvas.id}",
+        "version": 1,
+        "path": "Research.dc.html",
+        "width": 1440,
+        "height": 2200,
+        "most": 0.002,
+        "expect": {
+          "paths": {
+            "within": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-8"
+        ]
+      }
+    },
+    {
+      "id": "8-like-claude-compatibility",
+      "use": "runtime.rust:lab.artifactview.vsclaude",
+      "inputs": {
+        "id": "${state.canvas.id}",
+        "version": 1,
+        "path": "Compatibility.dc.html",
+        "width": 1440,
+        "height": 3200,
+        "most": 0.002,
+        "expect": {
+          "paths": {
+            "within": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-8"
+        ]
+      }
+    },
+    {
+      "id": "8-like-claude-prototype",
+      "use": "runtime.rust:lab.artifactview.vsclaude",
+      "inputs": {
+        "id": "${state.canvas.id}",
+        "version": 1,
+        "path": "Prototype.dc.html",
+        "width": 1280,
+        "height": 800,
+        "most": 0.002,
+        "expect": {
+          "paths": {
+            "within": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-8"
+        ]
+      }
+    },
+    {
+      "id": "8-like-claude-sphere",
+      "use": "runtime.rust:lab.artifactview.vsclaude",
+      "inputs": {
+        "id": "${state.canvas.id}",
+        "version": 1,
+        "path": "Sphere.dc.html",
+        "width": 1280,
+        "height": 800,
+        "most": 0.002,
+        "expect": {
+          "paths": {
+            "within": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-8"
+        ]
+      }
+    }
+  ]
+}

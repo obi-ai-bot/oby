@@ -4625,7 +4625,10 @@ fn every_reviewer_failing_waits_for_the_owner_in_one_item() {
     let (job, items) = waits(2);
     let error = job["reviewError"].as_str().unwrap_or_default();
     assert!(
-        error.starts_with("Oby couldn't review #7: ") && error.contains("Invalid API key"),
+        // Claude Code's refused login, in Oby's words, never its own "/login" (ACCOUNTS-38).
+        error.starts_with("Oby couldn't review #7: ")
+            && error.contains("login was refused")
+            && !error.contains("/login"),
         "{job}\n{}",
         obid.log()
     );

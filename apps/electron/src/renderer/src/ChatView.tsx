@@ -10,6 +10,7 @@ import StatusDot, { TaskMark } from './StatusDot';
 import { AskBlock, resultLine } from './TaskCard';
 import DecisionBar, { type Pending } from './DecisionBar';
 import { BrowserAsks } from './browser/Asks';
+import { MacCard } from './browser/Mac';
 import { useScrollThumb } from './useScrollThumb';
 import TaskMenu from './TaskMenu';
 import TaskLog from './TaskLog';
@@ -31,7 +32,9 @@ import { historyOf } from './recall';
 import SetupCard, { onlyPicks } from './SetupCard';
 import OfferCard from './OfferCard';
 import { WELCOME, typedFirst, useSetup } from './onboarding';
-import { openConversation, talkReady, useLimitAsks } from './live';
+import { openConversation, realId, takesWorkspace, talkReady, useLimitAsks, useLive } from './live';
+import { api, ApiError, type FinishAction, type WorkspaceAnswer } from './obid';
+import { FINISH_WORDS } from '../../shared/finish';
 import { onObid } from './lean';
 import { box as draftBox } from './drafts';
 import { useHelpers } from './helpers';
@@ -144,17 +147,22 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   // in sight, a conversation is seen: obid's unread goes, and a turn that comes while it shows is
   // seen too (CHATSTATE-6)
   useEffect(() => { if (talk && !covered && !leaving) seeChat(talk.id); }, [talk?.id, talk?.unread, talk?.seen, covered, leaving]);
-  const first = useRef(true);
+  // what comes in follows only while you're at the end: scrolled up to read, you stay there, until
+  // your own words go
+  const first = useRef(true), atEnd = useRef(true), said = useRef(thread.length);
   useLayoutEffect(() => {
     const l = list.current;
     if (!l) return;
+    const mine = thread.length > said.current && thread.at(-1)?.who === 'you';
+    said.current = thread.length;
+    if (!first.current && !mine && !atEnd.current) return;
+    atEnd.current = true;
     l.scrollTo({ top: l.scrollHeight, behavior: first.current ? 'instant' : 'smooth' });
     first.current = false;
   // (the last, as its words come in, then the card or task it ends with)
   }, [thread.length, typing, step, limits.length, (thread.at(-1) as Message | undefined)?.text?.length, (thread.at(-1) as Message | undefined)?.streaming, (thread.at(-1) as Message | undefined)?.jobs?.length]);
 
   // a live card growing at the end of the thread stays in view, while you're there
-  const atEnd = useRef(true);
   useEffect(() => {
     const l = list.current, column = l?.firstElementChild;
     if (!l || !column) return;
@@ -374,10 +382,15 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
       <DecisionBar key={openings} pending={pending} />
       {/* what this conversation's agents ask of the owner in the browser (docs/contracts/browser-app.md, BROWSERAPP-11 to 13) */}
       <BrowserAsks jobs={talk ? tasks.filter((t) => t.job.conversation === talk.id).map((t) => t.id) : task ? [task.id] : []} />
+      {/* an agent using the Mac: its card and Stop (BROWSERAPP-19) */}
+      <MacCard />
       {/* what obid refused of a click here, until dismissed; and the account it goes to, when that
           can't run (CHATSTATE-1 to 4) */}
       <Refusals where={talk ? [talk.id, ...tasks.filter((t) => t.job.conversation === talk.id).map((t) => t.id)] : task ? [task.id] : []} />
       {(talk && !talk.local && !talk.helper) || task ? <CantRunLine chat={talk ?? undefined} task={task ?? undefined} /> : null}
+      {/* finishing the work in its folders, as T3 Code does: Commit, Push, Create PR, or Publish
+          repository with no remote, or Initialize Git (WORKSPACE-4, 5) */}
+      {talk && onObid && !talk.local && !talk.helper && <FinishLine conversation={talk.id} busy={typing} />}
       {toTask ? <>
         {/* talking to one task's agent: its chip over the box, × back to Oby (LIVETASK-30) */}
         <div className="composer-to" role="status">
@@ -546,5 +559,48 @@ function Stages({ task }: { task: Task }) {
     <span className="tc-progress msg-task-stages" role="img" aria-label={label}>
       {stages.map((st, i) => <span key={i} className={st.state === 'done' ? 'is-done' : st.state === 'failed' ? 'is-failed' : st.state === 'current' ? (needs ? 'is-needs' : 'is-current') : undefined} />)}
     </span>
+  );
+}
+
+// What finishing can do in the conversation's folders now, read from obid (GET
+// /v1/conversations/{id}/workspace): one button per action, each done on the owner's click, which
+// main asks about in its own dialog and signs (WORKSPACE-4, 5). Read again once a turn ends. A
+// folder's name goes before its buttons when the conversation works in several.
+export function FinishLine({ conversation, busy }: { conversation: string; busy: boolean }) {
+  const on = takesWorkspace(useLive());
+  const [seen, setSeen] = useState<WorkspaceAnswer | null>(null);
+  const [doing, setDoing] = useState<string | null>(null);
+  const [said, setSaid] = useState<string | null>(null);
+  useEffect(() => {
+    if (!on || busy || conversation.startsWith('new:')) return;
+    let gone = false;
+    api.workspace(realId(conversation)).then((w) => { if (!gone) setSeen(w); }, () => { if (!gone) setSeen(null); });
+    return () => { gone = true; };
+  }, [on, busy, conversation]);
+  // a place with an action, or one obid works in only in the room, with why
+  const places = seen?.places.filter((p) => p.actions.length || p.why) ?? [];
+  if (!on || !places.length) return null;
+  const run = async (folder: string, action: FinishAction) => {
+    setDoing(`${folder}:${action}`);
+    setSaid(null);
+    try { setSeen(await api.finish(realId(conversation), folder, action)); } catch (e) {
+      setSaid(e instanceof ApiError ? e.message : String(e));
+    } finally { setDoing(null); }
+  };
+  return (
+    <div className="finish-line" role="group" aria-label="Finish">
+      {places.map((p) => (
+        <span key={p.folder} className="finish-place" title={p.path ?? p.folder}>
+          {seen!.places.length > 1 && <span className="finish-name">{p.name}</span>}
+          {p.why && <span className="finish-said">{p.why}</span>}
+          {p.actions.map((a) => (
+            <button key={a} type="button" className="finish-action" disabled={!!doing} onClick={() => void run(p.folder, a)}>
+              {FINISH_WORDS[a]}
+            </button>
+          ))}
+        </span>
+      ))}
+      {said && <span className="finish-said" role="alert">{said}</span>}
+    </div>
   );
 }

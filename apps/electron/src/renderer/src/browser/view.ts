@@ -64,6 +64,10 @@ export type BrowserState = {
   asks: Ask[];
   downloads: Download[];
   settings: BrowserSettings;
+  /** an agent using the Mac, and what it's doing (15); desktop control's own contract brings it on obid */
+  mac?: { agent: AgentId; action: string } | null;
+  /** the first time an agent would use the Mac: who, and what it wants to do (16) */
+  macAsk?: { agent: AgentId; wants: string } | null;
 };
 
 /** What the panel sends: the same calls on the demo data and on obid. */
@@ -79,6 +83,10 @@ export interface BrowserApi {
   reveal(download: string): Promise<void>;
   setSettings(s: Partial<BrowserSettings>): Promise<void>;
   select(tab: string): Promise<void>;
+  /** Stop, or Esc twice: the agent no longer has the Mac (15) */
+  stopMac(): Promise<void>;
+  /** the first-time sheet answered: Continue, or Not now (16) */
+  answerMac(go: boolean): Promise<void>;
   /** on obid: your mouse and keys on the page while you hold it */
   input?(tab: string, e: import('../../../shared/obid-wire').BrowserInput): Promise<void>;
 }

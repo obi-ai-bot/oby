@@ -1,0 +1,513 @@
+{
+  "schemaVersion": "2",
+  "name": "Sharing: asked once",
+  "version": "1.0.0",
+  "description": "The first question that waits on an owner with no rule brings one share card, in obid's words with none of the asker's; a second question, a restart and a no don't ask again, and the questions keep waiting on the owner (PEER-16).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana",
+        "agent": "fake-answerer"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "alex-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.alex}"
+      }
+    },
+    {
+      "id": "dana-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.dana}"
+      }
+    },
+    {
+      "id": "q1",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/peers/dana/ask",
+        "body": {
+          "text": "Is the billing work done, Zorblat?"
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 202
+        }
+      }
+    },
+    {
+      "id": "q1-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "pick": {
+          "where": {
+            "kind": "obiRequest",
+            "state": "open",
+            "obi": {
+              "quoted": {
+                "text": "Is the billing work done, Zorblat?"
+              }
+            }
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "peer-16-the-first-waiting-question-brings-one-card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 20,
+        "pick": {
+          "where": {
+            "kind": "confirm",
+            "state": "open",
+            "confirm": {
+              "action": "share_status"
+            }
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "kind": "confirm",
+                  "state": "open",
+                  "confirm": {
+                    "action": "share_status"
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-16"
+        ]
+      }
+    },
+    {
+      "id": "peer-16-the-card-holds-none-of-their-words",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.peer-16-the-first-waiting-question-brings-one-card.picked}",
+        "expect": {
+          "paths": {
+            "title": {
+              "$not": {
+                "$contains": "Zorblat"
+              }
+            },
+            "text": {
+              "$not": {
+                "$contains": "Zorblat"
+              }
+            },
+            "details": {
+              "$none": {
+                "$contains": "Zorblat"
+              }
+            },
+            "confirm.payload.offered": [
+              "obi-e2e/fixture-app"
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-16"
+        ]
+      }
+    },
+    {
+      "id": "peer-16-its-words-are-obids",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.peer-16-the-first-waiting-question-brings-one-card.picked}",
+        "expect": {
+          "paths": {
+            "title": "Which repositories can I tell people in your Obysphere about?",
+            "text": {
+              "$not": {
+                "$contains": "alex"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-16"
+        ]
+      }
+    },
+    {
+      "id": "q2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/peers/dana/ask",
+        "body": {
+          "text": "And the tests?"
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 202
+        }
+      }
+    },
+    {
+      "id": "q2-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "pick": {
+          "where": {
+            "kind": "obiRequest",
+            "state": "open",
+            "obi": {
+              "quoted": {
+                "text": "And the tests?"
+              }
+            }
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "peer-16-not-by-a-second",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "kind": "confirm",
+                  "confirm": {
+                    "action": "share_status"
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-16"
+        ]
+      }
+    },
+    {
+      "id": "dana-stopped",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.dana}"
+      }
+    },
+    {
+      "id": "dana2",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana",
+        "agent": "fake-answerer"
+      }
+    },
+    {
+      "id": "q3",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/peers/dana/ask",
+        "body": {
+          "text": "After the restart?"
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 202
+        }
+      }
+    },
+    {
+      "id": "q3-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana2}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "pick": {
+          "where": {
+            "kind": "obiRequest",
+            "state": "open",
+            "obi": {
+              "quoted": {
+                "text": "After the restart?"
+              }
+            }
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "peer-16-not-again-after-a-restart",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana2}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "kind": "confirm",
+                  "confirm": {
+                    "action": "share_status"
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-16"
+        ]
+      }
+    },
+    {
+      "id": "no",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana2}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.peer-16-the-first-waiting-question-brings-one-card.picked.id}/answer",
+        "body": {
+          "answer": "Cancel"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "no-shares-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana2}",
+        "method": "GET",
+        "path": "/v1/obid/sharing",
+        "expect": {
+          "status": 200,
+          "body": {
+            "rules": []
+          }
+        }
+      }
+    },
+    {
+      "id": "q4",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/peers/dana/ask",
+        "body": {
+          "text": "After the no?"
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 202
+        }
+      }
+    },
+    {
+      "id": "q4-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana2}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "pick": {
+          "where": {
+            "kind": "obiRequest",
+            "state": "open",
+            "obi": {
+              "quoted": {
+                "text": "After the no?"
+              }
+            }
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "peer-16-not-again-after-a-no",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana2}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "kind": "confirm",
+                "state": "open",
+                "confirm": {
+                  "action": "share_status"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-16"
+        ]
+      }
+    },
+    {
+      "id": "peer-16-and-it-still-waits-on-the-owner",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/peers/dana",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "posts": {
+              "$any": {
+                "kind": "status",
+                "status": "waiting_on_owner",
+                "replyTo": "${state.q4.body.id}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-16"
+        ]
+      }
+    }
+  ]
+}

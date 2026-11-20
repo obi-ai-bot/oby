@@ -92,6 +92,15 @@ pub(crate) fn login_refused(cause: Option<crate::agent::Cause>, words: &str) -> 
             .any(|w| words.contains(w))
 }
 
+/// What a task whose login `who` refused mid-run says (ACCOUNTS-38): what stopped it and how to
+/// fix it from Oby, never a tool's own command (Claude Code's `/login`) or a path. Proposed words,
+/// Sangam's to rewrite.
+pub(crate) fn refused_login(who: &str) -> String {
+    format!(
+        "{who}'s login was refused, so this task stopped: sign it in again from Settings › Accounts, then Try again, or ask for another account."
+    )
+}
+
 /// `why` in plain words for the owner (ACCOUNTS-19): its first line, the secrets obid knows taken
 /// out, each path down to its last name (no home folder, `~/…` or `[oby]` in it), and no closing
 /// full stop, to go inside a sentence.

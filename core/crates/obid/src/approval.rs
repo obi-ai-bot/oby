@@ -118,6 +118,24 @@ impl Approvals {
         self.check_signed(approval, &message, action, key, now)
     }
 
+    /// Lets `approval` through once for finishing conversation `conversation`'s work in a folder by
+    /// `action`, obid's own sentence (docs/contracts/folders.md, WORKSPACE-4): the device signed
+    /// `"oby-finish\n<conversation id>\n<action>\n<signedAt>"`, so no other signature passes for it.
+    pub fn check_finish(
+        &self,
+        approval: &Approval,
+        conversation: &str,
+        action: &str,
+        key: Option<&str>,
+        now: i64,
+    ) -> Result<(), String> {
+        let message = format!(
+            "oby-finish\n{conversation}\n{}\n{}",
+            approval.action, approval.signed_at
+        );
+        self.check_signed(approval, &message, action, key, now)
+    }
+
     /// Lets `approval` through once for confirming inbox item `item`, whose title is `title`
     /// (#776): the device signed `"oby-confirm\n<item>\n<title>\n<signedAt>"`.
     pub fn check_confirm(

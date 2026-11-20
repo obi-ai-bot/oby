@@ -1,0 +1,222 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: a failed try and the session it stays on",
+  "version": "1.0.0",
+  "description": "A failed try stays on its session, says what happened and sends the words again; a session the tool says is gone, or one the API keeps refusing, starts anew with the earlier turns handed over; a new session that fails too leaves the conversation on the one it was on; a retry on a new session still hands the earlier turns over (CONVERSATION-AGENT-15).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Hello there."
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-15-a-retry-stays-on-its-session",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "FAIL ONCE",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": {
+              "$matches": "^carried on: resume=\\S+"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-15"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-15-the-retry-was-told-its-run-was-cut",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "expect": {
+          "paths": {
+            "heard": {
+              "$any": {
+                "last": "FAIL ONCE",
+                "cut": true,
+                "resumed": {
+                  "$type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-15"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-15-a-session-gone-starts-anew-with-the-earlier-turns",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "GONE",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "handed over: true"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-15"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-15-one-refused-twice-starts-anew",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REFUSED",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "new session: with the earlier turns"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-15"
+        ]
+      }
+    },
+    {
+      "id": "session-before",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/session.json",
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-15-a-new-session-that-fails-too-says-so",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REFUSED ALWAYS",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "I couldn't answer: its agent session failed twice."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-15"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-15-and-leaves-the-session-it-was-on",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/session.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "session": "${state.session-before.json.session}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-15"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-15-a-new-sessions-retry-keeps-the-earlier-turns",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "TOOLONG THEN FAIL",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "retried: with the earlier turns"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-15"
+        ]
+      }
+    }
+  ]
+}

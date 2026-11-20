@@ -1,0 +1,230 @@
+{
+  "schemaVersion": "2",
+  "name": "DELETE /v1/projects/{id} (its conversations stay)",
+  "version": "1.0.0",
+  "description": "Deleting a project with two conversations answers 204; both stay, out of the project, still working in its folders, their revision raised; the project is gone and a second delete is 404 (PROJECTS-8).",
+  "trigger": {
+    "http": {
+      "method": "DELETE",
+      "path": "/v1/projects/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "person": {
+          "Projects/a/README.md": "x\n",
+          "Projects/b/README.md": "x\n",
+          "Projects/c/README.md": "x\n",
+          "Projects/d/README.md": "x\n"
+        }
+      }
+    },
+    {
+      "id": "p",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "P",
+          "folders": [
+            "${state.o.person}/Projects/b",
+            "${state.o.person}/Projects/c"
+          ]
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "one",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY one",
+          "new": true,
+          "project": "${state.p.body.id}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "two",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY two",
+          "new": true,
+          "project": "${state.p.body.id}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "before-one",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "pick": {
+          "where": {
+            "id": "${state.one.body.conversation}"
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "before-two",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "pick": {
+          "where": {
+            "id": "${state.two.body.conversation}"
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "projects-8-deleted-204",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-8"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/projects/${state.p.body.id}",
+        "expect": {
+          "status": 204
+        }
+      }
+    },
+    {
+      "id": "projects-8-both-kept-with-its-folders",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-8"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "project": null,
+                  "folders": [
+                    {
+                      "$matches": "/env-home/Projects/b$"
+                    },
+                    {
+                      "$matches": "/env-home/Projects/c$"
+                    }
+                  ]
+                },
+                2
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-8-revisions-raised",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-8"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.one.body.conversation}",
+                "revision": {
+                  "$ne": "${state.before-one.picked.revision}"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-8-gone-from-the-list",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-8"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/projects",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "projects-8-again-404",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-8"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/projects/${state.p.body.id}",
+        "expect": {
+          "status": 404
+        }
+      }
+    }
+  ]
+}

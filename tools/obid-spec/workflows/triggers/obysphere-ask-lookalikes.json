@@ -1,0 +1,431 @@
+{
+  "schemaVersion": "2",
+  "name": "Asking: an owner id that looks like another",
+  "version": "1.0.0",
+  "description": "An exact owner id that looks like another member's, asked on the owner's own word, waits for a Confirm titled with both, the model hearing neither; nothing goes before the click, the click sends it to that member only, and the next ask asks again; a member with no look-alike goes on the owner's word (ASK-34, ASK-17).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "dima",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dima",
+        "owner": "dima",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "dirna",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dirna",
+        "owner": "dirna",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dima-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dirna-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dima-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dima}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dima-key}",
+        "name": "Dima's Oby"
+      }
+    },
+    {
+      "id": "dirna-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dirna}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dirna-key}",
+        "name": "Dirna's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dima}",
+            "ownerKey": "${state.dima-key}"
+          },
+          {
+            "obid": "${state.dirna}",
+            "ownerKey": "${state.dirna-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "alex-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.alex}"
+      }
+    },
+    {
+      "id": "lookalikes-read",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "owner": "dirna",
+                "lookalike": [
+                  "dima"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "asked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_ask {\"to\": \"dirna\", \"question\": \"Is the deploy green?\"}",
+          "new": true
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$not": {
+                "$contains": "dima"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-34"
+        ]
+      }
+    },
+    {
+      "id": "ask-34-a-confirm-titled-with-both",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 20,
+        "pick": {
+          "where": {
+            "kind": "confirm",
+            "state": "open",
+            "confirm": {
+              "action": "ask_oby"
+            }
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "confirm",
+                "state": "open",
+                "title": "Ask dirna's Oby, not dima's",
+                "text": {
+                  "$contains": "Is the deploy green?"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-34"
+        ]
+      }
+    },
+    {
+      "id": "ask-34-the-model-hears-it-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.asked.body.conversation}&limit=500",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "1.who": "oby",
+            "1.text": "oby: Your question to dirna waits for the owner's OK: its Confirm is under this answer, and on Home. Nothing has gone yet: say so."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-34"
+        ]
+      }
+    },
+    {
+      "id": "ask-34-nothing-before-the-click",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dirna}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-34"
+        ]
+      }
+    },
+    {
+      "id": "clicked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.ask-34-a-confirm-titled-with-both.picked.id}/answer",
+        "confirm": {
+          "device": "${state.alex-device}",
+          "item": "${state.ask-34-a-confirm-titled-with-both.picked.id}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "ask-34-the-click-sends-it-to-that-member",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dirna}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "obiRequest",
+                "obi": {
+                  "fromOwner": "alex",
+                  "quoted": {
+                    "text": "Is the deploy green?"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-34"
+        ]
+      }
+    },
+    {
+      "id": "ask-34-only",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dima}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-34"
+        ]
+      }
+    },
+    {
+      "id": "asked-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_ask {\"to\": \"dirna\", \"question\": \"And the docs?\"}",
+          "conversation": "${state.asked.body.conversation}"
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "ask-34-nothing-remembered-it-asks-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "confirm",
+                "state": "open",
+                "title": "Ask dirna's Oby, not dima's",
+                "text": {
+                  "$contains": "And the docs?"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-34"
+        ]
+      }
+    },
+    {
+      "id": "no-lookalike",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_ask {\"to\": \"dana\", \"question\": \"Lunch?\"}",
+          "new": true
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "ask-34-one-with-no-lookalike-goes-on-the-owners-word",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "obiRequest",
+                "obi": {
+                  "quoted": {
+                    "text": "Lunch?"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-34",
+          "ASK-17"
+        ]
+      }
+    }
+  ]
+}

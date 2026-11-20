@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>A shared artifact, outside Oby</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="oby.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;background:#0b0b0b}
+a{color:#64a8ff}a:hover{color:#8cbcff}
+</style>
+</helmet>
+<div class="oby" style="min-height: 900px; display: flex; flex-direction: column; background: #0b0b0b; color: rgba(255,255,255,0.8); font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif; position: relative;">
+  <header style="display: flex; align-items: center; gap: 12px; padding: 14px 24px; border-bottom: 1px solid rgba(255,255,255,0.05); flex-wrap: wrap;">
+    <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><g fill="#f1f1ee" stroke="#f1f1ee" stroke-width="1.2" stroke-linejoin="round"><path d="M5 6.6 L7.9 3.6 L8.9 6.6 Z"/><path d="M19 6.6 L16.1 3.6 L15.1 6.6 Z"/></g><rect x="1.5" y="6" width="21" height="16.5" rx="5" fill="#f1f1ee"/><rect x="6" y="10.6" width="2.8" height="5" rx="1.4" fill="#0d0d0e"/><rect x="14.6" y="10.6" width="2.8" height="5" rx="1.4" fill="#0d0d0e"/></svg>
+    <span style="font-size: 14px; font-weight: 600; color: #ececec;">Oby Artifacts</span>
+    <span style="font-size: 13px; color: #6e6e74;">Shared by Ana from the Deskree Obysphere · v4</span>
+    <span style="margin-left: auto; font-size: 12px; color: #6e6e74;">Read only · made with Claude Design</span>
+  </header>
+
+  <main style="flex: 1 1 auto; width: 100%; max-width: 1100px; margin: 0 auto; padding: 40px 24px 160px; box-sizing: border-box; display: flex; flex-direction: column; gap: 24px;">
+    <div style="border-radius: 14px; border: 1px solid rgba(255,255,255,0.08); background: #070707; background-image: radial-gradient(rgba(255,255,255,0.06) 1px, transparent 1px); background-size: 20px 20px; padding: 32px; display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 24px;">
+      <div style="display: flex; flex-direction: column; gap: 6px;"><span style="font-size: 12px; color: #6e6e74;">The idea</span><div style="height: 180px; border-radius: 8px; background: #0b0b0b; border: 1px solid rgba(255,255,255,0.10); padding: 16px; box-sizing: border-box; display: flex; flex-direction: column; gap: 8px;"><span style="width: 70%; height: 10px; border-radius: 3px; background: rgba(255,255,255,0.5);"></span><span style="width: 90%; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.15);"></span><span style="display: flex; gap: 6px; flex: 1; margin-top: 10px;"><span style="flex: 1; border-radius: 6px; background: #161617;"></span><span style="flex: 1; border-radius: 6px; background: #161617;"></span><span style="flex: 1; border-radius: 6px; background: #161617;"></span></span></div></div>
+      <div style="display: flex; flex-direction: column; gap: 6px;"><span style="font-size: 12px; color: #6e6e74;">1a · Share it in words</span><div style="height: 180px; border-radius: 8px; background: #0b0b0b; border: 1px solid rgba(255,255,255,0.10);"></div></div>
+      <div style="display: flex; flex-direction: column; gap: 6px;"><span style="font-size: 12px; color: #6e6e74;">2a · Ben's Oby</span><div style="height: 180px; border-radius: 8px; background: #0b0b0b; border: 1px solid rgba(255,255,255,0.10);"></div></div>
+    </div>
+    <p style="margin: 0; font-size: 13px; color: #6e6e74;">This page is a copy Ana chose to make public. It loads nothing else and sends nothing back.</p>
+  </main>
+
+  <div style="position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); width: calc(100% - 32px); max-width: 560px; display: flex; flex-direction: column; align-items: center; gap: 0;">
+    <sc-if value="{{open}}" hint-placeholder-val="{{ false }}">
+      <div style="width: 100%; box-sizing: border-box; background: #181817; border: 1px solid rgba(255,255,255,0.08); border-radius: 20px 20px 0 0; border-bottom: 0; padding: 20px 22px 12px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 24px 64px rgba(0,0,0,0.55);">
+        <p style="margin: 0; font-size: 15px; font-weight: 600; color: #ececec;">Want to tell Ana what you think?</p>
+        <p style="margin: 0; font-size: 14px; line-height: 20px; color: #a3a3a8;">Get Oby, a small app for your Mac that works with your own Claude Code, Codex or Cursor. Then tell your Oby what you think of this, and it reaches Ana's Oby. No account, nothing stored anywhere but your Mac.</p>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <a href="https://oby.example/download" style="text-decoration: none; padding: 9px 16px; border-radius: 999px; background: #ececec; color: #111111; font-size: 14px; font-weight: 500;">Get Oby for Mac</a>
+          <a href="oby://open?artifact=demo" style="text-decoration: none; padding: 9px 16px; border-radius: 999px; background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.8); font-size: 14px;">I have Oby: open it there</a>
+        </div>
+      </div>
+    </sc-if>
+    <button type="button" onClick="{{toggle}}" aria-expanded="{{openText}}" style="width: 100%; box-sizing: border-box; display: flex; align-items: center; gap: 14px; padding: 12px 18px 12px 12px; border-radius: {{pillRadius}}; background: #181817; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 10px 28px rgba(0,0,0,0.45); color: inherit; font: inherit; text-align: left; cursor: pointer;">
+      <span class="oby-hop" style="width: 44px; height: 44px; flex-shrink: 0; display: flex; align-items: flex-end; justify-content: center;">
+        <svg width="40" height="40" viewBox="0 0 24 24" aria-hidden="true"><g fill="#f1f1ee" stroke="#f1f1ee" stroke-width="1.2" stroke-linejoin="round"><path d="M5 6.6 L7.9 3.6 L8.9 6.6 Z"/><path d="M19 6.6 L16.1 3.6 L15.1 6.6 Z"/></g><rect x="1.5" y="6" width="21" height="16.5" rx="5" fill="#f1f1ee"/><g class="oby-eyes"><rect class="oby-eye" x="6" y="10.6" width="2.8" height="5" rx="1.4" fill="#0d0d0e"/><rect class="oby-eye" x="14.6" y="10.6" width="2.8" height="5" rx="1.4" fill="#0d0d0e"/></g></svg>
+      </span>
+      <span style="display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0;">
+        <span style="font-size: 14px; font-weight: 500; color: #ececec;">Ana's Oby shared this with you</span>
+        <span style="font-size: 13px; color: #a3a3a8;">Have an idea? Your Oby can tell his.</span>
+      </span>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6e6e74" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{chevron}}"/></svg>
+    </button>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":900}}'>
+class Component extends DCLogic {
+  constructor(props) { super(props); this.state = { open: false }; }
+  renderVals() {
+    const open = this.state.open;
+    return {
+      open,
+      openText: open ? 'true' : 'false',
+      pillRadius: open ? '0 0 20px 20px' : '999px',
+      chevron: open ? 'm6 9 6 6 6-6' : 'm18 15-6-6-6 6',
+      toggle: () => this.setState({ open: !open })
+    };
+  }
+}
+</script>
+</body>
+</html>

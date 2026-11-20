@@ -1,0 +1,382 @@
+{
+  "schemaVersion": "2",
+  "name": "Asking: the Obysphere's rules refuse",
+  "version": "1.0.0",
+  "description": "On an Obysphere with no rule that lets members ask, the owner's question goes nowhere: the turn ends with the refusal's own words, no exchange is kept, and its card says why with no exchange (ASK-8, ASK-23, ASK-33); from the thread too (PEER-5); refused only after the click, it says so in the conversation once (ASK-8).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "alex-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.alex}"
+      }
+    },
+    {
+      "id": "dana-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.dana}"
+      }
+    },
+    {
+      "id": "no-rules",
+      "use": "runtime.rust:sphere-policy",
+      "inputs": {
+        "sphere": "${state.sphere}",
+        "rules": []
+      }
+    },
+    {
+      "id": "asked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_ask {\"to\": \"dana\", \"question\": \"Which branch has the fix?\"}",
+          "new": true
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "I can't ask dana's Oby. This Obysphere's rules don't allow questions yet. An admin can change that."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-8",
+          "ASK-33"
+        ]
+      }
+    },
+    {
+      "id": "ask-8-keeps-no-exchange",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-8",
+          "ASK-33",
+          "ASK-23"
+        ]
+      }
+    },
+    {
+      "id": "ask-23-a-card-with-no-exchange-saying-why",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.asked.body.conversation}&limit=500",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "asks": [
+                  {
+                    "state": "refused",
+                    "exchange": null,
+                    "why": {
+                      "$contains": "This Obysphere's rules don't allow questions yet. An admin can change that."
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-23"
+        ]
+      }
+    },
+    {
+      "id": "ask-23-and-no-turn-on-their-word",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.asked.body.conversation}&limit=500",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 2
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-23"
+        ]
+      }
+    },
+    {
+      "id": "peer-5-from-the-thread-too",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/peers/dana/ask",
+        "body": {
+          "text": "Which branch?"
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": [
+            403,
+            409,
+            422,
+            502
+          ],
+          "text": {
+            "$contains": "This Obysphere's rules don't allow questions yet. An admin can change that."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-5"
+        ]
+      }
+    },
+    {
+      "id": "peer-5-and-keeps-no-exchange",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-5"
+        ]
+      }
+    },
+    {
+      "id": "unsigned",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_ask {\"to\": \"dana\", \"question\": \"Is the release today?\"}",
+          "conversation": "${state.asked.body.conversation}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "the-confirm",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 20,
+        "pick": {
+          "where": {
+            "kind": "confirm",
+            "state": "open"
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "ask-8-refused-after-the-click",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.the-confirm.picked.id}/answer",
+        "confirm": {
+          "device": "${state.alex-device}",
+          "item": "${state.the-confirm.picked.id}"
+        },
+        "expect": {
+          "status": [
+            409,
+            422,
+            502
+          ],
+          "text": {
+            "$contains": "This Obysphere's rules don't allow questions yet. An admin can change that."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-8",
+          "ASK-23"
+        ]
+      }
+    },
+    {
+      "id": "ask-8-it-says-so-in-the-conversation-once",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.asked.body.conversation}&limit=500",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "who": "oby",
+                  "text": {
+                    "$contains": "This Obysphere's rules don't allow questions yet. An admin can change that."
+                  },
+                  "relayed": true
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-8"
+        ]
+      }
+    },
+    {
+      "id": "ask-8-still-no-exchange",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-8"
+        ]
+      }
+    },
+    {
+      "id": "ask-8-nothing-reached-dana",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-8"
+        ]
+      }
+    }
+  ]
+}

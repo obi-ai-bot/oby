@@ -252,3 +252,12 @@
 .br-tabs { -webkit-app-region: drag; }
 .br-tabs button, .br-resize { -webkit-app-region: no-drag; }
 .is-popover-open .br-tabs { -webkit-app-region: no-drag; }
+
+/* The Mac (15, 16): the first-time sheet's actions, the orange frame around the screen while an agent
+   has the Mac (main's click-through window, ?macframe), the pill's separator. The pill's own window
+   (?macpill) is transparent: only the pill shows. */
+.modal-actions { margin-top: 24px; display: flex; justify-content: flex-end; gap: 8px; }
+.mac-glow { position: fixed; z-index: 30; inset: 0; pointer-events: none; box-shadow: inset 0 0 0 3px rgba(255, 159, 10, 0.85), inset 0 0 40px rgba(255, 159, 10, 0.25); }
+.pill-sep { width: 1px; height: 20px; background: var(--line); }
+html.is-mac-overlay, html.is-mac-overlay body, html.is-mac-overlay #root { background: transparent !important; }
+html.is-mac-overlay .control-pill { position: fixed; top: 8px; }

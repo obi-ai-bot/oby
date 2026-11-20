@@ -1,0 +1,180 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: a Claude Code started ahead that ran its hooks",
+  "version": "1.0.0",
+  "description": "The next new conversation's Claude Code, started ahead, runs the owner's SessionStart hooks as it starts and writes their lines before any prompt: it still takes that conversation's first turn, with Oby's tools there, and no other Claude Code is started for it (CONVERSATION-AGENT-25).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_PRESTART": "on"
+        },
+        "files": {
+          "accounts/stand-in/startup-hooks": ""
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY hi",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "hi"
+          }
+        }
+      }
+    },
+    {
+      "id": "next",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/next-id",
+        "expect": {
+          "exists": true
+        },
+        "within": 30
+      }
+    },
+    {
+      "id": "ahead",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.next.text}/config/started.jsonl",
+        "expect": {
+          "json": {
+            "paths": {
+              "id": {
+                "$type": "string"
+              }
+            }
+          }
+        },
+        "within": 30
+      }
+    },
+    {
+      "id": "no-turn-ran-on-it",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.next.text}",
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-25-its-first-words",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_jobs {}",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "conversation": "${state.next.text}",
+            "text": {
+              "$matches": "^oby: "
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-25"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-25-oby-answered-its-tools",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.conversation-agent-25-its-first-words.body.text}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$not": {
+                "$contains": "refused"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-25"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-25-the-claude-code-started-ahead-took-the-turn",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.next.text}",
+        "expect": {
+          "paths": {
+            "heard": [
+              {
+                "process": "${state.ahead.json.id}",
+                "last": "OBY oby_jobs {}"
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-25"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-25-no-other-claude-code-started",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.next.text}/config/started.jsonl",
+        "expect": {
+          "text": {
+            "$matches": "^[^\\n]+\\n?$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-25"
+        ]
+      }
+    }
+  ]
+}
