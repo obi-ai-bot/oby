@@ -4,6 +4,33 @@
 use super::*;
 
 impl Jobs {
+    /// The lock of the clone job `id`'s checks are checked out from (`Jobs::preparing`): a check's
+    /// checkout is added and removed under it, as a job's own worktree is (#2626).
+    pub(super) fn checkout_lock(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.preparing(&self.get(id).map(|job| job.repo).unwrap_or_default())
+    }
+
+    /// Removes job `id`'s own check checkout and what its checks built there, once its worker
+    /// ended: never another job's (cargo could run another checkout's binary).
+    pub(super) async fn drop_checkout(&self, id: &str) {
+        let at = self.check_home(id);
+        let Some(job) = self.get(id).filter(|_| at.exists()) else {
+            return;
+        };
+        let common = self.clone_for(&job).join(".git");
+        let name = format!("check-{id}");
+        let check = Spec {
+            worktree: at.join(&name),
+            git_admin: Some(common.join("worktrees").join(&name)),
+            git_common: Some(common),
+            ..Spec::default()
+        };
+        let lock = self.checkout_lock(id);
+        if let Err(why) = crate::secretspec::remove_checkout(&check, &at, &lock).await {
+            tracing::warn!("job {id}: {why}");
+        }
+    }
+
     /// Where the job's worktree is as its check starts (PUBLISHING-5): its HEAD (empty when git
     /// can't say), and whether anything isn't committed (untracked files too, ignored ones not).
     /// Dirty when git can't say. The check never writes there: it runs in a checkout of its own.
@@ -213,7 +240,10 @@ impl Jobs {
         };
         // With the owner's secrets, what it wrote goes with its own checkout, which no job's
         // sandbox ever reads.
-        if !kept && let Err(why) = Box::pin(crate::secretspec::remove_checkout(&spec, &at)).await {
+        let lock = self.checkout_lock(id);
+        if !kept
+            && let Err(why) = Box::pin(crate::secretspec::remove_checkout(&spec, &at, &lock)).await
+        {
             tracing::warn!("job {id}: {why}");
         }
         record(Some(run.as_ref().is_ok_and(|run| run.passed)));
@@ -394,7 +424,8 @@ impl Jobs {
             Some(&group),
         )
         .await;
-        if let Err(why) = Box::pin(crate::secretspec::remove_checkout(&check, &at)).await {
+        let lock = self.checkout_lock(id);
+        if let Err(why) = Box::pin(crate::secretspec::remove_checkout(&check, &at, &lock)).await {
             tracing::warn!("job {id}: {why}");
         }
         let run = run
@@ -490,10 +521,17 @@ impl Jobs {
         )
         .await
         .map_err(|_| unchecked(format!("obid's clone doesn't have {base}")))?;
-        let check =
-            crate::secretspec::fresh_checkout(spec, &base_commit, head, at, &repo.check_keep)
-                .await
-                .map_err(unchecked);
+        let lock = self.checkout_lock(id);
+        let check = crate::secretspec::fresh_checkout(
+            spec,
+            &base_commit,
+            head,
+            at,
+            &repo.check_keep,
+            &lock,
+        )
+        .await
+        .map_err(unchecked);
         let mut check = match check {
             Ok(check) => check,
             Err(why) => {
@@ -531,7 +569,7 @@ impl Jobs {
             Err(why) => Some(unchecked(why.clone())),
         };
         if let Some(why) = missing {
-            if let Err(e) = crate::secretspec::remove_checkout(&check, at).await {
+            if let Err(e) = crate::secretspec::remove_checkout(&check, at, &lock).await {
                 tracing::warn!("job {id}: {e}");
             }
             return Err(why);
