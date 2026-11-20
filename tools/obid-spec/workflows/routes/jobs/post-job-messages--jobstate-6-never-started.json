@@ -1,0 +1,325 @@
+{
+  "schemaVersion": "2",
+  "name": "Try again on a task that never started is another round of itself (JOBSTATE-6, TASKS-20, 21)",
+  "version": "1.0.0",
+  "description": "A task whose repository can't be got ready fails with no session; Try again runs it again as the same job in its next round, with no follow-up; a review that never starts, tried again three times, stays one task in its fourth round.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/messages"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "repos": [
+            {
+              "repo": "obi-e2e/gone",
+              "remote": "file:///nonexistent/obid-spec/gone",
+              "defaultBranch": "main",
+              "check": "node --test",
+              "pullRequests": false
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/gone",
+            "kind": "build",
+            "task": "Add a.txt"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "b-failed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.b.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "failed",
+            "session": null
+          },
+          "paths": {
+            "reason": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "jobstate-6-the-same-job-next-round",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.b.body.id}/messages",
+        "body": {
+          "text": "Try again, picking up where you left off. Finish with a short summary as asked."
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.b.body.id}",
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "round": 2,
+            "finished": null,
+            "reason": null,
+            "nextStep": null,
+            "followUpOf": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-6",
+          "TASKS-20"
+        ]
+      }
+    },
+    {
+      "id": "b-failed-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.b.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "failed",
+            "round": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "tasks-20-no-follow-up",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 1
+            },
+            "0.id": "${state.b.body.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-6",
+          "TASKS-20"
+        ]
+      }
+    },
+    {
+      "id": "r",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/gone",
+            "kind": "review",
+            "task": "Review the change."
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "r-failed-1",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.r.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "failed",
+            "round": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "r-again-1",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.r.body.id}/messages",
+        "body": {
+          "text": "Try again, picking up where you left off. Finish with a short summary as asked."
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.r.body.id}",
+            "round": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "r-failed-2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.r.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "failed",
+            "round": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "r-again-2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.r.body.id}/messages",
+        "body": {
+          "text": "Try again, picking up where you left off. Finish with a short summary as asked."
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.r.body.id}",
+            "round": 3
+          }
+        }
+      }
+    },
+    {
+      "id": "r-failed-3",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.r.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "failed",
+            "round": 3
+          }
+        }
+      }
+    },
+    {
+      "id": "r-again-3",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.r.body.id}/messages",
+        "body": {
+          "text": "Try again, picking up where you left off. Finish with a short summary as asked."
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.r.body.id}",
+            "round": 4
+          }
+        }
+      }
+    },
+    {
+      "id": "tasks-21-one-task-in-its-fourth-round",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.r.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "failed",
+            "round": 4,
+            "followUpOf": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-21"
+        ]
+      }
+    },
+    {
+      "id": "tasks-21-no-follow-ups",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 2
+            },
+            "0.followUpOf": null,
+            "1.followUpOf": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-21"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,698 @@
+{
+  "schemaVersion": "2",
+  "name": "AGENTS-11: Cursor's ids grouped by model",
+  "version": "1.0.0",
+  "description": "A Cursor whose `cursor-agent models` lists one id per model, effort and Fast: options carry `groups`, each model once with its default and its variants by effort and Fast; auto and a lone id stand alone, thinking is part of the model, extra-high reads as xhigh, a model named like an effort stays itself; every listed id is in exactly one group, and an id picked from them is what the account keeps.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/settings/models/options"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "person": {
+          ".config/cursor/auth.json": "{\"accessToken\": \"obid-spec-cursor\", \"apiKey\": \"obid-spec-key\"}",
+          ".cursor/auth.json": "{\"accessToken\": \"obid-spec-cursor\", \"apiKey\": \"obid-spec-key\"}"
+        }
+      }
+    },
+    {
+      "id": "st",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tools.2.agent": "cursor",
+            "tools.2.path": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "w",
+      "use": "runtime.rust:accounts.exec",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "person",
+        "path": "bin/cursor-agent",
+        "text": "#!/usr/bin/env node\n// cursor-agent with a known model list: `models` answers it, anything else is the stand-in's.\nconst list = \"Available models\\n\\nauto - Auto (default)\\ngpt-5.3-codex-low - Codex 5.3 Low\\ngpt-5.3-codex - Codex 5.3\\ngpt-5.3-codex-fast - Codex 5.3 Fast\\ngpt-5.3-codex-high - Codex 5.3 High\\nclaude-opus-5-thinking-high - Claude Opus 5 1M Thinking\\nclaude-opus-5-thinking-low-fast - Claude Opus 5 1M Low Thinking Fast\\nclaude-opus-5-high - Claude Opus 5 1M\\ngpt-5.5-extra-high - GPT-5.5 1M Extra High\\ngpt-5.5-medium - GPT-5.5 1M\\nkimi-k2.7-code - Kimi K2.7 Code\\ngpt-5.1-codex-max - GPT-5.1 Codex Max\\ngpt-5.1-codex-max-high - GPT-5.1 Codex Max High\\n\";\nif (process.argv[2] === \"models\") { process.stdout.write(list); process.exit(0); }\nconst run = require(\"node:child_process\").spawnSync(process.execPath, [\"${state.st.body.tools.2.path}\", ...process.argv.slice(2)], { stdio: \"inherit\" });\nprocess.exit(run.status ?? 1);\n"
+      }
+    },
+    {
+      "id": "down",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "cursor": {
+              "bin": "${state.w.path}"
+            }
+          }
+        },
+        "person": {
+          ".config/cursor/auth.json": "{\"accessToken\": \"obid-spec-cursor\", \"apiKey\": \"obid-spec-key\"}",
+          ".cursor/auth.json": "{\"accessToken\": \"obid-spec-cursor\", \"apiKey\": \"obid-spec-key\"}"
+        },
+        "env": {
+          "OBID_USAGE_READS": "on"
+        }
+      }
+    },
+    {
+      "id": "read",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "cursor",
+                "signedIn": true,
+                "modelsRead": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "opt",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/settings/models/options",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "cursor.models": {
+              "$len": 13
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "agents-11-auto-stands-alone",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.opt.body.cursor.groups}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$any": {
+                "base": "auto",
+                "default": "auto",
+                "variants": [
+                  {
+                    "id": "auto",
+                    "fast": false
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-11"
+        ]
+      }
+    },
+    {
+      "id": "agents-11-a-models-efforts-and-fast-in-one-group",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.opt.body.cursor.groups}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$any": {
+                "base": "gpt-5.3-codex",
+                "name": "Codex 5.3",
+                "default": "gpt-5.3-codex",
+                "variants": [
+                  {
+                    "id": "gpt-5.3-codex-low",
+                    "effort": "low",
+                    "fast": false
+                  },
+                  {
+                    "id": "gpt-5.3-codex",
+                    "effort": {
+                      "$exists": false
+                    },
+                    "fast": false
+                  },
+                  {
+                    "id": "gpt-5.3-codex-fast",
+                    "effort": {
+                      "$exists": false
+                    },
+                    "fast": true
+                  },
+                  {
+                    "id": "gpt-5.3-codex-high",
+                    "effort": "high",
+                    "fast": false
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-11"
+        ]
+      }
+    },
+    {
+      "id": "agents-11-thinking-is-part-of-the-model",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.opt.body.cursor.groups}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$any": {
+                "base": "claude-opus-5-thinking",
+                "default": "claude-opus-5-thinking-high",
+                "variants": {
+                  "$len": 2
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-11"
+        ]
+      }
+    },
+    {
+      "id": "agents-11-extra-high-is-xhigh",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.opt.body.cursor.groups}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$any": {
+                "base": "gpt-5.5",
+                "default": "gpt-5.5-medium",
+                "variants": [
+                  {
+                    "id": "gpt-5.5-medium",
+                    "effort": "medium"
+                  },
+                  {
+                    "id": "gpt-5.5-extra-high",
+                    "effort": "xhigh"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-11"
+        ]
+      }
+    },
+    {
+      "id": "agents-11-a-model-named-like-an-effort-stays-itself",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.opt.body.cursor.groups}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$any": {
+                "base": "gpt-5.1-codex-max",
+                "variants": [
+                  {
+                    "id": "gpt-5.1-codex-max",
+                    "effort": {
+                      "$exists": false
+                    }
+                  },
+                  {
+                    "id": "gpt-5.1-codex-max-high",
+                    "effort": "high"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-11"
+        ]
+      }
+    },
+    {
+      "id": "agents-11-each-model-once-seven-models",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.opt.body.cursor.groups}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$len": 7
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-11"
+        ]
+      }
+    },
+    {
+      "id": "agents-11-in-exactly-one-group-1",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.opt.body.cursor.groups}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "variants": {
+                    "$any": {
+                      "id": "auto"
+                    }
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-11"
+        ]
+      }
+    },
+    {
+      "id": "agents-11-in-exactly-one-group-2",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.opt.body.cursor.groups}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "variants": {
+                    "$any": {
+                      "id": "gpt-5.3-codex-low"
+                    }
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-11"
+        ]
+      }
+    },
+    {
+      "id": "agents-11-in-exactly-one-group-3",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.opt.body.cursor.groups}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "variants": {
+                    "$any": {
+                      "id": "gpt-5.3-codex"
+                    }
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-11"
+        ]
+      }
+    },
+    {
+      "id": "agents-11-in-exactly-one-group-4",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.opt.body.cursor.groups}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "variants": {
+                    "$any": {
+                      "id": "gpt-5.3-codex-fast"
+                    }
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-11"
+        ]
+      }
+    },
+    {
+      "id": "agents-11-in-exactly-one-group-5",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.opt.body.cursor.groups}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "variants": {
+                    "$any": {
+                      "id": "gpt-5.3-codex-high"
+                    }
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-11"
+        ]
+      }
+    },
+    {
+      "id": "agents-11-in-exactly-one-group-6",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.opt.body.cursor.groups}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "variants": {
+                    "$any": {
+                      "id": "claude-opus-5-thinking-high"
+                    }
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-11"
+        ]
+      }
+    },
+    {
+      "id": "agents-11-in-exactly-one-group-7",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.opt.body.cursor.groups}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "variants": {
+                    "$any": {
+                      "id": "claude-opus-5-thinking-low-fast"
+                    }
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-11"
+        ]
+      }
+    },
+    {
+      "id": "agents-11-in-exactly-one-group-8",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.opt.body.cursor.groups}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "variants": {
+                    "$any": {
+                      "id": "claude-opus-5-high"
+                    }
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-11"
+        ]
+      }
+    },
+    {
+      "id": "agents-11-in-exactly-one-group-9",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.opt.body.cursor.groups}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "variants": {
+                    "$any": {
+                      "id": "gpt-5.5-extra-high"
+                    }
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-11"
+        ]
+      }
+    },
+    {
+      "id": "agents-11-in-exactly-one-group-10",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.opt.body.cursor.groups}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "variants": {
+                    "$any": {
+                      "id": "gpt-5.5-medium"
+                    }
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-11"
+        ]
+      }
+    },
+    {
+      "id": "agents-11-in-exactly-one-group-11",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.opt.body.cursor.groups}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "variants": {
+                    "$any": {
+                      "id": "kimi-k2.7-code"
+                    }
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-11"
+        ]
+      }
+    },
+    {
+      "id": "agents-11-in-exactly-one-group-12",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.opt.body.cursor.groups}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "variants": {
+                    "$any": {
+                      "id": "gpt-5.1-codex-max"
+                    }
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-11"
+        ]
+      }
+    },
+    {
+      "id": "agents-11-in-exactly-one-group-13",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.opt.body.cursor.groups}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "variants": {
+                    "$any": {
+                      "id": "gpt-5.1-codex-max-high"
+                    }
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-11"
+        ]
+      }
+    },
+    {
+      "id": "agents-11-a-composed-id-is-what-the-account-keeps",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "PATCH",
+        "path": "/v1/accounts/cursor",
+        "body": {
+          "model": "gpt-5.3-codex-fast"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "model": "gpt-5.3-codex-fast"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-11"
+        ]
+      }
+    }
+  ]
+}

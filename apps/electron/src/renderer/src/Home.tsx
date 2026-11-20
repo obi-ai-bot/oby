@@ -41,7 +41,7 @@ import { useBrowser } from './browser/store';
 import { browserFit } from './browser/fit';
 import { BrowserGlobe, BrowserPane } from './browser/BrowserPane';
 import { MacSheet, useMacPill } from './browser/Mac';
-import { registerCommands } from './shortcuts';
+import { composing, registerCommands } from './shortcuts';
 import { ComputerLine, ComputerStage, useComputerStage } from './computers/ComputerHome';
 import { TYPES, renameTask, tell, countOf, runningCount, firstTab, hasFresh, toDoOf, useTasks, asksWaiting, type Tab } from './tasks';
 
@@ -493,6 +493,7 @@ export default function Home() {
                           setRenaming(false);
                         }}
                         onKeyDown={(e) => {
+                          if (composing(e)) return;
                           if (e.key === 'Enter') e.currentTarget.blur();
                           // Esc leaves the name as it was (and stays on the page)
                           if (e.key === 'Escape') { e.stopPropagation(); setRenaming(false); }

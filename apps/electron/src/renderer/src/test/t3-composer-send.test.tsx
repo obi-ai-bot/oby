@@ -143,11 +143,9 @@ describe('+ › Attach tasks search (T3: IME Enter in a picker)', () => {
     return { enter, picked };
   }
 
-  // Known bug #2642: AddPanel's search (Composer.tsx, `onKeyDown … if (e.key === 'Enter')`) has no
-  // isComposing check, so the Enter that confirms an IME candidate attaches the first task and closes
-  // the panel. The same handler shape is in TalkPill.tsx (Search models), the rename fields (Sidebar.tsx,
-  // Home.tsx), EmailField.tsx, JoinLink.tsx, TetrixAddress.tsx and FindBar.tsx.
-  it.fails('t3_ime_the_enter_that_confirms_a_word_in_the_task_search_picks_nothing (known bug #2642)', async () => {
+  // #2642: the Enter that confirms an input-method word is the typist's (`composing`, shortcuts.ts),
+  // in AddPanel's search as in every search and rename field of the window (T3 Code 4a2f8b04bb)
+  it('t3_ime_the_enter_that_confirms_a_word_in_the_task_search_picks_nothing', async () => {
     const s = await searching();
     await s.enter({ isComposing: true, keyCode: 229 } as KeyboardEventInit);
     expect(s.picked()).toBe(false);

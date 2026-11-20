@@ -5,6 +5,7 @@ import { patchStatus } from './live';
 import { Group } from './SettingsView';
 import { isAgent } from '../../shared/obid-wire';
 import { agentOf } from './view';
+import { composing } from './shortcuts';
 
 // Where each tool runs from (docs/contracts/accounts.md, ACCOUNTS-26 to 28): the binary obid runs
 // it as, a path from / or a command's name, set here instead of in obid's config.json. obid keeps
@@ -49,7 +50,7 @@ export function ToolBinary({ tool, info, onSaved }: { tool: string; info?: Tool;
       </span>
       <span className="set-control">
         <input className="set-field" value={shown} placeholder={DEFAULT_BIN[tool] ?? tool} aria-label={`${name} binary`} title={shown} spellCheck={false} disabled={saving}
-          onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && changed && shown.trim()) void save(shown.trim()); if (e.key === 'Escape') setText(null); }} />
+          onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (composing(e)) return; if (e.key === 'Enter' && changed && shown.trim()) void save(shown.trim()); if (e.key === 'Escape') setText(null); }} />
         {changed && shown.trim()
           ? <button className="set-button" disabled={saving} onClick={() => void save(shown.trim())}>Save</button>
           : info?.binSet && <button className="set-button" disabled={saving} onClick={() => void save(null)}>Use default</button>}

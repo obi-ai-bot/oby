@@ -1,0 +1,165 @@
+{
+  "schemaVersion": "2",
+  "name": "CLIVERSIONS-7: a known-bad version is said in status",
+  "version": "1.0.0",
+  "description": "With a table of known versions naming Codex 0.170.0 known bad: status says Codex `knownBad` with its reason, Claude Code (in its tested range) `tested` with no reason, and Cursor (not in the table) `untested`.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/status"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": [
+                {
+                  "id": "cx",
+                  "name": "Work"
+                }
+              ]
+            }
+          }
+        },
+        "person": {
+          ".codex/auth.json": "{\"OPENAI_API_KEY\": \"fake-codex\"}"
+        }
+      }
+    },
+    {
+      "id": "table",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "cli-versions.json",
+        "content": "{\"claude\": {\"tested\": {\"from\": \"2.1.296\", \"to\": \"2.1.302\"}, \"knownBad\": []}, \"codex\": {\"tested\": {\"from\": \"0.170.0\", \"to\": \"0.170.0\"}, \"knownBad\": [{\"version\": \"0.170.0\", \"reason\": \"turns hang after a resume\", \"issue\": 1}]}}"
+      }
+    },
+    {
+      "id": "down",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "t",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": [
+                {
+                  "id": "cx",
+                  "name": "Work"
+                }
+              ]
+            }
+          }
+        },
+        "person": {
+          ".codex/auth.json": "{\"OPENAI_API_KEY\": \"fake-codex\"}"
+        },
+        "env": {
+          "OBID_TEST_CLI_VERSIONS": "${state.o.home}/cli-versions.json"
+        }
+      }
+    },
+    {
+      "id": "cliversions-7-a-known-bad-version-says-why",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.t}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tools": {
+              "$any": {
+                "agent": "codex",
+                "versionStatus": "knownBad",
+                "knownBadReason": "turns hang after a resume"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLIVERSIONS-7"
+        ]
+      }
+    },
+    {
+      "id": "cliversions-7-a-tested-one-says-so-with-no-reason",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.t}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tools": {
+              "$any": {
+                "agent": "claude",
+                "versionStatus": "tested",
+                "knownBadReason": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLIVERSIONS-7"
+        ]
+      }
+    },
+    {
+      "id": "cliversions-7-one-the-table-doesnt-name-is-untested",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.t}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tools": {
+              "$any": {
+                "agent": "cursor",
+                "versionStatus": "untested",
+                "knownBadReason": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLIVERSIONS-7"
+        ]
+      }
+    }
+  ]
+}

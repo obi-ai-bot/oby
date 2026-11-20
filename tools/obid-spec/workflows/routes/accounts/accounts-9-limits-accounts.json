@@ -1,0 +1,716 @@
+{
+  "schemaVersion": "2",
+  "name": "ACCOUNTS-9: limits.accounts is the only cap on accounts",
+  "version": "1.0.0",
+  "description": "With `limits.accounts` at 40 (PUT /v1/settings/jobs), 40 accounts of one tool can be added and the 41st, of any tool, is 422 saying at most 40.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/accounts"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "one-account-to-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "raised",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "limits": {
+            "accounts": 40
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "add-2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-3",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-4",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-5",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-6",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-7",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-8",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-9",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-10",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-11",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-12",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-13",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-14",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-15",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-16",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-17",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-18",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-19",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-20",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-21",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-22",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-23",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-24",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-25",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-26",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-27",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-28",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-29",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-30",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-31",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-32",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-33",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-34",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-35",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-36",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-37",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-38",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-39",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "add-40",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-9"
+        ]
+      }
+    },
+    {
+      "id": "accounts-9-forty-of-them",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$len": 40
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-9"
+        ]
+      }
+    },
+    {
+      "id": "accounts-9-the-41st-is-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": {
+              "$contains": "at most 40"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-9"
+        ]
+      }
+    },
+    {
+      "id": "accounts-9-nothing-was-added",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$len": 40
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-9"
+        ]
+      }
+    }
+  ]
+}

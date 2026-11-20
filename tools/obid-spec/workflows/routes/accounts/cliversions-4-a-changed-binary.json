@@ -1,0 +1,210 @@
+{
+  "schemaVersion": "2",
+  "name": "CLIVERSIONS-4: a changed binary is read again",
+  "version": "1.0.0",
+  "description": "Codex's binary at the same path is replaced between two jobs (a new modified time): the next round reads its version again (0.171.0, then 0.172.10), and obid's log says the change once.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": [
+                {
+                  "id": "cx",
+                  "name": "Work"
+                }
+              ]
+            }
+          }
+        },
+        "person": {
+          ".codex/auth.json": "{\"OPENAI_API_KEY\": \"fake-codex\"}"
+        }
+      }
+    },
+    {
+      "id": "st",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tools": {
+              "$any": {
+                "agent": "codex",
+                "version": "0.170.0"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "w1",
+      "use": "runtime.rust:accounts.exec",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "person",
+        "path": "bin/codex",
+        "text": "#!/bin/sh\n[ \"$1\" = --version ] && echo \"codex-cli 0.171.0\" && exit 0\nexec ${state.st.body.tools.1.path} \"$@\"\n"
+      }
+    },
+    {
+      "id": "bin-set",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/agents/codex",
+        "body": {
+          "bin": "${state.w1.path}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "agent": "codex",
+            "task": "Say hello."
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "cliversions-4-the-first-round-ran-on-0-171-0",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.first.body.id}",
+        "within": 240,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "agentVersion": "0.171.0"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLIVERSIONS-4"
+        ]
+      }
+    },
+    {
+      "id": "w2",
+      "use": "runtime.rust:accounts.exec",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "person",
+        "path": "bin/codex",
+        "text": "#!/bin/sh\n[ \"$1\" = --version ] && echo \"codex-cli 0.172.10\" && exit 0\nexec ${state.st.body.tools.1.path} \"$@\"\n"
+      }
+    },
+    {
+      "id": "next",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "agent": "codex",
+            "task": "Say hello again."
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "cliversions-4-the-changed-binary-is-read-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.next.body.id}",
+        "within": 240,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "agentVersion": "0.172.10"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLIVERSIONS-4"
+        ]
+      }
+    },
+    {
+      "id": "log",
+      "use": "runtime.rust:accounts.log",
+      "inputs": {
+        "obid": "${state.o}",
+        "has": "is version 0.172.10"
+      }
+    },
+    {
+      "id": "cliversions-4-the-change-is-logged-once",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.log.with}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$len": 1
+            },
+            "0": {
+              "$contains": "Codex at ${state.w2.path} is version 0.172.10"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLIVERSIONS-4"
+        ]
+      }
+    }
+  ]
+}

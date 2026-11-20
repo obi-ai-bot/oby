@@ -6,8 +6,12 @@ import SphereTile from './SphereTile';
 import { OwnerAvatar } from './ObyFace';
 import { api } from './obid';
 import { keyed } from './live';
-import type { InboxItem } from '../../shared/obid-wire';
+import type { InboxItem, OwnerPin, RememberedDecision } from '../../shared/obid-wire';
+import { notThem } from './askable';
+import { plainId } from './peers';
+import { acceptPin, canVerify, decisionWords, decisions as readDecisions, forgetDecision, members as readMembers, pins as readPins, toCompare } from './sphereTrust';
 import { withStarterRule } from '../../shared/policy';
+import { PIN_VERIFY } from '../../shared/words';
 import type { Policy, PolicyAnswer } from '../../shared/sphere';
 import RepoTicks from './RepoTicks';
 import { canAddProgress, canChangeRepos, canOpenRoom, confirmIsOff, repoTicks, whatItTells, type SharingRule } from './sharing';
@@ -17,6 +21,7 @@ import { JoinLink, useJoinLink } from './JoinLink';
 import InviteTeammates from './InviteTeammates';
 import { SoleAdmin, isSoleAdmin, useSphereAdmins } from './SphereAdmins';
 import AddSignIn, { needsSignin, useSigninStatus } from './AddSignIn';
+import { composing } from './shortcuts';
 
 export const sphereSettingsLabel = (id: string, spheres: Sphere[]) => `${spheres.find((s) => s.id === id)?.name ?? ''} settings`;
 
@@ -80,6 +85,7 @@ function Settings({ sphere }: { sphere: Sphere }) {
   };
   // Enter keeps it (by leaving the field); Esc puts it back
   const keys = (undo: () => void) => (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (composing(e)) return;
     if (e.key === 'Enter') e.currentTarget.blur();
     if (e.key === 'Escape') undo();
   };
@@ -166,8 +172,10 @@ function Settings({ sphere }: { sphere: Sphere }) {
     </Group>
     {sphere.live && !sphere.revoked && window.app?.spherePolicy && <SphereRules />}
     {sphere.live && !sphere.revoked && <WhatItTells sphere={sphere} />}
+    {sphere.live && !sphere.revoked && <MembersKeys />}
+    {sphere.live && !sphere.revoked && <WithoutAsking />}
     {/* last, set apart: what it does, then its button under it at the left */}
-    <Group i={5}>
+    <Group i={7}>
       <div className="set-row set-danger">
         <span className="set-label">
           {admin ? 'Delete Obysphere' : `Leave ${sphere.name}`}
@@ -261,6 +269,104 @@ function WhatItTells({ sphere }: { sphere: Sphere }) {
       )}
       {problem && <Row label={<span className="set-problem">{problem}</span>} />}
       {card && <ShareModal card={card} onClose={() => setCard(null)} onAnswered={() => { setCard(null); change(); }} />}
+    </Group>
+  );
+}
+
+// Each member's owner key as obid pinned it (docs/contracts/obysphere.md, SPHERE-11, 12): its
+// fingerprint to compare with that person, out of band (obid never fetches it from them), whether the
+// owner did, and who else's id theirs looks like. Verify asks first whether that person read them
+// this, and only then tells obid. Proposed words, for Sangam.
+export function MembersKeys() {
+  const [shown, setShown] = useState<{ pins: OwnerPin[]; alike: Map<string, string[]> } | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [asking, setAsking] = useState<OwnerPin | null>(null);
+  const read = () => void Promise.all([readPins(), readMembers().catch(() => [])])
+    .then(([pins, members]) => { setShown({ pins, alike: new Map(members.map((m) => [m.owner, m.lookalike])) }); setProblem(null); })
+    .catch((e: Error) => setProblem(e.message));
+  useEffect(read, []);
+  return (
+    <Group i={5} title="Members’ keys" footer={shown?.pins.length ? 'Compare a fingerprint with its person, in person or on a call, never by a message in the Obysphere.' : undefined}>
+      {shown?.pins.map((p) => {
+        const alike = shown.alike.get(p.owner) ?? [];
+        return (
+          <Row key={p.owner} label={plainId(p.owner)} about={<>
+            <code className="set-fingerprint">{toCompare(p)}</code>
+            <span>{p.changedTo ? ' · Their key changed' : p.verified ? ' · Verified' : ' · Not verified'}</span>
+            {alike.length > 0 && <span className="set-lookalike" role="note"> · {notThem(alike.map(plainId))}</span>}
+          </>}>
+            {canVerify(p) && <button className="set-button set-member-action" onClick={() => setAsking(p)} aria-label={`Verify ${plainId(p.owner)}`}>Verify</button>}
+          </Row>
+        );
+      })}
+      {shown?.pins.length === 0 && <Row label="No keys yet" about="A member’s key shows here once your Oby has seen it." />}
+      {problem && <Row label={<span className="set-problem" role="alert">{problem}</span>} />}
+      {asking && <VerifyModal pin={asking} onClose={() => setAsking(null)} onVerified={() => { setAsking(null); read(); }} />}
+    </Group>
+  );
+}
+
+// "Did <owner id> read you this?": the fingerprint, whole, then Verify, which tells obid that person
+// read the owner exactly this one, signed by its label as the owner's own (PIN_VERIFY, signed-words.md). Closed with Esc, Cancel, the x or a click outside, it tells obid nothing.
+export function VerifyModal({ pin, onClose, onVerified }: { pin: OwnerPin; onClose: () => void; onVerified: () => void }) {
+  const [problem, setProblem] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const close = useRef(onClose);
+  close.current = onClose;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopImmediatePropagation(); close.current(); } };
+    addEventListener('keydown', onKey, true);
+    return () => removeEventListener('keydown', onKey, true);
+  }, []);
+  const who = plainId(pin.owner), fingerprint = toCompare(pin);
+  const verify = () => {
+    if (busy) return;
+    setBusy(true);
+    void acceptPin(pin.owner, fingerprint).then(onVerified, (e: Error) => { setBusy(false); setProblem(e.message); });
+  };
+  return createPortal(
+    <div className="modal-backdrop" onPointerDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="modal is-small" role="alertdialog" aria-modal="true" aria-labelledby="verify-title" aria-describedby="verify-what">
+        <header className="modal-head">
+          <h2 id="verify-title">{`Did ${who} read you this?`}</h2>
+          <button type="button" className="icon-button" aria-label="Close" onClick={onClose}><X size={16} strokeWidth={1.6} /></button>
+        </header>
+        <p id="verify-what" className="modal-lede">{`Ask ${who} to read you their key’s fingerprint, in person or on a call. Verify only if it’s this one, character for character.`}</p>
+        <p className="modal-lede"><code className="set-fingerprint">{fingerprint}</code></p>
+        {problem && <p className="set-problem" role="alert">{problem}</p>}
+        <div className="modal-actions">
+          <button type="button" className="set-button" autoFocus onClick={onClose}>Cancel</button>
+          <button type="button" className="modal-primary" disabled={busy} onClick={verify}>{PIN_VERIFY}</button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+// What your Oby does for teammates without asking (docs/contracts/obysphere.md, SPHERE-13; #1394):
+// obid's remembered decisions, a standing GitHub approval among them, in words, each with Forget.
+// Forgotten, the next such request asks the owner again. Proposed words, for Sangam.
+export function WithoutAsking() {
+  const [kept, setKept] = useState<RememberedDecision[] | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const change = (what?: () => Promise<unknown>) => void (what?.() ?? Promise.resolve())
+    .then(() => readDecisions())
+    .then((d) => { setKept(d); setProblem(null); })
+    .catch((e: Error) => { setProblem(e.message); void readDecisions().then(setKept, () => {}); });
+  useEffect(() => change(), []);
+  return (
+    <Group i={6} title="What your Oby does without asking" footer={kept?.length ? 'Forget one, and the next such request asks you again.' : undefined}>
+      {kept?.map((d) => {
+        const { label, about } = decisionWords(d);
+        return (
+          <Row key={d.id} label={label} about={about}>
+            <button className="set-button set-member-action" onClick={() => change(() => forgetDecision(d.id))} aria-label={`Forget ${label}`}>Forget</button>
+          </Row>
+        );
+      })}
+      {kept?.length === 0 && <Row label="Nothing yet" about="Every request from another Oby waits for you." />}
+      {problem && <Row label={<span className="set-problem" role="alert">{problem}</span>} />}
     </Group>
   );
 }
