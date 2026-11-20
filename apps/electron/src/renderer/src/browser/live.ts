@@ -4,7 +4,7 @@
 // frame only. Main holds obid's token and follows the streams (window.app.browser); calls go through
 // window.app.obid, the owner's acts signed by main on their own click (shared/words.ts).
 import {
-  BROWSER_DOWNLOADS, BROWSER_PATH, browserAskPath, browserSaveCopyPath, browserTabPath,
+  BROWSER_DOWNLOADS, BROWSER_PATH, BROWSER_SETTINGS, browserAskPath, browserSaveCopyPath, browserTabPath,
   type BrowserAsk, type BrowserDownload, type BrowserDownloadsAnswer, type BrowserEvent, type BrowserFrame, type BrowserInput,
   type BrowserSettings, type BrowserTab, type BrowserTabsAnswer,
 } from '../../../shared/obid-wire';
@@ -21,6 +21,8 @@ export type Live = {
   answer(ask: string, choice?: string): Promise<void>;
   /** an agent's download copied into the owner's Downloads (POST …/saveCopy) */
   saveCopy(download: string): Promise<void>;
+  /** one of Settings › General's switches (PUT /v1/browser/settings, one key) */
+  setSettings(s: Partial<BrowserSettings>): Promise<void>;
   close(): void;
 };
 
@@ -217,6 +219,10 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
         saved.set(d, (a?.savedAs ?? '').split('/').pop() || (downloads.find((x) => x.id === d)?.name ?? ''));
         sinks.problem(null);
       } catch (e) { sinks.problem((e as Error).message); }
+      await refresh();
+    },
+    setSettings: async (x) => {
+      try { settings = (await call<BrowserSettings>('PUT', BROWSER_SETTINGS, x)) ?? settings; sinks.problem(null); publish(); } catch (e) { sinks.problem((e as Error).message); }
       await refresh();
     },
     close: () => { closed = true; following?.(); for (const stop of streams.values()) stop(); streams.clear(); },

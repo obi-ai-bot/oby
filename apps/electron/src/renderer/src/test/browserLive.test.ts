@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { owners, wordsOf, TAKE_CONTROL, GIVE_BACK, SKIP, SAVE_A_COPY } from '../../../shared/words';
+import { owners, wordsOf, TAKE_CONTROL, GIVE_BACK, SKIP, SAVE_A_COPY, BROWSER_SWITCHES } from '../../../shared/words';
 import { mayInput, sawInput } from '../../../main/browserInput';
+import { downloadsFile } from '../../../main/reveal';
 import { connectLive, LINGER_MS, type Sinks } from '../browser/live';
 import type { BrowserState } from '../browser/view';
 import type { BrowserTab } from '../../../shared/obid-wire';
@@ -76,6 +77,7 @@ function mockObid(lists: { tabs: BrowserTab[]; seq?: number; status?: number }) 
       if (lists.status) return { status: lists.status, text: '{"error":"Not found."}' };
       if (path === '/v1/browser') return { status: 200, text: JSON.stringify({ tabs: lists.tabs, settings: { agentsUseBrowser: true, agentsUseMac: true }, browsers: [], seq: lists.seq }) };
       if (path === '/v1/browser/downloads') return { status: 200, text: JSON.stringify({ downloads: (lists as { downloads?: unknown[] }).downloads ?? [], seq: lists.seq }) };
+      if (path === '/v1/browser/settings' && method === 'PUT') return { status: 200, text: JSON.stringify({ agentsUseBrowser: true, agentsUseMac: true, ...(body as object) }) };
       if (path.endsWith('/saveCopy')) return { status: 200, text: JSON.stringify({ id: 'd1', savedAs: '/Users/someone/Downloads/invoices (1).csv' }) };
       return { status: 200, text: '{}' };
     }),
@@ -207,5 +209,34 @@ describe('BROWSERAPP-15 and 16: a script\'s mark, and the agent\'s downloads', (
     await live.saveCopy('d1');
     expect(o.calls).toContainEqual({ method: 'POST', path: '/v1/browser/downloads/d1/saveCopy', body: {} });
     expect(state?.downloads[0]).toMatchObject({ saved: true, savedAs: 'invoices (1).csv' });
+  });
+});
+
+describe('BROWSERAPP-18: Settings › General\'s two switches', () => {
+  it('browserapp_18: each switch signs PUT /v1/browser/settings with its one key, a boolean, by its own label', () => {
+    expect(wordsOf('PUT', '/v1/browser/settings', { agentsUseBrowser: false })).toEqual([BROWSER_SWITCHES.agentsUseBrowser]);
+    expect(wordsOf('PUT', '/v1/browser/settings', { agentsUseMac: true })).toEqual(['Agents can use this Mac']);
+    expect(wordsOf('PUT', '/v1/browser/settings', { agentsUseBrowser: false, agentsUseMac: false })).toBeNull();
+    expect(wordsOf('PUT', '/v1/browser/settings', { agentsUseBrowser: 'no' })).toBeNull();
+    expect(wordsOf('PUT', '/v1/browser/settings', { other: true })).toBeNull();
+    expect(owners('PUT', '/v1/browser/settings', { agentsUseMac: false }, ['Agents can use the browser'], [])).toBeNull();
+  });
+  it('browserapp_18: the live adapter turns a switch with PUT and shows obid\'s answer', async () => {
+    let state: BrowserState | null = null;
+    const o = mockObid({ tabs: [], seq: 1 });
+    const live = connectLive({ offered: () => {}, state: (x) => { state = x; }, frame: () => {}, problem: () => {} }, o.api);
+    await settle(); await settle();
+    await live.setSettings({ agentsUseBrowser: false });
+    expect(o.calls).toContainEqual({ method: 'PUT', path: '/v1/browser/settings', body: { agentsUseBrowser: false } });
+  });
+});
+
+describe('BROWSERAPP-16: Show in Finder reaches only a file in Downloads', () => {
+  it('browserapp_16: a name keeps only its last part; empty, . and .. reach nothing', () => {
+    const D = '/Users/someone/Downloads';
+    expect(downloadsFile(D, 'invoices (1).csv')).toBe(`${D}/invoices (1).csv`);
+    expect(downloadsFile(D, '../../etc/passwd')).toBe(`${D}/passwd`);
+    expect(downloadsFile(D, '/Users/someone/Documents/plan.md')).toBe(`${D}/plan.md`);
+    for (const none of ['', '.', '..', '/', 'a/..', './', '../']) expect(downloadsFile(D, none)).toBeNull();
   });
 });

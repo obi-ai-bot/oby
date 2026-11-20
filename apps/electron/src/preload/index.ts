@@ -25,10 +25,12 @@ function textOf(el: Element | null): string | null {
   const box = el.isContentEditable ? el.closest('[contenteditable="true"]') : null;
   return box instanceof HTMLElement ? box.innerText : null;
 }
-// a button's own label, never a whole card's text
+// a button's own label, never a whole card's text; a switch, which has no words of its own, by its
+// aria-label (Settings › General's browser switches, BROWSERAPP-18)
 const labelOf = (el: Element | null) => {
   const b = el?.closest('button');
-  return b && seen(b) && !b.querySelector('button, input, textarea, [contenteditable="true"]') ? b.innerText : null;
+  if (!b || !seen(b) || b.querySelector('button, input, textarea, [contenteditable="true"]')) return null;
+  return b.innerText.trim() ? b.innerText : b.getAttribute('role') === 'switch' ? b.getAttribute('aria-label') : null;
 };
 function hold(e: Event) {
   if (!e.isTrusted || (e instanceof KeyboardEvent && ((e.key !== 'Enter' && e.key !== ' ') || e.isComposing))) return;

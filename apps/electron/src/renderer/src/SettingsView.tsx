@@ -9,6 +9,7 @@ import { OwnerAvatar } from './ObyFace';
 import { useSpheres } from './spheres';
 import { SphereJoinPage } from './SphereSettings';
 import { everything, onObid } from './lean';
+import { BrowserSettings } from './browser/Settings';
 import qrcode from 'qrcode-generator';
 import { ApiError, api, qrText, type CursorGroup, type Invitation, type PairedDevice, type ModelOptions, type Models, type SavedRule, type SignIn, type Status } from './obid';
 import Connectors, { ConfirmWindow, Window, readConnectors } from './Connectors';
@@ -200,6 +201,8 @@ function General() {
       <Row label="Speak replies to spoken requests"><Switch on={speaks} onChange={setSpeaks} label="Speak replies to spoken requests" /></Row>
       {/* Speech is English only (the owner's decision of 2026-11-01): no language to pick */}
     </Group>}
+    {/* the browser's two switches (docs/contracts/browser-app.md, BROWSERAPP-18) */}
+    <BrowserSettings i={3} />
     <Notifications />
   </>;
 }
