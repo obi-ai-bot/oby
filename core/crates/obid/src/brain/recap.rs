@@ -2,7 +2,8 @@
 //! tap, and on the first one after more than [`AWAY`] it sums up what happened meanwhile (jobs
 //! done, merged or failed, inbox items waiting, accounts that hit their limits) in one to three
 //! sentences, ending with the one thing that needs the owner, if any. A background call (#537:
-//! one attempt, the quick model, never Codex) writes it from a fact list obid builds itself; the
+//! one attempt, the quick model), on the signed-in Claude Code or Codex account with the most room
+//! (USAGE-11), writes it from a fact list obid builds itself; the
 //! facts are quoted inside a nonce fence and go through the vault first. The recap goes out as a
 //! `recap` event and leads the conversation's next answer; it's never a turn the user wrote.
 //! Only an owner who asked for updates gets it ([`returned`]): one whose check-ins are on.
@@ -371,8 +372,8 @@ fn told(items: Vec<Item>, triage: impl Fn(&Item) -> &'static str) -> Vec<Item> {
 }
 
 /// The recap for an owner back at `now` after being seen last at `since` (none: they weren't
-/// away), written with the first Claude account's quick model and sent as a `recap` event.
-/// Without Claude there's no recap: a background call never goes to Codex (#537).
+/// away), written with the quick model of the signed-in Claude Code or Codex account with the most
+/// room (USAGE-11) and sent as a `recap` event. Without one there's no recap.
 pub async fn back(shared: &Shared, since: Option<i64>, now: i64) -> Option<String> {
     let since = since?;
     let facts = facts(
@@ -395,8 +396,8 @@ pub async fn back(shared: &Shared, since: Option<i64>, now: i64) -> Option<Strin
     Some(recap)
 }
 
-/// What the first Claude account's quick model writes of `facts` with `system`, or none: no Claude
-/// (a background call never goes to Codex, #537), or [`write`] wrote none.
+/// What the quick model of the signed-in Claude Code or Codex account with the most room
+/// (USAGE-11) writes of `facts` with `system`, or none: no such account, or [`write`] wrote none.
 async fn quick(
     shared: &Shared,
     system: &str,
