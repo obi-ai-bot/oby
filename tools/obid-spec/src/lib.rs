@@ -15,6 +15,7 @@ pub mod nodes;
 pub mod obid;
 pub mod procs;
 pub mod sphere;
+pub mod t3_conversations;
 pub mod workflow;
 
 /// Every node's name, the internal `cleanup` among them.
@@ -23,6 +24,7 @@ pub fn node_names() -> Vec<&'static str> {
         .iter()
         .map(|(n, _)| *n)
         .chain(lab::nodes().map(|(n, _)| n))
+        .chain(t3_conversations::NODES.iter().map(|(n, _)| *n))
         .chain(["cleanup"])
         .collect()
 }
