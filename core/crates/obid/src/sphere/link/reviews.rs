@@ -857,7 +857,8 @@ impl Link {
         body: &[u8],
         meant: Option<Meant<'_>>,
     ) -> Result<Value, ApiError> {
-        let map = object(body, &["to", "type", "body", "expiresIn"])?;
+        // `operationId` is the route's request key (OBIREQ-7), read there.
+        let map = object(body, &["to", "type", "body", "expiresIn", "operationId"])?;
         let invalid = |m: String| api(StatusCode::UNPROCESSABLE_ENTITY, m);
         let joined = self.joined()?;
         let to = text_field(&map, "to")?.to_owned();
