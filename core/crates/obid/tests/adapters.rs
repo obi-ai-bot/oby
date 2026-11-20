@@ -2238,3 +2238,325 @@ fn recovery_3_codex_and_cursor_continue_when_quiet() {
         assert!(job["stalled"].is_null(), "{job}");
     }
 }
+
+// PROOF ONLY (not for merge): 40 copies of each Stop test, each in its own nextest process.
+#[test]
+fn proof_codex_stop_01() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_01() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_02() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_02() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_03() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_03() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_04() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_04() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_05() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_05() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_06() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_06() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_07() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_07() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_08() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_08() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_09() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_09() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_10() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_10() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_11() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_11() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_12() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_12() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_13() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_13() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_14() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_14() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_15() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_15() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_16() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_16() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_17() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_17() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_18() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_18() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_19() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_19() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_20() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_20() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_21() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_21() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_22() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_22() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_23() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_23() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_24() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_24() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_25() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_25() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_26() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_26() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_27() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_27() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_28() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_28() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_29() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_29() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_30() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_30() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_31() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_31() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_32() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_32() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_33() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_33() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_34() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_34() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_35() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_35() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_36() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_36() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_37() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_37() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_38() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_38() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_39() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_39() {
+    cursor_signed_out_failures_and_stop();
+}
+#[test]
+fn proof_codex_stop_40() {
+    codex_resumes_fails_and_stops();
+}
+#[test]
+fn proof_cursor_stop_40() {
+    cursor_signed_out_failures_and_stop();
+}
