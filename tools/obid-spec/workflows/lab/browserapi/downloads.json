@@ -1,0 +1,383 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser API: the agent's download stays in its profile, the person's is delivered, and Save a copy copies the agent's",
+  "version": "1.0.0",
+  "description": "LAB-BROWSERAPI-6 (src/lab/browserapi.rs, watch_downloads and save_copy over browser.rs's download_rule): the agent clicks Download file: the list says it's the agent's and in its profile, and it is still there; the person takes the tab and clicks the same link through the stream input: theirs is delivered; Save a copy (signed; unsigned refused) puts a copy in the person's Downloads while the agent's file stays.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.browserapi.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            },
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:lab.browserapi.device",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "id": {
+              "$contains": "device-"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "j1",
+      "use": "runtime.rust:lab.browserapi.job",
+      "inputs": {
+        "api": "${state.up}",
+        "job": "j1",
+        "agent": "claude",
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            },
+            "engine.agentBrowser.pinned": true
+          }
+        }
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.up.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "snap",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.outside.data.tree": {
+              "$contains": "Sign in"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "agent-clicks",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "click"
+        },
+        "refFor": {
+          "role": "link",
+          "name": "Download file"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "agents",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser/downloads",
+        "within": 15,
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.downloads": {
+              "$len": 1
+            },
+            "body.downloads.0.startedBy": "agent",
+            "body.downloads.0.place": "profile",
+            "body.downloads.0.job": "j1"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-6"
+        ]
+      }
+    },
+    {
+      "id": "stays",
+      "use": "runtime.rust:lab.browser.downloads",
+      "inputs": {
+        "conversation": "j1",
+        "expect": {
+          "paths": {
+            "inProfile": {
+              "$len": 1
+            },
+            "delivered": {
+              "$len": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-6"
+        ]
+      }
+    },
+    {
+      "id": "take",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/take",
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "press",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
+        "body": {
+          "type": "mouse",
+          "eventType": "mousePressed",
+          "x": "${state.up.site.download.x}",
+          "y": "${state.up.site.download.y}",
+          "button": "left",
+          "clickCount": 1
+        },
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "release",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
+        "body": {
+          "type": "mouse",
+          "eventType": "mouseReleased",
+          "x": "${state.up.site.download.x}",
+          "y": "${state.up.site.download.y}",
+          "button": "left",
+          "clickCount": 1
+        },
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "persons",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser/downloads",
+        "within": 15,
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.downloads": {
+              "$len": 2
+            },
+            "body.downloads.1.startedBy": "person",
+            "body.downloads.1.place": "delivered"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-6"
+        ]
+      }
+    },
+    {
+      "id": "delivered",
+      "use": "runtime.rust:lab.browser.downloads",
+      "inputs": {
+        "conversation": "j1",
+        "expect": {
+          "paths": {
+            "inProfile": {
+              "$len": 1
+            },
+            "delivered": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-6"
+        ]
+      }
+    },
+    {
+      "id": "copy-unsigned",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/downloads/${state.agents.body.downloads.0.id}/saveCopy",
+        "as": "unsigned",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "unsigned"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-6"
+        ]
+      }
+    },
+    {
+      "id": "copy",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/downloads/${state.agents.body.downloads.0.id}/saveCopy",
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.savedAs": "${state.agents.body.downloads.0.name}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-6"
+        ]
+      }
+    },
+    {
+      "id": "copied",
+      "use": "runtime.rust:lab.browser.downloads",
+      "inputs": {
+        "conversation": "j1",
+        "expect": {
+          "paths": {
+            "inProfile": {
+              "$len": 1
+            },
+            "delivered": {
+              "$contains": "${state.agents.body.downloads.0.name}"
+            },
+            "delivered.1": {
+              "$exists": true
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-6"
+        ]
+      }
+    },
+    {
+      "id": "still-the-agents",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser/downloads",
+        "expect": {
+          "paths": {
+            "body.downloads.0.place": "profile",
+            "body.downloads": {
+              "$len": 2
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-6"
+        ]
+      }
+    },
+    {
+      "id": "events",
+      "use": "runtime.rust:lab.browserapi.events",
+      "inputs": {
+        "api": "${state.up}",
+        "ms": 500,
+        "expect": {
+          "paths": {
+            "of.download": {
+              "$len": 2
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-6"
+        ]
+      }
+    }
+  ]
+}

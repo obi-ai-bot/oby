@@ -1,0 +1,124 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser API: everything the API started is stopped at the end",
+  "version": "1.0.0",
+  "description": "What the API starts it stops (src/lab/browserapi.rs, cleanup): with a job's tab streaming, the API answers on its port with its tasks and the stream's bridge alive; after lab.browserapi.down, the same cleanup the suite runs at every workflow's end, nothing answers on the port and no task or bridge is left.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.browserapi.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            },
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "j1",
+      "use": "runtime.rust:lab.browserapi.job",
+      "inputs": {
+        "api": "${state.up}",
+        "job": "j1",
+        "agent": "claude",
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            },
+            "engine.agentBrowser.pinned": true
+          }
+        }
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.up.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "watch",
+      "use": "runtime.rust:lab.browserapi.watch",
+      "inputs": {
+        "api": "${state.up}",
+        "tab": "${state.open.structured.result.tab}",
+        "ms": 1000,
+        "readers": [
+          {
+            "readEveryMs": 0
+          }
+        ],
+        "expect": {
+          "paths": {
+            "readers.0.frames": {
+              "$ne": 0
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "alive",
+      "use": "runtime.rust:lab.browserapi.alive",
+      "inputs": {
+        "api": "${state.up}",
+        "expect": {
+          "paths": {
+            "answers": true,
+            "bridges": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "down",
+      "use": "runtime.rust:lab.browserapi.down",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "stopped": true
+          }
+        }
+      }
+    },
+    {
+      "id": "gone",
+      "use": "runtime.rust:lab.browserapi.alive",
+      "inputs": {
+        "api": "${state.up}",
+        "expect": {
+          "paths": {
+            "answers": false,
+            "tasks": 0,
+            "bridges": 0
+          }
+        }
+      }
+    }
+  ]
+}

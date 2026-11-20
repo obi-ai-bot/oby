@@ -1,0 +1,585 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser API: an agent lists the tools and drives a page over MCP with its job's token; no token, another job's or a dead one is refused; with Agents can use the browser off every tool refuses",
+  "version": "1.0.0",
+  "description": "LAB-BROWSERAPI-4 (src/lab/browserapi.rs, the MCP route, Api::job_of and tools_allowed): initialize and tools/list with the job's token give the 11 oby_browser_* tools in the contract's order; the agent opens, snapshots and types through tools/call; no token and a token obid never gave are refused (401); another job's token can't act on this job's tab; an ended job's token is dead. The owner turns Agents can use the browser off (signed; unsigned is refused): every tool refuses with browser_off and a sentence that names the switch, while tools/list still answers; on again, tools work.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.browserapi.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            },
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:lab.browserapi.device",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "id": {
+              "$contains": "device-"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "j1",
+      "use": "runtime.rust:lab.browserapi.job",
+      "inputs": {
+        "api": "${state.up}",
+        "job": "j1",
+        "agent": "claude",
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            },
+            "engine.agentBrowser.pinned": true
+          }
+        }
+      }
+    },
+    {
+      "id": "j2",
+      "use": "runtime.rust:lab.browserapi.job",
+      "inputs": {
+        "api": "${state.up}",
+        "job": "j2",
+        "agent": "claude",
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            },
+            "engine.agentBrowser.pinned": true
+          }
+        }
+      }
+    },
+    {
+      "id": "init",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": null,
+        "args": {},
+        "method": "initialize",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "result.protocolVersion": "2025-06-18",
+            "result.serverInfo.name": "oby-browser"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-4"
+        ]
+      }
+    },
+    {
+      "id": "list",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": null,
+        "args": {},
+        "method": "tools/list",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "toolNames": [
+              "oby_browser_open",
+              "oby_browser_list_tabs",
+              "oby_browser_snapshot",
+              "oby_browser_screenshot",
+              "oby_browser_wait_for",
+              "oby_browser_navigate",
+              "oby_browser_act",
+              "oby_browser_evaluate",
+              "oby_browser_dialog",
+              "oby_browser_ask_person",
+              "oby_browser_close_tab"
+            ],
+            "result.tools.2.annotations.readOnlyHint": true,
+            "result.tools.6.annotations.readOnlyHint": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-4"
+        ]
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.up.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "snap",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.outside.data.tree": {
+              "$contains": "Sign in"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-4"
+        ]
+      }
+    },
+    {
+      "id": "type",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "type",
+          "text": "via mcp"
+        },
+        "refFor": {
+          "role": "textbox",
+          "name": "Name"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-4"
+        ]
+      }
+    },
+    {
+      "id": "typed",
+      "use": "runtime.rust:lab.browser.read",
+      "inputs": {
+        "conversation": "j1",
+        "selector": "#name",
+        "expect": {
+          "paths": {
+            "value": "via mcp"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-4"
+        ]
+      }
+    },
+    {
+      "id": "no-token",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": null,
+        "tool": null,
+        "args": {},
+        "method": "tools/list",
+        "as": "none",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "rpc.reason": "no_token"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-4"
+        ]
+      }
+    },
+    {
+      "id": "wrong-token",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": null,
+        "args": {},
+        "method": "tools/list",
+        "as": "wrong",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "rpc.reason": "bad_token"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-4"
+        ]
+      }
+    },
+    {
+      "id": "other-job",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j2.token}",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "type",
+          "text": "j2 was here",
+          "tab": "${state.open.structured.result.tab}"
+        },
+        "refFor": {
+          "role": "textbox",
+          "name": "Name"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.code": "not_your_tab"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-4"
+        ]
+      }
+    },
+    {
+      "id": "other-job-reads",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j2.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {
+          "tab": "${state.open.structured.result.tab}"
+        },
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.code": "not_your_tab"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-4"
+        ]
+      }
+    },
+    {
+      "id": "j2-ends",
+      "use": "runtime.rust:lab.browserapi.end-job",
+      "inputs": {
+        "job": "j2"
+      }
+    },
+    {
+      "id": "dead-token",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j2.token}",
+        "tool": null,
+        "args": {},
+        "method": "tools/list",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "rpc.reason": "bad_token"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-4"
+        ]
+      }
+    },
+    {
+      "id": "off-unsigned",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "PUT",
+        "path": "/v1/browser/settings",
+        "body": {
+          "agentsUseBrowser": false
+        },
+        "as": "unsigned",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "unsigned"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-4"
+        ]
+      }
+    },
+    {
+      "id": "off",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "PUT",
+        "path": "/v1/browser/settings",
+        "body": {
+          "agentsUseBrowser": false
+        },
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.agentsUseBrowser": false,
+            "body.agentsUseMac": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-4"
+        ]
+      }
+    },
+    {
+      "id": "off-snapshot",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.code": "browser_off",
+            "structured.error.message": {
+              "$contains": "Agents can use the browser"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-4"
+        ]
+      }
+    },
+    {
+      "id": "off-open",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.up.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.code": "browser_off"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-4"
+        ]
+      }
+    },
+    {
+      "id": "off-list-tabs",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_list_tabs",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.code": "browser_off"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-4"
+        ]
+      }
+    },
+    {
+      "id": "off-ask",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_ask_person",
+        "args": {
+          "kind": "captcha",
+          "reason": "x"
+        },
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.code": "browser_off"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-4"
+        ]
+      }
+    },
+    {
+      "id": "off-still-lists",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": null,
+        "args": {},
+        "method": "tools/list",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "toolNames": {
+              "$len": 11
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-4"
+        ]
+      }
+    },
+    {
+      "id": "settings",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser/settings",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.agentsUseBrowser": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-4"
+        ]
+      }
+    },
+    {
+      "id": "on",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "PUT",
+        "path": "/v1/browser/settings",
+        "body": {
+          "agentsUseBrowser": true
+        },
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.agentsUseBrowser": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-4"
+        ]
+      }
+    },
+    {
+      "id": "on-snapshot",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.outside.data.tree": {
+              "$contains": "Sign in"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-4"
+        ]
+      }
+    }
+  ]
+}
