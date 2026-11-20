@@ -1811,6 +1811,9 @@ button.connector { width: 100%; text-align: left; }
 .set-row + .set-row { border-top: 1px solid var(--divider); }
 .set-label { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; color: var(--ink); font-size: var(--text-base); }
 .set-about { color: var(--muted); font-size: var(--text-sm); line-height: 1.45; }
+/* a member's key's fingerprint, to read aloud: every character as it is, wrapping anywhere (SPHERE-11) */
+.set-fingerprint { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; overflow-wrap: anywhere; }
+.set-lookalike { color: var(--needs); }
 .set-control { flex: none; display: flex; align-items: center; gap: 8px; }
 .set-control-top { align-self: flex-start; }
 .set-share { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 320px; }  /* who, and how much (Sharing, a preview) */

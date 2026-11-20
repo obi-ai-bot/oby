@@ -476,7 +476,9 @@ export function roomPostOf(value: unknown): RoomPost | null {
 // the directory: not knowing, which says nothing about them.
 export type PeerExchange = { id: string; type: string; direction: string; state: string; waitingOnThem: boolean; quietAt: string | null };
 export type PeerPost = Omit<RoomPost, 'text'> & { text: string | null; direction: string; status: string | null; reason: string | null; exchange: PeerExchange };
-export type PeerThread = { owner: string; name: string; member: boolean | null; takesQuestions: boolean | null; posts: PeerPost[] };
+// verified: whether the owner compared their owner key (POST /v1/obid/sphere/pins/{owner}); lookalike:
+// the owner ids that look like theirs (ASK-35), none when obid lists none (SPHERE-11, 12)
+export type PeerThread = { owner: string; name: string; member: boolean | null; takesQuestions: boolean | null; posts: PeerPost[]; verified?: boolean; lookalike?: string[] };
 const orNullString = (v: unknown) => v === null || typeof v === 'string';
 export function peerPostOf(value: unknown): PeerPost | null {
   if (!value || typeof value !== 'object') return null;
@@ -489,7 +491,32 @@ export function peerThreadOf(value: unknown): PeerThread | null {
   const v = (value ?? {}) as Record<string, unknown>;
   if (typeof v.owner !== 'string' || typeof v.name !== 'string' || !Array.isArray(v.posts)) return null;
   const known = (b: unknown) => (typeof b === 'boolean' ? b : null);
-  return { owner: v.owner, name: v.name, member: known(v.member), takesQuestions: known(v.takesQuestions), posts: v.posts.flatMap((p) => peerPostOf(p) ?? []) };
+  const alike = Array.isArray(v.lookalike) ? v.lookalike.filter((x): x is string => typeof x === 'string') : [];
+  return {
+    owner: v.owner, name: v.name, member: known(v.member), takesQuestions: known(v.takesQuestions), posts: v.posts.flatMap((p) => peerPostOf(p) ?? []),
+    ...(typeof v.verified === 'boolean' ? { verified: v.verified } : {}), ...(alike.length ? { lookalike: alike } : {}),
+  };
+}
+
+// "GET /v1/obid/sphere/pins" (docs/api/obysphere.md, "Pinned owner keys"): an owner key obid pinned at
+// first sight, the fingerprint to compare with that person, a changed key waiting for the owner's OK,
+// and whether the owner compared it (SPHERE-11)
+export type OwnerPin = { owner: string; fingerprint: string; firstSeen: string; changedTo: string | null; verified: boolean };
+export function ownerPinOf(value: unknown): OwnerPin | null {
+  const v = (value ?? {}) as Record<string, unknown>;
+  if (typeof v.owner !== 'string' || typeof v.fingerprint !== 'string' || typeof v.verified !== 'boolean') return null;
+  return { owner: v.owner, fingerprint: v.fingerprint, firstSeen: typeof v.firstSeen === 'string' ? v.firstSeen : '', changedTo: typeof v.changedTo === 'string' ? v.changedTo : null, verified: v.verified };
+}
+// "GET /v1/obid/decisions" (docs/api/obysphere.md, "remembered decisions"): what the owner decided once,
+// which obid applies without asking. type and decision are open strings (SPHERE-13)
+export type RememberedDecision = { id: string; type: string; fromOwner: string; repo: string; decision: string; created: string; uses: number; lastUsed: string | null };
+export function rememberedOf(value: unknown): RememberedDecision | null {
+  const v = (value ?? {}) as Record<string, unknown>;
+  if (!['id', 'type', 'fromOwner', 'repo', 'decision'].every((k) => typeof v[k] === 'string')) return null;
+  return {
+    id: v.id as string, type: v.type as string, fromOwner: v.fromOwner as string, repo: v.repo as string, decision: v.decision as string,
+    created: typeof v.created === 'string' ? v.created : '', uses: typeof v.uses === 'number' ? v.uses : 0, lastUsed: typeof v.lastUsed === 'string' ? v.lastUsed : null,
+  };
 }
 
 export type Event =
