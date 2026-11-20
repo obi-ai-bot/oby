@@ -81,8 +81,9 @@ pub fn argv(
     argv
 }
 
-/// The MCP servers [`argv`] gives Codex, the only ones that may start or run.
-const OWN_SERVERS: [&str; 2] = ["oby", "tetrix"];
+/// The MCP servers obid gives Codex, the only ones that may start or run: [`argv`]'s, and Oby's
+/// browser (crate::browser::AgentServer::codex, BROWSER-17).
+const OWN_SERVERS: [&str; 3] = ["oby", "tetrix", crate::browser::agent_server::NAME];
 
 /// What an own run (LANES-13 and LANES-18) is told so that Oby's own tools run (LANES-21): in
 /// Bypass Codex asks nobody, and from codex-cli 0.163 it refuses an MCP call that would need
@@ -93,6 +94,13 @@ const OWN_SERVERS: [&str; 2] = ["oby", "tetrix"];
 pub(crate) const OWN_OBY_TOOLS: [&str; 2] = [
     "-c",
     r#"mcp_servers.oby.default_tools_approval_mode="approve""#,
+];
+
+/// [`OWN_OBY_TOOLS`] for Oby's browser (BROWSER-17), given only with its server: obid's browser
+/// server serves its own tools alone, each checked by obid's rules as it's served.
+pub(crate) const OWN_BROWSER_TOOLS: [&str; 2] = [
+    "-c",
+    r#"mcp_servers.browser.default_tools_approval_mode="approve""#,
 ];
 
 /// Runs one turn: starts the server, sends `prompt`, answers approvals with `decide`, reports with
@@ -2123,7 +2131,12 @@ exec sleep 30
         let tetrix = json!({"method": "item/completed",
             "params": {"item": {"type": "mcpToolCall", "server": "tetrix", "tool": "search"}}});
         assert_eq!(ran_outside(&tetrix), None);
-        for name in ["codex_apps", "elsewhere", ""] {
+        // So does Oby's browser (BROWSER-17), given to a job of the owner's.
+        assert_eq!(ran_outside(&starting("browser")), None);
+        let browser = json!({"method": "item/completed",
+            "params": {"item": {"type": "mcpToolCall", "server": "browser", "tool": "oby_browser_open"}}});
+        assert_eq!(ran_outside(&browser), None);
+        for name in ["codex_apps", "elsewhere", "", "browserx"] {
             assert_eq!(
                 ran_outside(&starting(name)),
                 Some("Codex sent mcpServer/startupStatus/updated".into()),
