@@ -2145,6 +2145,49 @@ async fn sphere_8_a_changed_key_asks_once() {
     });
 }
 
+/// SPHERE-8 (#2618): a read of the directory that saw an older owner key and ends after a newer
+/// read never takes the newer key back: the one card left is the newest key's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sphere_8_a_late_read_never_takes_a_newer_key_back() {
+    let folder = Folder::new("sphere-8-late-read");
+    let (sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    tokio::task::block_in_place(|| read_members(&obid));
+    let second = obi_protocol::keys::Keypair::from_seed_string("a second owner key");
+    serve_owner_key(&sphere, &ernesto, &second, 2);
+    let (arrived, release) = sphere.hold_next_members();
+    let third = obi_protocol::keys::Keypair::from_seed_string("a third owner key");
+    tokio::task::block_in_place(|| {
+        let obid = &obid;
+        std::thread::scope(|scope| {
+            // This read sees the second key; its answer waits.
+            let late = scope.spawn(|| read_members(obid));
+            arrived
+                .recv_timeout(std::time::Duration::from_secs(20))
+                .expect("the first read reached the Sphere");
+            // The third key, and a read that may see it before the first read ends.
+            serve_owner_key(&sphere, &ernesto, &third, 3);
+            let (done, finished) = std::sync::mpsc::channel();
+            let fresh = scope.spawn(move || {
+                let members = read_members(obid);
+                let _ = done.send(());
+                members
+            });
+            // A read that isn't waiting for the first one ends now; one that is waits for it.
+            let _ = finished.recv_timeout(std::time::Duration::from_secs(2));
+            let _ = release.send(());
+            late.join().unwrap();
+            fresh.join().unwrap();
+        });
+        let cards = trust_cards(obid, "");
+        assert_eq!(cards.len(), 1, "{cards:#?}");
+        assert_eq!(
+            cards[0]["confirm"]["payload"]["fingerprint"],
+            third.key_id(),
+            "{cards:#?}"
+        );
+    });
+}
+
 /// SPHERE-8, the owner's cap: after Cancel on a member's card, no card comes for that member's next
 /// key, after a restart too, until they leave the Sphere and come back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
