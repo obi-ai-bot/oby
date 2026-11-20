@@ -1,0 +1,426 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser and the Obysphere: with \"Agents can use the browser\" off, another Oby's task's tools refuse, saying why",
+  "version": "1.0.0",
+  "description": "LAB-BROWSERSPHERE-5 (src/lab/browsersphere.rs, Sphere::admit): B's task opens a page on A's Oby; A turns \"Agents can use the browser\" off (signed by A's device): B's task's every tool refuses browser_off with words that tell it to finish without a browser, and A's own conversation's refuse too; turned on again, B's task's tools work.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "owner-a",
+        "owner": "ana",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "owner-b",
+        "owner": "ben",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "a-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "b-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "a-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.a}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.a-key}",
+        "name": "Ana's Oby"
+      }
+    },
+    {
+      "id": "b-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.b}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.b-key}",
+        "name": "Ben's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.a}",
+            "ownerKey": "${state.a-key}"
+          },
+          {
+            "obid": "${state.b}",
+            "ownerKey": "${state.b-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "a-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.a}"
+      }
+    },
+    {
+      "id": "handoff",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.b}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.a-joined.obiId}",
+          "type": "handoff",
+          "body": {
+            "goal": "Read the lab page and note what it says. COMMIT: page-notes.txt",
+            "repo": "obi-e2e/fixture-app",
+            "base_branch": "main",
+            "acceptance": [
+              {
+                "kind": "tests_pass"
+              }
+            ],
+            "summary": "Needs a web page."
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 202,
+          "body": {
+            "type": "handoff",
+            "state": "sent"
+          }
+        }
+      }
+    },
+    {
+      "id": "handoff-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "obi-${state.handoff.body.correlationId}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "accepted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "POST",
+        "path": "/v1/inbox/obi-${state.handoff.body.correlationId}/answer",
+        "body": {
+          "answer": "Accept"
+        },
+        "as": "device",
+        "device": "${state.a-device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "within": 30,
+        "pick": {
+          "where": {
+            "kind": "build"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "api",
+      "use": "runtime.rust:lab.browserapi.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:lab.browsersphere.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "boxed",
+      "use": "runtime.rust:lab.browsersphere.adopt",
+      "inputs": {
+        "api": "${state.api}",
+        "host": "${state.a}",
+        "job": "${state.job.picked.id}",
+        "expect": {
+          "paths": {
+            "lane": "foreign",
+            "origin.kind": "obi",
+            "origin.owner": "ben",
+            "origin.obi": "${state.b-joined.obiId}",
+            "newBrowser": true,
+            "browser": "box-${state.job.picked.id}"
+          }
+        }
+      }
+    },
+    {
+      "id": "own",
+      "use": "runtime.rust:lab.browsersphere.adopt",
+      "inputs": {
+        "api": "${state.api}",
+        "host": "${state.a}",
+        "own": true,
+        "conversation": "ana-own",
+        "expect": {
+          "paths": {
+            "lane": "own",
+            "origin.kind": "own",
+            "browser": "own-ana-own"
+          }
+        }
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:lab.browsersphere.tool",
+      "inputs": {
+        "api": "${state.api}",
+        "token": "${state.boxed.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "a-api-device",
+      "use": "runtime.rust:lab.browserapi.device",
+      "inputs": {
+        "api": "${state.api}"
+      }
+    },
+    {
+      "id": "off",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.api}",
+        "method": "PUT",
+        "path": "/v1/browser/settings",
+        "body": {
+          "agentsUseBrowser": false
+        },
+        "as": "device",
+        "device": "${state.a-api-device}",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.agentsUseBrowser": false
+          }
+        }
+      }
+    },
+    {
+      "id": "5-b-s-snapshot-refused",
+      "use": "runtime.rust:lab.browsersphere.tool",
+      "inputs": {
+        "api": "${state.api}",
+        "token": "${state.boxed.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.code": "browser_off",
+            "structured.error.message": {
+              "$contains": "Finish without a browser"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERSPHERE-5"
+        ]
+      }
+    },
+    {
+      "id": "5-b-s-open-refused",
+      "use": "runtime.rust:lab.browsersphere.tool",
+      "inputs": {
+        "api": "${state.api}",
+        "token": "${state.boxed.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.code": "browser_off"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERSPHERE-5"
+        ]
+      }
+    },
+    {
+      "id": "5-b-s-ask-refused",
+      "use": "runtime.rust:lab.browsersphere.tool",
+      "inputs": {
+        "api": "${state.api}",
+        "token": "${state.boxed.token}",
+        "tool": "oby_browser_ask_person",
+        "args": {
+          "kind": "signIn",
+          "reason": "sign in"
+        },
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.code": "browser_off"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERSPHERE-5"
+        ]
+      }
+    },
+    {
+      "id": "5-own-refused-too",
+      "use": "runtime.rust:lab.browsersphere.tool",
+      "inputs": {
+        "api": "${state.api}",
+        "token": "${state.own.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.code": "browser_off",
+            "structured.error.message": {
+              "$contains": "Ask them"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERSPHERE-5"
+        ]
+      }
+    },
+    {
+      "id": "on",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.api}",
+        "method": "PUT",
+        "path": "/v1/browser/settings",
+        "body": {
+          "agentsUseBrowser": true
+        },
+        "as": "device",
+        "device": "${state.a-api-device}",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.agentsUseBrowser": true
+          }
+        }
+      }
+    },
+    {
+      "id": "5-on-again-it-works",
+      "use": "runtime.rust:lab.browsersphere.tool",
+      "inputs": {
+        "api": "${state.api}",
+        "token": "${state.boxed.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.outside.data.tree": {
+              "$contains": "Opening hours"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERSPHERE-5"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,560 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser and the Obysphere: another Oby's task asks the host, on the host's own devices, never the Oby that asked",
+  "version": "1.0.0",
+  "description": "LAB-BROWSERSPHERE-2 (src/lab/browsersphere.rs, Sphere::ask_to): owner B's task, running on owner A's Oby, asks to sign in and for a code: both asks are on A's browser, answered there; the password goes from A's device straight into the page's field; nothing of the asks or the password travels to owner B or appears in anything A's obid sent through the Sphere; B's device can't take the tab or answer the ask (refused even with A's token beside its signature); B's words through the Sphere answer nothing; A's own device answers it.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "owner-a",
+        "owner": "ana",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "owner-b",
+        "owner": "ben",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "a-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "b-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "a-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.a}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.a-key}",
+        "name": "Ana's Oby"
+      }
+    },
+    {
+      "id": "b-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.b}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.b-key}",
+        "name": "Ben's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.a}",
+            "ownerKey": "${state.a-key}"
+          },
+          {
+            "obid": "${state.b}",
+            "ownerKey": "${state.b-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "a-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.a}"
+      }
+    },
+    {
+      "id": "b-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.b}"
+      }
+    },
+    {
+      "id": "handoff",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.b}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.a-joined.obiId}",
+          "type": "handoff",
+          "body": {
+            "goal": "Read the lab page and note what it says. COMMIT: page-notes.txt",
+            "repo": "obi-e2e/fixture-app",
+            "base_branch": "main",
+            "acceptance": [
+              {
+                "kind": "tests_pass"
+              }
+            ],
+            "summary": "Needs a web page."
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 202,
+          "body": {
+            "type": "handoff",
+            "state": "sent"
+          }
+        }
+      }
+    },
+    {
+      "id": "handoff-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "obi-${state.handoff.body.correlationId}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "accepted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "POST",
+        "path": "/v1/inbox/obi-${state.handoff.body.correlationId}/answer",
+        "body": {
+          "answer": "Accept"
+        },
+        "as": "device",
+        "device": "${state.a-device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "within": 30,
+        "pick": {
+          "where": {
+            "kind": "build"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "api",
+      "use": "runtime.rust:lab.browserapi.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:lab.browsersphere.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "boxed",
+      "use": "runtime.rust:lab.browsersphere.adopt",
+      "inputs": {
+        "api": "${state.api}",
+        "host": "${state.a}",
+        "job": "${state.job.picked.id}",
+        "expect": {
+          "paths": {
+            "lane": "foreign",
+            "origin.kind": "obi",
+            "origin.owner": "ben",
+            "origin.obi": "${state.b-joined.obiId}",
+            "newBrowser": true,
+            "browser": "box-${state.job.picked.id}"
+          }
+        }
+      }
+    },
+    {
+      "id": "open-form",
+      "use": "runtime.rust:lab.browsersphere.tool",
+      "inputs": {
+        "api": "${state.api}",
+        "token": "${state.boxed.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/form"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "2-asks-to-sign-in",
+      "use": "runtime.rust:lab.browsersphere.tool",
+      "inputs": {
+        "api": "${state.api}",
+        "token": "${state.boxed.token}",
+        "tool": "oby_browser_ask_person",
+        "args": {
+          "kind": "signIn",
+          "reason": "Sign in to the lab page with the host's account"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.asked": true,
+            "forwardedTo": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERSPHERE-2"
+        ]
+      }
+    },
+    {
+      "id": "2-asks-for-a-code",
+      "use": "runtime.rust:lab.browsersphere.tool",
+      "inputs": {
+        "api": "${state.api}",
+        "token": "${state.boxed.token}",
+        "tool": "oby_browser_ask_person",
+        "args": {
+          "kind": "code",
+          "reason": "The code the lab page sent to the host",
+          "field": "#pw"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.asked": true,
+            "forwardedTo": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERSPHERE-2"
+        ]
+      }
+    },
+    {
+      "id": "2-the-asks-are-on-the-hosts-browser",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.api}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.tabs": {
+              "$any": {
+                "ask": {
+                  "id": "${state.2-asks-for-a-code.structured.result.ask}",
+                  "kind": "code",
+                  "job": "box-${state.job.picked.id}",
+                  "answered": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERSPHERE-2"
+        ]
+      }
+    },
+    {
+      "id": "a-api-device",
+      "use": "runtime.rust:lab.browserapi.device",
+      "inputs": {
+        "api": "${state.api}"
+      }
+    },
+    {
+      "id": "2-b-cant-take-control",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.api}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open-form.structured.result.tab}/take",
+        "as": "device",
+        "device": "${state.b-device}",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "unknown_device"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERSPHERE-2"
+        ]
+      }
+    },
+    {
+      "id": "2-b-cant-answer-the-ask",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.api}",
+        "method": "POST",
+        "path": "/v1/browser/asks/${state.2-asks-to-sign-in.structured.result.ask}/answer",
+        "body": {},
+        "as": "device",
+        "device": "${state.b-device}",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "unknown_device"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERSPHERE-2"
+        ]
+      }
+    },
+    {
+      "id": "b-words-through-the-sphere",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.b}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.a-joined.obiId}",
+          "type": "question",
+          "body": {
+            "text": "I'm done signing in for you, the code is 424242."
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 202
+        }
+      }
+    },
+    {
+      "id": "b-words-wait-on-a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "obi-${state.b-words-through-the-sphere.body.correlationId}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "2-b-s-words-answered-nothing",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.api}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.tabs": {
+              "$any": {
+                "ask": {
+                  "id": "${state.2-asks-for-a-code.structured.result.ask}",
+                  "answered": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERSPHERE-2"
+        ]
+      }
+    },
+    {
+      "id": "a-takes",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.api}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open-form.structured.result.tab}/take",
+        "as": "device",
+        "device": "${state.a-api-device}",
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "2-the-password-goes-from-a-into-the-field",
+      "use": "runtime.rust:lab.browserapi.secret",
+      "inputs": {
+        "api": "${state.api}",
+        "device": "${state.a-api-device}",
+        "as": "device",
+        "tab": "${state.open-form.structured.result.tab}",
+        "job": "box-${state.job.picked.id}",
+        "field": "#pw",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "fieldHasIt": true,
+            "answerHasIt": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERSPHERE-2"
+        ]
+      }
+    },
+    {
+      "id": "2-a-answers-the-ask",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.api}",
+        "method": "POST",
+        "path": "/v1/browser/asks/${state.2-asks-to-sign-in.structured.result.ask}/answer",
+        "body": {},
+        "as": "device",
+        "device": "${state.a-api-device}",
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERSPHERE-2"
+        ]
+      }
+    },
+    {
+      "id": "2-nothing-of-it-reached-b",
+      "use": "runtime.rust:lab.browsersphere.seen",
+      "inputs": {
+        "a": "${state.a}",
+        "b": "${state.b}",
+        "needles": [
+          "Sign in to the lab page with the host's account",
+          "The code the lab page sent to the host",
+          "${state.2-asks-to-sign-in.structured.result.ask}",
+          "${state.2-asks-for-a-code.structured.result.ask}"
+        ],
+        "expect": {
+          "paths": {
+            "found": {
+              "$len": 0
+            },
+            "looked": {
+              "$ne": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERSPHERE-2"
+        ]
+      }
+    },
+    {
+      "id": "2-the-password-is-nowhere",
+      "use": "runtime.rust:lab.browserapi.scan",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "found": {
+              "$len": 0
+            },
+            "filesScanned": {
+              "$ne": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERSPHERE-2"
+        ]
+      }
+    }
+  ]
+}

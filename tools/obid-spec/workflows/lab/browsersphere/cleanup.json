@@ -1,0 +1,158 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser and the Obysphere: everything this feature started is stopped at the end",
+  "version": "1.0.0",
+  "description": "What lab.browsersphere starts it stops (src/lab/browsersphere.rs, cleanup): with a job's browser open through the gate, the fixture site answers and the gate holds a grant; after lab.browsersphere.down, the same cleanup the suite runs at every workflow's end (then the API's and the engine's), the site answers nothing, no grant is left, and no browser process of the workflow's is alive.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "a",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "owner-a",
+        "owner": "ana",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "api",
+      "use": "runtime.rust:lab.browserapi.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:lab.browsersphere.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "own",
+      "use": "runtime.rust:lab.browsersphere.adopt",
+      "inputs": {
+        "api": "${state.api}",
+        "host": "${state.a}",
+        "own": true,
+        "conversation": "ana-own",
+        "expect": {
+          "paths": {
+            "lane": "own",
+            "origin.kind": "own",
+            "browser": "own-ana-own"
+          }
+        }
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:lab.browsersphere.tool",
+      "inputs": {
+        "api": "${state.api}",
+        "token": "${state.own.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "alive",
+      "use": "runtime.rust:lab.browsersphere.alive",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "answers": true,
+            "grants": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "browsers",
+      "use": "runtime.rust:lab.browser.processes",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "any": true
+          }
+        }
+      }
+    },
+    {
+      "id": "down",
+      "use": "runtime.rust:lab.browsersphere.down",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "stopped": true,
+            "grants": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "gone",
+      "use": "runtime.rust:lab.browsersphere.alive",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "answers": false,
+            "grants": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "api-down",
+      "use": "runtime.rust:lab.browserapi.down",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "stopped": true
+          }
+        }
+      }
+    },
+    {
+      "id": "browsers-down",
+      "use": "runtime.rust:lab.browser.down",
+      "inputs": {}
+    },
+    {
+      "id": "no-browser-left",
+      "use": "runtime.rust:lab.browser.processes",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "alive": 0
+          }
+        }
+      }
+    }
+  ]
+}

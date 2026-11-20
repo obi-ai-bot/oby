@@ -1,0 +1,445 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser and the Obysphere: what goes back to owner B passes the secret scan, and a page's token-like string sends nothing",
+  "version": "1.0.0",
+  "description": "LAB-BROWSERSPHERE-6 (src/lab/browsersphere.rs, Sphere::outgoing): B's task, on A's Oby, opens a page that shows a token-like string and writes it into what it reports; going back to B through the Sphere, the gate's scan (gitleaks, as obid's publish gate) finds it and nothing is sent: B's exchange stays unanswered and nothing B holds has the string; the same report without it goes, and B gets it. The stand-in agent's handoff summary is fixed, so the lab carries the report back as A's answer to B's question about the page; ported, Sphere::outgoing sits in the handoff result's path.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "owner-a",
+        "owner": "ana",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "owner-b",
+        "owner": "ben",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "a-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "b-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "a-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.a}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.a-key}",
+        "name": "Ana's Oby"
+      }
+    },
+    {
+      "id": "b-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.b}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.b-key}",
+        "name": "Ben's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.a}",
+            "ownerKey": "${state.a-key}"
+          },
+          {
+            "obid": "${state.b}",
+            "ownerKey": "${state.b-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "a-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.a}"
+      }
+    },
+    {
+      "id": "handoff",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.b}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.a-joined.obiId}",
+          "type": "handoff",
+          "body": {
+            "goal": "Read the lab page and note what it says. COMMIT: page-notes.txt",
+            "repo": "obi-e2e/fixture-app",
+            "base_branch": "main",
+            "acceptance": [
+              {
+                "kind": "tests_pass"
+              }
+            ],
+            "summary": "Needs a web page."
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 202,
+          "body": {
+            "type": "handoff",
+            "state": "sent"
+          }
+        }
+      }
+    },
+    {
+      "id": "handoff-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "obi-${state.handoff.body.correlationId}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "accepted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "POST",
+        "path": "/v1/inbox/obi-${state.handoff.body.correlationId}/answer",
+        "body": {
+          "answer": "Accept"
+        },
+        "as": "device",
+        "device": "${state.a-device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "within": 30,
+        "pick": {
+          "where": {
+            "kind": "build"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "b-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.b}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.a-joined.obiId}",
+          "type": "question",
+          "body": {
+            "text": "What does the lab's deploy page say?"
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 202
+        }
+      }
+    },
+    {
+      "id": "b-asks-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "obi-${state.b-asks.body.correlationId}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "api",
+      "use": "runtime.rust:lab.browserapi.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:lab.browsersphere.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "boxed",
+      "use": "runtime.rust:lab.browsersphere.adopt",
+      "inputs": {
+        "api": "${state.api}",
+        "host": "${state.a}",
+        "job": "${state.job.picked.id}",
+        "expect": {
+          "paths": {
+            "lane": "foreign",
+            "origin.kind": "obi",
+            "origin.owner": "ben",
+            "origin.obi": "${state.b-joined.obiId}",
+            "newBrowser": true,
+            "browser": "box-${state.job.picked.id}"
+          }
+        }
+      }
+    },
+    {
+      "id": "open-token-page",
+      "use": "runtime.rust:lab.browsersphere.tool",
+      "inputs": {
+        "api": "${state.api}",
+        "token": "${state.boxed.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/token"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "6-the-page-shows-a-token",
+      "use": "runtime.rust:lab.browsersphere.tool",
+      "inputs": {
+        "api": "${state.api}",
+        "token": "${state.boxed.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.outside.data.tree": {
+              "$contains": "ghp_"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERSPHERE-6"
+        ]
+      }
+    },
+    {
+      "id": "6-caught-and-nothing-goes-out",
+      "use": "runtime.rust:lab.browsersphere.reply",
+      "inputs": {
+        "host": "${state.a}",
+        "device": "${state.a-device}",
+        "item": "obi-${state.b-asks.body.correlationId}",
+        "text": "The deploy page shows its settings and this token:",
+        "withPageToken": true,
+        "expect": {
+          "paths": {
+            "scan.ran": true,
+            "scan.clean": false,
+            "attempted": false,
+            "sent": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERSPHERE-6"
+        ]
+      }
+    },
+    {
+      "id": "6-b-got-no-answer",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.b}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.b-asks.body.correlationId}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "sent",
+            "result": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERSPHERE-6"
+        ]
+      }
+    },
+    {
+      "id": "6-b-holds-no-token",
+      "use": "runtime.rust:lab.browsersphere.seen",
+      "inputs": {
+        "a": "${state.a}",
+        "b": "${state.b}",
+        "pageToken": true,
+        "expect": {
+          "paths": {
+            "found": {
+              "$len": 0
+            },
+            "looked": {
+              "$ne": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERSPHERE-6"
+        ]
+      }
+    },
+    {
+      "id": "6-a-clean-report-goes",
+      "use": "runtime.rust:lab.browsersphere.reply",
+      "inputs": {
+        "host": "${state.a}",
+        "device": "${state.a-device}",
+        "item": "obi-${state.b-asks.body.correlationId}",
+        "text": "The deploy page shows its settings; I left its token out.",
+        "expect": {
+          "paths": {
+            "scan.ran": true,
+            "scan.clean": true,
+            "attempted": true,
+            "sent": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERSPHERE-6"
+        ]
+      }
+    },
+    {
+      "id": "6-b-gets-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.b}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.b-asks.body.correlationId}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "done",
+            "result": {
+              "text": "The deploy page shows its settings; I left its token out."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERSPHERE-6"
+        ]
+      }
+    },
+    {
+      "id": "6-still-no-token-at-b",
+      "use": "runtime.rust:lab.browsersphere.seen",
+      "inputs": {
+        "a": "${state.a}",
+        "b": "${state.b}",
+        "pageToken": true,
+        "expect": {
+          "paths": {
+            "found": {
+              "$len": 0
+            },
+            "looked": {
+              "$ne": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERSPHERE-6"
+        ]
+      }
+    }
+  ]
+}
