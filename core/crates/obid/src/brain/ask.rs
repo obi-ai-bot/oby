@@ -496,8 +496,12 @@ fn telling(exchange: &Exchange, name: &str, now: i64) -> Option<Telling> {
         ),
         // It waited for the Obysphere and never went (ASK-42).
         "failed" => said("end", never_went(name), false),
-        // The owner called it off (obi-requests.md, OBIREQ-4): its card says so, nothing more.
-        "cancelled" => None,
+        // The owner called it off (obi-requests.md, OBIREQ-4): its card goes to Called off.
+        "cancelled" => said(
+            "end",
+            format!("I called off this question to {oby}."),
+            false,
+        ),
         // Waiting for the Obysphere: its card says so, and nobody is quiet yet.
         _ if exchange.unsent() => None,
         _ if told("unsent") && !told("went") => said(
@@ -742,6 +746,18 @@ mod tests {
             telling(&e, "Dima", 2_000_000).unwrap().text,
             "Dima's Oby never answered: the question expired."
         );
+    }
+
+    /// OBIREQ-4: a question called off ends its card once, in obid's words, quoting nothing.
+    #[test]
+    fn obireq_4_a_called_off_question_ends_its_card() {
+        let e = asked("cancelled");
+        let told = telling(&e, "Dima", 1001).unwrap();
+        assert_eq!(
+            (told.key, told.text.as_str(), told.quotes),
+            ("end", "I called off this question to Dima's Oby.", false)
+        );
+        assert_eq!(card(&e, "Dima", 1001)["state"], "cancelled");
     }
 
     #[test]

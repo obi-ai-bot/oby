@@ -68,7 +68,7 @@ pub fn due_for_job<'a>(
                 PR_ENDED
             } else if read_since
                 .and_then(|pr| pr.head.as_deref())
-                .is_some_and(|now| now != head)
+                .is_some_and(|now| now != head && !pushed_by(job, now, asked))
                 || pushed.is_some_and(|p| p.date >= asked && p.id != head)
             {
                 HEAD_MOVED
@@ -80,6 +80,18 @@ pub fn due_for_job<'a>(
         .collect();
     due.sort();
     due.into_iter().map(|(_, cid, why)| (cid, why)).collect()
+}
+
+/// Whether obid had pushed `sha` to `job`'s branch by `at`: the head a request asked then is
+/// about, or one it replaced. GitHub showing one of those after the request is a read that lags
+/// behind obid's own push, never the pull request moving past the request (OBIREQ-2).
+fn pushed_by(job: &Job, sha: &str, at: i64) -> bool {
+    job.outgoing.iter().any(|o| {
+        o.action == "push"
+            && o.branch.as_deref() == Some(job.branch.as_str())
+            && o.id == sha
+            && o.date <= at
+    })
 }
 
 /// The open requests for an approval of pull request `number` of `repo` at a commit other than
@@ -231,6 +243,39 @@ mod tests {
         push.date = 90;
         moved.outgoing = vec![push];
         assert!(due(&moved, &asked).is_empty(), "a push before it was asked");
+    }
+
+    /// OBIREQ-2: GitHub read after the request but still showing the head obid pushed before
+    /// the request's (its API lags behind a push) doesn't call the request off; a head obid never
+    /// pushed, or pushed only after asking, does.
+    #[test]
+    fn obireq_2_a_lagging_read_of_the_old_head_doesnt_call_off() {
+        let asked = [review("a", 100, "h2")];
+        let mut job = job(Status::Done);
+        for (sha, date) in [("h1", 50), ("h2", 95)] {
+            let mut push = Outgoing::new("push", "acme/app", sha, Some(&job.branch));
+            push.date = date;
+            job.outgoing.push(push);
+        }
+        job.pull_request = Some(read("OPEN", "h1", 110));
+        assert!(due(&job, &asked).is_empty(), "a lagging read of h1");
+        job.pull_request = Some(read("OPEN", "h2", 110));
+        assert!(due(&job, &asked).is_empty(), "the request's own head");
+        job.pull_request = Some(read("OPEN", "h3", 110));
+        assert_eq!(
+            due(&job, &asked),
+            [("a".to_owned(), HEAD_MOVED)],
+            "a head obid never pushed"
+        );
+        let mut other = Outgoing::new("push", "acme/app", "h1", Some("someone-elses"));
+        other.date = 50;
+        job.outgoing = vec![other];
+        job.pull_request = Some(read("OPEN", "h1", 110));
+        assert_eq!(
+            due(&job, &asked),
+            [("a".to_owned(), HEAD_MOVED)],
+            "a push to another branch says nothing of this one"
+        );
     }
 
     /// OBIREQ-5: what already ended, or came in, is never called off.

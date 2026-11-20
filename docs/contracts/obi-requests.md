@@ -27,11 +27,12 @@ An outgoing exchange is **open** while it is `sent` or `accepted` and nothing th
 - the owner stopped a conversation turn under way (`POST /v1/conversation/stop`): every question that conversation asked since the turn began (OBIREQ-4);
 - the owner calls it off by hand, `POST /v1/obid/sphere/exchanges/{id}/cancel` (OBIREQ-5).
 
-What obid read or pushed before a request was asked never calls it off: a stale read can't take a request about the head obid just pushed.
+What obid read or pushed before a request was asked never calls it off, and neither does GitHub showing, after the request, a head obid had pushed by the time it asked (the request's own, or one it replaced): GitHub's read lags behind obid's push, so a stale read can't take a request about the head obid just pushed.
 
 ### States and transitions
 
 - An open request called off reads `cancelled` at once, with its `cancel` in the outbox, and an `exchange` event says so; once the Sphere takes the `cancel`, it is the exchange's last sent message.
+- A question a conversation asked ends its card there as any end does (ask-an-oby.md, ASK-20): once the turn is over, the card goes to `cancelled` in place, told once, on a relayed turn whose words, for an app with no card, are `I called off this question to <name>'s Oby.`
 - A request already ended stays as it is: nothing is sent (OBIREQ-5).
 - A `decline`, `result` or `answer` from the other Oby that comes before the `cancel` went ends the exchange as it says, and the `cancel` waiting for it is dropped.
 
@@ -57,10 +58,10 @@ What obid read or pushed before a request was asked never calls it off: a stale 
 ## Acceptance scenarios
 
 - **OBIREQ-1:** Given a job that asked a teammate's Oby for a review, when the owner stops the job, then obid sends one `cancel` for that exchange and the exchange reads `cancelled`. Tests: `obireq_1_a_stopped_job_calls_off_its_review` (core/crates/obid/tests/sphere_api.rs), `obireq_1_a_stopped_job_calls_off_what_it_asked_before` (sphere/calloff.rs).
-- **OBIREQ-2:** Given an open teammate approval request at head A, when the pull request's head moves to B and obid asks again, then the request at A is called off before or with the new one, and only one request per pull request stays open. Tests: `obireq_2_a_new_head_calls_off_the_old_request` (sphere/link/calling_off.rs), `obireq_2_a_head_that_moved_since_calls_off`, `obireq_2_only_requests_at_another_head_are_replaced` (sphere/calloff.rs).
+- **OBIREQ-2:** Given an open teammate approval request at head A, when the pull request's head moves to B and obid asks again, then the request at A is called off before or with the new one, and only one request per pull request stays open. Tests: `obireq_2_a_new_head_calls_off_the_old_request` (sphere/link/calling_off.rs), `obireq_2_a_head_that_moved_since_calls_off`, `obireq_2_a_lagging_read_of_the_old_head_doesnt_call_off`, `obireq_2_only_requests_at_another_head_are_replaced` (sphere/calloff.rs).
 - **OBIREQ-3:** Given an open outgoing request, when its pull request merges or closes, then obid sends `cancel` once. Tests: `obireq_3_a_merged_pull_request_calls_off` (sphere_api.rs), `obireq_3_a_merged_or_closed_pull_request_calls_off` (sphere/calloff.rs).
-- **OBIREQ-4:** Given a question a conversation turn asked, when the owner stops that turn, then the question is called off and the conversation card reads `Called off` (its state `cancelled`). Tests: `obireq_4_a_stopped_turn_calls_off_its_question` (core/crates/obid/tests/ask_an_oby.rs), `obireq_4_a_stopped_turn_calls_off_its_questions` (sphere/link/calling_off.rs), `obireq_4_a_turn_calls_off_only_its_own_questions` (sphere/calloff.rs).
-- **OBIREQ-5:** Given an outgoing exchange that already ended, when the call-off route or a job stop runs, then nothing is sent and the route answers `409`. Tests: `obireq_5_an_ended_exchange_sends_nothing` (sphere_api.rs), `obireq_5_only_an_open_outgoing_request_is_called_off` (sphere/calloff.rs).
+- **OBIREQ-4:** Given a question a conversation turn asked, when the owner stops that turn, then the question is called off and the conversation card reads `Called off` (its state `cancelled`). Tests: `obireq_4_a_stopped_turn_calls_off_its_question` (core/crates/obid/tests/ask_an_oby.rs: the card goes asking, then `cancelled`), `obireq_4_a_stopped_turn_calls_off_its_questions` (sphere/link/calling_off.rs), `obireq_4_a_turn_calls_off_only_its_own_questions` (sphere/calloff.rs), `obireq_4_a_called_off_question_ends_its_card` (brain/ask.rs).
+- **OBIREQ-5:** Given an outgoing exchange that already ended, when the call-off route or a job stop runs, then nothing is sent and the route answers `409`. Tests: `obireq_5_an_ended_exchange_sends_nothing` (sphere_api.rs), `obireq_5_only_an_open_outgoing_request_is_called_off` (sphere/calloff.rs); obid-spec's `POST /v1/obid/sphere/exchanges/{id}/cancel` (tools/obid-spec/workflows/routes/sphere/post-exchange-cancel.json: `404` unknown, `409` incoming and ended with one `cancel` sent, `200` and `cancelled` on both sides).
 - **OBIREQ-6:** Given the Sphere cannot be reached, when a call-off is due, then the `cancel` waits in the outbox and goes once, also across an obid restart. Test: `obireq_6_a_call_off_waits_in_the_outbox` (sphere_api.rs).
 
 **Test it when it's done (real Mac):** on the rig, stop a job that waits on a teammate's review; the teammate's exchange reads `cancelled` and its review job stops.

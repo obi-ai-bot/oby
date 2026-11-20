@@ -1789,7 +1789,8 @@ async fn ask_42_a_question_asked_while_the_obysphere_is_away_goes_once_it_is_bac
 
 /// OBIREQ-4 (docs/contracts/obi-requests.md): the owner stops a turn that asked another Oby a
 /// question and is still under way: obid calls the question off, with one `cancel` in reply to it,
-/// and the conversation's card for it reads `cancelled` (the app's `Called off`).
+/// and the conversation's card for it goes from asking to `cancelled` (the app's `Called off`), in
+/// place as every card's end does (ASK-20), told once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn obireq_4_a_stopped_turn_calls_off_its_question() {
     let folder = Folder::new("obireq-4");
@@ -1817,11 +1818,25 @@ async fn obireq_4_a_stopped_turn_calls_off_its_question() {
                     .and_then(|e| e["correlationId"].as_str())
                     .map(str::to_owned)
             });
+            // Its card is in the turn under way before the owner stops it.
+            let carded = within(30, "its card asking", || {
+                let all = call(&obid, "GET", "/v1/conversations", None).body;
+                all.as_array()?
+                    .iter()
+                    .filter_map(|c| c["id"].as_str())
+                    .find(|c| {
+                        cards(&obid, c)
+                            .iter()
+                            .any(|(_, card)| card["exchange"] == cid.as_str())
+                    })
+                    .map(str::to_owned)
+            });
             let stopped = call(&obid, "POST", "/v1/conversation/stop", None);
             assert_eq!(stopped.status, 200, "{}", stopped.text);
             let answer = turn.join().unwrap();
             assert_eq!(answer.status, 200, "{}", answer.text);
             let conversation = answer.body["conversation"].as_str().unwrap().to_owned();
+            assert_eq!(conversation, carded);
             (conversation, cid)
         })
     });
@@ -1837,6 +1852,14 @@ async fn obireq_4_a_stopped_turn_calls_off_its_question() {
     )
     .body;
     assert_eq!(x["state"], "cancelled");
-    let cards = tokio::task::block_in_place(|| card_says(&obid, &conversation, "cancelled"));
-    assert_eq!(cards.len(), 1, "{cards:?}");
+    let all = tokio::task::block_in_place(|| card_says(&obid, &conversation, "cancelled"));
+    assert!(
+        all.iter().all(|(_, c)| c["exchange"] == cid.as_str()),
+        "{all:?}"
+    );
+    let states: Vec<&str> = all
+        .iter()
+        .map(|(_, c)| c["state"].as_str().unwrap())
+        .collect();
+    assert_eq!(states, ["asking", "cancelled"], "in order, once each");
 }

@@ -128,6 +128,17 @@
             "ASK-39": "the Electron app sends ask and main signs it (apps/electron askByMention and ipc tests)"
           }
         },
+        "obi-requests.md": {
+          "obid": [
+            "OBIREQ-1",
+            "OBIREQ-2",
+            "OBIREQ-3",
+            "OBIREQ-4",
+            "OBIREQ-5",
+            "OBIREQ-6"
+          ],
+          "elsewhere": {}
+        },
         "rooms.md": {
           "obid": [
             "ROOMS-8",
