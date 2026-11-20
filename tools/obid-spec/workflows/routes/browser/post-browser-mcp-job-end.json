@@ -1,0 +1,202 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/browser/mcp (a job's end)",
+  "version": "1.0.0",
+  "description": "BROWSER-25: a job whose agent opened a page through the browser's MCP server ends: its tab leaves GET /v1/browser (a tabClosed event says so), its browser leaves the list, obid's record of its live browser (browser/live/<job>.json) is gone, and its token no longer reaches the server (401 bad_token).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/browser/mcp"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "browser": true
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:browser-site",
+      "inputs": {}
+    },
+    {
+      "id": "j1",
+      "use": "runtime.rust:browser-job",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "within": 300,
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "listed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tabs": {
+              "$len": 1
+            },
+            "browsers": {
+              "$any": {
+                "job": "${state.j1.job}",
+                "state": "ready"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-25"
+        ]
+      }
+    },
+    {
+      "id": "live",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "browser/live/${state.j1.job}.json",
+        "expect": {
+          "exists": true,
+          "json": {
+            "paths": {
+              "daemon": {
+                "$type": "number"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-25"
+        ]
+      }
+    },
+    {
+      "id": "ends",
+      "use": "runtime.rust:browser-job",
+      "inputs": {
+        "obid": "${state.o}",
+        "end": true,
+        "job": "${state.j1.job}"
+      }
+    },
+    {
+      "id": "gone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tabs": {
+              "$len": 0
+            },
+            "browsers": {
+              "$none": {
+                "job": "${state.j1.job}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-25"
+        ]
+      }
+    },
+    {
+      "id": "closed-event",
+      "use": "runtime.rust:browser-events",
+      "inputs": {
+        "obid": "${state.o}",
+        "ms": 500,
+        "expect": {
+          "paths": {
+            "of.tabClosed": {
+              "$any": {
+                "tabId": "${state.open.structured.result.tab}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-25"
+        ]
+      }
+    },
+    {
+      "id": "no-live",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "browser/live/${state.j1.job}.json",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-25"
+        ]
+      }
+    },
+    {
+      "id": "dead-token",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "method": "tools/list",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "rpc.reason": "bad_token"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-16",
+          "BROWSER-25"
+        ]
+      }
+    }
+  ]
+}
