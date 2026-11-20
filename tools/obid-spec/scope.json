@@ -517,7 +517,8 @@
             "DELIVERY-8",
             "DELIVERY-9",
             "DELIVERY-10",
-            "DELIVERY-11"
+            "DELIVERY-11",
+            "DELIVERY-12"
           ],
           "elsewhere": {
             "DELIVERY-6": "delivery.rs state machine unit (no route asks an arbitrary move)."
