@@ -17,9 +17,17 @@ obid pair-computer          # macOS, Oby.app's own obid: ~/Library/Application S
 - **Where it reaches obid:** the addresses that obid bound when it last started, from `home/addresses.json` (COMPUTERS-9), a port the system picked included; the configuration's `listen` and `gateway` while that file isn't there.
 - **Exit 1,** one line on stderr, nothing paired: the configuration doesn't read; obid has no `gateway` (`This obid has no gateway, so no other computer can reach it: …`); it never started there (no `api-token`); it doesn't answer (`obid doesn't answer on 127.0.0.1:<port>: is it running?`); or it refused a step (`obid refused /v1/devices (403 Forbidden): …`). After a refusal `home/pairing` is taken out again.
 
+## Direct addresses
+
+With `direct` in obid's configuration ([configuration.md](configuration.md)), obid serves its gateway's own router over HTTPS on those addresses too (COMPUTERS-10): the same `POST /v1/pairing`, device tokens and allowlist as the gateway's listener ([phone-pairing.md](phone-pairing.md)), and never the pairing endpoints, which stay on the loopback API. Without a `gateway` the configuration doesn't load.
+
+- **Its certificate** is this computer's own: self-signed P-256 (subject `CN=<the machine's name>`, `notAfter` 99991231235959Z), made the first time obid serves a direct address and kept in `home/keys/direct-certificate.der` and `home/keys/direct-key.p8` (PKCS#8, both 0600). Its SHA-256 is its pin, which a window trusts in its place: no CA, no name. A start keeps it; it's made anew only when its files are gone or the key isn't the certificate's, and then every window that pinned the old one refuses it until the computer is added again.
+- **`GET /v1/status`** names each address under `gateway.direct`: `{"address": "0.0.0.0:8443", "state": "listening", "pin": "sha256:<64 hex>"}`, or `{"address", "state": "down", "detail"}` when it can't listen there (a warning in the log, never a stop). obid's log says `obid direct listening` with each address and pin; stdout keeps only its two lines, which launchers read first.
+- **A handshake** has 10 seconds; one that doesn't finish, or fails, is dropped and holds up no other.
+
 ## `home/addresses.json`
 
-obid writes it (0600) each time it starts, once its API and gateway are bound: `{"api": "127.0.0.1:<port>", "gateway": "127.0.0.1:<port>"}`, `gateway` left out when there's none. Only `obid pair-computer` reads it.
+obid writes it (0600) each time it starts, once its API, gateway and direct addresses are bound: `{"api": "127.0.0.1:<port>", "gateway": "127.0.0.1:<port>", "direct": ["0.0.0.0:<port>"]}`, `gateway` and `direct` left out when there are none. Only `obid pair-computer` reads it.
 
 ## `POST /v1/pairing/invite` with `"computer": true`
 
