@@ -37,11 +37,16 @@ export function splitDiff(diff: string): FileDiff[] {
   return files;
 }
 
-// a diff line's look: added, deleted, a hunk's head, or git's own header lines (hidden)
-const kindOf = (line: string) =>
-  line.startsWith('@@') ? 'hunk'
-    : line.startsWith('+++') || line.startsWith('---') || /^(index|new file|deleted file|old mode|new mode|similarity|rename|Binary)/.test(line) ? 'meta'
-      : line.startsWith('+') ? 'add' : line.startsWith('-') ? 'del' : 'ctx';
+// a file's diff lines' looks: added, deleted, a hunk's head, or git's own header lines (hidden), which
+// come only before its first hunk: in one, `--- x` is a deleted `-- x` and `+++i;` an added `++i;`
+const kindsOf = (lines: string[]) => {
+  let inHunk = false;
+  return lines.map((line) => {
+    if (line.startsWith('@@')) { inHunk = true; return 'hunk'; }
+    if (!inHunk && (line.startsWith('+++') || line.startsWith('---') || /^(index|new file|deleted file|old mode|new mode|similarity|rename|Binary)/.test(line))) return 'meta';
+    return line.startsWith('+') ? 'add' : line.startsWith('-') ? 'del' : 'ctx';
+  });
+};
 
 const STATUS: Record<string, string> = { added: 'Added', deleted: 'Deleted', modified: 'Changed' };
 const roundName = (r: ChangeRound) => `Round ${r.round} · ${new Date(r.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
@@ -122,8 +127,8 @@ export default function ChangesPanel() {
           <section key={d.path} className="changes-file" data-file={d.path} aria-label={d.path}>
             <h3>{d.path}</h3>
             <pre>
-              {d.lines.map((line, i) => {
-                const kind = kindOf(line);
+              {kindsOf(d.lines).map((kind, i) => {
+                const line = d.lines[i];
                 return kind === 'meta' ? null : <span key={i} className={`changes-line is-${kind}`}>{line || ' '}{'\n'}</span>;
               })}
             </pre>
