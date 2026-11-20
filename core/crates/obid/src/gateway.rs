@@ -41,6 +41,9 @@ use crate::api::Shared;
 
 /// How long an invitation can be redeemed (Pairing.swift: 120 seconds).
 const INVITATION: Duration = Duration::from_secs(120);
+/// How long another computer's invitation can be redeemed: the person walks between machines
+/// (docs/design/computer-picker, decision 4; docs/contracts/remote.md, COMPUTERS-13).
+const COMPUTER_INVITATION: Duration = Duration::from_secs(600);
 /// Wrong credentials an invitation takes before it is gone.
 const ATTEMPTS: u32 = 5;
 /// How long a device token works (Devices.swift, `GatewayToken.lifetime`).
@@ -230,6 +233,10 @@ pub struct Invitation {
     /// How the phone reaches obid through its Obysphere: what the link carries too.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relay: Option<Value>,
+    /// Another computer's invitation: `oby-computer:` and this computer's direct addresses, each
+    /// pinned (crate::remote::invite, COMPUTERS-13), when it has any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub computer_link: Option<String>,
 }
 
 /// What a phone needs to reach obid through its Obysphere (docs/runner-api.md, "obid only: the
@@ -268,6 +275,9 @@ pub struct Gateway {
     file: PathBuf,
     devices: Mutex<HashMap<String, Device>>,
     pending: Mutex<Option<Pending>>,
+    /// Another computer's open invitation, apart from the phone's: neither replaces the other
+    /// (COMPUTERS-13).
+    computer: Mutex<Option<Pending>>,
 }
 
 fn digest(value: &str) -> String {
@@ -298,6 +308,7 @@ impl Gateway {
             file,
             devices: Mutex::new(devices),
             pending: Mutex::new(None),
+            computer: Mutex::new(None),
         }
     }
 
@@ -312,14 +323,53 @@ impl Gateway {
         relay: Option<RelayInvite>,
         owned: bool,
     ) -> Invitation {
+        self.make(url, name, hostname, now, relay, owned, false)
+    }
+
+    /// Another computer's invitation (COMPUTERS-13), replacing the computer's one before but not a
+    /// phone's: ten minutes, never through the Obysphere. `owned`: the owner made it with their
+    /// own device or at this computer (`obid invite-computer`), so the computer it pairs may add
+    /// its publishing key.
+    pub fn invite_computer(
+        &self,
+        url: &str,
+        name: &str,
+        hostname: &str,
+        now: SystemTime,
+        owned: bool,
+    ) -> Invitation {
+        self.make(url, name, hostname, now, None, owned, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn make(
+        &self,
+        url: &str,
+        name: &str,
+        hostname: &str,
+        now: SystemTime,
+        relay: Option<RelayInvite>,
+        owned: bool,
+        computer: bool,
+    ) -> Invitation {
         let secret = random(32);
         let code = {
             let mut bytes = [0u8; 4];
             getrandom::fill(&mut bytes).expect("the system's random source works");
             format!("{:06}", u32::from_le_bytes(bytes) % 1_000_000)
         };
-        let expires = now + INVITATION;
-        *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending {
+        let expires = now
+            + if computer {
+                COMPUTER_INVITATION
+            } else {
+                INVITATION
+            };
+        let slot = if computer {
+            &self.computer
+        } else {
+            &self.pending
+        };
+        *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending {
             secret: digest(&secret),
             code: digest(&code),
             expires,
@@ -344,6 +394,7 @@ impl Gateway {
             code,
             expires_at: obi_protocol::time::format(seconds(expires)),
             relay,
+            computer_link: None,
         }
     }
 
@@ -360,27 +411,40 @@ impl Gateway {
         via: Option<&str>,
     ) -> Result<Redeemed, (StatusCode, &'static str)> {
         const GONE: &str = "That pairing invitation has expired or was already used.";
-        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(open) = pending.as_mut() else {
-            return Err((StatusCode::GONE, GONE));
-        };
-        if now > open.expires {
-            *pending = None;
-            return Err((StatusCode::GONE, GONE));
-        }
         let given = digest(credential);
-        let right_relay = open.relay.as_deref() == via;
-        if !right_relay
-            || !crate::token::same(&given, &open.secret) && !crate::token::same(&given, &open.code)
-        {
-            open.attempts += 1;
-            if open.attempts >= ATTEMPTS {
-                *pending = None;
+        let open = {
+            let mut phone = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+            let mut computer = self.computer.lock().unwrap_or_else(|e| e.into_inner());
+            for slot in [&mut *computer, &mut *phone] {
+                if slot.as_ref().is_some_and(|p| now > p.expires) {
+                    *slot = None;
+                }
             }
-            return Err((StatusCode::UNAUTHORIZED, "That pairing code is not valid."));
-        }
-        let open = pending.take().expect("checked above");
-        drop(pending);
+            if phone.is_none() && computer.is_none() {
+                return Err((StatusCode::GONE, GONE));
+            }
+            let matches = |p: &Pending| {
+                p.relay.as_deref() == via
+                    && (crate::token::same(&given, &p.secret)
+                        || crate::token::same(&given, &p.code))
+            };
+            if computer.as_ref().is_some_and(matches) {
+                computer.take().expect("checked above")
+            } else if phone.as_ref().is_some_and(matches) {
+                phone.take().expect("checked above")
+            } else {
+                // A wrong try counts against each open invitation; the fifth ends it.
+                for slot in [&mut *computer, &mut *phone] {
+                    if let Some(open) = slot.as_mut() {
+                        open.attempts += 1;
+                        if open.attempts >= ATTEMPTS {
+                            *slot = None;
+                        }
+                    }
+                }
+                return Err((StatusCode::UNAUTHORIZED, "That pairing code is not valid."));
+            }
+        };
         let token = random(64);
         let device = Device {
             id: uuid::Uuid::new_v4().to_string(),
@@ -567,6 +631,9 @@ pub struct InviteRequest {
     /// through the Obysphere, which is never the way to one's own computers.
     #[serde(default)]
     computer: bool,
+    /// With `computer`: what `obid invite-computer` wrote in `home/invite-computer` at this machine,
+    /// the owner's presence there (crate::remote::invite), so the computer it pairs may add its key.
+    presence: Option<String>,
 }
 
 /// `POST /v1/pairing/invite`. With an Obysphere the phone pairs through it, sealed (crate::relay),
@@ -578,8 +645,12 @@ pub async fn invite(
     State(shared): State<Arc<Shared>>,
     axum::Json(request): axum::Json<InviteRequest>,
 ) -> Response {
+    let present = request.computer
+        && request.presence.as_deref().is_some_and(|nonce| {
+            crate::remote::invite::presence_check(&shared.config.mac_home, nonce, SystemTime::now())
+        });
     let owned = match &request.approval {
-        None => false,
+        None => present,
         Some(approval) if shared.devices.approves_invite(approval) => true,
         Some(_) => {
             return error(
@@ -626,6 +697,18 @@ pub async fn invite(
         }
     };
     let through_relay = relay.is_some();
+    if request.computer {
+        let mut invitation =
+            shared
+                .gateway
+                .invite_computer(&url, &name, &hostname, SystemTime::now(), owned);
+        invitation.computer_link = shared
+            .gateway_state
+            .as_ref()
+            .and_then(|state| crate::remote::invite::link(&name, &state["direct"]))
+            .map(|link| link.encode());
+        return axum::Json(invitation).into_response();
+    }
     let invitation = shared
         .gateway
         .invite(&url, &name, &hostname, SystemTime::now(), relay, owned);
@@ -1571,5 +1654,56 @@ mod tests {
         assert!(phone["resumeCommand"].is_null(), "{body}");
         let frames = scrubber.frame(&format!("event: job\ndata: {job}\n\n"));
         assert!(!frames.contains("claude --resume"), "{frames}");
+    }
+
+    #[test]
+    fn computers_13_a_computers_invitation_lasts_ten_minutes_and_a_phones_doesnt_replace_it() {
+        let home = folder("computer-invite");
+        let gateway = Gateway::open(&home);
+        let now = SystemTime::now();
+        let minute = Duration::from_secs(60);
+        let url = "https://10.0.0.2:8443";
+        // A phone's invitation made after the computer's leaves it open, and both pair.
+        let computer = gateway.invite_computer(url, "Studio", "10.0.0.2", now, true);
+        assert!(computer.relay.is_none());
+        let phone = gateway.invite(url, "Mac", "mac", now, None, false);
+        assert!(
+            gateway
+                .redeem(&phone.code, "iPhone", now + minute, None)
+                .is_ok()
+        );
+        // The computer's is still there after nine minutes, and its computer may add a key.
+        let paired = gateway
+            .redeem(&computer.code, "Studio Mac", now + 9 * minute, None)
+            .unwrap();
+        assert!(gateway.may_add_key(&paired.device_id, now + 9 * minute));
+        let again = gateway.redeem(&computer.code, "again", now + 9 * minute, None);
+        assert_eq!(again.unwrap_err().0, StatusCode::GONE, "once");
+        // Made without the owner, it pairs one that can't add a key.
+        let plain = gateway.invite_computer(url, "Studio", "10.0.0.2", now, false);
+        let paired = gateway.redeem(&plain.code, "Laptop", now, None).unwrap();
+        assert!(!gateway.may_add_key(&paired.device_id, now));
+        // After ten minutes it's gone.
+        let late = gateway.invite_computer(url, "Studio", "10.0.0.2", now, false);
+        let gone = gateway.redeem(&late.code, "x", now + 11 * minute, None);
+        assert_eq!(gone.unwrap_err().0, StatusCode::GONE);
+        // A wrong try counts against it; the fifth ends it.
+        let tried = gateway.invite_computer(url, "Studio", "10.0.0.2", now, false);
+        for _ in 0..ATTEMPTS {
+            let wrong = gateway.redeem("not-the-code", "x", now, None);
+            assert_eq!(wrong.unwrap_err().0, StatusCode::UNAUTHORIZED);
+        }
+        assert_eq!(
+            gateway.redeem(&tried.code, "x", now, None).unwrap_err().0,
+            StatusCode::GONE
+        );
+        // Never through a relay.
+        let sealed = gateway.invite_computer(url, "Studio", "10.0.0.2", now, false);
+        assert!(
+            gateway
+                .redeem(&sealed.code, "x", now, Some("relay"))
+                .is_err()
+        );
+        assert!(gateway.redeem(&sealed.code, "x", now, None).is_ok());
     }
 }

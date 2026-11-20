@@ -12,6 +12,8 @@ import { connect, useLive } from './live';
 import { ChatGptWelcome } from './ChatGptPlan';
 import RenderError from './RenderError';
 import { BrowserProvider } from './browser/store';
+import { MacOverlay } from './browser/Mac';
+import './browser/browser.css';
 
 // Line the title bar up with the traffic lights, where macOS actually put them
 const chrome = window.app?.chrome;
@@ -61,7 +63,9 @@ function App() {
   return <BrowserProvider>{home && <Home key="home" />}{onboarding && <FirstRun key="setup" />}<ChatGptWelcome />{home && <ChangesPanel />}</BrowserProvider>;
 }
 
-if (onObid) connect();
-createRoot(document.getElementById('root')!).render(<RenderError><App /></RenderError>);
+// the Mac's pill and frame (browser/Mac.tsx): main's own windows over the screen, drawing only that
+const overlay = new URLSearchParams(location.search).has('macpill') ? 'pill' : new URLSearchParams(location.search).has('macframe') ? 'frame' : null;
+if (onObid && !overlay) connect();
+createRoot(document.getElementById('root')!).render(overlay ? <MacOverlay what={overlay} /> : <RenderError><App /></RenderError>);
 // dev builds only: the control center (dev/ControlCenter.tsx), left out of a release build
 if (import.meta.env.DEV) import('./dev/ControlCenter');

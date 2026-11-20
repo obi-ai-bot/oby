@@ -44,7 +44,7 @@ pub use drive::Driver;
 pub use frame::Frame;
 pub use live_file::LiveFile;
 pub use options::{
-    END_GRACE, IDLE_TIMEOUT, MAX_LIVE, Options, SETTLE_TRY, START_LIMIT, SYSTEM_LIMIT,
+    END_GRACE, IDLE_TIMEOUT, MAX_LIVE, Options, SETTLE_TRY, START_LIMIT, STOP_GRACE, SYSTEM_LIMIT,
 };
 pub use reap::reap_at_start;
 pub use session::{SOCKET_PATH_MAX, Session};

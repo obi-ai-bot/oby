@@ -269,6 +269,16 @@ impl Link {
             return;
         }
         exchange.messages.push(Link::received(&delivery));
+        // The other Oby ended it before this Oby's call-off went: there's nothing left to call off.
+        if exchange.direction == "outgoing" && obi_protocol::TERMINAL_TYPES.contains(&kind) {
+            let in_flight = exchange.tried.clone();
+            exchange.outbox.retain(|m| {
+                m["type"] != "cancel"
+                    || in_flight
+                        .as_deref()
+                        .is_some_and(|id| m["id"].as_str() == Some(id))
+            });
+        }
         match envelope["type"].as_str().unwrap_or("") {
             "accept" if exchange.state == "sent" => exchange.state = "accepted".into(),
             "decline" => exchange.state = "declined".into(),

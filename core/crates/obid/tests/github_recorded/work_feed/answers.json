@@ -549,6 +549,7 @@
         "text": "Issue #641 in obi-e2e/fixture-app is assigned to you.",
         "title": "Assigned to you: fixture-app #641",
         "triage": "needs_you",
+        "triageWhy": null,
         "why": null
       },
       {
@@ -593,6 +594,7 @@
         "text": "Your review is requested on pull request #703 in obi-e2e/fixture-app.",
         "title": "Review requested: fixture-app #703",
         "triage": "needs_you",
+        "triageWhy": null,
         "why": null
       }
     ]

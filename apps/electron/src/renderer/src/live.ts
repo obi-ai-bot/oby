@@ -56,6 +56,9 @@ type Live = ObidState & {
   answered: Record<string, { ask: Ask; option: string; item?: string; until?: number }>;
   // items with no task answered from Home's stack, their answer on its way: off the stack meanwhile
   answering: Set<string>;
+  // another Oby's review request that closed while its card showed, with no answer (it expired, or
+  // was called off): its card stays, saying why, until the owner closes it (PEER-49)
+  closedAsks: Record<string, Asking>;
   // the repository last picked for words sent here, by conversation (its app id), and when
   picked: Record<string, { repo: string; at: string }>;
   // the files your words took, by their turn: the name obid kept, the one picked, a photo's preview
@@ -67,7 +70,7 @@ type Live = ObidState & {
 
 let state: Live = {
   connection: 'connecting', problem: null, status: null, repos: [], github: null, jobs: {}, firstJobs: new Set(), seen: new Set(), inbox: [], limits: [],
-  conversations: [], turns: {}, loaded: new Set(), working: {}, on: {}, pending: {}, unanswered: new Set(), words: {}, pace: {}, waiting: {}, alias: {}, answered: {}, answering: new Set(), picked: {}, previews: {}, refused: [], gone: new Set(), goneConversations: new Set(), settledInbox: {},
+  conversations: [], turns: {}, loaded: new Set(), working: {}, on: {}, pending: {}, unanswered: new Set(), words: {}, pace: {}, waiting: {}, alias: {}, answered: {}, answering: new Set(), closedAsks: {}, picked: {}, previews: {}, refused: [], gone: new Set(), goneConversations: new Set(), settledInbox: {},
 };
 const listeners = new Set<() => void>();
 const set = (patch: Partial<Live>) => {
@@ -81,7 +84,7 @@ const set = (patch: Partial<Live>) => {
 const takeEvent = (e: Event) => {
   if (e.kind === 'transcript' || e.kind === 'transcriptLine' || e.kind === 'transcriptTail' || e.kind === 'transcriptOutput') return heard(e);
   if (e.kind === 'jobGone') sessions.delete(e.id);
-  set(apply(state, e));
+  set({ ...apply(state, e), ...(e.kind === 'inbox' ? closing(state, e.item) : {}) });
 };
 const take = (e: Event) => {
   takeEvent(e);
@@ -421,6 +424,19 @@ export const prChecksOf = (s: Pick<Live, 'github'>, i: InboxItem): { checks?: Ch
   const runs = g && w && [...w.mine, ...w.reviews].find((x) => x.repo === g.repo && x.number === g.number)?.checkRuns;
   return runs?.length ? { checks: runs } : {};
 };
+// A review request on the stack settled with no answer (an answer, from any device, has one): it
+// expired, or its sender called it off, or obid can no longer answer it. Its card stays, saying why,
+// with nothing to send (PEER-49). Opened again, it's an open card again.
+function closing(s: Live, i: InboxItem): Partial<Live> {
+  if (i.state !== 'done') return s.closedAsks[i.id] ? { closedAsks: without(s.closedAsks, i.id) } : {};
+  const card = !i.answer && !answeredHere.has(i.id) && asksOf(s).find((a) => a.id === i.id && a.review);
+  if (!card || !card.review) return {};
+  const expires = Date.parse(word(i.obi?.expiresAt ?? s.inbox.find((x) => x.id === i.id)?.obi?.expiresAt));
+  const closed = expires <= Date.now() ? 'This request expired before you answered.' : 'This request was called off before you answered.';
+  return { closedAsks: { ...s.closedAsks, [i.id]: { ...card, review: { ...card.review, closed } } } };
+}
+// the owner closed a closed card (Close)
+export const putAwayClosed = (id: string) => { if (state.closedAsks[id]) set({ closedAsks: without(state.closedAsks, id) }); };
 // An escalation with no job still reaches the stack (TASKS-17): Done and Later, whole text
 const onHome = (i: InboxItem) => ON_HOME.has(i.kind) || !!questionOf(i) || !!reviewOf(i) || (isEscalation(i) && i.kind === 'question' && !i.job);
 function asksOf(s: Live): Asking[] {
@@ -441,6 +457,7 @@ function asksOf(s: Live): Asking[] {
         ...(g ? { who: g.list === 'reviews' ? g.author ?? undefined : undefined, brand: BRANDS.github, url: g.url } : {}),
       };
     }),
+    ...Object.values(s.closedAsks),
     // an offer under the conversation it was made in, the way to it one click away
     ...offersOf(s, undefined, open).map((offer) => {
       const c = open.find((i) => i.offer?.id === offer.id)?.conversation;
@@ -868,7 +885,7 @@ export async function openConversation(shown: string) {
 // (POST /v1/attachments), and the words carry an id of their own: sent again while obid doesn't
 // answer, obid takes them once, files and tasks included.
 let made = 0;
-export function ask(said: string, shown?: string, repo?: string, folders?: string[], att?: Pick<Attachments, 'files' | 'jobs' | 'project' | 'defaults' | 'obys' | 'skill'>): string | undefined {
+export function ask(said: string, shown?: string, repo?: string, folders?: string[], att?: Pick<Attachments, 'files' | 'jobs' | 'project' | 'defaults' | 'obys' | 'skill' | 'workspace'>): string | undefined {
   const files = att?.files?.filter((f) => f.path) ?? [], jobs = att?.jobs ?? [];
   // a skill picked goes alone too, to an obid that takes it (COMPOSER-27)
   const skill = has(state.status, 'skills-v1') ? att?.skill : undefined;
@@ -902,7 +919,9 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
           // question asks no one
           ...(has(state.status, 'ask-mentions-v1') && !q ? { ask: att?.obys } : {}),
           // the skill picked in the box, beside the words (COMPOSER-27); an answer to Oby's question is only the answer
-          ...(skill && !q ? { skill } : {}) }));
+          ...(skill && !q ? { skill } : {}),
+          // where the conversation it starts works, once obid takes it (WORKSPACE-3)
+          ...(has(state.status, 'workspace-v1') && !c && att?.workspace ? { workspace: att.workspace } : {}) }));
       planned = true;
       const where = a.conversation ?? c;
       // Oby's turn is in a reply or a question (its event may land after this answer, and the card
@@ -992,6 +1011,8 @@ export async function moveToProject(shown: string, project: string | null) {
 }
 // whether obid has projects (projects-v1): with none, nothing names one (projects.ts)
 export const takesProjects = (s: Pick<Live, 'status'> = state) => has(s.status, 'projects-v1');
+// obid takes a new conversation's workspace and answers its finishing actions (WORKSPACE-2 to 6)
+export const takesWorkspace = (s: Pick<Live, 'status'> = state) => has(s.status, 'workspace-v1');
 export async function pinConversation(shown: string, pinned: boolean) {
   try { const c = await api.editConversation(realId(shown), { pinned }); take({ kind: 'conversation', conversation: c }); } catch (e) { say(e); }
 }
@@ -1318,8 +1339,13 @@ export async function changeSetup(repo: string, setup: string | null) {
 // AskStack.tsx): signed by main, or obid refuses it, and that refusal is the caller's to say, over
 // the words it keeps (QuestionCard.tsx).
 export async function answerQuestion(id: string, words: string) {
-  take({ kind: 'inbox', item: await keyed((key) => api.answer(id, { answer: words }, key)) });
+  answeredHere.add(id);
+  try {
+    take({ kind: 'inbox', item: await keyed((key) => api.answer(id, { answer: words }, key)) });
+  } catch (e) { answeredHere.delete(id); throw e; }
 }
+// items this app answered: settled, whatever obid's copy says, they close with no word of why (PEER-49)
+const answeredHere = new Set<string>();
 
 // an item with no task answered from Home's stack, its answer on its way (or not any more)
 const answering = (item: string, on: boolean) =>

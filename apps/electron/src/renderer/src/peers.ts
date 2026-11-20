@@ -161,6 +161,8 @@ export function standing(x: PeerExchange, t: Pick<PeerThread, 'name' | 'owner' |
     if (x.state === 'expired') return askedLine('expired', t);
     if (x.state === 'declined') return askedLine('declined', t, null, said.find((p) => p.kind === 'decline')?.reason);
   }
+  // a review they asked of yours, accepted: your Oby is on it until its result goes (PEER-47)
+  if (x.direction === 'incoming' && x.type === 'review_request' && x.state === 'accepted') return 'Your Oby is reviewing it.';
   return x.state === 'declined' ? 'Declined' : x.state === 'expired' ? 'No answer came' : x.state === 'cancelled' ? 'Called off' : null;
 }
 // under each exchange's last post with words, and no other, so it's told once. shown: the thread's posts with words

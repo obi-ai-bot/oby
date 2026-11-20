@@ -18,7 +18,7 @@ import type {
   JobChanges,
   UndoAction,
   LimitDecision,
-  PlanAnswer, PlanDefaults, PlanRequest, JobMessageRequest, ConversationFile, Cancelled, SkillsAnswer, Restarted,
+  PlanAnswer, PlanDefaults, PlanRequest, Workspace, WorkspaceAnswer, FinishAction, JobMessageRequest, ConversationFile, Cancelled, SkillsAnswer, Restarted,
   Profile,
   Project,
   Repo,
@@ -159,7 +159,7 @@ export const api = {
   // words to Oby: in a conversation, or starting a new one. with: the words' id (sent again with
   // the same id, nothing happens twice), the files uploaded for them and the tasks attached
   plan: (said: string, answer: { question: string; option: string } | undefined, where: { conversation: string } | { new: true }, folders?: string[],
-    with_: { id?: string; attachments?: string[]; jobs?: string[]; project?: string; defaults?: PlanDefaults; ask?: string[]; skill?: string } = {}) =>
+    with_: { id?: string; attachments?: string[]; jobs?: string[]; project?: string; defaults?: PlanDefaults; ask?: string[]; skill?: string; workspace?: Workspace } = {}) =>
     call<PlanAnswer>('POST', '/v1/plans', <PlanRequest>{
       said, ...(answer ? { answer } : {}), ...where, ...(folders?.length ? { folders } : {}), ...(with_.id ? { id: with_.id } : {}),
       ...(with_.attachments?.length ? { attachments: with_.attachments } : {}), ...(with_.jobs?.length ? { jobs: with_.jobs } : {}),
@@ -169,7 +169,15 @@ export const api = {
       ...(with_.ask?.length ? { ask: with_.ask } : {}),
       // the skill the owner picked in the box (skills-v1, COMPOSER-27): beside the words, never in them
       ...(with_.skill ? { skill: with_.skill } : {}),
+      // where a new conversation works (workspace-v1, WORKSPACE-3): with new only
+      ...(with_.workspace && 'new' in where ? { workspace: with_.workspace } : {}),
     }),
+  // a conversation's workspace and its finishing actions (workspace-v1, WORKSPACE-4 and 5)
+  workspace: (c: string) => call<WorkspaceAnswer>('GET', `/v1/conversations/${id(c)}/workspace`),
+  // one finishing action, on the owner's click: main reads obid's sentence for it, asks in its own
+  // dialog and signs it (oby-finish)
+  finish: (c: string, folder: string, action: FinishAction) =>
+    call<WorkspaceAnswer>('POST', `/v1/conversations/${id(c)}/workspace`, undefined, (b) => b.finish(c, folder, action)),
   // one message waiting in a conversation, dropped alone (composer-v1, COMPOSER-9 and 10)
   cancelWords: (conversation: string, turn: string) => call<Cancelled>('POST', '/v1/plans/cancel', { conversation, turn }),
   // the skills of the agent the box's words would go to (skills-v1, COMPOSER-25): a conversation's, a

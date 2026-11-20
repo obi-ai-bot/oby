@@ -21,6 +21,7 @@ import { flag, https, string } from '../shared/decode';
 import { SCRATCH } from '../shared/build';
 import { ownFolder } from './appFolder';
 import { browsing } from './browser';
+import { macPill } from './macPill';
 import { sawInput } from './browserInput';
 
 // A scratch install (scripts/run-dev.sh --port --home, shared/build.ts) and the app run from source
@@ -96,6 +97,8 @@ servers(trusted);
 helping(trusted);
 // obid's browser, followed for the window (browser.ts, BROWSERAPP-8)
 const stopBrowsing = browsing(trusted, () => win);
+// an agent using the Mac: Oby's pill and frame over the screen (macPill.ts, BROWSERAPP-19)
+const stopPill = macPill(trusted, () => win, join(__dirname, '../preload/index.cjs'), process.env.ELECTRON_RENDERER_URL);
 const channels = ipc(trusted);
 // the page asks for both before it draws, to lay its title bar out around the lights
 channels.on('window-chrome', [], () => chrome, null);
@@ -187,7 +190,7 @@ function createWindow() {
   win.on('restore', () => track(true));
   win.on('hide', () => track(false));
   win.on('minimize', () => track(false));
-  win.on('closed', () => { track(false); win = null; windowLeft(); stopBrowsing(); });
+  win.on('closed', () => { track(false); win = null; windowLeft(); stopBrowsing(); stopPill(); });
   // Oby's alerts (notify.ts): none for what the window shows while it's in front
   win.on('focus', windowSeen);
   for (const ev of ['blur', 'hide', 'minimize'] as const) win.on(ev as 'blur', windowLeft);

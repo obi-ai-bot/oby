@@ -1106,9 +1106,13 @@ fn post_unnamed(obid: &Obid, task: &str) -> String {
 
 /// What the Codex stand-in was sent for job `id`.
 fn codex_heard(folder: &Folder, id: &str) -> String {
-    let threads = folder.0.join("home/logins").join(id).join("threads");
-    std::fs::read_dir(&threads)
-        .into_iter()
+    // A boxed run's threads are in the job's own `CODEX_HOME`; the owner's own Codex job's in its
+    // account's folder (LANES-18), the one Codex job each of these tests has.
+    let boxed = folder.0.join("home/logins").join(id).join("threads");
+    let own = folder.0.join("home/accounts/codex/threads");
+    [boxed, own]
+        .iter()
+        .filter_map(|threads| std::fs::read_dir(threads).ok())
         .flatten()
         .flatten()
         .filter_map(|e| std::fs::read_to_string(e.path()).ok())

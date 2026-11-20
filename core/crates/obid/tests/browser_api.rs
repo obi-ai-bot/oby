@@ -468,6 +468,48 @@ fn browser_8_a_secret_goes_to_the_page_and_is_in_no_file_under_obids_home() {
 }
 
 #[test]
+fn browser_25_obid_stopping_ends_a_browser_slow_to_die_within_its_own_stop() {
+    let folder = Folder::new("browser-25-stop");
+    let mut obid = browser_obid(&folder);
+    let (_job, token) = sleeping_job(&obid);
+    let opened = tool(
+        &obid,
+        &token,
+        "oby_browser_open",
+        json!({"url": "http://127.0.0.1:1/"}),
+    );
+    assert_eq!(opened["ok"], true, "{opened}");
+    // Its daemon now ignores SIGTERM, as a Chrome slow to close does under load.
+    let live_dir = obid.home.join("browser/live");
+    let record: Value = std::fs::read_dir(&live_dir)
+        .unwrap()
+        .flatten()
+        .find_map(|e| serde_json::from_slice(&std::fs::read(e.path()).ok()?).ok())
+        .expect("the browser's live record");
+    let daemon = record["daemon"].as_u64().expect("its daemon's pid") as u32;
+    let socket_dir = PathBuf::from(record["socketDir"].as_str().unwrap());
+    let session = record["session"].as_str().unwrap();
+    std::fs::write(socket_dir.join(format!("{session}.stubborn")), "").unwrap();
+    let alive = |pid: u32| {
+        std::process::Command::new("/bin/kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    assert!(alive(daemon));
+    assert!(obid.stop().success());
+    let live: Vec<_> = std::fs::read_dir(&live_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    assert!(live.is_empty(), "browsers still recorded live: {live:?}");
+    assert!(!alive(daemon), "its daemon {daemon} outlived obid");
+}
+
+#[test]
 fn browser_15_the_switches_are_kept_across_a_restart() {
     let folder = Folder::new("browser-15");
     let mut obid = browser_obid(&folder);

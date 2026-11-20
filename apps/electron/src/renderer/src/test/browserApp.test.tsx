@@ -141,3 +141,34 @@ describe('BROWSERAPP-14: a page that didn\'t simply load', () => {
     expect([...host.querySelectorAll('button')].some((b) => b.textContent === 'Try again')).toBe(false);
   });
 });
+
+describe('BROWSERAPP-19 and 20: an agent using the Mac', () => {
+  let root: Root, host: HTMLDivElement;
+  beforeEach(() => { vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); host = document.createElement('div'); document.body.append(host); root = createRoot(host); });
+  afterEach(() => { act(() => root.unmount()); host.remove(); delete (window as unknown as { app?: unknown }).app; });
+
+  it("browserapp_19: while an agent has the Mac, main is told to show its pill; Stop there, or the card's, puts the pill and the card away", async () => {
+    const { MacCard, useMacPill } = await import('../browser/Mac');
+    const pill = vi.fn(async () => true);
+    let stopped: (() => void) | null = null;
+    (window as unknown as { app: unknown }).app = { mac: { pill, onStopped: (fn: () => void) => { stopped = fn; return () => { stopped = null; }; } } };
+    const Pill = () => { useMacPill(); return null; };
+    act(() => root.render(<BrowserProvider board={15}><Pill /><MacCard /></BrowserProvider>));
+    expect(pill).toHaveBeenLastCalledWith({ agent: 'claude', action: 'Typing in TextEdit' });
+    expect(host.querySelector('[data-browser="mac-card"]')?.textContent).toBe('Claude Code has your Mac. Press Esc twice to stop it.Stop');
+    act(() => stopped!());
+    expect(host.querySelector('[data-browser="mac-card"]')).toBeNull();
+    expect(pill).toHaveBeenLastCalledWith(null);
+    act(() => root.render(<BrowserProvider key="again" board={15}><Pill /><MacCard /></BrowserProvider>));
+    act(() => ([...host.querySelectorAll('button')].find((b) => b.textContent === 'Stop') as HTMLButtonElement).click());
+    expect(host.querySelector('[data-browser="mac-card"]')).toBeNull();
+  });
+  it('browserapp_20: the first time, the sheet says what using the Mac means and that macOS asks next; Not now closes it', async () => {
+    const { MacSheet } = await import('../browser/Mac');
+    act(() => root.render(<BrowserProvider board={16}><MacSheet /></BrowserProvider>));
+    expect(host.querySelector('.modal-title')?.textContent).toBe('Let agents use your Mac?');
+    expect(host.querySelectorAll('.modal-list li').length).toBe(3);
+    act(() => ([...host.querySelectorAll('button')].find((b) => b.textContent === 'Not now') as HTMLButtonElement).click());
+    expect(host.querySelector('[data-browser="mac-sheet"]')).toBeNull();
+  });
+});

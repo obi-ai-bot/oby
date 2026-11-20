@@ -28,6 +28,7 @@ Holds below are defaults: the owner's word lifts any of them ("Defaults: Oby for
 1. `gh pr create --base dev --head <branch>`, its body from `.github/PULL_REQUEST_TEMPLATE.md`.
 2. Answer every section, "Security path" included. A section that doesn't apply says "none" and stays.
 3. "Security path" says yes, with the path, when the diff touches one of `merge::SECURITY_PATHS` (MERGING-15, `core/crates/obid/src/merge.rs`). That decides step 5.
+4. Label it before the push that should run it, and before it's armed (`docs/ci.md`, "Which label"): `full-suite` when the change touches Rust under `core/` (a `.rs` file, a `Cargo.toml` or `Cargo.lock`) or `tools/obid-spec/`, so its own run is its first full one, every Rust test and every obid-spec workflow, not the merge queue's; else `full-ci` (an app-only or docs change). A label takes effect on the next push, or on a draft marked ready: open it as a draft, label it, then `gh pr ready`.
 
 ## 3. The review loop
 

@@ -832,6 +832,8 @@ impl Api {
                     computer: c::Computer::this_mac(),
                     ask: None,
                     dialog: None,
+                    kind: c::TabKind::Page,
+                    artifact: None,
                 },
                 inflight: 0,
                 last_error: None,
