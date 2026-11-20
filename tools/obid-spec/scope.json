@@ -1449,7 +1449,8 @@
             "CLEANUP-3",
             "CLEANUP-4",
             "CLEANUP-5",
-            "CLEANUP-6"
+            "CLEANUP-6",
+            "CLEANUP-7"
           ],
           "elsewhere": {
             "CLEANUP-2": "needs a disk under 20 GB free; a unit test."
