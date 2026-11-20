@@ -6,8 +6,9 @@
 //
 // The person's app calls every route but MCP_PATH's with obid's owner token
 // (`Authorization: Bearer <token>`); the owner's own acts on a tab (take, give back, a secret, an
-// answer, Save a copy, a setting) also carry the device's signed words (WORDS_HEADER). The SSE
-// routes need that header too, so read them with fetch() and a streaming body, not EventSource.
+// answer, Save a copy, a setting, a way out of a page state) also carry the device's signed words
+// (WORDS_HEADER). The SSE routes need that header too, so read them with fetch() and a streaming
+// body, not EventSource.
 // Errors are obid's: `{ error, reason }` with a 4xx (ApiError). Enums only grow: treat an unknown
 // state as "ready" and an unknown event type as one to ignore, never as an error.
 
@@ -26,6 +27,13 @@ export const VERB_INPUT = "input";
 export const VERB_TAKE = "take";
 export const VERB_GIVE_BACK = "giveBack";
 export const VERB_SECRET = "secret";
+/// The person's ways out of a page state (board 10): signed, only on a tab the signing device
+/// holds, each answering the Tab as it is after; never an agent's tool. Try again and Reload.
+export const VERB_RELOAD = "reload";
+/// Go back.
+export const VERB_BACK = "back";
+/// The page's own dialog answered: Leave (accept) or Stay; with no dialog, refused "no_dialog".
+export const VERB_DIALOG = "dialog";
 export const VERB_ANSWER = "answer";
 export const VERB_SAVE_COPY = "saveCopy";
 
@@ -51,6 +59,9 @@ export const ROUTES = [
   "POST /v1/browser/tabs/{id}/take",
   "POST /v1/browser/tabs/{id}/giveBack",
   "POST /v1/browser/tabs/{id}/secret",
+  "POST /v1/browser/tabs/{id}/reload",
+  "POST /v1/browser/tabs/{id}/back",
+  "POST /v1/browser/tabs/{id}/dialog",
   "POST /v1/browser/asks/{id}/answer",
   "POST /v1/browser/mcp",
 ] as const;
@@ -161,6 +172,19 @@ export interface SecretAnswer {
   tabId: string;
   field: string;
   filled: boolean;
+}
+
+// ── The person's ways out of a page state ───────────────────────────────────────────────────────
+
+/// Try again and Reload: `{}`.
+export type ReloadBody = Record<string, never>;
+/// Go back: `{}`.
+export type BackBody = Record<string, never>;
+
+/// `accept` is Leave (OK), else Stay (Cancel); `promptText` for a prompt.
+export interface DialogBody {
+  accept: boolean;
+  promptText?: string | null;
 }
 
 // ── Downloads ───────────────────────────────────────────────────────────────────────────────────
@@ -323,6 +347,7 @@ export const REASONS = [
   "upload_outside_room",
   "not_granted",
   "browser",
+  "certificate_page",
   // The API's.
   "browser_off",
   "no_token",
@@ -336,6 +361,7 @@ export const REASONS = [
   "not_found",
   "bad_request",
   "browser_starting",
+  "no_dialog",
 ] as const;
 export type Reason = (typeof REASONS)[number];
 
