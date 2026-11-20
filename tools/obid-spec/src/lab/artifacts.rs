@@ -1110,30 +1110,45 @@ fn is_id(id: &str) -> bool {
 }
 
 /// What to keep: a version's files, read from an agent's folder or a zip, and who made it.
-struct Keep {
-    files: Files,
-    folder: bool,
-    title: String,
-    kind: Option<Kind>,
-    conversation: Option<String>,
-    job: Option<String>,
-    artifact: Option<String>,
-    origin: Origin,
+pub(crate) struct Keep {
+    pub(crate) files: Files,
+    pub(crate) folder: bool,
+    pub(crate) title: String,
+    pub(crate) kind: Option<Kind>,
+    pub(crate) conversation: Option<String>,
+    pub(crate) job: Option<String>,
+    pub(crate) artifact: Option<String>,
+    pub(crate) origin: Origin,
+    /// Another Oby's version (an edit sent back, or the owner's on a recipient's copy): the
+    /// sharing's own rules let it in (src/lab/artifactsphere.rs), not the conversation's.
+    pub(crate) by: Option<String>,
 }
 
 /// The lab's store: obid's `home/artifacts/<id>/{artifact.json,<version>/…}` under the scratch
 /// folder, the owner's devices, the events sent and the conversations the turns made.
-struct Store {
-    dir: PathBuf,
+pub(crate) struct Store {
+    pub(crate) dir: PathBuf,
     rules: Rules,
     token: String,
     words: Words,
-    events: Vec<Value>,
+    pub(crate) events: Vec<Value>,
     turns: Vec<Value>,
 }
 
 impl Store {
-    fn get(&self, id: &str) -> Option<Artifact> {
+    /// A store of its own on `dir` (another Oby's, in the sharing lab).
+    pub(crate) fn at(dir: PathBuf) -> Store {
+        Store {
+            dir,
+            rules: rules_here(),
+            token: String::new(),
+            words: Words::default(),
+            events: vec![],
+            turns: vec![],
+        }
+    }
+
+    pub(crate) fn get(&self, id: &str) -> Option<Artifact> {
         if !is_id(id) {
             return None;
         }
@@ -1141,7 +1156,7 @@ impl Store {
         serde_json::from_slice(&text).ok()
     }
 
-    fn list(&self, conversation: Option<&str>, job: Option<&str>) -> Vec<Artifact> {
+    pub(crate) fn list(&self, conversation: Option<&str>, job: Option<&str>) -> Vec<Artifact> {
         let mut all: Vec<Artifact> = std::fs::read_dir(&self.dir)
             .into_iter()
             .flatten()
@@ -1154,7 +1169,7 @@ impl Store {
         all
     }
 
-    fn save(&self, a: &Artifact) -> std::io::Result<()> {
+    pub(crate) fn save(&self, a: &Artifact) -> std::io::Result<()> {
         let folder = self.dir.join(&a.id);
         std::fs::create_dir_all(&folder)?;
         let tmp = folder.join(".artifact.json.tmp");
@@ -1162,7 +1177,7 @@ impl Store {
         std::fs::rename(tmp, folder.join("artifact.json"))
     }
 
-    fn version_files(&self, a: &Artifact, version: u32) -> Option<Files> {
+    pub(crate) fn version_files(&self, a: &Artifact, version: u32) -> Option<Files> {
         let v = a.versions.iter().find(|v| v.version == version)?;
         let folder = self.dir.join(&a.id).join(version.to_string());
         v.files
@@ -1186,7 +1201,7 @@ impl Store {
     }
 
     /// The store's half of a publish or an import: checked, then kept as a new version.
-    fn keep(&mut self, mut what: Keep) -> Result<(String, u32), Refused> {
+    pub(crate) fn keep(&mut self, mut what: Keep) -> Result<(String, u32), Refused> {
         let rules = self.rules;
         let title = clean_title(&what.title).ok_or_else(|| {
             Refused::new(
@@ -1204,12 +1219,14 @@ impl Store {
                         "Not published: there's no artifact by that id.",
                     )
                 })?;
-                may_version(
-                    &a,
-                    what.conversation.as_deref(),
-                    what.job.as_deref(),
-                    &rules,
-                )?;
+                if what.by.is_none() {
+                    may_version(
+                        &a,
+                        what.conversation.as_deref(),
+                        what.job.as_deref(),
+                        &rules,
+                    )?;
+                }
                 if a.versions.len() >= c::MAX_VERSIONS as usize {
                     return Err(Refused::not_published(
                         "full",
@@ -1324,6 +1341,7 @@ impl Store {
             bytes,
             blobs,
             job: what.job.clone(),
+            by: what.by.clone(),
         });
         self.save(&artifact).map_err(|e| {
             Refused::not_published("not_published", format!("obid couldn't keep it ({e})."))
@@ -1852,6 +1870,7 @@ fn handle(store: &Mutex<Store>, req: &Request) -> Answer {
                 job: None,
                 artifact: None,
                 origin: Origin::Import { from: from.into() },
+                by: None,
             });
             match kept.map(|(id, _)| s.get(&id)) {
                 Ok(Some(a)) => Answer::json(200, &serde_json::to_value(a).unwrap_or_default()),
@@ -2333,6 +2352,7 @@ async fn publish(input: &Value) -> Result<Value> {
             job: input["job"].as_str().map(str::to_string),
             artifact,
             origin: Origin::Own,
+            by: None,
         })
     };
     let mut result = once(input["artifact"].as_str().map(str::to_string));
@@ -2752,6 +2772,7 @@ mod tests {
             bytes: 0,
             blobs: BTreeMap::from([("abc".into(), "assets/x.png".into())]),
             job: None,
+            by: None,
         };
         assert_eq!(
             resolve(&v, "_blob/abc", &Rules::ALL).as_deref(),

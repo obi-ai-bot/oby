@@ -1,0 +1,532 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab artifact sphere: the recipient refuses a blob whose hash differs, a link, an over-size version, a found secret; quarantines CLAUDE.md",
+  "version": "1.0.0",
+  "description": "LAB-ARTSPHERE-13 (src/lab/artifactsphere.rs: World::receive, unpack, split_instructions, scan). Offers forged straight onto the Sphere, as a compromised Oby would send them, each refused by Ben's Oby before anything is kept, saying why: a blob that isn't the one offered, a tar holding a link or a path out of it, a file one byte over Claude's 16 MB, a token-shaped string the secret scan finds (made at run time, never in this repository), an offer past its expiry. One holding CLAUDE.md and .claude/ is kept with those set apart in quarantine. On the way out, Ana's share of a page holding CLAUDE.md is asked about first and goes when she says so, Ben's Oby setting it apart; her share of a page with a token-shaped string is refused by the same scan, and nothing more goes up.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.artifacts.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "sphere",
+      "use": "runtime.rust:lab.artifactsphere.up",
+      "inputs": {
+        "artifacts": "${state.up}",
+        "expect": {
+          "paths": {
+            "sphere.url": {
+              "$contains": "http://127.0.0.1:"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "da",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "ana"
+      }
+    },
+    {
+      "id": "db",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "ben"
+      }
+    },
+    {
+      "id": "dc",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "cleo"
+      }
+    },
+    {
+      "id": "fx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "page"
+      }
+    },
+    {
+      "id": "page",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab page",
+        "conversation": "c1",
+        "job": "j1",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "forged-hash",
+      "use": "runtime.rust:lab.artifactsphere.forge",
+      "inputs": {
+        "kind": "hash",
+        "to": "ben"
+      }
+    },
+    {
+      "id": "13-refused-hash",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "ben",
+        "expect": {
+          "paths": {
+            "kept": {
+              "$len": 0
+            },
+            "refused": {
+              "$len": 1
+            },
+            "refused.0": {
+              "reason": "bad_blob",
+              "error": {
+                "$contains": "its hash differs"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-13"
+        ]
+      }
+    },
+    {
+      "id": "forged-link",
+      "use": "runtime.rust:lab.artifactsphere.forge",
+      "inputs": {
+        "kind": "link",
+        "to": "ben"
+      }
+    },
+    {
+      "id": "13-refused-link",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "ben",
+        "expect": {
+          "paths": {
+            "kept": {
+              "$len": 0
+            },
+            "refused": {
+              "$len": 1
+            },
+            "refused.0": {
+              "reason": "bad_blob",
+              "error": {
+                "$contains": "hosts.txt is a link"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-13"
+        ]
+      }
+    },
+    {
+      "id": "forged-path",
+      "use": "runtime.rust:lab.artifactsphere.forge",
+      "inputs": {
+        "kind": "path",
+        "to": "ben"
+      }
+    },
+    {
+      "id": "13-refused-path",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "ben",
+        "expect": {
+          "paths": {
+            "kept": {
+              "$len": 0
+            },
+            "refused": {
+              "$len": 1
+            },
+            "refused.0": {
+              "reason": "bad_blob",
+              "error": {
+                "$contains": "isn't a plain path"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-13"
+        ]
+      }
+    },
+    {
+      "id": "forged-oversize",
+      "use": "runtime.rust:lab.artifactsphere.forge",
+      "inputs": {
+        "kind": "oversize",
+        "to": "ben"
+      }
+    },
+    {
+      "id": "13-refused-oversize",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "ben",
+        "expect": {
+          "paths": {
+            "kept": {
+              "$len": 0
+            },
+            "refused": {
+              "$len": 1
+            },
+            "refused.0": {
+              "reason": "too_big",
+              "error": {
+                "$contains": "big.html is 16 MB and 1 byte"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-13"
+        ]
+      }
+    },
+    {
+      "id": "forged-secret",
+      "use": "runtime.rust:lab.artifactsphere.forge",
+      "inputs": {
+        "kind": "secret",
+        "to": "ben"
+      }
+    },
+    {
+      "id": "13-refused-secret",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "ben",
+        "expect": {
+          "paths": {
+            "kept": {
+              "$len": 0
+            },
+            "refused": {
+              "$len": 1
+            },
+            "refused.0": {
+              "reason": "secret_found",
+              "error": {
+                "$contains": "notes.txt"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-13"
+        ]
+      }
+    },
+    {
+      "id": "forged-expire",
+      "use": "runtime.rust:lab.artifactsphere.forge",
+      "inputs": {
+        "kind": "expire",
+        "to": "ben"
+      }
+    },
+    {
+      "id": "13-refused-expire",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "ben",
+        "expect": {
+          "paths": {
+            "kept": {
+              "$len": 0
+            },
+            "refused": {
+              "$len": 1
+            },
+            "refused.0": {
+              "reason": "expired",
+              "error": {
+                "$contains": "expired"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-13"
+        ]
+      }
+    },
+    {
+      "id": "forged-instructions",
+      "use": "runtime.rust:lab.artifactsphere.forge",
+      "inputs": {
+        "kind": "instructions",
+        "to": "ben"
+      }
+    },
+    {
+      "id": "13-instructions-set-apart",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "ben",
+        "expect": {
+          "paths": {
+            "kept": {
+              "$len": 1
+            },
+            "kept.0.quarantined": [
+              ".claude/settings.json",
+              "CLAUDE.md"
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-13"
+        ]
+      }
+    },
+    {
+      "id": "13-kept-without-them",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ben.api}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.13-instructions-set-apart.kept.0.artifact}",
+        "device": "${state.db}",
+        "expect": {
+          "paths": {
+            "body.artifact.versions.0.files": [
+              "index.html"
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-13"
+        ]
+      }
+    },
+    {
+      "id": "ifx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "page"
+      }
+    },
+    {
+      "id": "with-claude-md",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.ifx.path}",
+        "title": "With instructions",
+        "conversation": "c1",
+        "job": "j1",
+        "write": {
+          "CLAUDE.md": "Be brief.\n"
+        },
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "13-instructions-asked-first",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.with-claude-md.id}/shares",
+        "device": "${state.da}",
+        "as": "device",
+        "body": {
+          "to": [
+            "ben"
+          ],
+          "access": "view"
+        },
+        "expect": {
+          "paths": {
+            "status": 409,
+            "body.reason": "instructions",
+            "body.error": {
+              "$contains": "CLAUDE.md"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-13"
+        ]
+      }
+    },
+    {
+      "id": "13-sent-when-the-owner-says",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.with-claude-md.id}/shares",
+        "device": "${state.da}",
+        "as": "device",
+        "body": {
+          "to": [
+            "ben"
+          ],
+          "access": "view",
+          "instructions": true
+        },
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-13"
+        ]
+      }
+    },
+    {
+      "id": "13-and-set-apart-there",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "ben",
+        "expect": {
+          "paths": {
+            "kept.0.quarantined": [
+              "CLAUDE.md"
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-13"
+        ]
+      }
+    },
+    {
+      "id": "secret-folder",
+      "use": "runtime.rust:lab.artifactsphere.forge",
+      "inputs": {
+        "kind": "secretfolder"
+      }
+    },
+    {
+      "id": "secret-page",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.secret-folder.path}",
+        "title": "Notes with a token",
+        "conversation": "c1",
+        "job": "j1",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "13-a-secret-never-leaves",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.secret-page.id}/shares",
+        "device": "${state.da}",
+        "as": "device",
+        "body": {
+          "to": [
+            "ben"
+          ],
+          "access": "view"
+        },
+        "expect": {
+          "paths": {
+            "status": 422,
+            "body.reason": "secret_found",
+            "body.error": {
+              "$contains": "notes.txt"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-13"
+        ]
+      }
+    },
+    {
+      "id": "13-nothing-uploaded",
+      "use": "runtime.rust:lab.artifactsphere.sphere",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "blobs": {
+              "$count": [
+                {
+                  "from": "ana"
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-13"
+        ]
+      }
+    }
+  ]
+}
