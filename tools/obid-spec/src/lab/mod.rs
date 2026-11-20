@@ -21,6 +21,7 @@ use serde_json::{json, Value};
 use crate::obid::Run;
 
 pub mod browser;
+pub mod browser_cert;
 pub mod browser_contract;
 pub mod browserapi;
 pub mod browsersphere;

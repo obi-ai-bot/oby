@@ -34,6 +34,10 @@ export const VERB_RELOAD = "reload";
 export const VERB_BACK = "back";
 /// The page's own dialog answered: Leave (accept) or Stay; with no dialog, refused "no_dialog".
 export const VERB_DIALOG = "dialog";
+/// Go on anyway past an untrusted certificate: only on a tab stopped at one whose certificate obid
+/// read (else "no_certificate"), only for that exact certificate (else "certificate_changed"). The
+/// job's browser restarts trusting its key: its other tabs close.
+export const VERB_PROCEED = "proceed";
 export const VERB_ANSWER = "answer";
 export const VERB_SAVE_COPY = "saveCopy";
 
@@ -62,6 +66,7 @@ export const ROUTES = [
   "POST /v1/browser/tabs/{id}/reload",
   "POST /v1/browser/tabs/{id}/back",
   "POST /v1/browser/tabs/{id}/dialog",
+  "POST /v1/browser/tabs/{id}/proceed",
   "POST /v1/browser/asks/{id}/answer",
   "POST /v1/browser/mcp",
 ] as const;
@@ -103,6 +108,14 @@ export interface Tab {
   ask: Ask | null;
   /// The dialog the page shows (the page's words), if any.
   dialog: string | null;
+  /// On a tab stopped at a certificate problem, the certificate obid read there (add-only).
+  certificate?: Certificate;
+}
+
+/// A server's certificate as obid read it: its host and SHA-256 fingerprint (hex of its DER).
+export interface Certificate {
+  host: string;
+  fingerprint: string;
 }
 
 export interface TabsAnswer {
@@ -185,6 +198,11 @@ export type BackBody = Record<string, never>;
 export interface DialogBody {
   accept: boolean;
   promptText?: string | null;
+}
+
+/// Go on anyway: the fingerprint of the certificate the person was shown.
+export interface ProceedBody {
+  fingerprint: string;
 }
 
 // ── Downloads ───────────────────────────────────────────────────────────────────────────────────
@@ -362,6 +380,8 @@ export const REASONS = [
   "bad_request",
   "browser_starting",
   "no_dialog",
+  "no_certificate",
+  "certificate_changed",
 ] as const;
 export type Reason = (typeof REASONS)[number];
 

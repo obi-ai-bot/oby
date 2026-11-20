@@ -174,6 +174,7 @@ pub enum Route {
     Reload(String),
     Back(String),
     Dialog(String),
+    Proceed(String),
     Answer(String),
     Mcp,
     Preflight,
@@ -221,6 +222,7 @@ pub fn route(method: &str, path: &str) -> Route {
                 ("POST", v) if v == c::VERB_RELOAD => Route::Reload(tab),
                 ("POST", v) if v == c::VERB_BACK => Route::Back(tab),
                 ("POST", v) if v == c::VERB_DIALOG => Route::Dialog(tab),
+                ("POST", v) if v == c::VERB_PROCEED => Route::Proceed(tab),
                 _ => Route::NotFound,
             }
         }
@@ -241,6 +243,7 @@ impl Route {
                 | Route::Reload(_)
                 | Route::Back(_)
                 | Route::Dialog(_)
+                | Route::Proceed(_)
                 | Route::Answer(_)
         )
     }
@@ -795,6 +798,13 @@ impl Api {
                 "This tab's page shows no dialog to answer.",
             ));
         }
+        if verb == c::VERB_PROCEED && self.rec(tab)?.tab.certificate.is_none() {
+            return Err(Refused::new(
+                409,
+                "no_certificate",
+                "This tab isn't stopped at a certificate Oby read: there is nothing to go on past.",
+            ));
+        }
         Ok(job)
     }
 
@@ -832,6 +842,7 @@ impl Api {
                     computer: c::Computer::this_mac(),
                     ask: None,
                     dialog: None,
+                    certificate: None,
                 },
                 inflight: 0,
                 last_error: None,
@@ -846,6 +857,7 @@ impl Api {
             if et["dialog"] != true {
                 rec.tab.dialog = None;
             }
+            rec.tab.certificate = serde_json::from_value(et["certificate"].clone()).ok();
             rec.tab.state = if et["settling"] == true {
                 c::TabState::TimedOut
             } else if rec.tab.dialog.is_some() || et["dialog"] == true {
@@ -1695,7 +1707,7 @@ async fn person_route(
                 filled: true,
             })
         }
-        Route::Reload(tab) | Route::Back(tab) | Route::Dialog(tab) => {
+        Route::Reload(tab) | Route::Back(tab) | Route::Dialog(tab) | Route::Proceed(tab) => {
             way_out(shared, req, r, &device_id, tab).await
         }
         Route::Answer(id) => match parse::<c::AnswerBody>(&req.body) {
@@ -1731,6 +1743,10 @@ async fn way_out(
                 c::VERB_DIALOG,
                 json!({"accept": b.accept, "promptText": b.prompt_text}),
             ),
+            Err(e) => return refused(e),
+        },
+        Route::Proceed(_) => match parse::<c::ProceedBody>(&req.body) {
+            Ok(b) => (c::VERB_PROCEED, json!({"fingerprint": b.fingerprint})),
             Err(e) => return refused(e),
         },
         _ => unreachable!("a way out"),
