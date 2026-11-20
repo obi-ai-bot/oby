@@ -44,7 +44,7 @@ p256 = { version = "0.13.2", default-features = false, features = ["arithmetic",
 # Ids for jobs and messages.
 uuid = { version = "1.28.0", features = ["v4"] }
 # Process groups for agents and checks: SIGTERM, then SIGKILL, to everything one started.
-nix = { version = "0.31", features = ["signal", "process", "term", "user", "fs", "dir", "resource"] }
+nix = { version = "0.31", features = ["signal", "process", "term", "user", "fs", "dir", "resource", "net"] }
 # A job's agent's nice (PUBLISHING-30): nix has no setpriority, and `unsafe` is denied here.
 # The API connections' small send buffer (BROWSER-14): `net`, for the same reason.
 rustix = { version = "1.1.5", features = ["process", "net"] }
