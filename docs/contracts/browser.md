@@ -47,6 +47,13 @@ The business behavior contract for Oby's browser in obid: the engine that drives
 - A browser that died: its job's next tool starts it again under the allowance; its tabs are gone (`tabClosed`).
 - A job that ends: its token dies, its browser and every process it started stop, its tabs leave the list.
 - obid restarting: browsers left from before are stopped; no tab survives a restart.
+- A Linux computer without the libraries chrome-headless-shell needs: its browser doesn't start, and the tool answers `browser` with Chrome's own words, which obid passes on (driver/chrome_said.rs), such as `error while loading shared libraries: libnspr4.so: cannot open shared object file`. A bare Ubuntu 24.04 lacks 13 of them: libnspr4, libnss3, libnssutil3, libatk-1.0, libatk-bridge-2.0, libXcomposite, libXdamage, libXfixes, libXrandr, libgbm, libxkbcommon, libasound and libatspi (measured on a fresh Ubuntu 24.04 amd64 machine, 2026-11-20). What a person installs on a bare Linux computer (an "other computer" too) before its first browser call, the list the lab proves with `ldd` finding every library:
+
+  ```bash
+  sudo apt-get install --no-install-recommends libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libcairo2 libcups2t64 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 fonts-liberation
+  ```
+
+  macOS needs nothing. obid installs no system package itself.
 
 ## Interfaces and dependencies
 
