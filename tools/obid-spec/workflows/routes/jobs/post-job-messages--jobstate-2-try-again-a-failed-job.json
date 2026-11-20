@@ -1,0 +1,248 @@
+{
+  "schemaVersion": "2",
+  "name": "Try again on a failed job resets its round (JOBSTATE-2)",
+  "version": "1.0.0",
+  "description": "A failed job with a session, its every side field set: Try again's words make it the same job in its next round, every field JOBSTATE-2 lists empty, its account-limit fields gone from its file, and no follow-up.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/messages"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "files": {
+          "jobs/aaaa0002.json": {
+            "id": "aaaa0002",
+            "request": "Look around",
+            "agent": "claude",
+            "account": "stand-in",
+            "repo": "obi-e2e/fixture-app",
+            "branch": "oby/investigate-aaaa0002",
+            "base": "main",
+            "pr": null,
+            "kind": "investigate",
+            "task": "Look around",
+            "title": null,
+            "status": "failed",
+            "step": "",
+            "summary": "",
+            "session": "00000000-0000-4000-8000-000000000001",
+            "created": 1794999600,
+            "started": 1794999700,
+            "finished": 1794999800,
+            "commits": null,
+            "published": null,
+            "pushed": null,
+            "publishError": null,
+            "outgoing": [],
+            "pullRequest": null,
+            "pullRequestError": null,
+            "reviewError": null,
+            "summaries": null,
+            "issue": null,
+            "rounds": null,
+            "round": 2,
+            "check": "node --test",
+            "model": null,
+            "effort": null,
+            "notes": null,
+            "files": null,
+            "limit": "No progress for 3 seconds.",
+            "mode": "bypass",
+            "waiting": {
+              "kind": "slot",
+              "text": "Waiting."
+            },
+            "phase": "work",
+            "recovery": {
+              "errors": 0,
+              "stalls": 0,
+              "tries": 0,
+              "restarts": 0,
+              "limitResumes": 0,
+              "renewed": 0
+            },
+            "dismissed": 1794999900,
+            "obi": null,
+            "unattended": true,
+            "unsigned": true,
+            "archived": 1794999900,
+            "reason": "It broke.",
+            "stoppedBy": "by you",
+            "nextStep": "Try again",
+            "resumesAt": 1795864000,
+            "unjudged": {
+              "tries": 1,
+              "why": "No runner."
+            },
+            "stalled": {
+              "why": "quiet",
+              "text": "No progress.",
+              "at": 1794999800,
+              "round": 2,
+              "branch": "oby/investigate-aaaa0002",
+              "commit": null,
+              "commits": 0,
+              "session": true,
+              "note": "A note.",
+              "noteBy": "obid"
+            },
+            "accountLimitEpisode": "episode",
+            "accountLimitNonce": "nonce",
+            "accountLimitReset": 1795003600,
+            "accountLimitChoice": "resume"
+          }
+        }
+      }
+    },
+    {
+      "id": "before",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/aaaa0002",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "failed",
+            "round": 2,
+            "reason": "It broke.",
+            "nextStep": "Try again",
+            "stoppedBy": "by you",
+            "limit": "No progress for 3 seconds."
+          },
+          "paths": {
+            "finished": {
+              "$type": "string"
+            },
+            "dismissed": {
+              "$type": "string"
+            },
+            "archived": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "jobstate-2-same-job-next-round",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/aaaa0002/messages",
+        "body": {
+          "text": "Try again, picking up where you left off. Finish with a short summary as asked."
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "aaaa0002",
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "round": 3,
+            "finished": null,
+            "dismissed": null,
+            "archived": null,
+            "limit": null,
+            "reason": null,
+            "stoppedBy": null,
+            "nextStep": null,
+            "resumesAt": null,
+            "stalled": null,
+            "waiting": null,
+            "accountLimit": null,
+            "followUpOf": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-2"
+        ]
+      }
+    },
+    {
+      "id": "jobstate-2-its-file-forgets-the-limit",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "jobs/aaaa0002.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "accountLimitEpisode": {
+                "$exists": false
+              },
+              "accountLimitNonce": {
+                "$exists": false
+              },
+              "accountLimitReset": {
+                "$exists": false
+              },
+              "accountLimitChoice": {
+                "$exists": false
+              },
+              "unjudged": {
+                "$exists": false
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-2"
+        ]
+      }
+    },
+    {
+      "id": "jobstate-2-no-follow-up",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 1
+            },
+            "0.id": "aaaa0002"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-2"
+        ]
+      }
+    },
+    {
+      "id": "stop",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/aaaa0002/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    }
+  ]
+}

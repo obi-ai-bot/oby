@@ -56,6 +56,11 @@ export const BROWSER_SWITCHES = { agentsUseBrowser: 'Agents can use the browser'
 export const SAVE_A_COPY = 'Save a copy';
 const BROWSER_SAVE = /^\/v1\/browser\/downloads\/[^/]+\/saveCopy$/;
 
+// Verify, in the dialog that asks whether a member read the owner their key's fingerprint
+// (docs/contracts/obysphere.md, SPHERE-11): trusting a member's key is the owner's alone, as the
+// Confirm card's is (SPHERE-9), so it signs exactly `{fingerprint}` by this button's label.
+export const PIN_VERIFY = 'Verify';
+
 // whether `words` @-name `owner` (a whole word, case aside), as the message box sets a mention apart
 const named = (words: string, owner: string) =>
   /^[a-z0-9-]{1,63}$/.test(owner) && new RegExp(`(?<![\\w@])@${owner}(?![\\w-])`, 'i').test(words);
@@ -65,6 +70,7 @@ const ROOM = /^\/v1\/spheres\/[^/]+\/room$/;
 const PEER_ASK = /^\/v1\/obid\/sphere\/peers\/[^/]+\/ask$/;
 const VAULT = /^\/v1\/obid\/vault\/[^/]+$/;
 const PERMISSION = /^\/v1\/jobs\/[^/]+\/permission$/;
+const PIN = /^\/v1\/obid\/sphere\/pins\/[^/]+$/;
 
 // The words a request carries, for the requests the app sends obid with the owner's words in
 // them; null for any other request, or any other shape (main never signs it). A key the app
@@ -121,6 +127,8 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
   if (method === 'POST' && ROOM.test(p)) return text(body.text) && shaped(body, { text }) ? [body.text as string] : null;
   // the owner's question from a member's thread: its words alone (the path says to whom)
   if (method === 'POST' && PEER_ASK.test(p)) return text(body.text) && shaped(body, { text }) ? [body.text as string] : null;
+  // a member's key the owner compared: the fingerprint alone (the path says whose), by Verify
+  if (method === 'POST' && PIN.test(p)) return text(body.fingerprint) && shaped(body, { fingerprint: text }) ? [PIN_VERIFY] : null;
   // the yes alone: a no needs no signature (obid keeps it either way)
   if (method === 'POST' && /^\/v1\/accounts\/[^/]+\/background$/.test(p)) return body.given === true && shaped(body, { given: flag }) ? [BACKGROUND_YES] : null;
   if (method === 'PATCH' && /^\/v1\/jobs\/[^/]+$/.test(p)) return text(body.title) && shaped(body, { title: text }) ? [body.title] : null;

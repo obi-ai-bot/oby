@@ -1,0 +1,236 @@
+{
+  "schemaVersion": "2",
+  "name": "How a run that didn't end done ends (JOBSTATE-3, TASKS-29)",
+  "version": "1.0.0",
+  "description": "A run that failed with a session ends interrupted with Try again, its reason set, finished, an empty step and its conversation told it stopped; one that failed before it had a session ends failed, its summary the reason, with no next step.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        },
+        "config": {
+          "stallAfter": 3
+        }
+      }
+    },
+    {
+      "id": "i",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "DIE ALWAYS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "jobstate-3-failed-with-a-session-is-interrupted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.i.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "nextStep": "Try again",
+            "step": ""
+          },
+          "paths": {
+            "reason": {
+              "$contains": "stopped without finishing"
+            },
+            "finished": {
+              "$type": "string"
+            },
+            "session": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-3"
+        ]
+      }
+    },
+    {
+      "id": "tasks-29-its-conversation-hears-it-stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.i.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "oby",
+                "text": {
+                  "$matches": "^DIE ALWAYS stopped: "
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-29"
+        ]
+      }
+    },
+    {
+      "id": "tasks-29-never-that-it-needs-you",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.i.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "who": "oby",
+                "text": {
+                  "$contains": "needs you"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-29"
+        ]
+      }
+    },
+    {
+      "id": "g",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "g",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        },
+        "config": {
+          "repos": [
+            {
+              "repo": "obi-e2e/gone",
+              "remote": "file:///nonexistent/obid-spec/gone",
+              "defaultBranch": "main",
+              "check": "node --test",
+              "pullRequests": false
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "f",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.g}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/gone",
+            "kind": "build",
+            "task": "Add a.txt"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "f-ended",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.g}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.f.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "failed"
+          }
+        }
+      }
+    },
+    {
+      "id": "jobstate-3-failed-with-no-session-is-failed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.g}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.f.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "failed",
+            "session": null,
+            "nextStep": null,
+            "resumesAt": null,
+            "step": "",
+            "summary": "${state.f-ended.body.reason}"
+          },
+          "paths": {
+            "reason": {
+              "$contains": "Couldn't get obi-e2e/gone ready"
+            },
+            "finished": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-3"
+        ]
+      }
+    }
+  ]
+}

@@ -8,6 +8,7 @@ import { chooseTalk, lookAtUsage, useTalkSetting, type Chat } from './chats';
 import { AUTO, MENU_WIDTH, PILL_TOOL_NAME, accountModels, chosenOf, dot, hasModelSearch, list, menuModels, modelChoice, modelMenuPlace, modelUsage, percent, rowTitle, shownAccount, toolName, usageLines } from './talk';
 import { agentOf, type Agent } from './view';
 import { isAgent } from '../../shared/obid-wire';
+import { composing } from './shortcuts';
 
 // Claude's mark in its own colour; OpenAI's and Cursor's are one colour, drawn in the text's (a tool
 // this build doesn't know: agentOf's, gray with its letter, docs/contracts/providers.md)
@@ -179,7 +180,7 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
             onKeyDown={(e) => move(e, e.currentTarget, true)}>
             {sub.search && <input ref={searching} type="search" className="model-search" role="searchbox" aria-label="Search models" placeholder="Search models" value={sub.query} spellCheck={false} autoComplete="off"
               onChange={(e) => setSub({ ...sub, query: e.target.value })}
-              onKeyDown={(e) => { if (e.key === 'Enter' && shown[0]) { e.preventDefault(); void pick(subAccount.id, shown[0].id); } }} />}
+              onKeyDown={(e) => { if (composing(e)) return; if (e.key === 'Enter' && shown[0]) { e.preventDefault(); void pick(subAccount.id, shown[0].id); } }} />}
             <span className="model-list">
               {shown.length ? shown.map((m) => <button key={m.id} className="model-row" role="menuitemradio" aria-checked={m.on} title={m.name} disabled={saving} onClick={() => void pick(subAccount.id, m.id)}>
                 <span className="model-name">{m.name}</span>{m.on && <Check size={14} strokeWidth={1.8} className="menu-check" />}

@@ -1,0 +1,312 @@
+{
+  "schemaVersion": "2",
+  "name": "AGENTS-4: the account new tasks go to is validated, kept and cleared",
+  "version": "1.0.0",
+  "description": "`PUT /v1/settings/jobs` takes `defaultAccount`: an id obid doesn't have, or one that isn't a string, is 422 and keeps nothing; one it has is kept with the rest as it was, said by GET /v1/settings/jobs and /v1/status, and across a restart; null unsets it, and removing the account unsets it and takes its model and efforts with it (AGENTS-5).",
+  "trigger": {
+    "http": {
+      "method": "PUT",
+      "path": "/v1/settings/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "agents-4-unset-it-is-null",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "body": {
+            "defaultAccount": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-4"
+        ]
+      }
+    },
+    {
+      "id": "agents-4-an-account-obid-doesnt-have-is-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "defaultAccount": "nobody"
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-4"
+        ]
+      }
+    },
+    {
+      "id": "agents-4-not-an-id-is-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "defaultAccount": 1
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-4"
+        ]
+      }
+    },
+    {
+      "id": "agents-4-a-refused-one-kept-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/jobs",
+        "expect": {
+          "status": 200,
+          "body": {
+            "defaultAccount": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-4"
+        ]
+      }
+    },
+    {
+      "id": "agents-4-set-with-the-rest-as-it-was",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "defaultAccount": "stand-in"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "defaultAccount": "stand-in",
+            "limits": {
+              "rounds": 10
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-4"
+        ]
+      }
+    },
+    {
+      "id": "agents-4-get-says-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/jobs",
+        "expect": {
+          "status": 200,
+          "body": {
+            "defaultAccount": "stand-in"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-4"
+        ]
+      }
+    },
+    {
+      "id": "down",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "agents-4-kept-across-a-restart",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "body": {
+            "defaultAccount": "stand-in"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-4"
+        ]
+      }
+    },
+    {
+      "id": "agents-4-null-unsets-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "defaultAccount": null
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "defaultAccount": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-4"
+        ]
+      }
+    },
+    {
+      "id": "added",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex",
+          "name": "Work"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "set-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "defaultAccount": "${state.added.body.id}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "defaultAccount": "${state.added.body.id}"
+          }
+        }
+      }
+    },
+    {
+      "id": "tuned",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "PATCH",
+        "path": "/v1/accounts/${state.added.body.id}",
+        "body": {
+          "effort": "high"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "effort": "high"
+          }
+        }
+      }
+    },
+    {
+      "id": "removed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "DELETE",
+        "path": "/v1/accounts/${state.added.body.id}",
+        "expect": {
+          "status": 204
+        }
+      }
+    },
+    {
+      "id": "agents-4-removing-the-account-unsets-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "body": {
+            "defaultAccount": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-4"
+        ]
+      }
+    },
+    {
+      "id": "agents-5-its-settings-went-with-it",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.again}",
+        "path": "settings.json",
+        "expect": {
+          "text": {
+            "$not": {
+              "$contains": "${state.added.body.id}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-5"
+        ]
+      }
+    }
+  ]
+}

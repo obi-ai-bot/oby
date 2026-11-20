@@ -1,0 +1,106 @@
+{
+  "schemaVersion": "2",
+  "name": "AGENTS-8: the models and efforts on offer",
+  "version": "1.0.0",
+  "description": "`GET /v1/settings/models/options` lists each tool's models with their efforts (Claude Code's five, Codex's four, Cursor none), and `GET /v1/settings/models` answers the tools' own, as status.models has them.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/settings/models/options"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "agents-8-each-tools-choices",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/models/options",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "claude.models": {
+              "$any": {
+                "id": "claude-opus-5-5"
+              }
+            },
+            "claude.efforts": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "claude.complexEfforts": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "codex.models.0.efforts": [
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "cursor.efforts": [],
+            "claude.groups": {
+              "$exists": false
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-8"
+        ]
+      }
+    },
+    {
+      "id": "st",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "models": {
+              "$type": "object"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "agents-8-the-tools-own-as-status-has-them",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/models",
+        "expect": {
+          "status": 200,
+          "body": "${state.st.body.models}"
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-8"
+        ]
+      }
+    }
+  ]
+}

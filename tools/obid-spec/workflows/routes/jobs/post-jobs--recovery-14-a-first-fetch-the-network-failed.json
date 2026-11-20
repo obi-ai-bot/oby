@@ -1,0 +1,264 @@
+{
+  "schemaVersion": "2",
+  "name": "A first clone the network failed waits and tries again (RECOVERY-14)",
+  "version": "1.0.0",
+  "description": "A job whose first clone fails on a host that doesn't resolve stays queued, its step saying when it tries again (never longer than stallAfter), 3 tries, then fails with git's real words; Stop while it waits ends it there.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        },
+        "config": {
+          "repos": [
+            {
+              "repo": "obi-e2e/offline",
+              "remote": "https://obid-spec-offline.invalid/offline.git",
+              "defaultBranch": "main",
+              "check": "node --test",
+              "pullRequests": false
+            }
+          ],
+          "stallAfter": 3
+        }
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "f",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/offline",
+            "kind": "build",
+            "task": "Add a.txt"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "recovery-14-waits-queued",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "job",
+        "seconds": 60,
+        "expect": {
+          "paths": {
+            "id": "${state.f.body.id}",
+            "status": "queued",
+            "step": {
+              "$matches": "^Trying again in 3 seconds \\(1 of 3\\)"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-14"
+        ]
+      }
+    },
+    {
+      "id": "recovery-14-the-error-from-the-third",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "job",
+        "seconds": 60,
+        "expect": {
+          "paths": {
+            "id": "${state.f.body.id}",
+            "status": "queued",
+            "step": {
+              "$matches": "(?s)^Trying again in 3 seconds \\(3 of 3\\): Couldn't get obi-e2e/offline ready: "
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-14"
+        ]
+      }
+    },
+    {
+      "id": "recovery-14-trying-while-it-fetches",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "job",
+        "seconds": 60,
+        "expect": {
+          "paths": {
+            "id": "${state.f.body.id}",
+            "step": {
+              "$matches": "^Trying again \\([123] of 3\\)"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-14"
+        ]
+      }
+    },
+    {
+      "id": "recovery-14-then-the-real-reason",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.f.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "failed",
+            "session": null
+          },
+          "paths": {
+            "reason": {
+              "$matches": "(?i)resolve"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-14"
+        ]
+      }
+    },
+    {
+      "id": "p",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "p",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        },
+        "config": {
+          "repos": [
+            {
+              "repo": "obi-e2e/offline",
+              "remote": "https://obid-spec-offline.invalid/offline.git",
+              "defaultBranch": "main",
+              "check": "node --test",
+              "pullRequests": false
+            }
+          ],
+          "stallAfter": 600
+        }
+      }
+    },
+    {
+      "id": "g",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.p}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/offline",
+            "kind": "build",
+            "task": "Add a.txt"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "g-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.p}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.g.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "queued"
+          },
+          "paths": {
+            "step": {
+              "$matches": "^Trying again in 30 seconds \\(1 of 3\\)"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "recovery-14-stop-ends-the-wait",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.p}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.g.body.id}/stop",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "stopped"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-14"
+        ]
+      }
+    },
+    {
+      "id": "recovery-14-it-stays-stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.p}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.g.body.id}",
+        "within": 40,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "stopped"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-14"
+        ]
+      }
+    }
+  ]
+}

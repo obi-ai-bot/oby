@@ -1,0 +1,277 @@
+{
+  "schemaVersion": "2",
+  "name": "A session too long goes on in a new one, once (RECOVERY-8)",
+  "version": "1.0.0",
+  "description": "A session too long for its model goes on in a new session told so with all its first message said, not resumed; too long there too, it ends interrupted with the tool's words and Try again, which starts a new one again.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        },
+        "config": {
+          "stallAfter": 3
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "once",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "TOO LONG KEEP PROMPTS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "recovery-8-a-new-session-and-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.once.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-8"
+        ]
+      }
+    },
+    {
+      "id": "recovery-8-two-prompts",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.once.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){2}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-8"
+        ]
+      }
+    },
+    {
+      "id": "recovery-8-told-of-the-new-one-with-its-task",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.once.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)<<<end of prompt>>>.*not the owner's words.*new one.*What the user asked for: TOO LONG"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-8"
+        ]
+      }
+    },
+    {
+      "id": "recovery-8-not-resumed",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.once.body.id}/.obi/args.log",
+        "expect": {
+          "text": {
+            "$not": {
+              "$contains": "--resume"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-8"
+        ]
+      }
+    },
+    {
+      "id": "always",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "TOO LONG ALWAYS KEEP PROMPTS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "recovery-8-too-long-again-tells-the-owner",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.always.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "nextStep": "Try again"
+          },
+          "paths": {
+            "reason": {
+              "$matches": "^Prompt is too long"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-8"
+        ]
+      }
+    },
+    {
+      "id": "recovery-8-once-until-the-owner",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.always.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){2}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-8"
+        ]
+      }
+    },
+    {
+      "id": "try-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.always.body.id}/messages",
+        "body": {
+          "text": "Try again, picking up where you left off. Finish with a short summary as asked."
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "ends-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.always.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted"
+          },
+          "paths": {
+            "finished": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "recovery-8-the-owners-words-give-one-more",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.always.body.id}/.obi/prompts.log",
+        "within": 5,
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){4}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-8"
+        ]
+      }
+    }
+  ]
+}

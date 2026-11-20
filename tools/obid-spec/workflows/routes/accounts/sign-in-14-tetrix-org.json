@@ -1,0 +1,161 @@
+{
+  "schemaVersion": "2",
+  "name": "SIGN-IN-14: a Tetrix address may name its organization",
+  "version": "1.0.0",
+  "description": "A Tetrix address ending in `?org=<uuid>`, in either case, is an address Oby uses (it goes on to look for the sign-in: 502 `noSignIn` where nothing answers); any other query, a malformed or cut id, or anything after it is 422 `badAddress`. (The calls going there with the id need a Tetrix stand-in: proven by obid's own tests.)",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/tetrix/sign-in"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "sign-in-14-an-org-id-in-capitals-is-an-address",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/tetrix/sign-in",
+        "body": {
+          "url": "http://127.0.0.1:9/mcp?org=6F9619FF-8B86-D011-B42D-00C04FC964FF"
+        },
+        "expect": {
+          "status": 502,
+          "body": {
+            "reason": "noSignIn"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SIGN-IN-14"
+        ]
+      }
+    },
+    {
+      "id": "sign-in-14-an-org-id-in-lower-case-is-an-address",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/tetrix/sign-in",
+        "body": {
+          "url": "http://127.0.0.1:9/mcp?org=6f9619ff-8b86-d011-b42d-00c04fc964ff"
+        },
+        "expect": {
+          "status": 502,
+          "body": {
+            "reason": "noSignIn"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SIGN-IN-14"
+        ]
+      }
+    },
+    {
+      "id": "sign-in-14-a-malformed-id-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/tetrix/sign-in",
+        "body": {
+          "url": "http://127.0.0.1:9/mcp?org=not-a-uuid"
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "reason": "badAddress"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SIGN-IN-14"
+        ]
+      }
+    },
+    {
+      "id": "sign-in-14-anything-after-it-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/tetrix/sign-in",
+        "body": {
+          "url": "http://127.0.0.1:9/mcp?org=6f9619ff-8b86-d011-b42d-00c04fc964ff&x=1"
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "reason": "badAddress"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SIGN-IN-14"
+        ]
+      }
+    },
+    {
+      "id": "sign-in-14-another-query-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/tetrix/sign-in",
+        "body": {
+          "url": "http://127.0.0.1:9/mcp?team=6f9619ff-8b86-d011-b42d-00c04fc964ff"
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "reason": "badAddress"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SIGN-IN-14"
+        ]
+      }
+    },
+    {
+      "id": "sign-in-14-an-id-cut-short-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/tetrix/sign-in",
+        "body": {
+          "url": "http://127.0.0.1:9/mcp?org=6f9619ff-8b86-d011-b42d-00c04fc964f"
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "reason": "badAddress"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SIGN-IN-14"
+        ]
+      }
+    }
+  ]
+}

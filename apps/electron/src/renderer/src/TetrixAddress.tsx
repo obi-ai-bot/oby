@@ -1,6 +1,7 @@
 import { useId, useState } from 'react';
 import { connectTetrix } from './onboarding';
 import { TETRIX_URL_PLACEHOLDER, tetrixUrl } from './tetrixUrl';
+import { composing } from './shortcuts';
 
 // The field for the address of the person's own Tetrix (TETRIX-URL-1 to 3), under the first run's
 // Tetrix row and in Settings › Connectors' Connect Tetrix: Oby offers no Tetrix by name. What they
@@ -25,7 +26,7 @@ export function TetrixAddress({ text, setText, problem, connect, seen, autoFocus
   const why = useId();
   return <>
     <input className="modal-field setup-field" value={text} onChange={(e) => setText(e.target.value)} onBlur={() => { if (text.trim()) seen(); }}
-      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); connect(); } }}
+      onKeyDown={(e) => { if (!composing(e) && e.key === 'Enter') { e.preventDefault(); connect(); } }}
       type="url" inputMode="url" placeholder={TETRIX_URL_PLACEHOLDER} aria-label="Your Tetrix URL" aria-invalid={!!problem} aria-describedby={problem ? why : undefined}
       autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} autoFocus={autoFocus} />
     {problem && <span id={why} className="wl-sub is-problem" role="alert">{problem}</span>}

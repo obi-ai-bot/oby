@@ -1,0 +1,68 @@
+{
+  "schemaVersion": "2",
+  "name": "CLIVERSIONS-5: a Claude Code run has its self-update off",
+  "version": "1.0.0",
+  "description": "A Claude Code job's run has DISABLE_AUTOUPDATER=1 in its environment (the stand-in says what it got).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "j",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "agent": "claude",
+            "task": "SHOW_ENV"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "cliversions-5-a-claude-code-run-has-self-update-off",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 240,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "summary": {
+              "$contains": "DISABLE_AUTOUPDATER=1"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLIVERSIONS-5"
+        ]
+      }
+    }
+  ]
+}

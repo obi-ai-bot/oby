@@ -1,0 +1,145 @@
+{
+  "schemaVersion": "2",
+  "name": "A check failing the same way two rounds running stops (RECOVERY-9)",
+  "version": "1.0.0",
+  "description": "A committing job with a check and no rounds named reads 8 and stops at a limit with One more round as soon as its check fails the same way two rounds running, each failed run carrying the same signature; One more round runs exactly one more when it repeats.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "f",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: a.txt",
+            "check": "echo the check failed; false"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "recovery-9-stops-after-two-rounds",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.f.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "nextStep": "One more round",
+            "round": 2,
+            "rounds": 8,
+            "reason": "Stopped at a limit: `echo the check failed; false` still fails after 2 round(s). The branch is kept and nothing was pushed."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-9"
+        ]
+      }
+    },
+    {
+      "id": "recovery-9-the-same-signature-twice",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.f.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "checks": {
+              "$len": 2
+            },
+            "checks.0.signature": {
+              "$type": "string"
+            },
+            "checks.1.signature": "${state.recovery-9-stops-after-two-rounds.body.checks.0.signature}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-9"
+        ]
+      }
+    },
+    {
+      "id": "one-more",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.f.body.id}/messages",
+        "body": {
+          "text": "Try again, picking up where you left off. Finish with a short summary as asked."
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "round": 3
+          }
+        }
+      }
+    },
+    {
+      "id": "recovery-9-one-more-round-runs-exactly-one",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.f.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "round": 3,
+            "rounds": 8,
+            "nextStep": "One more round",
+            "limit": "`echo the check failed; false` still fails after 3 round(s)"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-9"
+        ]
+      }
+    }
+  ]
+}
