@@ -2,7 +2,7 @@
   "schemaVersion": "2",
   "name": "T3 conversations: a conversation deleted while its turn runs",
   "version": "1.0.0",
-  "description": "T3 Code's lifecycle fixes (archiving or deleting a thread didn't cancel its run, which then wrote it back): a conversation deleted while its turn runs stays deleted: the turn's request still answers, with its conversation, and so does the request of words waiting behind it (none: expected red, #2648), Oby's words aren't kept, nothing is written back, and words to it are refused; another conversation goes on (docs/api/conversations.md).",
+  "description": "T3 Code's lifecycle fixes (archiving or deleting a thread didn't cancel its run, which then wrote it back): a conversation deleted while its turn runs stays deleted: the turn's request still answers, with its conversation, and so does the request of words waiting behind it (none, DELIVERY-11), Oby's words aren't kept, nothing is written back, and words to it are refused; another conversation goes on (docs/api/conversations.md).",
   "tags": [
     "t3"
   ],
@@ -183,7 +183,9 @@
         }
       },
       "ui": {
-        "expectedRed": "#2648: deleting a conversation leaves the words waiting behind its turn unanswered forever"
+        "proves": [
+          "DELIVERY-11"
+        ]
       }
     },
     {
