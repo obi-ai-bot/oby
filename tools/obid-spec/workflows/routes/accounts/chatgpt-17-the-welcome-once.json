@@ -1,0 +1,122 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-17: obid keeps that the welcome was shown",
+  "version": "1.0.0",
+  "description": "`GET /v1/settings/chatgpt` says `welcomed` false until `PUT {\"welcomed\": true}` (anything but a boolean is 422), and true after a restart: the welcome shows once, whatever the app's own storage holds.",
+  "trigger": {
+    "http": {
+      "method": "PUT",
+      "path": "/v1/settings/chatgpt"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "chatgpt-17-not-yet-welcomed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/chatgpt",
+        "expect": {
+          "status": 200,
+          "body": {
+            "welcomed": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-17"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-17-not-a-yes-or-no-is-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/chatgpt",
+        "body": {
+          "welcomed": "yes"
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-17"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-17-welcomed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/chatgpt",
+        "body": {
+          "welcomed": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "welcomed": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-17"
+        ]
+      }
+    },
+    {
+      "id": "down",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "chatgpt-17-shown-once-across-a-restart",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/settings/chatgpt",
+        "expect": {
+          "status": 200,
+          "body": {
+            "welcomed": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-17"
+        ]
+      }
+    }
+  ]
+}

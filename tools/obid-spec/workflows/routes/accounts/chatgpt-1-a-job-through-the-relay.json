@@ -1,0 +1,205 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-1: a job on a ChatGPT login runs through obid's relay",
+  "version": "1.0.0",
+  "description": "A job the owner's app signed on a ChatGPT login runs Codex through obid's relay to the stand-in OpenAI, which sees the access token on POST /v1/responses; it ends done with the model's words, on the first model the account lists.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "ai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": []
+            }
+          }
+        },
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.ai.origin}"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "in-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "body": {
+            "userCode": null,
+            "pasteCode": false,
+            "url": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "in-consent",
+      "use": "runtime.rust:accounts.openai-consent",
+      "inputs": {
+        "url": "${state.in-page.body.url}",
+        "visit": true
+      }
+    },
+    {
+      "id": "in-back",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.in-consent.status}",
+        "expect": {
+          "paths": {
+            "$": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "in-settled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                },
+                "login": "chatgpt"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "j",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "agent": "codex",
+            "account": "${state.a.body.id}",
+            "task": "RELAY"
+          }
+        },
+        "as": "device",
+        "within": 10,
+        "expect": {
+          "status": 201,
+          "body": {
+            "waiting": null
+          }
+        },
+        "device": "${state.device}"
+      }
+    },
+    {
+      "id": "chatgpt-1-a-job-runs-through-the-relay-on-the-accounts-own-model",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "summary": {
+              "$contains": "From the stand-in."
+            },
+            "model": "gpt-stand-in"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-1"
+        ]
+      }
+    },
+    {
+      "id": "saw",
+      "use": "runtime.rust:accounts.openai-seen",
+      "inputs": {}
+    },
+    {
+      "id": "chatgpt-1-openai-sees-the-access-token-on-responses",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.saw.bearers}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$any": {
+                "token": "${state.saw.tokens.0}",
+                "method": "POST",
+                "path": "/v1/responses"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-1"
+        ]
+      }
+    }
+  ]
+}

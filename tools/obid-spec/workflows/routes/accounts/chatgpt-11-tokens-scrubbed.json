@@ -1,0 +1,273 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-11: every ChatGPT token is taken out of every answer",
+  "version": "1.0.0",
+  "description": "Each token of the login, sent back as an account's payer (the one thing an answer repeats as given), comes back as `[vault: oby.chatgpt.<id>]`, before and after a restart; and before that, no file under the scratch obid's folder but the vault held one.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/accounts"
+    }
+  },
+  "steps": [
+    {
+      "id": "ai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": []
+            }
+          }
+        },
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.ai.origin}"
+        }
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "in-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "body": {
+            "userCode": null,
+            "pasteCode": false,
+            "url": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "in-consent",
+      "use": "runtime.rust:accounts.openai-consent",
+      "inputs": {
+        "url": "${state.in-page.body.url}",
+        "visit": true
+      }
+    },
+    {
+      "id": "in-back",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.in-consent.status}",
+        "expect": {
+          "paths": {
+            "$": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "in-settled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                },
+                "login": "chatgpt"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "saw",
+      "use": "runtime.rust:accounts.openai-seen",
+      "inputs": {}
+    },
+    {
+      "id": "scan",
+      "use": "runtime.rust:accounts.scan",
+      "inputs": {
+        "obid": "${state.o}",
+        "openai": "openai"
+      }
+    },
+    {
+      "id": "chatgpt-11-in-no-file-but-the-vault",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.scan.found}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$len": 2
+            },
+            "0.path": "home/vault/secrets.json",
+            "1.path": "home/vault/secrets.json"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-11"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-11-token-1-is-taken-out-of-an-answer",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex",
+          "payer": "${state.saw.tokens.0}"
+        },
+        "expect": {
+          "status": 201,
+          "text": {
+            "$contains": "[vault: oby.chatgpt."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-11"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-11-token-2-is-taken-out-of-an-answer",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex",
+          "payer": "${state.saw.tokens.1}"
+        },
+        "expect": {
+          "status": 201,
+          "text": {
+            "$contains": "[vault: oby.chatgpt."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-11"
+        ]
+      }
+    },
+    {
+      "id": "down",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": []
+            }
+          }
+        },
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.ai.origin}"
+        }
+      }
+    },
+    {
+      "id": "chatgpt-11-token-1-after-a-restart",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex",
+          "payer": "${state.saw.tokens.0}"
+        },
+        "expect": {
+          "status": 201,
+          "text": {
+            "$contains": "[vault: oby.chatgpt."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-11"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-11-token-2-after-a-restart",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex",
+          "payer": "${state.saw.tokens.1}"
+        },
+        "expect": {
+          "status": 201,
+          "text": {
+            "$contains": "[vault: oby.chatgpt."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-11"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,677 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-4: a callback that isn't this sign-in's keeps no tokens",
+  "version": "1.0.0",
+  "description": "A callback with another Host, another state or none is refused (400) and the sign-in goes on; the real one works once, and there's no second. An id token with a forged signature or another audience ends the sign-in with no login kept, the row saying it couldn't be verified within one poll; consent denied says so, and nothing goes to the token endpoint.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/accounts/{id}/sign-in"
+    }
+  },
+  "steps": [
+    {
+      "id": "ai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": []
+            }
+          }
+        },
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.ai.origin}"
+        }
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "body": {
+            "userCode": null,
+            "pasteCode": false,
+            "url": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "back",
+      "use": "runtime.rust:accounts.openai-consent",
+      "inputs": {
+        "url": "${state.page.body.url}",
+        "visit": false
+      }
+    },
+    {
+      "id": "chatgpt-4-another-host-400",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.back.location}",
+        "host": "evil.example"
+      }
+    },
+    {
+      "id": "chatgpt-4-a-rebound-page-is-refused",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.chatgpt-4-another-host-400.status}",
+        "expect": {
+          "paths": {
+            "$": 400
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "wrong-state",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.back.location}",
+        "query": {
+          "state": "not-this-sign-ins"
+        }
+      }
+    },
+    {
+      "id": "chatgpt-4-another-state-is-refused",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.wrong-state.status}",
+        "expect": {
+          "paths": {
+            "$": 400
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "no-query",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.back.location}",
+        "query": {
+          "state": "",
+          "code": "",
+          "scope": "",
+          "client_id": "",
+          "iss": ""
+        }
+      }
+    },
+    {
+      "id": "chatgpt-4-none-is-refused",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.no-query.status}",
+        "expect": {
+          "paths": {
+            "$": 400
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-4-and-the-sign-in-goes-on",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": true,
+                "label": null
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "real",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.back.location}"
+      }
+    },
+    {
+      "id": "chatgpt-4-the-real-one-still-works",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.real.status}",
+        "expect": {
+          "paths": {
+            "$": 200
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "a-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                },
+                "login": "chatgpt",
+                "signedIn": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.back.location}"
+      }
+    },
+    {
+      "id": "chatgpt-4-no-second-callback",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.again.status}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$ne": 200
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "bad-signature",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "bad-signature-script",
+      "use": "runtime.rust:accounts.openai-script",
+      "inputs": {
+        "set": {
+          "forged": true
+        }
+      }
+    },
+    {
+      "id": "bad-signature-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.bad-signature.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "body": {
+            "userCode": null,
+            "pasteCode": false,
+            "url": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "bad-signature-back",
+      "use": "runtime.rust:accounts.openai-consent",
+      "inputs": {
+        "url": "${state.bad-signature-page.body.url}",
+        "visit": true
+      }
+    },
+    {
+      "id": "chatgpt-4-a-bad-signature-is-refused",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.bad-signature-back.status}",
+        "expect": {
+          "paths": {
+            "$": 400
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-4-a-bad-signature-shows-on-the-row",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 5,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.bad-signature.body.id}",
+                "signingIn": {
+                  "$exists": false
+                },
+                "signedIn": false,
+                "login": {
+                  "$exists": false
+                },
+                "label": {
+                  "$contains": "verified"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "bad-signature-after",
+      "use": "runtime.rust:accounts.openai-seen",
+      "inputs": {}
+    },
+    {
+      "id": "chatgpt-4-a-bad-signature-its-tokens-are-revoked",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.bad-signature-after.revoked}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "bad-signature-undo",
+      "use": "runtime.rust:accounts.openai-script",
+      "inputs": {
+        "set": {
+          "forged": false,
+          "wrongAud": false
+        }
+      }
+    },
+    {
+      "id": "bad-audience",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "bad-audience-script",
+      "use": "runtime.rust:accounts.openai-script",
+      "inputs": {
+        "set": {
+          "wrongAud": true
+        }
+      }
+    },
+    {
+      "id": "bad-audience-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.bad-audience.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "body": {
+            "userCode": null,
+            "pasteCode": false,
+            "url": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "bad-audience-back",
+      "use": "runtime.rust:accounts.openai-consent",
+      "inputs": {
+        "url": "${state.bad-audience-page.body.url}",
+        "visit": true
+      }
+    },
+    {
+      "id": "chatgpt-4-a-bad-audience-is-refused",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.bad-audience-back.status}",
+        "expect": {
+          "paths": {
+            "$": 400
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-4-a-bad-audience-shows-on-the-row",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 5,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.bad-audience.body.id}",
+                "signingIn": {
+                  "$exists": false
+                },
+                "signedIn": false,
+                "login": {
+                  "$exists": false
+                },
+                "label": {
+                  "$contains": "verified"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "bad-audience-after",
+      "use": "runtime.rust:accounts.openai-seen",
+      "inputs": {}
+    },
+    {
+      "id": "chatgpt-4-a-bad-audience-its-tokens-are-revoked",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.bad-audience-after.revoked}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$len": 2
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "bad-audience-undo",
+      "use": "runtime.rust:accounts.openai-script",
+      "inputs": {
+        "set": {
+          "forged": false,
+          "wrongAud": false
+        }
+      }
+    },
+    {
+      "id": "denied",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "use": "runtime.rust:accounts.openai-script",
+      "inputs": {
+        "set": {
+          "deny": true
+        }
+      }
+    },
+    {
+      "id": "deny-before",
+      "use": "runtime.rust:accounts.openai-seen",
+      "inputs": {}
+    },
+    {
+      "id": "deny-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.denied.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "body": {
+            "userCode": null,
+            "pasteCode": false,
+            "url": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "deny-back",
+      "use": "runtime.rust:accounts.openai-consent",
+      "inputs": {
+        "url": "${state.deny-page.body.url}",
+        "visit": true
+      }
+    },
+    {
+      "id": "chatgpt-4-consent-denied-is-refused",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.deny-back.status}",
+        "expect": {
+          "paths": {
+            "$": 400
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-4-the-row-says-it-wasnt-allowed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 5,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.denied.body.id}",
+                "signingIn": {
+                  "$exists": false
+                },
+                "label": {
+                  "$contains": "wasn't allowed"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "deny-after",
+      "use": "runtime.rust:accounts.openai-seen",
+      "inputs": {}
+    },
+    {
+      "id": "chatgpt-4-nothing-went-to-the-token-endpoint",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.deny-after.tokens}",
+        "expect": {
+          "paths": {
+            "$": "${state.deny-before.tokens}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "undeny",
+      "use": "runtime.rust:accounts.openai-script",
+      "inputs": {
+        "set": {
+          "deny": false
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,489 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-5: another person, or a client already taken, replaces nothing",
+  "version": "1.0.0",
+  "description": "Signing an account in again as another `sub` is refused, says it's a different ChatGPT login, and leaves the first login's tokens in the vault; signing in again uses the saved client with the person's email as a hint, never a first registration. A client already on another account replaces nothing; the same person under a new client is a separate account, and both stay.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/accounts/{id}/sign-in"
+    }
+  },
+  "steps": [
+    {
+      "id": "ai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": []
+            }
+          }
+        },
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.ai.origin}"
+        }
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "in-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "body": {
+            "userCode": null,
+            "pasteCode": false,
+            "url": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "in-consent",
+      "use": "runtime.rust:accounts.openai-consent",
+      "inputs": {
+        "url": "${state.in-page.body.url}",
+        "visit": true
+      }
+    },
+    {
+      "id": "in-back",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.in-consent.status}",
+        "expect": {
+          "paths": {
+            "$": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "in-settled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                },
+                "login": "chatgpt"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "held",
+      "use": "runtime.rust:accounts.openai-seen",
+      "inputs": {}
+    },
+    {
+      "id": "another-person",
+      "use": "runtime.rust:accounts.openai-script",
+      "inputs": {
+        "set": {
+          "sub": "stand-in-sub-2"
+        }
+      }
+    },
+    {
+      "id": "page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "body": {
+            "userCode": null,
+            "pasteCode": false,
+            "url": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "back",
+      "use": "runtime.rust:accounts.openai-consent",
+      "inputs": {
+        "url": "${state.page.body.url}",
+        "visit": true
+      }
+    },
+    {
+      "id": "refused",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.back.status}",
+        "expect": {
+          "paths": {
+            "$": 400
+          }
+        }
+      }
+    },
+    {
+      "id": "chatgpt-5-a-different-person-replaces-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 5,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                },
+                "label": {
+                  "$contains": "different ChatGPT login"
+                },
+                "login": "chatgpt"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-5"
+        ]
+      }
+    },
+    {
+      "id": "saw",
+      "use": "runtime.rust:accounts.openai-seen",
+      "inputs": {}
+    },
+    {
+      "id": "chatgpt-5-signing-in-again-uses-the-saved-client",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.saw.authorized.1}",
+        "expect": {
+          "paths": {
+            "client_id": {
+              "$ne": "dynamic_agent_client"
+            },
+            "agent_name_hint": {
+              "$exists": false
+            },
+            "login_hint": "person@example.com",
+            "ext_agent_host_id": "${state.saw.authorized.0.ext_agent_host_id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-5"
+        ]
+      }
+    },
+    {
+      "id": "scan",
+      "use": "runtime.rust:accounts.scan",
+      "inputs": {
+        "obid": "${state.o}",
+        "secrets": [
+          "${state.held.tokens.0}",
+          "${state.held.tokens.1}"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-5-the-first-logins-tokens-are-still-in-the-vault",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.scan.found}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$len": 2
+            },
+            "0.path": "home/vault/secrets.json",
+            "1.path": "home/vault/secrets.json"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-5"
+        ]
+      }
+    },
+    {
+      "id": "same-person-taken-client",
+      "use": "runtime.rust:accounts.openai-script",
+      "inputs": {
+        "set": {
+          "sub": "stand-in-sub-1",
+          "callbackClient": "${state.saw.authorized.1.client_id}"
+        }
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "page2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.b.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "body": {
+            "userCode": null,
+            "pasteCode": false,
+            "url": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "back2",
+      "use": "runtime.rust:accounts.openai-consent",
+      "inputs": {
+        "url": "${state.page2.body.url}",
+        "visit": true
+      }
+    },
+    {
+      "id": "chatgpt-5-a-client-already-on-another-account-replaces-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 5,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.b.body.id}",
+                "signingIn": {
+                  "$exists": false
+                },
+                "label": {
+                  "$contains": "already on"
+                },
+                "login": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-5"
+        ]
+      }
+    },
+    {
+      "id": "fresh-client",
+      "use": "runtime.rust:accounts.openai-script",
+      "inputs": {
+        "set": {
+          "callbackClient": null
+        }
+      }
+    },
+    {
+      "id": "c",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "in3-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.c.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "body": {
+            "userCode": null,
+            "pasteCode": false,
+            "url": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "in3-consent",
+      "use": "runtime.rust:accounts.openai-consent",
+      "inputs": {
+        "url": "${state.in3-page.body.url}",
+        "visit": true
+      }
+    },
+    {
+      "id": "in3-back",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.in3-consent.status}",
+        "expect": {
+          "paths": {
+            "$": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "in3-settled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.c.body.id}",
+                "signingIn": {
+                  "$exists": false
+                },
+                "login": "chatgpt"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "chatgpt-5-the-same-person-under-a-new-client-is-a-separate-account",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.c.body.id}",
+                "login": "chatgpt"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-5"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-5-and-the-first-stays",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "login": "chatgpt"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-5"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,167 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-3: a plain sign-in is still Codex's device login",
+  "version": "1.0.0",
+  "description": "A plain GET of a Codex account's sign-in runs `codex login --device-auth` (a code to type), a ChatGPT sign-in meanwhile is 409 `busy`, and the account signs in as a device login always did: no `login`, no chatgpt.json, nothing asked of OpenAI.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/accounts/{id}/sign-in"
+    }
+  },
+  "steps": [
+    {
+      "id": "ai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": []
+            }
+          }
+        },
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.ai.origin}"
+        }
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "chatgpt-3-a-plain-get-is-still-the-device-login",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in",
+        "expect": {
+          "status": 200,
+          "body": {
+            "userCode": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-3"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-3-the-other-kind-under-way-is-busy",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "expect": {
+          "status": 409,
+          "body": {
+            "reason": "busy"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-3"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-3-a-device-login-account-as-today",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signedIn": true,
+                "login": {
+                  "$exists": false
+                },
+                "loginEmail": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-3"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-3-no-chatgpt-marker",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "accounts/${state.a.body.id}/chatgpt.json",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-3"
+        ]
+      }
+    },
+    {
+      "id": "saw",
+      "use": "runtime.rust:accounts.openai-seen",
+      "inputs": {}
+    },
+    {
+      "id": "chatgpt-3-openai-was-asked-nothing",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.saw.authorized}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$len": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-3"
+        ]
+      }
+    }
+  ]
+}

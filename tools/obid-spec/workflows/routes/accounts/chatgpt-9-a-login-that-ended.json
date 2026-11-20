@@ -1,0 +1,266 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-9: a terminal refresh error asks to sign in again",
+  "version": "1.0.0",
+  "description": "A refresh OpenAI answers `refresh_token_expired`: the job ends saying to Continue with ChatGPT again, the account is signed out with its record kept, and signing in again reuses the client OpenAI issued (`client_id=oaiapp_1`), not a first registration.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "ai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": []
+            }
+          }
+        },
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.ai.origin}"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "short",
+      "use": "runtime.rust:accounts.openai-script",
+      "inputs": {
+        "set": {
+          "expiresIn": 60
+        }
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "in-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "body": {
+            "userCode": null,
+            "pasteCode": false,
+            "url": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "in-consent",
+      "use": "runtime.rust:accounts.openai-consent",
+      "inputs": {
+        "url": "${state.in-page.body.url}",
+        "visit": true
+      }
+    },
+    {
+      "id": "in-back",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.in-consent.status}",
+        "expect": {
+          "paths": {
+            "$": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "in-settled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                },
+                "login": "chatgpt"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "ended",
+      "use": "runtime.rust:accounts.openai-script",
+      "inputs": {
+        "tokenErrors": [
+          [
+            400,
+            {
+              "error": "refresh_token_expired"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "id": "j",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "agent": "codex",
+            "account": "${state.a.body.id}",
+            "task": "RELAY"
+          }
+        },
+        "as": "device",
+        "within": 10,
+        "expect": {
+          "status": 201,
+          "body": {
+            "waiting": null
+          }
+        },
+        "device": "${state.device}"
+      }
+    },
+    {
+      "id": "chatgpt-9-a-terminal-refresh-error-ends-the-job-asking-to-sign-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": {
+              "$ne": "done"
+            },
+            "reason": {
+              "$contains": "Continue with ChatGPT"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-9"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-9-tokens-cleared-the-record-kept",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signedIn": false,
+                "login": "chatgpt"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-9"
+        ]
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "body": {
+            "userCode": null,
+            "pasteCode": false,
+            "url": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "chatgpt-9-and-the-sign-in-again-keeps-the-client-id",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.again.body.url}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$matches": "client_id=oaiapp_1(&|$)"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-9"
+        ]
+      }
+    }
+  ]
+}

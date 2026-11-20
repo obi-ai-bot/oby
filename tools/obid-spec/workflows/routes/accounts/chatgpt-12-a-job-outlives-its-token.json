@@ -1,0 +1,297 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-12: a job outlives its token",
+  "version": "1.0.0",
+  "description": "The access token OpenAI refuses mid-job (within 10 minutes of its end): the relay refreshes once and sends the same request again with the new token, so Codex never sees the 401 and the job ends done; the account stays signed in.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "ai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": []
+            }
+          }
+        },
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.ai.origin}"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "almost",
+      "use": "runtime.rust:accounts.openai-script",
+      "inputs": {
+        "set": {
+          "expiresIn": 500
+        }
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "in-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "body": {
+            "userCode": null,
+            "pasteCode": false,
+            "url": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "in-consent",
+      "use": "runtime.rust:accounts.openai-consent",
+      "inputs": {
+        "url": "${state.in-page.body.url}",
+        "visit": true
+      }
+    },
+    {
+      "id": "in-back",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.in-consent.status}",
+        "expect": {
+          "paths": {
+            "$": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "in-settled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                },
+                "login": "chatgpt"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "before",
+      "use": "runtime.rust:accounts.openai-seen",
+      "inputs": {}
+    },
+    {
+      "id": "refuse-first",
+      "use": "runtime.rust:accounts.openai-script",
+      "inputs": {
+        "refuse": [
+          "${state.before.tokens.0}"
+        ]
+      }
+    },
+    {
+      "id": "j",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "agent": "codex",
+            "account": "${state.a.body.id}",
+            "task": "RELAY"
+          }
+        },
+        "as": "device",
+        "within": 10,
+        "expect": {
+          "status": 201,
+          "body": {
+            "waiting": null
+          }
+        },
+        "device": "${state.device}"
+      }
+    },
+    {
+      "id": "chatgpt-12-a-job-outlives-its-token",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "summary": {
+              "$contains": "From the stand-in."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-12"
+        ]
+      }
+    },
+    {
+      "id": "saw",
+      "use": "runtime.rust:accounts.openai-seen",
+      "inputs": {}
+    },
+    {
+      "id": "chatgpt-12-one-refresh",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.saw.refreshes}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-12"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-12-the-same-request-again-with-the-new-token-none-of-its-tries-spent",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.saw.bearers}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "method": "POST"
+                },
+                2
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-12"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-12-first-the-refused-token",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.saw.bearers}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "method": "POST",
+                  "token": "${state.before.tokens.0}"
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-12"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-12-still-signed-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signedIn": true
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-12"
+        ]
+      }
+    }
+  ]
+}

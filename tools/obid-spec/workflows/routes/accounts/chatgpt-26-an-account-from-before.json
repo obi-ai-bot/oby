@@ -1,0 +1,275 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-26: an account from before the question starts with no yes",
+  "version": "1.0.0",
+  "description": "A ChatGPT login and a routine on Auto kept from before: after a restart the account is still signed in with no answer (asked, not refused), and the routine's job waits for the owner's yes, with no failure counted.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/accounts/{id}/background"
+    }
+  },
+  "steps": [
+    {
+      "id": "ai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": []
+            },
+            "claude": {
+              "accounts": []
+            }
+          }
+        },
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.ai.origin}"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "in-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "body": {
+            "userCode": null,
+            "pasteCode": false,
+            "url": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "in-consent",
+      "use": "runtime.rust:accounts.openai-consent",
+      "inputs": {
+        "url": "${state.in-page.body.url}",
+        "visit": true
+      }
+    },
+    {
+      "id": "in-back",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.in-consent.status}",
+        "expect": {
+          "paths": {
+            "$": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "in-settled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                },
+                "login": "chatgpt"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "old",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Old routine",
+          "repo": "obi-e2e/fixture-app",
+          "kind": "research",
+          "task": "RELAY",
+          "agent": "auto",
+          "account": "auto",
+          "schedule": {
+            "every": "weekdays",
+            "at": "09:00"
+          },
+          "zone": "America/Sao_Paulo",
+          "createdBy": "mac"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "down",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": []
+            },
+            "claude": {
+              "accounts": []
+            }
+          }
+        },
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.ai.origin}"
+        }
+      }
+    },
+    {
+      "id": "chatgpt-26-an-existing-account-starts-with-no-yes-and-stays-signed-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signedIn": true,
+                "backgroundConsent": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-26"
+        ]
+      }
+    },
+    {
+      "id": "ran",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/routines/${state.old.body.id}/run",
+        "within": 10,
+        "expect": {
+          "status": 201,
+          "paths": {
+            "job.id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "chatgpt-26-its-routine-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.ran.body.job.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "queued",
+            "waiting": {
+              "kind": "limit",
+              "reserved": {
+                "$type": "array"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-26"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-26-and-nothing-fails",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/routines/${state.old.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "failuresInARow": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-26"
+        ]
+      }
+    }
+  ]
+}

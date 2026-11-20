@@ -1,0 +1,340 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-24: only the owner's signed yes",
+  "version": "1.0.0",
+  "description": "`POST /v1/accounts/{id}/background {\"given\": true}` with the token alone is 403 and keeps nothing; a signature over other words, or one used already, is 403; the owner's own signed yes is kept; an account that isn't a ChatGPT login has nothing to answer (422).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/accounts/{id}/background"
+    }
+  },
+  "steps": [
+    {
+      "id": "ai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": []
+            },
+            "claude": {
+              "accounts": []
+            }
+          }
+        },
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.ai.origin}"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "in-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "body": {
+            "userCode": null,
+            "pasteCode": false,
+            "url": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "in-consent",
+      "use": "runtime.rust:accounts.openai-consent",
+      "inputs": {
+        "url": "${state.in-page.body.url}",
+        "visit": true
+      }
+    },
+    {
+      "id": "in-back",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.in-consent.status}",
+        "expect": {
+          "paths": {
+            "$": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "in-settled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                },
+                "login": "chatgpt"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "chatgpt-24-the-token-alone-cant-say-yes",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.a.body.id}/background",
+        "body": {
+          "given": true
+        },
+        "expect": {
+          "status": 403
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-24"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-24-nothing-kept",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "backgroundConsent": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-24"
+        ]
+      }
+    },
+    {
+      "id": "other",
+      "use": "runtime.rust:device-sign",
+      "inputs": {
+        "device": "${state.device}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.a.body.id}/background",
+        "body": {
+          "given": false
+        }
+      }
+    },
+    {
+      "id": "chatgpt-24-a-signature-over-other-words-cant",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.a.body.id}/background",
+        "headers": {
+          "X-Oby-Words": "${state.other.header}"
+        },
+        "body": {
+          "given": true
+        },
+        "expect": {
+          "status": 403
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-24"
+        ]
+      }
+    },
+    {
+      "id": "once",
+      "use": "runtime.rust:device-sign",
+      "inputs": {
+        "device": "${state.device}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.a.body.id}/background",
+        "body": {
+          "given": true
+        }
+      }
+    },
+    {
+      "id": "signed-yes",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.a.body.id}/background",
+        "headers": {
+          "X-Oby-Words": "${state.once.header}"
+        },
+        "body": {
+          "given": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "backgroundConsent": true
+          }
+        }
+      }
+    },
+    {
+      "id": "no",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.a.body.id}/background",
+        "body": {
+          "given": false
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "chatgpt-24-a-signature-used-already-cant",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.a.body.id}/background",
+        "headers": {
+          "X-Oby-Words": "${state.once.header}"
+        },
+        "body": {
+          "given": true
+        },
+        "expect": {
+          "status": 403
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-24"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-24-it-stays-no",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "backgroundConsent": false
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-24"
+        ]
+      }
+    },
+    {
+      "id": "plain",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "chatgpt-24-an-account-with-no-chatgpt-login-has-nothing-to-answer",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.plain.body.id}/background",
+        "body": {
+          "given": false
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-24"
+        ]
+      }
+    }
+  ]
+}

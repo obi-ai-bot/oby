@@ -1,0 +1,420 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-14: a 403 stops, a 503 goes back to Codex",
+  "version": "1.0.0",
+  "description": "A 403 `subscription_sharing_user_not_eligible` ends the job saying the plan isn't available for this account with the request id, sent once and with no new sign-in; a 503 goes to Codex as it came, for its own six tries and none of obid's, and the job ends interrupted with OpenAI's words and Try again. Neither signs the account out or holds it as full.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "ai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": []
+            }
+          }
+        },
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.ai.origin}"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "in-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "body": {
+            "userCode": null,
+            "pasteCode": false,
+            "url": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "in-consent",
+      "use": "runtime.rust:accounts.openai-consent",
+      "inputs": {
+        "url": "${state.in-page.body.url}",
+        "visit": true
+      }
+    },
+    {
+      "id": "in-back",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.in-consent.status}",
+        "expect": {
+          "paths": {
+            "$": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "in-settled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                },
+                "login": "chatgpt"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "not-eligible",
+      "use": "runtime.rust:accounts.openai-script",
+      "inputs": {
+        "responses": [
+          {
+            "json": [
+              403,
+              {
+                "error": {
+                  "code": "subscription_sharing_user_not_eligible",
+                  "message": "No."
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "j",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "agent": "codex",
+            "account": "${state.a.body.id}",
+            "task": "RELAY"
+          }
+        },
+        "as": "device",
+        "within": 10,
+        "expect": {
+          "status": 201,
+          "body": {
+            "waiting": null
+          }
+        },
+        "device": "${state.device}"
+      }
+    },
+    {
+      "id": "chatgpt-14-a-403-not-eligible-stops",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": {
+              "$ne": "done"
+            },
+            "reason": {
+              "$matches": "isn't available for this account.*req_scripted|req_scripted.*isn't available for this account"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-14"
+        ]
+      }
+    },
+    {
+      "id": "saw",
+      "use": "runtime.rust:accounts.openai-seen",
+      "inputs": {}
+    },
+    {
+      "id": "chatgpt-14-no-retry-of-a-403-and-no-oauth-loop",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.saw}",
+        "expect": {
+          "paths": {
+            "bearers": {
+              "$count": [
+                {
+                  "method": "POST"
+                },
+                1
+              ]
+            },
+            "authorized": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-14"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-14-still-signed-in-and-not-a-limit",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signedIn": true,
+                "fullUntil": null
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-14"
+        ]
+      }
+    },
+    {
+      "id": "unavailable",
+      "use": "runtime.rust:accounts.openai-script",
+      "inputs": {
+        "responses": [
+          {
+            "json": [
+              503,
+              {
+                "detail": "Direct routing is unavailable"
+              }
+            ]
+          },
+          {
+            "json": [
+              503,
+              {
+                "detail": "Direct routing is unavailable"
+              }
+            ]
+          },
+          {
+            "json": [
+              503,
+              {
+                "detail": "Direct routing is unavailable"
+              }
+            ]
+          },
+          {
+            "json": [
+              503,
+              {
+                "detail": "Direct routing is unavailable"
+              }
+            ]
+          },
+          {
+            "json": [
+              503,
+              {
+                "detail": "Direct routing is unavailable"
+              }
+            ]
+          },
+          {
+            "json": [
+              503,
+              {
+                "detail": "Direct routing is unavailable"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "k",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "agent": "codex",
+            "account": "${state.a.body.id}",
+            "task": "RELAY"
+          }
+        },
+        "as": "device",
+        "within": 10,
+        "expect": {
+          "status": 201,
+          "body": {
+            "waiting": null
+          }
+        },
+        "device": "${state.device}"
+      }
+    },
+    {
+      "id": "chatgpt-14-a-503-goes-back-to-codex-and-ends-saying-so",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.k.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "nextStep": "Try again",
+            "resumesAt": null,
+            "reason": {
+              "$matches": "^ChatGPT is unavailable for now \\(503\\)\\."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-14"
+        ]
+      }
+    },
+    {
+      "id": "saw2",
+      "use": "runtime.rust:accounts.openai-seen",
+      "inputs": {}
+    },
+    {
+      "id": "chatgpt-14-codexs-own-tries-and-none-of-obids",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.saw2.bearers}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "method": "POST"
+                },
+                7
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-14"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-14-credentials-kept",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signedIn": true,
+                "fullUntil": null
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-14"
+        ]
+      }
+    }
+  ]
+}

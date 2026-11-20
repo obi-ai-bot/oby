@@ -1,0 +1,349 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-15: removing a ChatGPT login revokes it",
+  "version": "1.0.0",
+  "description": "Removing an account with a ChatGPT login revokes its refresh token at OpenAI, and its folder and vault entry go; a revoke that fails three times still completes, answering 200 `revoked: false`; an account with no ChatGPT login stays 204.",
+  "trigger": {
+    "http": {
+      "method": "DELETE",
+      "path": "/v1/accounts/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "ai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": []
+            }
+          }
+        },
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.ai.origin}"
+        }
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "in-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "body": {
+            "userCode": null,
+            "pasteCode": false,
+            "url": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "in-consent",
+      "use": "runtime.rust:accounts.openai-consent",
+      "inputs": {
+        "url": "${state.in-page.body.url}",
+        "visit": true
+      }
+    },
+    {
+      "id": "in-back",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.in-consent.status}",
+        "expect": {
+          "paths": {
+            "$": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "in-settled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                },
+                "login": "chatgpt"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "before",
+      "use": "runtime.rust:accounts.openai-seen",
+      "inputs": {}
+    },
+    {
+      "id": "chatgpt-15-removal",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/accounts/${state.a.body.id}",
+        "expect": {
+          "status": 204
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-15"
+        ]
+      }
+    },
+    {
+      "id": "after",
+      "use": "runtime.rust:accounts.openai-seen",
+      "inputs": {}
+    },
+    {
+      "id": "chatgpt-15-revokes-the-refresh-token",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.after.revoked}",
+        "expect": {
+          "paths": {
+            "$": [
+              "${state.before.tokens.1}"
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-15"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-15-its-folder-is-gone",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "accounts/${state.a.body.id}",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-15"
+        ]
+      }
+    },
+    {
+      "id": "scan",
+      "use": "runtime.rust:accounts.scan",
+      "inputs": {
+        "obid": "${state.o}",
+        "secrets": [
+          "${state.before.tokens.1}"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-15-the-vault-no-longer-holds-it",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.scan}",
+        "expect": {
+          "paths": {
+            "found": [],
+            "secrets": 1
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-15"
+        ]
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "in2-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.b.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "body": {
+            "userCode": null,
+            "pasteCode": false,
+            "url": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "in2-consent",
+      "use": "runtime.rust:accounts.openai-consent",
+      "inputs": {
+        "url": "${state.in2-page.body.url}",
+        "visit": true
+      }
+    },
+    {
+      "id": "in2-back",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.in2-consent.status}",
+        "expect": {
+          "paths": {
+            "$": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "in2-settled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.b.body.id}",
+                "signingIn": {
+                  "$exists": false
+                },
+                "login": "chatgpt"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "revoke-fails",
+      "use": "runtime.rust:accounts.openai-script",
+      "inputs": {
+        "revokeStatuses": [
+          503,
+          503,
+          503
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-15-a-failed-revoke-completes-saying-so",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/accounts/${state.b.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "revoked": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-15"
+        ]
+      }
+    },
+    {
+      "id": "plain",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "chatgpt-15-an-account-with-no-chatgpt-login-stays-204",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/accounts/${state.plain.body.id}",
+        "expect": {
+          "status": 204
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-15"
+        ]
+      }
+    }
+  ]
+}

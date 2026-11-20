@@ -1,0 +1,13 @@
+[package]
+name = "obid-spec-obi-protocol-shim"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The two helpers of obid's obi-protocol that obid's test stand-in OpenAI uses, so obid-spec imports that stand-in as it is without depending on obid's own crates."
+
+[lib]
+name = "obi_protocol"
+path = "src/lib.rs"
+
+[dependencies]
+sha2 = "0.10"

@@ -1,0 +1,261 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-25: a limit never moves a job onto a ChatGPT login by itself",
+  "version": "1.0.0",
+  "description": "A ChatGPT login with the owner's yes, and a routine's Claude Code job that hits its week's limit: the job waits on its own account, with no card, and nothing goes to OpenAI: a ChatGPT login shows no room, so a move past a limit never lands there by itself.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/routines/{id}/run"
+    }
+  },
+  "steps": [
+    {
+      "id": "ai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": []
+            }
+          }
+        },
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.ai.origin}"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "in-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "body": {
+            "userCode": null,
+            "pasteCode": false,
+            "url": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "in-consent",
+      "use": "runtime.rust:accounts.openai-consent",
+      "inputs": {
+        "url": "${state.in-page.body.url}",
+        "visit": true
+      }
+    },
+    {
+      "id": "in-back",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.in-consent.status}",
+        "expect": {
+          "paths": {
+            "$": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "in-settled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                },
+                "login": "chatgpt"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "yes",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.a.body.id}/background",
+        "body": {
+          "given": true
+        },
+        "as": "device",
+        "expect": {
+          "status": 200,
+          "body": {
+            "backgroundConsent": true
+          }
+        },
+        "device": "${state.device}"
+      }
+    },
+    {
+      "id": "limited",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Limited",
+          "repo": "obi-e2e/fixture-app",
+          "kind": "research",
+          "task": "LIMITED WEEK: 86400",
+          "agent": "claude",
+          "account": "stand-in",
+          "schedule": {
+            "every": "weekdays",
+            "at": "09:00"
+          },
+          "zone": "America/Sao_Paulo",
+          "createdBy": "mac"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "ran",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines/${state.limited.body.id}/run",
+        "within": 10,
+        "expect": {
+          "status": 201,
+          "paths": {
+            "job.id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "chatgpt-25-a-limit-never-moves-a-routines-job-onto-the-login",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.ran.body.job.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "queued",
+            "resumesAt": {
+              "$ne": null
+            },
+            "account": "stand-in",
+            "accountLimit": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-25"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-25-with-no-card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/limit-decisions",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-25"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-25-and-nothing-went-to-openai-seen",
+      "use": "runtime.rust:accounts.openai-seen",
+      "inputs": {}
+    },
+    {
+      "id": "chatgpt-25-and-nothing-went-to-openai",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.chatgpt-25-and-nothing-went-to-openai-seen.bearers}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "method": "POST"
+                },
+                0
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-25"
+        ]
+      }
+    }
+  ]
+}

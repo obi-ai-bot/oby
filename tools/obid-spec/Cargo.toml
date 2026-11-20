@@ -58,6 +58,11 @@ png = "0.17"
 # public links in one format, age (the owner's decision of 2026-11-20), a version packed as a tar.
 age = { version = "0.11", default-features = false }
 tar = { version = "0.4", default-features = false }
+# Continue with ChatGPT's stand-in OpenAI (src/coverage_accounts.rs): obid's own tests'
+# tests/support/stand_in_openai.rs, imported as it is, on the versions obid builds it with.
+aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys"] }
+axum = "0.8.9"
+obi-protocol = { path = "obi-protocol-shim", package = "obid-spec-obi-protocol-shim" }
 
 [dev-dependencies]
 tempfile = "3"
