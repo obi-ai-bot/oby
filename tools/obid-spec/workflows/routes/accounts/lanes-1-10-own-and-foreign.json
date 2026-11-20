@@ -1,0 +1,256 @@
+{
+  "schemaVersion": "2",
+  "name": "LANES-1 and 10: whose work picks the lane",
+  "version": "1.0.0",
+  "description": "The owner's task runs in the own lane: obid's --settings, CLAUDE_ENV_FILE, no egress proxy, the owner's HOME, every settings source, its account's own folder and no login copy. A task a conversation dispatched after it read something untrusted is `untrusted` and runs boxed as before: --strict-mcp-config, no settings source, no --settings, no CLAUDE_ENV_FILE, a HOME of its own and a config folder that is a copy, never the account's.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "own",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "REPORT"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "own-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.own.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "untrusted": {
+              "$exists": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "lanes-1-the-owners-task-runs-in-the-own-lane",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.own.body.id}/.obi/report.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "argv": {
+                "$contains": "--settings"
+              },
+              "env.CLAUDE_ENV_FILE": {
+                "$exists": true
+              },
+              "env.HTTPS_PROXY": {
+                "$exists": false
+              },
+              "env.HTTP_PROXY": {
+                "$exists": false
+              },
+              "env.HOME": "${state.o.person}",
+              "loaded.sources": [
+                "user",
+                "project",
+                "local"
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-1"
+        ]
+      }
+    },
+    {
+      "id": "lanes-1-with-no-login-copy",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "logins/${state.own.body.id}/.credentials.json",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-1"
+        ]
+      }
+    },
+    {
+      "id": "marked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "READREPO OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"REPORT\", \"kind\": \"research\"}",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "jobs.0.id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "lanes-1-a-job-a-conversation-started-after-an-untrusted-read-is-marked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.marked.body.jobs.0.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "untrusted": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-1"
+        ]
+      }
+    },
+    {
+      "id": "lanes-10-a-foreign-job-keeps-the-box",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.marked.body.jobs.0.id}/.obi/report.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "argv": {
+                "$contains": "--strict-mcp-config"
+              },
+              "loaded.sources": [],
+              "loaded.mcpServers": [],
+              "env.CLAUDE_ENV_FILE": {
+                "$exists": false
+              },
+              "env.HOME": {
+                "$ne": "${state.o.person}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-10",
+          "LANES-1"
+        ]
+      }
+    },
+    {
+      "id": "lanes-10-with-no-setting-sources-and-no-own-settings",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.marked.body.jobs.0.id}/.obi/report.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "argv": {
+                "$not": {
+                  "$contains": "--settings"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-10"
+        ]
+      }
+    },
+    {
+      "id": "lanes-10-on-a-copy-of-its-login-not-the-accounts-folder",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.marked.body.jobs.0.id}/.obi/report.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "env.CLAUDE_CONFIG_DIR": {
+                "$not": {
+                  "$contains": "/accounts/"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-10"
+        ]
+      }
+    },
+    {
+      "id": "lanes-1-the-own-runs-config-is-its-accounts-own-folder",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.own.body.id}/.obi/report.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "env.CLAUDE_CONFIG_DIR": "${state.o.home}/accounts/stand-in"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-1"
+        ]
+      }
+    }
+  ]
+}

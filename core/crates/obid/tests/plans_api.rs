@@ -816,6 +816,36 @@ fn stop_reaches_only_its_own_conversation() {
     assert_eq!(b["text"], "waited", "{b}");
 }
 
+/// COMPOSER-4: a Bypass chip on unsigned words (a script's, oby-mcp's) where Bypass is the owner's
+/// default is that default: the task starts at once in Bypass and nothing waits for a Confirm, as
+/// the same words with no chip do (#2543). With Ask the default, the chip still doesn't widen it.
+#[test]
+fn composer_4_a_bypass_chip_where_bypass_is_the_default_asks_nothing() {
+    let folder = Folder::new("composer-4-default-bypass");
+    let obid = started_harness_jobs(&folder);
+    let dispatch = r#"OBY oby_dispatch {"repo":"obi-e2e/fixture-app","kind":"fix","title":"Greeting fix","task":"Fix the greeting"}"#;
+    let ask = |mode: &str| {
+        // The owner's own setting, signed as Settings signs it (Bypass widens trust).
+        let setting = json!({"mode": mode});
+        let set = call_signed(&obid, "PUT", "/v1/settings/permissions", Some(&setting));
+        assert_eq!(set.status, 200, "{}", set.text);
+        let answer = call(
+            &obid,
+            "POST",
+            "/v1/plans",
+            Some(&json!({"said": dispatch, "new": true, "defaults": {"mode": "bypass"}})),
+        );
+        assert_eq!(answer.status, 200, "{}", answer.text);
+        answer.body
+    };
+    let started = ask("bypass");
+    assert_eq!(started["jobs"][0]["mode"], "bypass", "{started}");
+    assert_eq!(items_of(&obid, "confirm"), Vec::<serde_json::Value>::new());
+    let started = ask("ask");
+    assert_eq!(started["jobs"][0]["mode"], "ask", "{started}");
+    assert_eq!(items_of(&obid, "confirm"), Vec::<serde_json::Value>::new());
+}
+
 /// A brain dispatch can't start a job in Bypass mode: it waits as a confirm item whose title,
 /// made by obid from the job, says so; the owner's Confirm starts it (review on #551, N1).
 #[test]

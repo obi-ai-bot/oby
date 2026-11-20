@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -39,7 +39,7 @@ vi.mock('../../../main/obid', () => ({
 }));
 vi.mock('../../../main/live', () => ({ obidState: () => the.state, onLive: (f: () => void) => { the.live.push(f); } }));
 
-const { Terminals, cleanEnv, cwdOf, ownersShell, shellOf, shellArgs, terminals, nodePty, MAX_TERMINALS, KILL_GRACE_MS } = await import('../../../main/terminal');
+const { Terminals, cleanEnv, cwdOf, ownersShell, shellOf, shellArgs, terminals, nodePty, jobGroups, MAX_TERMINALS, KILL_GRACE_MS } = await import('../../../main/terminal');
 type Spawn = import('../../../main/terminal').Spawn;
 
 // A pty that does what it's told and records it; it ends on the signal named in `endsOn`
@@ -63,13 +63,21 @@ let endsOn: string | null = 'SIGHUP';
 const spawned: FakePty[] = [];
 const fake: Spawn = (file, args, opts) => { const p = new FakePty(file, args, opts, endsOn); spawned.push(p); return p; };
 let terms: InstanceType<typeof Terminals>;
+// the shells whose jobs were killed with them (never a real process: the fake's pid is made up)
+const jobsKilled: number[] = [];
+// how the jobs were asked for: off main's thread (false) or waited for, as Oby quits (true); and the
+// answer, held while a test wants it
+const jobsAsked: boolean[] = [];
+let holdJobs: (() => void)[] | null = null;
 const ENV = { env: { HOME: '/Users/owner', PATH: '/usr/bin:/bin' }, shell: '/bin/zsh' };
 // main's channels, for the window's own page (trusted) or another
 let trustedNow = true;
 function register() {
   the.handlers.clear();
   the.live.length = 0;
-  terms = new Terminals(() => fake, (p, ...a) => (p as unknown as Page | null)?.send(...(a as Sent)), () => ENV, KILL_GRACE_MS);
+  jobsKilled.length = 0; jobsAsked.length = 0; holdJobs = null;
+  terms = new Terminals(() => fake, (p, ...a) => (p as unknown as Page | null)?.send(...(a as Sent)), () => ENV, KILL_GRACE_MS,
+    (pid, done, now) => { jobsKilled.push(pid); jobsAsked.push(now); if (holdJobs) holdJobs.push(done); else done(); });
   terminals(() => trustedNow, terms);
 }
 const open = (p: Page, place: string, id: string, cols = 80, rows = 24) => the.handlers.get('terminal-open')!({ sender: p }, place, id, cols, rows) as Promise<{ term?: string; cwd?: string; error?: string }>;
@@ -224,6 +232,8 @@ describe('TERMINAL-4: a shell never outlives its tab, its page, its place or Oby
     expect(spawned[0].killed).toEqual(['SIGHUP', 'SIGTERM']);
     vi.advanceTimersByTime(1);
     expect(spawned[0].killed).toEqual(['SIGHUP', 'SIGTERM', 'SIGKILL']);
+    // the jobs it never passed its hang-up to go with it
+    expect(jobsKilled).toEqual([4242]);
     // one that ends on its hang-up gets nothing more
     endsOn = 'SIGHUP';
     input();
@@ -231,6 +241,40 @@ describe('TERMINAL-4: a shell never outlives its tab, its page, its place or Oby
     the.handlers.get('terminal-close')!({ sender: p }, second.term);
     vi.advanceTimersByTime(KILL_GRACE_MS * 2);
     expect(spawned[1].killed).toEqual(['SIGHUP']);
+    expect(jobsKilled).toEqual([4242]);
+  });
+
+  it('terminal_4: the jobs a shell started are the process groups below it, never its own or one above', () => {
+    // pid ppid pgid: the shell 100 (its own group), a job 101 and its child 102 (group 101), a
+    // pipeline 103 and 104 (group 103), a grandchild in its own group 105, and others' processes
+    const table = ' 1 0 1\n 50 1 50\n 100 50 100\n 101 100 101\n 102 101 101\n 103 100 103\n 104 100 103\n 105 102 105\n 200 1 200\n 201 200 101\n';
+    expect(jobGroups(100, table).sort((a, b) => a - b)).toEqual([101, 103, 105]);
+    expect(jobGroups(100, '')).toEqual([]);
+    expect(jobGroups(999, table)).toEqual([]);
+  });
+
+  it('terminal_4: a stuck shell\'s jobs are read off the window\'s thread, and the shell killed once they\'re gone; quitting waits for them', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    worktree('j1');
+    const p = page();
+    endsOn = null;
+    holdJobs = [];
+    input();
+    const { term } = await open(p, 'task', 'j1');
+    the.handlers.get('terminal-close')!({ sender: p }, term);
+    vi.advanceTimersByTime(KILL_GRACE_MS);
+    // asked, not waited for: the shell isn't killed until the jobs' answer comes
+    expect(jobsAsked).toEqual([false]);
+    expect(spawned[0].killed).toEqual(['SIGHUP', 'SIGTERM']);
+    holdJobs.shift()!();
+    expect(spawned[0].killed).toEqual(['SIGHUP', 'SIGTERM', 'SIGKILL']);
+    // Oby quitting: waited for, as nothing would run after the app ends
+    holdJobs = null;
+    input(); await open(p, 'task', 'j1');
+    the.app.emit('before-quit');
+    the.app.emit('will-quit');
+    expect(jobsAsked).toEqual([false, true]);
+    expect(spawned[1].killed.at(-1)).toBe('SIGKILL');
   });
 
   it('terminal_4: Oby quitting ends every shell, and kills any still there before the app ends', async () => {
@@ -422,7 +466,7 @@ describe('TERMINAL-8: a real shell', () => {
   };
   const until = async (f: () => boolean, ms = 10_000) => { const end = Date.now() + ms; while (!f()) { if (Date.now() > end) throw new Error('timed out'); await new Promise((r) => setTimeout(r, 20)); } };
   // running, not gone or a zombie waiting to be reaped
-  const alive = (pid: number) => { const st = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim(); return !!st && !st.startsWith('Z'); };
+  const alive = (pid: number) => { const st = spawnSync('/bin/ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim(); return !!st && !st.startsWith('Z'); };
 
   it('terminal_8_a_real_shell_runs_in_the_folder_with_a_clean_environment_utf8_whole_and_ends_with_its_jobs', async () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-real-')));
@@ -447,5 +491,54 @@ describe('TERMINAL-8: a real shell', () => {
     t.close(term);
     await until(() => !alive(shellPid) && !alive(job));
     t.killLeft();
+  });
+
+  it('terminal_4_a_real_shell_still_there_after_its_grace_is_killed_with_its_jobs', async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-real-')));
+    const { t, text } = real();
+    const term = (t.start(null, 'task', 'j1', dir, 80, 24) as { term: string }).term;
+    t.write(term, 'sleep 300 & echo JOB=$!\r');
+    await until(() => /JOB=\d+/.test(text()));
+    const job = Number(/JOB=(\d+)/.exec(text())![1]);
+    const shellPid = (t as unknown as { terms: Map<string, { pty: { pid: number } }> }).terms.get(term)!.pty.pid;
+    // a shell that can't run before its grace ends (stopped, as a busy Mac can leave it): its SIGHUP
+    // never reaches the job, and the SIGKILL that ends it alone would leave the job running on
+    process.kill(shellPid, 'SIGSTOP');
+    try {
+      t.close(term);
+      await until(() => !alive(shellPid));
+      // killed with the shell, in the same step: gone, not handed to launchd
+      await until(() => !alive(job), 2000);
+    } finally { try { process.kill(job, 'SIGKILL'); } catch { /* gone */ } }
+  });
+
+  it('terminal_4_a_stuck_shells_jobs_are_found_without_stopping_the_window', async () => {
+    // a ps that takes a second to answer, as a loaded Mac's can: the window's own thread goes on
+    const bin = mkdtempSync(join(tmpdir(), 'oby-slow-ps-'));
+    writeFileSync(join(bin, 'ps'), '#!/bin/sh\n/bin/sleep 1\nexec /bin/ps "$@"\n', { mode: 0o755 });
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path}`;
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-real-')));
+    const { t, text } = real();
+    const term = (t.start(null, 'task', 'j1', dir, 80, 24) as { term: string }).term;
+    let job = 0;
+    try {
+      t.write(term, 'sleep 300 & echo JOB=$!\r');
+      await until(() => /JOB=\d+/.test(text()));
+      job = Number(/JOB=(\d+)/.exec(text())![1]);
+      const shellPid = (t as unknown as { terms: Map<string, { pty: { pid: number } }> }).terms.get(term)!.pty.pid;
+      process.kill(shellPid, 'SIGSTOP');
+      // the longest the window's thread went without a turn, from the close until the shell's gone
+      let last = Date.now(), longest = 0;
+      const tick = setInterval(() => { const now = Date.now(); longest = Math.max(longest, now - last); last = now; }, 10);
+      t.close(term);
+      await until(() => !alive(shellPid));
+      clearInterval(tick);
+      await until(() => !alive(job), 2000);
+      expect(longest).toBeLessThan(500);
+    } finally {
+      process.env.PATH = path;
+      if (job) try { process.kill(job, 'SIGKILL'); } catch { /* gone */ }
+    }
   });
 });

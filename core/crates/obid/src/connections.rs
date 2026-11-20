@@ -256,6 +256,12 @@ impl Connections {
         )
     }
 
+    /// Oby's browser server for job `id` (crate::browser::AgentServer, BROWSER-17), with the job's
+    /// token: the broker's, which the server takes, so it dies with the job the same way.
+    pub fn open_browser(&self, id: &str) -> crate::browser::AgentServer {
+        crate::browser::AgentServer::new(&self.api_url, &self.job_token(id))
+    }
+
     /// ChatGPT's relay for job `id` (crate::chatgpt_relay), with the job's token: the broker's, so
     /// it dies with the job the same way.
     pub fn open_chatgpt(&self, id: &str) -> (String, String) {

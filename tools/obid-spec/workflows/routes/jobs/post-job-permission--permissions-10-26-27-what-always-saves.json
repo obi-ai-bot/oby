@@ -1,0 +1,278 @@
+{
+  "schemaVersion": "2",
+  "name": "What Always offers for wrappers, Python's runners and a chain (PERMISSIONS-10, 26, 27)",
+  "version": "1.0.0",
+  "description": "In Ask, a command behind variables and wrappers that change nothing offers its own rule; Python running pytest offers python3 -m pytest; Python running code offers none; a chain whose every command has a rule offers each, one per line.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/permission"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        }
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ASKS: [{\"tool\": \"Bash\", \"input\": {\"command\": \"RUST_LOG=debug timeout 60 cargo test\"}}, {\"tool\": \"Bash\", \"input\": {\"command\": \"timeout 5 bash -c x\"}}, {\"tool\": \"Bash\", \"input\": {\"command\": \"python3 -m pytest -q\"}}, {\"tool\": \"Bash\", \"input\": {\"command\": \"python3 -c 'print(1)'\"}}, {\"tool\": \"Bash\", \"input\": {\"command\": \"rm -rf __pycache__ .pytest_cache; python3 -m pytest -q\"}}]",
+            "mode": "ask"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a-0-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.a.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "permission.detail": "RUST_LOG=debug timeout 60 cargo test",
+            "permission.rule": "Bash(cargo test:*)"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-10"
+        ]
+      }
+    },
+    {
+      "id": "a-0-no",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.a.body.id}/permission",
+        "body": {
+          "id": "${state.a-0-asks.body.permission.id}",
+          "decision": "deny"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-1-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.a.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "permission.detail": "timeout 5 bash -c x",
+            "permission.rule": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-10"
+        ]
+      }
+    },
+    {
+      "id": "a-1-no",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.a.body.id}/permission",
+        "body": {
+          "id": "${state.a-1-asks.body.permission.id}",
+          "decision": "deny"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-2-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.a.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "permission.detail": "python3 -m pytest -q",
+            "permission.rule": "Bash(python3 -m pytest:*)"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-26"
+        ]
+      }
+    },
+    {
+      "id": "a-2-no",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.a.body.id}/permission",
+        "body": {
+          "id": "${state.a-2-asks.body.permission.id}",
+          "decision": "deny"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-3-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.a.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "permission.detail": "python3 -c 'print(1)'",
+            "permission.rule": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-26"
+        ]
+      }
+    },
+    {
+      "id": "a-3-no",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.a.body.id}/permission",
+        "body": {
+          "id": "${state.a-3-asks.body.permission.id}",
+          "decision": "deny"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-4-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.a.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "permission.detail": "rm -rf __pycache__ .pytest_cache; python3 -m pytest -q",
+            "permission.rule": "Bash(rm -rf __pycache__ .pytest_cache)\nBash(python3 -m pytest:*)",
+            "permission.always": {
+              "$contains": "rm -rf __pycache__ .pytest_cache, python3 -m pytest"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-27"
+        ]
+      }
+    },
+    {
+      "id": "a-4-no",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.a.body.id}/permission",
+        "body": {
+          "id": "${state.a-4-asks.body.permission.id}",
+          "decision": "deny"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.a.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,190 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: a file gone before its turn",
+  "version": "1.0.0",
+  "description": "Words that wait behind a turn with a file, the file gone before their turn starts: the turn names it as left out (ATTACH-14).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "notes",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/attachments?name=notes.txt",
+        "raw": "soon gone",
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY first",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "first"
+          }
+        }
+      }
+    },
+    {
+      "id": "busy",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "LINGER 3000",
+          "conversation": "${state.said.body.conversation}",
+          "id": "a77ac400-0000-4000-8000-00000000a141"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "busy-under-way",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "a77ac400-0000-4000-8000-00000000a141",
+                "delivery": {
+                  "status": "running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "waiting",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "FILES",
+          "conversation": "${state.said.body.conversation}",
+          "attachments": [
+            "${state.notes.body.path}"
+          ]
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "text": "FILES",
+                "delivery": {
+                  "status": "queued"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gone",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "remove",
+        "path": "attachments/app"
+      }
+    },
+    {
+      "id": "busy-answered",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.busy}",
+        "seconds": 60,
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "attach-14-answered-without-it",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.waiting}",
+        "seconds": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "files:  named=false"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-14"
+        ]
+      }
+    },
+    {
+      "id": "attach-14-named-as-left-out",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$contains": "(left out: notes.txt, it is no longer on this Mac)"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-14"
+        ]
+      }
+    }
+  ]
+}

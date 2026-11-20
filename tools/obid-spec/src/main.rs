@@ -137,6 +137,7 @@ async fn run_main() -> Result<i32> {
                 .copied()
                 .chain(obid_spec::lab::nodes())
                 .chain(obid_spec::t3_conversations::NODES.iter().copied())
+                .chain(obid_spec::coverage_conversations::NODES.iter().copied())
                 .chain(obid_spec::coverage_accounts::NODES.iter().copied())
             {
                 println!("runtime.rust:{n:<16} {d}");
