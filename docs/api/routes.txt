@@ -18,9 +18,11 @@ POST /v1/agent/mcp/{job}
 POST /v1/agent/tetrix/{job}
 GET /v1/alerts
 GET /v1/artifacts
+POST /v1/artifacts/import
 DELETE /v1/artifacts/{id}
 GET /v1/artifacts/{id}
 PATCH /v1/artifacts/{id}
+GET /v1/artifacts/{id}/export/{version}
 GET /v1/artifacts/{id}/{version}/{*path}
 DELETE /v1/attachments
 POST /v1/attachments
