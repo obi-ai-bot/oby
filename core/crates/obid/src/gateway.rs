@@ -562,6 +562,11 @@ pub struct InviteRequest {
     /// The owner's device's signature over `"oby-pair-invite\n<signedAt>"` (crate::devices): the
     /// phone it pairs may add its publishing key. Without one it pairs a phone that can't.
     approval: Option<Value>,
+    /// Another computer of the owner's, added over SSH (`obid pair-computer`, crate::remote::pair;
+    /// docs/contracts/remote.md, COMPUTERS-8): the invitation is for this gateway's `url` only, never
+    /// through the Obysphere, which is never the way to one's own computers.
+    #[serde(default)]
+    computer: bool,
 }
 
 /// `POST /v1/pairing/invite`. With an Obysphere the phone pairs through it, sealed (crate::relay),
@@ -593,9 +598,18 @@ pub async fn invite(
         }
         Some(_) => return error(StatusCode::BAD_REQUEST, "url must be an HTTP or HTTPS URL."),
     };
-    let relay = match shared.relay.invite(&shared.link).await {
-        Ok(relay) => relay,
-        Err((status, message)) => return error(status, &message),
+    let relay = match request.computer {
+        true if authority.is_none() => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "Another computer is invited to a url: its gateway's.",
+            );
+        }
+        true => None,
+        false => match shared.relay.invite(&shared.link).await {
+            Ok(relay) => relay,
+            Err((status, message)) => return error(status, &message),
+        },
     };
     let name = request.name.unwrap_or_else(|| shared.host.clone());
     let (url, hostname) = match (request.url, authority, &relay) {
