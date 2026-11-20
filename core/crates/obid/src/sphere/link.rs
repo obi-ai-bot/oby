@@ -542,6 +542,9 @@ pub struct Link {
     /// One ask about, or trust of, a changed owner key at a time, so at most one `trust_key` card
     /// stands open for an owner (SPHERE-8).
     trusting: Mutex<()>,
+    /// One read of the directory at a time, so reads apply in the order they were fetched: one
+    /// that saw an older owner key never ends after a newer one and takes it back (SPHERE-8, #2618).
+    reading: tokio::sync::Mutex<()>,
     /// One token exchange at a time.
     tokening: tokio::sync::Mutex<()>,
     /// One key, card or join call at a time.
@@ -1116,6 +1119,7 @@ impl Link {
             sending: tokio::sync::Mutex::new(()),
             saving: Mutex::new(()),
             trusting: Mutex::new(()),
+            reading: tokio::sync::Mutex::new(()),
             tokening: tokio::sync::Mutex::new(()),
             joining: tokio::sync::Mutex::new(()),
             unread_key: unread,
@@ -2844,6 +2848,7 @@ impl Link {
     /// Reads the directory and keeps every member whose card passes the checks (identity.md 2.2,
     /// with the owner key the Sphere bound), with every key it ever had.
     async fn read_directory(&self) -> Result<(), ClientError> {
+        let _one = self.reading.lock().await;
         let began = Instant::now();
         let token = self.token().await?;
         let members = match self.client()?.members(&token).await {

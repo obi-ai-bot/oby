@@ -1401,6 +1401,9 @@ pub struct SphereState {
     pub swap_member: Option<(u32, Value)>,
     /// Reads of the directory answer `503`.
     pub members_down: bool,
+    /// The next read of the directory is answered as the directory is when it arrives, but only
+    /// once the test lets it go: a slow read ([`FakeSphere::hold_next_members`]).
+    pub members_hold: Option<(std::sync::mpsc::Sender<()>, tokio::sync::oneshot::Receiver<()>)>,
     /// A Sphere away for now: every path but its health answers `503` ([`sphere_away`]).
     pub down: bool,
     /// Every send's body as it arrived, with its sender and the status answered.
@@ -1578,6 +1581,17 @@ impl FakeSphere {
 
     /// Holds the answer to the next send of type `kind`: the Sphere records it and delivers it,
     /// and answers the sender only once the test calls `notify_one` on what this returns.
+    /// Holds the next read of the directory: its answer is the directory as the read arrives, sent
+    /// once the test sends on what this returns. The receiver hears when the read has arrived.
+    pub fn hold_next_members(
+        &self,
+    ) -> (std::sync::mpsc::Receiver<()>, tokio::sync::oneshot::Sender<()>) {
+        let (arrived, heard) = std::sync::mpsc::channel();
+        let (release, held) = tokio::sync::oneshot::channel();
+        self.lock().members_hold = Some((arrived, held));
+        (heard, release)
+    }
+
     pub fn hold_next(&self, kind: &str) -> Arc<tokio::sync::Notify> {
         let release = Arc::new(tokio::sync::Notify::new());
         self.lock().hold = Some((kind.to_owned(), release.clone()));
@@ -1897,8 +1911,24 @@ async fn owner_events(
 }
 
 async fn members(State(state): State<Arc<Mutex<SphereState>>>, headers: HeaderMap) -> Response {
-    let mut state = state.lock().unwrap();
-    if bearer(&state, &headers).is_none() {
+    let (answer, hold) = members_now(&mut state.lock().unwrap(), &headers);
+    if let Some((arrived, held)) = hold {
+        let _ = arrived.send(());
+        let _ = held.await;
+    }
+    answer
+}
+
+/// The directory as it is now, and the hold on this read, if the test set one.
+type MembersHold = (std::sync::mpsc::Sender<()>, tokio::sync::oneshot::Receiver<()>);
+fn members_now(state: &mut SphereState, headers: &HeaderMap) -> (Response, Option<MembersHold>) {
+    let answer = members_answer(state, headers);
+    let hold = state.members_hold.take();
+    (answer, hold)
+}
+
+fn members_answer(state: &mut SphereState, headers: &HeaderMap) -> Response {
+    if bearer(state, headers).is_none() {
         return sphere_error(StatusCode::UNAUTHORIZED, "unauthorized", "no token");
     }
     if state.members_down {
