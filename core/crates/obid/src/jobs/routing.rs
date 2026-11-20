@@ -69,6 +69,16 @@ impl Jobs {
             .collect()
     }
 
+    /// `accounts` the most room first, as a new job on Auto is routed (USAGE-11: `defaultAccount`
+    /// first, then the emptiest), for the brain's side calls (crate::brain::calls, B00-15).
+    pub(crate) fn most_room_first(
+        &self,
+        accounts: Vec<(Tool, crate::config::Account)>,
+    ) -> Vec<(Tool, crate::config::Account)> {
+        let first = crate::settings::load(&self.config.home).default_account;
+        self.by_room(accounts, first.as_deref())
+    }
+
     /// Before a task the owner started with a click is routed (Fix CI, the GitHub feed's work):
     /// every account whose kept usage is older than obid's read interval, or missing, is asked of
     /// its tool now, for at most [`FRESH_USAGE_WAIT`] in all, so routing never takes an account it
