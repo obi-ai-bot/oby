@@ -1,0 +1,171 @@
+{
+  "schemaVersion": "2",
+  "name": "T3 approvals: obid restarts while a permission waits",
+  "version": "1.0.0",
+  "description": "T3 Code's restart fixes for requests (ProviderRuntimeRecoveryService 'expires orphaned runtime requests', 577c524089 detaching a session no longer strands its pending approval): obid stopped while a job's agent waits on a permission card (not parked). After the restart the old card takes no answer (409) and its inbox item is no longer open, the job goes on in its session (RECOVERY-2), never on the card nobody can answer any more. (Whether the agent asks again is the CLI's: the stand-in asks again on macOS and has nothing left to do on Linux; either is right.)",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "j",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "mode": "ask",
+            "task": "KEEP PROMPTS ASKS: [{\"tool\":\"Bash\",\"input\":{\"command\":\"swift test\"}},{\"tool\":\"Bash\",\"input\":{\"command\":\"make\"}}]"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "permission.id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "stopped",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "the-old-card-takes-no-answer",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.j.body.id}/permission",
+        "body": {
+          "id": "${state.waits.body.permission.id}",
+          "decision": "allow"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 409,
+          "body": {
+            "error": "That permission isn't waiting any more."
+          }
+        }
+      }
+    },
+    {
+      "id": "its-item-isnt-open",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "id": "${state.j.body.id}-permission-${state.waits.body.permission.id}",
+                "done": null
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "recovery-2-it-goes-on-never-on-the-old-card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "running",
+                "done"
+              ]
+            }
+          },
+          "paths": {
+            "permission.id": {
+              "$ne": "${state.waits.body.permission.id}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-2"
+        ]
+      }
+    },
+    {
+      "id": "stopped-at-the-end",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.j.body.id}/stop",
+        "expect": {
+          "status": [
+            200,
+            409
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,134 @@
+{
+  "schemaVersion": "2",
+  "name": "T3: obid killed while a task's command runs",
+  "version": "1.0.0",
+  "description": "T3 Code's MessagesTimeline tests ('does not revive stale in-progress tools', 'stops stranded thinking') and its fixes for runs cut by a restart: obid is killed while a task's agent runs a command. After the restart the task goes on (RECOVERY-2) and ends, and its transcript no longer says that command is running: a call ends once (docs/api/jobs.md, 'A call comes twice under the same n: running when it starts, then as it ended'), so the window never draws a step at work forever (LIVETASK-10).",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "STEPS: 1 60000"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "its-command-runs",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}/transcript",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "entries": {
+              "$any": {
+                "kind": "tool",
+                "tool": "Bash",
+                "state": "running"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "killed",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}",
+        "kill": true
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "recovery-2-it-goes-on-and-ends",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "done",
+                "failed",
+                "interrupted"
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-2"
+        ]
+      }
+    },
+    {
+      "id": "livetask-10-no-call-is-left-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}/transcript",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "entries": {
+              "$none": {
+                "kind": "tool",
+                "state": "running"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIVETASK-10"
+        ],
+        "expectedRed": "#2737: a command cut by obid going down stays running in its task's transcript"
+      }
+    }
+  ]
+}

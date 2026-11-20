@@ -1,0 +1,322 @@
+{
+  "schemaVersion": "2",
+  "name": "T3 approvals: a mode change keeps what waits",
+  "version": "1.0.0",
+  "description": "T3 Code's mode fixes (a767d23297 a setting change no longer detaches a busy session; ProviderSessionTransitionPolicy 'treats interaction mode as turn-scoped'; ClaudeAdapterV2 'asks before restricted tools and follows policy across turns'; c15e49a77c older questions stay answerable): the default mode widened to Bypass reaches new jobs only, so a running Ask job keeps its mode and its waiting card (docs/api/permissions.md, 'Jobs already made keep theirs'); a job's own mode widened to Bypass never answers its agent's question, which still waits for the owner (permissions.md: 'a secret or a question keeps waiting'); and once a call's first question is answered, its id takes no second answer (409), never read as the next question's.",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "default-ask",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "ask"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": "ask"
+          }
+        }
+      }
+    },
+    {
+      "id": "j",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "KEEP PROMPTS ASKS: [{\"tool\":\"Bash\",\"input\":{\"command\":\"swift test\"}}]"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "j-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": "ask"
+          },
+          "paths": {
+            "permission.id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "default-bypass",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "bypass"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": "bypass"
+          }
+        }
+      }
+    },
+    {
+      "id": "the-running-job-keeps-its-mode-and-its-card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": "ask",
+            "status": "running"
+          },
+          "paths": {
+            "permission.id": "${state.j-waits.body.permission.id}"
+          }
+        }
+      }
+    },
+    {
+      "id": "j-allowed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.j.body.id}/permission",
+        "body": {
+          "id": "${state.j-waits.body.permission.id}",
+          "decision": "allow"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "j-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "q",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "mode": "ask",
+            "task": "KEEP PROMPTS ASK: {\"tool\":\"AskUserQuestion\",\"input\":{\"questions\":[{\"question\":\"Which store?\",\"options\":[{\"label\":\"SQLite\"},{\"label\":\"Postgres\"}]},{\"question\":\"Which checks?\",\"options\":[{\"label\":\"Unit\"},{\"label\":\"Lint\"}]}]}}"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "q-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.q.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "permission.question.question": "Which store?"
+          }
+        }
+      }
+    },
+    {
+      "id": "q-to-bypass",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.q.body.id}/mode",
+        "body": {
+          "mode": "bypass"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": "bypass"
+          }
+        }
+      }
+    },
+    {
+      "id": "the-question-still-waits-for-the-owner",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.q.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "permission.id": "${state.q-asks.body.permission.id}",
+            "permission.question.question": "Which store?"
+          }
+        }
+      }
+    },
+    {
+      "id": "first-answered",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.q.body.id}/permission",
+        "body": {
+          "id": "${state.q-asks.body.permission.id}",
+          "answer": "SQLite"
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "permission.question.question": "Which checks?"
+          }
+        }
+      }
+    },
+    {
+      "id": "the-first-ones-id-again-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.q.body.id}/permission",
+        "body": {
+          "id": "${state.q-asks.body.permission.id}",
+          "answer": "Postgres"
+        },
+        "expect": {
+          "status": 409,
+          "body": {
+            "error": "That question isn't waiting any more."
+          }
+        }
+      }
+    },
+    {
+      "id": "the-second-still-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.q.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "permission.question.question": "Which checks?"
+          }
+        }
+      }
+    },
+    {
+      "id": "second-answered",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.q.body.id}/permission",
+        "body": {
+          "id": "${state.first-answered.body.permission.id}",
+          "answer": "Unit"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "q-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.q.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "permission": null
+          }
+        }
+      }
+    }
+  ]
+}
