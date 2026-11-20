@@ -253,6 +253,65 @@ def board_17():
     )
 
 
+def board_06():
+    held = "You have this tab. Codex waits until you give it back."
+    workflow(
+        "browser-06-hold.json",
+        "App: Take control, you hold the tab and the agent waits; Give back (board 6)",
+        "The real app on its demo data at the design's board 6 (BROWSERAPP-9): you hold the tab, the strip says so in the "
+        "held blue (--held), the page is ringed and the tab's dot is blue (--unread); Give back returns it to the agent and "
+        "Take control holds it again. Within 4px of the board in both its states. Signing these on obid: browserLive.test.ts.",
+        [
+            launch(6, 1280, 800),
+            read("held-strip", {"css": ".br-control-text > span:last-child"}, "BROWSERAPP-9", count=1, text=held),
+            read("held-blue", {"css": ".br-control.is-held"}, "BROWSERAPP-9", styles={"background-color": "--held"}, **{"styles.background-color.matches": True}),
+            measure("ringed-page", {"css": ".br-view.is-held"}, "BROWSERAPP-9", **{"box.width": 639, "box.x": 641}),
+            read("tab-dot-blue", {"css": ".br-tab .status-dot.is-held"}, None, styles={"background-color": "--unread"}, **{"styles.background-color.matches": True}),
+            compare("Hold", "BROWSERAPP-9", state="held"),
+            *pictures(6, "Hold", "board 6, held"),
+            click("give-back", {"role": "button", "name": "Give back"}),
+            read("agent-again", {"css": ".br-control-text"}, "BROWSERAPP-9", count=1, text="Codex is using this tab · Clicking Sign in"),
+            read("ring-gone", {"css": ".br-view.is-held"}, None, count=0, within=5),
+            step("matches-board-gave-back", "app.compare", None, app=APP, board="Hold", state="gaveBack", expect={"paths": {"within": True, "sameWords": True}}, within=10),
+            step("beside-board-gave-back", "app.sidebyside", app=APP, board="Hold", state="gaveBack", name="browser-06-gave-back-beside-board", label="board 6, given back"),
+            click("take-again", {"role": "button", "name": "Take control"}),
+            read("held-again", {"css": ".br-control-text > span:last-child"}, None, count=1, text=held),
+            close(),
+        ],
+    )
+
+
+# obid's browser routes aren't served yet: they come with browser port 1's routes pull request
+# (docs/contracts/browser.md, BROWSER-1 to 25; its contract #2608, its core #2610). Every step that
+# needs them is expected red until then; the pull request that lands them removes these marks.
+PORT_1 = "browser port 1's routes PR (obid's /v1/browser; contract #2608, core #2610)"
+
+
+def red(s):
+    s.setdefault("ui", {})["expectedRed"] = PORT_1
+    return s
+
+
+def live_101():
+    workflow(
+        "browser-101-live-on-obid.json",
+        "App live: on a real obid, the globe opens the browser, no pages yet (board 17, live)",
+        "The real app on a scratch obid (BROWSERAPP-7, BROWSERAPP-8): once obid answers GET /v1/browser, main follows its "
+        "browser and the globe shows at the title bar's end; opened, the panel has no tabs and says so, as board 17. Expected "
+        "red until obid serves the browser's routes (browser port 1).",
+        [
+            step("obid", "obid-start", agent="fake-harness-jobs"),
+            step("app", "app.launch", obid="${state.obid}", size={"width": 1280, "height": 800}),
+            red(step("globe", "app.read", "BROWSERAPP-8", app=APP, target={"role": "button", "name": "Show the browser, 0 tabs"},
+                     within=20, expect={"paths": {"count": 1}})),
+            red(click("open", {"role": "button", "name": "Show the browser, 0 tabs"})),
+            red(measure("panel", {"css": "aside.br"}, "BROWSERAPP-8", **{"box.width": 640, "box.x": 640})),
+            red(read("no-pages", {"css": ".empty-words"}, "BROWSERAPP-8", count=1, text="No pages yet.\nWhen an agent opens one, you see it here, live.")),
+            close(),
+        ],
+    )
+
+
 # What a board draws that the app doesn't, piece by piece, and why (docs/contracts/browser-app.md, "Not matched
 # within 4px"): left out of that board's compare, never of its other checks.
 BOARD_SKIPS = {
@@ -274,4 +333,6 @@ if __name__ == "__main__":
     board_03()
     board_04()
     board_05()
+    board_06()
     board_17()
+    live_101()

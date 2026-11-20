@@ -29,7 +29,7 @@ describe('BROWSERAPP-3: the conversation keeps 420px beside the browser', () => 
   });
 });
 
-describe('BROWSERAPP-7: not offered on obid until main follows obid\'s browser', () => {
+describe('BROWSERAPP-7: offered on obid only once obid answers GET /v1/browser', () => {
   let root: Root, host: HTMLDivElement;
   beforeEach(() => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
@@ -41,10 +41,28 @@ describe('BROWSERAPP-7: not offered on obid until main follows obid\'s browser',
   it('browserapp_7: without ?everything there is no demo board to show', () => {
     expect(demoNumber()).toBeNull();
   });
-  it('browserapp_7: on obid there is no globe and no panel', () => {
+  it('browserapp_7: with neither obid nor the demo there is no globe and no panel', () => {
     draw(null);
     expect(host.querySelector('[data-browser="globe"]')).toBeNull();
     expect(host.querySelector('aside.br')).toBeNull();
+  });
+  it('browserapp_7: on an obid without the browser (GET /v1/browser answers 404) there is no globe, and nothing is followed', async () => {
+    const follow = vi.fn(() => () => {});
+    (window as unknown as { app: unknown }).app = { obid: { call: async () => ({ status: 404, text: '{"error":"Not found."}' }) }, browser: { follow, watch: () => () => {} } };
+    await act(async () => { root.render(<BrowserProvider board={null} live><BrowserGlobe /><BrowserPane width={640} /></BrowserProvider>); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(host.querySelector('[data-browser="globe"]')).toBeNull();
+    expect(follow).not.toHaveBeenCalled();
+    delete (window as unknown as { app?: unknown }).app;
+  });
+  it('browserapp_7: on an obid that answers GET /v1/browser, the globe shows and says how many tabs', async () => {
+    const tabs = [{ id: 't1', owner: { kind: 'agent', job: 'j1', agent: 'codex' }, title: 'Sign in', url: 'http://localhost:3000/', state: 'ready', heldBy: null, holdGeneration: 0, computer: { id: 'local', name: 'This Mac' }, ask: null, dialog: null }];
+    const call = async (_m: string, path: string) => ({ status: 200, text: JSON.stringify(path === '/v1/browser' ? { tabs, settings: { agentsUseBrowser: true, agentsUseMac: true }, seq: 1 } : { downloads: [], seq: 1 }) });
+    (window as unknown as { app: unknown }).app = { obid: { call }, browser: { follow: () => () => {}, watch: () => () => {} } };
+    await act(async () => { root.render(<BrowserProvider board={null} live><BrowserGlobe /><BrowserPane width={640} /></BrowserProvider>); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(host.querySelector('[data-browser="globe"]')?.getAttribute('aria-label')).toBe('Show the browser, 1 tab');
+    delete (window as unknown as { app?: unknown }).app;
   });
   it('browserapp_7: on the demo data at board 2, the globe and the panel show (the check above can fail)', () => {
     draw(2);

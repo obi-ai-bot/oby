@@ -35,6 +35,14 @@ export const BACKGROUND_YES = 'Yes, it can';
 export const VAULT_ADD = 'Add Secret';
 export const VAULT_REMOVE = 'Remove Secret';
 
+// The owner's hold on a browser tab (docs/contracts/browser-app.md, BROWSERAPP-9): Take control and
+// Give back, each signed by its own button's label, an empty body. A take is also the page dialog's
+// Take control to answer, and the sign-in card's Type the password (the hold the password goes in under).
+export const TAKE_CONTROL = 'Take control';
+export const TAKE_LABELS = [TAKE_CONTROL, 'Take control to answer', 'Type the password'];
+export const GIVE_BACK = 'Give back';
+const BROWSER_TAB = /^\/v1\/browser\/tabs\/[^/]+\/(take|giveBack)$/;
+
 // whether `words` @-name `owner` (a whole word, case aside), as the message box sets a mention apart
 const named = (words: string, owner: string) =>
   /^[a-z0-9-]{1,63}$/.test(owner) && new RegExp(`(?<![\\w@])@${owner}(?![\\w-])`, 'i').test(words);
@@ -56,6 +64,9 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
   }
   if (!isBody(body)) return null;
   const p = path.split('?')[0];
+  // a browser tab's take or give back: an empty body, nothing else
+  const hold = method === 'POST' ? BROWSER_TAB.exec(p) : null;
+  if (hold) return Object.keys(body).length === 0 ? [hold[1] === 'take' ? TAKE_CONTROL : GIVE_BACK] : null;
   const id = text, flag = (v: unknown) => v === true;
   if ((method === 'POST' && /^\/v1\/jobs\/[^/]+\/mode$/.test(p)) || (method === 'PUT' && p === '/v1/settings/permissions')) {
     return text(body.mode) && [...MODES, SANDBOX].some((m) => m.id === body.mode) && shaped(body, { mode: text }) ? [modeLabel(body.mode)] : null;
@@ -113,7 +124,8 @@ export function owners(method: string, path: string, body: unknown, held: string
     if (answers && i === 0 && earlier.some((e) => norm(e) === n)) continue;
     const round = w === TRY_AGAIN && MESSAGES.test(path.split('?')[0]);
     const once = i === 0 && w === DECISIONS.allow && PERMISSION.test(path.split('?')[0]);
-    const at = held.findIndex((h, j) => !used.includes(j) && (norm(h) === n || (round && norm(h) === norm(TRY_AGAIN_LABEL)) || (once && norm(h) === ALLOW_ONCE)));
+    const take = w === TAKE_CONTROL && /\/take$/.test(path.split('?')[0]);
+    const at = held.findIndex((h, j) => !used.includes(j) && (norm(h) === n || (round && norm(h) === norm(TRY_AGAIN_LABEL)) || (once && norm(h) === ALLOW_ONCE) || (take && TAKE_LABELS.some((l) => norm(l) === norm(h)))));
     if (at < 0) return null;
     used.push(at);
   }
