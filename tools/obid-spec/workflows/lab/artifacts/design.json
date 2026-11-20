@@ -1,0 +1,232 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab artifacts: a Claude Design canvas publishes as design, byte for byte, and its export zip equals the import",
+  "version": "1.0.0",
+  "description": "LAB-ARTIFACTS-1 (src/lab/artifacts.rs: check_design, ingest_blobs, export_entries, zip_of, unzip, project_of). The lab's own Claude Design project (canvas.json v3 with pages, notes, launch and a design system; three .dc.html boards; fonts, video, data; three uploads under _blob/, one whose id looks like a token) publishes from an agent's folder as the design kind: every file kept byte for byte, each upload moved under assets/ with the map in the version, the token-like id under a hashed name rather than refused. The same project as Claude Design's project zip imports (signed) as a design whose origin is the import and whose title is canvas.json's; its export zip holds exactly the import's entries, byte for byte, and a second import and export gives the same zip bytes. Its standalone HTML export holds every file and reaches nothing outside itself.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.artifacts.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            },
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:lab.artifacts.device",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "fx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "claude-design",
+        "zip": true,
+        "expect": {
+          "paths": {
+            "zip": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "1-published-as-design",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab design",
+        "conversation": "c1",
+        "job": "j1",
+        "expect": {
+          "paths": {
+            "ok": true,
+            "artifact.kind": "design",
+            "artifact.origin.kind": "own",
+            "artifact.versions.0.version": 1,
+            "artifact.versions.0.files": {
+              "$contains": "canvas.json"
+            },
+            "artifact.versions.0.blobs.Kq7Zt2mW9xR4vB8nL3pF6hJ1sD5gA0cYeU7iO2wT": {
+              "$matches": "^assets/[0-9a-f]{16}\\.png$"
+            },
+            "artifact.versions.0.blobs.font-7c1e": "assets/font-7c1e.woff2",
+            "artifact.versions.0.blobs.clip_3": "assets/clip_3.mp4",
+            "sameAsSource": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-1"
+        ]
+      }
+    },
+    {
+      "id": "1-no-upload-kept-at-its-claude-path",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab design",
+        "conversation": "c1",
+        "job": "j1",
+        "artifact": "${state.1-published-as-design.id}",
+        "expect": {
+          "paths": {
+            "ok": true,
+            "version": 1,
+            "artifact.versions.0.files": {
+              "$none": "_blob/Kq7Zt2mW9xR4vB8nL3pF6hJ1sD5gA0cYeU7iO2wT"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-1"
+        ]
+      }
+    },
+    {
+      "id": "1-imported-from-the-zip",
+      "use": "runtime.rust:lab.artifacts.import",
+      "inputs": {
+        "api": "${state.up}",
+        "device": "${state.d1}",
+        "file": "${state.fx.zip}",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.kind": "design",
+            "body.title": "Lab design",
+            "body.origin": {
+              "kind": "import",
+              "from": "claude-design-zip"
+            },
+            "body.conversation": null,
+            "body.versions.0.blobs.Kq7Zt2mW9xR4vB8nL3pF6hJ1sD5gA0cYeU7iO2wT": {
+              "$matches": "^assets/[0-9a-f]{16}\\.png$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-1"
+        ]
+      }
+    },
+    {
+      "id": "1-export-equals-the-import",
+      "use": "runtime.rust:lab.artifacts.roundtrip",
+      "inputs": {
+        "api": "${state.up}",
+        "device": "${state.d1}",
+        "zip": "${state.fx.zip}",
+        "expect": {
+          "paths": {
+            "same": true,
+            "onlyInSource": {
+              "$len": 0
+            },
+            "onlyInExport": {
+              "$len": 0
+            },
+            "changed": {
+              "$len": 0
+            },
+            "stable": true,
+            "imported.kind": "design"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-1"
+        ]
+      }
+    },
+    {
+      "id": "1-export-zip",
+      "use": "runtime.rust:lab.artifacts.export",
+      "inputs": {
+        "api": "${state.up}",
+        "id": "${state.1-imported-from-the-zip.body.id}",
+        "version": 1,
+        "as": "zip",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "type": "application/zip",
+            "entries": {
+              "$contains": {
+                "name": "project/_blob/Kq7Zt2mW9xR4vB8nL3pF6hJ1sD5gA0cYeU7iO2wT"
+              }
+            },
+            "disposition": {
+              "$contains": "Lab-design-v1.zip"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-1"
+        ]
+      }
+    },
+    {
+      "id": "1-export-html-is-one-file",
+      "use": "runtime.rust:lab.artifacts.export",
+      "inputs": {
+        "api": "${state.up}",
+        "id": "${state.1-imported-from-the-zip.body.id}",
+        "version": 1,
+        "as": "html",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "type": {
+              "$contains": "text/html"
+            },
+            "outside": {
+              "$len": 0
+            },
+            "files": {
+              "$contains": "Main.dc.html"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-1"
+        ]
+      }
+    }
+  ]
+}

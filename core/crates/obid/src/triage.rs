@@ -6,8 +6,11 @@
 //! scan, with what came from outside fenced as data, and it may only say `needs_you` or `fyi`: an
 //! item's words can at worst move others to FYI, never hide them. Until it has sorted an item, the
 //! item is `pending` (the apps don't notify it), for at most [`pending_seconds`]; then it needs the
-//! owner. Any failure sorts it `needs_you`. Sorting never acts: it answers, starts, settles and
-//! hides nothing, and every item stays listed and answerable.
+//! owner. Any failure sorts it `needs_you`. The quick model is the signed-in account with the most
+//! room of any tool that takes side calls (crate::brain::calls, B00-15); with none, nothing is
+//! scanned or sent, and the items stay `pending` and say why (a `triage` event) until one signs in
+//! (TRIAGE-ANY-2). Sorting never acts: it answers, starts, settles and hides nothing, and every
+//! item stays listed and answerable.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
@@ -37,6 +40,9 @@ const BETWEEN: i64 = 60;
 /// Items that come close together are sorted together.
 const GATHER: Duration = Duration::from_secs(2);
 const MODEL_TIMEOUT: Duration = Duration::from_secs(60);
+/// While no account can sort what waits, how often obid looks for one again, in seconds: a login
+/// the tool wrote itself (`codex login` in a terminal) sends no `accounts` event.
+const LOOK_AGAIN: i64 = 10;
 
 /// How long an outside item may wait for the model before it needs the owner: 120 seconds, or
 /// `OBID_TRIAGE_PENDING_SECONDS` (obid's tests).
@@ -189,6 +195,8 @@ pub struct Sorts<'a> {
     /// before one that only says something, then the first to come. The others are `ignore`.
     first: HashMap<(String, String), (bool, u64, &'a str)>,
     now: i64,
+    /// Nothing can sort what waits (no account to think with): it stays `pending`.
+    stuck: bool,
 }
 
 impl<'a> Sorts<'a> {
@@ -203,7 +211,13 @@ impl<'a> Sorts<'a> {
                 }
             }
         }
-        Sorts { kept, first, now }
+        let stuck = kept.why().is_some();
+        Sorts {
+            kept,
+            first,
+            now,
+            stuck,
+        }
     }
 
     /// `item`'s sort, unless it waits for the model.
@@ -219,14 +233,22 @@ impl<'a> Sorts<'a> {
     }
 
     /// `item`'s sort as the API shows it: `pending` while it waits for the model, `needs_you` once
-    /// it has waited [`pending_seconds`].
+    /// it has waited [`pending_seconds`]; `pending` for as long as no account can sort it
+    /// (TRIAGE-ANY-2), never guessed.
     pub fn get(&self, item: &Item) -> &'static str {
-        self.sorted(item)
-            .unwrap_or(if self.now - item.created < pending_seconds() {
+        self.sorted(item).unwrap_or(
+            if self.stuck || self.now - item.created < pending_seconds() {
                 PENDING
             } else {
                 NEEDS_YOU
-            })
+            },
+        )
+    }
+
+    /// Why `item` is still `pending`, when nothing can sort it ([`Kept::why`]); none while it only
+    /// waits its turn, or doesn't wait.
+    pub fn why(&self, item: &Item) -> Option<String> {
+        self.waits(item).then(|| self.kept.why()).flatten()
     }
 
     /// Whether `item` is open and waits for the model.
@@ -251,6 +273,9 @@ struct File {
 pub struct Kept {
     path: PathBuf,
     file: Mutex<File>,
+    /// Why nothing can sort the items that wait, while that holds ([`Kept::stuck`]): kept in
+    /// memory, set by the watcher ([`spawn`]) each time it looks.
+    why: Mutex<Option<String>>,
 }
 
 impl Kept {
@@ -273,7 +298,22 @@ impl Kept {
         Kept {
             path,
             file: Mutex::new(file),
+            why: Mutex::new(None),
         }
+    }
+
+    /// Why nothing can sort the items that wait for the model, while that holds.
+    pub fn why(&self) -> Option<String> {
+        self.why.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Nothing can sort the items that wait, for `why` (none: something can again): whether that
+    /// changed.
+    pub fn stuck(&self, why: Option<String>) -> bool {
+        let mut kept = self.why.lock().unwrap_or_else(|e| e.into_inner());
+        let changed = *kept != why;
+        *kept = why;
+        changed
     }
 
     pub fn get(&self, id: &str) -> Option<&'static str> {
@@ -458,9 +498,11 @@ where
 }
 
 /// Sorts what no rule can, in the background, with the brain's quick model: soon after such an item
-/// comes, at most one call a minute and [`PER_HOUR`] an hour. With no Claude Code account nothing is
-/// scanned or sent, and the items are sorted once one is added. An item that waited
-/// [`pending_seconds`] unsorted needs the owner, and the apps hear it.
+/// comes, at most one call a minute and [`PER_HOUR`] an hour. With no account to think with
+/// (crate::brain::calls::thinker) nothing is scanned or sent: the items stay `pending`, the apps
+/// hear them again and a `triage` event says why ([`tell_why`]), and they are sorted once one signs
+/// in. An item that waited [`pending_seconds`] unsorted while one could sort it needs the owner, and
+/// the apps hear it.
 pub fn spawn(shared: Arc<Shared>) {
     use tokio::sync::broadcast::error::RecvError;
     let mut bus = shared.events.subscribe();
@@ -474,17 +516,20 @@ pub fn spawn(shared: Arc<Shared>) {
             let now = obi_protocol::time::now();
             let waiting = shared.link.unsorted();
             told.retain(|id| waiting.iter().any(|i| &i.id == id));
+            let brain = match waiting.is_empty() {
+                true => Ok(None),
+                false => quick_model(&shared).map(Some),
+            };
+            tell_why(&shared, &waiting, brain.as_ref().err());
+            let brain = brain.ok().flatten();
+            // While nothing can sort them, they stay `pending`: none is due.
             let due: Vec<String> = waiting
                 .iter()
+                .filter(|_| shared.link.triage.why().is_none())
                 .filter(|i| now - i.created >= pending_seconds() && !told.contains(&i.id))
                 .map(|i| i.id.clone())
                 .collect();
             told.extend(due.iter().cloned());
-            let brain = if waiting.is_empty() {
-                None
-            } else {
-                quick_model(&shared)
-            };
             // What was past its time when obid started, the apps read with the inbox.
             if first {
                 tracing::info!("triage: {} item(s) wait for the quick model", waiting.len());
@@ -517,14 +562,18 @@ pub fn spawn(shared: Arc<Shared>) {
             }
             if let Some(due) = waiting
                 .iter()
-                .filter(|i| !told.contains(&i.id))
+                .filter(|i| brain.is_some() && !told.contains(&i.id))
                 .map(|i| i.created + pending_seconds())
                 .min()
             {
                 next = Some(next.map_or(due, |at: i64| at.min(due)));
             }
-            // Nothing to do until then, a new item to sort, or (with none to sort it) an account.
+            // Nothing to do until then, a new item to sort, or (with none to sort it) an account:
+            // signed in through Oby (an `accounts` event) or by the tool itself, looked for again.
             let stuck = !waiting.is_empty() && brain.is_none();
+            if stuck {
+                next = Some(next.map_or(now + LOOK_AGAIN, |at: i64| at.min(now + LOOK_AGAIN)));
+            }
             let until = next.map(|at| {
                 tokio::time::Instant::now() + Duration::from_secs((at - now).max(0) as u64)
             });
@@ -537,8 +586,10 @@ pub fn spawn(shared: Arc<Shared>) {
                 };
                 tokio::select! {
                     got = bus.recv() => match got {
-                        Ok(e) if (e.name == "inbox" && e.data["triage"] == PENDING
-                                  && e.data["state"] == "open")
+                        // An open item that may wait for the model, whatever it shows: one
+                        // that came in past its time to wait reads `needs_you` already.
+                        Ok(e) if (e.name == "inbox" && e.data["state"] == "open"
+                                  && (e.data["triage"] == PENDING || e.data["triage"] == NEEDS_YOU))
                             || (stuck && e.name == "accounts") => {
                             // Nearby ones come together.
                             tokio::select! {
@@ -558,9 +609,36 @@ pub fn spawn(shared: Arc<Shared>) {
     });
 }
 
-/// The brain's quick model, as the listener and the watcher ask it: none with no Claude Code account.
-fn quick_model(shared: &Shared) -> Option<crate::brain::calls::Quick> {
-    crate::brain::calls::quick(shared, "triage")
+/// The brain's quick model, as the listener and the watcher ask it: why there's none with no
+/// account to think with.
+fn quick_model(shared: &Shared) -> Result<crate::brain::calls::Quick, String> {
+    crate::brain::calls::thinker(shared, "triage")
+}
+
+/// What an item still `pending` says while nothing can sort it (TRIAGE-ANY-2).
+fn waiting_why(none: &str) -> String {
+    format!("Oby can't sort it yet: {none}. It's sorted once one is.")
+}
+
+/// Keeps why nothing can sort the items `waiting` (`none`: why there's no account to think with),
+/// or that something can. When that changes, the apps hear each item again, now `pending` for
+/// good or sorted as it should be, and a `triage` event (obid only) says how many wait and why,
+/// `why` null once they can be sorted.
+fn tell_why(shared: &Shared, waiting: &[Item], none: Option<&String>) {
+    let why = none.map(|none| waiting_why(none));
+    if !shared.link.triage.stuck(why.clone()) {
+        return;
+    }
+    match &why {
+        Some(why) => tracing::warn!("triage: {} item(s) wait: {why}", waiting.len()),
+        None => tracing::info!("triage: the items that wait can be sorted"),
+    }
+    let ids: Vec<String> = waiting.iter().map(|i| i.id.clone()).collect();
+    shared.link.retell(&ids);
+    shared.events.send(
+        "triage",
+        serde_json::json!({"waiting": ids.len(), "why": why}),
+    );
 }
 
 #[cfg(test)]
@@ -884,6 +962,35 @@ mod tests {
         let mut done = work("assigned", 8, "sangam", "Old");
         done.done = Some(1);
         assert!(!Sorts::of(&kept, [&done].into_iter(), 0).waits(&done));
+    }
+
+    /// TRIAGE-ANY-2: while no account can sort what waits, it stays `pending` past its time and
+    /// says why; a sorted item or one a rule sorts says nothing. Once an account can, the wait's
+    /// time holds again.
+    #[test]
+    fn a_stuck_item_stays_pending_and_says_why() {
+        let kept = Kept::open(&scratch("stuck"));
+        let mut assigned = work("assigned", 7, "sangam", "Fix the login");
+        assigned.created = 1000;
+        let review = work("reviews", 12, "sangam", "Review it");
+        let late = 1000 + pending_seconds();
+        let why = waiting_why(crate::brain::calls::NO_ACCOUNT);
+        assert!(kept.stuck(Some(why.clone())));
+        assert!(!kept.stuck(Some(why.clone())), "no change, nothing to tell");
+        let sorts = Sorts::of(&kept, [&assigned, &review].into_iter(), late);
+        assert_eq!(sorts.get(&assigned), PENDING);
+        assert_eq!(sorts.why(&assigned).as_deref(), Some(why.as_str()));
+        assert_eq!((sorts.get(&review), sorts.why(&review)), (NEEDS_YOU, None));
+        assert!(kept.stuck(None));
+        let sorts = Sorts::of(&kept, [&assigned].into_iter(), late);
+        assert_eq!(
+            (sorts.get(&assigned), sorts.why(&assigned)),
+            (NEEDS_YOU, None)
+        );
+        kept.stuck(Some(why));
+        kept.keep(&[(assigned.id.clone(), FYI)]);
+        let sorts = Sorts::of(&kept, [&assigned].into_iter(), late);
+        assert_eq!((sorts.get(&assigned), sorts.why(&assigned)), (FYI, None));
     }
 
     #[test]

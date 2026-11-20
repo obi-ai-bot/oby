@@ -1,0 +1,161 @@
+{
+  "schemaVersion": "2",
+  "name": "T3 accounts: an agent that exits mid-turn is tried again in its session",
+  "version": "1.0.0",
+  "description": "T3 Code's process exits (an app-server that exits before initialize, a process that dies mid-turn): Claude Code's and Codex's processes exit with no result. Each task stays running in its session, its step saying it tries again and when, with no error shown (RECOVERY-1, RECOVERY-5); Stop ends the wait (RECOVERY-5).",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": [
+                {
+                  "id": "cx",
+                  "name": "Work"
+                }
+              ]
+            }
+          }
+        },
+        "person": {
+          ".codex/auth.json": {
+            "OPENAI_API_KEY": "fake-codex"
+          }
+        }
+      }
+    },
+    {
+      "id": "claude-exits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "DIE",
+            "account": "stand-in"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "recovery-1-claude-is-tried-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.claude-exits.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running",
+            "reason": null,
+            "step": "Trying again in 1 minute (1 of 3)"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-1",
+          "RECOVERY-5"
+        ]
+      }
+    },
+    {
+      "id": "codex-exits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "DIE",
+            "account": "cx"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "recovery-1-codex-is-tried-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.codex-exits.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running",
+            "reason": null,
+            "step": "Trying again in 1 minute (1 of 3)"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-1",
+          "RECOVERY-5"
+        ]
+      }
+    },
+    {
+      "id": "stop",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.claude-exits.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "recovery-5-stop-ends-the-wait",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.claude-exits.body.id}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "stopped"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-5"
+        ]
+      }
+    }
+  ]
+}

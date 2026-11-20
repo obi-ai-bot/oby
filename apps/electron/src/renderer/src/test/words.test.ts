@@ -224,7 +224,7 @@ describe('signed words', () => {
     expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', { said: 'Fix the login', new: true }, undefined, ['/Users/me/never-picked'])).not.toBeNull();
   });
 
-  it('words_19_a_new_conversations_workspace_signs_with_its_words', () => {
+  it('words_20_a_new_conversations_workspace_signs_with_its_words', () => {
     const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
     const plan = (workspace: unknown, more: Record<string, unknown> = { new: true }) =>
       ({ said: 'Fix the login', folders: ['/Users/me/api'], ...more, workspace });

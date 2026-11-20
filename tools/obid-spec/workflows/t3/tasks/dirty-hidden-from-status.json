@@ -1,0 +1,353 @@
+{
+  "schemaVersion": "2",
+  "name": "T3: work git status hides keeps its worktree",
+  "version": "1.0.0",
+  "description": "T3 Code's dirty-tree kind (fe565c8958: cleanup trusted git status, which skips files marked skip-worktree or assume-unchanged): a stopped task put away whose edit to a tracked file git status doesn't show keeps its worktree and the edit (CLEANUP-4); a task put away with nothing left in it loses its worktree on the same pass (CLEANUP-5), so a pass did run. The hidden edit's task is judged only once that pass is over: no job event says its worktree was freed, watched for 10 s more (the same pass frees the next worktree well under a second later).",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "t3"
+  ],
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "follow",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "d",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "e",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "d-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.d.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "e-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.e.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "d-worktree",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.d.body.id}/.git",
+        "within": 30,
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "d-edits-readme",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "write",
+        "path": "worktrees/${state.d.body.id}/README.md",
+        "text": "# fixture-app\nthe owner's edit, not committed\n"
+      }
+    },
+    {
+      "id": "d-hides-it",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "worktrees/${state.d.body.id}",
+        "args": [
+          "update-index",
+          "--skip-worktree",
+          "README.md"
+        ]
+      }
+    },
+    {
+      "id": "d-status",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "worktrees/${state.d.body.id}",
+        "args": [
+          "status",
+          "--porcelain",
+          "--untracked-files=normal"
+        ]
+      }
+    },
+    {
+      "id": "git-status-shows-nothing",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.d-status}",
+        "expect": {
+          "paths": {
+            "out": ""
+          }
+        }
+      }
+    },
+    {
+      "id": "d-diff",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "worktrees/${state.d.body.id}",
+        "args": [
+          "diff",
+          "--name-only"
+        ]
+      }
+    },
+    {
+      "id": "git-diff-shows-nothing",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.d-diff}",
+        "expect": {
+          "paths": {
+            "out": ""
+          }
+        }
+      }
+    },
+    {
+      "id": "d-stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.d.body.id}/stop",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "stopped"
+          }
+        }
+      }
+    },
+    {
+      "id": "e-stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.e.body.id}/stop",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "stopped"
+          }
+        }
+      }
+    },
+    {
+      "id": "d-archived",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.d.body.id}/archive",
+        "expect": {
+          "status": 200,
+          "body": {
+            "archived": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "e-archived",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.e.body.id}/archive",
+        "expect": {
+          "status": 200,
+          "body": {
+            "archived": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cleanup-5-the-empty-one-is-freed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.e.body.id}",
+        "within": 150,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "stopped",
+            "worktreeFreed": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLEANUP-5"
+        ]
+      }
+    },
+    {
+      "id": "cleanup-4-the-pass-frees-no-other-worktree",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "job",
+        "none": true,
+        "seconds": 10,
+        "expect": {
+          "paths": {
+            "id": "${state.d.body.id}",
+            "worktreeFreed": {
+              "$exists": true
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLEANUP-4"
+        ],
+        "expectedRed": "#2658: cleanup trusts git status, which skips skip-worktree files"
+      }
+    },
+    {
+      "id": "cleanup-4-the-hidden-edit-keeps-its-worktree",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.d.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "worktreeFreed": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLEANUP-4"
+        ],
+        "expectedRed": "#2658: cleanup trusts git status, which skips skip-worktree files"
+      }
+    },
+    {
+      "id": "cleanup-4-the-edit-is-still-there",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.d.body.id}/README.md",
+        "expect": {
+          "exists": true,
+          "text": {
+            "$contains": "the owner's edit"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLEANUP-4"
+        ],
+        "expectedRed": "#2658: cleanup trusts git status, which skips skip-worktree files"
+      }
+    }
+  ]
+}

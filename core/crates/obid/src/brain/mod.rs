@@ -342,7 +342,7 @@ pub async fn plan(
         back,
         now,
     };
-    let heard = shared.turns.ask(&begun.turn, asking);
+    let heard = shared.turns.ask(&begun.turn, &begun.conversation, asking);
     drain(&shared, &begun.conversation);
     match heard.await {
         Ok(turn::Heard::Answer(body)) => Ok((StatusCode::OK, axum::Json(body)).into_response()),
@@ -386,6 +386,12 @@ pub fn drain(shared: &Arc<Shared>, conversation: &str) {
                 let empty = || shared.conversations.queued(&conversation).is_empty();
                 if shared.turns.done_draining(&conversation, empty) {
                     guard.2.set(true);
+                    // Deleted meanwhile, its file took the words that waited there with it: their
+                    // requests hear `none`, as a cancel's (DELIVERY-11). A request asks before it
+                    // asks for a drain, so one that came after this drain ended has its own.
+                    if !shared.conversations.exists(&conversation) {
+                        answer_waiting(&shared, &conversation);
+                    }
                     return;
                 }
                 continue;
@@ -586,6 +592,19 @@ fn cancel_waiting(shared: &Arc<Shared>, conversation: &str, turns: &[String]) ->
             .tell(turn, turn::Heard::Answer(none_body(conversation)));
     }
     dropped
+}
+
+/// Every request still waiting for words said in `conversation`, which is gone, hears `none`
+/// (DELIVERY-11), and an earlier one's recap waits for the next answer, as after a cancel.
+fn answer_waiting(shared: &Arc<Shared>, conversation: &str) {
+    for turn in shared.turns.waiting_in(conversation) {
+        if let Some(since) = shared.turns.take_asking(&turn).and_then(|a| a.back) {
+            recap::keep(shared.clone(), since, obi_protocol::time::now());
+        }
+        shared
+            .turns
+            .tell(&turn, turn::Heard::Answer(none_body(conversation)));
+    }
 }
 
 /// Why words Oby's brain wrote in `conversation` aren't on obid's allowlist (crate::secretspec):

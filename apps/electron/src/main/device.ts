@@ -10,6 +10,7 @@ import { INPUT_PATH, mayInput } from './browserInput';
 import { ipc } from './ipc';
 import { FINISH_WORDS } from '../shared/finish';
 import { flag, oneOf, optional, safeInteger, string, type Decoder } from '../shared/decode';
+import { BROWSER_PATH, browserAskPath, browserTabPath } from '../shared/obid-wire';
 
 // This Mac's device key for obid (docs/runner-api.md, "POST /v1/devices"), which makes a Confirm
 // the owner's (#776). A P-256 key made here in main, kept in the app's own folder as a 0600 file,
@@ -204,6 +205,35 @@ export async function ownersWords(method: string, path: string, body: unknown, o
 }
 
 // Fetch and verify the current options before signing; the revision and destination are covered.
+// A password or a code typed in Oby's card, put straight into the page's field (docs/contracts/browser-app.md,
+// BROWSERAPP-12), on the owner's own press of Fill in (the preload saw it, `clicked`) and a real click
+// or Enter main saw itself: one input, one fill. Main holds the tab for it if this device doesn't
+// already, puts the value in (`…/secret`), answers the ask it was for and gives back only the hold it
+// took, each request signed. The value goes to obid once and nowhere else: never logged, kept or
+// answered back; a refusal says obid's words, which never carry it. Null once filled, else why not.
+export async function fillSecret(tab: string, field: string, value: string, ask: string | undefined, clicked: boolean): Promise<string | null> {
+  if (!clicked || !takeInput()) return 'Filling in takes your own click.';
+  const refused = (a: Answer) => {
+    if (a.status >= 200 && a.status < 300) return null;
+    try { return (JSON.parse(a.text) as { error?: string }).error ?? `obid answered ${a.status}.`; } catch { return a.status ? `obid answered ${a.status}.` : a.text; }
+  };
+  try {
+    const id = (device ??= await register());
+    const send = (path: string, body: unknown) => obid('POST', path, body, signedHeader(deviceKey(), id, 'POST', path, body));
+    const list = await obid('GET', BROWSER_PATH);
+    let heldBy: string | null = null;
+    try { heldBy = (JSON.parse(list.text) as { tabs?: { id: string; heldBy: string | null }[] }).tabs?.find((t) => t.id === tab)?.heldBy ?? null; } catch { /* taken below */ }
+    const took = heldBy !== id;
+    if (took) { const why = refused(await send(browserTabPath(tab, 'take'), {})); if (why) return why; }
+    const filled = refused(await send(browserTabPath(tab, 'secret'), { field, value }));
+    if (!filled && ask) await send(browserAskPath(ask), {});
+    if (took) await send(browserTabPath(tab, 'giveBack'), {});
+    return filled;
+  } catch (err) {
+    return `Oby couldn’t sign the fill: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
 export async function answerLimit(id: string, revision: number, choice: string, account?: string): Promise<Answer> {
   try {
     const current = await obid('GET', '/v1/limit-decisions');

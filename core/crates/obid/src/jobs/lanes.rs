@@ -57,6 +57,17 @@ impl Jobs {
         cfg!(target_os = "macos") && mode == Mode::Bypass
     }
 
+    /// Where a run reaches obid's own servers (Oby's tools, Tetrix), from obid's address for agents
+    /// (`Connections::api_url`): an own run is on the host, so on loopback, never at `10.0.2.2`,
+    /// slirp4netns's host, which only Linux's box reaches (LANES-26). A boxed run, and every run on
+    /// macOS, keeps the address as it is.
+    pub(crate) fn agent_api(api: &str, own: bool) -> String {
+        match api.strip_prefix("http://10.0.2.2:") {
+            Some(port) if own => format!("http://127.0.0.1:{port}"),
+            _ => api.to_owned(),
+        }
+    }
+
     /// Whether `tool` on `account` reaches its model only through obid's relay (a ChatGPT login),
     /// so its run never leaves Oby's box, in any lane.
     pub(crate) fn relayed(tool: Tool, account: &crate::config::Account) -> bool {
@@ -588,6 +599,22 @@ pub(crate) fn claude_place(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// LANES-26 (docs/contracts/lanes.md): an own run reaches obid's servers on loopback; a boxed
+    /// one keeps the box's host address, and macOS's loopback address stays as it is.
+    #[test]
+    fn lanes_26_an_own_run_reaches_obid_on_loopback() {
+        let linux = "http://10.0.2.2:7777";
+        assert_eq!(Jobs::agent_api(linux, true), "http://127.0.0.1:7777");
+        assert_eq!(
+            Jobs::agent_api(&format!("{linux}/v1/agent/mcp/c"), true),
+            "http://127.0.0.1:7777/v1/agent/mcp/c"
+        );
+        assert_eq!(Jobs::agent_api(linux, false), linux);
+        let mac = "http://127.0.0.1:7777";
+        assert_eq!(Jobs::agent_api(mac, true), mac);
+        assert_eq!(Jobs::agent_api(mac, false), mac);
+    }
 
     /// LANES-1 (docs/contracts/lanes.md): another Oby's job, one marked `untrusted` and Oby's own
     /// review are foreign; one marked only `foreign` or `reached` is the owner's, and so own.

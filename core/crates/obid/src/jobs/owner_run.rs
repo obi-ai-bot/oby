@@ -4,6 +4,42 @@
 
 use super::*;
 
+/// Whether the job's worktree is there for git: its `.git` is, and when it is a file, the git
+/// folder it points at is too. A worktree whose folder went (the owner deleted it, a disk
+/// cleanup) or whose clone went while obid was down isn't, and is made again (JOBSTATE-20).
+fn worktree_there(worktree: &Path) -> bool {
+    let dot_git = worktree.join(".git");
+    let Ok(pointer) = std::fs::read_to_string(&dot_git) else {
+        return dot_git.exists();
+    };
+    pointer
+        .strip_prefix("gitdir:")
+        .map(|dir| worktree.join(dir.trim()))
+        .is_none_or(|dir| dir.exists())
+}
+
+/// Clears the way for the job's worktree to be made again in `clone` (JOBSTATE-20, as T3 Code
+/// does, pingdotgg/t3code 0604547a3a): a folder whose git folder went moves aside, beside it as
+/// `<id>.orphaned`, so what was in it isn't lost, and git forgets the worktrees whose folders went
+/// (`git worktree prune`), this one's among them, which `git worktree add` refuses to make again.
+/// Called under the clone's lock, as the add is.
+async fn clear_for_worktree(id: &str, clone: &Path, worktree: &Path) -> Result<(), String> {
+    if std::fs::symlink_metadata(worktree).is_ok() {
+        let aside = worktree.with_file_name(format!("{id}.orphaned"));
+        let _ = std::fs::remove_dir_all(&aside);
+        std::fs::rename(worktree, &aside)
+            .map_err(|e| format!("obid can't move the job's broken worktree aside: {e}"))?;
+        tracing::warn!(
+            "job {id}: its worktree's git folder is gone, so obid made it again; what was in it is in {}",
+            aside.display()
+        );
+    }
+    git::git(clone, &["worktree", "prune"])
+        .await
+        .map_err(|e| format!("obid couldn't clear the job's old worktree: {e}"))?;
+    Ok(())
+}
+
 impl Jobs {
     /// The owner's own work: a branch, rounds of the agent and the check, its commits counted.
     pub(super) async fn run_owner_job(
@@ -32,7 +68,7 @@ impl Jobs {
 
         // Only a job that could get the owner's secrets asks GitHub (crate::secretspec).
         // A job on an issue asks once its issue is quoted, below.
-        if !worktree.join(".git").exists()
+        if !worktree_there(&worktree)
             && job.not_owners_words().is_none()
             && job.issue.is_none()
             && job.pr.is_some()
@@ -41,7 +77,7 @@ impl Jobs {
         }
         let preparing = self.preparing(&repo.repo);
         let mut prepared = preparing.lock().await;
-        if !worktree.join(".git").exists() {
+        if !worktree_there(&worktree) {
             // A clone someone else's commits came into is made again before a new job uses it;
             // Oby's review only reads it, and finds the commit it reads below either way.
             if job.clone_root.is_none()
@@ -195,6 +231,7 @@ impl Jobs {
                 worktree.as_os_str(),
                 branch_ref.as_ref(),
             ]);
+            Box::pin(clear_for_worktree(id, &clone, &worktree)).await?;
             git::run(&clone, &args, &[])
                 .await
                 .map_err(|e| format!("obid couldn't make the job's worktree: {e}"))?;

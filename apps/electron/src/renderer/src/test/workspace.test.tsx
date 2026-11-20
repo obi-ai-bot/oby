@@ -7,7 +7,7 @@ import { wordsOf } from '../../../shared/words';
 
 // A conversation's workspace in the app (docs/contracts/folders.md, WORKSPACE-2 to 5): Home's box
 // offers "This folder" or "A new worktree" with folders picked, and sends the choice with the words
-// that start the conversation, in a shape main signs (WORDS-19); a conversation's finishing line
+// that start the conversation, in a shape main signs (WORDS-20); a conversation's finishing line
 // shows what obid says each folder can do, and a click goes through main's own dialog and
 // signature (window.app.obid.finish). The real Home and FinishLine on live.ts, main's bridge stood
 // in for as obid.
@@ -115,7 +115,7 @@ describe('WORKSPACE-3: Home’s box chooses where the conversation works', () =>
     await until(() => expect(plans(o.calls)).toHaveLength(1));
     const body = plans(o.calls)[0];
     expect(body).toMatchObject({ said: 'Tidy the notes', new: true, folders: [API], workspace: 'worktree' });
-    // the shape main signs: its words alone, the choice with the body (WORDS-19)
+    // the shape main signs: its words alone, the choice with the body (WORDS-20)
     expect(wordsOf('POST', '/v1/plans', body)).toEqual(['Tidy the notes']);
   });
 

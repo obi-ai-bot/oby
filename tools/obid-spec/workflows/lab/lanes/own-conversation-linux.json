@@ -1,0 +1,112 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab: the owner's own Claude Code conversation runs in the own lane on a real Linux obid",
+  "version": "1.0.0",
+  "description": "LANES-12 and LANES-26 against the real obid this checkout builds, on an isolated Ubuntu 24.04 machine (lab.machine.obid, Claude Code's stand-in fake-harness). The owner's conversation reaches Oby's own tools from the own lane (obid gives it 127.0.0.1, not 10.0.2.2, which only obid's box reaches), runs Claude Code's own Bash in its room, and its session ran on the account's own folder with every settings source. Red before the port: on origin/dev the conversation was boxed off macOS (no Bash, a login copy); with the lane but without the loopback rewrite, Oby's tools were unreachable. No model call, no login. Skipped without OrbStack.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "linux-obid",
+      "use": "runtime.rust:lab.machine.obid-build",
+      "inputs": {
+        "limit": 1800
+      }
+    },
+    {
+      "id": "box",
+      "use": "runtime.rust:lab.machine.up",
+      "inputs": {
+        "name": "lanes-obid"
+      }
+    },
+    {
+      "id": "obid",
+      "use": "runtime.rust:lab.machine.obid",
+      "inputs": {
+        "machine": "${state.box}",
+        "limit": 900
+      }
+    },
+    {
+      "id": "lanes-26-oby-tools-on-loopback",
+      "use": "runtime.rust:lab.remote.local-call",
+      "ui": {
+        "proves": [
+          "LANES-26"
+        ]
+      },
+      "inputs": {
+        "machine": "${state.box}",
+        "obid": "${state.obid}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "TOOLS",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "body.kind": "reply",
+            "body.text": {
+              "$contains": "tools: oby_"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "lanes-12-own-bash-on-linux",
+      "use": "runtime.rust:lab.remote.local-call",
+      "ui": {
+        "proves": [
+          "LANES-12"
+        ]
+      },
+      "inputs": {
+        "machine": "${state.box}",
+        "obid": "${state.obid}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "BASH true",
+          "conversation": "${state.lanes-26-oby-tools-on-loopback.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "body.text": {
+              "$contains": "bash: ran 0 in"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "lanes-12-on-the-accounts-own-folder",
+      "use": "runtime.rust:lab.machine.run",
+      "ui": {
+        "proves": [
+          "LANES-12"
+        ]
+      },
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "tail -n 1 /home/oby/.oby/home/conversations/${state.lanes-26-oby-tools-on-loopback.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": {
+              "$contains": "\"config\":\"/home/oby/.oby/home/accounts/stand-in\""
+            }
+          }
+        }
+      }
+    }
+  ]
+}

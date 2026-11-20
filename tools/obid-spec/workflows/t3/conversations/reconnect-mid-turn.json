@@ -1,0 +1,254 @@
+{
+  "schemaVersion": "2",
+  "name": "T3 conversations: the event stream reconnected in the middle of a turn",
+  "version": "1.0.0",
+  "description": "T3 Code's reconnect fixes (streamed text lost after a reconnect, events missed or doubled across it): a client that followed a turn until it ran, then reconnects after it ended with the last id it saw, gets the rest of that turn once, in order, the answer's whole text in Oby's turn (EVENTS-2); the same by a Last-Event-ID header, as EventSource reconnects by itself, and with both the query wins (EVENTS-4).",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Ready.",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Ready."
+          }
+        }
+      }
+    },
+    {
+      "id": "lingering",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "LINGER 3000",
+          "conversation": "${state.said.body.conversation}",
+          "id": "7a3e0000-0000-4000-8000-000000000051"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "seen-running",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "turnDelivery",
+        "expect": {
+          "paths": {
+            "id": "7a3e0000-0000-4000-8000-000000000051",
+            "delivery.status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "seen-it-queued",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "turn",
+        "expect": {
+          "paths": {
+            "id": "7a3e0000-0000-4000-8000-000000000051"
+          }
+        }
+      }
+    },
+    {
+      "id": "it-ends-while-away",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.lingering}",
+        "seconds": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "waited"
+          }
+        }
+      }
+    },
+    {
+      "id": "reconnected",
+      "use": "runtime.rust:t3.follow",
+      "inputs": {
+        "obid": "${state.o}",
+        "name": "reconnected",
+        "after": "${state.seen-running.id}"
+      }
+    },
+    {
+      "id": "events-2-the-rest-of-the-turn-once-in-order",
+      "use": "runtime.rust:t3.trail",
+      "inputs": {
+        "name": "reconnected",
+        "conversation": "${state.said.body.conversation}",
+        "events": [
+          "turn",
+          "turnDelivery"
+        ],
+        "show": [
+          "who",
+          "delivery.status",
+          "text"
+        ],
+        "until": {
+          "event": "turnDelivery",
+          "expect": {
+            "paths": {
+              "delivery.status": "answered",
+              "id": "7a3e0000-0000-4000-8000-000000000051"
+            }
+          }
+        },
+        "settle": 1500,
+        "expect": {
+          "paths": {
+            "trail": [
+              "turn oby waited",
+              "turnDelivery user answered LINGER 3000"
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "EVENTS-2"
+        ]
+      }
+    },
+    {
+      "id": "reconnected-by-header",
+      "use": "runtime.rust:t3.follow",
+      "inputs": {
+        "obid": "${state.o}",
+        "name": "by-header",
+        "lastEventId": "${state.seen-running.id}"
+      }
+    },
+    {
+      "id": "events-4-the-header-resumes-the-same",
+      "use": "runtime.rust:t3.trail",
+      "inputs": {
+        "name": "by-header",
+        "conversation": "${state.said.body.conversation}",
+        "events": [
+          "turn",
+          "turnDelivery"
+        ],
+        "show": [
+          "who",
+          "delivery.status",
+          "text"
+        ],
+        "until": {
+          "event": "turnDelivery",
+          "expect": {
+            "paths": {
+              "delivery.status": "answered",
+              "id": "7a3e0000-0000-4000-8000-000000000051"
+            }
+          }
+        },
+        "settle": 1500,
+        "expect": {
+          "paths": {
+            "trail": [
+              "turn oby waited",
+              "turnDelivery user answered LINGER 3000"
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "EVENTS-4"
+        ]
+      }
+    },
+    {
+      "id": "both",
+      "use": "runtime.rust:t3.follow",
+      "inputs": {
+        "obid": "${state.o}",
+        "name": "both",
+        "after": "${state.seen-running.id}",
+        "lastEventId": "${state.seen-it-queued.id}"
+      }
+    },
+    {
+      "id": "events-4-with-both-the-query-wins",
+      "use": "runtime.rust:t3.trail",
+      "inputs": {
+        "name": "both",
+        "conversation": "${state.said.body.conversation}",
+        "events": [
+          "turn",
+          "turnDelivery"
+        ],
+        "show": [
+          "who",
+          "delivery.status",
+          "text"
+        ],
+        "until": {
+          "event": "turnDelivery",
+          "expect": {
+            "paths": {
+              "delivery.status": "answered",
+              "id": "7a3e0000-0000-4000-8000-000000000051"
+            }
+          }
+        },
+        "settle": 1500,
+        "expect": {
+          "paths": {
+            "trail": [
+              "turn oby waited",
+              "turnDelivery user answered LINGER 3000"
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "EVENTS-4"
+        ]
+      }
+    }
+  ]
+}

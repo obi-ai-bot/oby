@@ -1,0 +1,283 @@
+{
+  "schemaVersion": "2",
+  "name": "T3 accounts: Codex's usage limit is read from Codex, never from the agent's words",
+  "version": "1.0.0",
+  "description": "T3 Code's usage-limit bugs (relaying \"out of credits\" instead of naming the limit and its reset, limit-stopped turns shown as completed): a Codex turn that fails with a usage limit only its codexErrorInfo says moves to Claude Code by itself, saying why (LIMITS-15); on an account the owner named it waits by itself, its line naming the account and when it resumes, with no card (LIMITS-5, ACCOUNTS-33). A turn whose agent's words name a limit while Codex's own error is another is no limit: Try again, no account marked full (RECOVERY-7, RECOVERY-19).",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": [
+                {
+                  "id": "cx",
+                  "name": "Work"
+                }
+              ]
+            }
+          }
+        },
+        "person": {
+          ".codex/auth.json": {
+            "OPENAI_API_KEY": "fake-codex"
+          }
+        }
+      }
+    },
+    {
+      "id": "asked-of-codex",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "PLAN USED UP",
+            "agent": "codex"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "codex",
+            "account": "cx"
+          }
+        }
+      }
+    },
+    {
+      "id": "limits-15-it-moves-to-claude-saying-why",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.asked-of-codex.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "agent": "claude",
+            "account": "stand-in",
+            "moves": {
+              "$any": {
+                "from": "Codex · Work",
+                "to": "Claude Code · Stand-in",
+                "why": "Codex reached its limit, so Claude Code took over"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-15"
+        ]
+      }
+    },
+    {
+      "id": "p",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "p",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": [
+                {
+                  "id": "cx",
+                  "name": "Work"
+                }
+              ]
+            }
+          }
+        },
+        "person": {
+          ".codex/auth.json": {
+            "OPENAI_API_KEY": "fake-codex"
+          }
+        }
+      }
+    },
+    {
+      "id": "words-of-a-limit",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.p}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "WORDS OF A LIMIT",
+            "account": "cx"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "recovery-7-the-agents-words-are-no-limit",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.p}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.words-of-a-limit.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "nextStep": "Try again",
+            "accountLimit": null,
+            "resumesAt": null,
+            "waiting": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-7",
+          "RECOVERY-19"
+        ]
+      }
+    },
+    {
+      "id": "recovery-7-the-account-isnt-marked-full",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.p}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "cx",
+                "fullUntil": null
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-7"
+        ]
+      }
+    },
+    {
+      "id": "named-to-codex",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.p}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "PLAN USED UP",
+            "account": "cx"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "limits-5-it-waits-saying-for-what",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.p}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.named-to-codex.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "queued",
+            "account": "cx",
+            "resumesAt": {
+              "$type": "string"
+            },
+            "reason": null,
+            "waiting": {
+              "kind": "cap",
+              "text": {
+                "$matches": "^Codex is at its limit: resuming when it has room"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-5",
+          "ACCOUNTS-33"
+        ]
+      }
+    },
+    {
+      "id": "limits-5-no-card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.p}",
+        "method": "GET",
+        "path": "/v1/limit-decisions",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-5"
+        ]
+      }
+    },
+    {
+      "id": "the-account-is-full-until-its-reset",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.p}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "cx",
+                "fullUntil": {
+                  "$type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab artifacts: everything the API started is stopped at the end",
+  "version": "1.0.0",
+  "description": "What the artifacts' API starts it stops (src/lab/artifacts.rs, cleanup): up, it answers on its port; after lab.artifacts.down, the same cleanup the suite runs at every workflow's end, nothing answers there.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.artifacts.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "alive",
+      "use": "runtime.rust:lab.artifacts.alive",
+      "inputs": {
+        "api": "${state.up}",
+        "expect": {
+          "paths": {
+            "answers": true
+          }
+        }
+      }
+    },
+    {
+      "id": "down",
+      "use": "runtime.rust:lab.artifacts.down",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "stopped": true
+          }
+        }
+      }
+    },
+    {
+      "id": "gone",
+      "use": "runtime.rust:lab.artifacts.alive",
+      "inputs": {
+        "api": "${state.up}",
+        "expect": {
+          "paths": {
+            "answers": false
+          }
+        }
+      }
+    }
+  ]
+}

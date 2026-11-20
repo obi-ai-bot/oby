@@ -118,7 +118,7 @@ const answers = new Map<string, string>();
 
 // One press of an inbox item's button (RECEIPTS-16): once main's own read says obid takes keys,
 // the press's own key goes with its answer, and an answer obid didn't answer goes again, the same
-// body and key, a few times a second apart, as the window's do (live.ts, sent). Allow and Deny are
+// body and key, a few times a second apart, as the window's do (live.ts, sent). Those in SIGNED are
 // signed afresh each time; any answer of obid's is final.
 async function pressed(path: string, words: string, signs: boolean, tries = 3, pause = 1000): Promise<Answer> {
   const body = await takesKeys() ? { answer: words, clientRequestId: randomUUID() } : { answer: words };
@@ -146,8 +146,13 @@ export const waiting = (want: Map<string, { needs: boolean }>) => {
   return n ? String(n) : '';
 };
 
+// The answers main signs on the owner's own click of the banner's action (`notificationWords`):
+// a permission's Allow and Deny, and a teammate's review request's Accept and Decline, which obid
+// refuses unsigned (SPHERE-17, alerts.md ALERTS-22). Start goes with obid's token, as the window's.
+const SIGNED = new Set(['Allow', 'Deny', 'Accept', 'Decline']);
+
 // The buttons of one alert: obid's `answers`, each answered where the window answers that thing
-// (its inbox item: a job's permission is one too), Allow and Deny signed as the window's are. A
+// (its inbox item: a job's permission is one too), those in SIGNED signed as the window's are. A
 // Confirm has none, whatever comes: it takes this Mac's signature on the owner's click in the
 // window (device.ts), where what it carries out shows in full. A limit decision keeps its own
 // choices, answered through answerLimit, which re-reads the decision and signs its revision, so a
@@ -164,7 +169,7 @@ function buttonsOf(a: Served): Button[] {
   }
   if (!a.item) return [];
   const path = `/v1/inbox/${id(a.item)}/answer`;
-  return a.answers.map((words) => ({ text: words, does: () => pressed(path, words, words === 'Allow' || words === 'Deny') }));
+  return a.answers.map((words) => ({ text: words, does: () => pressed(path, words, SIGNED.has(words)) }));
 }
 
 // One alert of obid's as the Mac draws it: obid's words as plain text, another Oby's question as

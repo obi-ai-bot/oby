@@ -1,0 +1,100 @@
+{
+  "schemaVersion": "2",
+  "name": "T3 accounts: an agent that can't start says why",
+  "version": "1.0.0",
+  "description": "T3 Code's start-up failures (a provider CLI that dies at startup names its exit, health checks that fail silently): Claude Code's binary is gone and its account is the only one. The task still starts there, as nothing else could run it, and fails at once saying which tool couldn't start on which account and why in plain words with no path, instead of hanging (ACCOUNTS-19); the account carries the same reason as cantRun (ACCOUNTS-19).",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "claude": {
+              "bin": "/nonexistent/obid-spec/claude"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a-task-on-auto",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ECHO"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "account": "stand-in"
+          }
+        }
+      }
+    },
+    {
+      "id": "accounts-19-it-fails-saying-why",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.a-task-on-auto.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "failed",
+            "reason": "Claude Code couldn't start on Stand-in: obid can't find Claude Code's binary (claude)."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-19"
+        ]
+      }
+    },
+    {
+      "id": "accounts-19-the-account-says-why",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "stand-in",
+                "cantRun": "obid can't find Claude Code's binary (claude)"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-19"
+        ]
+      }
+    }
+  ]
+}

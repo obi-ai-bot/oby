@@ -1196,7 +1196,8 @@ use computers::{Change, Link, Pin, Route, RouteKind, Ssh, Supervisor, Tunnel, Vi
 pub const NODES: &[(&str, &str)] = &[
     ("lab.remote.window", "The Mac's window, as the node stands in for it: its device key (P-256), made once, as the Mac app's own."),
     ("lab.remote.pair-ssh", "Adds a computer over SSH on the owner's click: names the window's device key in that obid's home/pairing and registers it there, gets a one-time invitation back over SSH, and redeems it through an ssh -N -L tunnel for a device token."),
-    ("lab.remote.front", "The other computer's direct address, until obid serves HTTPS itself: a TLS front on every interface of that machine (its own self-signed certificate, made once or anew) to obid's gateway on its 127.0.0.1; answers its URL and pin."),
+    ("lab.remote.front", "A TLS front on every interface of a machine with no obid (its own self-signed certificate, made once or anew) to a port on its 127.0.0.1: another machine answering at an address, for the impostor steps; answers its URL and pin."),
+    ("lab.remote.direct", "The other computer's direct address as obid serves it (`direct` in its configuration, COMPUTERS-10): its URL on the machine's address and the pin obid's GET /v1/status names; with certificate \"new\", obid's certificate is taken out and obid started again with `config`, so it makes another."),
     ("lab.remote.invite", "On the other computer, as its owner there: registers that owner's device key, makes an invitation they approve, and shows the six-digit code and the link (its direct routes, each pinned)."),
     ("lab.remote.redeem", "Adds a computer with a code: the window reads the link, reaches its route with the certificate pinned, redeems the code for a device token and registers its own key through it."),
     ("lab.remote.address", "An address on this Mac (127.0.0.1:<port>) that leads to a machine's port, and can be moved to another machine's: the same address, another computer behind it."),
@@ -1277,6 +1278,7 @@ pub async fn run_node(run: &Run, name: &str, input: &Value) -> Result<Value> {
         }
         "lab.remote.pair-ssh" => pair_ssh(run, input).await,
         "lab.remote.front" => front(run, input).await,
+        "lab.remote.direct" => direct(run, input).await,
         "lab.remote.invite" => invite(run, input).await,
         "lab.remote.redeem" => redeem(input).await,
         "lab.remote.address" => address(input).await,
@@ -1798,6 +1800,53 @@ async fn local_call(run: &Run, input: &Value) -> Result<Value> {
     )
     .await?;
     Ok(json!({"status": status, "body": body, "text": text.chars().take(4000).collect::<String>()}))
+}
+
+/// obid's own direct address on the machine (COMPUTERS-10): where it listens and the pin its
+/// status names. With `"certificate": "new"`, its certificate goes and obid starts again with
+/// `config`, making a new one, as a reinstall or a lost home would.
+async fn direct(run: &Run, input: &Value) -> Result<Value> {
+    let machine = &input["machine"];
+    let obid = &input["obid"];
+    if input["certificate"].as_str() == Some("new") {
+        let home = crate::sphere::str_of(obid, "home")?;
+        let (status, out, err) = machine_run(
+            run,
+            machine,
+            &format!("rm -f '{home}/keys/direct-certificate.der' '{home}/keys/direct-key.p8'"),
+            false,
+        )
+        .await?;
+        anyhow::ensure!(status == 0, "the certificate stays: {out}{err}");
+        super::machine::run_node(
+            run,
+            "lab.machine.obid",
+            &json!({"machine": machine, "config": input["config"]}),
+        )
+        .await?;
+    }
+    let (status, said, text) =
+        local_call_raw(run, machine, obid, "GET", "/v1/status", None, None).await?;
+    anyhow::ensure!(status == 200, "obid's status: {status} {text}");
+    let direct = &said["gateway"]["direct"][0];
+    anyhow::ensure!(
+        direct["state"] == "listening",
+        "obid serves no direct address: {}",
+        said["gateway"]
+    );
+    let pin = Pin::parse(crate::sphere::str_of(direct, "pin")?).map_err(anyhow::Error::msg)?;
+    let port: u16 = crate::sphere::str_of(direct, "address")?
+        .rsplit(':')
+        .next()
+        .and_then(|p| p.parse().ok())
+        .context("direct.address: <ip>:<port>")?;
+    let (status, out, err) =
+        machine_run(run, machine, "hostname -I | cut -d' ' -f1", false).await?;
+    anyhow::ensure!(status == 0, "the machine's address: {out}{err}");
+    let ip = out.trim().to_string();
+    Ok(
+        json!({"url": format!("https://{ip}:{port}"), "pin": pin.to_string(), "host": ip, "port": port}),
+    )
 }
 
 /// The other computer's owner, at that computer: their own device key registered there (its

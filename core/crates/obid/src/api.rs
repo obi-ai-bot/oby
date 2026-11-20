@@ -542,7 +542,9 @@ async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -
     let mut response = match admitted {
         Ok(()) => next.run(request).await,
         Err(error) => {
-            crate::browser::routes::gate_reason(path, request.headers(), error).into_response()
+            let refusal =
+                crate::browser::routes::gate_reason(path, request.headers(), error).into_response();
+            after_body(request, refusal).await
         }
     };
     if api {
@@ -556,6 +558,41 @@ async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -
         );
     }
     response
+}
+
+/// The most of a refused request's body obid reads before it answers: axum's default body limit,
+/// the most any route but an upload reads.
+const REFUSED_BODY_MOST: usize = 2 << 20;
+/// How long obid waits for a refused request's body before it answers anyway.
+const REFUSED_BODY_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// `refusal`, answered once the refused request's body is read (BROWSER-28). hyper closes a
+/// connection whose request body nobody read, and a socket closed with bytes it never read sends
+/// a reset, which can reach the caller before it reads its 401, or while it still writes. A body
+/// past [`REFUSED_BODY_MOST`], or slower than [`REFUSED_BODY_WAIT`], gets the refusal with
+/// `Connection: close` at once.
+pub async fn after_body(request: Request, mut refusal: Response) -> Response {
+    use futures_util::StreamExt as _;
+    let mut body = request.into_body().into_data_stream();
+    let read_whole = async {
+        let mut read = 0usize;
+        while let Some(chunk) = body.next().await {
+            read += chunk.map_err(|_| ())?.len();
+            if read > REFUSED_BODY_MOST {
+                return Err(());
+            }
+        }
+        Ok(())
+    };
+    if !matches!(
+        tokio::time::timeout(REFUSED_BODY_WAIT, read_whole).await,
+        Ok(Ok(()))
+    ) {
+        refusal
+            .headers_mut()
+            .insert(header::CONNECTION, HeaderValue::from_static("close"));
+    }
+    refusal
 }
 
 /// The one id in an agent's own route: its broker's, Tetrix's or ChatGPT's relay.
