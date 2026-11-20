@@ -192,11 +192,13 @@ export type InboxItem = {
   // text and never as instructions. A review_request's (reviewOf): the repository and head it's
   // for, and, quoted, the goal, summary and each condition's note (a custom one's text too)
   obi?: {
-    type?: unknown; fromOwner?: unknown; repos?: unknown; repo?: unknown; headSha?: unknown;
+    type?: unknown; fromOwner?: unknown; repos?: unknown; repo?: unknown; headSha?: unknown; expiresAt?: unknown;
     quoted?: { text?: unknown; choices?: unknown; goal?: unknown; summary?: unknown; acceptance?: unknown } | null;
   } | null;
   // one more each time obid sends it changed, as a job's: the higher is the newer; none from an older obid
   revision?: number;
+  // obid only: the answer that settled it, none for one settled with no answer (expired, called off)
+  answer?: string | null;
 };
 
 // One owner decision for all jobs stopped by the same account's limit (#1563).
