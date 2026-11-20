@@ -1250,8 +1250,13 @@ impl Jobs {
                     if tries < of && recovery.spent() {
                         reason = crate::job::capped(&reason);
                     }
-                    // Its login was refused: the account can't run until that changes (ACCOUNTS-19).
+                    // Its login was refused: the account can't run until that changes (ACCOUNTS-19),
+                    // and the owner is told, in Oby's words, how to fix it from Oby; the tool's own
+                    // ("please run /login", which Oby has no way to run) go to obid's log
+                    // (ACCOUNTS-38).
                     if cant_run::login_refused(turn.cause(), &reason) {
+                        tracing::info!("job {id}: {}'s login was refused: {reason}", account.id);
+                        reason = cant_run::refused_login(&self.label(tool, &account));
                         self.cant_start(&account, &reason);
                     }
                     let resumes = None;
