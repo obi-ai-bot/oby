@@ -126,6 +126,13 @@ const ask = (method, params) => new Promise((done) => {
   send({ id, method, params });
 });
 let steered = [];
+// After a decline, obid tells the turn why with turn/steer: it's waited for (10 s at most), as a
+// real turn goes on long enough to hear it; a fixed wait lost it when obid's save of the denial was
+// slow (CI health, 2026-11-20).
+const hearing = async () => {
+  const until = Date.now() + 10_000;
+  while (!steered.length && Date.now() < until) await new Promise((r) => setTimeout(r, 20));
+};
 // The turn under way, which `turn/steer` must name.
 let active = null;
 let thread = null;
@@ -288,7 +295,7 @@ async function runTurn(turnId, prompt) {
     const answer = await ask("item/commandExecution/requestApproval", { threadId: thread, turnId, itemId: "c1", command: command[1] });
     mkdirSync(".obi", { recursive: true });
     appendFileSync(".obi/answers.log", `${answer.decision}\n`);
-    if (answer.decision === "decline") await new Promise((r) => setTimeout(r, 300));
+    if (answer.decision === "decline") await hearing();
     return complete(turnId, `answer: ${answer.decision}${steered.length ? `\nheard: ${steered.join(" | ")}` : ""}`);
   }
   if (task.includes("OUTSIDE")) {
@@ -296,7 +303,7 @@ async function runTurn(turnId, prompt) {
     send({ method: "item/fileChange/patchUpdated", params: { threadId: thread, turnId, itemId: change.id, changes: change.changes } });
     const answer = await ask("item/fileChange/requestApproval", { threadId: thread, turnId, itemId: change.id });
     if (answer.decision === "accept") writeFileSync(resolve("../outside.txt"), "escaped\n");
-    await new Promise((r) => setTimeout(r, 300));
+    await (answer.decision === "decline" ? hearing() : new Promise((r) => setTimeout(r, 300)));
     return complete(turnId, `answer: ${answer.decision}${steered.length ? `\nheard: ${steered.join(" | ")}` : ""}`);
   }
   if (task.includes("UNKNOWN")) {
