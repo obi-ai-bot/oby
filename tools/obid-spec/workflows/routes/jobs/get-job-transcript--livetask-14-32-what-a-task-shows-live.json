@@ -1,0 +1,259 @@
+{
+  "schemaVersion": "2",
+  "name": "What a running task shows as it works (LIVETASK-14, 32)",
+  "version": "1.0.0",
+  "description": "A job's agent's to-do tools never ask the owner or show as its step; the agent's words stream as transcript events carrying the tail past their last whole line.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/jobs/{id}/transcript"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        }
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "t",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "TODOS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "t-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "summary": "Did the list."
+          }
+        }
+      }
+    },
+    {
+      "id": "livetask-14-only-its-commands-are-steps",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}/transcript",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "entries": {
+              "$count": [
+                {
+                  "kind": "tool"
+                },
+                2
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIVETASK-14"
+        ]
+      }
+    },
+    {
+      "id": "livetask-14-the-to-dos-are-its-plan",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}/transcript",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "entries": {
+              "$any": {
+                "kind": "plan",
+                "summary": "2 of 2 done"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIVETASK-14"
+        ]
+      }
+    },
+    {
+      "id": "livetask-14-nothing-asked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "answered": [],
+            "permission": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIVETASK-14"
+        ]
+      }
+    },
+    {
+      "id": "livetask-14-never-the-jobs-step",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "job",
+        "seconds": 1,
+        "expect": {
+          "paths": {
+            "id": "${state.t.body.id}",
+            "step": {
+              "$matches": "(?i)task(create|update)|todo"
+            }
+          }
+        },
+        "none": true
+      }
+    },
+    {
+      "id": "livetask-14-a-command-of-the-list-is-a-step",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "job",
+        "seconds": 2,
+        "expect": {
+          "paths": {
+            "id": "${state.t.body.id}",
+            "step": {
+              "$matches": "(?i)echo|Running"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIVETASK-14"
+        ]
+      }
+    },
+    {
+      "id": "c",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "CHATTY: 3000"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "livetask-32-the-words-stream-as-a-tail",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "transcript",
+        "seconds": 60,
+        "expect": {
+          "paths": {
+            "job": "${state.c.body.id}",
+            "tail": {
+              "$type": "string"
+            },
+            "n": {
+              "$type": "number"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIVETASK-32"
+        ]
+      }
+    },
+    {
+      "id": "c-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "summary": "Chatted."
+          }
+        }
+      }
+    }
+  ]
+}
