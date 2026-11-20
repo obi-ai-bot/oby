@@ -436,6 +436,7 @@
         "obid": "${state.dana}",
         "method": "GET",
         "path": "/v1/obid/sphere/peers/alex",
+        "within": 30,
         "expect": {
           "status": 200,
           "body": {
