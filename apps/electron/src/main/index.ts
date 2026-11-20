@@ -20,6 +20,8 @@ import { childGone, quit, quitting, renderFailed, rendererGone, started, windowL
 import { flag, https, string } from '../shared/decode';
 import { SCRATCH } from '../shared/build';
 import { ownFolder } from './appFolder';
+import { browsing } from './browser';
+import { sawInput } from './browserInput';
 
 // A scratch install (scripts/run-dev.sh --port --home, shared/build.ts) and the app run from source
 // (npm run dev) keep their own folder and Keychain item, never the installed Oby's (main/appFolder.ts,
@@ -92,6 +94,8 @@ worktrees(trusted);
 servers(trusted);
 // the Help menu's items, for ⌘K's Actions too (help.ts)
 helping(trusted);
+// obid's browser, followed for the window (browser.ts, BROWSERAPP-8)
+const stopBrowsing = browsing(trusted, () => win);
 const channels = ipc(trusted);
 // the page asks for both before it draws, to lay its title bar out around the lights
 channels.on('window-chrome', [], () => chrome, null);
@@ -183,7 +187,7 @@ function createWindow() {
   win.on('restore', () => track(true));
   win.on('hide', () => track(false));
   win.on('minimize', () => track(false));
-  win.on('closed', () => { track(false); win = null; windowLeft(); });
+  win.on('closed', () => { track(false); win = null; windowLeft(); stopBrowsing(); });
   // Oby's alerts (notify.ts): none for what the window shows while it's in front
   win.on('focus', windowSeen);
   for (const ev of ['blur', 'hide', 'minimize'] as const) win.on(ev as 'blur', windowLeft);
@@ -199,11 +203,16 @@ function createWindow() {
   // the owner's real Enter and clicks, which the page's own process can't make: each lets main sign
   // one request of the owner's words right after it (words.ts, device.ts)
   win.webContents.on('before-input-event', (_, i) => {
+    // every real key, for the owner's keys on a browser tab they hold (browser.ts)
+    if (i.type === 'keyDown' || i.type === 'keyUp') sawInput(i.type, i.key);
     if (i.type !== 'keyDown' || i.isAutoRepeat) return;
     if (i.key === 'Enter') input();
     if (i.code === 'Space') space();
   });
-  win.webContents.on('before-mouse-event', (_, m) => { if (m.type === 'mouseDown') input(); });
+  win.webContents.on('before-mouse-event', (_, m) => {
+    if (m.type === 'mouseDown') input();
+    if (m.type === 'mouseDown' || m.type === 'mouseUp' || m.type === 'mouseMove' || m.type === 'mouseWheel') sawInput(m.type);
+  });
   // full screen hides the traffic lights: the page moves its title bar over.
   // Besides entering and leaving, re-check whenever the window comes back
   // (switching Spaces between full-screen apps), so the page never drifts.

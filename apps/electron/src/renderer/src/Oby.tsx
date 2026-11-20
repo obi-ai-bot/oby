@@ -66,6 +66,12 @@ declare global {
       // Add sign-in: whether one is linked, and linking one (preload, main/sphere.ts, SPHEREAPP-13)
       sphereSigninStatus?(): Promise<import('../../shared/sphere').SigninStatus | null>;
       sphereAddSignin?(provider: string): Promise<string | null>;
+      // obid's browser, followed by main (preload, main/browser.ts, BROWSERAPP-8): its events, and a
+      // tab's frames; each a function that stops listening
+      browser?: {
+        follow(fn: (m: { name: string; data: string }) => void): () => void;
+        watch(tab: string, fn: (data: string) => void): () => void;
+      };
       // obid, through main (preload, main/obid.ts); its events, from main's one follower (main/live.ts)
       obid: {
         call(method: string, path: string, body?: unknown): Promise<{ status: number; text: string }>;

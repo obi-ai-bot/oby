@@ -9,6 +9,12 @@ import { WITHIN_MS, wordsOf } from '../shared/words';
 // from obid for this request (device.ts); none when it couldn't
 export function wordsHeader(key: KeyObject, device: string, method: string, path: string, body: unknown, signedAt = new Date().toISOString(), project?: string[]): string | null {
   if (!wordsOf(method, path, body) || !ownFolders(body, project)) return null;
+  return signedHeader(key, device, method, path, body, signedAt);
+}
+
+// The header itself, for a request main has decided to sign: the words above, or the owner's own
+// mouse and keys on a browser tab they hold, each right after a real input main saw (browser.ts, mayInput)
+export function signedHeader(key: KeyObject, device: string, method: string, path: string, body: unknown, signedAt = new Date().toISOString()): string {
   const digest = createHash('sha256').update(body === undefined ? '' : JSON.stringify(body)).digest('hex');
   const signature = sign('sha256', Buffer.from(`oby-words\n${method}\n${path.split('?')[0]}\n${digest}\n${signedAt}`, 'utf8'), key).toString('base64');
   return `${device} ${signedAt} ${signature}`;

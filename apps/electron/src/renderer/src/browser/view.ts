@@ -15,6 +15,8 @@ export type Computer = { name: string; os: string };
 export type Tab = {
   id: string;
   owner: Owner;
+  /** on obid: the agent's job the tab is for */
+  job?: string;
   title: string;
   /** host, then path: drawn as <b>host</b>path */
   url: string;
@@ -66,4 +68,6 @@ export interface BrowserApi {
   saveCopy(download: string): Promise<void>;
   setSettings(s: Partial<BrowserSettings>): Promise<void>;
   select(tab: string): Promise<void>;
+  /** on obid: your mouse and keys on the page while you hold it */
+  input?(tab: string, e: import('../../../shared/obid-wire').BrowserInput): Promise<void>;
 }
