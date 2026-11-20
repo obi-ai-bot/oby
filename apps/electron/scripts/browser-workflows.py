@@ -305,7 +305,8 @@ def board_07():
             read("tab-dot-orange", {"css": ".br-tab .status-dot.is-needs"}, "BROWSERAPP-11", styles={"background-color": "--needs"}, **{"styles.background-color.matches": True}),
             read("kind-orange", {"css": "[data-browser=asks] .tc-ask-kind"}, None, styles={"color": "--needs"}, **{"styles.color.matches": True}),
             step("over-the-box", "app.measure", "BROWSERAPP-11", app=APP, target=CARD,
-                 against={"box": {"css": ".chat-layer:not(.is-covered) .composer"}}, expect={"paths": {"box.overlap": False}}),
+                 against={"box": {"css": ".chat-layer:not(.is-covered) .composer"}}, expect={"paths": {"box.overlap": False}},
+                 within=5),  # asked again while the message box settles its height
             compare("AsksYou", "BROWSERAPP-11", skip=BOARD_SKIPS[7]),
             *pictures(7, "AsksYou", "board 7"),
             click("type-the-password", {"role": "button", "name": "Type the password"}),
@@ -335,7 +336,8 @@ def board_08():
             read("kind-blue", {"css": ".tc-ask-kind.is-blue"}, None, styles={"color": "--unread"}, **{"styles.color.matches": True}),
             read("page-ringed", {"css": "[data-browser=page-password]"}, None, count=1, text="Password\nFrom Oby"),
             step("over-the-box", "app.measure", "BROWSERAPP-12", app=APP, target=CARD,
-                 against={"box": {"css": ".chat-layer:not(.is-covered) .composer"}}, expect={"paths": {"box.overlap": False}}),
+                 against={"box": {"css": ".chat-layer:not(.is-covered) .composer"}}, expect={"paths": {"box.overlap": False}},
+                 within=5),  # asked again while the message box settles its height
             compare("Secret", "BROWSERAPP-12", skip=BOARD_SKIPS[8]),
             *pictures(8, "Secret", "board 8"),
             click("cancel", {"role": "button", "name": "Cancel"}),
@@ -367,7 +369,8 @@ def board_09():
             read("captcha", line, "BROWSERAPP-13", count=1, text="Check The page wants to know you’re a person · Codex 1 of 4"),
             read("captcha-words", words, None, count=1, text="Codex can’t answer this. Take control and solve it; Codex goes on when you give the tab back."),
             step("over-the-box", "app.measure", "BROWSERAPP-13", app=APP, target=CARD,
-                 against={"box": {"css": ".chat-layer:not(.is-covered) .composer"}}, expect={"paths": {"box.overlap": False}}),
+                 against={"box": {"css": ".chat-layer:not(.is-covered) .composer"}}, expect={"paths": {"box.overlap": False}},
+                 within=5),  # asked again while the message box settles its height
             *pictures(9, "Asks", "board 9 (a sheet): the CAPTCHA card"),
             click("to-choice", nxt),
             read("choice", line, "BROWSERAPP-13", count=1, text="Question Which plan should I pick at checkout? · Claude Code 2 of 4"),

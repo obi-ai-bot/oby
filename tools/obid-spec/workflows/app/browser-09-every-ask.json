@@ -79,7 +79,8 @@
           "paths": {
             "box.overlap": false
           }
-        }
+        },
+        "within": 5
       },
       "ui": {
         "proves": [
