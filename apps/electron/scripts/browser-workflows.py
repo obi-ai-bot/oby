@@ -388,6 +388,110 @@ def board_09():
     )
 
 
+def board_10():
+    tab = lambda i: {"css": ".br-tab", "nth": i}
+    steps = [launch(10, 1280, 880)]
+    steps += [
+        read("loading-strip", {"css": ".br-control-text"}, "BROWSERAPP-14", count=1, text="Codex · Waiting for the page"),
+        read("loading-stop", {"role": "button", "name": "Stop loading"}, None, count=1),
+    ]
+    for i, (state, words, proves) in enumerate([
+        ("failed", "This page didn’t load localhost:3000 refused to connect. Is the app running? Try again", "BROWSERAPP-14"),
+        ("timedOut", "The page took too long Nothing came back from api.acme.dev in 30 seconds. Try again", "BROWSERAPP-14"),
+    ], start=1):
+        steps += [click(f"tab-{state}", tab(i)), read(state, {"css": f"[data-browser=page-{state}]"}, proves, count=1, text=words)]
+    steps += [
+        click("tab-dialog", tab(3)),
+        read("dialog", {"css": "[data-browser=page-dialog]"}, "BROWSERAPP-14", count=1,
+             text="localhost:3000 asks Leave this page? Changes you made may not be saved. Leave Stay Take control to answer"),
+        step("dialog-waits", "app.read", None, app=APP, target={"role": "button", "name": "Leave"}, attributes=["disabled"], expect={"paths": {"count": 1, "attributes.disabled": ""}}),
+        step("dialog-over-the-page", "app.measure", "BROWSERAPP-14", app=APP, target={"css": "[data-browser=page-dialog]"},
+             against={"view": {"css": ".br-view"}}, expect={"paths": {"view.overlap": True}}),
+        click("take-to-answer", {"role": "button", "name": "Take control to answer"}),
+        step("dialog-answerable", "app.read", "BROWSERAPP-14", app=APP, target={"role": "button", "name": "Leave"}, attributes=["disabled"], expect={"paths": {"count": 1, "attributes.disabled": None}}),
+        click("tab-certificate", tab(4)),
+        read("certificate", {"css": "[data-browser=page-certificate]"}, "BROWSERAPP-14", count=1,
+             text="This connection isn’t private The certificate for staging.acme.dev isn’t trusted. Codex stopped here and won’t go on by itself. Go back Go on anyway"),
+        read("certificate-address", {"css": ".br-address.is-warn"}, None, count=1),
+        click("tab-crashed", tab(5)),
+        read("crashed", {"css": "[data-browser=page-crashed]"}, "BROWSERAPP-14", count=1,
+             text="This page stopped working Its tab crashed, out of memory. Cursor was told and can open it again. Reload"),
+        *pictures(10, "PageStates", "board 10 (a sheet): the crashed page"),
+        close(),
+    ]
+    workflow(
+        "browser-10-page-states.json",
+        "App: a page that doesn't simply load: loading, failed, timed out, a dialog, a certificate, crashed (board 10)",
+        "The real app on its demo data with the design's board 10 tabs (BROWSERAPP-14), each state in the panel with the "
+        "board's words and its way out: loading's strip and Stop; failed and timed out, Try again; the page's own dialog "
+        "over the page, answerable only once you take control; an untrusted certificate, its address marked; a crashed "
+        "tab, Reload. Board 10 is a sheet of six small browsers: here each is checked in the panel, word by word, not by "
+        "the sheet's places. On obid the ways out wait for routes obid doesn't have yet (the contract's Open list).",
+        steps,
+    )
+
+
+def board_11():
+    workflow(
+        "browser-11-script.json",
+        "App: a script the agent ran in the page (board 11)",
+        "The real app on its demo data at the design's board 11 (BROWSERAPP-15): the page carries the agent's mark, Ran a "
+        "script and how long it took, and the strip says the agent ran a script in this page and is done. Its result as "
+        "outside text is the agent's log, under its card in the conversation (TaskLog), not the panel's.",
+        [
+            launch(11, 1280, 800),
+            read("strip", {"css": ".br-control-text"}, "BROWSERAPP-15", count=1, text="Codex ran a script in this page · done"),
+            read("ran", {"css": ".ran"}, "BROWSERAPP-15", count=1, text="Ran a script · 18 ms"),
+            step("mark-on-the-page", "app.measure", "BROWSERAPP-15", app=APP, target={"css": ".ran"}, against={"view": {"css": ".br-view"}}, expect={"paths": {"view.overlap": True}}),
+            compare("Script", "BROWSERAPP-15", skip=BOARD_SKIPS[11]),
+            *pictures(11, "Script", "board 11"),
+            close(),
+        ],
+    )
+
+
+def board_12():
+    workflow(
+        "browser-12-downloads.json",
+        "App: downloads, the agent's stay in its browser, yours come to your Mac (board 12)",
+        "The real app on its demo data at the design's board 12 (BROWSERAPP-16): the shelf at the panel's foot says whose "
+        "each file is and where it is; Save a copy puts the agent's into your Downloads and its row says so, with Show in "
+        "Finder.",
+        [
+            launch(12, 1280, 800),
+            read("agents-file", {"css": "[data-browser=file-csv] .br-file-about"}, "BROWSERAPP-16", count=1, text="Codex downloaded it · kept in its browser, not on your Mac"),
+            read("your-file", {"css": "[data-browser=file-pdf] .br-file-about"}, None, count=1, text="You downloaded it · in Downloads"),
+            step("shelf-at-the-foot", "app.measure", "BROWSERAPP-16", app=APP, target={"css": ".br-shelf"}, against={"view": {"css": ".br-view"}}, expect={"paths": {"view.overlap": False, "view.gap": 0}}),
+            compare("Downloads", "BROWSERAPP-16", skip=BOARD_SKIPS[12]),
+            *pictures(12, "Downloads", "board 12"),
+            click("save-a-copy", {"role": "button", "name": "Save a copy"}),
+            read("saved", {"css": "[data-browser=file-csv] .br-file-about"}, "BROWSERAPP-16", count=1, text="Codex downloaded it · in Downloads"),
+            read("finder-twice", {"role": "button", "name": "Show in Finder"}, None, count=2),
+            read("no-save-left", {"role": "button", "name": "Save a copy"}, None, count=0, within=5),
+            close(),
+        ],
+    )
+
+
+def board_14():
+    workflow(
+        "browser-14-another-computer.json",
+        "App: another computer, the browser shows that computer's localhost (board 14)",
+        "The real app on its demo data at the design's board 14 (BROWSERAPP-17): under the tabs the panel says the browser "
+        "runs on devbox and whose localhost it shows; the address says on devbox; New tab opens one there.",
+        [
+            launch(14, 1280, 800),
+            read("where", {"css": "[data-browser=where]"}, "BROWSERAPP-17", count=1, text="This browser runs on devbox. Its localhost is devbox’s, not this Mac’s."),
+            read("badge", {"css": ".br-where"}, "BROWSERAPP-17", count=1, text="on devbox"),
+            read("new-tab-there", {"role": "button", "name": "New tab on devbox"}, None, count=1),
+            step("where-under-the-tabs", "app.measure", "BROWSERAPP-17", app=APP, target={"css": "[data-browser=where]"}, against={"tabs": {"css": ".br-tabs"}}, expect={"paths": {"tabs.overlap": False, "tabs.gap": 0}}),
+            compare("OtherComputer", "BROWSERAPP-17", skip=BOARD_SKIPS[14]),
+            *pictures(14, "OtherComputer", "board 14"),
+            close(),
+        ],
+    )
+
+
 # obid's browser routes aren't served yet: they come with browser port 1's routes pull request
 # (4b; docs/contracts/browser.md, BROWSER-1 to 25; its contract #2608 and core #2610 merged). Every step that
 # needs them is expected red until then; the pull request that lands them removes these marks.
@@ -434,6 +538,12 @@ BOARD_SKIPS = {
     # boxes are held to the board in their words, their places reported (today's composer, not the board's)
     7: [".decision-card", ".tc-ask-line", ".tc-ask-text"],
     8: [".decision-card", ".tc-ask-line", ".secret-row", ".secret-note"],
+    # the board draws a smaller set for a tab nobody is using (no Full width, no page menu, Take control without its
+    # hand); the app keeps board 2's set: one more button at the tabs' end, the address 30px shorter, the strip's
+    # Take control 20px wider and its words 20px narrower
+    11: [".br-tabs-end .icon-button", ".br-address", ".br-control-text", ".br-control .tc-option"],
+    12: [".br-tabs-end .icon-button", ".br-address", ".br-control-text", ".br-control .tc-option"],
+    14: [".br-tabs-end .icon-button", ".br-address", ".br-control-text", ".br-control .tc-option"],
 }
 
 
@@ -448,5 +558,9 @@ if __name__ == "__main__":
     board_07()
     board_08()
     board_09()
+    board_10()
+    board_11()
+    board_12()
+    board_14()
     board_17()
     live_101()

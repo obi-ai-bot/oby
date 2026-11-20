@@ -1,0 +1,347 @@
+{
+  "schemaVersion": "2",
+  "name": "App: a page that doesn't simply load: loading, failed, timed out, a dialog, a certificate, crashed (board 10)",
+  "version": "1.0.0",
+  "description": "The real app on its demo data with the design's board 10 tabs (BROWSERAPP-14), each state in the panel with the board's words and its way out: loading's strip and Stop; failed and timed out, Try again; the page's own dialog over the page, answerable only once you take control; an untrusted certificate, its address marked; a crashed tab, Reload. Board 10 is a sheet of six small browsers: here each is checked in the panel, word by word, not by the sheet's places. On obid the ways out wait for routes obid doesn't have yet (the contract's Open list).",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "browser"
+  ],
+  "steps": [
+    {
+      "id": "app",
+      "use": "runtime.rust:app.launch",
+      "inputs": {
+        "mock": true,
+        "query": "browser=10",
+        "size": {
+          "width": 1280,
+          "height": 880
+        },
+        "storage": {
+          "oby.chatPanelOpen": "0"
+        }
+      }
+    },
+    {
+      "id": "loading-strip",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-control-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Codex · Waiting for the page"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-14"
+        ]
+      }
+    },
+    {
+      "id": "loading-stop",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Stop loading"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "tab-failed",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-tab",
+          "nth": 1
+        }
+      }
+    },
+    {
+      "id": "failed",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=page-failed]"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "This page didn’t load localhost:3000 refused to connect. Is the app running? Try again"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-14"
+        ]
+      }
+    },
+    {
+      "id": "tab-timedOut",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-tab",
+          "nth": 2
+        }
+      }
+    },
+    {
+      "id": "timedOut",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=page-timedOut]"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "The page took too long Nothing came back from api.acme.dev in 30 seconds. Try again"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-14"
+        ]
+      }
+    },
+    {
+      "id": "tab-dialog",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-tab",
+          "nth": 3
+        }
+      }
+    },
+    {
+      "id": "dialog",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=page-dialog]"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "localhost:3000 asks Leave this page? Changes you made may not be saved. Leave Stay Take control to answer"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-14"
+        ]
+      }
+    },
+    {
+      "id": "dialog-waits",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Leave"
+        },
+        "attributes": [
+          "disabled"
+        ],
+        "expect": {
+          "paths": {
+            "count": 1,
+            "attributes.disabled": ""
+          }
+        }
+      }
+    },
+    {
+      "id": "dialog-over-the-page",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=page-dialog]"
+        },
+        "against": {
+          "view": {
+            "css": ".br-view"
+          }
+        },
+        "expect": {
+          "paths": {
+            "view.overlap": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-14"
+        ]
+      }
+    },
+    {
+      "id": "take-to-answer",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Take control to answer"
+        }
+      }
+    },
+    {
+      "id": "dialog-answerable",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Leave"
+        },
+        "attributes": [
+          "disabled"
+        ],
+        "expect": {
+          "paths": {
+            "count": 1,
+            "attributes.disabled": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-14"
+        ]
+      }
+    },
+    {
+      "id": "tab-certificate",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-tab",
+          "nth": 4
+        }
+      }
+    },
+    {
+      "id": "certificate",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=page-certificate]"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "This connection isn’t private The certificate for staging.acme.dev isn’t trusted. Codex stopped here and won’t go on by itself. Go back Go on anyway"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-14"
+        ]
+      }
+    },
+    {
+      "id": "certificate-address",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-address.is-warn"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "tab-crashed",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-tab",
+          "nth": 5
+        }
+      }
+    },
+    {
+      "id": "crashed",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=page-crashed]"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "This page stopped working Its tab crashed, out of memory. Cursor was told and can open it again. Reload"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-14"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:app.screenshot",
+      "inputs": {
+        "app": "${state.app}",
+        "name": "browser-10"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:app.sidebyside",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "PageStates",
+        "name": "browser-10-beside-board",
+        "label": "board 10 (a sheet): the crashed page"
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:app.close",
+      "inputs": {
+        "app": "${state.app}"
+      }
+    }
+  ]
+}
