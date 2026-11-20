@@ -220,7 +220,9 @@ fn cursor(config: &mut Value, folder: &Path, alone: bool) {
     });
     std::fs::create_dir_all(login.parent().unwrap()).unwrap();
     std::fs::create_dir_all(account.join(".config")).unwrap();
-    std::fs::write(&login, "{}").unwrap();
+    // Signed in: a login with no token is a signed-out Cursor (jobs::logins, `cursor_has_token`),
+    // and its jobs go to Claude Code instead, which on a Mac runs past the proxy (#2629).
+    std::fs::write(&login, r#"{"accessToken": "secretspec-test-login"}"#).unwrap();
     std::fs::write(
         account.join("cli-config.json"),
         r#"{"version": 1, "permissions": {"allow": [], "deny": []}}"#,
@@ -405,6 +407,10 @@ fn declared_with(
     }
     if let Some(conversation) = conversation {
         config["conversation"] = conversation;
+    }
+    // Claude Code signed in whenever it's configured: a job asked of it runs on it, never routed
+    // to the signed-in Cursor (#2629).
+    if claude.is_some() {
         let account = folder.0.join("home/accounts/stub");
         std::fs::create_dir_all(&account).unwrap();
         std::fs::write(account.join(".credentials.json"), "{}").unwrap();
