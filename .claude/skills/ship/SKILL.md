@@ -19,8 +19,9 @@ Holds below are defaults: the owner's word lifts any of them ("Defaults: Oby for
 
 1. Branch from `dev` (`git fetch origin dev`, then branch from `origin/dev`).
 2. Commit with Conventional Commits, in the style of `git log --oneline`.
-3. Run `scripts/oby-check.sh` on the branch, with `oby-check-blok` installed as AGENTS.md "Build and run" says. `OBY_CHECK_PLAN=1 scripts/oby-check.sh` first shows what it will run.
-4. Keep the commands you actually ran and what they printed: they go in the PR's "Checks run". A suite that couldn't run is reported as not run, not as passed.
+3. Run `scripts/preflight.sh` and fix every miss it names, until it prints `preflight: clean` (docs/contracts/ci.md, CI-69). It's required before every push, this one and each in the review loop: GitHub fails a pull request on what it checks.
+4. Run `scripts/oby-check.sh` on the branch, with `oby-check-blok` installed as AGENTS.md "Build and run" says. `OBY_CHECK_PLAN=1 scripts/oby-check.sh` first shows what it will run.
+5. Keep the commands you actually ran and what they printed: they go in the PR's "Checks run". A suite that couldn't run is reported as not run, not as passed.
 
 ## 2. Open the PR into dev
 
@@ -33,7 +34,7 @@ Holds below are defaults: the owner's word lifts any of them ("Defaults: Oby for
 
 For each review that asks for changes:
 1. Address every finding, or answer on the PR why not.
-2. Commit and push.
+2. Commit, run `scripts/preflight.sh` until it's clean, and push.
 3. Run `scripts/oby-check.sh` again on the new head, and update "Checks run" with what it printed.
 
 A review counts only for the head it read: after a push, the review of the new head is the one that counts.

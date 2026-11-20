@@ -1675,7 +1675,8 @@
             "CI-65": "GitHub Actions lanes and scripts/ci-rust-tests.sh.",
             "CI-66": "GitHub Actions lanes and the Mac's check (scripts/oby-check.sh).",
             "CI-67": "GitHub Actions lanes and the Mac's check (scripts/oby-check.sh).",
-            "CI-68": "GitHub Actions lanes and the Mac's check (scripts/oby-check.sh)."
+            "CI-68": "GitHub Actions lanes and the Mac's check (scripts/oby-check.sh).",
+            "CI-69": "scripts/preflight.sh, proven by scripts/preflight-test.sh."
           }
         },
         "engine.md": {
