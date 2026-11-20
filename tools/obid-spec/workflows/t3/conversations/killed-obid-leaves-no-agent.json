@@ -1,0 +1,180 @@
+{
+  "schemaVersion": "2",
+  "name": "T3 conversations: obid killed mid-turn leaves no agent of the conversation running",
+  "version": "1.0.0",
+  "description": "T3 Code's e4025c8528 (reap recorded Claude survivors before recovery) and ProviderSessionManager 'stops a session still opening when its layer shuts down': obid killed (SIGKILL, a crash) while a conversation's agent is mid-turn. After obid starts again the cut turn reads interrupted (DELIVERY-7), and nothing of that conversation's agent is still running: what obid does for a job's agent (jobs_api.rs a_restart_ends_the_agent_a_killed_obid_left_running, crate::groups) holds for a conversation's, or its commands go on after the turn was cut.",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Ready.",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Ready."
+          }
+        }
+      }
+    },
+    {
+      "id": "lingering",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "LINGER 60000",
+          "conversation": "${state.said.body.conversation}",
+          "id": "7a3e0000-0000-4000-8000-0000000000a1"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "under-way",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "user",
+                "delivery": {
+                  "status": "running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "its-agent-heard-them",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "within": 10,
+        "expect": {
+          "paths": {
+            "heard": {
+              "$any": {
+                "last": "LINGER 60000"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "its-agent-runs",
+      "use": "runtime.rust:t3.agents",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "within": 10,
+        "expect": {
+          "paths": {
+            "count": {
+              "$ne": 0
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "killed",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}",
+        "kill": true
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "delivery-7-the-cut-words-read-interrupted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "7a3e0000-0000-4000-8000-0000000000a1",
+                "delivery": {
+                  "status": "interrupted"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-7"
+        ]
+      }
+    },
+    {
+      "id": "nothing-of-its-agent-runs-on",
+      "use": "runtime.rust:t3.agents",
+      "inputs": {
+        "obid": "${state.again}",
+        "conversation": "${state.said.body.conversation}",
+        "within": 15,
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-7"
+        ],
+        "expectedRed": "#2739: obid killed mid-turn leaves the conversation's agent running after it starts again"
+      }
+    }
+  ]
+}
