@@ -1,0 +1,462 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/github/work/{id}/start (a repository obid doesn't work in)",
+  "version": "1.0.0",
+  "description": "With githubEveryRepo on, a review request in a repository obid doesn't work in is kept as unknown and offered saying so; obid's token alone adds nothing (422, one confirm item), the owner's signed Confirm adds the repository and starts the review (GITHUBWORK-3). Turned off again, the next read settles that kind of open offer and drops the item (GITHUBWORK-4).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/github/work/{id}/start"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "person": {
+          "github/work.json": {
+            "data": {
+              "reviews": {
+                "issueCount": 0,
+                "nodes": []
+              },
+              "assigned": {
+                "issueCount": 0,
+                "nodes": []
+              },
+              "mine": {
+                "issueCount": 0,
+                "nodes": []
+              },
+              "rateLimit": {
+                "remaining": 4900,
+                "resetAt": "2030-10-18T10:00:00Z"
+              },
+              "viewer": {
+                "login": "alex"
+              }
+            }
+          },
+          "github/view.json": {
+            "title": "t",
+            "body": "b",
+            "author": {
+              "login": "sangam"
+            },
+            "labels": [],
+            "comments": []
+          },
+          "github/repo.json": {
+            "nameWithOwner": "obi-e2e/other",
+            "defaultBranchRef": {
+              "name": "main"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "first-read-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/github/work",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "nextCheck": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "clones-from-the-fixture",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": ".gitconfig",
+        "content": "[url \"file://${state.o.folder}/../fixture/remote.git\"]\n\tinsteadOf = https://github.com/obi-e2e/other.git\n"
+      }
+    },
+    {
+      "id": "every-repo-on",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "githubEveryRepo": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "githubEveryRepo": true
+          }
+        }
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/refresh",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-review-elsewhere",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "github/work.json",
+        "content": {
+          "data": {
+            "reviews": {
+              "issueCount": 1,
+              "nodes": [
+                {
+                  "number": 12,
+                  "title": "Thing 12",
+                  "updatedAt": "2026-10-18T08:43:00Z",
+                  "state": "OPEN",
+                  "author": {
+                    "login": "sangam"
+                  },
+                  "repository": {
+                    "nameWithOwner": "obi-e2e/other"
+                  },
+                  "labels": {
+                    "nodes": [
+                      {
+                        "name": "bug"
+                      }
+                    ]
+                  },
+                  "isDraft": false,
+                  "reviewDecision": "REVIEW_REQUIRED",
+                  "commits": {
+                    "nodes": [
+                      {
+                        "commit": {
+                          "statusCheckRollup": {
+                            "state": "PENDING"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "assigned": {
+              "issueCount": 0,
+              "nodes": []
+            },
+            "mine": {
+              "issueCount": 0,
+              "nodes": []
+            },
+            "rateLimit": {
+              "remaining": 4900,
+              "resetAt": "2030-10-18T10:00:00Z"
+            },
+            "viewer": {
+              "login": "alex"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "githubwork-3-kept-as-unknown",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/refresh",
+        "pick": {
+          "from": "reviews",
+          "where": {
+            "number": 12
+          }
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "reviews": [
+              {
+                "repo": "obi-e2e/other",
+                "number": 12,
+                "known": false
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "githubwork-3-offered-saying-so",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "pick": {
+          "where": {
+            "kind": "github"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "github",
+                "title": "Review requested: other #12",
+                "text": "Your review is requested on pull request #12 in obi-e2e/other. Oby doesn't work in obi-e2e/other yet."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "githubwork-3-a-tap-with-the-token-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/${state.githubwork-3-kept-as-unknown.picked.id}/start",
+        "expect": {
+          "status": 422,
+          "text": {
+            "$contains": "Adding obi-e2e/other waits for your Confirm"
+          }
+        }
+      }
+    },
+    {
+      "id": "githubwork-3-review-it-with-the-token-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.githubwork-3-offered-saying-so.picked.id}/answer",
+        "body": {
+          "answer": "Review it"
+        },
+        "expect": {
+          "status": 422,
+          "text": {
+            "$contains": "Adding obi-e2e/other waits for your Confirm"
+          }
+        }
+      }
+    },
+    {
+      "id": "githubwork-3-nothing-added",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/repos",
+        "expect": {
+          "status": 200,
+          "body": {
+            "repos": {
+              "$len": 1
+            }
+          },
+          "paths": {
+            "repos": {
+              "$none": {
+                "repo": "obi-e2e/other"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "githubwork-3-one-confirm-item",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "pick": {
+          "where": {
+            "kind": "confirm"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "kind": "confirm"
+                },
+                1
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "githubwork-3-the-confirm-says-what-it-adds",
+      "use": "runtime.rust:check",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-3"
+        ]
+      },
+      "inputs": {
+        "value": "${state.githubwork-3-one-confirm-item.picked}",
+        "expect": {
+          "paths": {
+            "title": "Add obi-e2e/other and review #12"
+          }
+        }
+      }
+    },
+    {
+      "id": "githubwork-3-unsigned-confirm-403",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.githubwork-3-one-confirm-item.picked.id}/answer",
+        "body": {
+          "answer": "Confirm"
+        },
+        "expect": {
+          "status": 403
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "githubwork-3-signed-confirm",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.githubwork-3-one-confirm-item.picked.id}/answer",
+        "confirm": {
+          "device": "${state.device}",
+          "item": "${state.githubwork-3-one-confirm-item.picked.id}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "githubwork-3-added",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/repos",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "repos": {
+              "$any": {
+                "repo": "obi-e2e/other"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "githubwork-3-a-review-job-there",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "review",
+                "pr": 12,
+                "repo": "obi-e2e/other"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

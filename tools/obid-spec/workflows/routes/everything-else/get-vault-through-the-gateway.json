@@ -1,0 +1,188 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/obid/vault (through the gateway)",
+  "version": "1.0.0",
+  "description": "Through the gateway, with a paired phone's token and the owner's signed words, the vault's three routes are 404 and nothing is saved or removed (VAULT-3).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/obid/vault"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "gateway": "127.0.0.1:0"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "invite",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/pairing/invite",
+        "body": {
+          "url": "https://mac.example.invalid",
+          "name": "Test Mac"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "phone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "x"
+        },
+        "method": "POST",
+        "path": "/v1/pairing",
+        "body": {
+          "credential": "${state.invite.body.secret}",
+          "name": "Test phone"
+        },
+        "as": "token",
+        "token": "x",
+        "expect": {
+          "status": 200,
+          "body": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "secret",
+      "use": "runtime.rust:owner-key",
+      "inputs": {}
+    },
+    {
+      "id": "kept",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/obid/vault/test.kept",
+        "body": {
+          "value": "${state.secret.seed}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 204
+        }
+      }
+    },
+    {
+      "id": "vault-3-get-404",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "VAULT-3"
+        ]
+      },
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.phone.body.token}"
+        },
+        "method": "GET",
+        "path": "/v1/obid/vault",
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "vault-3-put-404",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "VAULT-3"
+        ]
+      },
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.phone.body.token}"
+        },
+        "method": "PUT",
+        "path": "/v1/obid/vault/test.phone",
+        "body": {
+          "value": "${state.secret.seed}x"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "vault-3-delete-404",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "VAULT-3"
+        ]
+      },
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.phone.body.token}"
+        },
+        "method": "DELETE",
+        "path": "/v1/obid/vault/test.kept",
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "vault-3-nothing-saved-or-removed",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "VAULT-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/obid/vault",
+        "expect": {
+          "status": 200,
+          "body": {
+            "names": [
+              "test.kept"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

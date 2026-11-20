@@ -1,0 +1,401 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/repos (refused working folders)",
+  "version": "1.0.0",
+  "description": "Each place Oby never works in is refused 422 with the folder's name and why, and nothing is kept: the whole disk, the home folder, iCloud's Library folder, Claude Code's login, obid's home and the folder holding it, an account's configDir, /usr/local, a file, a relative path and a missing one (FOLDERS-9; ~/LIBRARY, macOS's case, is obid's Rust test).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/repos"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "person": {
+          "Projects/api/README.md": "x\n",
+          "Projects/web/README.md": "x\n",
+          "Library/Mobile Documents/x/README.md": "x\n",
+          ".claude/settings.json": "{}\n",
+          "logins/other/.credentials.json": "{}\n"
+        }
+      }
+    },
+    {
+      "id": "stopped",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "claude": {
+              "accounts": [
+                {
+                  "id": "stand-in",
+                  "name": "Stand-in",
+                  "configDir": "${state.o.home}/accounts/stand-in"
+                },
+                {
+                  "id": "other",
+                  "name": "Other",
+                  "configDir": "${state.o.person}/logins/other"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "folders-9-the-whole-disk-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "FOLDERS-9"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY tidy",
+          "new": true,
+          "folders": [
+            "/"
+          ]
+        },
+        "expect": {
+          "status": 422,
+          "paths": {
+            "error": {
+              "$contains": "\"/\" is your whole disk"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "folders-9-the-home-folder-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "FOLDERS-9"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY tidy",
+          "new": true,
+          "folders": [
+            "${state.o.person}"
+          ]
+        },
+        "expect": {
+          "status": 422,
+          "paths": {
+            "error": {
+              "$contains": "is your whole home folder"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "folders-9-mobile-documents-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "FOLDERS-9"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY tidy",
+          "new": true,
+          "folders": [
+            "${state.o.person}/Library/Mobile Documents"
+          ]
+        },
+        "expect": {
+          "status": 422,
+          "paths": {
+            "error": {
+              "$contains": "\"Mobile Documents\" is where your Mac keeps its own settings"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "folders-9-the-claude-login-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "FOLDERS-9"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY tidy",
+          "new": true,
+          "folders": [
+            "${state.o.person}/.claude"
+          ]
+        },
+        "expect": {
+          "status": 422,
+          "paths": {
+            "error": {
+              "$contains": "\".claude\" holds an agent's login"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "folders-9-obids-home-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "FOLDERS-9"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY tidy",
+          "new": true,
+          "folders": [
+            "${state.o.home}"
+          ]
+        },
+        "expect": {
+          "status": 422,
+          "paths": {
+            "error": {
+              "$contains": "\"home\""
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "folders-9-a-folder-holding-obids-home-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "FOLDERS-9"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY tidy",
+          "new": true,
+          "folders": [
+            "${state.o.folder}"
+          ]
+        },
+        "expect": {
+          "status": 422,
+          "paths": {
+            "error": {
+              "$contains": "Oby"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "folders-9-an-accounts-config-dir-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "FOLDERS-9"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY tidy",
+          "new": true,
+          "folders": [
+            "${state.o.person}/logins/other"
+          ]
+        },
+        "expect": {
+          "status": 422,
+          "paths": {
+            "error": {
+              "$contains": "\"other\" holds an agent's login"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "folders-9-usr-local-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "FOLDERS-9"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY tidy",
+          "new": true,
+          "folders": [
+            "/usr/local"
+          ]
+        },
+        "expect": {
+          "status": 422,
+          "paths": {
+            "error": {
+              "$contains": "\"local\""
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "folders-9-a-file-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "FOLDERS-9"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY tidy",
+          "new": true,
+          "folders": [
+            "${state.o.person}/Projects/api/README.md"
+          ]
+        },
+        "expect": {
+          "status": 422,
+          "paths": {
+            "error": {
+              "$contains": "\"README.md\" is a file, not a folder."
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "folders-9-a-relative-path-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "FOLDERS-9"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY tidy",
+          "new": true,
+          "folders": [
+            "Projects/api"
+          ]
+        },
+        "expect": {
+          "status": 422,
+          "paths": {
+            "error": {
+              "$contains": "\"api\" isn't a folder's full path."
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "folders-9-a-missing-path-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "FOLDERS-9"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY tidy",
+          "new": true,
+          "folders": [
+            "${state.o.person}/Projects/gone"
+          ]
+        },
+        "expect": {
+          "status": 422,
+          "paths": {
+            "error": {
+              "$contains": "\"gone\" isn't at"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "folders-9-nothing-kept",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "FOLDERS-9"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,182 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/routines/{id} (past its grace)",
+  "version": "1.0.0",
+  "description": "A routine whose latest due time is older than its grace is recorded missed, nothing runs, and it goes on to its next time; left out, the grace is 1440 minutes for a daily routine and 60 for an hourly one (ROUTINES-3).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/routines/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "clock",
+      "use": "runtime.rust:clock",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "files": {
+          "routines/a3000001.json": {
+            "id": "a3000001",
+            "name": "Check a3000001",
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "Say what the README covers.",
+            "agent": "auto",
+            "account": "auto",
+            "mode": null,
+            "check": null,
+            "rounds": 1,
+            "schedule": {
+              "every": "daily",
+              "at": "00:00"
+            },
+            "zone": "UTC",
+            "enabled": true,
+            "created": "${state.clock.tenDaysAgo}",
+            "createdBy": "mac",
+            "conversation": null,
+            "lastFire": "${state.clock.yesterday}",
+            "failuresInARow": 0,
+            "runs": [],
+            "graceMinutes": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-3-missed-not-run",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/routines/a3000001",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "runs": {
+              "$len": 1
+            },
+            "runs.0.outcome": "missed",
+            "runs.0.reason": "Missed 1 run while Oby wasn't running."
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-3-goes-on-to-its-next-time",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/routines/a3000001",
+        "expect": {
+          "status": 200,
+          "body": {
+            "enabled": true,
+            "graceMinutes": 1,
+            "nextRun": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-3-nothing-ran",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "routines-3-within-its-grace-a-catch-up",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Daily",
+          "repo": "obi-e2e/fixture-app",
+          "task": "Say what the README covers.",
+          "schedule": {
+            "every": "daily",
+            "at": "09:00"
+          },
+          "zone": "UTC"
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "graceMinutes": 1440
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-3-hourly-60",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Hourly",
+          "repo": "obi-e2e/fixture-app",
+          "task": "Say what the README covers.",
+          "schedule": {
+            "every": "hourly",
+            "minute": 5
+          },
+          "zone": "UTC"
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "graceMinutes": 60
+          }
+        }
+      }
+    }
+  ]
+}

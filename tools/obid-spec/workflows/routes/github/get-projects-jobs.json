@@ -1,0 +1,541 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/projects (its jobs)",
+  "version": "1.0.0",
+  "description": "A job dispatched from a conversation in a project answers that project in the plan, the job, the list and its event, keeps it after its conversation leaves, the project is deleted and obid restarts; one from a conversation in none or from POST /v1/jobs answers null (PROJECTS-13). GET /v1/jobs?project= answers exactly its jobs, the active one first then newest first, with limit, nothing for an unknown or empty id, and 422 for a limit that isn't a number (PROJECTS-14).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/projects"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "person": {
+          "Projects/a/README.md": "x\n",
+          "Projects/b/README.md": "x\n",
+          "Projects/c/README.md": "x\n",
+          "Projects/d/README.md": "x\n"
+        }
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "p",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "P",
+          "folders": [
+            "${state.o.person}/Projects/b"
+          ]
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "q",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "Q",
+          "folders": [
+            "${state.o.person}/Projects/c"
+          ]
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "active",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"SLEEP\", \"kind\": \"build\"}",
+          "new": true,
+          "project": "${state.p.body.id}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "projects-13-the-plans-job-answers-p",
+      "use": "runtime.rust:check",
+      "ui": {
+        "proves": [
+          "PROJECTS-13"
+        ]
+      },
+      "inputs": {
+        "value": "${state.active.body.jobs.0}",
+        "expect": {
+          "paths": {
+            "project": "${state.p.body.id}"
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-13-get-job-answers-p",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-13"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.active.body.jobs.0.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "project": "${state.p.body.id}"
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-13-its-job-event-answers-p",
+      "use": "runtime.rust:events-wait",
+      "ui": {
+        "proves": [
+          "PROJECTS-13"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "job",
+        "expect": {
+          "body": {
+            "id": "${state.active.body.jobs.0.id}",
+            "project": "${state.p.body.id}"
+          }
+        }
+      }
+    },
+    {
+      "id": "tick-done-1",
+      "use": "runtime.rust:next-second",
+      "inputs": {}
+    },
+    {
+      "id": "done-1",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Say what the README covers.\", \"kind\": \"investigate\"}",
+          "conversation": "${state.active.body.conversation}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "done-1-ended",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.done-1.body.jobs.0.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "tick-done-2",
+      "use": "runtime.rust:next-second",
+      "inputs": {}
+    },
+    {
+      "id": "done-2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Say what the README covers.\", \"kind\": \"investigate\"}",
+          "conversation": "${state.active.body.conversation}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "done-2-ended",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.done-2.body.jobs.0.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "tick-in-q",
+      "use": "runtime.rust:next-second",
+      "inputs": {}
+    },
+    {
+      "id": "in-q",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Say what the README covers.\", \"kind\": \"investigate\"}",
+          "new": true,
+          "project": "${state.q.body.id}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "tick-in-none",
+      "use": "runtime.rust:next-second",
+      "inputs": {}
+    },
+    {
+      "id": "in-none",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Say what the README covers.\", \"kind\": \"investigate\"}",
+          "new": true
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "projects-13-from-a-conversation-in-none-null",
+      "use": "runtime.rust:check",
+      "ui": {
+        "proves": [
+          "PROJECTS-13"
+        ]
+      },
+      "inputs": {
+        "value": "${state.in-none.body.jobs.0}",
+        "expect": {
+          "paths": {
+            "project": null
+          }
+        }
+      }
+    },
+    {
+      "id": "tick-api",
+      "use": "runtime.rust:next-second",
+      "inputs": {}
+    },
+    {
+      "id": "by-the-api",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "Say what the README covers."
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "projects-13-by-the-api-null",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-13"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.by-the-api.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "project": null
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-13-listed-with-p",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-13"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.active.body.jobs.0.id}",
+                "project": "${state.p.body.id}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-14-ps-three-active-first-then-newest",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-14"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs?project=${state.p.body.id}",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.active.body.jobs.0.id}"
+            },
+            {
+              "id": "${state.done-2.body.jobs.0.id}"
+            },
+            {
+              "id": "${state.done-1.body.jobs.0.id}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "projects-14-limit-1-only-the-active",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-14"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs?project=${state.p.body.id}&limit=1",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.active.body.jobs.0.id}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "projects-14-an-unknown-project-none",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-14"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs?project=00000000-0000-4000-8000-000000000000",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "projects-14-an-empty-project-none",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-14"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs?project=",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "projects-14-without-project-every-job-newest-first",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-14"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 6
+            },
+            "0.id": "${state.by-the-api.body.id}",
+            "5.id": "${state.active.body.jobs.0.id}"
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-14-limit-x-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-14"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs?project=${state.p.body.id}&limit=x",
+        "expect": {
+          "status": 422,
+          "text": {
+            "$contains": "limit is a number."
+          }
+        }
+      }
+    },
+    {
+      "id": "out-of-p",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/conversations/${state.active.body.conversation}",
+        "body": {
+          "project": null
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "p-deleted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/projects/${state.p.body.id}",
+        "expect": {
+          "status": 204
+        }
+      }
+    },
+    {
+      "id": "stopped",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "projects-13-kept-after-a-restart",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-13"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.active.body.jobs.0.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "project": "${state.p.body.id}"
+          }
+        }
+      }
+    }
+  ]
+}
