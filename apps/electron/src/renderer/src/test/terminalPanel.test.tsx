@@ -285,8 +285,7 @@ describe('T3: the terminal panel', () => {
   // Manager.test "resumed attaches after close never respawn until the terminal is reopened" (T3 f3e5a165e0);
   // TERMINAL-1: a shell starts only on the owner's click, "never because the page asked alone". The panel
   // goes from the page and comes back (another profile opened, main.tsx), its shells ended with it.
-  // known bug obi-ai-bot/oby#2725: it.fails until it's fixed, then the fix removes .fails
-  it.fails('t3_terminal_the_panel_drawn_again_asks_for_no_shell_without_a_click (known bug #2725)', async () => {
+  it('t3_terminal_the_panel_drawn_again_asks_for_no_shell_without_a_click', async () => {
     const store = await mount();
     const { default: TerminalPanel } = await import('../terminal/TerminalPanel');
     await act(async () => store.openTerminal('task', 'j1', 'Add hello'));

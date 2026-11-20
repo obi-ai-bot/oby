@@ -15,7 +15,7 @@ import { BrandMark } from './brands';
 import { barOf, fullness, useAccounts, weekWords } from './SettingsView';
 import { USING_PLAN } from './chatgpt';
 import { ManageUsage } from './ChatGptPlan';
-import { lookAtUsage, uploadFiles, useRepos } from './live';
+import { lookAtUsage, queuedFiles, uploadFiles, useRepos } from './live';
 import { useScrollThumb } from './useScrollThumb';
 import { usePrompt } from './prompts';
 import { leave, useGlide } from './glide';
@@ -43,7 +43,7 @@ import { composing } from './shortcuts';
 // in the words: @Wellington.) place: the Mac it runs on, when not this one
 // (one at a time: picking another replaces it). repo: the repository the work is
 // in (obid's), one at a time too.
-type Attached = { kind: 'file'; name: string; preview?: string; file?: File } | { kind: 'task'; id: string } | { kind: 'place'; name: string } | { kind: 'repo'; name: string };
+type Attached = { kind: 'file'; name: string; preview?: string; file?: File; path?: string } | { kind: 'task'; id: string } | { kind: 'place'; name: string } | { kind: 'repo'; name: string };
 type View = 'root' | 'oby' | 'task' | 'where' | 'repo' | 'folder' | 'usage';
 const same = (a: Attached, b: Attached) =>
   a.kind === 'task' ? b.kind === 'task' && a.id === b.id : a.kind === b.kind && a.name === (b as { name: string }).name;
@@ -382,7 +382,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
       if (sending.current || (!b.text().trim() && !attached.length && !(skillsOn && skill))) return;
       // the files go up first (on obid): one refused keeps the box as it was, words and tags
       sending.current = true;
-      const files = await uploadFiles(attached.flatMap((a) => (a.kind === 'file' ? [{ name: a.name, preview: a.preview, file: a.file }] : [])));
+      const files = await uploadFiles(attached.flatMap((a) => (a.kind === 'file' ? [{ name: a.name, preview: a.preview, file: a.file, path: a.path }] : [])));
       sending.current = false;
       if (!files) return;
       if (say) {
@@ -450,7 +450,10 @@ export default function Composer({ placeholder, prompts = false, note, label, on
       {onCancelQueued && <QueuedWords queued={queued} onCancel={onCancelQueued} onEdit={async (q) => {
         if (!(await onCancelQueued(q))) return;
         const b = box.current, now = b?.text().trim() ?? '';
-        b?.setText(now ? `${q.text}\n\n${now}` : q.text);
+        b?.setText([q.text, now].filter(Boolean).join('\n\n'));
+        // its files come back as tags, where obid keeps them (COMPOSER-10)
+        const back = queuedFiles(q.id, q.files).map((f): Attached => ({ kind: 'file', ...f }));
+        if (back.length) setAttached((all) => [...all, ...back.filter((a) => !all.some((x) => same(x, a)))]);
         b?.focus();
       }} />}
       {dropNote && <p className="composer-drop-note" role="status">{dropNote}</p>}

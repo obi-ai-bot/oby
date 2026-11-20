@@ -7,6 +7,11 @@
 //! - `conversations.kill-agent`: SIGKILL to a conversation's stand-in agent found among the scratch
 //!   obid's own descendants, so a boxed Codex, whose command line doesn't name obid's home, can be
 //!   killed while it waits (CONVERSATION-AGENT-45), and nothing outside this obid ever is.
+//! - `conversations.list-dir`: the names in a folder of a scratch obid's home, sorted, so a workflow
+//!   can name what a CLI keeps one file each of (a Codex account's threads, CONVERSATION-AGENT-51).
+//! - `conversations.only-on`: the rest of the workflow runs only on the named system, else the
+//!   workflow is skipped (OBIDSPEC-15: skipped, never green), for what obid does on one system only
+//!   (CONVERSATION-AGENT-8: a conversation's Cursor where no box holds it to the proxy).
 
 use crate::{expect, obid, sphere};
 use anyhow::{bail, Context, Result};
@@ -18,12 +23,16 @@ use std::time::{Duration, Instant};
 pub const NODES: &[(&str, &str)] = &[
     ("conversations.person-file", "Reads a file in a scratch obid's person's home (`path`, relative), as home-file reads obid's own: {path, exists, mode, json, text}; `expect` takes exists, mode, json and text (the whole file), `within` (seconds) reads it again until it holds."),
     ("conversations.kill-agent", "Kills (SIGKILL) a scratch obid's stand-in agent (`fake-*`, never what starts it) serving `conversation`, found among that obid's own descendants by its command line naming the conversation, waiting up to `within` seconds for one: {killed: [pids]}; none found fails."),
+    ("conversations.list-dir", "The names in a folder of a scratch obid's home (`path`, relative), sorted, with their stems (no extension): {path, names, stems, count}; none there is an empty list. `expect` is {paths: …} over that answer, and `within` (seconds) reads it again until it holds."),
+    ("conversations.only-on", "The rest of the workflow runs only on `os` (macos or linux); elsewhere the step answers why and the workflow is skipped, never passed: {os}."),
 ];
 
 pub async fn run_node(name: &str, input: &Value) -> Result<Value> {
     match name {
         "conversations.person-file" => person_file(input).await,
         "conversations.kill-agent" => kill_agent(input).await,
+        "conversations.only-on" => only_on(input),
+        "conversations.list-dir" => list_dir(input).await,
         other => bail!("no node named {other}"),
     }
 }
@@ -131,6 +140,62 @@ fn red_proof(want: &Value, out: &Value) -> Value {
     json!({"mutants": cases.len(), "vacuous": vacuous})
 }
 
+async fn list_dir(input: &Value) -> Result<Value> {
+    let home = std::path::PathBuf::from(sphere::str_of(&input["obid"], "home")?);
+    let rel = sphere::str_of(input, "path")?;
+    anyhow::ensure!(
+        !rel.is_empty() && !rel.starts_with('/') && !rel.split('/').any(|p| p == ".."),
+        "{rel} isn't a path in obid's home"
+    );
+    let folder = home.join(rel);
+    let until = Instant::now() + Duration::from_secs(input["within"].as_u64().unwrap_or(0));
+    loop {
+        let mut names: Vec<String> = std::fs::read_dir(&folder)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        let stems: Vec<String> = (names.iter())
+            .map(|n| n.rsplit_once('.').map_or(n.as_str(), |(s, _)| s).to_owned())
+            .collect();
+        let out = json!({"path": rel, "count": names.len(), "names": names, "stems": stems});
+        let failures = match input.get("expect") {
+            Some(want) => expect::check(want, &out, ""),
+            None => vec![],
+        };
+        if failures.is_empty() {
+            let mut out = out;
+            if let Some(want) = input.get("expect") {
+                let all = expect::mutants(want, 0, &out, "");
+                let vacuous: Vec<String> = (all.iter())
+                    .filter(|m| expect::check(want, &m.body, &m.text).is_empty())
+                    .map(|m| m.what.clone())
+                    .collect();
+                out["red"] = json!({"mutants": all.len(), "vacuous": vacuous});
+            }
+            return Ok(out);
+        }
+        if Instant::now() >= until {
+            bail!("{}", failures.join("; "));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+fn only_on(input: &Value) -> Result<Value> {
+    let os = sphere::str_of(input, "os")?;
+    anyhow::ensure!(matches!(os, "macos" | "linux"), "os: {os}? macos or linux");
+    if os == std::env::consts::OS {
+        Ok(json!({"os": os}))
+    } else {
+        Ok(
+            json!({"skipped": format!("this runs on {os} only, and this is {}", std::env::consts::OS)}),
+        )
+    }
+}
+
 /// Each process's parent, from `ps`.
 fn processes() -> Result<Vec<(i32, i32, String)>> {
     let ps = std::process::Command::new("ps")
@@ -218,6 +283,42 @@ mod tests {
         assert!(judge(&want, &out).is_empty());
         assert_eq!(red_proof(&want, &out)["vacuous"], json!([]));
         assert!(!judge(&want, &json!({"text": "nothing"})).is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_dir_names_a_folders_files_sorted_and_proves_its_assertion() {
+        let home = std::env::temp_dir().join(format!("obid-spec-list-{}", std::process::id()));
+        std::fs::create_dir_all(home.join("threads")).unwrap();
+        for n in ["b.json", "a.json"] {
+            std::fs::write(home.join("threads").join(n), "{}").unwrap();
+        }
+        let obid = json!({"home": home});
+        let want = json!({"paths": {"stems": ["a", "b"]}});
+        let out = list_dir(&json!({"obid": obid, "path": "threads", "expect": want}))
+            .await
+            .unwrap();
+        assert_eq!(out["names"], json!(["a.json", "b.json"]));
+        assert_eq!(out["red"]["vacuous"], json!([]));
+        assert!(list_dir(&json!({"obid": obid, "path": "../x"}))
+            .await
+            .is_err());
+        let none = list_dir(&json!({"obid": obid, "path": "nothing"}))
+            .await
+            .unwrap();
+        assert_eq!(none["count"], 0);
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn only_on_skips_on_another_system() {
+        let here = std::env::consts::OS;
+        let other = if here == "macos" { "linux" } else { "macos" };
+        assert!(only_on(&json!({"os": here}))
+            .unwrap()
+            .get("skipped")
+            .is_none());
+        assert!(only_on(&json!({"os": other})).unwrap()["skipped"].is_string());
+        assert!(only_on(&json!({"os": "windows"})).is_err());
     }
 
     #[test]
