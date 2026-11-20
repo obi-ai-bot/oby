@@ -40,6 +40,7 @@ import { kidLine, kidTitle, kidsLine, kidsOf } from './nested';
 import { AGENTS_SHOWN } from './panelFlags';
 import { WELCOME, sampleDid, sampleOut, useSetup } from './onboarding';
 import { SAMPLE_TALK } from './Welcome';
+import { ComputerButton } from './computers/ComputerButton';
 
 type Section = 'oby' | 'home' | 'conversations' | 'obysphere' | 'settings';
 type StripIcon = (p: { size?: number; weight?: 'regular' | 'fill' }) => React.ReactNode;
@@ -548,6 +549,8 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
           {(everything || CAN_CREATE) && <button className="rail-button" data-tip="Create an Obysphere" aria-label="Create an Obysphere" aria-haspopup="dialog" onClick={() => setCreating(true)}>
             <PlusIcon size={20} />
           </button>}
+          {/* the computer the window is on, above Settings (docs/contracts/computers-app.md) */}
+          <ComputerButton />
           {/* you, at the foot: your picture opens your account's menu (Settings is in it) */}
           {/* lean (Sangam's call of 2026-10-28): no account, no sign-in, nothing but this Mac, so
               Settings itself, the gear filled while it's open; the design's account picture and its
