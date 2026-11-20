@@ -196,9 +196,12 @@ fn lanes_18_an_own_codex_job_runs_on_its_own_folder_in_every_mode() {
         json!({"agent": "codex", "task": "ENV", "mode": "ask"}),
     );
     let account = folder.0.join("home/accounts/codex-work");
-    for (id, profile, policy) in [
-        (&own, ":danger-full-access", full_access()),
-        (&asks, ":read-only", json!("on-request")),
+    // LANES-27: in Ask the profile is obid's `oby`, Ask's built-in one with obid's secret places
+    // denied; in Bypass there's no sandbox to deny them in.
+    let vault = obid.home.join("vault");
+    for (id, profile, base, policy) in [
+        (&own, ":danger-full-access", None, full_access()),
+        (&asks, "oby", Some(":read-only"), json!("on-request")),
     ] {
         let job = ended(&obid, id);
         assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
@@ -218,6 +221,17 @@ fn lanes_18_an_own_codex_job_runs_on_its_own_folder_in_every_mode() {
             settings.contains(&json!(format!("default_permissions=\"{profile}\""))),
             "{kept}"
         );
+        let set = |key: &str| {
+            (settings.iter().filter_map(Value::as_str)).find_map(|s| s.strip_prefix(key))
+        };
+        assert_eq!(
+            set("permissions.oby.extends="),
+            base.map(|b| format!("\"{b}\"")).as_deref(),
+            "{kept}"
+        );
+        let denies_vault = set("permissions.oby.filesystem=")
+            .is_some_and(|f| f.contains(&format!("{} = \"none\"", json!(vault))));
+        assert_eq!(denies_vault, base.is_some(), "{kept}");
         for gone in ["oby_own", "projects=", "features.hooks", "notify="] {
             assert!(
                 !settings.iter().any(|s| s.as_str().unwrap().contains(gone)),
@@ -256,12 +270,17 @@ fn lanes_18_a_running_own_codex_job_whose_mode_narrows_goes_on_under_it() {
     assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
     assert_eq!(
         summary(&job),
-        format!("own: :read-only CODEX_HOME={}", account.display()),
+        format!("own: oby CODEX_HOME={}", account.display()),
         "{job}"
     );
     assert_eq!(job["session"], own.as_str(), "{job}");
     let kept = codex_thread(&obid, &id, &job);
-    assert_eq!(kept["permissions"], ":read-only", "{kept}");
+    assert_eq!(kept["permissions"], "oby", "{kept}");
+    let base = r#"permissions.oby.extends=":read-only""#;
+    assert!(
+        kept["settings"].as_array().unwrap().contains(&json!(base)),
+        "{kept}"
+    );
     assert_eq!(kept["approvalPolicy"], "on-request", "{kept}");
     assert!(job["resumeCommand"].is_string(), "{job}");
 }
@@ -284,11 +303,12 @@ fn codex_commits_with_obids_approval() {
     assert_eq!(job["commits"], 1);
     assert_eq!(summary(&job), "Added hello.txt.");
     // The owner's job runs in the own lane (LANES-18), on its mode's settings (a built-in
-    // profile, no sandbox of obid's), and what Codex asks still comes to obid.
+    // profile, or obid's `oby` on one, LANES-27; no sandbox of obid's), and what Codex asks still
+    // comes to obid.
     let kept = codex_thread(&obid, &id, &job);
     assert!(kept["sandbox"].is_null(), "{kept}");
     let profile = kept["permissions"].as_str().unwrap_or_default();
-    assert!(profile.starts_with(':'), "{kept}");
+    assert!(profile.starts_with(':') || profile == "oby", "{kept}");
     assert_eq!(kept["model"], "gpt-6-sol");
     let worktree = obid.home.join("worktrees").join(&id);
     assert_eq!(

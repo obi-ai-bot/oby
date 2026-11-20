@@ -160,7 +160,7 @@ Codex:
 
 - "Yes, match T3" (LANES-18): every Codex job of the owner's own on a `codex login` (not another Oby's, not `untrusted`, not a review), in every mode, on macOS and Linux, runs unboxed on its account's folder as `CODEX_HOME` and the person's `HOME`, no copy, no egress proxy.
 - From its first such launch its check, and its follow-up's, gets none of the declared secrets whatever it becomes (LANE-3a): saved in the job's file before the run starts, no run if that fails, never undone.
-- Its limits are Codex's own sandbox and approvals as its mode sets them, by T3 Code's mapping (`:read-only`, `:workspace`, `:danger-full-access`); obid adds no profile of its own and answers what Codex asks by the mode.
+- Its limits are Codex's own sandbox and approvals as its mode sets them (T3 Code's mapping), plus, but in Bypass, no reads of obid's secrets (LANES-27); obid answers what Codex asks by the mode.
 - obid sets them with `-c` settings, names them on every thread, asks Codex before each whether they hold, and starts no run on other settings.
 - In Bypass Codex asks nobody: Oby's own tools are approved before the run.
 - A mode narrower than the one a run launched in ends its turn at obid's next one-second tick; it goes on under the new mode.

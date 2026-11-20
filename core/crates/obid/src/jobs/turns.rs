@@ -451,8 +451,8 @@ impl Jobs {
                     argv.splice(1..1, crate::chatgpt_relay::codex_settings(base));
                 }
                 if own {
-                    let settings = codex::own::policy(Self::mode_of(job)).settings();
-                    argv.splice(1..1, settings.map(OsString::from));
+                    let settings = self.own_codex_policy(Self::mode_of(job)).settings();
+                    argv.splice(1..1, settings.into_iter().map(OsString::from));
                     // Codex may ask nobody (Bypass): Oby's own tools are approved (LANES-21).
                     if broker.is_some() {
                         argv.splice(1..1, codex::OWN_OBY_TOOLS.map(OsString::from));
@@ -1048,30 +1048,31 @@ impl Jobs {
                     let chatgpt = self
                         .job_account(&job)
                         .is_ok_and(|(_, account)| crate::chatgpt::marker_of(&account).is_some());
-                    let options =
-                        codex::Options {
-                            resume: job.session.clone(),
-                            model: Some(job.model.clone().unwrap_or_else(|| {
-                                crate::settings::default_model(tool).to_owned()
-                            })),
-                            effort: job.effort.clone(),
-                            plan,
-                            instructions: (!obi_review).then(|| standing_rules(&job)).flatten(),
-                            no_commands: false,
-                            usage: !chatgpt,
-                            priced: if chatgpt {
-                                Some("plan".into())
-                            } else {
-                                self.usage.get(&job.account).priced
-                            },
-                            chatgpt,
-                            // An own run's threads are held to its mode's settings (LANES-18),
-                            // the mode it launched in (`Job::own_mode`).
-                            own: own.then(|| {
-                                let launched = job.own_mode.as_deref().and_then(Mode::parse);
-                                codex::own::policy(launched.unwrap_or_else(|| Self::mode_of(&job)))
-                            }),
-                        };
+                    let options = codex::Options {
+                        resume: job.session.clone(),
+                        model: Some(
+                            job.model
+                                .clone()
+                                .unwrap_or_else(|| crate::settings::default_model(tool).to_owned()),
+                        ),
+                        effort: job.effort.clone(),
+                        plan,
+                        instructions: (!obi_review).then(|| standing_rules(&job)).flatten(),
+                        no_commands: false,
+                        usage: !chatgpt,
+                        priced: if chatgpt {
+                            Some("plan".into())
+                        } else {
+                            self.usage.get(&job.account).priced
+                        },
+                        chatgpt,
+                        // An own run's threads are held to its mode's settings (LANES-18),
+                        // the mode it launched in (`Job::own_mode`).
+                        own: own.then(|| {
+                            let launched = job.own_mode.as_deref().and_then(Mode::parse);
+                            self.own_codex_policy(launched.unwrap_or_else(|| Self::mode_of(&job)))
+                        }),
+                    };
                     // The owner's words go into its turn as they come, as `turn/steer`, and those
                     // that come as it ends are its thread's next turn, in the same server
                     // (crate::steer, TASKCONV-36, 37).

@@ -1,0 +1,238 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab: an own Codex run's commands never read obid's vault, but in Bypass, on a real Linux obid",
+  "version": "1.0.0",
+  "description": "LANES-27 (the owner's \"Merge, add guard after\", 2026-11-20) against the real obid this checkout builds and the real codex-cli 0.163.0 sandbox, on an isolated Ubuntu 24.04 machine. The owner's Codex jobs in Ask, Sandbox and Bypass run on Codex's stand-in, which keeps the exact -c settings obid started it with; each thread's settings are then replayed into the real `codex sandbox` with its profile, reading a canary file in obid's vault folder. Ask (:read-only) and Sandbox (:workspace) are refused; Bypass (:danger-full-access, no sandbox) reads it, as the contract says. Red on #2683's code: there Ask's and Sandbox's profiles were the bare built-ins, which read it. No model call, no login. Skipped without OrbStack.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "linux-obid",
+      "use": "runtime.rust:lab.machine.obid-build",
+      "inputs": {
+        "limit": 1800
+      }
+    },
+    {
+      "id": "box",
+      "use": "runtime.rust:lab.machine.up",
+      "inputs": {
+        "name": "lanes-vault"
+      }
+    },
+    {
+      "id": "obid",
+      "use": "runtime.rust:lab.machine.obid",
+      "inputs": {
+        "machine": "${state.box}",
+        "limit": 900,
+        "config": {
+          "agents": {
+            "codex": {
+              "bin": "/home/oby/.oby/agents/fake-codex",
+              "accounts": [
+                {
+                  "id": "cx",
+                  "name": "Codex",
+                  "configDir": "/home/oby/.oby/home/accounts/codex"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "account",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "mkdir -p /home/oby/.oby/home/accounts/codex && printf '%s' '{\"OPENAI_API_KEY\":\"fake-codex\"}' > /home/oby/.oby/home/accounts/codex/auth.json && chmod 600 /home/oby/.oby/home/accounts/codex/auth.json && echo ready",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": "ready\n"
+          }
+        }
+      }
+    },
+    {
+      "id": "real-codex",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "limit": 600,
+        "command": "export DEBIAN_FRONTEND=noninteractive; command -v python3 >/dev/null || sudo -E apt-get install -y -qq python3 >/dev/null; A=$(uname -m); mkdir -p ~/bin && curl -fsSL -o /tmp/codex.tgz \"https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-$A-unknown-linux-musl.tar.gz\" && tar xzf /tmp/codex.tgz -C /tmp && install -m 755 \"/tmp/codex-$A-unknown-linux-musl\" ~/bin/codex && mkdir -p /tmp/cx-scratch && ~/bin/codex --version",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": "codex-cli 0.163.0\n"
+          }
+        }
+      }
+    },
+    {
+      "id": "ask-job",
+      "use": "runtime.rust:lab.remote.local-call",
+      "inputs": {
+        "machine": "${state.box}",
+        "obid": "${state.obid}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "ENV",
+            "agent": "codex",
+            "account": "cx",
+            "mode": "ask",
+            "check": "true"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "sandbox-job",
+      "use": "runtime.rust:lab.remote.local-call",
+      "inputs": {
+        "machine": "${state.box}",
+        "obid": "${state.obid}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "ENV",
+            "agent": "codex",
+            "account": "cx",
+            "mode": "sandbox",
+            "check": "true"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "bypass-job",
+      "use": "runtime.rust:lab.remote.local-call",
+      "inputs": {
+        "machine": "${state.box}",
+        "obid": "${state.obid}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "ENV",
+            "agent": "codex",
+            "account": "cx",
+            "mode": "bypass",
+            "check": "true"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "jobs-done",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "limit": 300,
+        "command": "for id in ${state.ask-job.body.id} ${state.sandbox-job.body.id} ${state.bypass-job.body.id}; do for i in $(seq 1 120); do j=$(curl -s -H \"Authorization: Bearer $(cat /home/oby/.oby/home/api-token)\" http://127.0.0.1:7811/v1/jobs/$id); case \"$j\" in *'\"status\":\"done\"'*|*'\"status\":\"failed\"'*|*'\"status\":\"interrupted\"'*) break;; esac; sleep 1; done; case \"$j\" in *'\"status\":\"done\"'*) echo \"$id done\";; *) echo \"$id not done: $j\";; esac; done",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": {
+              "$not": {
+                "$contains": "not done"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "replay",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "limit": 120,
+        "command": "set -u\ncanary=/home/oby/.oby/home/vault/lab-canary\nmkdir -p \"$(dirname \"$canary\")\" && printf 'VAULT-CANARY' > \"$canary\"\nprintf 'control: '; cat \"$canary\"; echo\nfor t in /home/oby/.oby/home/accounts/codex/threads/*.json; do\npython3 - \"$t\" <<'PY' > /tmp/replay.sh\nimport json, sys, shlex\nt = json.load(open(sys.argv[1]))\nkeep = [s for s in t.get(\"settings\", []) if s.split(\"=\")[0] in (\"approval_policy\", \"default_permissions\") or s.startswith(\"permissions.\")]\nprofile = t.get(\"permissions\")\nargs = [\"/home/oby/bin/codex\"]\nfor s in keep:\n    args += [\"-c\", s]\nargs += [\"sandbox\", \"-P\", profile, \"-C\", \"/home/oby/.oby/home/worktrees\", \"--\", \"cat\", \"/home/oby/.oby/home/vault/lab-canary\"]\nbase = next((s.split(\"=\", 1)[1].strip('\"') for s in keep if s.startswith(\"permissions.oby.extends=\")), profile)\nprint(\"printf '%s: ' \" + shlex.quote(base))\nprint(\" \".join(shlex.quote(a) for a in args) + \" >/tmp/out 2>&1 && echo read || echo \\\"refused ($(head -c 120 /tmp/out | tr \\\"\\\\n\\\" \\\" \\\"))\\\"\")\nPY\nCODEX_HOME=/tmp/cx-scratch bash /tmp/replay.sh\ndone",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": {
+              "$contains": "control: VAULT-CANARY"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "lanes-27-ask-reads-no-vault",
+      "use": "runtime.rust:check",
+      "ui": {
+        "proves": [
+          "LANES-27"
+        ]
+      },
+      "inputs": {
+        "value": "${state.replay.stdout}",
+        "expect": {
+          "body": {
+            "$contains": ":read-only: refused"
+          }
+        }
+      }
+    },
+    {
+      "id": "lanes-27-sandbox-reads-no-vault",
+      "use": "runtime.rust:check",
+      "ui": {
+        "proves": [
+          "LANES-27"
+        ]
+      },
+      "inputs": {
+        "value": "${state.replay.stdout}",
+        "expect": {
+          "body": {
+            "$contains": ":workspace: refused"
+          }
+        }
+      }
+    },
+    {
+      "id": "lanes-27-bypass-has-no-sandbox",
+      "use": "runtime.rust:check",
+      "ui": {
+        "proves": [
+          "LANES-27"
+        ]
+      },
+      "inputs": {
+        "value": "${state.replay.stdout}",
+        "expect": {
+          "body": {
+            "$contains": ":danger-full-access: read"
+          }
+        }
+      }
+    }
+  ]
+}

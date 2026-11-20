@@ -87,7 +87,7 @@ impl Jobs {
             job.own_lane
                 && launched.is_some_and(|launched| {
                     codex::own::policy(launched)
-                        .narrowed_by(codex::own::policy(Self::mode_of(&job)))
+                        .narrowed_by(&codex::own::policy(Self::mode_of(&job)))
                 })
         };
         tool == Tool::Codex && self.get(id).is_some_and(narrowed)
@@ -290,7 +290,12 @@ impl Jobs {
         let mut extra = process::no_publish_env(temp);
         extra.extend(own_run_env(Tool::Codex, account, &spec, temp)?);
         let argv: Vec<OsString> = std::iter::once(bin.into_os_string())
-            .chain(codex::own::policy(mode).settings().map(OsString::from))
+            .chain(
+                self.conversation_codex_policy(room, mode)
+                    .settings()
+                    .into_iter()
+                    .map(OsString::from),
+            )
             .chain(flags)
             .chain(["app-server".into()])
             .collect();
@@ -346,6 +351,20 @@ impl Jobs {
     /// (`CLAUDE_CODE_TMPDIR`) and its Bash reads anyway; and each Claude Code account's settings,
     /// state, login and hooks, so no turn plants a hook.
     fn conversation_denials(&self, room: &Path) -> Vec<String> {
+        let mut rules = Vec::new();
+        for path in self.conversation_secret_places(room) {
+            let path = path.to_string_lossy();
+            for tool in ["Read", "Edit"] {
+                rules.push(format!("{tool}(/{path})"));
+                rules.push(format!("{tool}(/{path}/**)"));
+            }
+        }
+        rules
+    }
+
+    /// What an own conversation whose room is `room` never reads ([`Self::conversation_denials`]),
+    /// as named and where it leads, a `*` matching one name.
+    fn conversation_secret_places(&self, room: &Path) -> Vec<PathBuf> {
         let home = &self.config.home;
         let real_home = home.canonicalize().unwrap_or_else(|_| home.clone());
         let mut places: Vec<PathBuf> = std::fs::read_dir(home)
@@ -404,14 +423,24 @@ impl Jobs {
         );
         paths.sort();
         paths.dedup();
-        let mut rules = Vec::new();
-        for path in paths.iter().map(|p| p.to_string_lossy()) {
-            for tool in ["Read", "Edit"] {
-                rules.push(format!("{tool}(/{path})"));
-                rules.push(format!("{tool}(/{path}/**)"));
-            }
-        }
-        rules
+        paths
+    }
+
+    /// An own Codex job's settings in `mode` (LANES-18): its commands never read obid's secret
+    /// places, the ones an own Claude Code job's file tools are denied ([`Self::secret_places`]),
+    /// as named and where they lead (LANES-27; in Bypass Codex has no sandbox to deny them in).
+    pub(crate) fn own_codex_policy(&self, mode: Mode) -> codex::own::Policy {
+        let places = self.secret_places();
+        let real = places.iter().filter_map(|p| p.canonicalize().ok());
+        let all: Vec<PathBuf> = places.iter().cloned().chain(real).collect();
+        codex::own::policy(mode).denying(codex_denied(&all))
+    }
+
+    /// An own Codex conversation's settings in `mode`, its room `room` (LANES-13): its commands
+    /// never read what an own Claude Code conversation's file tools are denied (LANES-27).
+    pub(crate) fn conversation_codex_policy(&self, room: &Path, mode: Mode) -> codex::own::Policy {
+        let places = self.conversation_secret_places(room);
+        codex::own::policy(mode).denying(codex_denied(&places))
     }
 
     /// The box job `id`'s check runs in, from its agent's `spec`, in either lane (LANES-6): Oby's,
@@ -424,6 +453,14 @@ impl Jobs {
         spec.accounts.clear();
         spec
     }
+}
+
+/// `places` as an own Codex run's profile denies them (LANES-27): each path, and everything under
+/// it, which Codex's sandbox needs said for a name with a `*` in it (codex-cli 0.163.0, measured).
+fn codex_denied(places: &[PathBuf]) -> Vec<String> {
+    (places.iter().map(|p| p.to_string_lossy()))
+        .flat_map(|p| [p.to_string(), format!("{p}/**")])
+        .collect()
 }
 
 /// Whether `job`'s run of `tool` on `account` leaves Oby's box: in the own lane, but never a Codex
@@ -1094,16 +1131,32 @@ mod tests {
             assert_eq!(set(gone), None, "{gone}: {argv:?}");
         }
         assert!(!argv.iter().any(|a| a.contains("oby_own")), "{argv:?}");
-        // The same job in Ask is own too, on Ask's settings: a sandbox that writes nothing.
+        // The same job in Ask is own too, on Ask's settings: a sandbox that writes nothing, in
+        // obid's profile, whose commands never read obid's secret places, as named and where they
+        // lead (LANES-27).
         let asking = jobs
             .launch(&asks, &spec, Tool::Codex, Vec::new(), &codex, None)
             .unwrap();
         assert!(asking.own_sandbox);
-        assert!(
-            (asking.argv.iter()).any(|a| a == "default_permissions=\":read-only\""),
-            "{:?}",
-            asking.argv
-        );
+        let asked: Vec<String> = (asking.argv.iter())
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        for want in [
+            "default_permissions=\"oby\"",
+            "permissions.oby.extends=\":read-only\"",
+        ] {
+            assert!(asked.iter().any(|a| a == want), "{want}: {asked:?}");
+        }
+        let files = (asked.iter())
+            .find_map(|a| a.strip_prefix("permissions.oby.filesystem="))
+            .unwrap();
+        for place in jobs.secret_places() {
+            let named = json!(place.to_str().unwrap()).to_string();
+            assert!(
+                files.contains(&format!("{named} = \"none\"")),
+                "{named}: {files}"
+            );
+        }
         let env = |name: &str| {
             launch
                 .env
@@ -1204,10 +1257,19 @@ mod tests {
                 .map(|w| w[1][key.len() + 1..].to_owned())
         };
         assert_eq!(set("approval_policy").as_deref(), Some("\"on-request\""));
+        assert_eq!(set("default_permissions").as_deref(), Some("\"oby\""));
         assert_eq!(
-            set("default_permissions").as_deref(),
+            set("permissions.oby.extends").as_deref(),
             Some("\":workspace\"")
         );
+        // LANES-27: never obid's vault, nor any conversation's login.
+        let files = set("permissions.oby.filesystem").unwrap();
+        for denied in [
+            "/vault\" = \"none\"",
+            "/conversations/*/login/**\" = \"none\"",
+        ] {
+            assert!(files.contains(denied), "{denied}: {files}");
+        }
         for gone in [
             "features.hooks",
             "notify",

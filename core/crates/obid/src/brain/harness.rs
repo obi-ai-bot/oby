@@ -913,7 +913,7 @@ fn own_lane(
 /// go less far (LANES-13, LANES-18), and it asks obid only what its launch's settings ask.
 fn narrowed(shared: &Shared, launched: crate::permissions::Mode) -> bool {
     let policy = crate::codex::own::policy;
-    policy(launched).narrowed_by(policy(shared.jobs.default_mode()))
+    policy(launched).narrowed_by(&policy(shared.jobs.default_mode()))
 }
 
 /// What the owner hears when a narrower mode ended an own Codex turn.
@@ -2229,7 +2229,7 @@ async fn attempts(
                     &url,
                     tetrix.as_deref(),
                     &resume,
-                    own,
+                    own.then_some(place.room.as_path()),
                     helper,
                 )
                 .await;
