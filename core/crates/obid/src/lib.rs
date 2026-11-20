@@ -898,7 +898,7 @@ impl Door {
                 if !agent_route
                     && let Err(error) = api::admit(request.uri(), request.headers(), &door.token)
                 {
-                    return sealed(error.into_response());
+                    return sealed(api::after_body(request, error.into_response()).await);
                 }
                 match now {
                     Some(Err(why)) => return closed(why),
