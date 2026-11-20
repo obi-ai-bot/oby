@@ -1,0 +1,461 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab: add a computer over SSH, act on it with the owner's signed words, run work there, revoke it",
+  "version": "1.0.0",
+  "description": "Other computers (src/lab/remote.rs): a Linux obid on an isolated Ubuntu machine listens on its own 127.0.0.1 only; the window adds it over SSH (its key named in that obid's home/pairing, a one-time invitation back over SSH, redeemed through an ssh -N -L tunnel for a device token), a wider setting goes through only with the Mac's registered key's signature, a job runs in that machine's folder and its result reaches the Mac, and a revoke there refuses the Mac's token. Skipped without OrbStack.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "linux-obid",
+      "use": "runtime.rust:lab.machine.obid-build",
+      "inputs": {
+        "limit": 1200
+      }
+    },
+    {
+      "id": "window",
+      "use": "runtime.rust:lab.remote.window",
+      "inputs": {
+        "name": "obid-spec's Mac"
+      }
+    },
+    {
+      "id": "box",
+      "use": "runtime.rust:lab.machine.up",
+      "inputs": {
+        "name": "box"
+      }
+    },
+    {
+      "id": "obid",
+      "use": "runtime.rust:lab.machine.obid",
+      "inputs": {
+        "machine": "${state.box}"
+      }
+    },
+    {
+      "id": "linux-obid-answers-on-its-own-loopback",
+      "use": "runtime.rust:lab.remote.local-call",
+      "inputs": {
+        "machine": "${state.box}",
+        "obid": "${state.obid}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-1"
+        ]
+      }
+    },
+    {
+      "id": "it-listens-on-127-0-0-1-only",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "ss -ltnH | awk '{print $4}' | grep -E ':(7811|8810)$' | sort | tr '\\n' ' '",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": "127.0.0.1:7811 127.0.0.1:8810 "
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-1"
+        ]
+      }
+    },
+    {
+      "id": "ssh",
+      "use": "runtime.rust:lab.machine.ssh",
+      "inputs": {
+        "machine": "${state.box}",
+        "alias": "lab-box"
+      }
+    },
+    {
+      "id": "ssh-reaches-it-as-oby-with-the-workflows-own-key",
+      "use": "runtime.rust:lab.remote.ssh",
+      "inputs": {
+        "ssh": "${state.ssh}",
+        "command": "id -un",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": "oby\n"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-1"
+        ]
+      }
+    },
+    {
+      "id": "a-host-key-not-accepted-is-refused",
+      "use": "runtime.rust:lab.remote.ssh",
+      "inputs": {
+        "ssh": {
+          "config": "${state.ssh.config}",
+          "alias": "lab-box-unknown",
+          "home": "${state.ssh.home}"
+        },
+        "command": "id -un",
+        "expect": {
+          "paths": {
+            "status": 255,
+            "trouble.trouble": "hostKeyUnknown"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-1"
+        ]
+      }
+    },
+    {
+      "id": "pair",
+      "use": "runtime.rust:lab.remote.pair-ssh",
+      "inputs": {
+        "computer": "box",
+        "ssh": "${state.ssh}",
+        "obid": "${state.obid}",
+        "expect": {
+          "paths": {
+            "paired": true,
+            "computer.hasToken": true,
+            "computer.current": "ssh",
+            "computer.routes": {
+              "$len": 1
+            },
+            "devices.id": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-2"
+        ]
+      }
+    },
+    {
+      "id": "the-pairing-file-is-used-up",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "test -e /home/oby/.oby/home/pairing; echo $?",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": "1\n"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-2"
+        ]
+      }
+    },
+    {
+      "id": "through-the-tunnel-it-answers",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "box",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "route": "ssh",
+            "reached": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-2"
+        ]
+      }
+    },
+    {
+      "id": "narrower-needs-no-words",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "box",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "ask"
+        },
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.mode": "ask"
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "box",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "bypass"
+        },
+        "as": "none",
+        "expect": {
+          "paths": {
+            "status": 401
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-2"
+        ]
+      }
+    },
+    {
+      "id": "wider-unsigned-403",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "box",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "bypass"
+        },
+        "expect": {
+          "paths": {
+            "status": 403
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-2"
+        ]
+      }
+    },
+    {
+      "id": "wider-signed-by-a-key-never-registered-403",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "box",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "bypass"
+        },
+        "sign": "stranger",
+        "expect": {
+          "paths": {
+            "status": 403
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-2"
+        ]
+      }
+    },
+    {
+      "id": "still-ask",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "box",
+        "method": "GET",
+        "path": "/v1/settings/permissions",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.mode": "ask"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-2"
+        ]
+      }
+    },
+    {
+      "id": "wider-signed-by-the-macs-key-200",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "box",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "bypass"
+        },
+        "sign": "owner",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.mode": "bypass"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-2"
+        ]
+      }
+    },
+    {
+      "id": "job",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "box",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "sign": "owner",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: hello.txt"
+          }
+        },
+        "expect": {
+          "paths": {
+            "status": 201,
+            "body.status": "queued"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-6"
+        ]
+      }
+    },
+    {
+      "id": "its-result-reaches-the-mac",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "box",
+        "method": "GET",
+        "path": "/v1/jobs/${state.job.body.id}",
+        "within": 180,
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.status": "done",
+            "body.commits": 1,
+            "route": "ssh"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-6"
+        ]
+      }
+    },
+    {
+      "id": "it-ran-in-that-machines-folder",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "find /home/oby/.oby/home -name hello.txt -path '*/worktrees/*' 2>/dev/null | head -1 | grep -c '^/home/oby/.oby/home/'",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": "1\n"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-6"
+        ]
+      }
+    },
+    {
+      "id": "revoke-on-that-computer",
+      "use": "runtime.rust:lab.remote.local-call",
+      "inputs": {
+        "machine": "${state.box}",
+        "obid": "${state.obid}",
+        "method": "DELETE",
+        "path": "/v1/pairing/devices/${state.pair.computer.pairing}",
+        "expect": {
+          "paths": {
+            "status": 204
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-5"
+        ]
+      }
+    },
+    {
+      "id": "after-a-revoke-the-macs-token-is-refused",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "box",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "reached": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-5"
+        ]
+      }
+    },
+    {
+      "id": "and-its-signed-words-too",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "box",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "ask"
+        },
+        "sign": "owner",
+        "expect": {
+          "paths": {
+            "status": 401
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-5"
+        ]
+      }
+    }
+  ]
+}

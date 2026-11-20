@@ -1,0 +1,440 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab: the other computer is a Mac: add it over SSH, act on it with signed words, run work there, revoke it",
+  "version": "1.0.0",
+  "description": "Other computers on a Mac (src/lab/remote.rs): a second scratch obid on this Mac (its own home, port and user folder) is reached over SSH to localhost with a key the workflow makes, which ~/.ssh/authorized_keys lets run only that obid's pairing program and open only its gateway's port, for an hour at most. The window pairs, signs the owner's words, runs a job there and sees its result; a revoke there refuses it; and the workflow's line leaves ~/.ssh/authorized_keys. Skipped while macOS Remote Login is off.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "window",
+      "use": "runtime.rust:lab.remote.window",
+      "inputs": {
+        "name": "obid-spec's Mac"
+      }
+    },
+    {
+      "id": "mac",
+      "use": "runtime.rust:lab.remote.mac-computer",
+      "inputs": {
+        "name": "other-mac",
+        "alias": "lab-mac",
+        "expect": {
+          "paths": {
+            "authorized.options": {
+              "$matches": "^restrict,port-forwarding,permitopen=\"127\\.0\\.0\\.1:[0-9]+\",expiry-time=\"[0-9]{12}Z\",command=\"/.+/pair-computer\"$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-MAC-1"
+        ]
+      }
+    },
+    {
+      "id": "the-key-runs-nothing-but-the-pairing",
+      "use": "runtime.rust:lab.remote.ssh",
+      "inputs": {
+        "ssh": "${state.mac.ssh}",
+        "command": "id -un",
+        "expect": {
+          "paths": {
+            "status": 2,
+            "stdout": "",
+            "stderr": {
+              "$contains": "isn't a device key"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-MAC-1"
+        ]
+      }
+    },
+    {
+      "id": "a-host-key-not-accepted-is-refused",
+      "use": "runtime.rust:lab.remote.ssh",
+      "inputs": {
+        "ssh": {
+          "config": "${state.mac.ssh.config}",
+          "alias": "lab-mac-unknown",
+          "home": "${state.mac.ssh.home}"
+        },
+        "command": "id -un",
+        "expect": {
+          "paths": {
+            "status": 255,
+            "trouble.trouble": "hostKeyUnknown"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-MAC-1"
+        ]
+      }
+    },
+    {
+      "id": "its-tunnel-reaches-the-gateway",
+      "use": "runtime.rust:lab.remote.tunnel",
+      "inputs": {
+        "ssh": "${state.mac.ssh}",
+        "remotePort": "${state.mac.obid.gatewayPort}",
+        "expect": {
+          "paths": {
+            "reached": true,
+            "status": 401
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-MAC-1"
+        ]
+      }
+    },
+    {
+      "id": "and-no-other-port",
+      "use": "runtime.rust:lab.remote.tunnel",
+      "inputs": {
+        "ssh": "${state.mac.ssh}",
+        "remotePort": "${state.mac.obid.apiPort}",
+        "expect": {
+          "paths": {
+            "reached": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-MAC-1"
+        ]
+      }
+    },
+    {
+      "id": "pair",
+      "use": "runtime.rust:lab.remote.pair-ssh",
+      "inputs": {
+        "computer": "mac",
+        "ssh": "${state.mac.ssh}",
+        "obid": "${state.mac.obid}",
+        "expect": {
+          "paths": {
+            "paired": true,
+            "computer.hasToken": true,
+            "computer.current": "ssh",
+            "devices.id": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-MAC-2"
+        ]
+      }
+    },
+    {
+      "id": "the-pairing-file-is-used-up",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.mac.obid}",
+        "path": "pairing",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-MAC-2"
+        ]
+      }
+    },
+    {
+      "id": "through-the-tunnel-it-answers",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "mac",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "route": "ssh"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-MAC-2"
+        ]
+      }
+    },
+    {
+      "id": "narrower-needs-no-words",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "mac",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "ask"
+        },
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.mode": "ask"
+          }
+        }
+      }
+    },
+    {
+      "id": "wider-unsigned-403",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "mac",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "bypass"
+        },
+        "expect": {
+          "paths": {
+            "status": 403
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-MAC-2"
+        ]
+      }
+    },
+    {
+      "id": "wider-signed-by-a-key-never-registered-403",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "mac",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "bypass"
+        },
+        "sign": "stranger",
+        "expect": {
+          "paths": {
+            "status": 403
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-MAC-2"
+        ]
+      }
+    },
+    {
+      "id": "wider-signed-by-the-macs-key-200",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "mac",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "bypass"
+        },
+        "sign": "owner",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.mode": "bypass"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-MAC-2"
+        ]
+      }
+    },
+    {
+      "id": "job",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "mac",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "sign": "owner",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: hello.txt"
+          }
+        },
+        "expect": {
+          "paths": {
+            "status": 201,
+            "body.status": "queued"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-MAC-3"
+        ]
+      }
+    },
+    {
+      "id": "its-result-reaches-the-window",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "mac",
+        "method": "GET",
+        "path": "/v1/jobs/${state.job.body.id}",
+        "within": 180,
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.status": "done",
+            "body.commits": 1,
+            "route": "ssh"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-MAC-3"
+        ]
+      }
+    },
+    {
+      "id": "it-ran-in-that-obids-folder",
+      "use": "runtime.rust:lab.remote.find",
+      "inputs": {
+        "obid": "${state.mac.obid}",
+        "name": "hello.txt",
+        "expect": {
+          "paths": {
+            "found": {
+              "$contains": "worktrees/${state.job.body.id}/hello.txt"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-MAC-3"
+        ]
+      }
+    },
+    {
+      "id": "revoke-on-that-computer",
+      "use": "runtime.rust:lab.remote.local-call",
+      "inputs": {
+        "obid": "${state.mac.obid}",
+        "method": "DELETE",
+        "path": "/v1/pairing/devices/${state.pair.computer.pairing}",
+        "expect": {
+          "paths": {
+            "status": 204
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-MAC-4"
+        ]
+      }
+    },
+    {
+      "id": "after-a-revoke-the-windows-token-is-refused",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "mac",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "reached": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-MAC-4"
+        ]
+      }
+    },
+    {
+      "id": "and-its-signed-words-too",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "mac",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "ask"
+        },
+        "sign": "owner",
+        "expect": {
+          "paths": {
+            "status": 401
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-MAC-4"
+        ]
+      }
+    },
+    {
+      "id": "what-it-added-to-ssh-goes",
+      "use": "runtime.rust:lab.remote.mac-forget",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "left": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-MAC-5"
+        ]
+      }
+    },
+    {
+      "id": "and-its-key-opens-nothing-after",
+      "use": "runtime.rust:lab.remote.tunnel",
+      "inputs": {
+        "ssh": "${state.mac.ssh}",
+        "remotePort": "${state.mac.obid.gatewayPort}",
+        "expect": {
+          "paths": {
+            "reached": false,
+            "said": {
+              "$contains": "accepts none of your SSH keys"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-MAC-5"
+        ]
+      }
+    }
+  ]
+}

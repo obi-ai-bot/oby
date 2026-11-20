@@ -1,0 +1,130 @@
+# Lab: other computers (`lab-remote`)
+
+The owner's decisions of 2026-11-19, built and proven here first (src/lab/remote.rs, src/lab/machine.rs):
+any network the person already has, routes ranked LAN, then VPN or tailnet, then public, then SSH;
+SSH as a tunnel only (`ssh -N -L` to the other obid's 127.0.0.1), keys and agent only, host keys the
+person's call, nothing installed over it; Macs and Linux; the whole window switches to the other
+computer; when no route works, Oby says so. The Obysphere is never the transport to one's own
+computers.
+
+```bash
+cargo build --manifest-path tools/obid-spec/Cargo.toml --bins
+tools/obid-spec/target/debug/obid-spec run --only lab-remote
+```
+
+Each Linux workflow makes its own isolated Ubuntu machines (user `oby`) and deletes them at its
+end, whatever it ended in; the window's SSH tunnels stop then too. Without OrbStack they're
+`skipped`. Only the Mac workflow needs the Mac's obid that `run` builds; with `--obid /usr/bin/true`
+the Linux ones run alone.
+
+**The other computer is a Mac** (`mac-ssh-pair.json`, the owner's addition of 2026-11-19): a second
+scratch obid on this Mac, with its own home, port and user folder, reached over `ssh` to
+localhost. It needs macOS Remote Login on, and is `skipped` while it's off: the lab never turns it
+on or changes any setting. The workflow makes its own key, and adds one line for it to the
+person's `~/.ssh/authorized_keys`: `restrict,port-forwarding,permitopen="127.0.0.1:<that obid's
+gateway>",expiry-time="<an hour from now>Z",command="<that obid's pairing program>"`. The key can
+run nothing but that obid's pairing and open no port but its gateway, and stops working within the
+hour even if nothing removes it. The line goes at the workflow's end, whatever it ended in, and
+every other line is left as it was (its SHA-256 before and after each run here was the same).
+ssh runs with the workflow's own config, known_hosts (this Mac's host key, from
+`/etc/ssh/ssh_host_ed25519_key.pub`) and `HOME`, never the person's keys or agent.
+
+The Linux obid is built once per `core/` tree and arch, in a machine of its own deleted right
+after, and cached in `$TMPDIR/obid-spec-lab/` (with nodejs.org's Node 22, SHA-256 checked): workflows
+running at once share one build. A cold build can take longer than a step's usual 300 s, so each
+workflow's first step builds it with a `limit` of its own (`"limit": 1200`: a lab step may ask for
+up to 1800 s, src/main.rs `step_limit`, OBIDSPEC-16). A cold run of all four took 414 s, most of it
+that one build; with the build cached the Linux three take about 90 s and the Mac one about 10 s.
+
+## Scenarios
+
+| Scenario | What it proves | Workflow |
+|---|---|---|
+| LAB-REMOTE-1 | A Linux obid on another machine listens on its own 127.0.0.1 only; the window reaches the machine over SSH with a key of its own, and a host key the person never accepted is refused. | `ssh-pair.json` |
+| LAB-REMOTE-2 | Adding a computer over SSH: the Mac's device key is named in that obid's `home/pairing` and registered there, a one-time invitation comes back over SSH and is redeemed through the tunnel for a device token; a wider setting goes through only with the Mac's key's signature (no token: 401; unsigned or signed by a key never registered: 403). | `ssh-pair.json` |
+| LAB-REMOTE-3 | Adding a computer with a code: the other computer's owner makes a six-digit code and a link carrying its direct address with its certificate pinned; a wrong code and a used one pair nothing; the right one gives a token, and the Mac's key added through it signs the owner's words; another machine answering at the same address gets no code and no call. | `code-pair.json` |
+| LAB-REMOTE-4 | Two routes to one computer (LAN direct, SSH): the best is used, the next takes over when it's cut, the window moves up again once the better one answers twice, and with both cut the answer names each route tried and why. | `routes.json` |
+| LAB-REMOTE-5 | After a revoke on that computer, the Mac's token is refused, its signed words too. | `ssh-pair.json` |
+| LAB-REMOTE-6 | A job the window starts runs on the Linux obid with obid's stand-in agents, in that machine's folder, and its result reaches the Mac through the tunnel. | `ssh-pair.json` |
+| LAB-REMOTE-7 | A direct address is HTTPS with the certificate pinned: the pinned one connects; another machine's certificate at the same address, or a new certificate on the same machine, is refused. | `code-pair.json` |
+| LAB-REMOTE-MAC-1 | The other computer is a Mac: the workflow's key in `~/.ssh/authorized_keys` is restricted, runs nothing but that obid's pairing program (`id -un` gets "That isn't a device key."), tunnels to that obid's gateway and to no other port; a host key never accepted is refused. | `mac-ssh-pair.json` |
+| LAB-REMOTE-MAC-2 | Pairing that Mac over SSH: its pairing file used up, a device token through the tunnel, and a wider setting only with the window's key's signature. | `mac-ssh-pair.json` |
+| LAB-REMOTE-MAC-3 | A job the window starts runs in that obid's own worktree (`worktrees/<job>/`), and its result reaches the window. | `mac-ssh-pair.json` |
+| LAB-REMOTE-MAC-4 | After a revoke there, the window's token is refused, its signed words too. | `mac-ssh-pair.json` |
+| LAB-REMOTE-MAC-5 | The workflow's line leaves `~/.ssh/authorized_keys`, and its key then opens nothing ("accepts none of your SSH keys"). | `mac-ssh-pair.json` |
+
+## What's portable
+
+`remote::computers` is what obid takes as it is: `RouteKind`, `classify` and `rank` (the owner's
+order), `Route` (a direct address is HTTPS and pinned, or an SSH alias), `Supervisor` (the best route
+that answers; down on the first failure, up only after two answers in a row; `Lost` with every route
+tried, once), `Ssh` (every argument ssh gets, `trouble` and `say` for what its errors mean),
+`Tunnel`, `Pin` and `PinnedVerifier` (a rustls verifier that trusts one certificate, and still checks
+the handshake is signed by its key), `Link` and `pair_computer_script` (the stand-in for `obid pair-computer`). The nodes only hold the
+window's state and drive the machines.
+
+T3 Code's SSH fixes were read first (59% of its SSH commits); the classes this avoids by design:
+
+- No `~/.ssh/config` parsing at all (a third of T3's fixes are Include/Host-pattern parsing): ssh reads
+  its own configuration, and `ssh -G` says what it made of an alias.
+- An alias's `RemoteCommand` or `RequestTTY` can't hijack the session (`RemoteCommand=none`,
+  `RequestTTY=no`); its configured forwards can't ride along (`ClearAllForwardings=yes` for commands).
+- No password or code prompt (`BatchMode=yes`): keys and the agent only, and "accepts none of your SSH
+  keys" when that fails.
+- A destination is never an option (`-oProxyCommand=…`): it's checked and always after `--`.
+- Readiness counts the forward's port taking connections after ssh signed in, not ssh's start; the
+  port a tunnel takes is verified by an HTTP answer, so another server on that port isn't mistaken
+  for obid; a port taken in between (`ExitOnForwardFailure=yes`) is retried on another.
+- ssh's stderr is read for as long as it runs (a full pipe stalls the tunnel), the last 16 KiB kept
+  for its error.
+- Every ssh is in its own process group, stopped by PID at the end, and `kill_on_drop`.
+- No shared ControlMaster (`ControlMaster=no`, `ControlPath=none`): a slow reconnect never replaces a
+  healthy forward, and nothing outlives the window.
+- A lost link is noticed in 45 s (`ServerAliveInterval=15`, `ServerAliveCountMax=3`); a cut route
+  isn't redialed more than once a second.
+- Host key trouble says what to do and leaves it to the person: unknown (accept it once in a
+  terminal) or changed (someone else may answer: Oby won't connect).
+
+## What obid needs when ported
+
+Each item is something the lab does in obid's place today.
+
+1. **An HTTPS listener for direct addresses.** obid refuses any `listen` or `gateway` that isn't on
+   127.0.0.1 (config.rs, gateway.rs). The lab runs a TLS front on the machine (`lab.remote.front`,
+   python3) from `0.0.0.0:8443` to the gateway. obid needs its own: on the interfaces the owner
+   picks, with a self-signed P-256 certificate it makes and keeps in `home/keys`, its SHA-256 the pin.
+2. **`obid pair-computer`**, a command run over SSH on the owner's click (as `obid vault` is): register
+   the given device key (the SSH login is the owner's presence, as `home/pairing` is today) and make
+   a one-time invitation, printing one JSON line. The lab does it with a bash script on ssh's stdin
+   that writes `home/pairing` and calls obid's own API there with curl (`pair_computer_script`, placed
+   with obid and reading the Mac's name and key from stdin, so it can be a key's forced command); the
+   API token stays on that computer but is read by a shell and curl, which obid wouldn't need.
+3. **A computer's token reaches the window's routes.** A paired device's token goes through the
+   iPhone's allowlist (gateway.rs: 68 of the 156 routes in docs/api/routes.txt), which leaves out routes the window uses (connections,
+   the vault, adding folders, a member's unsealed setting…). A paired computer needs the window's
+   route set (still never the pairing endpoints), as a kind of pairing of its own.
+4. **Signed words bound to the token's own key.** Through the gateway, `X-Oby-Words` is checked
+   against any registered key, whatever token carried it. A computer's token should carry only its
+   own key's words; a key registered through `home/pairing` over SSH has no `paired` binding today.
+5. **Revoking from the Mac, and forgetting its key.** Revoking is `DELETE /v1/pairing/devices/{id}` on
+   the other computer's loopback only (the gateway refuses pairing endpoints), and it leaves the
+   Mac's key in `devices.json`. "Remove this computer" in the window needs a revoke over the
+   computer's own token that also forgets its key.
+6. **The link in the invitation.** `POST /v1/pairing/invite` answers a `link` with a name and a
+   hostname; it needs the direct routes and the certificate pin (`Link` v1, `oby-computer:` and
+   base64url JSON). A six-digit code alone can't carry a pin: it travels with the link (pasted or a
+   QR code), never instead of it.
+7. **One invitation at a time.** obid keeps one open invitation (`pending`): a second replaces the
+   first. Fine for a person adding one computer; two at once (a phone and a computer) would race.
+8. **Where the window's computers live.** The supervisor, tunnels and tokens belong to the Mac's side
+   (the dispatcher's: which computer, which route). Proposed: the Mac's obid keeps them
+   (`home/computers.json`, tokens in the vault, never in an answer) and the window switches by
+   talking to its own obid, which forwards to the computer in use. An owner's decision before the
+   port.
+9. **Linux obid's runtime needs.** A job's stand-ins need Node 22 (Ubuntu 24.04 has 18); the real CLIs
+   bring their own. bubblewrap for boxed jobs; git.
+10. **A Mac as the other computer.** macOS Remote Login is the owner's setting: with it off, Oby says
+    so and how to turn it on, and never changes it. To add a key for a Mac over SSH, obid's
+    `pair-computer` needs a stable path, so `authorized_keys` can make it the key's forced command
+    (`restrict`, `permitopen` to the gateway only, an `expiry-time`), as the lab does. A key with
+    a shell is more than pairing needs.
