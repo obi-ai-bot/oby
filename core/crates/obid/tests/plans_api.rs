@@ -3225,6 +3225,63 @@ fn delivery_3_cancel_marks_running_and_waiting_words_cancelled() {
     );
 }
 
+/// DELIVERY-11: a conversation deleted while its turn runs, with words waiting behind it: the
+/// turn under way still answers its request, and the waiting words' request answers `none` with
+/// the conversation, as after a cancel, instead of never.
+#[test]
+fn delivery_11_deleting_a_conversation_answers_the_words_waiting_there() {
+    let folder = Folder::new("delivery-11");
+    let obid = started_harness(&folder);
+    let id = said_anew(&obid, "SAY Ready.")["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // On a thread of its own, so a request that never answers fails the test, not hangs it.
+    let send = |words: &str| {
+        use std::io::{Read, Write};
+        let (tell, hear) = std::sync::mpsc::channel();
+        let body = json!({"said": words, "conversation": id}).to_string();
+        let port = obid.port;
+        std::thread::spawn(move || {
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            write!(
+                stream,
+                "POST /v1/plans HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            let mut raw = String::new();
+            let _ = stream.read_to_string(&mut raw);
+            let _ = tell.send(raw);
+        });
+        hear
+    };
+    let answer = |raw: &str| -> serde_json::Value {
+        assert!(raw.starts_with("HTTP/1.1 200"), "{raw}");
+        serde_json::from_str(raw.split_once("\r\n\r\n").unwrap().1.trim()).unwrap()
+    };
+    let running = send("LINGER 4000");
+    reads(&obid, &id, "LINGER 4000", "running");
+    let waiting = send("SAY queued.");
+    reads(&obid, &id, "SAY queued.", "queued");
+    let deleted = call(&obid, "DELETE", &format!("/v1/conversations/{id}"), None);
+    assert_eq!(deleted.status, 204);
+    let within = std::time::Duration::from_secs(60);
+    let running = running.recv_timeout(within);
+    let running = answer(&running.expect("the running turn's request answers"));
+    assert_eq!(running["conversation"], id.as_str());
+    let waiting = waiting.recv_timeout(within);
+    let waiting = answer(&waiting.expect("the waiting words' request answers (#2648)"));
+    assert_eq!(
+        waiting,
+        json!({"kind": "none", "jobs": [], "drafts": [], "conversation": id})
+    );
+    assert_eq!(
+        call(&obid, "GET", &format!("/v1/conversation?id={id}"), None).status,
+        404
+    );
+}
+
 /// COMPOSER-9 and 11: one message waiting is cancelled alone, by its turn: it reads `cancelled`
 /// and its request answers `none`; the turn under way goes on to its answer, and the words before
 /// it are answered by themselves. Words a turn took already aren't dropped.
