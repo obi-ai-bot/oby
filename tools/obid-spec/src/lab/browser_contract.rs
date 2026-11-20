@@ -26,7 +26,7 @@ use serde_json::{json, Value};
 
 // ── Routes ──────────────────────────────────────────────────────────────────────────────────────
 
-/// `GET`: every tab, with the settings ([`TabsAnswer`]).
+/// `GET`: every tab, with the settings and the last event the answer reflects ([`TabsAnswer`]).
 pub const PATH_BROWSER: &str = "/v1/browser";
 /// `GET`: Server-Sent Events, one [`Event`] per message (`id:` its seq, `event:` its type). A
 /// reader reconnecting with `Last-Event-ID` gets what it missed while the server still holds it.
@@ -176,6 +176,10 @@ pub struct TabsAnswer {
     pub settings: Settings,
     /// Each job's browser: whether it is up yet (a job has one before it has a tab).
     pub browsers: Vec<JobBrowser>,
+    /// The last event this answer reflects: a reader applies only the events after it, and doesn't
+    /// take an answer older than an event it already applied (add-only; 0 before any event).
+    #[serde(default)]
+    pub seq: u64,
 }
 
 // ── A job's browser ─────────────────────────────────────────────────────────────────────────────
@@ -322,6 +326,9 @@ pub struct Download {
 #[serde(rename_all = "camelCase")]
 pub struct DownloadsAnswer {
     pub downloads: Vec<Download>,
+    /// The last event this answer reflects, as [`TabsAnswer::seq`].
+    #[serde(default)]
+    pub seq: u64,
 }
 
 /// Save a copy: the agent's file stays in its profile, a copy lands in the person's Downloads.
@@ -806,6 +813,7 @@ mod tests {
                     state: BrowserState::Starting,
                     reason: None,
                 }],
+                seq: 7,
             })
             .unwrap(),
             serde_json::to_value(Download {

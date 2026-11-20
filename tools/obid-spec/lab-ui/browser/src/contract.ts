@@ -99,6 +99,9 @@ export interface TabsAnswer {
   settings: Settings;
   /// Each job's browser: whether it is up yet (a job has one before it has a tab).
   browsers: JobBrowser[];
+  /// The last event this answer reflects: a reader applies only the events after it, and doesn't
+  /// take an answer older than an event it already applied (add-only; 0 before any event).
+  seq: number;
 }
 
 // ── A job's browser ─────────────────────────────────────────────────────────────────────────────
@@ -177,6 +180,8 @@ export interface Download {
 
 export interface DownloadsAnswer {
   downloads: Download[];
+  /// The last event this answer reflects, as TabsAnswer's seq.
+  seq: number;
 }
 
 export interface SaveCopyAnswer {

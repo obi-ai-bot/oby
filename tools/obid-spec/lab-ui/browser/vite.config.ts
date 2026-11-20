@@ -89,6 +89,11 @@ function boards(): Plugin {
 const API = process.env.LAB_BROWSER_API;
 const TOKEN = process.env.LAB_BROWSER_TOKEN;
 const DEVICE = process.env.LAB_BROWSER_DEVICE; // "<id> <secret hex> <public key base64>"
+// A busy main process, for the workflow that proves a list answer older than an event never rolls
+// the screen back (LAB-UI-LIVE-6): each GET of the tab list or the downloads, once the API has
+// answered it, is held this long before the page gets it. Off (0) unless the workflow sets it.
+const SLOW_READS_MS = Number(process.env.LAB_BROWSER_SLOW_READS_MS) || 0;
+const SLOW_READS = new Set(['/v1/browser', '/v1/browser/downloads']);
 
 function deviceKey() {
   if (!DEVICE) return null;
@@ -137,6 +142,11 @@ function live(): Plugin {
         // an event stream goes out as it comes: the preview server's compression would hold small
         // events back until its buffer fills
         if (r.headers.get('content-type')?.includes('text/event-stream')) { res.setHeader('Cache-Control', 'no-cache, no-transform'); res.flushHeaders(); }
+        if (SLOW_READS_MS && method === 'GET' && SLOW_READS.has(req.url!.split('?')[0])) {
+          const answer = Buffer.from(await r.arrayBuffer());
+          await new Promise((done) => setTimeout(done, SLOW_READS_MS));
+          return res.end(answer);
+        }
         if (!r.body) return res.end();
         Readable.fromWeb(r.body as never).on('error', () => res.end()).pipe(res);
       } catch (e) {

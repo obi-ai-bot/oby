@@ -1,0 +1,210 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser screens 106: live: a list answer older than an event never rolls the screen back",
+  "version": "1.0.0",
+  "description": "Live (board 2's screen) on lane A's API, with the screens' server slow: each answer to GET /v1/browser and /v1/browser/downloads is held 3 s after the API gave it (a busy main process). The screen reloads, so its first read of the list is still on its way while the agent's page fails to load (127.0.0.1:2) and the failure arrives as an event: the screen shows This page didn't load, and still shows it after the older list lands, because the list carries the last event it reflects (`seq`) and an answer older than what the screen already applied is not taken. The screen never re-reads the list on a timer.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.browserapi.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:lab.browserapi.device",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "id": {
+              "$contains": "device-"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "j1",
+      "use": "runtime.rust:lab.browserapi.job",
+      "inputs": {
+        "api": "${state.up}",
+        "job": "j1",
+        "agent": "codex",
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "open-site",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.up.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "serve",
+      "use": "runtime.rust:lab.ui.serve",
+      "inputs": {
+        "api": "${state.up}",
+        "device": "${state.device}",
+        "slowReadsMs": 3000,
+        "expect": {
+          "paths": {
+            "live": true,
+            "signs": true
+          }
+        }
+      }
+    },
+    {
+      "id": "screen",
+      "use": "runtime.rust:lab.ui.open",
+      "inputs": {
+        "server": "${state.serve}",
+        "board": 2,
+        "live": true
+      }
+    },
+    {
+      "id": "live-frame",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=frame]"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        },
+        "within": 20
+      }
+    },
+    {
+      "id": "reload",
+      "use": "runtime.rust:lab.ui.reload",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    },
+    {
+      "id": "tab-from-the-events",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-tab.is-on .br-tab-name"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Sign in to the lab"
+          }
+        },
+        "within": 10
+      }
+    },
+    {
+      "id": "refused",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "http://127.0.0.1:2/",
+          "tab": "${state.open-site.structured.result.tab}"
+        },
+        "expect": {
+          "paths": {
+            "isError": true
+          }
+        }
+      }
+    },
+    {
+      "id": "api-says-failed",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.tabs.0.state": "failed"
+          }
+        }
+      }
+    },
+    {
+      "id": "didnt-load-and-stays",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=page-failed]"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": {
+              "$contains": "This page didn’t load"
+            }
+          }
+        },
+        "within": 10,
+        "hold": 6000
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-LIVE-6"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:lab.ui.screenshot",
+      "inputs": {
+        "screen": "${state.screen}",
+        "name": "lab-ui-live-6"
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:lab.ui.close",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    }
+  ]
+}

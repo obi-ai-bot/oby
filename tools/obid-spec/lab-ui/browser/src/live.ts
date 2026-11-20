@@ -92,10 +92,19 @@ export function connectLive(_base: string, sinks: Sinks): Live {
   const askOf = (t: CTab, a: CAsk) => ({ id: a.id, tab: t.id, kind: a.kind, agent: t.owner.kind === 'agent' ? agentOf(t.owner.agent) : 'codex' as AgentId, host: shown(t.url).split('/')[0], field: a.field });
   const publish = () => { if (!closed) sinks.state(view()); };
 
+  // The last event each list reflects: the tabs' (tabs, asks, settings, what an agent does) and the
+  // downloads'. A list answer reflects up to its `seq`; one older than an event already applied
+  // isn't taken (it would roll the screen back), and an event a newer answer already reflects isn't
+  // applied again. So the events stream alone keeps the screen current: no re-read on a timer.
+  let tabsSeq = 0;
+  let downloadsSeq = 0;
+
   const refresh = async () => {
     try {
       const [b, d] = await Promise.all([call<TabsAnswer>('GET', PATH_BROWSER), call<DownloadsAnswer>('GET', PATH_DOWNLOADS)]);
-      tabs = b.tabs; settings = b.settings; downloads = d.downloads;
+      // an API from before `seq` (none on the answer): taken as it comes, the watermark unmoved
+      if (b.seq === undefined || b.seq >= tabsSeq) { tabs = b.tabs; settings = b.settings; tabsSeq = b.seq ?? tabsSeq; }
+      if (d.seq === undefined || d.seq >= downloadsSeq) { downloads = d.downloads; downloadsSeq = d.seq ?? downloadsSeq; }
       for (const t of tabs) if (!streams.has(t.id)) watch(t.id);
       sinks.problem(null);
       publish();
@@ -121,6 +130,8 @@ export function connectLive(_base: string, sinks: Sinks): Live {
   const on = (raw: string) => {
     let e: BrowserEvent;
     try { e = JSON.parse(raw); } catch { return; }
+    if (e.type === 'download') { if (e.seq <= downloadsSeq) return; downloadsSeq = e.seq; }
+    else if (e.type !== 'scriptRun') { if (e.seq <= tabsSeq) return; tabsSeq = e.seq; }
     switch (e.type) {
       case 'tab': tabs = [...tabs.filter((t) => t.id !== e.tab.id), e.tab]; if (!streams.has(e.tab.id)) watch(e.tab.id); break;
       case 'tabClosed': tabs = tabs.filter((t) => t.id !== e.tabId); streams.get(e.tabId)?.close(); streams.delete(e.tabId); break;
@@ -152,8 +163,6 @@ export function connectLive(_base: string, sinks: Sinks): Live {
   events.onmessage = (m) => on(m.data);
   events.onerror = () => { if (!closed) sinks.problem('live: the events stream dropped; trying again'); };
   void refresh();
-  // the list read again now and then: an event missed while the stream reconnected is made good
-  const again = setInterval(() => { void refresh(); }, 2000);
 
   const post = (path: string, body: unknown = {}) => call('POST', path, body);
   // one at a time, so a press never overtakes the move before it
@@ -176,6 +185,6 @@ export function connectLive(_base: string, sinks: Sinks): Live {
       inputs = inputs.catch(() => undefined).then(() => post(tabPath(t, VERB_INPUT), e)).catch((err) => { sinks.problem(`live: ${(err as Error).message}`); });
       return inputs.then(() => undefined);
     },
-    close: () => { closed = true; clearInterval(again); events.close(); for (const es of streams.values()) es.close(); },
+    close: () => { closed = true; events.close(); for (const es of streams.values()) es.close(); },
   };
 }
