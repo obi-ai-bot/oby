@@ -107,12 +107,23 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
-/// Whether the agent of job `id`, which writes `.obi/beat` every 50 ms, has stopped.
-fn stopped_beating(obid: &Obid, id: &str) -> bool {
+/// Stop's 2 seconds are the agent's: once its `.obi/beat`, written every 50 ms, has stood still
+/// for 400 ms, its last beat came within 2 seconds of the Stop being sent. Not the answer's time,
+/// which waits on the job's save to disk, as every change of a job does; nor a beat in the agent's
+/// own last moments, which Stop's grace lets it have.
+fn assert_ended_within_stop(obid: &Obid, id: &str, sent: std::time::SystemTime, tool: &str) {
     let path = obid.home.join("worktrees").join(id).join(".obi/beat");
-    let first = std::fs::read_to_string(&path).ok();
-    std::thread::sleep(Duration::from_millis(400));
-    std::fs::read_to_string(&path).ok() == first
+    let last = within(10, &format!("{tool} stopped beating"), || {
+        let first = std::fs::read_to_string(&path).ok();
+        std::thread::sleep(Duration::from_millis(400));
+        (std::fs::read_to_string(&path).ok() == first)
+            .then(|| std::fs::metadata(&path).unwrap().modified().unwrap())
+    });
+    let after = last.duration_since(sent).unwrap_or_default();
+    assert!(
+        after < Duration::from_secs(2),
+        "{tool} beat {after:?} after Stop"
+    );
 }
 
 fn beats(obid: &Obid, id: &str) {
@@ -875,12 +886,11 @@ fn codex_resumes_fails_and_stops() {
     assert_eq!(job["nextStep"], "Try again");
 
     beats(&obid, &sleep);
-    let started = std::time::Instant::now();
+    let sent = std::time::SystemTime::now();
     let stopped = call(&obid, "POST", &format!("/v1/jobs/{sleep}/stop"), None);
     assert_eq!(stopped.status, 200);
     assert_eq!(stopped.body["status"], "stopped");
-    assert!(started.elapsed() < Duration::from_secs(2));
-    assert!(stopped_beating(&obid, &sleep), "Codex outlived its stop");
+    assert_ended_within_stop(&obid, &sleep, sent, "Codex");
 }
 
 /// A Cursor job: Cursor writes without asking (as the probe saw), asks before its commit, and
@@ -1380,11 +1390,10 @@ fn cursor_signed_out_failures_and_stop() {
     assert_eq!(job["status"], "interrupted");
     assert_eq!(summary(&job), "The model refused to continue.");
     beats(&obid, &sleep);
-    let started = std::time::Instant::now();
+    let sent = std::time::SystemTime::now();
     let stopped = call(&obid, "POST", &format!("/v1/jobs/{sleep}/stop"), None);
     assert_eq!(stopped.body["status"], "stopped");
-    assert!(started.elapsed() < Duration::from_secs(2));
-    assert!(stopped_beating(&obid, &sleep), "Cursor outlived its stop");
+    assert_ended_within_stop(&obid, &sleep, sent, "Cursor");
 }
 
 /// Codex runs `danger-full-access` and Cursor edits without asking: obid's job sandbox is what
