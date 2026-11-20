@@ -9,6 +9,8 @@
 #               (retired_8), every top-level module of obid is in an area, and the rest of that file
 #   coverage    `obid-spec coverage --gate`: every route has a workflow, every scenario of a contract
 #               in tools/obid-spec/scope.json is classified
+#   workflows   `obid-spec run --workflow <file>` for each workflow under tools/obid-spec/workflows the
+#               change touches, against this checkout's obid (a lab workflow is left to run by hand)
 #   fmt         `cargo fmt --check` in each Cargo workspace whose Rust changed
 #   clippy      `clippy --all-targets --locked -D warnings` on the crates whose Rust changed
 #
@@ -66,7 +68,11 @@ brain_step() {
     say "preflight: brain: the Brain's repo checks (the first run builds its extractor with cargo)"
     local out
     out=$(cd tools/brain && NO_COLOR=1 FORCE_COLOR=0 npx --no-install vitest run test/repo.test.ts 2>&1)
-    if [[ $? -eq 0 ]]; then
+    local code=$?
+    # Routes a doc proposes ahead of obid (RETIRED-10): listed, never a failure.
+    (cd tools/brain && NO_COLOR=1 npx --no-install tsx -e "import { generateBrain } from './generator/index.ts'; import { config } from './brain.config.ts'; for (const c of generateBrain(config).checks) if (c.kind === 'proposed-route') console.log(c.message);" 2>/dev/null) |
+        sed 's/^/- listed, not a failure: /'
+    if [[ $code -eq 0 ]]; then
         record brain passed
         return
     fi
@@ -74,10 +80,14 @@ brain_step() {
     # Each message the Brain's checks print names what to change: say how, one line each.
     printf '%s\n' "$out" | sed -nE 's/^[[:space:]]*[+-]?[[:space:]]*"(.*)",?$/\1/p' | sort -u | while IFS= read -r m; do
         case "$m" in
+            *" documents "*" as proposed, but obid routes it")
+                file=${m%% documents *}; route=${m#* documents }; route=${route% as proposed*}
+                say "- $file still marks $route as proposed, but obid serves it now."
+                fix "take the \"**Proposed: obid doesn't serve\" line off its section in $file, or move $route out of that section" ;;
             *" documents "*", which obid doesn't route")
                 file=${m%% documents *}; route=${m#* documents }; route=${route%, which obid*}
                 say "- $file documents $route, but obid doesn't serve it."
-                fix "serve $route in obid in this change, or take it out of $file until obid serves it" ;;
+                fix "serve $route in obid in this change, take it out of $file, or document it in a section that opens with \"**Proposed: obid doesn't serve these routes yet.**\" until obid serves it (RETIRED-10)" ;;
             *" lists "*" as gone, but obid routes it")
                 file=${m%% lists *}; route=${m#* lists }; route=${route% as gone*}
                 say "- $file lists $route under \"Routes obid does not serve\", but obid serves it."
@@ -194,6 +204,46 @@ if not shown:
     record coverage failed
 }
 
+# --- workflows ------------------------------------------------------------------------------
+# Each obid-spec workflow the change touches, run against this checkout's obid, so a red one shows
+# before CI's run does. A lab workflow makes machines: it's run by hand, never here.
+workflows_step() {
+    local files f rel area only out any="" bad="" lab=()
+    files=$(grep -E '^tools/obid-spec/workflows/.*\.json$' <<<"$changed" || true)
+    while IFS= read -r f; do
+        [[ -n "$f" && -f "$f" ]] || continue
+        rel=${f#tools/obid-spec/workflows/}
+        case "$rel" in
+            lab/*) area=${rel#lab/}; lab+=("lab-${area%%/*}"); continue ;;
+            t3/*) area=${rel#t3/}; only=(--only "t3-${area%%/*}") ;;
+            *) only=() ;;
+        esac
+        if [[ -z "$any" ]]; then
+            need workflows cargo || return
+            say "preflight: workflows: building obid-spec and obid (cargo; minutes in a fresh worktree)"
+            if ! cargo build --quiet --manifest-path tools/obid-spec/Cargo.toml --bins; then
+                record workflows "not run" "obid-spec didn't build"
+                return
+            fi
+            any=1
+        fi
+        say "preflight: workflows: $rel"
+        if ! OBID_SPEC_ROOT="$root" tools/obid-spec/target/debug/obid-spec run ${only[@]+"${only[@]}"} --workflow "$rel" >"$tmp" 2>&1; then
+            grep -vE '^ *$' "$tmp" | tail -25 | sed 's/^/  | /'
+            say "- the workflow $f fails against this checkout's obid."
+            fix "read its failed step above and the folder it names; fix the workflow or obid, or mark the step ui.expectedRed with its issue when it's a known bug (tools/obid-spec/README.md)"
+            bad=1
+        fi
+    done <<<"$files"
+    for area in ${lab[@]+"${lab[@]}"}; do
+        say "preflight: workflows: a lab workflow changed; it makes machines, so run it by hand: tools/obid-spec/target/debug/obid-spec run --only $area"
+    done
+    if [[ -n "$bad" ]]; then record workflows failed
+    elif [[ -n "$any" ]]; then record workflows passed
+    elif [[ ${#lab[@]} -gt 0 ]]; then record workflows skipped "only lab workflows changed: run them by hand"
+    else record workflows skipped "no workflow changed"; fi
+}
+
 # --- fmt and clippy ---------------------------------------------------------------------------
 # Each Cargo workspace and what of it changed: core's crates by folder, the tools whole.
 workspaces=(core tools/obid-spec tools/oby-check-blok tools/brain/obid-extract)
@@ -245,7 +295,7 @@ clippy_step() {
     else record clippy skipped "no Rust changed"; fi
 }
 
-for step in brain coverage fmt clippy; do
+for step in brain coverage workflows fmt clippy; do
     if wanted "$step"; then "${step}_step"; fi
 done
 
