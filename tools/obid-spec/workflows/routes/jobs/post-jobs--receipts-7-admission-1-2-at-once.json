@@ -1,0 +1,516 @@
+{
+  "schemaVersion": "2",
+  "name": "Requests and tasks at once (RECEIPTS-7, ADMISSION-1, 2)",
+  "version": "1.0.0",
+  "description": "Two POST /v1/jobs with the same request key at the same moment make one job, both answers naming it; on an 8 GB Mac with 1 GiB available, and on a 16 GB one with 3 GiB, three tasks all run at once, none waiting.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        }
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "SLEEP",
+            "clientRequestId": "same-moment-1"
+          }
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "second",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "SLEEP",
+            "clientRequestId": "same-moment-1"
+          }
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "first-answer",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.first}",
+        "expect": {
+          "status": [
+            200,
+            201
+          ]
+        }
+      }
+    },
+    {
+      "id": "receipts-7-both-name-the-same-job",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.second}",
+        "expect": {
+          "status": [
+            200,
+            201
+          ],
+          "body": {
+            "id": "${state.first-answer.body.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECEIPTS-7"
+        ]
+      }
+    },
+    {
+      "id": "receipts-7-one-job-made",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECEIPTS-7"
+        ]
+      }
+    },
+    {
+      "id": "stop-all",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/stop-all",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "eight",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "eight",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600",
+          "OBID_MEMORY_TOTAL": "8589934592",
+          "OBID_MEMORY_AVAILABLE": "1073741824"
+        }
+      }
+    },
+    {
+      "id": "eight-0",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.eight}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "eight-1",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.eight}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "eight-2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.eight}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "eight-0-runs",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.eight}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.eight-0.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running",
+            "waiting": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ADMISSION-1"
+        ]
+      }
+    },
+    {
+      "id": "eight-1-runs",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.eight}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.eight-1.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running",
+            "waiting": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ADMISSION-1"
+        ]
+      }
+    },
+    {
+      "id": "eight-2-runs",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.eight}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.eight-2.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running",
+            "waiting": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ADMISSION-1"
+        ]
+      }
+    },
+    {
+      "id": "eight-nothing-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.eight}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "memory.waiting": []
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ADMISSION-1"
+        ]
+      }
+    },
+    {
+      "id": "eight-stop-all",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.eight}",
+        "method": "POST",
+        "path": "/v1/stop-all",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "sixteen",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "sixteen",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600",
+          "OBID_MEMORY_TOTAL": "17179869184",
+          "OBID_MEMORY_AVAILABLE": "3221225472"
+        }
+      }
+    },
+    {
+      "id": "sixteen-0",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.sixteen}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "sixteen-1",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.sixteen}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "sixteen-2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.sixteen}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "sixteen-0-runs",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.sixteen}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.sixteen-0.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running",
+            "waiting": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ADMISSION-2"
+        ]
+      }
+    },
+    {
+      "id": "sixteen-1-runs",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.sixteen}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.sixteen-1.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running",
+            "waiting": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ADMISSION-2"
+        ]
+      }
+    },
+    {
+      "id": "sixteen-2-runs",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.sixteen}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.sixteen-2.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running",
+            "waiting": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ADMISSION-2"
+        ]
+      }
+    },
+    {
+      "id": "sixteen-nothing-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.sixteen}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "memory.waiting": []
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ADMISSION-2"
+        ]
+      }
+    },
+    {
+      "id": "sixteen-stop-all",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.sixteen}",
+        "method": "POST",
+        "path": "/v1/stop-all",
+        "expect": {
+          "status": 200
+        }
+      }
+    }
+  ]
+}

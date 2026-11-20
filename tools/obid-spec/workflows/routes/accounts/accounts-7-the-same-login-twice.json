@@ -147,6 +147,7 @@
       "inputs": {
         "obid": "${state.o}",
         "path": "accounts/${state.again.body.id}",
+        "within": 10,
         "expect": {
           "exists": false
         }

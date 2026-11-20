@@ -1,0 +1,319 @@
+{
+  "schemaVersion": "2",
+  "name": "What a job's commands are answered without the owner (PERMISSIONS-1, 2, 9, 11)",
+  "version": "1.0.0",
+  "description": "In Ask, git that writes to a code host is refused and the agent hears obid pushes its branch; git's reads (branch listing, status) run unasked; a command that prints the environment inside a group still asks; the owner's no tells the agent the call didn't run; a Claude Code job starts with its telemetry and error reports off.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/permission"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        }
+      }
+    },
+    {
+      "id": "t",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ASKS: [{\"tool\": \"Bash\", \"input\": {\"command\": \"git push origin HEAD\"}}, {\"tool\": \"Bash\", \"input\": {\"command\": \"git branch -a\"}}, {\"tool\": \"Bash\", \"input\": {\"command\": \"git tag --list\"}}, {\"tool\": \"Bash\", \"input\": {\"command\": \"git status\"}}, {\"tool\": \"Bash\", \"input\": {\"command\": \"{ printenv; }\"}}]",
+            "mode": "ask"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "t-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "permission.detail": {
+              "$contains": "printenv"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "permissions-1-a-push-is-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "answered": {
+              "$any": {
+                "detail": "git push origin HEAD",
+                "decision": "refused",
+                "reason": {
+                  "$contains": "Agents have no code-host login"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-1"
+        ]
+      }
+    },
+    {
+      "id": "permissions-9-0-a-git-read-asks-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "answered": {
+              "$any": {
+                "detail": "git branch -a",
+                "decision": "allowed"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-9"
+        ]
+      }
+    },
+    {
+      "id": "permissions-9-1-a-git-read-asks-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "answered": {
+              "$any": {
+                "detail": "git tag --list",
+                "decision": "allowed"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-9"
+        ]
+      }
+    },
+    {
+      "id": "permissions-9-2-a-git-read-asks-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "answered": {
+              "$any": {
+                "detail": "git status",
+                "decision": "allowed"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-9"
+        ]
+      }
+    },
+    {
+      "id": "deny",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.t.body.id}/permission",
+        "body": {
+          "id": "${state.t-asks.body.permission.id}",
+          "decision": "deny"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "t-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "permissions-1-the-agent-hears-obid-pushes",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "summary": {
+              "$matches": "^answers: deny: Agents have no code-host login, so pushing and posting go through obid: it pushes this job's branch"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-1"
+        ]
+      }
+    },
+    {
+      "id": "permissions-11-a-no-says-it-didnt-run",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "summary": {
+              "$matches": "(?i)did not run"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-11"
+        ]
+      }
+    },
+    {
+      "id": "r",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "REPORT"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "r-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.r.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "summary": "Reported."
+          }
+        }
+      }
+    },
+    {
+      "id": "permissions-2-telemetry-and-error-reports-off",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.r.body.id}/.obi/report.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "env.DISABLE_TELEMETRY": "1",
+              "env.DISABLE_ERROR_REPORTING": "1"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-2"
+        ]
+      }
+    }
+  ]
+}
