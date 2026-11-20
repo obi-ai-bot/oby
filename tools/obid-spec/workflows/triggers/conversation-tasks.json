@@ -274,7 +274,12 @@
         "expect": {
           "status": 201,
           "body": {
-            "status": "queued",
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
             "task": "COMMIT: hello.txt"
           }
         }

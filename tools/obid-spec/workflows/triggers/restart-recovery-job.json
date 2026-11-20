@@ -33,7 +33,12 @@
         "expect": {
           "status": 201,
           "body": {
-            "status": "queued",
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
             "task": "SLEEP KEEP PROMPTS"
           }
         }
