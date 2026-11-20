@@ -236,7 +236,7 @@ pub async fn act(run: &Run, node: &str, input: &Value) -> Result<Value> {
         "app.click" => {
             ask(
                 &h,
-                &request("click", input, &["target", "hover", "timeout"]),
+                &request("click", input, &["target", "hover", "pagePoint", "timeout"]),
             )
             .await
         }

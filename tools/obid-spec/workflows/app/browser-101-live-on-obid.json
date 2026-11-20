@@ -2,7 +2,7 @@
   "schemaVersion": "2",
   "name": "App live: on a real obid, the globe opens the browser, no pages yet (board 17, live)",
   "version": "1.0.0",
-  "description": "The real app on a scratch obid (BROWSERAPP-7, BROWSERAPP-8): once obid answers GET /v1/browser, main follows its browser and the globe shows at the title bar's end; opened, the panel has no tabs and says so, as board 17. Expected red until obid serves the browser's routes (browser port 1).",
+  "description": "The real app on a scratch obid that serves the browser (BROWSERAPP-7, BROWSERAPP-8): once obid answers GET /v1/browser, main follows its browser and the globe shows at the title bar's end; opened, the panel has no tabs and says so, as board 17.",
   "trigger": {
     "manual": {}
   },
@@ -14,7 +14,8 @@
       "id": "obid",
       "use": "runtime.rust:obid-start",
       "inputs": {
-        "agent": "fake-harness-jobs"
+        "agent": "fake-harness-jobs",
+        "browser": true
       }
     },
     {
@@ -37,7 +38,7 @@
           "role": "button",
           "name": "Show the browser, 0 tabs"
         },
-        "within": 20,
+        "within": 30,
         "expect": {
           "paths": {
             "count": 1
@@ -47,8 +48,7 @@
       "ui": {
         "proves": [
           "BROWSERAPP-8"
-        ],
-        "expectedRed": "browser port 1's routes PR (4b): obid doesn't serve /v1/browser yet (contract #2608, core #2610 merged)"
+        ]
       }
     },
     {
@@ -60,9 +60,6 @@
           "role": "button",
           "name": "Show the browser, 0 tabs"
         }
-      },
-      "ui": {
-        "expectedRed": "browser port 1's routes PR (4b): obid doesn't serve /v1/browser yet (contract #2608, core #2610 merged)"
       }
     },
     {
@@ -83,8 +80,7 @@
       "ui": {
         "proves": [
           "BROWSERAPP-8"
-        ],
-        "expectedRed": "browser port 1's routes PR (4b): obid doesn't serve /v1/browser yet (contract #2608, core #2610 merged)"
+        ]
       }
     },
     {
@@ -105,8 +101,7 @@
       "ui": {
         "proves": [
           "BROWSERAPP-8"
-        ],
-        "expectedRed": "browser port 1's routes PR (4b): obid doesn't serve /v1/browser yet (contract #2608, core #2610 merged)"
+        ]
       }
     },
     {

@@ -281,35 +281,85 @@ def board_06():
     )
 
 
-# obid's browser routes aren't served yet: they come with browser port 1's routes pull request
-# (4b; docs/contracts/browser.md, BROWSER-1 to 25; its contract #2608 and core #2610 merged). Every step that
-# needs them is expected red until then; the pull request that lands them removes these marks.
-PORT_1 = "browser port 1's routes PR (4b): obid doesn't serve /v1/browser yet (contract #2608, core #2610 merged)"
+# The live workflows: the real app on a scratch obid that serves the browser (browser port 1, #2620),
+# its agent a stand-in job driving the browser through obid's agents' tools (browser-job, browser-mcp).
+OBID = "${state.obid}"
 
 
-def red(s):
-    s.setdefault("ui", {})["expectedRed"] = PORT_1
-    return s
+def browser_obid():
+    return [
+        step("obid", "obid-start", agent="fake-harness-jobs", browser=True),
+        step("app", "app.launch", obid=OBID, size={"width": 1280, "height": 800}),
+    ]
 
 
 def live_101():
     workflow(
         "browser-101-live-on-obid.json",
         "App live: on a real obid, the globe opens the browser, no pages yet (board 17, live)",
-        "The real app on a scratch obid (BROWSERAPP-7, BROWSERAPP-8): once obid answers GET /v1/browser, main follows its "
-        "browser and the globe shows at the title bar's end; opened, the panel has no tabs and says so, as board 17. Expected "
-        "red until obid serves the browser's routes (browser port 1).",
+        "The real app on a scratch obid that serves the browser (BROWSERAPP-7, BROWSERAPP-8): once obid answers GET "
+        "/v1/browser, main follows its browser and the globe shows at the title bar's end; opened, the panel has no tabs "
+        "and says so, as board 17.",
         [
-            step("obid", "obid-start", agent="fake-harness-jobs"),
-            step("app", "app.launch", obid="${state.obid}", size={"width": 1280, "height": 800}),
-            red(step("globe", "app.read", "BROWSERAPP-8", app=APP, target={"role": "button", "name": "Show the browser, 0 tabs"},
-                     within=20, expect={"paths": {"count": 1}})),
-            red(click("open", {"role": "button", "name": "Show the browser, 0 tabs"})),
-            red(measure("panel", {"css": "aside.br"}, "BROWSERAPP-8", **{"box.width": 640, "box.x": 640})),
-            red(read("no-pages", {"css": ".empty-words"}, "BROWSERAPP-8", count=1, text="No pages yet.\nWhen an agent opens one, you see it here, live.")),
+            *browser_obid(),
+            step("globe", "app.read", "BROWSERAPP-8", app=APP, target={"role": "button", "name": "Show the browser, 0 tabs"}, within=30, expect={"paths": {"count": 1}}),
+            click("open", {"role": "button", "name": "Show the browser, 0 tabs"}),
+            measure("panel", {"css": "aside.br"}, "BROWSERAPP-8", **{"box.width": 640, "box.x": 640}),
+            read("no-pages", {"css": ".empty-words"}, "BROWSERAPP-8", count=1, text="No pages yet.\nWhen an agent opens one, you see it here, live."),
             close(),
         ],
     )
+
+
+def live_102():
+    tab = "${state.open.structured.result.tab}"
+    held = "You have this tab. Codex waits until you give it back."
+    workflow(
+        "browser-102-live-take-control.json",
+        "App live: an agent's tab drawn live; Take control, your click reaches the page, Give back (board 6, live)",
+        "The real app on a scratch obid that serves the browser (BROWSERAPP-8 to 10): a stand-in Codex job opens the fixture "
+        "site; the panel shows its tab and draws the page from obid's stream. Take control (signed by main on the click it "
+        "saw) holds the tab: the strip says so and the agent's act is refused (human_control). Your click on the live page's "
+        "download link reaches the page, signed by main right after the real mouse input, and obid keeps the file as yours, "
+        "delivered. Give back returns the tab and the agent acts again. (Your keys are signed only after main sees that very key reach the window: a test's keys, made inside the page, never do, so they're proven by browserLive.test.ts and device.test.ts.)",
+        [
+            *browser_obid(),
+            step("site", "browser-site"),
+            step("job", "browser-job", obid=OBID),
+            step("open", "browser-mcp", obid=OBID, token="${state.job.token}", tool="oby_browser_open", args={"url": "${state.site.url}/"},
+                 within=300, expect={"paths": {"isError": False, "structured.ok": True}}),
+            step("globe", "app.read", "BROWSERAPP-8", app=APP, target={"css": "[data-browser=globe]"}, within=30, expect={"paths": {"count": 1}}),
+            click("show", {"css": "[data-browser=globe]"}),
+            read("one-tab", {"css": ".br-tab .logo[aria-label='Codex’s']"}, "BROWSERAPP-8", count=1, within=30),
+            # the stream's frame, drawn in the panel's page
+            step("live-page", "app.measure", "BROWSERAPP-8", app=APP, target={"css": "[data-browser=frame]"}, against={"page": {"css": "aside.br .br-view"}},
+                 within=60, expect={"paths": {"page.overlap": True}}),
+            read("agent-strip", {"css": ".br-control-text"}, None, count=1, text="Codex opened this tab · idle", within=15),
+            step("snap", "browser-mcp", obid=OBID, token="${state.job.token}", tool="oby_browser_snapshot", args={},
+                 expect={"paths": {"isError": False}}),
+            click("take", {"role": "button", "name": "Take control"}),
+            read("held", {"css": ".br-control-text > span:last-child"}, "BROWSERAPP-9", count=1, text=held, within=15),
+            step("held-by-a-device", "call", "BROWSERAPP-9", obid=OBID, method="GET", path="/v1/browser",
+                 expect={"paths": {"tabs.0.heldBy": {"$type": "string"}, "tabs.0.holdGeneration": 1}}),
+            step("agent-refused", "browser-mcp", "BROWSERAPP-9", obid=OBID, token="${state.job.token}", tool="oby_browser_act",
+                 args={"action": "type", "text": "agent"}, refFor={"role": "textbox", "name": "Name"}, snapshot="${state.snap}",
+                 expect={"paths": {"isError": True, "structured.error.code": "human_control"}}),
+            step("click-download", "app.click", app=APP, target={"css": "[data-browser=frame-input]"}, pagePoint="${state.site.download}"),
+            step("your-download", "call", "BROWSERAPP-10", obid=OBID, method="GET", path="/v1/browser/downloads", within=20,
+                 expect={"status": 200, "paths": {"downloads": {"$len": 1}, "downloads.0.startedBy": "person", "downloads.0.place": "delivered"}}),
+            click("give-back", {"role": "button", "name": "Give back"}),
+            read("agent-again", {"css": ".br-control-text"}, "BROWSERAPP-9", count=1, text="Codex opened this tab · idle", within=15),
+            step("free-again", "call", None, obid=OBID, method="GET", path="/v1/browser", expect={"paths": {"tabs.0.heldBy": None, "tabs.0.holdGeneration": 2}}),
+            step("snap-again", "browser-mcp", obid=OBID, token="${state.job.token}", tool="oby_browser_snapshot", args={},
+                 expect={"paths": {"isError": False}}),
+            step("agent-acts-again", "browser-mcp", "BROWSERAPP-9", obid=OBID, token="${state.job.token}", tool="oby_browser_act",
+                 args={"action": "type", "text": "agent"}, refFor={"role": "textbox", "name": "Name"}, snapshot="${state.snap-again}",
+                 expect={"paths": {"isError": False}}),
+            step("end", "browser-job", obid=OBID, job="${state.job.job}", end=True),
+            close(),
+        ],
+    )
+
 
 
 # What a board draws that the app doesn't, piece by piece, and why (docs/contracts/browser-app.md, "Not matched
@@ -336,3 +386,4 @@ if __name__ == "__main__":
     board_06()
     board_17()
     live_101()
+    live_102()
