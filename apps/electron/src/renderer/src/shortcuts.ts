@@ -49,9 +49,13 @@ export function run(command: Command) {
   scope[command]!();
   return true;
 }
+// A word being composed (an input method) is the typist's: its Enter confirms the word and its Esc
+// drops it, in any field of the window, never the field's own Enter or Esc (T3 Code 4a2f8b04bb, 54c1f1007c)
+export const composing = (e: { keyCode: number; isComposing?: boolean; nativeEvent?: { isComposing?: boolean } }) =>
+  !!(e.nativeEvent ?? e).isComposing || e.keyCode === 229;
 function onKey(e: KeyboardEvent) {
-  // a word being composed (an IME) is the typist's, and an alert dialog keeps its keys
-  if (e.isComposing || e.keyCode === 229 || (e.target as Element | null)?.closest?.('[role="alertdialog"]')) return;
+  // a word being composed is the typist's, and an alert dialog keeps its keys
+  if (composing(e) || (e.target as Element | null)?.closest?.('[role="alertdialog"]')) return;
   const command = commandOf(e);
   // the page took it: the Mac's menu item for the same key doesn't run it again
   if (command && run(command)) e.preventDefault();
