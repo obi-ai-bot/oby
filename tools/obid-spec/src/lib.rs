@@ -15,6 +15,7 @@ pub mod nodes;
 pub mod obid;
 pub mod procs;
 pub mod sphere;
+pub mod t3_conversations;
 pub mod workflow;
 
 /// T3 Code's worktree and git bugs (`workflows/t3/tasks/`): the nodes that act on obid's folders.
@@ -27,6 +28,7 @@ pub fn node_names() -> Vec<&'static str> {
         .map(|(n, _)| *n)
         .chain(t3_tasks::NODES.iter().map(|(n, _)| *n))
         .chain(lab::nodes().map(|(n, _)| n))
+        .chain(t3_conversations::NODES.iter().map(|(n, _)| *n))
         .chain(["cleanup"])
         .collect()
 }

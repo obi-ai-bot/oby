@@ -76,6 +76,14 @@ applies to obid gets workflows here, driving the real obid with its stand-in age
   `t3` tag, never `launch`.
 - `obid-spec run --tag t3` (or `--only t3-<topic>`) runs them; any other run leaves them out, and
   `coverage` doesn't count them.
+- `t3/conversations/`: one turn's events in order and once, Stop with words waiting, a provider's
+  errors, an agent that dies mid-turn, restarts with words waiting, the event stream reconnected
+  mid-turn, a conversation deleted while it runs, the same words sent twice, and two conversations
+  at once. Their nodes, `src/t3_conversations.rs`: `t3.follow` (the stream from `after` and/or a
+  `Last-Event-ID` header, as `EventSource` reconnects), `t3.trail` (one conversation's events in the
+  order they came, so a `check` can assert order and count), `t3.kill-agent` (SIGKILL to the
+  stand-in agent itself, never what starts it) and `t3.heard` (what the stand-in heard, from its
+  own `turns.jsonl`).
 - A step that finds a real obid bug keeps its assertion, marked `expectedRed` with the bug's issue.
 - `t3/tasks/`: worktrees and git, a worktree gone from under its task, tasks started at once, branch
   names, edits `git status` hides, a stale lock, a clone moved, a base that moved, binary and large

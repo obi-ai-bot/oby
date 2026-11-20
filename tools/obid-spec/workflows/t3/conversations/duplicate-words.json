@@ -1,0 +1,307 @@
+{
+  "schemaVersion": "2",
+  "name": "T3 conversations: the same words sent twice",
+  "version": "1.0.0",
+  "description": "T3 Code's sending fixes (a message sent twice by a retry or a second server, so a turn ran twice): words sent again with their id, after their answer or while they wait behind a turn, answer repeated, add nothing and start nothing; the id on other words is 409 (docs/api/conversations.md, POST /v1/plans).",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY One.",
+          "new": true,
+          "id": "7a3e0000-0000-4000-8000-000000000071"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "One."
+          }
+        }
+      }
+    },
+    {
+      "id": "again-after-its-answer",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY One.",
+          "conversation": "${state.said.body.conversation}",
+          "id": "7a3e0000-0000-4000-8000-000000000071"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "none",
+            "repeated": true,
+            "conversation": "${state.said.body.conversation}"
+          }
+        }
+      }
+    },
+    {
+      "id": "again-with-new-true",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY One.",
+          "new": true,
+          "id": "7a3e0000-0000-4000-8000-000000000071"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "none",
+            "repeated": true,
+            "conversation": "${state.said.body.conversation}"
+          }
+        }
+      }
+    },
+    {
+      "id": "the-id-on-other-words-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Other.",
+          "conversation": "${state.said.body.conversation}",
+          "id": "7a3e0000-0000-4000-8000-000000000071"
+        },
+        "expect": {
+          "status": 409
+        }
+      }
+    },
+    {
+      "id": "one-turn-one-answer",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 2
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "lingering",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "LINGER 4000",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "under-way",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "user",
+                "delivery": {
+                  "status": "running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "waiting",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Two.",
+          "conversation": "${state.said.body.conversation}",
+          "id": "7a3e0000-0000-4000-8000-000000000072"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "it-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "7a3e0000-0000-4000-8000-000000000072",
+                "delivery": {
+                  "status": "queued"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "again-while-it-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Two.",
+          "conversation": "${state.said.body.conversation}",
+          "id": "7a3e0000-0000-4000-8000-000000000072"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "none",
+            "repeated": true
+          }
+        }
+      }
+    },
+    {
+      "id": "its-answer",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.waiting}",
+        "seconds": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Two."
+          }
+        }
+      }
+    },
+    {
+      "id": "its-words-once",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "id": "7a3e0000-0000-4000-8000-000000000072"
+                },
+                1
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "and-answered-once",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "who": "oby",
+                  "text": "Two."
+                },
+                1
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "one-turn-event-for-them",
+      "use": "runtime.rust:t3.trail",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "turn": "7a3e0000-0000-4000-8000-000000000072",
+        "events": [
+          "turn"
+        ],
+        "show": [
+          "who"
+        ],
+        "expect": {
+          "paths": {
+            "trail": [
+              "turn user"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

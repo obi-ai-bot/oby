@@ -106,6 +106,9 @@ pub async fn run_node(run: &Run, name: &str, input: Value) -> Result<Value> {
         return Ok(out);
     }
     match name {
+        n if crate::t3_conversations::NODES.iter().any(|(t, _)| *t == n) => {
+            crate::t3_conversations::run_node(n, &input).await
+        }
         "obid-start" => obid::start(run, serde_json::from_value(input)?).await,
         n if crate::t3_tasks::NODES.iter().any(|(t, _)| *t == n) => {
             crate::t3_tasks::run_node(n, &input).await
