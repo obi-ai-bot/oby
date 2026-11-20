@@ -1,0 +1,434 @@
+{
+  "schemaVersion": "2",
+  "name": "T3 conversations: two at once, and one waiting message cancelled alone",
+  "version": "1.0.0",
+  "description": "T3 Code's cross-thread fixes (a stop or a queue in one thread reaching another): words in another conversation are answered while a turn runs here; cancelling this conversation's turn leaves the other's running turn alone; one waiting message cancelled alone goes, the turn under way and the other waiting words go on (COMPOSER-9, COMPOSER-11).",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Here.",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Here."
+          }
+        }
+      }
+    },
+    {
+      "id": "there",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY There.",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "There."
+          }
+        }
+      }
+    },
+    {
+      "id": "lingering",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "LINGER 60000",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "under-way",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "user",
+                "delivery": {
+                  "status": "running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "answered-meanwhile",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Meanwhile.",
+          "conversation": "${state.there.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Meanwhile."
+          }
+        }
+      }
+    },
+    {
+      "id": "there-lingers",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "LINGER 4000",
+          "conversation": "${state.there.body.conversation}"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "there-under-way",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.there.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "user",
+                "delivery": {
+                  "status": "running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cancelled-here",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans/cancel",
+        "body": {
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "cancelled": true
+          }
+        }
+      }
+    },
+    {
+      "id": "here-ends",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.lingering}",
+        "seconds": 20,
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "none"
+          }
+        }
+      }
+    },
+    {
+      "id": "there-goes-on",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.there-lingers}",
+        "seconds": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "waited"
+          }
+        }
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "LINGER 4000",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "again-under-way",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "user",
+                "delivery": {
+                  "status": "running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "dropped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Dropped.",
+          "conversation": "${state.said.body.conversation}",
+          "id": "7a3e0000-0000-4000-8000-000000000081"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "kept",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Kept.",
+          "conversation": "${state.said.body.conversation}",
+          "id": "7a3e0000-0000-4000-8000-000000000082"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "both-wait",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "7a3e0000-0000-4000-8000-000000000082",
+                "delivery": {
+                  "status": "queued"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "composer-9-cancel-one",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans/cancel",
+        "body": {
+          "conversation": "${state.said.body.conversation}",
+          "turn": "7a3e0000-0000-4000-8000-000000000081"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "cancelled": true,
+            "dropped": [
+              "7a3e0000-0000-4000-8000-000000000081"
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPOSER-9"
+        ]
+      }
+    },
+    {
+      "id": "composer-9-its-request-answers-none",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.dropped}",
+        "seconds": 10,
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "none"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPOSER-9"
+        ]
+      }
+    },
+    {
+      "id": "composer-11-the-turn-under-way-goes-on",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.again}",
+        "seconds": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "waited"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPOSER-11"
+        ]
+      }
+    },
+    {
+      "id": "composer-11-the-other-waiting-words-are-answered",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.kept}",
+        "seconds": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Kept."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPOSER-11"
+        ]
+      }
+    },
+    {
+      "id": "composer-9-it-reads-cancelled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "7a3e0000-0000-4000-8000-000000000081",
+                "delivery": {
+                  "status": "cancelled"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPOSER-9"
+        ]
+      }
+    },
+    {
+      "id": "and-was-never-answered",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "who": "oby",
+                "text": "Dropped."
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

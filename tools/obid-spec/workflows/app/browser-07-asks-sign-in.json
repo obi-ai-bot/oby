@@ -1,0 +1,316 @@
+{
+  "schemaVersion": "2",
+  "name": "App: the agent asks you to sign in; Type the password fills the page (board 7)",
+  "version": "1.0.0",
+  "description": "The real app on its demo data at the design's board 7 (BROWSERAPP-11, BROWSERAPP-12): the agent's sign-in ask sits over the message box, its heading the agent's first sentence; the strip turns orange and the tab's dot orange (--needs). Type the password opens the password card (board 8); Fill in puts the dots in the page's field, marked From Oby, and the card goes.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "browser"
+  ],
+  "steps": [
+    {
+      "id": "app",
+      "use": "runtime.rust:app.launch",
+      "inputs": {
+        "mock": true,
+        "query": "browser=7",
+        "size": {
+          "width": 1280,
+          "height": 800
+        },
+        "storage": {
+          "oby.chatPanelOpen": "0"
+        }
+      }
+    },
+    {
+      "id": "ask-head",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=asks] .tc-ask-line"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Sign in Sign in to the staging admin · Codex 1 of 1"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-11"
+        ]
+      }
+    },
+    {
+      "id": "ask-words",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=asks] .tc-ask-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "The mail log is behind a sign-in. Take control and sign in yourself, or type the password here: it goes straight into the page, never to Codex."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-11"
+        ]
+      }
+    },
+    {
+      "id": "orange-strip",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-control-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Codex asks you to sign in here"
+          }
+        }
+      }
+    },
+    {
+      "id": "tab-dot-orange",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-tab .status-dot.is-needs"
+        },
+        "expect": {
+          "paths": {
+            "styles.background-color.matches": true
+          }
+        },
+        "styles": {
+          "background-color": "--needs"
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-11"
+        ]
+      }
+    },
+    {
+      "id": "kind-orange",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=asks] .tc-ask-kind"
+        },
+        "expect": {
+          "paths": {
+            "styles.color.matches": true
+          }
+        },
+        "styles": {
+          "color": "--needs"
+        }
+      }
+    },
+    {
+      "id": "over-the-box",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=asks] .decision-card"
+        },
+        "against": {
+          "box": {
+            "css": ".chat-layer:not(.is-covered) .composer"
+          }
+        },
+        "expect": {
+          "paths": {
+            "box.overlap": false
+          }
+        },
+        "within": 5
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-11"
+        ]
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:app.compare",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "AsksYou",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        },
+        "within": 10,
+        "skip": [
+          ".decision-card",
+          ".tc-ask-line",
+          ".tc-ask-text"
+        ]
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-11"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:app.screenshot",
+      "inputs": {
+        "app": "${state.app}",
+        "name": "browser-07"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:app.sidebyside",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "AsksYou",
+        "name": "browser-07-beside-board",
+        "label": "board 7"
+      }
+    },
+    {
+      "id": "type-the-password",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Type the password"
+        }
+      }
+    },
+    {
+      "id": "filling",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-control-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "You’re filling the password. Codex waits."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-12"
+        ]
+      }
+    },
+    {
+      "id": "type",
+      "use": "runtime.rust:app.type",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=secret-input]"
+        },
+        "text": "0123456789"
+      }
+    },
+    {
+      "id": "now-board-8",
+      "use": "runtime.rust:app.compare",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "Secret",
+        "skip": [
+          ".decision-card",
+          ".tc-ask-line",
+          ".secret-row",
+          ".secret-note"
+        ],
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        },
+        "within": 10
+      }
+    },
+    {
+      "id": "fill-in",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Fill in"
+        }
+      }
+    },
+    {
+      "id": "page-field",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=page-password]"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "•••••••••• From Oby"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-12"
+        ]
+      }
+    },
+    {
+      "id": "card-gone",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=asks] .decision-card"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        },
+        "within": 5
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:app.close",
+      "inputs": {
+        "app": "${state.app}"
+      }
+    }
+  ]
+}

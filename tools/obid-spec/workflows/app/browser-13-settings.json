@@ -1,0 +1,337 @@
+{
+  "schemaVersion": "2",
+  "name": "App: Settings › General, two switches for the browser, on by default (board 13)",
+  "version": "1.0.0",
+  "description": "The real app on its demo data at the design's board 13 (BROWSERAPP-18): Settings › General has a Browser group, marked New, after Permissions on this Mac, with Agents can use the browser and Agents can use this Mac, both on, each with the board's words, and its footer; turned off, the browser's globe goes from the title bar; on again, it's back. The page is today's Settings, with more groups than the board draws: the group is checked by its words, switches and place after Permissions, not by the board's places.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "browser"
+  ],
+  "steps": [
+    {
+      "id": "app",
+      "use": "runtime.rust:app.launch",
+      "inputs": {
+        "mock": true,
+        "query": "browser=13",
+        "size": {
+          "width": 1200,
+          "height": 860
+        },
+        "storage": {
+          "oby.chatPanelOpen": "1"
+        }
+      }
+    },
+    {
+      "id": "settings",
+      "use": "runtime.rust:app.press",
+      "inputs": {
+        "app": "${state.app}",
+        "keys": "Meta+Comma"
+      }
+    },
+    {
+      "id": "general",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".sidebar-item",
+          "hasText": "General"
+        }
+      }
+    },
+    {
+      "id": "head",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=settings] .set-head"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "BrowserNew"
+          }
+        },
+        "within": 10
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-18"
+        ]
+      }
+    },
+    {
+      "id": "rows",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=settings] .set-card"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Agents can use the browser They open pages, click and type; you watch beside the conversation and take control any time. Agents can use this Mac Other apps too, through agent-desktop. macOS asks you once."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-18"
+        ]
+      }
+    },
+    {
+      "id": "browser-on",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "switch",
+          "name": "Agents can use the browser"
+        },
+        "attributes": [
+          "aria-checked"
+        ],
+        "expect": {
+          "paths": {
+            "attributes.aria-checked": "true"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-18"
+        ]
+      }
+    },
+    {
+      "id": "mac-on",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "switch",
+          "name": "Agents can use this Mac"
+        },
+        "attributes": [
+          "aria-checked"
+        ],
+        "expect": {
+          "paths": {
+            "attributes.aria-checked": "true"
+          }
+        }
+      }
+    },
+    {
+      "id": "on-is-ink",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "switch",
+          "name": "Agents can use the browser"
+        },
+        "expect": {
+          "paths": {
+            "styles.background-color.matches": true
+          }
+        },
+        "styles": {
+          "background-color": "--ink"
+        }
+      }
+    },
+    {
+      "id": "foot",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=settings] .set-foot"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "A password you type in Oby goes straight to the page. No agent sees it."
+          }
+        }
+      }
+    },
+    {
+      "id": "after-permissions",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=settings]"
+        },
+        "against": {
+          "permissions": {
+            "css": ".set-group",
+            "hasText": "Permissions on this Mac"
+          }
+        },
+        "expect": {
+          "paths": {
+            "permissions.overlap": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-18"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:app.screenshot",
+      "inputs": {
+        "app": "${state.app}",
+        "name": "browser-13"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:app.sidebyside",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "SettingsBrowser",
+        "name": "browser-13-beside-board",
+        "label": "board 13"
+      }
+    },
+    {
+      "id": "globe-there",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=globe]"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "browser-off",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "switch",
+          "name": "Agents can use the browser"
+        }
+      }
+    },
+    {
+      "id": "browser-is-off",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "switch",
+          "name": "Agents can use the browser"
+        },
+        "attributes": [
+          "aria-checked"
+        ],
+        "expect": {
+          "paths": {
+            "attributes.aria-checked": "false"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-18"
+        ]
+      }
+    },
+    {
+      "id": "globe-gone",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=globe]"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        },
+        "within": 5
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-18"
+        ]
+      }
+    },
+    {
+      "id": "browser-on-again",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "switch",
+          "name": "Agents can use the browser"
+        }
+      }
+    },
+    {
+      "id": "browser-on-again-reads",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "switch",
+          "name": "Agents can use the browser"
+        },
+        "attributes": [
+          "aria-checked"
+        ],
+        "expect": {
+          "paths": {
+            "attributes.aria-checked": "true"
+          }
+        }
+      }
+    },
+    {
+      "id": "globe-back",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=globe]"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        },
+        "within": 5
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:app.close",
+      "inputs": {
+        "app": "${state.app}"
+      }
+    }
+  ]
+}

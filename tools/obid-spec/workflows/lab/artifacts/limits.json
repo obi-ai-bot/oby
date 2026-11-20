@@ -1,0 +1,588 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab artifacts: every limit refuses one byte or one file over, saying which",
+  "version": "1.0.0",
+  "description": "LAB-ARTIFACTS-23 (src/lab/artifacts.rs: check_sizes, Claude's limits as the owner decided on 2026-11-20). At each limit it publishes, and one over is refused saying which file or what, and by how much: a text file of 16 MB, a binary of 15 MB, an SVG of 2 MB, 512 files, a version of 256 MB (17 binaries of 15 MB and a 1 MB page), and 50 versions. The files are sparse: only their length is written.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.artifacts.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            },
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:lab.artifacts.device",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "text-at",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "sized",
+        "files": [
+          {
+            "path": "index.html",
+            "bytes": 16777216
+          }
+        ]
+      }
+    },
+    {
+      "id": "23-text-at-16-mb",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.text-at.path}",
+        "title": "Lab artifact",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-23"
+        ]
+      }
+    },
+    {
+      "id": "text-over",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "sized",
+        "files": [
+          {
+            "path": "index.html",
+            "bytes": 16777217
+          }
+        ]
+      }
+    },
+    {
+      "id": "23-text-one-byte-over",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.text-over.path}",
+        "title": "Lab artifact",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "reason": "too_big",
+            "error": "Not published: index.html is 16 MB and 1 byte, and a text file may be 16 MB at most."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-23"
+        ]
+      }
+    },
+    {
+      "id": "bin-at",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "sized",
+        "files": [
+          {
+            "path": "index.html",
+            "bytes": 10
+          },
+          {
+            "path": "still.png",
+            "bytes": 15728640
+          }
+        ]
+      }
+    },
+    {
+      "id": "23-binary-at-15-mb",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.bin-at.path}",
+        "title": "Lab artifact",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-23"
+        ]
+      }
+    },
+    {
+      "id": "bin-over",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "sized",
+        "files": [
+          {
+            "path": "index.html",
+            "bytes": 10
+          },
+          {
+            "path": "still.png",
+            "bytes": 15728641
+          }
+        ]
+      }
+    },
+    {
+      "id": "23-binary-one-byte-over",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.bin-over.path}",
+        "title": "Lab artifact",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "reason": "too_big",
+            "error": {
+              "$contains": "still.png is 15 MB and 1 byte, and a binary file"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-23"
+        ]
+      }
+    },
+    {
+      "id": "svg-at",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "sized",
+        "files": [
+          {
+            "path": "index.html",
+            "bytes": 10
+          },
+          {
+            "path": "drawing.svg",
+            "bytes": 2097152
+          }
+        ]
+      }
+    },
+    {
+      "id": "23-svg-at-2-mb",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.svg-at.path}",
+        "title": "Lab artifact",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-23"
+        ]
+      }
+    },
+    {
+      "id": "svg-over",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "sized",
+        "files": [
+          {
+            "path": "index.html",
+            "bytes": 10
+          },
+          {
+            "path": "drawing.svg",
+            "bytes": 2097153
+          }
+        ]
+      }
+    },
+    {
+      "id": "23-svg-one-byte-over",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.svg-over.path}",
+        "title": "Lab artifact",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "reason": "too_big",
+            "error": {
+              "$contains": "drawing.svg is 2 MB and 1 byte, and an SVG may be 2 MB at most"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-23"
+        ]
+      }
+    },
+    {
+      "id": "files-at",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "many",
+        "count": 511
+      }
+    },
+    {
+      "id": "23-512-files",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.files-at.path}",
+        "title": "Lab artifact",
+        "expect": {
+          "paths": {
+            "ok": true,
+            "artifact.versions.0.files": {
+              "$len": 512
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-23"
+        ]
+      }
+    },
+    {
+      "id": "files-over",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "many",
+        "count": 512
+      }
+    },
+    {
+      "id": "23-513-files",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.files-over.path}",
+        "title": "Lab artifact",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "reason": "too_many",
+            "error": "Not published: a version holds at most 512 files, and this holds 513."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-23"
+        ]
+      }
+    },
+    {
+      "id": "version-at",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "sized",
+        "files": [
+          {
+            "path": "index.html",
+            "bytes": 1048576
+          },
+          {
+            "path": "b00.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b01.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b02.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b03.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b04.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b05.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b06.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b07.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b08.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b09.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b10.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b11.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b12.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b13.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b14.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b15.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b16.bin",
+            "bytes": 15728640
+          }
+        ]
+      }
+    },
+    {
+      "id": "23-version-at-256-mb",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.version-at.path}",
+        "title": "Lab artifact",
+        "expect": {
+          "paths": {
+            "ok": true,
+            "artifact.versions.0.bytes": 268435456
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-23"
+        ]
+      }
+    },
+    {
+      "id": "version-over",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "sized",
+        "files": [
+          {
+            "path": "index.html",
+            "bytes": 1048577
+          },
+          {
+            "path": "b00.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b01.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b02.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b03.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b04.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b05.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b06.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b07.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b08.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b09.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b10.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b11.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b12.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b13.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b14.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b15.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "b16.bin",
+            "bytes": 15728640
+          }
+        ]
+      }
+    },
+    {
+      "id": "23-version-one-byte-over",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.version-over.path}",
+        "title": "Lab artifact",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "reason": "too_big",
+            "error": "Not published: this version is 256 MB and 1 byte, and a version may be 256 MB at most."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-23"
+        ]
+      }
+    },
+    {
+      "id": "small",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "page"
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.small.path}",
+        "title": "Lab artifact",
+        "conversation": "c1",
+        "job": "j1",
+        "expect": {
+          "paths": {
+            "ok": true,
+            "version": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "23-50-versions",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.small.path}",
+        "title": "Lab artifact",
+        "conversation": "c1",
+        "job": "j1",
+        "artifact": "${state.first.id}",
+        "repeat": 49,
+        "expect": {
+          "paths": {
+            "ok": true,
+            "version": 50,
+            "repeated": 49
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-23"
+        ]
+      }
+    },
+    {
+      "id": "23-the-51st-refused",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.small.path}",
+        "title": "Lab artifact",
+        "conversation": "c1",
+        "job": "j1",
+        "artifact": "${state.first.id}",
+        "write": {
+          "version.txt": "51"
+        },
+        "expect": {
+          "paths": {
+            "ok": false,
+            "reason": "full",
+            "error": {
+              "$contains": "has 50 versions, the most obid keeps"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-23"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,335 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab artifacts: obid's and Swift's canvases both publish; a design with a missing board, a bad page id or a link is refused, saying which",
+  "version": "1.0.0",
+  "description": "LAB-ARTIFACTS-2 (src/lab/artifacts.rs: check_canvas, check_design, read_source). A canvas.json that is obid's list of frames, and one that is Swift's {\"frames\": [...]}, both publish as canvas. Claude Design projects spoiled one way each are refused with the reason bad_design and one line naming what is wrong: a board canvas.json names that isn't a file, a page id that isn't 1 to 40 letters, digits, _ or -, an order or a launch naming no board, a board with no <x-dc> or two logic scripts, a design system with no ds/ folder; and a project holding a link is refused naming the link, never following it.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.artifacts.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            },
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:lab.artifacts.device",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "obid",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "canvas-obid"
+      }
+    },
+    {
+      "id": "swift",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "canvas-swift"
+      }
+    },
+    {
+      "id": "2-obid-canvas",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.obid.path}",
+        "title": "Lab artifact",
+        "expect": {
+          "paths": {
+            "ok": true,
+            "artifact.kind": "canvas"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-2"
+        ]
+      }
+    },
+    {
+      "id": "2-swift-canvas",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.swift.path}",
+        "title": "Lab artifact",
+        "expect": {
+          "paths": {
+            "ok": true,
+            "artifact.kind": "canvas"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-2"
+        ]
+      }
+    },
+    {
+      "id": "fx-missing-board",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "claude-design",
+        "break": "missing-board"
+      }
+    },
+    {
+      "id": "2-refused-missing-board",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx-missing-board.path}",
+        "title": "Lab artifact",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "reason": "bad_design",
+            "error": {
+              "$contains": "board \"Gone.dc.html\" isn't a file of the design"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-2"
+        ]
+      }
+    },
+    {
+      "id": "fx-bad-page",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "claude-design",
+        "break": "bad-page"
+      }
+    },
+    {
+      "id": "2-refused-bad-page",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx-bad-page.path}",
+        "title": "Lab artifact",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "reason": "bad_design",
+            "error": {
+              "$contains": "page id \"not a page id\""
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-2"
+        ]
+      }
+    },
+    {
+      "id": "fx-bad-order",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "claude-design",
+        "break": "bad-order"
+      }
+    },
+    {
+      "id": "2-refused-bad-order",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx-bad-order.path}",
+        "title": "Lab artifact",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "reason": "bad_design",
+            "error": {
+              "$contains": "order names \"Elsewhere.dc.html\""
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-2"
+        ]
+      }
+    },
+    {
+      "id": "fx-bad-launch",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "claude-design",
+        "break": "bad-launch"
+      }
+    },
+    {
+      "id": "2-refused-bad-launch",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx-bad-launch.path}",
+        "title": "Lab artifact",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "reason": "bad_design",
+            "error": {
+              "$contains": "launch names \"Elsewhere.dc.html\""
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-2"
+        ]
+      }
+    },
+    {
+      "id": "fx-no-xdc",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "claude-design",
+        "break": "no-xdc"
+      }
+    },
+    {
+      "id": "2-refused-no-xdc",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx-no-xdc.path}",
+        "title": "Lab artifact",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "reason": "bad_design",
+            "error": {
+              "$contains": "Card.dc.html has no <x-dc>"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-2"
+        ]
+      }
+    },
+    {
+      "id": "fx-two-scripts",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "claude-design",
+        "break": "two-scripts"
+      }
+    },
+    {
+      "id": "2-refused-two-scripts",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx-two-scripts.path}",
+        "title": "Lab artifact",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "reason": "bad_design",
+            "error": {
+              "$contains": "Card.dc.html has 2"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-2"
+        ]
+      }
+    },
+    {
+      "id": "fx-no-ds",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "claude-design",
+        "break": "no-ds"
+      }
+    },
+    {
+      "id": "2-refused-no-ds",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx-no-ds.path}",
+        "title": "Lab artifact",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "reason": "bad_design",
+            "error": {
+              "$contains": "design system \"absent\""
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-2"
+        ]
+      }
+    },
+    {
+      "id": "fx-link",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "claude-design",
+        "break": "link"
+      }
+    },
+    {
+      "id": "2-refused-link",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx-link.path}",
+        "title": "Lab artifact",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "reason": "not_published",
+            "error": {
+              "$contains": "linked.css is a link"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-2"
+        ]
+      }
+    }
+  ]
+}

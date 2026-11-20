@@ -1,0 +1,311 @@
+{
+  "schemaVersion": "2",
+  "name": "Publish, review and merge",
+  "version": "1.0.0",
+  "description": "The success path, end to end: a task the owner's app signed finishes with a commit, obid publishes it (the push and the pull request, on the recording gh's GitHub over the fixture's bare remote), Oby's own review approves the exact head, and obid merges it by itself with a squash that lands on main, with nothing asked of the owner (MERGING-44 to 46, 52). Never the real GitHub.",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "publishing-claude",
+        "env": {
+          "OBID_FOLLOW_SECONDS": "1"
+        },
+        "github": {
+          "routes.json": {
+            "fixture": "github/routes.json"
+          },
+          "pull-request.js": {
+            "fixture": "github/pull-request.js"
+          }
+        }
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "task",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "as": "device",
+        "device": "${state.device}",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: hello.txt"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "task": "COMMIT: hello.txt",
+            "base": "main"
+          }
+        }
+      }
+    },
+    {
+      "id": "published",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.task.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "commits": 1,
+            "pushed": 1,
+            "published": "https://github.com/obi-e2e/fixture-app/pull/7",
+            "publishError": null,
+            "pullRequestError": null,
+            "pullRequest": {
+              "base": "main",
+              "head": {
+                "$matches": "^[0-9a-f]{40}$"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "pushed",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "rev-parse",
+          "refs/heads/${state.published.body.branch}"
+        ]
+      }
+    },
+    {
+      "id": "pull-request-at-the-jobs-head",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.published.body.pullRequest.head}",
+        "expect": {
+          "body": "${state.pushed.out}"
+        }
+      }
+    },
+    {
+      "id": "merged",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "MERGING-44",
+          "MERGING-45",
+          "MERGING-46",
+          "MERGING-52"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.task.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "mergedBy": {
+              "by": "oby"
+            },
+            "mergeNeedsYou": false,
+            "mergeError": null,
+            "reviewNeedsYou": false,
+            "reviewError": null,
+            "question": null,
+            "permission": null,
+            "pullRequest": {
+              "state": "MERGED",
+              "head": "${state.pushed.out}"
+            },
+            "review": {
+              "verdict": "approved",
+              "commit": "${state.pushed.out}",
+              "round": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "the-review",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.merged.body.review.job}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "review",
+            "status": "done",
+            "reviewOf": "${state.task.body.id}",
+            "summary": {
+              "$matches": "VERDICT: APPROVE$"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "base-tree",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "rev-parse",
+          "refs/heads/main^{tree}"
+        ]
+      }
+    },
+    {
+      "id": "head-tree",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "rev-parse",
+          "${state.pushed.out}^{tree}"
+        ]
+      }
+    },
+    {
+      "id": "the-merge-landed-the-change-on-main",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.base-tree.out}",
+        "expect": {
+          "body": "${state.head-tree.out}"
+        }
+      }
+    },
+    {
+      "id": "on-main",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "show",
+          "refs/heads/main:hello.txt"
+        ]
+      }
+    },
+    {
+      "id": "one-parent",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "rev-list",
+          "--parents",
+          "-n",
+          "1",
+          "refs/heads/main"
+        ]
+      }
+    },
+    {
+      "id": "squashed-onto-main",
+      "use": "runtime.rust:check",
+      "ui": {
+        "proves": [
+          "MERGING-46"
+        ]
+      },
+      "inputs": {
+        "value": "${state.one-parent.out}",
+        "expect": {
+          "body": {
+            "$matches": "^[0-9a-f]{40} [0-9a-f]{40}$"
+          }
+        }
+      }
+    },
+    {
+      "id": "merged-event",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "job",
+        "expect": {
+          "body": {
+            "id": "${state.task.body.id}",
+            "status": "done",
+            "mergedBy": {
+              "by": "oby"
+            }
+          },
+          "paths": {
+            "pipeline.stages.3.id": "publish",
+            "pipeline.stages.3.state": "done",
+            "pipeline.stages.3.detail": "Secret scan clean · pushed · pull request opened",
+            "pipeline.stages.4.id": "review",
+            "pipeline.stages.4.state": "done",
+            "pipeline.stages.4.detail": "Approved by Oby",
+            "pipeline.stages.5.id": "merged",
+            "pipeline.stages.5.state": "done",
+            "pipeline.stages.5.title": "Merged into main"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "MERGING-46"
+        ]
+      }
+    },
+    {
+      "id": "nothing-asks-the-owner",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "MERGING-45",
+          "MERGING-52"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 0
+            }
+          }
+        }
+      }
+    }
+  ]
+}

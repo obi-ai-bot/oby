@@ -1,0 +1,231 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab artifacts: /_blob/<id> resolves inside the version only; a blob outside the map is 404",
+  "version": "1.0.0",
+  "description": "LAB-ARTIFACTS-3 (src/lab/artifacts.rs: resolve). A published design's uploads are served at {version}/_blob/<id>: the token-like id's PNG byte for byte as image/png under obid's artifact CSP, the font as font/woff2. An id the version's map doesn't hold, the same id asked of another artifact or of a version that isn't there, and a path stepping out of _blob/ are all 404.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.artifacts.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            },
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:lab.artifacts.device",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "fx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "claude-design"
+      }
+    },
+    {
+      "id": "design",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab artifact",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "page-fx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "page"
+      }
+    },
+    {
+      "id": "page",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.page-fx.path}",
+        "title": "Lab artifact",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "3-upload-served-by-its-claude-name",
+      "use": "runtime.rust:lab.artifacts.serve",
+      "inputs": {
+        "api": "${state.up}",
+        "id": "${state.design.id}",
+        "version": 1,
+        "path": "_blob/Kq7Zt2mW9xR4vB8nL3pF6hJ1sD5gA0cYeU7iO2wT",
+        "sameAs": "${state.fx.blobLocal}",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "type": "image/png",
+            "same": true,
+            "csp": "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' data: blob:; style-src 'self' 'unsafe-inline' data:; img-src 'self' data: blob:; connect-src 'none'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts",
+            "nosniff": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-3"
+        ]
+      }
+    },
+    {
+      "id": "3-font-upload",
+      "use": "runtime.rust:lab.artifacts.serve",
+      "inputs": {
+        "api": "${state.up}",
+        "id": "${state.design.id}",
+        "version": 1,
+        "path": "_blob/font-7c1e",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "type": "font/woff2"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-3"
+        ]
+      }
+    },
+    {
+      "id": "3-unknown-id-404",
+      "use": "runtime.rust:lab.artifacts.serve",
+      "inputs": {
+        "api": "${state.up}",
+        "id": "${state.design.id}",
+        "version": 1,
+        "path": "_blob/not-in-the-map",
+        "expect": {
+          "paths": {
+            "status": 404,
+            "body.reason": "not_found"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-3"
+        ]
+      }
+    },
+    {
+      "id": "3-other-artifact-404",
+      "use": "runtime.rust:lab.artifacts.serve",
+      "inputs": {
+        "api": "${state.up}",
+        "id": "${state.page.id}",
+        "version": 1,
+        "path": "_blob/Kq7Zt2mW9xR4vB8nL3pF6hJ1sD5gA0cYeU7iO2wT",
+        "expect": {
+          "paths": {
+            "status": 404
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-3"
+        ]
+      }
+    },
+    {
+      "id": "3-other-version-404",
+      "use": "runtime.rust:lab.artifacts.serve",
+      "inputs": {
+        "api": "${state.up}",
+        "id": "${state.design.id}",
+        "version": 2,
+        "path": "_blob/Kq7Zt2mW9xR4vB8nL3pF6hJ1sD5gA0cYeU7iO2wT",
+        "expect": {
+          "paths": {
+            "status": 404
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-3"
+        ]
+      }
+    },
+    {
+      "id": "3-no-way-out-404",
+      "use": "runtime.rust:lab.artifacts.serve",
+      "inputs": {
+        "api": "${state.up}",
+        "id": "${state.design.id}",
+        "version": 1,
+        "path": "_blob/../canvas.json",
+        "expect": {
+          "paths": {
+            "status": 404
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-3"
+        ]
+      }
+    },
+    {
+      "id": "3-board-itself",
+      "use": "runtime.rust:lab.artifacts.serve",
+      "inputs": {
+        "api": "${state.up}",
+        "id": "${state.design.id}",
+        "version": 1,
+        "path": "Main.dc.html",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "type": "text/html; charset=utf-8"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-3"
+        ]
+      }
+    }
+  ]
+}

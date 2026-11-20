@@ -1,0 +1,340 @@
+{
+  "schemaVersion": "2",
+  "name": "T3 conversations: a provider's error ends the turn, says why, and nothing waits forever",
+  "version": "1.0.0",
+  "description": "T3 Code's provider-error fixes (an error it didn't know left the turn running; a queue stuck behind a failed turn; a retry that lost its session): a turn whose agent fails every try ends failed with why (DELIVERY-4) and the next words are answered; words that waited behind a failing turn get their own turn (CONVERSATION-AGENT-49); a passing overload (529) is tried again on the same session, the agent told its run was cut (CONVERSATION-AGENT-15).",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Ready.",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Ready."
+          }
+        }
+      }
+    },
+    {
+      "id": "session",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/session.json",
+        "within": 10,
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "failed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "FAIL",
+          "conversation": "${state.said.body.conversation}",
+          "id": "7a3e0000-0000-4000-8000-000000000021"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": {
+              "$contains": "failed"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "delivery-4-its-words-read-failed-with-why",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "7a3e0000-0000-4000-8000-000000000021",
+                "delivery": {
+                  "status": "failed",
+                  "error": {
+                    "$contains": "failed"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-4"
+        ]
+      }
+    },
+    {
+      "id": "nothing-left-under-way",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "underway": {
+              "$exists": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "after-the-error",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Back again.",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Back again."
+          }
+        }
+      }
+    },
+    {
+      "id": "slow-fail",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SLOWFAIL 3000",
+          "conversation": "${state.said.body.conversation}",
+          "id": "7a3e0000-0000-4000-8000-000000000022"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "slow-fail-runs",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "7a3e0000-0000-4000-8000-000000000022",
+                "delivery": {
+                  "status": "running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "behind-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Queued behind a failure.",
+          "conversation": "${state.said.body.conversation}",
+          "id": "7a3e0000-0000-4000-8000-000000000023"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "behind-it-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "7a3e0000-0000-4000-8000-000000000023",
+                "delivery": {
+                  "status": "queued"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "the-failing-turn-ends",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.slow-fail}",
+        "seconds": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": {
+              "$contains": "failed"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-49-the-waiting-words-get-their-turn",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.behind-it}",
+        "seconds": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Queued behind a failure."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-49"
+        ]
+      }
+    },
+    {
+      "id": "delivery-4-one-failed-one-answered",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "7a3e0000-0000-4000-8000-000000000022",
+                "delivery": {
+                  "status": "failed"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-4"
+        ]
+      }
+    },
+    {
+      "id": "and-the-waiting-words-answered-by-their-own",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "7a3e0000-0000-4000-8000-000000000023",
+                "delivery": {
+                  "status": "answered",
+                  "by": "7a3e0000-0000-4000-8000-000000000023"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "overloaded-once",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "FAIL ONCE",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "carried on: resume=${state.session.json.session}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-15"
+        ]
+      }
+    }
+  ]
+}

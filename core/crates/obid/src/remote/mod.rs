@@ -14,18 +14,26 @@
 //! - [`link`]: what the other computer shows to be added without SSH.
 //! - [`supervisor`]: the route the window uses, and when it moves.
 //! - [`ssh`] and [`trouble`]: the person's own ssh as a tunnel only, and what its errors mean.
+//! - [`certificate`], [`direct`] and [`pinned`]: this computer's own certificate, the gateway
+//!   served over HTTPS with it, and the window's client that trusts only a pinned one.
+//! - [`tunnel`]: an `ssh -N -L` to another computer's obid, held while the window uses it.
 //! - [`pair`]: `obid pair-computer`, which the person's SSH runs on the other computer.
 //! - [`addresses`]: where this obid answers, kept for `obid pair-computer`.
 //!
-//! It owns `home/addresses.json` (written once each start) and writes `home/pairing` only from
+//! It owns `home/addresses.json` (written once each start) and `home/keys/direct-*` (this
+//! computer's certificate), and writes `home/pairing` only from
 //! `obid pair-computer`, as the person's own presence on that machine. It never writes
 //! `~/.ssh`, the person's ssh configuration or `known_hosts`, and installs nothing over SSH.
 
 pub mod addresses;
+pub mod certificate;
+pub mod direct;
 pub mod link;
 pub mod pair;
 pub mod pin;
+pub mod pinned;
 pub mod route;
 pub mod ssh;
 pub mod supervisor;
 pub mod trouble;
+pub mod tunnel;
