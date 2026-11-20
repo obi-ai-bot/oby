@@ -555,7 +555,8 @@
             "JOBSTATE-15",
             "JOBSTATE-16",
             "JOBSTATE-17",
-            "JOBSTATE-18"
+            "JOBSTATE-18",
+            "JOBSTATE-20"
           ],
           "elsewhere": {
             "JOBSTATE-8": "internal worker race, unit test jobs::tests.",
