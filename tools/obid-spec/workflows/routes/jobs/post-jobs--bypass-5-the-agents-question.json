@@ -1,0 +1,172 @@
+{
+  "schemaVersion": "2",
+  "name": "The agent's question is a card the owner answers (BYPASS-5)",
+  "version": "1.0.0",
+  "description": "An agent asking Which store? with SQLite and Files makes a question card with that headline and those choices; the owner's pick answers it and the agent hears it.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "q",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "ASK: {\"tool\": \"AskUserQuestion\", \"input\": {\"questions\": [{\"question\": \"Which store?\", \"header\": \"Store\", \"multiSelect\": false, \"options\": [{\"label\": \"SQLite\"}, {\"label\": \"Files\"}]}]}}"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "q-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.q.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "permission.question.question": "Which store?"
+          }
+        }
+      }
+    },
+    {
+      "id": "bypass-5-its-card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "pick": {
+          "where": {
+            "job": "${state.q.body.id}"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "job": "${state.q.body.id}",
+                "options": {
+                  "$contains": "SQLite"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BYPASS-5"
+        ]
+      }
+    },
+    {
+      "id": "bypass-5-its-choices",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.bypass-5-its-card.picked.options}",
+        "expect": {
+          "body": {
+            "$contains": "Files"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BYPASS-5"
+        ]
+      }
+    },
+    {
+      "id": "pick",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.bypass-5-its-card.picked.id}/answer",
+        "body": {
+          "answer": "SQLite"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "bypass-5-the-agent-hears-the-pick",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.q.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          },
+          "paths": {
+            "summary": {
+              "$contains": "SQLite"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BYPASS-5"
+        ]
+      }
+    }
+  ]
+}

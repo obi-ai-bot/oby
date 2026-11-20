@@ -1,0 +1,289 @@
+{
+  "schemaVersion": "2",
+  "name": "The owner's signed Publish to a branch they name (PUBLISHING-10)",
+  "version": "1.0.0",
+  "description": "Publish anyway with a branch the owner names answers a sentence naming it, and the signed Publish sends the head it named there; to the base it lands on it with no pull request.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/publish"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "f",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: a.txt",
+            "check": "echo the check failed; false",
+            "rounds": 1
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "f-ended",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.f.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "commits": 1,
+            "pushed": null
+          }
+        }
+      }
+    },
+    {
+      "id": "publishing-10-the-sentence-names-the-branch",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.f.body.id}/publish?anyway=true&to=feature-y",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "action": {
+              "$contains": "feature-y"
+            },
+            "head": {
+              "$matches": "^[0-9a-f]{40}$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-10"
+        ]
+      }
+    },
+    {
+      "id": "sig",
+      "use": "runtime.rust:device-sign",
+      "inputs": {
+        "device": "${state.device}",
+        "lines": [
+          "oby-publish",
+          "${state.f.body.id}",
+          "${state.publishing-10-the-sentence-names-the-branch.body.action}"
+        ]
+      }
+    },
+    {
+      "id": "published",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.f.body.id}/publish",
+        "body": {
+          "anyway": true,
+          "to": "feature-y",
+          "head": "${state.publishing-10-the-sentence-names-the-branch.body.head}",
+          "device": "${state.sig.approval.device}",
+          "action": "${state.publishing-10-the-sentence-names-the-branch.body.action}",
+          "signedAt": "${state.sig.approval.signedAt}",
+          "signature": "${state.sig.approval.signature}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "on-feature-y",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "obid": "${state.o}",
+        "args": [
+          "rev-parse",
+          "refs/heads/feature-y"
+        ]
+      }
+    },
+    {
+      "id": "publishing-10-it-went-to-that-branch",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.on-feature-y.out}",
+        "expect": {
+          "body": "${state.publishing-10-the-sentence-names-the-branch.body.head}"
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-10"
+        ]
+      }
+    },
+    {
+      "id": "g",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: b.txt",
+            "check": "echo the check failed; false",
+            "rounds": 1
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "g-ended",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.g.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "commits": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "onto-main",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.g.body.id}/publish?anyway=true&to=main",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "action": {
+              "$contains": "main"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "sig2",
+      "use": "runtime.rust:device-sign",
+      "inputs": {
+        "device": "${state.device}",
+        "lines": [
+          "oby-publish",
+          "${state.g.body.id}",
+          "${state.onto-main.body.action}"
+        ]
+      }
+    },
+    {
+      "id": "published-onto-main",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.g.body.id}/publish",
+        "body": {
+          "anyway": true,
+          "to": "main",
+          "head": "${state.onto-main.body.head}",
+          "device": "${state.sig2.approval.device}",
+          "action": "${state.onto-main.body.action}",
+          "signedAt": "${state.sig2.approval.signedAt}",
+          "signature": "${state.sig2.approval.signature}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "url": null
+          }
+        }
+      }
+    },
+    {
+      "id": "main-now",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "obid": "${state.o}",
+        "args": [
+          "rev-parse",
+          "refs/heads/main"
+        ]
+      }
+    },
+    {
+      "id": "publishing-10-onto-its-base-with-no-pull-request",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.main-now.out}",
+        "expect": {
+          "body": "${state.onto-main.body.head}"
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-10"
+        ]
+      }
+    }
+  ]
+}
