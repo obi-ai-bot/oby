@@ -178,7 +178,10 @@ its trigger `http` naming the method and path as routes.txt lists them), `workfl
 
 **Every assertion can fail** (OBIDSPEC-6): the host changes the answer each assertion passed on at
 each place it looks, and each change must fail it; one that passes anyway is a vacuous assertion
-and fails the step. To see a step go red by hand, copy `workflows/`, make an expectation wrong and
+and fails the step. An `expect` holds only the keys its node judges (`nodes::judges`): a bare
+`{"count": 0}` where `{"paths": {"count": 0}}` was meant, or `status` on a node judged by
+`expect::check` alone (write `{"paths": {"status": 200}}` there), fails the step before the node
+runs, and `cargo test` checks every shipped workflow for it. To see a step go red by hand, copy `workflows/`, make an expectation wrong and
 run with `OBID_SPEC_WORKFLOWS=<the copy>`.
 
 ## The real app and the Mac
