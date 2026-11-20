@@ -80,7 +80,9 @@
           }
         },
         "expect": {
-          "status": 201
+          "paths": {
+            "status": 201
+          }
         }
       }
     },
