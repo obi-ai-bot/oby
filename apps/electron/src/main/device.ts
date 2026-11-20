@@ -9,6 +9,7 @@ import { mayConfirm, signedHeader, takeInput, wordsHeader } from './words';
 import { INPUT_PATH, mayInput } from './browserInput';
 import { ipc } from './ipc';
 import { flag, oneOf, optional, safeInteger, string, type Decoder } from '../shared/decode';
+import { BROWSER_PATH, browserAskPath, browserTabPath } from '../shared/obid-wire';
 
 // This Mac's device key for obid (docs/runner-api.md, "POST /v1/devices"), which makes a Confirm
 // the owner's (#776). A P-256 key made here in main, kept in the app's own folder as a 0600 file,
@@ -218,15 +219,14 @@ export async function fillSecret(tab: string, field: string, value: string, ask:
   try {
     const id = (device ??= await register());
     const send = (path: string, body: unknown) => obid('POST', path, body, signedHeader(deviceKey(), id, 'POST', path, body));
-    const base = `/v1/browser/tabs/${encodeURIComponent(tab)}`;
-    const list = await obid('GET', '/v1/browser');
+    const list = await obid('GET', BROWSER_PATH);
     let heldBy: string | null = null;
     try { heldBy = (JSON.parse(list.text) as { tabs?: { id: string; heldBy: string | null }[] }).tabs?.find((t) => t.id === tab)?.heldBy ?? null; } catch { /* taken below */ }
     const took = heldBy !== id;
-    if (took) { const why = refused(await send(`${base}/take`, {})); if (why) return why; }
-    const filled = refused(await send(`${base}/secret`, { field, value }));
-    if (!filled && ask) await send(`/v1/browser/asks/${encodeURIComponent(ask)}/answer`, {});
-    if (took) await send(`${base}/giveBack`, {});
+    if (took) { const why = refused(await send(browserTabPath(tab, 'take'), {})); if (why) return why; }
+    const filled = refused(await send(browserTabPath(tab, 'secret'), { field, value }));
+    if (!filled && ask) await send(browserAskPath(ask), {});
+    if (took) await send(browserTabPath(tab, 'giveBack'), {});
     return filled;
   } catch (err) {
     return `Oby couldn’t sign the fill: ${err instanceof Error ? err.message : String(err)}`;
