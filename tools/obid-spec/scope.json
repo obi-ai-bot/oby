@@ -1567,7 +1567,8 @@
             "RETIRED-6": "install.sh, the cloud Worker and tools/brain checks.",
             "RETIRED-7": "install.sh, the cloud Worker and tools/brain checks.",
             "RETIRED-8": "install.sh, the cloud Worker and tools/brain checks.",
-            "RETIRED-9": "install.sh, the cloud Worker and tools/brain checks."
+            "RETIRED-9": "install.sh, the cloud Worker and tools/brain checks.",
+            "RETIRED-10": "tools/brain checks (repo.test.ts)."
           }
         },
         "ci.md": {
