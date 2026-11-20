@@ -81,9 +81,13 @@ pub fn argv(
     argv
 }
 
-/// The MCP servers obid gives Codex, the only ones that may start or run: [`argv`]'s, and Oby's
-/// browser (crate::browser::AgentServer::codex, BROWSER-17).
-const OWN_SERVERS: [&str; 3] = ["oby", "tetrix", crate::browser::agent_server::NAME];
+/// The MCP servers [`argv`] gives Codex, the only ones that may start or run.
+const OWN_SERVERS: [&str; 2] = ["oby", "tetrix"];
+
+/// The MCP servers whose tools a boxed job's Codex may run, each by obid's rules: [`OWN_SERVERS`]
+/// and Oby's browser, given to a job of the owner's (crate::browser::AgentServer::codex,
+/// BROWSER-17). A conversation's Codex isn't given the browser.
+const JOB_SERVERS: [&str; 3] = ["oby", "tetrix", crate::browser::agent_server::NAME];
 
 /// What an own run (LANES-13 and LANES-18) is told so that Oby's own tools run (LANES-21): in
 /// Bypass Codex asks nobody, and from codex-cli 0.163 it refuses an MCP call that would need
@@ -1036,7 +1040,7 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
                 let answer = match call.cloned() {
                     // Only Oby's own server: another's (ChatGPT's apps, the person's) is never
                     // run, as before Codex asked. An own run's are the owner's (LANE-12).
-                    Some(_) if !OWN_SERVERS.contains(&server) && !self.own => {
+                    Some(_) if !JOB_SERVERS.contains(&server) && !self.own => {
                         Answer::Deny(format!("Only Oby's own tools run here, not {server}'s."))
                     }
                     Some((tool, arguments)) => {
@@ -1630,6 +1634,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// BROWSER-17: a boxed job's Codex runs the tools of Oby's servers, the browser's among them,
+    /// each by obid's rules; another server's (`browserx`, the person's) is refused before them.
+    #[test]
+    fn browser_17_a_boxed_jobs_codex_may_run_the_browsers_tools() {
+        for server in ["oby", "tetrix", "browser"] {
+            assert!(JOB_SERVERS.contains(&server), "{server}");
+        }
+        for server in ["browserx", "codex_apps", "playwright", ""] {
+            assert!(!JOB_SERVERS.contains(&server), "{server}");
+        }
+        assert!(!OWN_SERVERS.contains(&"browser"));
+    }
+
     /// ConnectionTests' last part: Codex finds the broker in its config and reads the job's token
     /// from a variable it names; the token is never an argument (other processes read those).
     #[test]
@@ -2131,12 +2148,8 @@ exec sleep 30
         let tetrix = json!({"method": "item/completed",
             "params": {"item": {"type": "mcpToolCall", "server": "tetrix", "tool": "search"}}});
         assert_eq!(ran_outside(&tetrix), None);
-        // So does Oby's browser (BROWSER-17), given to a job of the owner's.
-        assert_eq!(ran_outside(&starting("browser")), None);
-        let browser = json!({"method": "item/completed",
-            "params": {"item": {"type": "mcpToolCall", "server": "browser", "tool": "oby_browser_open"}}});
-        assert_eq!(ran_outside(&browser), None);
-        for name in ["codex_apps", "elsewhere", "", "browserx"] {
+        // A conversation isn't given Oby's browser (BROWSER-17 is a job's): none of its starts.
+        for name in ["codex_apps", "elsewhere", "", "browser"] {
             assert_eq!(
                 ran_outside(&starting(name)),
                 Some("Codex sent mcpServer/startupStatus/updated".into()),
