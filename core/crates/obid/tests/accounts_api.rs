@@ -967,10 +967,10 @@ fn codex_and_cursor_sign_in_with_their_own_logins() {
     } else {
         ".config/cursor/auth.json"
     });
-    within(15, "Cursor's login was written", || {
-        login.is_file().then_some(())
+    // Whole, not just there: the login writes its file in place, so it can be seen empty first.
+    let saw: Value = within(15, "Cursor's login was written", || {
+        serde_json::from_slice(&std::fs::read(&login).ok()?).ok()
     });
-    let saw: Value = serde_json::from_slice(&std::fs::read(&login).unwrap()).unwrap();
     let env = &saw["saw"]["env"];
     assert_eq!(env["CURSOR_CONFIG_DIR"], json!(dir));
     assert_eq!(env["HOME"], json!(dir));
