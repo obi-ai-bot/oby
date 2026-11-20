@@ -31,13 +31,26 @@ pub async fn follow(base: &str, token: &str) -> Result<Value> {
 /// [`follow`], from `after` (an event id: obid replays what came after it) and kept as `key`, so a
 /// second stream of the same obid can be followed apart from the first.
 pub async fn follow_as(base: &str, token: &str, after: Option<&str>, key: &str) -> Result<Value> {
+    follow_from(base, token, after, None, key).await
+}
+
+/// [`follow_as`], also sending `Last-Event-ID: <last_event_id>` as a browser's `EventSource` does
+/// when it reconnects by itself (EVENTS-4).
+pub async fn follow_from(
+    base: &str,
+    token: &str,
+    after: Option<&str>,
+    last_event_id: Option<&str>,
+    key: &str,
+) -> Result<Value> {
     let host = crate::http::loopback(base)?;
     let mut stream = tokio::net::TcpStream::connect(&host).await?;
     stream
         .write_all(
             format!(
-                "GET /v1/events{} HTTP/1.0\r\nHost: {host}\r\nAuthorization: Bearer {token}\r\nAccept: text/event-stream\r\n\r\n",
-                after.map(|a| format!("?after={a}")).unwrap_or_default()
+                "GET /v1/events{} HTTP/1.0\r\nHost: {host}\r\nAuthorization: Bearer {token}\r\nAccept: text/event-stream\r\n{}\r\n",
+                after.map(|a| format!("?after={a}")).unwrap_or_default(),
+                last_event_id.map(|id| format!("Last-Event-ID: {id}\r\n")).unwrap_or_default()
             )
                 .as_bytes(),
         )
@@ -100,6 +113,11 @@ pub async fn follow_as(base: &str, token: &str, after: Option<&str>, key: &str) 
         }
     });
     Ok(json!({"following": key}))
+}
+
+/// Every event kept so far of the stream followed as `key`, in the order it came.
+pub fn seen(key: &str) -> Option<Vec<Event>> {
+    Some(log_of(key)?.lock().unwrap().clone())
 }
 
 /// The first event named `name` whose data matches `expect` (crate::expect), waiting up to

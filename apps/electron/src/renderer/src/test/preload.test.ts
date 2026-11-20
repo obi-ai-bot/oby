@@ -123,3 +123,19 @@ describe('the preload following main (main/live.ts)', () => {
     expect(the.on.has('obid-live')).toBe(false);
   });
 });
+
+// Settings › General's browser switches (docs/contracts/browser-app.md, BROWSERAPP-18): a switch has no
+// words of its own, so a real press holds its aria-label, and only a switch's
+describe('the preload on a press of a browser switch', () => {
+  const switchy = (role: string | null, label: string) => Object.assign(new the.HTMLElement('', true), { getAttribute: (n: string) => (n === 'role' ? role : n === 'aria-label' ? label : null) });
+  const turn = async () => { await the.exposed.app.obid.call('PUT', '/v1/browser/settings', { agentsUseBrowser: false }); return the.invoked.at(-1)![4]; };
+  it('browserapp_18: a switch is held by its aria-label, once; a wordless button that isn\'t a switch holds nothing', async () => {
+    the.listeners.get('pointerdown')!({ isTrusted: true, type: 'pointerdown', target: switchy('switch', 'Agents can use the browser') });
+    expect(await turn()).toBe(true);
+    expect(await turn()).toBe(false);
+    the.listeners.get('pointerdown')!({ isTrusted: true, type: 'pointerdown', target: switchy(null, 'Agents can use the browser') });
+    expect(await turn()).toBe(false);
+    the.listeners.get('pointerdown')!({ isTrusted: true, type: 'pointerdown', target: switchy('switch', 'Agents can use this Mac') });
+    expect(await turn()).toBe(false);
+  });
+});

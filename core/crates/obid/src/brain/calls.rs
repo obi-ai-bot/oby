@@ -1,8 +1,11 @@
 //! Every model call obid makes as Oby's brain, and what each spent. The quick model's one-shot
 //! side calls (triage sorting the inbox, memory finding what the owner keeps repeating, the recap
-//! after time away) run here: the first Claude Code account's `claude -p` with a JSON schema, one
-//! attempt, boxed when it reads a quoted file. Every brain call, those and each run of a harness
-//! turn, is kept in `home/brain-turns.jsonl` with the
+//! after time away) run here, one attempt, on the signed-in account with the most room of any tool
+//! that takes them, as a new job on Auto is routed (USAGE-11, B00-15): Claude Code's `claude -p`
+//! with a JSON schema, boxed when it reads a quoted file, or a Codex `app-server` turn with an
+//! output schema, always boxed, reading the quoted file only through a Read tool obid serves. With
+//! no such account none runs, and [`thinker`] says why. Every brain call, those and each run of a
+//! harness turn, is kept in `home/brain-turns.jsonl` with the
 //! numbers its CLI reported (#533), and `GET /v1/brain/usage` adds them up.
 
 use std::collections::BTreeMap;
@@ -41,29 +44,73 @@ pub enum Failure {
     TimedOut(String),
 }
 
-/// The user's own Claude Code, with no tools, no settings and no MCP: it only fills the schema.
-/// With a quoted file to read, it has Read and nothing else, boxed like a job.
+/// The tools a side call runs on, each with its own prompt shape: Claude Code (`--system-prompt`,
+/// `--json-schema`) and Codex (`baseInstructions`, `outputSchema`). Cursor isn't one yet: its
+/// confined read is the read gate and egress door of another Oby's question's answerer
+/// (crate::sphere::answering), not shared with the brain yet.
+const TOOLS: [Tool; 2] = [Tool::Claude, Tool::Codex];
+
+/// Why no side call runs: no account of [`TOOLS`] is signed in.
+pub const NO_ACCOUNT: &str = "no Claude Code or Codex account is signed in";
+
+/// Codex's features a side call runs without, besides a conversation's
+/// ([`super::harness_codex::OFF`]): no patch tool, code mode, goals or questions for the owner. It
+/// only fills the schema.
+const CODEX_OFF: &[&str] = &[
+    "apply_patch_freeform",
+    "code_mode_host",
+    "goals",
+    "default_mode_request_user_input",
+];
+
+/// The user's own Claude Code or Codex, with no tools, no settings and no MCP: it only fills the
+/// schema. With a quoted file to read, it has Read on that file and nothing else, boxed like a
+/// job.
 pub struct Quick {
+    tool: Tool,
     bin: PathBuf,
-    /// The account to think with (its folder is `CLAUDE_CONFIG_DIR`), or none for the default
-    /// login.
-    account: Option<crate::config::Account>,
+    /// The account to think with: Claude Code's folder is `CLAUDE_CONFIG_DIR` (none for the
+    /// default login); Codex's is copied into the box's `CODEX_HOME`.
+    account: crate::config::Account,
     home: PathBuf,
     jobs: Arc<crate::jobs::Jobs>,
     /// What the call is for, in its record: `triage`, `memory`, `recap`.
     kind: &'static str,
 }
 
-/// The quick model for `kind`'s calls, on the first Claude Code account; none with no Claude
-/// Code (a side call never goes to Codex, #537).
+/// The quick model for `kind`'s calls ([`thinker`]); none with no account to think with.
 pub fn quick(shared: &Shared, kind: &'static str) -> Option<Quick> {
-    let agents = shared.config.agents.get();
-    let claude = agents.claude.as_ref()?;
+    thinker(shared, kind).ok()
+}
+
+/// The quick model for `kind`'s calls: of each tool of [`TOOLS`], the account Oby thinks with
+/// first (signed in, not full: [`crate::jobs::Jobs::thinking_accounts`]), then of those the one
+/// with the most room, as a new job on Auto is routed (USAGE-11). A ChatGPT login isn't one: its
+/// runs go through obid's relay with a run's own token, and background work waits for the owner's
+/// yes on it (CHATGPT-20). With none, why ([`NO_ACCOUNT`]): nothing is guessed.
+pub fn thinker(shared: &Shared, kind: &'static str) -> Result<Quick, String> {
+    let jobs = &shared.jobs;
     // Run by its absolute path, never one a folder it starts in could change.
-    let bin = crate::process::resolve_bin(&claude.bin).filter(|bin| bin.is_absolute())?;
-    let account = crate::jobs::claude_accounts(claude).into_iter().next();
-    Some(Quick {
-        bin,
+    let bin = |tool: Tool| jobs.agent_bin(tool).filter(|bin| bin.is_absolute());
+    let first: Vec<(Tool, crate::config::Account)> = TOOLS
+        .into_iter()
+        .filter(|tool| bin(*tool).is_some())
+        .filter_map(|tool| {
+            let account = jobs
+                .thinking_accounts(tool)
+                .into_iter()
+                .find(|a| crate::chatgpt::marker_of(a).is_none())?;
+            Some((tool, account))
+        })
+        .collect();
+    let (tool, account) = jobs
+        .most_room_first(first)
+        .into_iter()
+        .next()
+        .ok_or_else(|| NO_ACCOUNT.to_owned())?;
+    Ok(Quick {
+        tool,
+        bin: bin(tool).ok_or_else(|| NO_ACCOUNT.to_owned())?,
         account,
         home: shared.config.home.clone(),
         jobs: shared.jobs.clone(),
@@ -118,17 +165,30 @@ impl Quick {
         let (system, user, schema, quoted) = for_brain(system, user, schema, quoted)
             .map_err(|why| Failure::Failed(format!("the vault can't be read: {why}")))?;
         let began = Instant::now();
-        let ran = self
-            .complete(&system, &user, quoted.as_deref(), &schema, timeout)
-            .await;
-        let (result, answer) = match ran {
-            Ok((answer, value)) => (Ok(answer), value),
-            Err((failure, value)) => (Err(failure), value),
+        let (result, mut call) = match self.tool {
+            Tool::Codex => {
+                let model = self.codex_model();
+                let (result, tokens) = self
+                    .codex(&system, &user, quoted.as_deref(), &schema, timeout, &model)
+                    .await;
+                let call = Call::read("codex", Some(&model), None, began).with(tokens.as_ref());
+                (result, call)
+            }
+            _ => {
+                let ran = self
+                    .complete(&system, &user, quoted.as_deref(), &schema, timeout)
+                    .await;
+                let (result, answer) = match ran {
+                    Ok((answer, value)) => (Ok(answer), value),
+                    Err((failure, value)) => (Err(failure), value),
+                };
+                let call = Call::read("claude", Some(QUICK_MODEL), answer.as_ref(), began);
+                (result, call)
+            }
         };
-        let mut call = Call::read("claude", Some(QUICK_MODEL), answer.as_ref(), began);
-        if result.is_err() {
+        if let Err(Failure::Failed(why) | Failure::TimedOut(why)) = &result {
             call.outcome = CallOutcome::Failed;
-            tracing::warn!("brain: a {} call failed: {}", self.kind, call.line());
+            tracing::warn!("brain: a {} call failed: {}: {why}", self.kind, call.line());
         }
         Record::new(self.kind, None, None, vec![call]).keep(&self.home);
         result
@@ -188,7 +248,7 @@ impl Quick {
         let ready = if quoted.is_some() {
             None
         } else {
-            self.account.as_ref()
+            Some(&self.account)
         };
         self.jobs.claude_login_ready(ready).await.map_err(failed)?;
         // With nothing to read it has no tool at all; with the quoted file it reads, boxed.
@@ -201,7 +261,7 @@ impl Quick {
         } else {
             let env = unboxed_env(
                 |name| std::env::var_os(name),
-                self.account.as_ref().and_then(|a| a.config_dir.as_deref()),
+                self.account.config_dir.as_deref(),
                 &folder.0,
             )
             .map_err(failed)?;
@@ -273,6 +333,269 @@ impl Quick {
         } else {
             (Failure::Failed(why), answer)
         })
+    }
+
+    /// The Codex account's model, as the owner set it in Settings › Accounts, else Codex's own.
+    fn codex_model(&self) -> String {
+        let offered = self
+            .jobs
+            .model_lists
+            .to_check(Tool::Codex, &self.account.id);
+        crate::settings::account_model(&self.home, Tool::Codex, &self.account.id, &offered)
+    }
+
+    /// The answer as JSON from one Codex turn on `model`, with what it used: boxed like a
+    /// conversation's Codex (a copy of the login as its `CODEX_HOME`, nothing else of the
+    /// account's), every feature of [`super::harness_codex::OFF`] and [`CODEX_OFF`] off and no web
+    /// search, checked before it runs. Its working folder is read-only and holds only the quoted
+    /// file, which it reads through obid's own Read tool, on that file alone (a Read of any other
+    /// is refused). Any other tool, or a request obid doesn't serve, ends the call with no answer.
+    async fn codex(
+        &self,
+        system: &str,
+        user: &str,
+        quoted: Option<&str>,
+        schema: &str,
+        timeout: Duration,
+        model: &str,
+    ) -> (Result<String, Failure>, Option<crate::usage::Tokens>) {
+        let failed = |why: String| (Err(Failure::Failed(why)), None);
+        let secrets = crate::secrets::known();
+        let Ok(schema) = serde_json::from_str::<Value>(&secrets.redact(schema)) else {
+            return failed("the side call's schema isn't JSON".into());
+        };
+        let dir = self
+            .home
+            .join("plans")
+            .join(uuid::Uuid::new_v4().to_string());
+        let (reads, temp) = (dir.join("reads"), dir.join("home"));
+        for made in [&dir, &reads, &temp] {
+            if let Err(e) = crate::store::make_private_dir(made) {
+                return failed(format!("the brain's folder couldn't be made: {e}"));
+            }
+        }
+        let folder = Folder(dir);
+        if let Some(quoted) = quoted
+            && let Err(e) = std::fs::write(reads.join(QUOTED_FILE), secrets.redact(quoted))
+        {
+            return failed(format!("the quoted file couldn't be written: {e}"));
+        }
+        let mut flags: Vec<OsString> = vec![];
+        for feature in super::harness_codex::OFF.iter().chain(CODEX_OFF) {
+            flags.extend(["-c".into(), format!("features.{feature}=false").into()]);
+        }
+        flags.extend(["-c".into(), r#"web_search="disabled""#.into()]);
+        let launch = match self.jobs.conversation_launch(
+            Tool::Codex,
+            &self.account,
+            &reads,
+            &temp,
+            &folder.0.join("login"),
+            vec![reads.clone()],
+            flags,
+            folder.0.join("stderr.log"),
+        ) {
+            Ok(launch) => launch,
+            Err(why) => return failed(why),
+        };
+        if let Err(why) = super::harness_codex::features_off_with(&launch, CODEX_OFF).await {
+            return failed(why);
+        }
+        // Kept until the call ends: a stop channel whose sender is gone stops the server.
+        let (_run, stop) = tokio::sync::watch::channel(crate::process::Signal::Run);
+        let conn = match crate::conn::Conn::spawn(&launch, timeout, stop, false).await {
+            Ok(conn) => conn,
+            Err(e) => return failed(format!("Codex couldn't start: {e}")),
+        };
+        let mut turn = CodexTurn {
+            conn,
+            reads,
+            thread: None,
+            said: None,
+            tokens: None,
+            before: None,
+        };
+        let user = secrets.redact(user);
+        let system = secrets.redact(system);
+        let answer = turn
+            .run(&system, &user, quoted.is_some(), schema, model)
+            .await;
+        let tokens = turn.tokens.take();
+        // Nothing of the call outlives it: no thread is kept (it's ephemeral) nor resumed.
+        turn.conn.finish_within(Duration::ZERO).await;
+        let answer = answer.map_err(|(timed_out, why)| {
+            let why = format!("codex returned no answer: {}", secrets.redact(&why));
+            match timed_out {
+                true => Failure::TimedOut(why),
+                false => Failure::Failed(why),
+            }
+        });
+        (answer, tokens)
+    }
+}
+
+/// The one tool a Codex side call has when it may read the quoted file: Read, on that file alone.
+fn codex_read_tool() -> Value {
+    serde_json::json!([{"type": "function", "name": "Read",
+        "description": format!("Read {QUOTED_FILE} in the working folder."),
+        "inputSchema": {"type": "object", "additionalProperties": false, "required": ["file_path"],
+            "properties": {"file_path": {"type": "string", "enum": [QUOTED_FILE]}}}}])
+}
+
+/// Codex's items a side call may make: its words and thinking, and obid's Read
+/// (crate::codex's items that are no tool).
+const CODEX_ITEMS: &[&str] = &[
+    "agentMessage",
+    "userMessage",
+    "reasoning",
+    "plan",
+    "contextCompaction",
+    "dynamicToolCall",
+];
+
+/// One Codex side call's turn, over its `app-server`.
+struct CodexTurn {
+    conn: crate::conn::Conn,
+    /// Its working folder, holding the quoted file alone.
+    reads: PathBuf,
+    thread: Option<String>,
+    /// Its last words, the answer.
+    said: Option<String>,
+    /// What the turn used, as Codex counted it.
+    tokens: Option<crate::usage::Tokens>,
+    before: Option<crate::usage::Tokens>,
+}
+
+/// Why a Codex side call has no answer: whether it ran out of time, and why.
+type Why = (bool, String);
+
+impl CodexTurn {
+    /// The answer, a JSON object as `schema` asks: a new ephemeral thread told `system`, one turn
+    /// of `user` with `schema` as its output schema, Read offered when `reads_file`.
+    async fn run(
+        &mut self,
+        system: &str,
+        user: &str,
+        reads_file: bool,
+        schema: Value,
+        model: &str,
+    ) -> Result<String, Why> {
+        use serde_json::json;
+        let version = env!("CARGO_PKG_VERSION");
+        self.call(
+            "initialize",
+            json!({"clientInfo": {"name": "obid", "title": "obid", "version": version},
+                   "capabilities": {"experimentalApi": true}}),
+        )
+        .await?;
+        self.conn.notify("initialized", None).await;
+        // Its own sandbox can't run inside obid's box: every approval is obid's, and it has no
+        // shell to ask one for.
+        let mut thread = json!({"cwd": self.reads, "sandbox": "danger-full-access",
+            "approvalPolicy": "untrusted", "approvalsReviewer": "user", "ephemeral": true,
+            "baseInstructions": system});
+        if !model.is_empty() {
+            thread["model"] = json!(model);
+        }
+        if reads_file {
+            thread["dynamicTools"] = codex_read_tool();
+        }
+        let started = self.call("thread/start", thread).await?;
+        let thread = started["thread"]["id"]
+            .as_str()
+            .ok_or((false, "Codex started no thread".to_owned()))?
+            .to_owned();
+        self.thread = Some(thread.clone());
+        let mut turn = json!({"threadId": thread, "outputSchema": schema, "effort": QUICK_EFFORT,
+            "input": [{"type": "text", "text": user, "text_elements": []}]});
+        if !model.is_empty() {
+            turn["model"] = json!(model);
+        }
+        self.call("turn/start", turn).await?;
+        loop {
+            let message = self.next().await?;
+            self.handle(&message).await?;
+            if message["method"] != "turn/completed" {
+                continue;
+            }
+            let turn = &message["params"]["turn"];
+            if turn["status"] != "completed" {
+                let said = turn["error"]["message"].as_str().unwrap_or_default();
+                let status = turn["status"].as_str().unwrap_or("with no status");
+                return Err((false, format!("its turn ended {status}: {said}")));
+            }
+            return self
+                .said
+                .take()
+                .filter(|said| serde_json::from_str::<Value>(said).is_ok_and(|v| v.is_object()))
+                .ok_or((false, "its answer isn't the schema's".to_owned()));
+        }
+    }
+
+    /// Sends a request and reads until its answer comes, handling everything else on the way.
+    async fn call(&mut self, method: &str, params: Value) -> Result<Value, Why> {
+        let id = self.conn.request(method, params).await;
+        loop {
+            let message = self.next().await?;
+            if let Some(answer) = crate::conn::answer_to(&message, id) {
+                return answer
+                    .map_err(|e| (false, format!("Codex refused {method}: {}", e.message)));
+            }
+            self.handle(&message).await?;
+        }
+    }
+
+    async fn next(&mut self) -> Result<Value, Why> {
+        self.conn.next().await.map_err(|cut| match cut {
+            crate::conn::Cut::TimedOut => (true, "timeout".to_owned()),
+            _ => (false, "Codex ended before its answer".to_owned()),
+        })
+    }
+
+    /// One message of Codex's: its Read of the quoted file served, its words kept, what it used
+    /// counted. Anything else it asks for, or does, ends the call.
+    async fn handle(&mut self, message: &Value) -> Result<(), Why> {
+        let params = &message["params"];
+        let method = message["method"].as_str().unwrap_or_default();
+        if let Some(id) = crate::conn::request_id(message).cloned() {
+            if method != "item/tool/call" || params["tool"] != "Read" {
+                self.conn.refuse(&id).await;
+                return Err((false, format!("Codex asked for {method} outside Read")));
+            }
+            // Any other file, its login's among them, is refused: the call goes on without it.
+            let text = params["arguments"]["file_path"]
+                .as_str()
+                .filter(|path| {
+                    *path == QUOTED_FILE || Path::new(path) == self.reads.join(QUOTED_FILE)
+                })
+                .and_then(|_| std::fs::read_to_string(self.reads.join(QUOTED_FILE)).ok());
+            let answer = serde_json::json!({"success": text.is_some(), "contentItems": [{
+                "type": "inputText", "text": text.unwrap_or_else(|| format!("Only {QUOTED_FILE} may be read."))}]});
+            self.conn.reply(&id, answer).await;
+            return Ok(());
+        }
+        if let Some(thread) = params["threadId"].as_str()
+            && self.thread.as_deref().is_some_and(|own| own != thread)
+        {
+            return Err((false, "Codex spoke on another thread".into()));
+        }
+        match method {
+            "item/started" | "item/completed" => {
+                let item = &params["item"];
+                let kind = item["type"].as_str().unwrap_or_default();
+                if !CODEX_ITEMS.contains(&kind) {
+                    return Err((false, format!("Codex used {kind} outside Read")));
+                }
+                if method == "item/completed" && kind == "agentMessage" {
+                    self.said = item["text"].as_str().map(str::to_owned);
+                }
+            }
+            "thread/tokenUsage/updated" => {
+                self.tokens = crate::usage::codex_turn(&params["tokenUsage"], &mut self.before);
+            }
+            _ => {}
+        }
+        Ok(())
     }
 }
 

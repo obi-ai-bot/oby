@@ -7,7 +7,7 @@ import { Logo, Sheen, agentName } from './pieces';
 import { YouMark } from './Panel';
 import type { AgentId } from './view';
 
-export function Card({ label, kind, blue, head, from, count, children }: { label: string; kind: string; blue?: boolean; head: ReactNode; from?: string; count?: string; children?: ReactNode }) {
+export function Card({ label, kind, blue, head, from, count, children }: { label: string; kind: string; blue?: boolean; head: ReactNode; from?: string; count?: ReactNode; children?: ReactNode }) {
   return (
     <div className="decision-card" role="group" aria-label={label} data-browser="card">
       <div className="tc-ask-line">
@@ -24,12 +24,25 @@ export const Text = ({ children }: { children: ReactNode }) => <p className="tc-
 export const Options = ({ children }: { children: ReactNode }) => <div className="tc-options">{children}</div>;
 export const Note = ({ children }: { children: ReactNode }) => <p className="secret-note"><ShieldCheck size={12} strokeWidth={1.6} />{children}</p>;
 
+/**
+ * An agent's words for its card: the first sentence its heading (a statement's full stop dropped,
+ * a question's mark kept), the rest leading the card's words.
+ */
+export function headOf(reason: string | undefined, fallback: string): { head: string; lead: string } {
+  const r = (reason ?? '').trim();
+  const m = /^(.+?[.?!])(\s+|$)([\s\S]*)$/.exec(r);
+  if (!r) return { head: fallback, lead: '' };
+  if (!m) return { head: r, lead: '' };
+  return { head: m[1].endsWith('.') ? m[1].slice(0, -1) : m[1], lead: m[3].trim() };
+}
+
 /** 7: the agent asks you to sign in. */
-export function SignInCard({ agent, onTake, onType, onSkip }: { agent: AgentId; onTake?: () => void; onType?: () => void; onSkip?: () => void }) {
+export function SignInCard({ agent, reason, host, count, onTake, onType, onSkip }: { agent: AgentId; reason?: string; host: string; count?: ReactNode; onTake?: () => void; onType?: () => void; onSkip?: () => void }) {
   const who = agentName(agent);
+  const { head, lead } = headOf(reason, `Sign in to ${host}`);
   return (
-    <Card label={`${who} is asking`} kind="Sign in" head="Sign in to the staging admin" from={who} count="1 of 1">
-      <Text>The mail log is behind a sign-in. Take control and sign in yourself, or type the password here: it goes straight into the page, never to {who}.</Text>
+    <Card label={`${who} is asking`} kind="Sign in" head={head} from={who} count={count}>
+      <Text>{lead ? `${lead} ` : ''}Take control and sign in yourself, or type the password here: it goes straight into the page, never to {who}.</Text>
       <Options>
         <button className="tc-option is-primary has-icon" onClick={onTake}><Hand size={14} strokeWidth={1.6} />Take control</button>
         <button className="tc-option has-icon" onClick={onType}><KeyRound size={13} strokeWidth={1.6} />Type the password</button>

@@ -125,7 +125,7 @@
         "expect": {
           "paths": {
             "count": 1,
-            "text": "Codex is using this tab · Clicking Sign in"
+            "words": "Codex is using this tab · Clicking Sign in"
           }
         }
       },
@@ -146,7 +146,7 @@
         "expect": {
           "paths": {
             "count": 1,
-            "text": "Clicking Sign in"
+            "words": "Clicking Sign in"
           }
         }
       }
@@ -304,7 +304,7 @@
         "expect": {
           "paths": {
             "count": 1,
-            "text": "Sign-up flow works end to end · Signed up and in; now inviting a teammate"
+            "words": "Sign-up flow works end to end · Signed up and in; now inviting a teammate"
           }
         }
       },

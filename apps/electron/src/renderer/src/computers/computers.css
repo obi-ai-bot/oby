@@ -1,0 +1,73 @@
+/* The computer picker (docs/design/computer-picker/index.html, its EXTRA: Sangam's tokens and the
+   app's existing patterns only). */
+
+/* the computer button: the mini sidebar's foot, above Settings (or the account's picture) */
+.rail-computer { margin-top: auto; }
+.rail-computer + :is(.rail-settings, .rail-account) { margin-top: 0; }
+.rail-button.rail-computer.has-dot::before { bottom: auto; top: 3px; left: auto; right: 3px; margin: 0; }
+
+/* its menu: the profile menu's rows, two lines where a computer has something to say (the menu's
+   own box is Menu's; this group adds no box of its own) */
+.computer-menu { display: contents; }
+.computer-menu .talk-choice-mark { color: var(--text); }
+.computer-menu [aria-checked="true"] .talk-choice-mark { color: var(--ink); }
+.computer-menu .computer-row { position: relative; }
+.computer-menu > :is(button, .computer-row) + .computer-row,
+.computer-menu > .computer-row + button { margin-top: 2px; }
+.computer-menu .computer-row:is(:hover, :focus-within, .is-more) > .talk-choice .talk-choice-check { visibility: hidden; }  /* the ⋯ takes its place */
+.computer-menu .computer-row:is(:hover, .is-more) > .talk-choice { background: rgba(255, 255, 255, 0.08); }
+.computer-menu .talk-choice.is-renaming { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 6px 10px; border-radius: 6px; background: rgba(255, 255, 255, 0.08); }
+.computer-menu .talk-choice.is-renaming .sidebar-rename { flex: none; height: 18px; margin-left: -6px; font-size: var(--text-md); }
+/* a row's ⋯, on hover */
+.row-menu .computer-row > button.row-more {
+  position: absolute; top: 50%; right: 10px; translate: 0 -50%;
+  width: 22px; height: 22px; margin: 0; padding: 0; display: grid; place-items: center;
+  border-radius: 6px; color: var(--muted); visibility: hidden;
+}
+.computer-row:is(:hover, :focus-within, .is-more) > button.row-more { visibility: visible; }
+.row-menu .computer-row:is(:hover, .is-more) > button.row-more { color: var(--ink); background: var(--chip-hover); }
+/* its Rename… and Remove…, beside the ⋯ */
+.computer-more {
+  position: absolute; z-index: 1; top: 0; left: calc(100% + 12px); min-width: 140px; padding: 8px;
+  display: flex; flex-direction: column;
+  background: var(--surface); border: 1px solid var(--surface-edge); border-radius: 16px; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+.computer-note { margin: 6px 12px 8px 40px; color: var(--muted); font-size: var(--text-sm); line-height: 16px; }
+.route-dot { display: inline-block; width: 6px; height: 6px; margin: 0 6px 1px 0; border-radius: 50%; background: rgb(48, 209, 88); vertical-align: middle; }
+
+/* Add a computer */
+.computer-sheet .modal-label { margin-top: 16px; }
+.computer-sheet :is(.modal-lede, .panel-side) + .modal-label { margin-top: 0; }
+.computer-sheet .fingerprint { display: block; }
+.computer-sheet .panel-side { margin: 0 0 20px; }
+.computer-hint { margin: 8px 0 0; color: var(--muted); font-size: var(--text-sm); line-height: 1.45; }
+.computer-hint code, .computer-sheet .modal-list code, .computer-tried code { font: 12px/1.4 ui-monospace, "SF Mono", Menlo, monospace; color: var(--item); }
+.computer-switch-link { display: block; margin: 20px 0 -4px; color: var(--text); font-size: var(--text-md); text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
+.computer-sheet .modal-field.is-mono { font: 13px ui-monospace, "SF Mono", Menlo, monospace; color: var(--item); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; mask-image: var(--fade-out); }
+.computer-sheet .modal-field.is-code { width: 140px; font-size: 17px; letter-spacing: 0.12em; font-variant-numeric: tabular-nums; }
+.computer-found + .modal-label { margin-top: 20px; }
+.computer-found { display: flex; gap: 12px; align-items: flex-start; margin-top: 16px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--field); }
+.computer-found > svg { flex: none; margin-top: 1px; color: var(--text); }
+.computer-found b { display: block; color: var(--ink); font-weight: 500; font-size: var(--text-md); }
+.computer-found span { display: block; color: var(--muted); font-size: var(--text-sm); line-height: 1.45; }
+.fingerprint { font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace; color: var(--item); letter-spacing: 0.02em; }
+/* the steps, as the browser's sheets list theirs */
+.computer-sheet .modal-list { margin: 14px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.computer-sheet .modal-list li { display: flex; gap: 10px; align-items: flex-start; color: var(--text); font-size: var(--text-md); line-height: 1.45; }
+.computer-sheet .modal-list li svg { flex: none; margin-top: 2px; color: var(--muted); }
+.computer-sheet .modal-list .is-done svg { color: var(--ink); }
+.computer-sheet .modal-list .is-now { color: var(--ink); }
+.computer-sheet .modal-list .is-now svg { color: var(--ink); }
+.computer-sheet .modal-list .is-later { color: var(--muted); }
+.computer-sheet .modal-list .is-trouble svg { color: var(--danger); }
+.computer-sheet .modal-list .is-trouble { color: var(--ink); }
+.big-code { margin: 4px 0 20px; color: var(--ink); font-size: 40px; font-weight: 500; letter-spacing: 0.08em; font-variant-numeric: tabular-nums; text-align: center; }
+.reach-row { display: flex; align-items: center; justify-content: space-between; height: 40px; padding: 0 2px; color: var(--item); font-size: var(--text-md); }
+.reach-row + .reach-row { border-top: 1px solid var(--divider); }
+.reach-row small { color: var(--muted); font-size: var(--text-sm); margin-left: 6px; }
+
+/* the window while it isn't on a computer that answers: a switch under way, or no route (the
+   computer's last lists stay, dimmed) */
+html:is([data-computer="lost"], [data-computer="switching"]) :is(.sidebar-content, .composer) { opacity: 0.4; transition: none; }
+.computer-tried { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: var(--text-sm); text-align: center; }
+.computer-tried b { color: var(--text); font-weight: 500; }

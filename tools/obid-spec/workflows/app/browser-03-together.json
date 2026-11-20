@@ -258,7 +258,7 @@
         "expect": {
           "paths": {
             "count": 1,
-            "text": "Codex is using this tab · Clicking Sign in"
+            "words": "Codex is using this tab · Clicking Sign in"
           }
         }
       },

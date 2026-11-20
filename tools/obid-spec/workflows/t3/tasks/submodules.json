@@ -1,0 +1,195 @@
+{
+  "schemaVersion": "2",
+  "name": "T3: a repository with a submodule",
+  "version": "1.0.0",
+  "description": "T3 Code's submodule kind: main gains a submodule. A task's worktree has it filled by obid before its agent starts (SETUP-1), and the task's changes list only its own file, never the submodule as changed.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "t3"
+  ],
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "rev-parse",
+          "main"
+        ]
+      }
+    },
+    {
+      "id": "gitmodules",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "write",
+        "path": "sub-tree/.gitmodules",
+        "in": "person",
+        "text": "[submodule \"lib\"]\n\tpath = lib\n\turl = file://${state.o.person}/../../fixture/remote.git\n"
+      }
+    },
+    {
+      "id": "read",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "--work-tree=${state.o.person}/sub-tree",
+          "read-tree",
+          "main"
+        ]
+      }
+    },
+    {
+      "id": "add-gitmodules",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "--work-tree=${state.o.person}/sub-tree",
+          "add",
+          ".gitmodules"
+        ]
+      }
+    },
+    {
+      "id": "add-gitlink",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "--work-tree=${state.o.person}/sub-tree",
+          "update-index",
+          "--add",
+          "--cacheinfo",
+          "160000,${state.first.out},lib"
+        ]
+      }
+    },
+    {
+      "id": "commit",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "-c",
+          "user.name=teammate",
+          "-c",
+          "user.email=teammate@example.invalid",
+          "--work-tree=${state.o.person}/sub-tree",
+          "commit",
+          "-q",
+          "-m",
+          "Add lib as a submodule"
+        ]
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: s.txt QUIET"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "s-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "setup-1-the-submodule-is-filled",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.s.body.id}/lib/README.md",
+        "within": 30,
+        "expect": {
+          "exists": true,
+          "text": "# fixture-app\n"
+        }
+      },
+      "ui": {
+        "proves": [
+          "SETUP-1"
+        ]
+      }
+    },
+    {
+      "id": "tasks-23-the-submodule-isnt-a-change",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}/changes",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "files": [
+              {
+                "path": "s.txt",
+                "status": "added"
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-23"
+        ]
+      }
+    },
+    {
+      "id": "s-stop",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    }
+  ]
+}
