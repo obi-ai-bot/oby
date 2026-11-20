@@ -3,7 +3,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-// Settings › Agents' Model menu with a long list, as Cursor's (docs/contracts/agents.md, AGENTS-10):
+// Settings › Accounts' Model menu with a long list, as Cursor's (docs/contracts/agents.md, AGENTS-10):
 // inside the window wherever its button is, scrolling, its model in view, Effort still beside it.
 const MODELS = Array.from({ length: 40 }, (_, i) => [`m-${i}`, `Model ${i}`] as const);
 const EFFORTS = [['low', 'Low'], ['high', 'High']] as const;

@@ -40,7 +40,7 @@ export function accountModels(a: Account, toolOptions: readonly { id: string; na
 }
 // The account's model submenu (AGENTS-11): with Cursor's groups, each model once, kept to this
 // account's own ids (one of them in no group stands alone); a pick is the listed id that keeps the
-// effort and Fast the account runs, else the model's default (cursorCompose, as Settings › Agents)
+// effort and Fast the account runs, else the model's default (cursorCompose, as Settings › Accounts)
 export function menuModels(models: readonly { id: string; name: string }[], current: string, groups?: CursorGroup[]) {
   if (!groups) return models.map((m) => ({ id: m.id, name: m.name, on: m.id === current }));
   const ids = new Set(models.map((m) => m.id));

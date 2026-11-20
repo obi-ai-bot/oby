@@ -52,7 +52,7 @@ impl CantTake {
         let fix = match self {
             CantTake::Missing(_) => "install it, or ask for another account",
             CantTake::SignedOut(_) | CantTake::Login(_) => {
-                "sign it in from Settings › Agents, or ask for another account"
+                "sign it in from Settings › Accounts, or ask for another account"
             }
             CantTake::Failed(_) => "ask for another account, or try again later",
         };
@@ -94,7 +94,7 @@ mod tests {
     fn accounts_32_a_refusal_says_why_and_what_to_do() {
         assert_eq!(
             CantTake::SignedOut("Codex · Codex Two".into()).refusal(),
-            "Codex · Codex Two isn't signed in, so this task didn't start: sign it in from Settings › Agents, or ask for another account."
+            "Codex · Codex Two isn't signed in, so this task didn't start: sign it in from Settings › Accounts, or ask for another account."
         );
         assert_eq!(
             CantTake::Missing("Cursor".into()).refusal(),

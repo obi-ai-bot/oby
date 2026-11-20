@@ -75,7 +75,7 @@ const SCENARIOS: Scenario[] = [
   { id: 'home', label: 'Home', home: true, href: '?dev=home' },
   { id: 'task-page', label: 'Task page', home: true, then: () => { const id = addTask(FIRST_TASK)!; setStage(tk.get().find((t) => t.id === id)!, 2); }, open: () => ({ kind: 'task', id: first()!.id }), href: '?dev=task-page' },
   { id: 'settings-general', label: 'Settings › General', home: true, open: () => ({ kind: 'settings', id: 'general' }), href: '?dev=settings-general' },
-  { id: 'settings-agents', label: 'Settings › Agents', home: true, open: () => ({ kind: 'settings', id: 'agents' }), href: '?dev=settings-agents' },
+  { id: 'settings-agents', label: 'Settings › Accounts', home: true, open: () => ({ kind: 'settings', id: 'agents' }), href: '?dev=settings-agents' },
   { id: 'settings-connectors', label: 'Settings › Connectors', home: true, open: () => ({ kind: 'settings', id: 'connectors' }), href: '?dev=settings-connectors' },
   { id: 'settings-about', label: 'Settings › About', home: true, open: () => ({ kind: 'settings', id: 'about' }), href: '?dev=settings-about' },
   // the chat window's pill (TalkPill): the account it talked through filled, and Oby moved

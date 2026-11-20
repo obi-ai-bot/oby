@@ -1968,7 +1968,7 @@
             "USAGE-10": "Keychain, Electron and unit tests.",
             "USAGE-14": "Electron.",
             "USAGE-17": "Electron.",
-            "USAGE-18": "Electron Settings › Agents' pace line, worked out in the app (apps/electron usage.test.ts)."
+            "USAGE-18": "Electron Settings › Accounts' pace line, worked out in the app (apps/electron usage.test.ts)."
           }
         },
         "remote-gate.md": {

@@ -1885,7 +1885,7 @@ mod tests {
     #[test]
     fn alerts_4_a_job_held_for_the_owners_yes_alerts() {
         let mut held = job("c1");
-        let text = "your OK for work I run by myself to use the ChatGPT plan on Work: you can allow it on your Mac, in Settings › Agents";
+        let text = "your OK for work I run by myself to use the ChatGPT plan on Work: you can allow it on your Mac, in Settings › Accounts";
         held.waiting = Some(crate::job::Waiting {
             kind: "limit".into(),
             text: text.into(),

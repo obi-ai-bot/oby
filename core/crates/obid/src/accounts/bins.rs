@@ -1,4 +1,4 @@
-//! The binary each tool runs as, set from Settings › Agents (docs/contracts/accounts.md,
+//! The binary each tool runs as, set from Settings › Accounts (docs/contracts/accounts.md,
 //! ACCOUNTS-26 to 28): `PUT /v1/settings/agents/{agent}` keeps it in `home/accounts.json` beside
 //! the accounts, laid over the configuration's `agents.<tool>.bin` at every start, and `null` takes
 //! it back to the configuration's. The configuration file is never rewritten, as for the accounts.

@@ -467,7 +467,7 @@ pub struct Job {
     pub checked: Option<Checked>,
     pub model: Option<String>,
     pub effort: Option<String>,
-    /// `model` is its account's (Settings › Agents, #1574), not one the job named: on another
+    /// `model` is its account's (Settings › Accounts, #1574), not one the job named: on another
     /// account it's that one's. Kept in its file, never in the API; a job from before reads as
     /// naming its own.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

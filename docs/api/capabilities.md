@@ -84,7 +84,7 @@ End-of-turn work a restart cut short carries on too (a crash or `systemctl resta
 
 `talkAccount` (obid only, docs/contracts/conversation-agent.md) is the account conversations talk through unless one chose another, or null for Auto (`PUT /v1/settings/jobs`); `talkNext` is the account a new conversation's first turn would use now, or null when none can. Older runners don't send either.
 
-`defaultAccount` (obid only, #1573) is the account new tasks go to (Settings › Agents › New tasks go to), or null for routing's own order (`PUT /v1/settings/jobs`). Older runners don't send the key; an app that sees it, even null, knows obid keeps Settings › Agents' choices (docs/contracts/agents.md).
+`defaultAccount` (obid only, #1573) is the account new tasks go to (Settings › Accounts › New tasks go to), or null for routing's own order (`PUT /v1/settings/jobs`). Older runners don't send the key; an app that sees it, even null, knows obid keeps Settings › Accounts' choices (docs/contracts/agents.md).
 
 `clearedAt` is when Clear done was last pressed, on any app (`POST /v1/clear`), or null when it never was. Every app hides the settled jobs that finished at that second or before (`finished` not after `clearedAt`): dismissed or stopped, with their pull request merged or closed, or ended with nothing to publish (`JobList.settled`, Shared/JobList.swift). Jobs still queued, running or waiting, needing the user, with their pull request open, or reviewing one that isn't settled stay, and so do finished ones that ran again since. Older runners don't send the key.
 

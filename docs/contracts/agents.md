@@ -1,6 +1,6 @@
-# Settings › Agents: the default agent, and each account's model and effort
+# Settings › Accounts: the default agent, and each account's model and effort
 
-The business behavior contract for Settings › Agents' **New tasks go to** and each agent card's **Model** menu (with its effort) and **Effort on complex tasks** (Sangam's design, [#1564](https://github.com/obi-ai-bot/oby/pull/1564): `apps/electron/src/renderer/src/SettingsView.tsx`, `Agents`), from [the template](../business-contract-template.md). Issues [#1573](https://github.com/obi-ai-bot/oby/issues/1573) and [#1574](https://github.com/obi-ai-bot/oby/issues/1574). Scenarios are numbered `AGENTS-n`; the tests that prove them are named after them (`agents_1_…`).
+The business behavior contract for Settings › Accounts' **New tasks go to** and each agent card's **Model** menu (with its effort) and **Effort on complex tasks** (Sangam's design, [#1564](https://github.com/obi-ai-bot/oby/pull/1564): `apps/electron/src/renderer/src/SettingsView.tsx`, `Agents`), from [the template](../business-contract-template.md). Issues [#1573](https://github.com/obi-ai-bot/oby/issues/1573) and [#1574](https://github.com/obi-ai-bot/oby/issues/1574). Scenarios are numbered `AGENTS-n`; the tests that prove them are named after them (`agents_1_…`).
 
 ## Feature and status
 
@@ -22,7 +22,7 @@ The business behavior contract for Settings › Agents' **New tasks go to** and 
 
 ### Actors and ownership
 
-- **The owner** chooses in Settings › Agents, on the Mac (the iPhone has no such screen yet; it can read both from status and accounts).
+- **The owner** chooses in Settings › Accounts, on the Mac (the iPhone has no such screen yet; it can read both from status and accounts).
 - **obid** keeps the choices, validates them, routes new jobs and passes the model and effort to the tool. Every decision below is obid's.
 - **The Electron app** shows obid's choices and sends the owner's; it moves a choice it kept itself to obid once (AGENTS-7).
 
@@ -47,7 +47,7 @@ The business behavior contract for Settings › Agents' **New tasks go to** and 
 - A choice obid refuses is reported as the app reports any failure (`live.ts`, `say`), and the menu stays on obid's value. Sangam's screen has no words of its own for it yet.
 - An account with nothing chosen shows and runs the tool's model from `status.models` (CONVERSATION-AGENT-21). The menu has no separate "Default" entry.
 - **AGENTS-11 (the app):** With Cursor's `groups`, a Cursor card's Model menu lists each model once, and its Effort (in the same menu, as Claude Code's and Codex's) the chosen model's efforts, its bare id as Default; a Fast switch shows only where the chosen effort has both. Another model keeps the effort and Fast where it has them, else starts on its default; another effort keeps Fast where that effort has it. A saved id Cursor no longer lists shows as itself, with no effort or Fast. An older obid with no `groups`: the flat list, as before.
-- **AGENTS-11 (the message box):** With Cursor's `groups`, a Cursor account's model menu beside the message box's account menu lists each model once, kept to that account's own list (`accounts[].models`, CONVERSATION-AGENT-22, when it differs from the tool's): a group it lists none of goes, and an id of its own no group has stands alone, in its list's order. The model it runs is checked, and its row keeps the whole id's name (`Grok 4.7 Low Fast`). Picking another model composes the id that keeps the effort and Fast the account runs where that model has them, else the model's default, from that account's ids only (as Settings' Model menu does); picking the checked one keeps its id. Effort and Fast are changed in Settings › Agents. An older obid with no `groups`: the flat list.
+- **AGENTS-11 (the message box):** With Cursor's `groups`, a Cursor account's model menu beside the message box's account menu lists each model once, kept to that account's own list (`accounts[].models`, CONVERSATION-AGENT-22, when it differs from the tool's): a group it lists none of goes, and an id of its own no group has stands alone, in its list's order. The model it runs is checked, and its row keeps the whole id's name (`Grok 4.7 Low Fast`). Picking another model composes the id that keeps the effort and Fast the account runs where that model has them, else the model's default, from that account's ids only (as Settings' Model menu does); picking the checked one keeps its id. Effort and Fast are changed in Settings › Accounts. An older obid with no `groups`: the flat list.
 - **AGENTS-10:** The Model menu stays inside the window, at its smallest size too: under its button where it fits, else on the side with more room, never taller than that room. A list longer than the room (Cursor's) scrolls under the Model label, the chosen model scrolled into view; Effort stays below the list and opens its submenu beside it, inside the window.
 
 ## Invariants
@@ -73,7 +73,7 @@ The business behavior contract for Settings › Agents' **New tasks go to** and 
 
 ## Test it when it's done (on a real Mac)
 
-1. Settings › Agents with two Claude Code accounts: pick the second under New tasks go to; ask Oby for a small fix. The task runs on the second account.
+1. Settings › Accounts with two Claude Code accounts: pick the second under New tasks go to; ask Oby for a small fix. The task runs on the second account.
 2. Fill the second (or sign it out): the next task runs on the first.
 3. Set the second account's model to Sonnet 5.5 at High, Effort on complex tasks Max; start a task: its page shows Sonnet; ask for something large: `ps` shows `--effort max`.
 4. With a 0.4.x app's choices kept locally, update: the same choices show after the first connection, and quitting and reopening keeps them.

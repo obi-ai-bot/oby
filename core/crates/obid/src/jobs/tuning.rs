@@ -20,7 +20,7 @@ pub(super) fn on_tool(job: &mut Job, tool: Tool) {
 }
 
 /// The model and effort `job` runs on, on its account as it is now (#1574): a model it named
-/// itself stays; else its account's, as Settings › Agents set them (`tuning`, by account); neither,
+/// itself stays; else its account's, as Settings › Accounts set them (`tuning`, by account); neither,
 /// the tool's own. An effort the owner's chip named stays (COMPOSER-5); else its account's. Again
 /// whenever it changes account. `offered` is that account's own list, empty while none was read
 /// since obid started (`ModelLists::to_check`): the saved model stands.

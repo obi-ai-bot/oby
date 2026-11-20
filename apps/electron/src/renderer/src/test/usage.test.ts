@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-// The Usage panel's and Settings › Agents' rows from obid's status (docs/contracts/usage.md).
+// The Usage panel's and Settings › Accounts' rows from obid's status (docs/contracts/usage.md).
 
 async function load() {
   vi.resetModules();

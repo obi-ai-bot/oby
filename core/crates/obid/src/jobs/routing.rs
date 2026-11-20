@@ -740,7 +740,7 @@ impl Jobs {
         }
         if job.waiting.as_ref().is_some_and(Waiting::for_consent) {
             return Some(Err(Refused(
-                "It's waiting for your OK to use that ChatGPT plan: you can allow it on your Mac, in Settings › Agents.".into(),
+                "It's waiting for your OK to use that ChatGPT plan: you can allow it on your Mac, in Settings › Accounts.".into(),
             )));
         }
         if let Err(e) = self.usage.lift(&job.account, true) {

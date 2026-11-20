@@ -63,9 +63,9 @@ OpenAI's words below were re-read from the pages themselves on 2026-11-03 (https
 
 | Where | Words |
 |---|---|
-| The question | **Can work I run by myself use this plan?** *Routines, my own reviews and anything else nobody's watching would use the ChatGPT plan on {email}. You can turn this off in Settings › Agents.* **Not now** · **Yes, it can** |
-| Settings › Agents, on that account | **Work I run by myself can use this plan**, a switch. Turning it on asks the same question; turning it off is at once. |
-| A job waiting | *Waiting for your OK for work I run by myself to use the ChatGPT plan on {name}: you can allow it on your Mac, in Settings › Agents.* |
+| The question | **Can work I run by myself use this plan?** *Routines, my own reviews and anything else nobody's watching would use the ChatGPT plan on {email}. You can turn this off in Settings › Accounts.* **Not now** · **Yes, it can** |
+| Settings › Accounts, on that account | **Work I run by myself can use this plan**, a switch. Turning it on asks the same question; turning it off is at once. |
+| A job waiting | *Waiting for your OK for work I run by myself to use the ChatGPT plan on {name}: you can allow it on your Mac, in Settings › Accounts.* |
 | A job stopped by the switch | *You turned off work I run by myself on this ChatGPT plan, so I stopped.* |
 
 **How it's granted:** only **Yes, it can**, clicked in the owner's own app, signed by the device's key (signed-words.md, WORDS-13). The token alone, a job, an agent, the brain and a phone (the route is off the gateway) can't say yes. A no needs no signature: it takes nothing away from the owner, and a key that can't sign must never keep them from withdrawing.
@@ -196,8 +196,8 @@ A release doesn't offer a new ChatGPT sign-in until the real one has run. This i
 
 - **The gate** is one line, `REAL_CHATGPT_SIGN_IN_REPORT` in `apps/electron/src/renderer/src/chatgptGate.ts`, empty until "One real sign-in" has run. To open it, set it to the link of the comment on #1879 that reports that run. The owner can open it sooner with their own word in such a comment. Our plan also holds the button for background-use consent and a privacy notice, which the gate can't see, so check those before setting it.
 - **Who sees the button:** a development build (`npm run dev`) always does, so the real sign-in can be run; a build with the gate set does. It's decided when the app is built, so `?everything`, `?dev`, stored defaults and Deskree's own settings don't reach it.
-- **What it hides,** every way the app starts a new one: first run's Tools row (`AgentRows`, `SetupCard.tsx`, with `FirstRun.tsx` and the setup card), an account's row in Settings › Agents, and Add account, whether opened from there or from the message box's list (`TalkPill.tsx`). Codex's own sign-in, with its code, stays in each. Its welcome and the other words show only for an account already signed in.
-- **What it doesn't touch:** obid, and any account already signed in this way. Those accounts keep running jobs and conversations, show Using ChatGPT plan and Manage usage, and can be removed. One whose login ended, or with plan use off, keeps Continue with ChatGPT on its own row in Settings › Agents, since nothing else can sign it back in with the same login. `GET /v1/accounts/{id}/sign-in?with=chatgpt` still answers on obid's loopback API: the gate is the app's button, not a limit on the owner.
+- **What it hides,** every way the app starts a new one: first run's Tools row (`AgentRows`, `SetupCard.tsx`, with `FirstRun.tsx` and the setup card), an account's row in Settings › Accounts, and Add account, whether opened from there or from the message box's list (`TalkPill.tsx`). Codex's own sign-in, with its code, stays in each. Its welcome and the other words show only for an account already signed in.
+- **What it doesn't touch:** obid, and any account already signed in this way. Those accounts keep running jobs and conversations, show Using ChatGPT plan and Manage usage, and can be removed. One whose login ended, or with plan use off, keeps Continue with ChatGPT on its own row in Settings › Accounts, since nothing else can sign it back in with the same login. `GET /v1/accounts/{id}/sign-in?with=chatgpt` still answers on obid's loopback API: the gate is the app's button, not a limit on the owner.
 - **What `apps/electron/scripts/package.sh` checks,** before it builds or signs anything:
   1. The line is there once and reads as a plain string. If not, it stops.
   2. Empty: it says the button stays hidden and goes on.
@@ -205,7 +205,7 @@ A release doesn't offer a new ChatGPT sign-in until the real one has run. This i
 
 Scenarios (`apps/electron/src/renderer/src/test/chatgptGate.test.tsx`):
 
-- **CHATGPT-GATE-1:** Given a packaged build with the gate empty, then first run, Settings › Agents and Add account show no Continue with ChatGPT, and each still offers Codex's own sign-in. `chatgpt_gate_1_packaged_build_hides_the_button`
+- **CHATGPT-GATE-1:** Given a packaged build with the gate empty, then first run, Settings › Accounts and Add account show no Continue with ChatGPT, and each still offers Codex's own sign-in. `chatgpt_gate_1_packaged_build_hides_the_button`
 - **CHATGPT-GATE-2:** Given a gate that isn't a link to a comment on #1879, one GitHub doesn't confirm, or one that can't be read, then the release script stops before building. Given an empty gate, or a confirmed report, it goes on. `chatgpt_gate_2_release_script_refuses_without_the_real_run`
 - **CHATGPT-GATE-3:** A development build keeps the button. `chatgpt_gate_3_development_build_keeps_the_button`
 - **CHATGPT-GATE-4:** A packaged build with the gate set shows the button. `chatgpt_gate_4_gate_set_shows_the_button_in_a_packaged_build`

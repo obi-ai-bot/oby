@@ -28,7 +28,7 @@ The business behavior contract for what the message box takes besides typing, do
 
 - The box has one Auto: the talk pill's (Auto · Whichever has room, then each account with its model and usage, a `>` to its models, then Add account). There is no model chip.
 - An account's `>` list holds its models, then, for a tool whose effort isn't in its model's name (Claude Code, Codex; not Cursor), a line, **Effort**, and that model's efforts as pills, four to a row, the one the account runs on checked.
-- Picking a model or an effort keeps it on the account (`PATCH /v1/accounts/{id}`, as Settings › Agents does) and talks through that account, as picking a model always has (CONVERSATION-AGENT-19).
+- Picking a model or an effort keeps it on the account (`PATCH /v1/accounts/{id}`, as Settings › Accounts does) and talks through that account, as picking a model always has (CONVERSATION-AGENT-19).
 - A tool, model or effort an earlier build's model chip kept for a box is read as nothing: nothing on screen would show it, so it never goes with the words.
 
 ### Earlier words (COMPOSER-20 to 22)
@@ -85,7 +85,7 @@ The business behavior contract for what the message box takes besides typing, do
 
 ### Invariants and boundaries
 
-- The mode chip never changes Settings, and `defaults` never picks the tool over words that name one. An account's model and effort change only from the account menu, as Settings › Agents changes them.
+- The mode chip never changes Settings, and `defaults` never picks the tool over words that name one. An account's model and effort change only from the account menu, as Settings › Accounts changes them.
 - Bypass from a chip starts a job without a Confirm only on words an app of the owner's signed (docs/contracts/signed-words.md: `defaults` is signed with the body, never one of the words).
 - The files list reads only names, only in the folders obid keeps for that conversation, never a path the request names; another profile's conversation is `404`.
 
@@ -132,7 +132,7 @@ The business behavior contract for what the message box takes besides typing, do
 
 ### Test it when it's done (real Mac)
 
-1. In a conversation, set Mode to Plan, and on the account chip open a Claude Code account's `>` and pick a model, then High under Effort; ask for a small change: the task starts in Plan on that model and effort; Settings › Agents shows that account's model and effort; Settings' mode is unchanged. The box shows one Auto.
+1. In a conversation, set Mode to Plan, and on the account chip open a Claude Code account's `>` and pick a model, then High under Effort; ask for a small change: the task starts in Plan on that model and effort; Settings › Accounts shows that account's model and effort; Settings' mode is unchanged. The box shows one Auto.
 2. While Oby answers, send two more messages: both show over the box as Waiting; Cancel one and Edit the other: the first is gone, the second's words are back in the box, and Oby's answer carries on.
 3. Press Stop while Oby answers: "Stopping…" until the answer ends.
 4. Drop two files on the box: two tags. Type `@` and part of a file's name in a conversation with a folder: the file is listed; pick it.

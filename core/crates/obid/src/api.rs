@@ -1040,7 +1040,7 @@ async fn models() -> axum::Json<Models> {
     axum::Json(Models::defaults())
 }
 
-/// `GET /v1/settings/models/options`: the models and efforts Settings › Agents offers each tool
+/// `GET /v1/settings/models/options`: the models and efforts Settings › Accounts offers each tool
 /// (each account's last good CLI list when read, else [`crate::settings::models`]); each model
 /// lists its efforts too, as Codex's do. Add-only shape.
 async fn model_options(State(shared): State<Arc<Shared>>) -> axum::Json<serde_json::Value> {

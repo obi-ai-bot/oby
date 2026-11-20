@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Status } from '../obid';
 
-// Full on every account (docs/contracts/usage.md, USAGE-14): Settings › Agents says an account obid
+// Full on every account (docs/contracts/usage.md, USAGE-14): Settings › Accounts says an account obid
 // holds full is at its limit, and until when, whatever its tool, not only a ChatGPT login.
 
 vi.mock('../Composer', () => ({ default: () => null, typingIn: () => false }));
@@ -34,7 +34,7 @@ async function agents(accounts: unknown[]) {
 const card = (title: string) => Array.from(host.querySelectorAll('section.set-group')).find((s) => s.querySelector('h2')?.textContent === title);
 const soon = () => new Date(Date.now() + 3_600_000).toISOString();
 
-describe('USAGE-14: every account obid holds full says so in Settings › Agents', () => {
+describe('USAGE-14: every account obid holds full says so in Settings › Accounts', () => {
   it('usage_14_a_claude_code_codex_or_cursor_account_held_full_says_limit_reached', async () => {
     await agents([row('default', 'claude', 'Personal', { fullUntil: soon() }), row('cx', 'codex', 'Work', { fullUntil: soon() }), row('cu', 'cursor', 'Editor', { fullUntil: soon() })]);
     for (const name of ['Personal', 'Work', 'Editor']) expect(card(name)?.textContent).toMatch(/Usage limit reached · until /);

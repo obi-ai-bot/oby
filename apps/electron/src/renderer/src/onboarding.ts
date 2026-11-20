@@ -90,7 +90,7 @@ const row = (k: 'github' | 'tetrix', v: Sign, why?: string) => set((x) => ({ [k]
 type Try = { account?: string; made?: string };
 const tries: Partial<Record<Agent, Try>> = {};
 // a try ended: its sign-in ended at obid, and the account it made taken off again, so only what
-// was connected shows in Settings › Agents (awaited before the row's button is back: a retry
+// was connected shows in Settings › Accounts (awaited before the row's button is back: a retry
 // straight after mustn't find it and sign it in)
 async function unmake(t: Try) {
   if (t.account) await api.endSignIn(t.account).catch(() => { /* ended already */ });

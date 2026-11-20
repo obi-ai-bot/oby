@@ -300,7 +300,7 @@ describe('SHORTCUTS: the window answers ⌘N, ⌘K, ⌘F, ⌘,, ⌘B, ⌘1 to �
     await type(field, 'settings');
     expect(talks()).toEqual(['Settings sync']);
     expect(heads()).toEqual(['Settings', 'Actions']);
-    expect(picks()).toEqual(['General', 'Agents', 'Obysphere', 'Connectors', 'Repositories', 'Routines', 'About', 'Open Settings']);
+    expect(picks()).toEqual(['General', 'Accounts', 'Obysphere', 'Connectors', 'Repositories', 'Routines', 'About', 'Open Settings']);
     // the actions: New conversation, Reveal obid's Log (main's), Open Settings
     await act(async () => (host.querySelector('[aria-label="Search"]') as HTMLElement).click());
     await type(host.querySelector<HTMLInputElement>('input[aria-label="Search"]')!, 'log');

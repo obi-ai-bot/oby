@@ -1341,7 +1341,7 @@ fn conversation_agent_21_agents_5_6_jobs_run_on_their_accounts_model_and_effort(
     assert_eq!(ran(json!({})), format!("model={fallback} effort=none"));
 }
 
-/// AGENTS-8 (docs/contracts/agents.md): the models and efforts Settings › Agents offers, and each
+/// AGENTS-8 (docs/contracts/agents.md): the models and efforts Settings › Accounts offers, and each
 /// tool's own, as status has them.
 #[test]
 fn agents_8_the_choices_are_listed() {

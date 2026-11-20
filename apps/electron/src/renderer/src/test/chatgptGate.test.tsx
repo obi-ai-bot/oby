@@ -68,7 +68,7 @@ const REFUSED = /error: .*(chatgptGate|real sign-in)/;
 describe('Continue with ChatGPT’s gate', () => {
   afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.doUnmock('../chatgptGate'); vi.doUnmock('../live'); vi.doUnmock('../onboarding'); });
 
-  it('chatgpt_gate_1_packaged_build_hides_the_button: first run, Settings › Agents and Add account, with their own sign-in left', async () => {
+  it('chatgpt_gate_1_packaged_build_hides_the_button: first run, Settings › Accounts and Add account, with their own sign-in left', async () => {
     const app = await built({ packaged: true });
     for (const [door, html] of Object.entries(app)) expect(html, door).not.toContain(BUTTON);
     expect(app.firstRun).toContain('Connect');

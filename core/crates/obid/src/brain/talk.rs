@@ -318,7 +318,7 @@ pub(super) fn why_none(
     let none_here = !every.is_empty() && !every.iter().any(|id| mine(id));
     match tools.first() {
         Some(_) if said.is_empty() && none_here => {
-            return "this profile has no agent account yet: add one in Settings › Agents".into();
+            return "this profile has no agent account yet: add one in Settings › Accounts".into();
         }
         Some(first) if said.is_empty() => return shared.jobs.none_signed_in(*first),
         None => return format!("{} can't talk here", only.unwrap_or_default()),

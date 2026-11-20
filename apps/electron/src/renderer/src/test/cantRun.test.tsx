@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Status } from '../obid';
 
-// Why an account can't run (docs/contracts/accounts.md, ACCOUNTS-21 and 22): Settings › Agents says
+// Why an account can't run (docs/contracts/accounts.md, ACCOUNTS-21 and 22): Settings › Accounts says
 // obid's reason on the account's row and doesn't show it as where new tasks go, and a failed task's
 // line says obid's reason with no home folder in it.
 
@@ -39,7 +39,7 @@ async function agents(accounts: unknown[], defaultAccount: string | null) {
 const card = (title: string) => Array.from(host.querySelectorAll('section.set-group')).find((s) => s.querySelector('h2')?.textContent === title);
 const goesTo = () => host.querySelector<HTMLSelectElement>('select[aria-label="Default agent"]')?.value;
 
-describe('ACCOUNTS-21: an account that can’t run says why in Settings › Agents', () => {
+describe('ACCOUNTS-21: an account that can’t run says why in Settings › Accounts', () => {
   it('accounts_21_the_row_says_why_and_new_tasks_go_elsewhere', async () => {
     await agents([personal, codex], 'default');
     expect(card('Personal')?.textContent).toContain(`Claude Code can’t start: ${WHY}`);

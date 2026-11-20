@@ -1773,7 +1773,7 @@ button.connector { width: 100%; text-align: left; }
 .row-menu hr { width: auto; height: 1px; margin: 4px 6px; border: 0; background: var(--surface-edge); }
 .row-menu .menu-label { padding: 6px 12px 4px; color: var(--label); font-size: var(--text-sm); }
 .row-menu .menu-check { margin-left: auto; color: var(--ink); }
-/* a submenu (Settings › Agents' Effort): its item with its pick and a chevron on the right; the
+/* a submenu (Settings › Accounts' Effort): its item with its pick and a chevron on the right; the
    submenu beside the menu, its first item level with that item */
 .row-menu .menu-sub-anchor { position: relative; display: block; }
 .row-menu .menu-sub-anchor > button { width: 100%; }
@@ -1784,7 +1784,7 @@ button.connector { width: 100%; text-align: left; }
 .row-menu.row-submenu.is-left { left: auto; right: calc(100% + 12px); transform-origin: top right; }
 /* A long account model list (CONVERSATION-AGENT-22): scroll inside the window. A menu taller than
    the window's room (Menu) scrolls whole, or only its .menu-scroll part, so the submenu beside
-   the rest (Settings › Agents' Effort) isn't clipped. */
+   the rest (Settings › Accounts' Effort) isn't clipped. */
 .row-menu.is-scroll, .row-menu.row-submenu.is-scroll { overflow-y: auto; overscroll-behavior: contain; }
 .row-menu .menu-scroll { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 /* its items keep their own height and scroll, rather than flex squashing them (and its hr to 0) */
@@ -1834,12 +1834,12 @@ button.connector { width: 100%; text-align: left; }
 .set-select select { appearance: none; height: 32px; padding: 0 34px 0 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); color: inherit; font: inherit; font-size: var(--text-base); cursor: default; outline: none; transition: border-color var(--fade), background-color var(--fade); }
 .set-select select:hover, .set-select select:focus-visible { border-color: var(--field-edge-on); }
 .set-select svg { position: absolute; right: 14px; color: var(--muted); pointer-events: none; }
-/* Settings › Agents' model and effort: a pop-up like .set-select's, its menu the app's (Menu.tsx) */
+/* Settings › Accounts' model and effort: a pop-up like .set-select's, its menu the app's (Menu.tsx) */
 .set-picker { width: 240px; height: 32px; padding: 0 12px 0 14px; display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); color: var(--ink); font-size: var(--text-base); white-space: nowrap; transition: border-color var(--fade), background-color var(--fade); }
 .set-picker:hover, .set-picker.is-on, .set-picker:focus-visible { border-color: var(--field-edge-on); }
 .set-picker-sub { color: var(--muted); }
 .set-picker-text { flex: 1; min-width: 0; display: flex; gap: 8px; overflow: hidden; text-align: left; }
-/* Settings › Agents: every pop-up and field one width (240px), its text on the left, its arrow at the right */
+/* Settings › Accounts: every pop-up and field one width (240px), its text on the left, its arrow at the right */
 .set-select.is-wide, .set-select.is-wide select { width: 240px; }
 .set-field.is-wide { width: 240px; }
 /* Connectors: Connect and Disconnect one width */
@@ -1862,7 +1862,7 @@ button.connector { width: 100%; text-align: left; }
 .set-button:hover:not(:disabled) { background: #29292c; border-color: var(--line-strong); }
 .set-button:disabled { opacity: 0.3; cursor: default; }
 .set-button.is-danger { color: var(--danger); }
-/* the page's one main action (Settings › Agents' Add Agent): white, as onboarding's buttons */
+/* the page's one main action (Settings › Accounts' Add Agent): white, as onboarding's buttons */
 .set-button.is-primary { background: var(--ink); border-color: var(--ink); color: #111; font-weight: 500; }
 .set-button.is-primary:hover:not(:disabled) { background: #fff; border-color: #fff; }
 /* an Obysphere's avatar, 56px at the row's right; a click changes it, its badge takes the image out */
@@ -1911,7 +1911,7 @@ button.connector { width: 100%; text-align: left; }
 .set-address:focus-within { border-color: var(--field-edge-on); }
 .set-address.is-bad, .set-address.is-bad:focus-within { border-color: rgba(240, 113, 103, 0.5); }
 .set-problem { color: var(--danger); }
-/* a tool's binary (Settings › Agents › Binaries, ACCOUNTS-26): where it was found cut to one line
+/* a tool's binary (Settings › Accounts › Binaries, ACCOUNTS-26): where it was found cut to one line
    (the whole on hover), the field and its button beside it */
 .set-bin .set-label { flex: 1; min-width: 0; }
 .set-bin .set-about { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1921,7 +1921,7 @@ button.connector { width: 100%; text-align: left; }
 /* an account: what it's used this week, as a bar under its name */
 .set-usage { align-items: flex-start; }
 .set-usage > svg { flex: none; margin-top: 2px; color: var(--muted); }
-/* an account's use (Settings › Agents): its name with the 5-hour session's % at the right, the
+/* an account's use (Settings › Accounts): its name with the 5-hour session's % at the right, the
    session's bar under it to the card's edge, and the week in words under that */
 .set-usage .set-label { flex: 1; min-width: 0; }
 .set-usage-name { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
