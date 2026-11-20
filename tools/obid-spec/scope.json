@@ -2217,6 +2217,12 @@
         "cleanup.json"
       ]
     },
+    "the pull request follower: publish, Oby's review and merge": {
+      "area": "jobs",
+      "workflows": [
+        "publish-review-merge.json"
+      ]
+    },
     "routines": {
       "area": "everything-else",
       "workflows": [

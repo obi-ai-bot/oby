@@ -142,6 +142,14 @@ its trigger `http` naming the method and path as routes.txt lists them), `workfl
   needs `fake-claude` itself, whose `node` obid finds). The task's or the words' text drives it
   (`SAY <words>`, `LINGER <ms>`, `ASK …`, `OBY oby_dispatch {…}`; `COMMIT: <file>`, `SLEEP`, `FAIL`,
   `LIMITED: <s>`, `KEEP PROMPTS`): the stand-ins' own headers list them.
+- GitHub: by default the stand-ins' `gh` and no pull requests (a push to the fixture's `file://`
+  remote). `obid-start`'s `github` puts obid's recording `gh` (core/crates/obid/tests/fakes/gh)
+  first on its `PATH` with the files it names (`routes.json` and what the routes run), and the
+  fixture's pushes then get pull requests there. `fixtures/github/` is one such GitHub: one pull
+  request on the fixture's bare remote that `pr create` opens, green and clean, which a merge
+  squashes onto its base in that remote, as GitHub does (`flags/refuse-merge` in its files: GitHub
+  refuses the merge). A file's text may be `{"fixture": "<path under fixtures/>"}`. Never the real
+  GitHub.
 
 **Every assertion can fail** (OBIDSPEC-6): the host changes the answer each assertion passed on at
 each place it looks, and each change must fail it; one that passes anyway is a vacuous assertion
