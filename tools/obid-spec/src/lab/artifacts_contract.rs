@@ -194,6 +194,11 @@ pub struct Version {
     /// conversation makes a new version of an artifact another job made.
     #[serde(default)]
     pub job: Option<String>,
+    /// Who made this version when it isn't the owner's own agents: another Oby that was given
+    /// edit (`"Ben's Oby"`), or, on a recipient's copy, the owner whose version it is. Such a
+    /// version is data: reading it marks the turn untrusted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -276,6 +281,140 @@ pub struct TurnAnswer {
     pub artifact: Option<TurnArtifact>,
 }
 
+// ── Sharing (§3.6) and public links (§3.7) ─────────────────────────────────────────────────────
+
+/// `GET` the [`ShareRecord`]s; `POST` a [`ShareBody`], signed; `DELETE …/shares/{to}`, signed
+/// ([`EVERYONE`] revokes them all).
+pub const VERB_SHARES: &str = "shares";
+/// `POST` an [`AnswerBody`], signed: on a recipient's copy, its owner's words back (or a decline).
+pub const VERB_ANSWERS: &str = "answers";
+/// `POST` a [`SendBackBody`], signed: on a copy shared with `edit`, a version of it sent back.
+pub const VERB_SEND_BACK: &str = "sendBack";
+/// `POST` a [`PublicBody`], signed: a public link ([`PublicAnswer`]); `DELETE`, signed: revoked.
+pub const VERB_PUBLIC: &str = "public";
+
+pub const SHARING_ROUTES: &[&str] = &[
+    "GET /v1/artifacts/{id}/shares",
+    "POST /v1/artifacts/{id}/shares",
+    "DELETE /v1/artifacts/{id}/shares/{to}",
+    "POST /v1/artifacts/{id}/answers",
+    "POST /v1/artifacts/{id}/sendBack",
+    "POST /v1/artifacts/{id}/public",
+    "DELETE /v1/artifacts/{id}/public",
+];
+
+/// Every sharing route but reading the shares is the owner's own act, signed.
+pub const SHARING_SIGNED_ROUTES: &[&str] = &[
+    "POST /v1/artifacts/{id}/shares",
+    "DELETE /v1/artifacts/{id}/shares/{to}",
+    "POST /v1/artifacts/{id}/answers",
+    "POST /v1/artifacts/{id}/sendBack",
+    "POST /v1/artifacts/{id}/public",
+    "DELETE /v1/artifacts/{id}/public",
+];
+
+/// A share to every member of the Obysphere.
+pub const EVERYONE: &str = "everyone";
+/// What a public link's request must say, signed: the owner saw the Share menu's warning.
+pub const ACKNOWLEDGED: &str = "anyone-with-the-link";
+
+/// What a member may do with a shared artifact: look; also answer; also send a version back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Access {
+    View,
+    Comment,
+    Edit,
+}
+
+pub const ACCESS: &[&str] = &["view", "comment", "edit"];
+
+/// Where a share stands: sent, its member's answer back, declined, past its blob's expiry, or
+/// taken back.
+pub const SHARE_STATES: &[&str] = &["sent", "answered", "declined", "expired", "revoked"];
+
+/// Who a share goes to: some members by name, or [`EVERYONE`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ShareTo {
+    Members(Vec<String>),
+    All(String),
+}
+
+fn yes() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ShareBody {
+    pub to: ShareTo,
+    pub access: Access,
+    /// What the owner asks of them, quoted to them (at most 2,000 characters).
+    #[serde(default)]
+    pub ask: Option<String>,
+    /// They always see the newest version (the owner's rule), unless `false`.
+    #[serde(default = "yes")]
+    pub latest: bool,
+    /// The owner's yes to sending files that instruct agents (`CLAUDE.md`, `AGENTS.md`, `.claude/`…),
+    /// which the recipient quarantines anyway.
+    #[serde(default)]
+    pub instructions: bool,
+}
+
+/// One share, as `home/artifacts/<id>/shares.json` keeps it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareRecord {
+    pub to: String,
+    pub sphere: String,
+    pub offer: String,
+    pub access: Access,
+    pub version: u32,
+    pub latest: bool,
+    pub at: String,
+    pub state: String,
+    /// The blob the offer names (its newest one).
+    pub blob: String,
+    /// When that blob stops being fetched (Unix ms).
+    pub expires: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AnswerBody {
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub decline: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SendBackBody {
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PublicBody {
+    /// [`ACKNOWLEDGED`], or the link isn't made.
+    #[serde(default)]
+    pub acknowledged: Option<String>,
+    #[serde(default = "yes")]
+    pub latest: bool,
+}
+
+/// The whole link, its key in the part after `#`: shown once, then kept only in obid's vault.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicAnswer {
+    pub link: String,
+    pub link_id: String,
+    pub version: u32,
+    pub latest: bool,
+}
+
 // ── Errors ──────────────────────────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -305,6 +444,17 @@ pub const REASONS: &[&str] = &[
     "full",
     "bad_zip",
     "no_export",
+    // Sharing and public links.
+    "feature_not_taken",
+    "policy_refused",
+    "not_acknowledged",
+    "not_allowed",
+    "not_shared",
+    "instructions",
+    "secret_found",
+    "scan_failed",
+    "bad_blob",
+    "expired",
 ];
 
 #[cfg(test)]
@@ -364,6 +514,10 @@ mod tests {
         assert_eq!(twin_list("EVENT_TYPES"), EVENT_TYPES);
         assert_eq!(twin_list("EXPORTS"), EXPORTS);
         assert_eq!(twin_list("REASONS"), REASONS);
+        assert_eq!(twin_list("SHARING_ROUTES"), SHARING_ROUTES);
+        assert_eq!(twin_list("SHARING_SIGNED_ROUTES"), SHARING_SIGNED_ROUTES);
+        assert_eq!(twin_list("ACCESS"), ACCESS);
+        assert_eq!(twin_list("SHARE_STATES"), SHARE_STATES);
         for (name, value) in [
             ("PATH_ARTIFACTS", PATH_ARTIFACTS),
             ("PATH_IMPORT", PATH_IMPORT),
@@ -371,6 +525,12 @@ mod tests {
             ("PATH_PLANS", PATH_PLANS),
             ("BLOB_PREFIX", BLOB_PREFIX),
             ("WORDS_HEADER", WORDS_HEADER),
+            ("VERB_SHARES", VERB_SHARES),
+            ("VERB_ANSWERS", VERB_ANSWERS),
+            ("VERB_SEND_BACK", VERB_SEND_BACK),
+            ("VERB_PUBLIC", VERB_PUBLIC),
+            ("EVERYONE", EVERYONE),
+            ("ACKNOWLEDGED", ACKNOWLEDGED),
         ] {
             assert_eq!(twin_const(name), value, "{name}");
         }
@@ -423,6 +583,45 @@ mod tests {
                 reason: "r".into(),
             })
             .unwrap(),
+            serde_json::to_value(ShareBody {
+                to: ShareTo::Members(vec!["ben".into()]),
+                access: Access::Edit,
+                ask: Some("a".into()),
+                latest: true,
+                instructions: false,
+            })
+            .unwrap(),
+            serde_json::to_value(ShareRecord {
+                to: "ben".into(),
+                sphere: "s".into(),
+                offer: "o".into(),
+                access: Access::View,
+                version: 1,
+                latest: true,
+                at: "t".into(),
+                state: "sent".into(),
+                blob: "b".into(),
+                expires: 1,
+            })
+            .unwrap(),
+            serde_json::to_value(AnswerBody {
+                text: Some("t".into()),
+                decline: false,
+            })
+            .unwrap(),
+            serde_json::to_value(SendBackBody { version: 2 }).unwrap(),
+            serde_json::to_value(PublicBody {
+                acknowledged: Some(ACKNOWLEDGED.into()),
+                latest: true,
+            })
+            .unwrap(),
+            serde_json::to_value(PublicAnswer {
+                link: "l".into(),
+                link_id: "i".into(),
+                version: 1,
+                latest: true,
+            })
+            .unwrap(),
         ];
         fn keys(v: &Value, out: &mut Vec<String>) {
             if let Value::Object(m) = v {
@@ -466,6 +665,7 @@ mod tests {
                 bytes: 1,
                 blobs: BTreeMap::from([("blob-1".into(), "assets/blob-1.png".into())]),
                 job: Some("j".into()),
+                by: Some("Ben's Oby".into()),
             }],
             profile: Some("p".into()),
             origin: Origin::Sphere {
