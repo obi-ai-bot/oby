@@ -1,0 +1,254 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab artifacts: words with artifact land in its conversation even when another was open; an artifact with none gets one",
+  "version": "1.0.0",
+  "description": "LAB-ARTIFACTS-7 (src/lab/artifacts.rs: land_words, handle's Plans). Words said while an artifact made in conversation c1 is open land in c1, though the app had c-other open; the same words with no artifact land in c-other. An imported artifact has no conversation: its first words make one and it becomes the artifact's (TASKCONV-4), and its next words land there too. A job of that conversation then versions the import. Words naming no such artifact are refused 404.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.artifacts.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            },
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:lab.artifacts.device",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "fx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "page"
+      }
+    },
+    {
+      "id": "page",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab artifact",
+        "conversation": "c1",
+        "job": "j1",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "7-lands-in-the-artifacts-conversation",
+      "use": "runtime.rust:lab.artifacts.turn",
+      "inputs": {
+        "api": "${state.up}",
+        "device": "${state.d1}",
+        "text": "Make the title bigger.",
+        "conversation": "c-other",
+        "artifact": {
+          "id": "${state.page.id}",
+          "version": 1
+        },
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.conversation": "c1",
+            "body.created": false,
+            "body.artifact.id": "${state.page.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-7"
+        ]
+      }
+    },
+    {
+      "id": "7-no-artifact-the-open-one",
+      "use": "runtime.rust:lab.artifacts.turn",
+      "inputs": {
+        "api": "${state.up}",
+        "device": "${state.d1}",
+        "text": "And the other thing.",
+        "conversation": "c-other",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.conversation": "c-other",
+            "body.created": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-7"
+        ]
+      }
+    },
+    {
+      "id": "imported",
+      "use": "runtime.rust:lab.artifacts.import",
+      "inputs": {
+        "api": "${state.up}",
+        "device": "${state.d1}",
+        "file": "${state.fx.path}/index.html",
+        "contentType": "text/html",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.conversation": null,
+            "body.origin": {
+              "kind": "import",
+              "from": "html"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "7-an-import-gets-one",
+      "use": "runtime.rust:lab.artifacts.turn",
+      "inputs": {
+        "api": "${state.up}",
+        "device": "${state.d1}",
+        "text": "What is this?",
+        "conversation": "c-other",
+        "artifact": {
+          "id": "${state.imported.body.id}"
+        },
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.created": true,
+            "body.conversation": {
+              "$matches": "^conversation-[0-9a-f]{12}$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-7"
+        ]
+      }
+    },
+    {
+      "id": "7-the-import-is-the-conversations",
+      "use": "runtime.rust:lab.artifacts.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.imported.body.id}",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.conversation": "${state.7-an-import-gets-one.body.conversation}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-7"
+        ]
+      }
+    },
+    {
+      "id": "7-next-words-land-there-too",
+      "use": "runtime.rust:lab.artifacts.turn",
+      "inputs": {
+        "api": "${state.up}",
+        "device": "${state.d1}",
+        "text": "Make it blue.",
+        "artifact": {
+          "id": "${state.imported.body.id}"
+        },
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.created": false,
+            "body.conversation": "${state.7-an-import-gets-one.body.conversation}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-7"
+        ]
+      }
+    },
+    {
+      "id": "7-a-job-of-it-versions-the-import",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab artifact",
+        "conversation": "${state.7-an-import-gets-one.body.conversation}",
+        "job": "j9",
+        "artifact": "${state.imported.body.id}",
+        "write": {
+          "index.html": "<!doctype html><html><head><title>Blue</title></head><body><h1>Blue</h1></body></html>\n"
+        },
+        "expect": {
+          "paths": {
+            "ok": true,
+            "version": 2,
+            "artifact.origin.kind": "import"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-7"
+        ]
+      }
+    },
+    {
+      "id": "7-no-such-artifact",
+      "use": "runtime.rust:lab.artifacts.turn",
+      "inputs": {
+        "api": "${state.up}",
+        "device": "${state.d1}",
+        "text": "Hm.",
+        "artifact": {
+          "id": "00000000-0000-4000-8000-000000000000"
+        },
+        "expect": {
+          "paths": {
+            "status": 404,
+            "body.reason": "not_found"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-7"
+        ]
+      }
+    }
+  ]
+}

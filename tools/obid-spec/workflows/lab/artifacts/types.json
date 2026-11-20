@@ -1,0 +1,293 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab artifacts: fonts and video are served with their types",
+  "version": "1.0.0",
+  "description": "LAB-ARTIFACTS-4 (src/lab/artifacts.rs: type_of). A design's TrueType and OpenType fonts, WOFF2, WebM and an MP4 upload, AVIF, JSON and scripts are each served with its own media type, every one with obid's artifact CSP and nosniff; a .jsx stays application/octet-stream, as the format needs none. (Fetching a design's Google fonts into it comes with the renderer, the artifactview PR, where the board is drawn offline.)",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.artifacts.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            },
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:lab.artifacts.device",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "fx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "claude-design"
+      }
+    },
+    {
+      "id": "design",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab artifact",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "4-fonts-Lab-ttf",
+      "use": "runtime.rust:lab.artifacts.serve",
+      "inputs": {
+        "api": "${state.up}",
+        "id": "${state.design.id}",
+        "version": 1,
+        "path": "fonts/Lab.ttf",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "type": "font/ttf",
+            "csp": "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' data: blob:; style-src 'self' 'unsafe-inline' data:; img-src 'self' data: blob:; connect-src 'none'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts",
+            "nosniff": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-4"
+        ]
+      }
+    },
+    {
+      "id": "4-fonts-Lab-otf",
+      "use": "runtime.rust:lab.artifacts.serve",
+      "inputs": {
+        "api": "${state.up}",
+        "id": "${state.design.id}",
+        "version": 1,
+        "path": "fonts/Lab.otf",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "type": "font/otf",
+            "csp": "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' data: blob:; style-src 'self' 'unsafe-inline' data:; img-src 'self' data: blob:; connect-src 'none'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts",
+            "nosniff": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-4"
+        ]
+      }
+    },
+    {
+      "id": "4-fonts-Lab-woff2",
+      "use": "runtime.rust:lab.artifacts.serve",
+      "inputs": {
+        "api": "${state.up}",
+        "id": "${state.design.id}",
+        "version": 1,
+        "path": "fonts/Lab.woff2",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "type": "font/woff2",
+            "csp": "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' data: blob:; style-src 'self' 'unsafe-inline' data:; img-src 'self' data: blob:; connect-src 'none'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts",
+            "nosniff": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-4"
+        ]
+      }
+    },
+    {
+      "id": "4-media-loop-webm",
+      "use": "runtime.rust:lab.artifacts.serve",
+      "inputs": {
+        "api": "${state.up}",
+        "id": "${state.design.id}",
+        "version": 1,
+        "path": "media/loop.webm",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "type": "video/webm",
+            "csp": "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' data: blob:; style-src 'self' 'unsafe-inline' data:; img-src 'self' data: blob:; connect-src 'none'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts",
+            "nosniff": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-4"
+        ]
+      }
+    },
+    {
+      "id": "4-media-still-avif",
+      "use": "runtime.rust:lab.artifacts.serve",
+      "inputs": {
+        "api": "${state.up}",
+        "id": "${state.design.id}",
+        "version": 1,
+        "path": "media/still.avif",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "type": "image/avif",
+            "csp": "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' data: blob:; style-src 'self' 'unsafe-inline' data:; img-src 'self' data: blob:; connect-src 'none'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts",
+            "nosniff": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-4"
+        ]
+      }
+    },
+    {
+      "id": "4-blob-clip3",
+      "use": "runtime.rust:lab.artifacts.serve",
+      "inputs": {
+        "api": "${state.up}",
+        "id": "${state.design.id}",
+        "version": 1,
+        "path": "_blob/clip_3",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "type": "video/mp4",
+            "csp": "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' data: blob:; style-src 'self' 'unsafe-inline' data:; img-src 'self' data: blob:; connect-src 'none'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts",
+            "nosniff": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-4"
+        ]
+      }
+    },
+    {
+      "id": "4-data-json",
+      "use": "runtime.rust:lab.artifacts.serve",
+      "inputs": {
+        "api": "${state.up}",
+        "id": "${state.design.id}",
+        "version": 1,
+        "path": "data.json",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "type": "application/json",
+            "csp": "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' data: blob:; style-src 'self' 'unsafe-inline' data:; img-src 'self' data: blob:; connect-src 'none'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts",
+            "nosniff": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-4"
+        ]
+      }
+    },
+    {
+      "id": "4-app-js",
+      "use": "runtime.rust:lab.artifacts.serve",
+      "inputs": {
+        "api": "${state.up}",
+        "id": "${state.design.id}",
+        "version": 1,
+        "path": "app.js",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "type": "text/javascript; charset=utf-8",
+            "csp": "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' data: blob:; style-src 'self' 'unsafe-inline' data:; img-src 'self' data: blob:; connect-src 'none'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts",
+            "nosniff": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-4"
+        ]
+      }
+    },
+    {
+      "id": "4-lab-css",
+      "use": "runtime.rust:lab.artifacts.serve",
+      "inputs": {
+        "api": "${state.up}",
+        "id": "${state.design.id}",
+        "version": 1,
+        "path": "lab.css",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "type": "text/css; charset=utf-8",
+            "csp": "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' data: blob:; style-src 'self' 'unsafe-inline' data:; img-src 'self' data: blob:; connect-src 'none'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts",
+            "nosniff": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-4"
+        ]
+      }
+    },
+    {
+      "id": "4-widget-jsx",
+      "use": "runtime.rust:lab.artifacts.serve",
+      "inputs": {
+        "api": "${state.up}",
+        "id": "${state.design.id}",
+        "version": 1,
+        "path": "widget.jsx",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "type": "application/octet-stream",
+            "csp": "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' data: blob:; style-src 'self' 'unsafe-inline' data:; img-src 'self' data: blob:; connect-src 'none'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts",
+            "nosniff": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-4"
+        ]
+      }
+    }
+  ]
+}
