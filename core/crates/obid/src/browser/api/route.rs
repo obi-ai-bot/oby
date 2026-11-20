@@ -1,6 +1,6 @@
 //! A route of the browser's contract, parsed from the method and path (every route of the
-//! contract's `ROUTES`), and which carry the owner's signed words or a secret. It owns no state and
-//! writes nothing.
+//! contract's `ROUTES`, BROWSER-26's ways out among them), and which carry the owner's signed words
+//! or a secret. It owns no state and writes nothing.
 
 use crate::browser::contract as c;
 
@@ -18,6 +18,9 @@ pub enum Route {
     Take(String),
     GiveBack(String),
     Secret(String),
+    Reload(String),
+    Back(String),
+    Dialog(String),
     Answer(String),
     Mcp,
     Preflight,
@@ -63,6 +66,9 @@ pub fn route(method: &str, path: &str) -> Route {
                 ("POST", v) if v == c::VERB_TAKE => Route::Take(tab),
                 ("POST", v) if v == c::VERB_GIVE_BACK => Route::GiveBack(tab),
                 ("POST", v) if v == c::VERB_SECRET => Route::Secret(tab),
+                ("POST", v) if v == c::VERB_RELOAD => Route::Reload(tab),
+                ("POST", v) if v == c::VERB_BACK => Route::Back(tab),
+                ("POST", v) if v == c::VERB_DIALOG => Route::Dialog(tab),
                 _ => Route::NotFound,
             }
         }
@@ -80,6 +86,9 @@ impl Route {
                 | Route::Take(_)
                 | Route::GiveBack(_)
                 | Route::Secret(_)
+                | Route::Reload(_)
+                | Route::Back(_)
+                | Route::Dialog(_)
                 | Route::Answer(_)
         )
     }
@@ -120,6 +129,29 @@ mod tests {
             Route::Answer("ask-3".into())
         );
         assert_eq!(route("POST", "/v1/browser/mcp"), Route::Mcp);
+        assert_eq!(
+            route("POST", "/v1/browser/tabs/tab-1/reload"),
+            Route::Reload("tab-1".into())
+        );
+        assert_eq!(
+            route("POST", "/v1/browser/tabs/tab-1/back"),
+            Route::Back("tab-1".into())
+        );
+        assert_eq!(
+            route("POST", "/v1/browser/tabs/tab-1/dialog"),
+            Route::Dialog("tab-1".into())
+        );
+        assert_eq!(
+            route("GET", "/v1/browser/tabs/tab-1/reload"),
+            Route::NotFound
+        );
+        for r in [
+            Route::Reload("t".into()),
+            Route::Back("t".into()),
+            Route::Dialog("t".into()),
+        ] {
+            assert!(r.signed(), "{r:?} is the owner's own act");
+        }
         assert_eq!(route("GET", "/v1/browser/tabs/../take"), Route::NotFound);
         assert_eq!(route("GET", "/v1/browser/tabs/tab-1/take"), Route::NotFound);
         // Every route of the contract parses to something.
