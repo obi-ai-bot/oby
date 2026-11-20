@@ -146,6 +146,15 @@
           ],
           "elsewhere": {}
         },
+        "obi-requests-repeated.md": {
+          "obid": [
+            "OBIREQ-7",
+            "OBIREQ-8",
+            "OBIREQ-9",
+            "OBIREQ-10"
+          ],
+          "elsewhere": {}
+        },
         "rooms.md": {
           "obid": [
             "ROOMS-8",
