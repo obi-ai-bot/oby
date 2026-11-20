@@ -10,7 +10,10 @@
 # KANI_JOBS (by default 2) runs that many at once: CBMC takes several GB a harness, and four at once
 # ran GitHub's 16 GB runner out of memory. On Linux each process gets at most KANI_MEMORY_GB (by
 # default 6) of memory: a harness past it fails with CBMC's out-of-memory message and the job goes
-# on to name it, where without a ceiling the runner died with no log at all.
+# on to name it, where without a ceiling the runner died with no log at all. The harnesses on
+# core/.config/kani-slow.txt, when proved, go after the others, one at a time, each with
+# KANI_SLOW_MEMORY_GB (by default 13): jobstate_7 aborted ("CBMC failed with status 6") under 6 GB
+# beside another harness on three nights in a row.
 set -euo pipefail
 cd "$(dirname "$0")/../core"
 filters=${1:-}
@@ -42,22 +45,42 @@ for name in slow - names:
     sys.exit(f"kani-prove: .config/kani-slow.txt names {name}, which isn't a harness")
 wanted = sorted(n for n in names if "all" in filters or any(f in n for f in filters))
 for name in wanted:
-    if name in slow and slow_mode != "prove":
-        print(f"kani-prove: {name} is on .config/kani-slow.txt: proved nightly, not here", file=sys.stderr)
+    if name not in slow:
+        print("fast", name)
+    elif slow_mode == "prove":
+        print("slow", name)
     else:
-        print(name)
+        print(f"kani-prove: {name} is on .config/kani-slow.txt: proved nightly, not here", file=sys.stderr)
 PY
 )
 if [[ -z "$names" ]]; then
     echo "kani-prove: what this change requires is proved nightly only (.config/kani-slow.txt)."
     exit 0
 fi
-args=()
-while IFS= read -r name; do args+=(--harness "$name"); done <<< "$names"
-if [[ "$(uname)" == Linux ]]; then
-    ulimit -v $(( ${KANI_MEMORY_GB:-6} * 1024 * 1024 ))
+fast=$(awk '$1 == "fast" {print $2}' <<< "$names")
+slow=$(awk '$1 == "slow" {print $2}' <<< "$names")
+
+# prove <jobs> <memory GB> <names>: one cargo kani over those harnesses, in a subshell so its memory
+# ceiling stays its own (a lowered ulimit can't be raised again in the same shell).
+prove() {
+    local jobs=$1 memory=$2 list=$3 args=()
+    while IFS= read -r name; do args+=(--harness "$name"); done <<< "$list"
+    echo "kani-prove: proving $(wc -l <<< "$list" | tr -d ' ') harnesses, $jobs at a time, each within ${KANI_HARNESS_TIMEOUT:-20m} and $memory GB"
+    printf 'kani-prove:   %s\n' $list
+    (
+        if [[ "$(uname)" == Linux ]]; then
+            ulimit -v $(( memory * 1024 * 1024 ))
+        fi
+        exec env -u RUSTUP_TOOLCHAIN cargo kani -p obid --tests --output-format terse --exact "${args[@]}" \
+            --jobs "$jobs" -Z unstable-options --harness-timeout "${KANI_HARNESS_TIMEOUT:-20m}"
+    )
+}
+
+status=0
+if [[ -n "$fast" ]]; then
+    prove "${KANI_JOBS:-2}" "${KANI_MEMORY_GB:-6}" "$fast" || status=1
 fi
-echo "kani-prove: proving $(wc -l <<< "$names" | tr -d ' ') harnesses, ${KANI_JOBS:-2} at a time, each within ${KANI_HARNESS_TIMEOUT:-20m} and ${KANI_MEMORY_GB:-6} GB"
-printf 'kani-prove:   %s\n' $names
-exec env -u RUSTUP_TOOLCHAIN cargo kani -p obid --tests --output-format terse --exact "${args[@]}" \
-    --jobs "${KANI_JOBS:-2}" -Z unstable-options --harness-timeout "${KANI_HARNESS_TIMEOUT:-20m}"
+if [[ -n "$slow" ]]; then
+    prove 1 "${KANI_SLOW_MEMORY_GB:-13}" "$slow" || status=1
+fi
+exit "$status"

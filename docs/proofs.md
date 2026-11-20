@@ -68,7 +68,8 @@ ones the change requires, two at a time, each within 20 minutes and 6 GB (a harn
 merge queue, so nothing merges into `dev` with a required proof failing, and pull requests into
 `main` or labelled `full-ci`. A harness too slow for GitHub's runner is on
 `core/.config/kani-slow.txt`, with why: those runs leave it out and say so, and nightly and on
-demand, when the job proves every harness, it proves those too, each within 150 minutes. One there
+demand, when the job proves every harness, it proves those too, after the others, one at a time,
+each within 150 minutes and 13 GB (beside another harness under 6 GB, CBMC aborted). One there
 now: `job::lifecycle::proofs::jobstate_7_holds_in_every_status`, past 100 minutes on GitHub's
 runner. The factory's own `prove` stage (docs/contracts/factory.md) is unchanged: it still runs the
 harnesses a task names on its gate VM, on top of these.
