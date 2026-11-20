@@ -364,3 +364,47 @@ describe('ALERTS-18', () => {
     expect(mac.ask('notification-kinds')).toEqual({ finished: true, merged: false, limit: true });
   });
 });
+
+describe('ALERTS-22 to 24', () => {
+  // a teammate's review request as obid serves it with its two answers (push.rs `answers`)
+  const review = served('obi-c1', { title: 'Review request from alex', body: "alex's Obi asks for a review of acme/app pull request #12.",
+    item: 'obi-c1', answers: ['Accept', 'Decline'] });
+  const item = { id: 'obi-c1', kind: 'obiRequest', job: '', title: 'Review request from alex', text: "alex's Obi asks for a review of acme/app pull request #12.",
+    options: ['Accept', 'Accept, and remember for this repo', 'Decline', 'Decline, and remember for this repo'], state: 'open', triage: 'needs_you',
+    obi: { type: 'review_request', fromOwner: 'alex', quoted: { goal: 'Fix it' } } };
+  // obid serves `alert` after launch (the first look is the baseline, ALERTS-2): its banner
+  const servedAfterLaunch = async (alert: ReturnType<typeof served>) => {
+    mac.served = [alert];
+    mac.event('inbox', item);
+    await vi.waitFor(() => expect(mac.posted).toHaveLength(1), { timeout: 5000 });
+    return mac.posted;
+  };
+
+  it('alerts_22_a_review_request_banner_answers_its_item_once', async () => {
+    mac.inbox = [item];
+    await launch();
+    const [banner] = await servedAfterLaunch(review);
+    expect(banner).toMatchObject({ title: 'Review request from alex', actions: ['Accept', 'Decline'] });
+    await banner.press('Accept');
+    expect(mac.sent).toEqual([{ method: 'POST', path: '/v1/inbox/obi-c1/answer', body: { answer: 'Accept' }, signed: false }]);
+  });
+
+  it('alerts_23_a_review_request_served_with_no_answers_has_no_buttons', async () => {
+    mac.inbox = [item];
+    await launch();
+    const [banner] = await servedAfterLaunch({ ...review, answers: [] });
+    expect(banner).toMatchObject({ title: 'Review request from alex', actions: [] });
+  });
+
+  it('alerts_24_a_settled_review_request_click_sends_nothing_more', async () => {
+    // answered on another device: obid answers 409, and the banner sends nothing more
+    mac.inbox = [item];
+    mac.receipts = true;
+    mac.refusing = 409;
+    await launch();
+    const [banner] = await servedAfterLaunch(review);
+    await banner.press('Accept');
+    expect(mac.sent).toHaveLength(1);
+    expect(mac.sent[0]).toMatchObject({ path: '/v1/inbox/obi-c1/answer', signed: false });
+  });
+});

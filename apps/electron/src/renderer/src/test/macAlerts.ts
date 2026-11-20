@@ -30,6 +30,8 @@ export const mac = {
   receipts: false,
   // how many of the next answers Oby sends obid get no answer at all (status 0)
   lost: 0,
+  // the status obid answers what Oby sends (200 unless a test says: 409 for an item settled elsewhere)
+  refusing: undefined as number | undefined,
   posted: [] as Banner[],
   badge: undefined as string | undefined,
   // what Oby sent obid that isn't a read, and whether this Mac signed it
@@ -54,7 +56,7 @@ let launches = 0;
 // A new app folder, nothing served
 export function fresh() {
   launches++;
-  Object.assign(mac, { userData: mkdtempSync(join(tmpdir(), 'oby-alerts-')), served: [], inbox: [], decisions: [], jobs: [], down: false, window: true, front: false, receipts: false, lost: 0 });
+  Object.assign(mac, { userData: mkdtempSync(join(tmpdir(), 'oby-alerts-')), served: [], inbox: [], decisions: [], jobs: [], down: false, window: true, front: false, receipts: false, lost: 0, refusing: undefined });
 }
 
 // One alert of obid's list (docs/runner-api.md, GET /v1/alerts)
@@ -115,6 +117,7 @@ export async function launch() {
     if (method !== 'GET') {
       mac.sent.push({ method, path, body, signed });
       if (mac.lost > 0) { mac.lost--; return { status: 0, text: 'obid closed the connection.' }; }
+      if (mac.refusing) return { status: mac.refusing, text: '{"error": "That item is done already."}' };
       return { status: 200, text: '{}' };
     }
     // GET /v1/alerts with any query (`fyi`, ALERTS-15) serves mac.served
