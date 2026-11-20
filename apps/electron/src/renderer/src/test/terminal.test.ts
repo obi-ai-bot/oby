@@ -223,15 +223,15 @@ describe('TERMINAL-4: a shell never outlives its tab, its page, its place or Oby
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     worktree('j1');
     const p = page();
-    endsOn = null;  // ignores SIGHUP and SIGTERM, as a stuck program can
+    endsOn = null;  // ignores SIGHUP, as a stuck program can
     input();
     const { term } = await open(p, 'task', 'j1');
     the.handlers.get('terminal-close')!({ sender: p }, term);
-    expect(spawned[0].killed).toEqual(['SIGHUP', 'SIGTERM']);
+    expect(spawned[0].killed).toEqual(['SIGHUP']);
     vi.advanceTimersByTime(KILL_GRACE_MS - 1);
-    expect(spawned[0].killed).toEqual(['SIGHUP', 'SIGTERM']);
+    expect(spawned[0].killed).toEqual(['SIGHUP']);
     vi.advanceTimersByTime(1);
-    expect(spawned[0].killed).toEqual(['SIGHUP', 'SIGTERM', 'SIGKILL']);
+    expect(spawned[0].killed).toEqual(['SIGHUP', 'SIGKILL']);
     // the jobs it never passed its hang-up to go with it
     expect(jobsKilled).toEqual([4242]);
     // one that ends on its hang-up gets nothing more
@@ -265,9 +265,9 @@ describe('TERMINAL-4: a shell never outlives its tab, its page, its place or Oby
     vi.advanceTimersByTime(KILL_GRACE_MS);
     // asked, not waited for: the shell isn't killed until the jobs' answer comes
     expect(jobsAsked).toEqual([false]);
-    expect(spawned[0].killed).toEqual(['SIGHUP', 'SIGTERM']);
+    expect(spawned[0].killed).toEqual(['SIGHUP']);
     holdJobs.shift()!();
-    expect(spawned[0].killed).toEqual(['SIGHUP', 'SIGTERM', 'SIGKILL']);
+    expect(spawned[0].killed).toEqual(['SIGHUP', 'SIGKILL']);
     // Oby quitting: waited for, as nothing would run after the app ends
     holdJobs = null;
     input(); await open(p, 'task', 'j1');
@@ -284,7 +284,7 @@ describe('TERMINAL-4: a shell never outlives its tab, its page, its place or Oby
     input(); await open(p, 'task', 'j1');
     input(); await open(p, 'task', 'j1');
     the.app.emit('before-quit');
-    expect(spawned.map((s) => s.killed)).toEqual([['SIGHUP', 'SIGTERM'], ['SIGHUP', 'SIGTERM']]);
+    expect(spawned.map((s) => s.killed)).toEqual([['SIGHUP'], ['SIGHUP']]);
     the.app.emit('will-quit');
     expect(spawned.map((s) => s.killed.at(-1))).toEqual(['SIGKILL', 'SIGKILL']);
     expect(terms.open).toBe(0);
@@ -478,6 +478,30 @@ describe('TERMINAL-8: a real shell', () => {
   const until = async (f: () => boolean, ms = 10_000) => { const end = Date.now() + ms; while (!f()) { if (Date.now() > end) throw new Error('timed out'); await new Promise((r) => setTimeout(r, 20)); } };
   // running, not gone or a zombie waiting to be reaped
   const alive = (pid: number) => { const st = spawnSync('/bin/ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim(); return !!st && !st.startsWith('Z'); };
+
+  // a shell the close finds busy (stopped here, as a loaded Mac can leave it) still hangs up its job
+  // once it runs: nothing is sent behind its SIGHUP that could end it first. A SIGTERM right behind it
+  // did, in about one close in eight (bash 3.2 dying of it mid hang-up, its job left to launchd), so 24
+  it('terminal_4_a_busy_shell_closed_still_hangs_up_its_job', { timeout: 120_000 }, async () => {
+    const left: string[] = [];
+    for (let i = 0; i < 24; i++) {
+      const dir = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-busy-')));
+      const { t, text, did } = real();
+      const term = (t.start(null, 'task', 'j1', dir, 80, 24) as { term: string }).term;
+      t.write(term, 'sleep 300 & echo JOB=$!\r');
+      await until(() => /JOB=\d+/.test(text()));
+      const job = Number(/JOB=(\d+)/.exec(text())![1]);
+      const shellPid = (t as unknown as { terms: Map<string, { pty: { pid: number } }> }).terms.get(term)!.pty.pid;
+      process.kill(shellPid, 'SIGSTOP');
+      t.close(term);
+      process.kill(shellPid, 'SIGCONT');
+      await until(() => !alive(shellPid));
+      await until(() => !alive(job), 2000).catch(() => { left.push(`job [${row(job)}]; ${did.join('; ')}`); });
+      try { process.kill(job, 'SIGKILL'); } catch { /* gone */ }
+      t.killLeft();
+    }
+    expect(left).toEqual([]);
+  });
 
   it('terminal_8_a_real_shell_runs_in_the_folder_with_a_clean_environment_utf8_whole_and_ends_with_its_jobs', async () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-real-')));
