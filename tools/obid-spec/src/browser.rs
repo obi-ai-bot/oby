@@ -65,7 +65,11 @@ pub async fn run_node(name: &str, input: &Value) -> Result<Value> {
             Some(want) => crate::expect::check(want, &out, "").is_empty(),
             None => true,
         };
-        if holds || Instant::now() >= until {
+        // A browser that failed to start (`browser`, not `browser_starting`) won't start by being
+        // asked again: the step fails now, with obid's reason, instead of at its time limit.
+        let failed_for_good =
+            name == "browser-mcp" && out["structured"]["error"]["code"] == "browser";
+        if holds || failed_for_good || Instant::now() >= until {
             return Ok(out);
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
