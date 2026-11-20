@@ -18,6 +18,7 @@
 //!   served over HTTPS with it, and the window's client that trusts only a pinned one.
 //! - [`tunnel`]: an `ssh -N -L` to another computer's obid, held while the window uses it.
 //! - [`pair`]: `obid pair-computer`, which the person's SSH runs on the other computer.
+//! - [`invite`] and [`code`]: adding a computer with a code, its side and the Mac's.
 //! - [`addresses`]: where this obid answers, kept for `obid pair-computer`.
 //!
 //! It owns `home/addresses.json` (written once each start) and `home/keys/direct-*` (this
@@ -27,7 +28,9 @@
 
 pub mod addresses;
 pub mod certificate;
+pub mod code;
 pub mod direct;
+pub mod invite;
 pub mod link;
 pub mod pair;
 pub mod pin;

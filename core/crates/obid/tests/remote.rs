@@ -331,3 +331,130 @@ async fn computers_10_obid_serves_its_gateway_over_https_with_its_own_pinned_cer
     let said = pinned::said(&refused);
     assert!(said.contains(&fresh.to_string()), "{said}");
 }
+
+/// `obid invite-computer --config <the test's>`: its exit code, stdout and stderr.
+fn invite_computer(obid: &Obid) -> (i32, String, String) {
+    let out = Command::new(OBID)
+        .args(["invite-computer", "--config"])
+        .arg(obid.folder.join("config.json"))
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// COMPUTERS-13: the other computer's owner makes a code at it; the Mac reaches it through the
+/// link's pinned route before it sends anything, redeems the code and adds its own key there. A
+/// link pinned to another certificate sends no code; a wrong code pairs nothing; a phone's
+/// invitation doesn't replace the computer's; an invitation made with the API token alone pairs
+/// a computer that can't add its key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn computers_13_a_computer_is_added_with_a_code_its_certificate_pinned() {
+    use obid::remote::{code, link::Link, pin::Pin, route::Via};
+    let folder = Folder::new("remote-code");
+    let config = tokio::task::block_in_place(|| with_direct(&folder));
+    let obid = tokio::task::block_in_place(|| start(&folder.0, &config, None));
+    let (address, pin) = tokio::task::block_in_place(|| direct_of(&obid));
+
+    let (status, out, err) = tokio::task::block_in_place(|| invite_computer(&obid));
+    assert_eq!(status, 0, "{out}{err}");
+    let made: Value = serde_json::from_str(out.trim()).unwrap();
+    let code_text = made["code"].as_str().unwrap().to_owned();
+    let link_text = made["link"].as_str().unwrap().to_owned();
+    let link = Link::decode(&link_text).unwrap();
+    assert!(
+        matches!(&link.routes[0].via, Via::Https { pin: p, port, .. } if *p == pin && address.ends_with(&format!(":{port}"))),
+        "{link:?}"
+    );
+    assert_eq!(made["fingerprint"].as_str().unwrap().len(), 39, "{made}");
+    assert!(
+        !obid.home.join("invite-computer").exists(),
+        "presence used up"
+    );
+
+    // A phone's invitation now doesn't replace the computer's.
+    let phone = tokio::task::block_in_place(|| {
+        call(
+            &obid,
+            "POST",
+            "/v1/pairing/invite",
+            Some(&json!({"url": "https://mac.tail0000.ts.net:8443", "name": "My Mac"})),
+        )
+    });
+    assert_eq!(phone.status, 200, "{}", phone.text);
+
+    // Pinned to another certificate: refused at the handshake, the code never sent.
+    let mut impostor = link.clone();
+    for route in &mut impostor.routes {
+        if let Via::Https { pin, .. } = &mut route.via {
+            *pin = Pin([7; 32]);
+        }
+    }
+    let key = device_key(11);
+    let refused = code::redeem(&impostor.encode(), &code_text, "Studio Mac", &key)
+        .await
+        .unwrap_err();
+    assert!(
+        refused.said.contains("another computer answered"),
+        "{refused:?}"
+    );
+
+    // A wrong code pairs nothing.
+    let wrong = code::redeem(&link_text, "000000", "Studio Mac", &key)
+        .await
+        .unwrap_err();
+    assert_eq!(wrong.status, Some(401), "{wrong:?}");
+
+    // The code: paired, and this Mac's key added there.
+    let paired = code::redeem(&link_text, &code_text, "Studio Mac", &key)
+        .await
+        .unwrap();
+    assert!(!paired.token.is_empty());
+    let known = tokio::task::block_in_place(|| {
+        call(
+            &obid,
+            "POST",
+            "/v1/devices",
+            Some(&json!({"name": "Studio Mac", "publicKey": key})),
+        )
+    });
+    assert_eq!(known.status, 200, "{}", known.text);
+    assert_eq!(
+        paired.device.as_deref(),
+        known.body["id"].as_str(),
+        "{paired:?}"
+    );
+    let again = code::redeem(&link_text, &code_text, "Studio Mac", &key)
+        .await
+        .unwrap_err();
+    // Used once: refused, 401 while the phone's invitation is still open.
+    assert!(matches!(again.status, Some(401 | 410)), "once: {again:?}");
+
+    // The API token alone: paired, but no key added.
+    let token_only = tokio::task::block_in_place(|| {
+        call(
+            &obid,
+            "POST",
+            "/v1/pairing/invite",
+            Some(&json!({"url": format!("https://{address}"), "name": "Studio", "computer": true})),
+        )
+    });
+    assert_eq!(token_only.status, 200, "{}", token_only.text);
+    let link_only = token_only.body["computerLink"].as_str().unwrap();
+    let other = device_key(12);
+    let plain = code::redeem(
+        link_only,
+        token_only.body["code"].as_str().unwrap(),
+        "Laptop",
+        &other,
+    )
+    .await
+    .unwrap();
+    assert_eq!(plain.device, None, "no presence, no key");
+}
