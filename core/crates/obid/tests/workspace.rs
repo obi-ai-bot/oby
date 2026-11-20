@@ -110,13 +110,18 @@ fn workspace(obid: &Obid, id: &str) -> Value {
     answer.body
 }
 
-/// The owner's signed click on `action` in `folder`: obid's own sentence, read first, signed.
-fn finish(obid: &Obid, id: &str, folder: &Path, action: &str) -> Answer {
+/// obid's sentence for `action` in `folder`, what the owner's device signs.
+fn sentence(obid: &Obid, id: &str, folder: &Path, action: &str) -> String {
     let target = format!("/v1/conversations/{id}/workspace");
     let query = format!("{target}?folder={}&finish={action}", text(folder));
     let sentence = call(obid, "GET", &query, None);
     assert_eq!(sentence.status, 200, "{}", sentence.text);
-    let sentence = sentence.body["action"].as_str().unwrap().to_owned();
+    sentence.body["action"].as_str().unwrap().to_owned()
+}
+
+/// The owner's signed click on `sentence` for `action` in `folder`.
+fn signed(obid: &Obid, id: &str, folder: &Path, action: &str, sentence: &str) -> Answer {
+    let target = format!("/v1/conversations/{id}/workspace");
     let signed_at = time::format(time::now());
     let mut approval = owner_signs(
         obid,
@@ -126,6 +131,12 @@ fn finish(obid: &Obid, id: &str, folder: &Path, action: &str) -> Answer {
     approval["action"] = json!(sentence);
     let body = json!({"folder": text(folder), "finish": action, "approval": approval});
     call(obid, "POST", &target, Some(&body))
+}
+
+/// The owner's signed click on `action` in `folder`: obid's own sentence, read first, signed.
+fn finish(obid: &Obid, id: &str, folder: &Path, action: &str) -> Answer {
+    let sentence = sentence(obid, id, folder, action);
+    signed(obid, id, folder, action, &sentence)
 }
 
 /// A `gh` that only says it ran, in `bin`: its log, none until it's called.
@@ -313,8 +324,11 @@ fn workspace_6_factory_jobs_get_a_worktree() {
     let [api] = <[PathBuf; 1]>::try_from(picked(&folder, &["api"])).unwrap();
     repository(&api);
     let before = files(&api);
-    let id = start(&obid, &[&api], Some("folder"));
-    assert_eq!(workspace(&obid, &id)["workspace"], "folder");
+    // The conversation chose its own worktree: the job still gets one of its own.
+    let id = start(&obid, &[&api], Some("worktree"));
+    let seen = workspace(&obid, &id);
+    assert_eq!(seen["workspace"], "worktree", "{seen}");
+    let conversations = PathBuf::from(seen["places"][0]["path"].as_str().unwrap());
 
     let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Look around"});
     let made = call_typed(&obid, "POST", "/v1/jobs", &json!({ "job": job }));
@@ -329,11 +343,295 @@ fn workspace_6_factory_jobs_get_a_worktree() {
         "{tree}"
     );
     assert!(!Path::new(&tree).starts_with(&api));
+    assert!(!Path::new(&tree).starts_with(&conversations));
+    assert!(!Path::new(&tree).starts_with(folder.0.join("home/workspaces")));
     assert_eq!(files(&api), before);
+    // The folder's repository has its own worktree and the conversation's, never the job's.
+    let listed = git(&api, &["worktree", "list", "--porcelain"]);
+    assert_eq!(listed.matches("worktree ").count(), 2, "{listed}");
+    assert!(listed.contains(&text(&conversations)), "{listed}");
+    assert!(!listed.contains(&tree), "{listed}");
+}
+
+/// An executable script at `path`.
+fn script(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// A choice that can't be kept would read as "This folder": the conversation doesn't start, and
+/// says why (fail closed).
+#[test]
+fn workspace_3_a_choice_that_cant_be_kept_starts_nothing() {
+    let folder = Folder::new("workspace-3-unkept");
+    let obid = harness_obid(&folder, None);
+    let [api] = <[PathBuf; 1]>::try_from(picked(&folder, &["api"])).unwrap();
+    repository(&api);
+    // Where the choices go is a file, so none can be written there.
+    std::fs::write(folder.0.join("home/workspaces"), "not a folder").unwrap();
+    let ids = || -> Vec<Value> {
+        let listed = call(&obid, "GET", "/v1/conversations", None).body;
+        (listed.as_array().cloned().unwrap_or_default().iter())
+            .map(|c| c["id"].clone())
+            .collect()
+    };
+    let before = ids();
+
+    let body = json!({"said": "tidy it up", "new": true, "workspace": "worktree",
+                      "folders": [text(&api)]});
+    let answer = call(&obid, "POST", "/v1/plans", Some(&body));
+    assert_eq!(answer.status, 500, "{}", answer.text);
+    assert!(
+        answer
+            .text
+            .contains("Oby couldn't keep where this conversation works"),
+        "{}",
+        answer.text
+    );
+    // No conversation was left to run in the folder.
+    assert_eq!(ids(), before);
+}
+
+/// A choice there that can't be read gives every folder the room only: no path, no action, and
+/// why; never the folder in its place.
+#[test]
+fn workspace_3_an_unreadable_choice_gives_the_room_only() {
+    let folder = Folder::new("workspace-3-unread");
+    let obid = harness_obid(&folder, None);
+    let [api] = <[PathBuf; 1]>::try_from(picked(&folder, &["api"])).unwrap();
+    repository(&api);
+    std::fs::write(api.join("todo.md"), "- tidy\n").unwrap();
+    let id = start(&obid, &[&api], Some("worktree"));
+    std::fs::write(
+        folder.0.join(format!("home/workspaces/{id}.json")),
+        "{not json",
+    )
+    .unwrap();
+
+    let seen = workspace(&obid, &id);
+    let place = &seen["places"][0];
+    assert_eq!(place["folder"], text(&api), "{seen}");
+    assert_eq!(place["path"], Value::Null, "{seen}");
+    assert_eq!(place["actions"], json!([]), "{seen}");
+    assert!(
+        place["why"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("its own room"),
+        "{seen}"
+    );
+    let query = format!(
+        "/v1/conversations/{id}/workspace?folder={}&finish=commit",
+        text(&api)
+    );
+    assert_eq!(call(&obid, "GET", &query, None).status, 409);
+}
+
+/// A worktree that can't be made gives that folder the room only, never the folder itself.
+#[test]
+fn workspace_2_a_worktree_that_cant_be_made_gives_the_room_only() {
+    let folder = Folder::new("workspace-2-unmade");
+    let obid = harness_obid(&folder, None);
+    let [api] = <[PathBuf; 1]>::try_from(picked(&folder, &["api"])).unwrap();
+    // Not git yet: it works in place, as T3 does.
+    std::fs::write(api.join("notes.md"), "# Notes\n").unwrap();
+    let id = start(&obid, &[&api], Some("worktree"));
+    assert_eq!(workspace(&obid, &id)["places"][0]["path"], text(&api));
+
+    // Now a repository, its worktree can't be made: the conversation's worktrees' folder is a file.
+    repository_here(&api);
+    std::fs::write(folder.0.join(format!("home/workspaces/{id}")), "in the way").unwrap();
+    let seen = workspace(&obid, &id);
+    let place = &seen["places"][0];
+    assert_eq!(place["path"], Value::Null, "{seen}");
+    assert_eq!(place["worktree"], false, "{seen}");
+    assert_eq!(place["actions"], json!([]), "{seen}");
+    assert!(
+        place["why"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("couldn't make a worktree"),
+        "{seen}"
+    );
+}
+
+/// [`repository`] in a folder that has files already.
+fn repository_here(dir: &Path) {
+    git(dir, &["init", "-q", "-b", "main"]);
+    git(dir, &["config", "user.name", "Owner"]);
+    git(dir, &["config", "user.email", "owner@example.invalid"]);
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "First"]);
+}
+
+/// Two folders of one name: each sentence names its own by its full path.
+#[test]
+fn workspace_5_a_sentence_names_the_folder_by_its_full_path() {
+    let folder = Folder::new("workspace-5-paths");
+    let obid = harness_obid(&folder, None);
+    let [a, b] = <[PathBuf; 2]>::try_from(picked(&folder, &["a/api", "b/api"])).unwrap();
+    let id = start(&obid, &[&a, &b], None);
+    let first = sentence(&obid, &id, &a, "initializeGit");
+    let second = sentence(&obid, &id, &b, "initializeGit");
+    assert_eq!(first, format!("Make {} a git repository.", text(&a)));
+    assert_eq!(second, format!("Make {} a git repository.", text(&b)));
+}
+
+/// A commit takes exactly the files its sentence named, as T3's commit takes the files its dialog
+/// shows: never a file the owner didn't see, nor one of the repository outside the folder. The
+/// owner's pre-commit hook doesn't run.
+#[test]
+fn workspace_4_commit_takes_only_the_files_it_named() {
+    let folder = Folder::new("workspace-4-files");
+    let obid = harness_obid(&folder, None);
+    let [api] = <[PathBuf; 1]>::try_from(picked(&folder, &["mono/api"])).unwrap();
+    let mono = api.parent().unwrap().to_path_buf();
+    std::fs::write(api.join("main.rs"), "fn main() {}\n").unwrap();
+    repository(&mono);
+    let hooked = folder.0.join("hooked");
+    script(
+        &mono.join(".git/hooks/pre-commit"),
+        &format!("touch '{}'\nexit 1", hooked.display()),
+    );
+    std::fs::write(api.join("main.rs"), "fn main() { tidy(); }\n").unwrap();
+    std::fs::write(api.join("todo.md"), "- tidy\n").unwrap();
+    std::fs::write(mono.join("outside.md"), "someone else's\n").unwrap();
+
+    let id = start(&obid, &[&api], None);
+    let said = sentence(&obid, &id, &api, "commit");
     assert_eq!(
-        git(&api, &["worktree", "list", "--porcelain"])
-            .matches("worktree ")
-            .count(),
-        1
+        said,
+        format!(
+            "Commit 2 changes in {} on main: api/main.rs, api/todo.md (new).",
+            text(&api)
+        )
+    );
+
+    // A file that comes after the owner read it isn't theirs to commit: refused, nothing done.
+    std::fs::write(api.join("late.md"), "- later\n").unwrap();
+    let refused = signed(&obid, &id, &api, "commit", &said);
+    assert_eq!(refused.status, 403, "{}", refused.text);
+    assert_eq!(git(&mono, &["rev-list", "--count", "HEAD"]), "1");
+    std::fs::remove_file(api.join("late.md")).unwrap();
+
+    let done = signed(&obid, &id, &api, "commit", &said);
+    assert_eq!(done.status, 200, "{}", done.text);
+    let committed = git(&mono, &["show", "--name-only", "--format=", "HEAD"]);
+    assert_eq!(committed, "api/main.rs\napi/todo.md");
+    assert_eq!(git(&mono, &["status", "--porcelain"]), "?? outside.md");
+    assert!(!hooked.exists(), "the owner's pre-commit hook ran");
+}
+
+/// A `gh` that logs its calls and, for `repo create`, says the repository is `url`; nothing else.
+fn creating_gh(bin: &Path, url: &str) -> PathBuf {
+    let log = bin.join("gh.log");
+    script(
+        &bin.join("gh"),
+        &format!(
+            "echo \"$*\" >> '{}'\ncase \"$1 $2\" in \"repo create\") echo '{url}'; exit 0;; esac\nexit 1",
+            log.display()
+        ),
+    );
+    log
+}
+
+/// Publish repository: gh makes the repository and pushes nothing; obid sends exactly the commit
+/// it scanned, from its own git, and none of the folder's hooks runs.
+#[test]
+fn workspace_4_publish_sends_exactly_the_commit_it_scanned() {
+    let folder = Folder::new("workspace-4-publish");
+    let bin = folder.0.join("bin");
+    let github = folder.0.join("github/notes.git");
+    std::fs::create_dir_all(&github).unwrap();
+    git(&github, &["init", "-q", "--bare"]);
+    let url = format!("file://{}", github.display());
+    let gh_log = creating_gh(&bin, &url);
+    let obid = harness_obid(&folder, Some(&bin));
+    let [notes] = <[PathBuf; 1]>::try_from(picked(&folder, &["notes"])).unwrap();
+    repository(&notes);
+    let hooked = folder.0.join("hooked");
+    script(
+        &notes.join(".git/hooks/pre-push"),
+        &format!("touch '{}'", hooked.display()),
+    );
+    let head = git(&notes, &["rev-parse", "HEAD"]);
+
+    let id = start(&obid, &[&notes], None);
+    assert_eq!(
+        workspace(&obid, &id)["places"][0]["actions"],
+        json!(["publishRepository"])
+    );
+    let done = finish(&obid, &id, &notes, "publishRepository");
+    assert_eq!(done.status, 200, "{}", done.text);
+
+    let created: Vec<String> = gh_calls(&gh_log)
+        .into_iter()
+        .filter(|c| c.starts_with("repo create"))
+        .collect();
+    assert_eq!(created, vec!["repo create notes --private".to_owned()]);
+    assert_eq!(git(&github, &["rev-parse", "refs/heads/main"]), head);
+    assert_eq!(git(&notes, &["remote", "get-url", "origin"]), url);
+    assert!(!hooked.exists(), "the folder's pre-push hook ran");
+    assert_eq!(
+        done.body["places"][0]["actions"],
+        json!([]),
+        "{}",
+        done.text
+    );
+}
+
+/// Push: exactly the commit scanned goes to the branch, and the folder's own settings for its
+/// remote (a `receivepack` program of its choosing) never run.
+#[test]
+fn workspace_4_push_runs_nothing_of_the_folders_settings() {
+    let folder = Folder::new("workspace-4-push");
+    let remote = folder.0.join("remote/api.git");
+    std::fs::create_dir_all(&remote).unwrap();
+    git(&remote, &["init", "-q", "--bare"]);
+    let obid = harness_obid(&folder, None);
+    let [api] = <[PathBuf; 1]>::try_from(picked(&folder, &["api"])).unwrap();
+    repository(&api);
+    let url = format!("file://{}", remote.display());
+    git(&api, &["remote", "add", "origin", &url]);
+    // Pushed once by the owner, main its upstream and the remote's default branch.
+    git(&api, &["push", "-q", "-u", "origin", "main"]);
+    git(
+        &api,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        ],
+    );
+    let ran = folder.0.join("ran");
+    let program = folder.0.join("receive");
+    script(
+        &program,
+        &format!("touch '{}'\nexec git-receive-pack \"$@\"", ran.display()),
+    );
+    git(
+        &api,
+        &["config", "remote.origin.receivepack", &text(&program)],
+    );
+    git(&api, &["commit", "-q", "--allow-empty", "-m", "Second"]);
+    let head = git(&api, &["rev-parse", "HEAD"]);
+
+    let id = start(&obid, &[&api], None);
+    assert_eq!(
+        workspace(&obid, &id)["places"][0]["actions"],
+        json!(["push"])
+    );
+    let done = finish(&obid, &id, &api, "push");
+    assert_eq!(done.status, 200, "{}", done.text);
+    assert_eq!(git(&remote, &["rev-parse", "refs/heads/main"]), head);
+    assert!(!ran.exists(), "the folder's receivepack setting ran");
+    // The folder knows it's pushed: nothing left to push.
+    assert_eq!(
+        done.body["places"][0]["actions"],
+        json!([]),
+        "{}",
+        done.text
     );
 }

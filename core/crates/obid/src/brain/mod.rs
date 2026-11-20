@@ -285,14 +285,28 @@ pub async fn plan(
         )?
     };
     drop_uploads(&shared, begun.forgotten.clone()).await;
-    // The new conversation's workspace, kept before its first turn runs (WORKSPACE-3).
+    // The new conversation's workspace, kept before its first turn runs (WORKSPACE-3). One that
+    // can't be kept would read as "This folder": the conversation goes again, and nothing runs.
     if let Some(workspace) = req.workspace.filter(|_| begun.started && !begun.repeated)
         && let Err(why) = crate::workspace::chose(&shared, &begun.conversation, workspace).await
     {
         tracing::warn!(
-            "conversation {}: its workspace isn't kept: {why}",
+            "conversation {}: its workspace isn't kept, so it doesn't start: {why}",
             begun.conversation
         );
+        if let Err(e) = crate::conversation::forget(&shared, &begun.conversation, false).await {
+            tracing::warn!("conversation {} stays: {e:?}", begun.conversation);
+            shared.conversations.mark(
+                &begun.conversation,
+                "a workspace that couldn't be kept".into(),
+            );
+        }
+        return Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!(
+                "Not started: Oby couldn't keep where this conversation works ({why}). Nothing ran."
+            ),
+        ));
     }
     // An answer to a question Oby asked elsewhere (the Watch answers in the latest conversation)
     // brings that conversation's words here.

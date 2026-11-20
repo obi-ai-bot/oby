@@ -188,14 +188,18 @@ mod tests {
 }
 
 /// Kani: for every workspace and any paths of up to three components, each component any byte,
-/// the list is the chosen path alone, and it never is nor holds obid's home, a person's home or an
-/// account's folder, nor sits inside an account's; a folder never sits inside obid's home, and a
-/// worktree only strictly inside obid's worktrees.
+/// with none, one or two of the person's homes and of the accounts' folders, the list is the chosen
+/// path alone, and it never is nor holds obid's home, a person's home or an account's folder, nor
+/// sits inside an account's; a folder never sits inside obid's home, and a worktree only strictly
+/// inside obid's worktrees. `kani::cover!` shows each workspace's allowed branch is reached, so the
+/// assertions aren't vacuous.
 #[cfg(kani)]
 mod proofs {
     use super::*;
 
     const N: usize = 3;
+    /// The most homes, and accounts, a run is given.
+    const M: usize = 2;
 
     fn any_path(buf: &mut [u8; N]) -> &[u8] {
         *buf = kani::any();
@@ -215,25 +219,40 @@ mod proofs {
     #[kani::proof]
     #[kani::unwind(5)]
     fn the_write_list_holds_the_workspace_and_nothing_guarded() {
-        let (mut c, mut o, mut w, mut h, mut a) = ([0; N], [0; N], [0; N], [0; N], [0; N]);
+        let (mut c, mut o, mut w) = ([0; N], [0; N], [0; N]);
+        let (mut h0, mut h1, mut a0, mut a1) = ([0; N], [0; N], [0; N], [0; N]);
         let chosen = any_path(&mut c);
         let obid = any_path(&mut o);
         let worktrees = any_path(&mut w);
-        let homes = [any_path(&mut h)];
-        let accounts = [any_path(&mut a)];
+        let all_homes = [any_path(&mut h0), any_path(&mut h1)];
+        let all_accounts = [any_path(&mut a0), any_path(&mut a1)];
+        let (n_homes, n_accounts): (usize, usize) = (kani::any(), kani::any());
+        kani::assume(n_homes <= M && n_accounts <= M);
+        let homes = &all_homes[..n_homes];
+        let accounts = &all_accounts[..n_accounts];
         let workspace = any_workspace();
         let at = Places {
             obid,
             worktrees,
-            homes: &homes,
-            accounts: &accounts,
+            homes,
+            accounts,
         };
-        if allowed(workspace, chosen, &at) {
+        let allowed = allowed(workspace, chosen, &at);
+        kani::cover!(allowed && workspace == Workspace::Folder && n_homes == M && n_accounts == M);
+        kani::cover!(
+            allowed && workspace == Workspace::Worktree && n_homes == M && n_accounts == M
+        );
+        kani::cover!(!allowed);
+        if allowed {
             // Never the whole disk, a person's home or what holds it.
             assert!(!chosen.is_empty());
-            assert!(!within(homes[0], chosen));
+            for home in homes {
+                assert!(!within(home, chosen));
+            }
             // Nothing of an account's folder, nor what holds one.
-            assert!(!within(chosen, accounts[0]) && !within(accounts[0], chosen));
+            for account in accounts {
+                assert!(!within(chosen, account) && !within(account, chosen));
+            }
             // Never obid's home itself, nor anything holding it.
             assert!(!within(obid, chosen));
             match workspace {

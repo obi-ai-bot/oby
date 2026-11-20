@@ -17,6 +17,7 @@
 
 pub mod writes;
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -72,10 +73,35 @@ struct Worktree {
 pub struct Place {
     /// The conversation's folder.
     pub folder: PathBuf,
-    /// Where its work happens: the folder itself, or its worktree.
-    pub path: PathBuf,
+    /// Where its work happens: the folder itself, or its worktree. None when obid can't tell or
+    /// can't make it: then the conversation works only in its own room there, never in the
+    /// folder instead (fail closed, WORKSPACE-3).
+    pub path: Option<PathBuf>,
     /// The worktree's branch; none in place.
     pub branch: Option<String>,
+    /// Why it has no path.
+    pub why: Option<String>,
+}
+
+impl Place {
+    fn at(folder: &str, path: &str, branch: Option<String>) -> Place {
+        Place {
+            folder: PathBuf::from(folder),
+            path: Some(PathBuf::from(path)),
+            branch,
+            why: None,
+        }
+    }
+
+    /// Its room only, and why.
+    fn room(folder: &str, why: String) -> Place {
+        Place {
+            folder: PathBuf::from(folder),
+            path: None,
+            branch: None,
+            why: Some(why),
+        }
+    }
 }
 
 /// One change to the workspaces at a time: two requests never make two worktrees for one folder.
@@ -95,11 +121,16 @@ fn file(home: &Path, id: &str) -> PathBuf {
     worktrees(home).join(format!("{id}.json"))
 }
 
-fn read(home: &Path, id: &str) -> Kept {
-    std::fs::read(file(home, id))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+/// What conversation `id` keeps: none when it chose nothing (no file), why not when its file is
+/// there but can't be read or doesn't parse. Never a default in its place.
+fn read(home: &Path, id: &str) -> Result<Option<Kept>, String> {
+    match std::fs::read(file(home, id)) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|e| format!("its file doesn't read: {e}")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 fn write(home: &Path, id: &str, kept: &Kept) -> Result<(), String> {
@@ -108,17 +139,18 @@ fn write(home: &Path, id: &str, kept: &Kept) -> Result<(), String> {
     crate::store::write_private(&file(home, id), &bytes).map_err(|e| e.to_string())
 }
 
-/// The workspace conversation `id` chose: `Folder` when it chose none.
-pub fn chosen(home: &Path, id: &str) -> Workspace {
-    if is_id(id) {
-        read(home, id).workspace
-    } else {
-        Workspace::Folder
+/// The workspace conversation `id` chose: `Folder` when it chose none; why not when its choice
+/// can't be read.
+pub fn chosen(home: &Path, id: &str) -> Result<Workspace, String> {
+    if !is_id(id) {
+        return Err("That isn't a conversation's id.".into());
     }
+    Ok(read(home, id)?.unwrap_or_default().workspace)
 }
 
 /// Keeps a new conversation's choice, sent with its first message (WORKSPACE-3), and makes its
-/// worktrees now. A worktree that can't be made is said in obid's log; the next look tries again.
+/// worktrees now. `Err` when the choice can't be kept: the caller refuses the conversation, as
+/// none kept would read as "This folder".
 pub async fn chose(shared: &Shared, id: &str, workspace: Workspace) -> Result<(), String> {
     if !is_id(id) {
         return Err("That isn't a conversation's id.".into());
@@ -139,47 +171,78 @@ pub async fn chose(shared: &Shared, id: &str, workspace: Workspace) -> Result<()
 }
 
 /// Where conversation `id` works in each of its folders, its worktrees made first for those that
-/// have none yet (a folder added later, or one that became a repository).
+/// have none yet (a folder added later, one that became a repository, or one whose worktree is
+/// gone). It fails closed: a choice it can't read, or a worktree it can't make, gives that folder
+/// no path (the room only), never the folder itself.
 pub async fn places(shared: &Shared, id: &str) -> Vec<Place> {
-    let folders = shared.conversations.working_folders(id).unwrap_or_default();
     if !is_id(id) {
         return vec![];
     }
+    let folders = shared.conversations.working_folders(id).unwrap_or_default();
     let home = &shared.config.home;
     let _held = LOCK.lock().await;
-    let mut kept = read(home, id);
-    if kept.workspace == Workspace::Worktree {
-        let mut made = false;
-        for folder in &folders {
-            if kept
-                .worktrees
-                .iter()
-                .any(|w| crate::folders::same(&w.folder, folder))
-            {
-                continue;
+    let mut kept = match read(home, id) {
+        Ok(kept) => kept.unwrap_or_default(),
+        Err(why) => {
+            tracing::warn!("conversation {id}: where it works can't be read: {why}");
+            let why = format!(
+                "Oby couldn't read where this conversation works ({why}), so it works only in its own room."
+            );
+            return (folders.iter())
+                .map(|f| Place::room(f, why.clone()))
+                .collect();
+        }
+    };
+    if kept.workspace == Workspace::Folder {
+        return (folders.iter()).map(|f| Place::at(f, f, None)).collect();
+    }
+    // A worktree that's gone is made again, on a branch of its own.
+    let before = kept.worktrees.len();
+    kept.worktrees.retain(|w| Path::new(&w.root).is_dir());
+    let mut changed = kept.worktrees.len() != before;
+    let mut in_place: Vec<&str> = Vec::new();
+    let mut failed: Vec<(&str, String)> = Vec::new();
+    for folder in &folders {
+        if kept
+            .worktrees
+            .iter()
+            .any(|w| crate::folders::same(&w.folder, folder))
+        {
+            continue;
+        }
+        match make(home, id, Path::new(folder)).await {
+            Ok(Some(worktree)) => {
+                kept.worktrees.push(worktree);
+                changed = true;
             }
-            match make(home, id, Path::new(folder)).await {
-                Ok(Some(worktree)) => {
-                    kept.worktrees.push(worktree);
-                    made = true;
-                }
-                Ok(None) => {}
-                Err(why) => tracing::warn!("conversation {id}: no worktree for a folder: {why}"),
+            Ok(None) => in_place.push(folder.as_str()),
+            Err(why) => {
+                tracing::warn!("conversation {id}: no worktree for a folder: {why}");
+                failed.push((folder.as_str(), why));
             }
         }
-        if made && let Err(why) = write(home, id, &kept) {
-            tracing::warn!("conversation {id}: its worktrees aren't kept: {why}");
-        }
+    }
+    if changed && let Err(why) = write(home, id, &kept) {
+        tracing::warn!("conversation {id}: its worktrees aren't kept: {why}");
     }
     folders
         .iter()
         .map(|folder| {
-            let worktree = (kept.worktrees.iter())
-                .find(|w| crate::folders::same(&w.folder, folder) && Path::new(&w.root).is_dir());
-            Place {
-                folder: PathBuf::from(folder),
-                path: PathBuf::from(worktree.map_or(folder, |w| &w.path)),
-                branch: worktree.map(|w| w.branch.clone()),
+            let worktree = (kept.worktrees.iter()).find(|w| crate::folders::same(&w.folder, folder));
+            if let Some(w) = worktree {
+                Place::at(folder, &w.path, Some(w.branch.clone()))
+            } else if in_place.contains(&folder.as_str()) {
+                Place::at(folder, folder, None)
+            } else {
+                let why = (failed.iter())
+                    .find(|(f, _)| *f == folder.as_str())
+                    .map_or("no worktree was made", |(_, why)| why.as_str());
+                Place::room(
+                    folder,
+                    format!(
+                        "Oby couldn't make a worktree of {folder} ({why}), so this conversation works only in its own room there."
+                    ),
+                )
             }
         })
         .collect()
@@ -190,7 +253,17 @@ pub async fn places(shared: &Shared, id: &str) -> Vec<Place> {
 /// place, as T3's `resolveSendEnvMode` decides). The folder's files and branches don't change.
 async fn make(home: &Path, id: &str, folder: &Path) -> Result<Option<Worktree>, String> {
     let state = crate::git::state(folder).await;
-    if !state.repo || !state.committed {
+    if !state.repo {
+        // In place only when git itself says it isn't a repository: git that can't say is no
+        // place at all (fail closed), never the folder.
+        let args = [OsStr::new("rev-parse"), OsStr::new("--is-inside-work-tree")];
+        return match crate::git::run(folder, &args, &[("LC_ALL", "C")]).await {
+            Err(e) if e.0.contains("not a git repository") => Ok(None),
+            Err(e) => Err(e.0),
+            Ok(said) => Err(format!("git says {said} of it as a repository")),
+        };
+    }
+    if !state.committed {
         return Ok(None);
     }
     let git = |args: Vec<String>| async move {
@@ -241,9 +314,15 @@ async fn make(home: &Path, id: &str, folder: &Path) -> Result<Option<Worktree>, 
     ])
     .await?;
     let root = std::fs::canonicalize(&root).map_err(|e| e.to_string())?;
+    // The root itself for a folder at its repository's top: `join("")` would end it in a `/`.
+    let path = if inside.as_os_str().is_empty() {
+        root.clone()
+    } else {
+        root.join(inside)
+    };
     Ok(Some(Worktree {
         folder: folder.to_string_lossy().into_owned(),
-        path: root.join(inside).to_string_lossy().into_owned(),
+        path: path.to_string_lossy().into_owned(),
         root: root.to_string_lossy().into_owned(),
         branch,
         base,
@@ -272,8 +351,14 @@ pub async fn forget(shared: &Shared, id: &str) {
     }
     let home = &shared.config.home;
     let _held = LOCK.lock().await;
-    for worktree in read(home, id).worktrees {
-        remove(&worktree).await;
+    match read(home, id) {
+        Ok(kept) => {
+            for worktree in kept.unwrap_or_default().worktrees {
+                remove(&worktree).await;
+            }
+        }
+        // Its folder below goes anyway; the repositories prune the worktree on their next look.
+        Err(why) => tracing::warn!("conversation {id}: its worktrees can't be read: {why}"),
     }
     let _ = std::fs::remove_file(file(home, id));
     let _ = std::fs::remove_dir_all(worktrees(home).join(id));
@@ -304,7 +389,14 @@ pub async fn tidy(shared: &Shared) {
         .collect();
     for id in ids {
         let _held = LOCK.lock().await;
-        let mut kept = read(home, &id);
+        let mut kept = match read(home, &id) {
+            Ok(Some(kept)) => kept,
+            Ok(None) => continue,
+            Err(why) => {
+                tracing::warn!("conversation {id}: its worktrees can't be read: {why}");
+                continue;
+            }
+        };
         let before = kept.worktrees.len();
         let mut left = Vec::new();
         for worktree in std::mem::take(&mut kept.worktrees) {
@@ -389,34 +481,48 @@ async fn look(
     held(&shared, &id, scope)?;
     if let (Some(folder), Some(action)) = (asked.folder, asked.finish) {
         let (place, state) = find(&shared, &id, &folder).await?;
-        let sentence = sentence(action, &place, &state)?;
+        let (sentence, _) = what(action, &place, &state).await?;
         return Ok(answer(json!({"action": sentence})));
     }
     Ok(answer(seen(&shared, &id).await))
 }
 
-/// The workspace and its places as the app shows them.
+/// The workspace and its places as the app shows them. A place obid can't give a path is the
+/// room only: no path, no action, and why.
 async fn seen(shared: &Shared, id: &str) -> Value {
     let mut out = Vec::new();
     for place in places(shared, id).await {
-        let state = crate::git::state(&place.path).await;
+        let name = crate::folders::name(&place.folder.to_string_lossy()).to_owned();
+        let Some(path) = &place.path else {
+            out.push(json!({
+                "folder": place.folder,
+                "name": name,
+                "path": null,
+                "worktree": false,
+                "branch": null,
+                "actions": [],
+                "why": place.why,
+            }));
+            continue;
+        };
+        let state = crate::git::state(path).await;
         out.push(json!({
             "folder": place.folder,
-            "name": crate::folders::name(&place.folder.to_string_lossy()),
-            "path": place.path,
+            "name": name,
+            "path": path,
             "worktree": place.branch.is_some(),
             "branch": state.branch,
             "actions": crate::folders::finishing(&state),
         }));
     }
-    json!({"workspace": chosen(&shared.config.home, id), "places": out})
+    json!({"workspace": chosen(&shared.config.home, id).ok(), "places": out})
 }
 
 fn answer(body: Value) -> Response {
     (StatusCode::OK, axum::Json(body)).into_response()
 }
 
-/// The conversation's place for `folder`, one of its own, and its git state now.
+/// The conversation's place for `folder`, one of its own with a path, and its git state now.
 async fn find(
     shared: &Shared,
     id: &str,
@@ -432,31 +538,117 @@ async fn find(
                 "That folder isn't one this conversation works in.",
             )
         })?;
-    let state = crate::git::state(&place.path).await;
+    let Some(path) = &place.path else {
+        let why = place.why.clone().unwrap_or_default();
+        return Err(ApiError::new(StatusCode::CONFLICT, why));
+    };
+    let state = crate::git::state(path).await;
     Ok((place, state))
 }
 
-/// obid's sentence for `action` in `place` now, what the owner signs; a conflict when finishing
-/// can't take that action there now.
-fn sentence(action: Action, place: &Place, state: &crate::git::State) -> Result<String, ApiError> {
+/// A file a commit from finishing takes: its path from the repository's top, and whether git
+/// doesn't track it yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Change {
+    path: String,
+    new: bool,
+}
+
+/// What git shows changed in `dir` (the place, never the rest of its repository): each untracked
+/// file by itself, none git ignores, renames as their two halves.
+async fn changes(dir: &Path) -> Result<Vec<Change>, String> {
+    let args = [
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--no-renames",
+        "--",
+        ".",
+    ];
+    let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+    let out = crate::git::run_bytes(dir, &args, &[], None)
+        .await
+        .map_err(|e| e.0)?;
+    Ok(parse_status(&out))
+}
+
+/// `git status --porcelain=v1 -z --no-renames`: `XY path\0`, one path each.
+fn parse_status(out: &[u8]) -> Vec<Change> {
+    out.split(|b| *b == 0)
+        .filter(|entry| entry.len() > 3)
+        .map(|entry| Change {
+            path: String::from_utf8_lossy(&entry[3..]).into_owned(),
+            new: entry.starts_with(b"??"),
+        })
+        .collect()
+}
+
+/// The most files a commit's sentence names one by one; the rest are counted.
+const NAMED: usize = 50;
+
+/// The files as the commit's sentence names them: new ones marked, past [`NAMED`] counted.
+fn listed(files: &[Change]) -> String {
+    let mut names: Vec<String> = (files.iter().take(NAMED))
+        .map(|c| {
+            if c.new {
+                format!("{} (new)", c.path)
+            } else {
+                c.path.clone()
+            }
+        })
+        .collect();
+    if files.len() > NAMED {
+        names.push(format!("and {} more", files.len() - NAMED));
+    }
+    names.join(", ")
+}
+
+/// obid's sentence for `action` in `place` now, what the owner signs, and for a commit the files
+/// it takes; a conflict when finishing can't take that action there now. The folder is named by
+/// its full path, so two folders of one name can't be told apart wrongly.
+async fn what(
+    action: Action,
+    place: &Place,
+    state: &crate::git::State,
+) -> Result<(String, Vec<Change>), ApiError> {
     if !crate::folders::finishing(state).contains(&action) {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
             "That can't be done there now. Look at it again.",
         ));
     }
-    let name = crate::folders::name(&place.folder.to_string_lossy()).to_owned();
+    let path = place.folder.to_string_lossy().into_owned();
     let branch = state.branch.clone().unwrap_or_default();
     let remote = state.remote.clone().unwrap_or_default();
-    Ok(match action {
-        Action::Commit => format!("Commit every change in {name} on {branch}."),
-        Action::Push => format!("Push {branch} from {name} to {remote}."),
-        Action::PullRequest => format!("Open a pull request from {branch} in {name}."),
-        Action::PublishRepository => {
-            format!("Publish {name} as a new private repository on GitHub, with {branch}.")
+    let mut files = Vec::new();
+    let sentence = match action {
+        Action::Commit => {
+            let dir = place.path.as_deref().unwrap_or(place.folder.as_path());
+            files = changes(dir)
+                .await
+                .map_err(|why| ApiError::new(StatusCode::CONFLICT, why))?;
+            if files.is_empty() {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    format!("There's nothing to commit in {path}."),
+                ));
+            }
+            let n = files.len();
+            let changes = if n == 1 { "change" } else { "changes" };
+            format!(
+                "Commit {n} {changes} in {path} on {branch}: {}.",
+                listed(&files)
+            )
         }
-        Action::InitializeGit => format!("Make {name} a git repository."),
-    })
+        Action::Push => format!("Push {branch} from {path} to {remote}."),
+        Action::PullRequest => format!("Open a pull request from {branch} in {path}."),
+        Action::PublishRepository => {
+            format!("Publish {path} as a new private repository on GitHub, with {branch}.")
+        }
+        Action::InitializeGit => format!("Make {path} a git repository."),
+    };
+    Ok((sentence, files))
 }
 
 #[derive(Deserialize)]
@@ -485,7 +677,7 @@ async fn finish(
     })?;
     held(&shared, &id, scope)?;
     let (place, state) = find(&shared, &id, &asked.folder).await?;
-    let sentence = sentence(asked.finish, &place, &state)?;
+    let (sentence, files) = what(asked.finish, &place, &state).await?;
     let key = shared.devices.public_key(&asked.approval.device);
     shared
         .jobs
@@ -498,7 +690,13 @@ async fn finish(
             obi_protocol::time::now(),
         )
         .map_err(|why| ApiError::new(StatusCode::FORBIDDEN, why))?;
-    act(&shared, asked.finish, &place, &state)
+    let Some(dir) = place.path.as_deref() else {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "There's no place to do it.",
+        ));
+    };
+    act(&shared, asked.finish, dir, &place, &state, &files)
         .await
         .map_err(|why| ApiError::new(StatusCode::CONFLICT, why))?;
     Ok(answer(seen(&shared, &id).await))
@@ -510,10 +708,11 @@ const MESSAGE: &str = "Changes made with Oby";
 async fn act(
     shared: &Shared,
     action: Action,
+    dir: &Path,
     place: &Place,
     state: &crate::git::State,
+    files: &[Change],
 ) -> Result<(), String> {
-    let dir = place.path.as_path();
     let git = |args: &'static [&'static str]| async move {
         crate::git::git(dir, args)
             .await
@@ -522,13 +721,7 @@ async fn act(
     };
     match action {
         Action::InitializeGit => git(&["init", "-q"]).await,
-        Action::Commit => {
-            git(&["add", "-A"]).await?;
-            crate::git::git(dir, &["commit", "-q", "-m", MESSAGE])
-                .await
-                .map(|_| ())
-                .map_err(|e| e.0)
-        }
+        Action::Commit => commit(dir, files).await,
         Action::Push => push(shared, dir, state).await,
         Action::PullRequest => {
             if state.ahead > 0 || !state.upstream {
@@ -540,6 +733,30 @@ async fn act(
     }
 }
 
+/// Commits exactly `files`, the ones the owner's sentence named, as T3 Code commits the files its
+/// dialog shows (`git add -A` of those paths, `GitVcsDriverCore.ts`): never anything else of the
+/// folder, nor of its repository outside it. The owner's hooks don't run (obid's git never runs a
+/// hook, and `--no-verify` says it again); their name, email and signing settings stay theirs.
+async fn commit(dir: &Path, files: &[Change]) -> Result<(), String> {
+    if files.is_empty() {
+        return Err("There's nothing to commit.".into());
+    }
+    let mut paths = Vec::new();
+    for change in files {
+        paths.extend_from_slice(format!(":(top,literal){}", change.path).as_bytes());
+        paths.push(0);
+    }
+    let add = ["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"];
+    let add: Vec<&OsStr> = add.iter().map(OsStr::new).collect();
+    crate::git::run_bytes(dir, &add, &[], Some(paths))
+        .await
+        .map_err(|e| e.0)?;
+    crate::git::git(dir, &["commit", "-q", "--no-verify", "-m", MESSAGE])
+        .await
+        .map(|_| ())
+        .map_err(|e| e.0)
+}
+
 /// What the scan writes its texts in: obid's own, never the Mac's shared temporary folder.
 fn scratch(shared: &Shared) -> Result<PathBuf, String> {
     let scratch = worktrees(&shared.config.home).join("scan");
@@ -547,42 +764,123 @@ fn scratch(shared: &Shared) -> Result<PathBuf, String> {
     Ok(scratch)
 }
 
+/// A bare repository of obid's own that borrows a folder's objects (`objects/info/alternates`):
+/// what finishing scans and sends is read and pushed from it, so none of the folder's settings,
+/// hooks or attributes takes part. Removed when dropped.
+struct Borrowed(PathBuf);
+
+impl Drop for Borrowed {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+async fn borrow(shared: &Shared, dir: &Path) -> Result<Borrowed, String> {
+    let common = crate::git::git(
+        dir,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .await
+    .map_err(|e| e.0)?;
+    let objects = Path::new(&common).join("objects");
+    if !objects.is_dir() {
+        return Err("its repository's objects aren't there".into());
+    }
+    let format = crate::git::git(dir, &["rev-parse", "--show-object-format"])
+        .await
+        .unwrap_or_else(|_| "sha1".into());
+    let scratch = scratch(shared)?;
+    let path = scratch.join(format!("borrowed-{}", uuid::Uuid::new_v4()));
+    let borrowed = Borrowed(path.clone());
+    crate::git::git(
+        &scratch,
+        &[
+            "init",
+            "-q",
+            "--bare",
+            "--template=",
+            &format!("--object-format={format}"),
+            &path.to_string_lossy(),
+        ],
+    )
+    .await
+    .map_err(|e| e.0)?;
+    let info = path.join("objects/info");
+    std::fs::create_dir_all(&info).map_err(|e| e.to_string())?;
+    std::fs::write(info.join("alternates"), format!("{}\n", objects.display()))
+        .map_err(|e| e.to_string())?;
+    Ok(borrowed)
+}
+
+/// The commit `dir`'s `HEAD` is now, by its id: what is scanned, and exactly what is sent.
+async fn head(dir: &Path) -> Result<String, String> {
+    let head = crate::git::git(dir, &["rev-parse", "--verify", "-q", "HEAD^{commit}"])
+        .await
+        .map_err(|_| "There's no commit to send.".to_owned())?;
+    if crate::git::is_sha(&head) {
+        Ok(head)
+    } else {
+        Err("There's no commit to send.".into())
+    }
+}
+
+/// Scans what `head` adds since `since` (none: its whole history), then sends exactly `head` to
+/// `branch` on `url`, both from a [`Borrowed`] repository: the commit pushed is the commit scanned.
+async fn send(
+    shared: &Shared,
+    dir: &Path,
+    url: &str,
+    since: Option<&str>,
+    head: &str,
+    branch: &str,
+) -> Result<(), String> {
+    let borrowed = borrow(shared, dir).await?;
+    crate::publish::scan_folder(&borrowed.0, since, head, &scratch(shared)?).await?;
+    crate::publish::push_out(&borrowed.0, url, head, branch).await
+}
+
+/// After a push of `head` to `branch` on `remote`: the folder's own record of it, as a push by
+/// name would have written it (the remote's branch, and its upstream when it had none).
+async fn pushed(dir: &Path, remote: &str, branch: &str, head: &str, upstream: bool) {
+    let tracking = format!("refs/remotes/{remote}/{branch}");
+    let _ = crate::git::git(dir, &["update-ref", &tracking, head]).await;
+    if !upstream {
+        let key = |k: &str| format!("branch.{branch}.{k}");
+        let _ = crate::git::git(dir, &["config", &key("remote"), remote]).await;
+        let merge = format!("refs/heads/{branch}");
+        let _ = crate::git::git(dir, &["config", &key("merge"), &merge]).await;
+    }
+}
+
 /// Pushes `dir`'s branch to its remote, its upstream set, once the secret scan of every commit the
-/// remote hasn't is clean.
+/// remote hasn't is clean: exactly the commit scanned, `<sha>:refs/heads/<branch>`.
 async fn push(shared: &Shared, dir: &Path, state: &crate::git::State) -> Result<(), String> {
     let (Some(remote), Some(branch)) = (&state.remote, &state.branch) else {
         return Err("There's no branch or remote to push to.".into());
     };
-    let since = if state.upstream {
-        crate::git::git(dir, &["rev-parse", "@{upstream}"])
+    let head = head(dir).await?;
+    let since = (if state.upstream {
+        crate::git::git(dir, &["rev-parse", "--verify", "-q", "@{upstream}"])
             .await
             .ok()
     } else {
-        let default = state
-            .default_branch
-            .as_ref()
-            .map(|d| format!("{remote}/{d}"));
-        match default {
-            Some(default) => crate::git::git(dir, &["merge-base", &default, "HEAD"])
-                .await
-                .ok(),
+        match &state.default_branch {
+            Some(default) => {
+                let default = format!("refs/remotes/{remote}/{default}");
+                crate::git::git(dir, &["merge-base", &default, &head])
+                    .await
+                    .ok()
+            }
             None => None,
         }
-    };
-    crate::publish::scan_folder(dir, since.as_deref(), &scratch(shared)?).await?;
-    crate::git::git(
-        dir,
-        &[
-            "push",
-            "-q",
-            "-u",
-            remote,
-            &format!("HEAD:refs/heads/{branch}"),
-        ],
-    )
-    .await
-    .map(|_| ())
-    .map_err(|e| format!("Nothing was pushed: {}", e.said()))
+    })
+    .filter(|since| crate::git::is_sha(since));
+    let url = crate::git::git(dir, &["remote", "get-url", "--push", remote])
+        .await
+        .map_err(|e| e.0)?;
+    send(shared, dir, &url, since.as_deref(), &head, branch).await?;
+    pushed(dir, remote, branch, &head, state.upstream).await;
+    Ok(())
 }
 
 /// The GitHub CLI, or why finishing can't reach GitHub.
@@ -616,8 +914,9 @@ async fn pull_request(dir: &Path, state: &crate::git::State) -> Result<(), Strin
         .map_err(|(_, said)| format!("The branch is pushed, but no pull request opened: {said}"))
 }
 
-/// Makes a private repository on GitHub named after the folder, with `dir` as its source and
-/// `origin` its remote, and pushes it, once the secret scan of its whole history is clean.
+/// Makes a private repository on GitHub named after the folder, once the secret scan of its whole
+/// history is clean; adds it as `origin`, then sends exactly the commit scanned with obid's own git
+/// (`gh repo create` without `--push`, so gh runs no git of the folder's).
 async fn publish_repository(
     shared: &Shared,
     dir: &Path,
@@ -627,25 +926,40 @@ async fn publish_repository(
     if state.remote.is_some() {
         return Err("It has a remote already.".into());
     }
+    let Some(branch) = &state.branch else {
+        return Err("There's no branch to publish.".into());
+    };
     let gh = gh()?;
-    crate::publish::scan_folder(dir, None, &scratch(shared)?).await?;
+    let head = head(dir).await?;
+    // The scan first, from obid's own repository: nothing is made on GitHub when it isn't clean.
+    {
+        let borrowed = borrow(shared, dir).await?;
+        crate::publish::scan_folder(&borrowed.0, None, &head, &scratch(shared)?).await?;
+    }
     let name = repository_name(crate::folders::name(&place.folder.to_string_lossy()));
-    let source = dir.to_string_lossy();
-    let args = [
-        "repo",
-        "create",
-        &name,
-        "--private",
-        "--source",
-        &source,
-        "--remote",
-        "origin",
-        "--push",
-    ];
-    crate::github::output(&gh, &args)
+    let made = crate::github::output(&gh, &["repo", "create", &name, "--private"])
         .await
-        .map(|_| ())
-        .map_err(|(_, said)| format!("Not published: {said}"))
+        .map_err(|(_, said)| format!("Not published: {said}"))?;
+    let url = (made.lines().rev())
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or_default()
+        .to_owned();
+    let file = shared.config.allow_file_remotes && url.starts_with("file://");
+    if !file && (!url.starts_with("https://github.com/") || github_repo(&url).is_none()) {
+        return Err(format!(
+            "Not published: GitHub didn't say where the repository is ({url})."
+        ));
+    }
+    crate::git::git(dir, &["remote", "add", "origin", &url])
+        .await
+        .map_err(|e| format!("Not published: {}", e.said()))?;
+    send(shared, dir, &url, None, &head, branch).await?;
+    pushed(dir, "origin", branch, &head, false).await;
+    // GitHub's default branch is the first one pushed: the folder's record says so too.
+    let default = format!("refs/remotes/origin/{branch}");
+    let _ = crate::git::git(dir, &["symbolic-ref", "refs/remotes/origin/HEAD", &default]).await;
+    Ok(())
 }
 
 /// A folder's name as a GitHub repository's: letters, digits, `.`, `-` and `_`, anything else `-`.
@@ -725,6 +1039,37 @@ mod tests {
             ..clean
         };
         assert!(!merged(&changed, "b", "a", true), "uncommitted work stays");
+    }
+
+    #[test]
+    fn workspace_4_a_commit_names_each_file_git_shows() {
+        let out = b" M api/main.rs\0?? api/todo.md\0D  api/old.md\0";
+        let files = parse_status(out);
+        assert_eq!(
+            files,
+            vec![
+                Change {
+                    path: "api/main.rs".into(),
+                    new: false
+                },
+                Change {
+                    path: "api/todo.md".into(),
+                    new: true
+                },
+                Change {
+                    path: "api/old.md".into(),
+                    new: false
+                },
+            ]
+        );
+        assert_eq!(listed(&files), "api/main.rs, api/todo.md (new), api/old.md");
+        let many: Vec<Change> = (0..NAMED + 2)
+            .map(|n| Change {
+                path: format!("f{n}"),
+                new: false,
+            })
+            .collect();
+        assert!(listed(&many).ends_with(&format!("f{}, and 2 more", NAMED - 1)));
     }
 
     #[test]

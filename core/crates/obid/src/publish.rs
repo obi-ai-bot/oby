@@ -1438,13 +1438,22 @@ async fn scan_changes(
 }
 
 /// The secret scan of what finishing a conversation's work in a folder sends out (WORKSPACE-4):
-/// every commit `HEAD` has that `since` hasn't (none: its whole history, a repository published
-/// for the first time), as a job's push is scanned: each patch, each message and author, every
-/// file sent. `Ok` only when it ran and found nothing; else one line saying why nothing goes out,
-/// where it found something, never the secret.
-pub async fn scan_folder(dir: &Path, since: Option<&str>, scratch: &Path) -> Result<(), String> {
-    let range = since.map_or_else(|| "HEAD".to_owned(), |since| format!("{since}..HEAD"));
-    let mut found = scan_range(dir, since, "HEAD", scratch)
+/// every commit `head` (a commit's id, resolved once by the caller, and exactly what it sends) has
+/// that `since` hasn't (none: its whole history, a repository published for the first time), as a
+/// job's push is scanned: each patch, each message and author, every file sent. `Ok` only when it
+/// ran and found nothing; else one line saying why nothing goes out, where it found something,
+/// never the secret.
+pub async fn scan_folder(
+    dir: &Path,
+    since: Option<&str>,
+    head: &str,
+    scratch: &Path,
+) -> Result<(), String> {
+    if !git::is_sha(head) || since.is_some_and(|s| !git::is_sha(s)) {
+        return Err("Not published: the secret scan reads commits by their ids only.".into());
+    }
+    let range = since.map_or_else(|| head.to_owned(), |since| format!("{since}..{head}"));
+    let mut found = scan_range(dir, since, head, scratch)
         .await
         .map_err(|f| f.line())?;
     found.extend(
@@ -1457,6 +1466,42 @@ pub async fn scan_folder(dir: &Path, since: Option<&str>, scratch: &Path) -> Res
     } else {
         Err(Failure::Blocked(found).line())
     }
+}
+
+/// Pushes exactly `head` to `branch` on `url` from `repo` (crate::workspace's borrowed repository),
+/// as a job's push goes: no tags, submodules, signing or hooks, never a force; an `https` GitHub
+/// remote signs in with the owner's gh ([`credentials`]).
+pub(crate) async fn push_out(
+    repo: &Path,
+    url: &str,
+    head: &str,
+    branch: &str,
+) -> Result<(), String> {
+    if !git::is_sha(head) || !git::is_branch_name(branch) {
+        return Err(format!(
+            "Nothing was pushed: {branch} isn't a branch Oby pushes."
+        ));
+    }
+    let mut args = if url.starts_with("https://github.com/") {
+        credentials(url, crate::github::gh().as_deref(), &forbidden_names())
+    } else {
+        Vec::new()
+    };
+    args.extend([
+        "push".into(),
+        "--no-follow-tags".into(),
+        "--no-signed".into(),
+        "--recurse-submodules=no".into(),
+        "--no-verify".into(),
+        "--".into(),
+        url.to_owned(),
+        format!("{head}:refs/heads/{branch}"),
+    ]);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    git::git(repo, &args)
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("Nothing was pushed: {}", e.said()))
 }
 
 /// [`scan_changes`] from `since`, or with none, of `head`'s whole history (a repository published
