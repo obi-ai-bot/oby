@@ -1,0 +1,287 @@
+{
+  "schemaVersion": "2",
+  "name": "DELETE /v1/pairing",
+  "version": "1.0.0",
+  "description": "Another computer's own device token ends its pairing on the gateway (COMPUTERS-16), where a phone's can't; before that, its token reaches the gateway's list and nothing kept on loopback, and no path read two ways (COMPUTERS-14).",
+  "trigger": {
+    "http": {
+      "method": "DELETE",
+      "path": "/v1/pairing"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "gateway": "127.0.0.1:0"
+        }
+      }
+    },
+    {
+      "id": "computer-invite",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/pairing/invite",
+        "body": {
+          "url": "https://computer.example.invalid",
+          "name": "Test computer",
+          "computer": true
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "computer",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "x"
+        },
+        "method": "POST",
+        "path": "/v1/pairing",
+        "as": "token",
+        "token": "x",
+        "expect": {
+          "status": 200,
+          "body": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        },
+        "body": {
+          "credential": "${state.computer-invite.body.secret}",
+          "name": "Test Mac"
+        }
+      }
+    },
+    {
+      "id": "phone-invite",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/pairing/invite",
+        "body": {
+          "url": "https://mac.example.invalid",
+          "name": "Test Mac"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "phone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "x"
+        },
+        "method": "POST",
+        "path": "/v1/pairing",
+        "as": "token",
+        "token": "x",
+        "expect": {
+          "status": 200,
+          "body": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        },
+        "body": {
+          "credential": "${state.phone-invite.body.secret}",
+          "name": "Test phone"
+        }
+      }
+    },
+    {
+      "id": "on-the-list",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.computer.body.token}"
+        },
+        "method": "GET",
+        "path": "/v1/repos",
+        "as": "token",
+        "token": "${state.computer.body.token}",
+        "expect": {
+          "status": 200
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-14"
+        ]
+      }
+    },
+    {
+      "id": "never-the-vault",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.computer.body.token}"
+        },
+        "method": "GET",
+        "path": "/v1/obid/vault",
+        "as": "token",
+        "token": "${state.computer.body.token}",
+        "expect": {
+          "status": 404
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-14"
+        ]
+      }
+    },
+    {
+      "id": "escaped-segment-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.computer.body.token}"
+        },
+        "method": "GET",
+        "path": "/v1/%70airing/devices",
+        "as": "token",
+        "token": "${state.computer.body.token}",
+        "expect": {
+          "status": 404
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-14"
+        ]
+      }
+    },
+    {
+      "id": "never-pairing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.computer.body.token}"
+        },
+        "method": "GET",
+        "path": "/v1/pairing/devices",
+        "as": "token",
+        "token": "${state.computer.body.token}",
+        "expect": {
+          "status": 404
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-14"
+        ]
+      }
+    },
+    {
+      "id": "a-phone-removes-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.phone.body.token}"
+        },
+        "method": "DELETE",
+        "path": "/v1/pairing",
+        "as": "token",
+        "token": "${state.phone.body.token}",
+        "expect": {
+          "status": 404
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-16"
+        ]
+      }
+    },
+    {
+      "id": "removed-with-its-own-token",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.computer.body.token}"
+        },
+        "method": "DELETE",
+        "path": "/v1/pairing",
+        "as": "token",
+        "token": "${state.computer.body.token}",
+        "expect": {
+          "status": 204
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-16"
+        ]
+      }
+    },
+    {
+      "id": "its-token-is-gone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.computer.body.token}"
+        },
+        "method": "GET",
+        "path": "/v1/status",
+        "as": "token",
+        "token": "${state.computer.body.token}",
+        "expect": {
+          "status": 401
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-16"
+        ]
+      }
+    },
+    {
+      "id": "the-phone-stays",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.phone.body.token}"
+        },
+        "method": "GET",
+        "path": "/v1/status",
+        "as": "token",
+        "token": "${state.phone.body.token}",
+        "expect": {
+          "status": 200
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-16"
+        ]
+      }
+    }
+  ]
+}
