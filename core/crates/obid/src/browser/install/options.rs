@@ -13,7 +13,7 @@ pub struct Options {
     pub home: PathBuf,
     /// agent-browser's pin, or why this computer has none.
     pub agent_browser: Result<Pin, String>,
-    /// Chrome for Testing's pin, or why this computer has none (linux-arm64).
+    /// chrome-headless-shell's pin, or why this computer has none (linux-arm64).
     pub chrome: Result<Pin, String>,
 }
 
