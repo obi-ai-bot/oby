@@ -78,6 +78,7 @@ const BOARDS: Record<number, Demo> = {
     }),
     ui: { width: 600 },
   },
+  13: { state: state([]), ui: { open: false } },
   14: { state: state([t('dash', { owner: claude, title: 'Dashboard · Acme', url: 'localhost:3000/dashboard', action: 'Reading the dashboard', computer: { name: 'devbox', os: 'Linux' } })]), ui: { width: 620 } },
   17: { state: state([]), ui: { width: 600 } },
 };
