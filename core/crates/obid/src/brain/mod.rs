@@ -19,6 +19,7 @@ pub mod briefing;
 pub mod calls;
 pub mod defaults;
 pub mod find;
+pub mod folder_writes;
 pub mod harness;
 pub mod harness_codex;
 pub mod harness_cursor;
