@@ -1,0 +1,215 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/routines/{id} (behind a job waiting for room)",
+  "version": "1.0.0",
+  "description": "A due run whose previous run's job still waits for an account with room is skipped, saying so, and starts no job; skips never count as failures, so a routine skipped three times in a row stays on (ROUTINES-1).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/routines/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "clock",
+      "use": "runtime.rust:clock",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "limited",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "LIMITED: 3600",
+            "account": "stand-in"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "waits-for-room",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.limited.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "queued",
+            "resumesAt": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "stopped",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "routine-behind-it",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "routines/a1000001.json",
+        "content": {
+          "id": "a1000001",
+          "name": "Check a1000001",
+          "repo": "obi-e2e/fixture-app",
+          "kind": "investigate",
+          "task": "Say what the README covers.",
+          "agent": "auto",
+          "account": "auto",
+          "mode": null,
+          "check": null,
+          "rounds": 1,
+          "schedule": {
+            "every": "daily",
+            "at": "00:00"
+          },
+          "zone": "UTC",
+          "enabled": true,
+          "created": "${state.clock.tenDaysAgo}",
+          "createdBy": "mac",
+          "conversation": null,
+          "lastFire": "${state.clock.yesterday}",
+          "failuresInARow": 0,
+          "runs": [
+            {
+              "scheduled": "${state.clock.tenDaysAgo}",
+              "at": "${state.clock.tenDaysAgo}",
+              "outcome": "started",
+              "reason": null,
+              "job": "${state.limited.body.id}",
+              "catchUp": false,
+              "ended": null
+            },
+            {
+              "scheduled": "${state.clock.tenDaysAgo}",
+              "at": "${state.clock.tenDaysAgo}",
+              "outcome": "skipped",
+              "reason": null,
+              "job": null,
+              "catchUp": false,
+              "ended": null
+            },
+            {
+              "scheduled": "${state.clock.tenDaysAgo}",
+              "at": "${state.clock.tenDaysAgo}",
+              "outcome": "skipped",
+              "reason": null,
+              "job": null,
+              "catchUp": false,
+              "ended": null
+            }
+          ],
+          "lastJob": "${state.limited.body.id}"
+        },
+        "in": "home"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "routines-1-skipped",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-1"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/routines/a1000001",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "runs": {
+              "$len": 4
+            },
+            "runs.0.outcome": "skipped",
+            "runs.0.reason": "The previous run still waits for an account with room.",
+            "runs.0.job": null
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-1-still-on-and-no-failure",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-1"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/routines/a1000001",
+        "expect": {
+          "status": 200,
+          "body": {
+            "enabled": true,
+            "failuresInARow": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-1-no-job-started",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-1"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.limited.body.id}",
+              "status": "queued"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

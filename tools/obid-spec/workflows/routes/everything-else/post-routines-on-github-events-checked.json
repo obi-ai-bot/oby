@@ -1,0 +1,587 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/routines (on GitHub events, checked)",
+  "version": "1.0.0",
+  "description": "A routine on GitHub events is checked as it's made: a schedule and on together, neither, a label where it doesn't belong or missing, a kind that doesn't fit and another repository are 422; it's shown with obid's words for its event, has no schedule nor Run now, and from chat is only a Confirm card (ROUTINES-9). A label holding a control character or a line or paragraph separator is 422, a plain space kept (ROUTINES-17).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/routines"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "routines-9-both-a-schedule-and-on-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-9"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Review requests",
+          "repo": "obi-e2e/fixture-app",
+          "task": "Review it.",
+          "zone": "UTC",
+          "on": {
+            "github": {
+              "repo": "obi-e2e/fixture-app",
+              "event": "reviewRequested"
+            }
+          },
+          "schedule": {
+            "every": "daily",
+            "at": "09:00"
+          }
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "routines-9-neither-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-9"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Review requests",
+          "repo": "obi-e2e/fixture-app",
+          "task": "Review it.",
+          "zone": "UTC"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "routines-9-a-label-where-it-doesnt-belong-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-9"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Review requests",
+          "repo": "obi-e2e/fixture-app",
+          "task": "Review it.",
+          "zone": "UTC",
+          "on": {
+            "github": {
+              "repo": "obi-e2e/fixture-app",
+              "event": "reviewRequested",
+              "label": "bug"
+            }
+          }
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "routines-9-labeled-without-a-label-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-9"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Review requests",
+          "repo": "obi-e2e/fixture-app",
+          "task": "Review it.",
+          "zone": "UTC",
+          "on": {
+            "github": {
+              "repo": "obi-e2e/fixture-app",
+              "event": "labeled"
+            }
+          }
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "routines-9-a-kind-that-doesnt-fit-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-9"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Review requests",
+          "repo": "obi-e2e/fixture-app",
+          "task": "Review it.",
+          "zone": "UTC",
+          "kind": "fix",
+          "on": {
+            "github": {
+              "repo": "obi-e2e/fixture-app",
+              "event": "reviewRequested"
+            }
+          }
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "routines-9-another-repository-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-9"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Review requests",
+          "repo": "obi-e2e/fixture-app",
+          "task": "Review it.",
+          "zone": "UTC",
+          "on": {
+            "github": {
+              "repo": "obi-e2e/other",
+              "event": "reviewRequested"
+            }
+          }
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "routines-9-made-and-shown",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-9"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Review requests",
+          "repo": "obi-e2e/fixture-app",
+          "task": "Review it.",
+          "zone": "UTC",
+          "on": {
+            "github": {
+              "repo": "obi-e2e/fixture-app",
+              "event": "reviewRequested"
+            }
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "kind": "review",
+            "schedule": null,
+            "nextRun": null,
+            "when": "When your review is requested in obi-e2e/fixture-app",
+            "on": {
+              "github": {
+                "repo": "obi-e2e/fixture-app",
+                "event": "reviewRequested",
+                "label": null
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-9-patch-schedule-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-9"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/routines/${state.routines-9-made-and-shown.body.id}",
+        "body": {
+          "schedule": {
+            "every": "daily",
+            "at": "09:00"
+          }
+        },
+        "expect": {
+          "status": 422,
+          "text": {
+            "$contains": "A routine on GitHub events has no schedule."
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-9-run-now-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-9"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines/${state.routines-9-made-and-shown.body.id}/run",
+        "expect": {
+          "status": 422,
+          "text": {
+            "$contains": "A routine on GitHub events runs when its event comes."
+          }
+        }
+      }
+    },
+    {
+      "id": "from-chat",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "new": true,
+          "said": "OBY oby_routine {\"name\": \"Chat reviews\", \"repo\": \"obi-e2e/fixture-app\", \"task\": \"Review it.\", \"zone\": \"UTC\", \"on\": {\"github\": {\"repo\": \"obi-e2e/fixture-app\", \"event\": \"reviewRequested\"}}}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "routines-9-from-chat-a-confirm-card",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-9"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "confirm",
+                "title": {
+                  "$contains": "Chat reviews"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-9-from-chat-nothing-saved",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-9"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/routines",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "name": "Chat reviews"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-17-a-carriage-return-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-17"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Labeled",
+          "repo": "obi-e2e/fixture-app",
+          "task": "Review it.",
+          "zone": "UTC",
+          "on": {
+            "github": {
+              "repo": "obi-e2e/fixture-app",
+              "event": "labeled",
+              "label": "bug\r"
+            }
+          }
+        },
+        "expect": {
+          "status": 422,
+          "text": {
+            "$contains": "label is one line of 1 to 50 characters."
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-17-a-tab-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-17"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Labeled",
+          "repo": "obi-e2e/fixture-app",
+          "task": "Review it.",
+          "zone": "UTC",
+          "on": {
+            "github": {
+              "repo": "obi-e2e/fixture-app",
+              "event": "labeled",
+              "label": "a\tb"
+            }
+          }
+        },
+        "expect": {
+          "status": 422,
+          "text": {
+            "$contains": "label is one line of 1 to 50 characters."
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-17-a-nul-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-17"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Labeled",
+          "repo": "obi-e2e/fixture-app",
+          "task": "Review it.",
+          "zone": "UTC",
+          "on": {
+            "github": {
+              "repo": "obi-e2e/fixture-app",
+              "event": "labeled",
+              "label": "a\u0000b"
+            }
+          }
+        },
+        "expect": {
+          "status": 422,
+          "text": {
+            "$contains": "label is one line of 1 to 50 characters."
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-17-a-next-line-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-17"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Labeled",
+          "repo": "obi-e2e/fixture-app",
+          "task": "Review it.",
+          "zone": "UTC",
+          "on": {
+            "github": {
+              "repo": "obi-e2e/fixture-app",
+              "event": "labeled",
+              "label": "ab"
+            }
+          }
+        },
+        "expect": {
+          "status": 422,
+          "text": {
+            "$contains": "label is one line of 1 to 50 characters."
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-17-a-line-separator-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-17"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Labeled",
+          "repo": "obi-e2e/fixture-app",
+          "task": "Review it.",
+          "zone": "UTC",
+          "on": {
+            "github": {
+              "repo": "obi-e2e/fixture-app",
+              "event": "labeled",
+              "label": "a b"
+            }
+          }
+        },
+        "expect": {
+          "status": 422,
+          "text": {
+            "$contains": "label is one line of 1 to 50 characters."
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-17-a-paragraph-separator-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-17"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Labeled",
+          "repo": "obi-e2e/fixture-app",
+          "task": "Review it.",
+          "zone": "UTC",
+          "on": {
+            "github": {
+              "repo": "obi-e2e/fixture-app",
+              "event": "labeled",
+              "label": "a b"
+            }
+          }
+        },
+        "expect": {
+          "status": 422,
+          "text": {
+            "$contains": "label is one line of 1 to 50 characters."
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-17-a-plain-space-kept",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-17"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Labeled",
+          "repo": "obi-e2e/fixture-app",
+          "task": "Review it.",
+          "zone": "UTC",
+          "on": {
+            "github": {
+              "repo": "obi-e2e/fixture-app",
+              "event": "labeled",
+              "label": "needs review"
+            }
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "on": {
+              "github": {
+                "label": "needs review"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

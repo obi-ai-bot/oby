@@ -1,0 +1,371 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/repos (a conversation's working folders)",
+  "version": "1.0.0",
+  "description": "A conversation keeps its folders for later words, the same folder once; a PATCH replaces them and an empty one clears them (FOLDERS-6). The same words sent again with the same id, other folders or a refused one, start nothing new and add nothing (FOLDERS-22).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/repos"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "person": {
+          "Projects/api/README.md": "x\n",
+          "Projects/web/README.md": "x\n"
+        }
+      }
+    },
+    {
+      "id": "status-folders",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "body": {
+            "folders": true
+          }
+        }
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY renamed",
+          "new": true,
+          "folders": [
+            "${state.o.person}/Projects/api",
+            "${state.o.person}/Projects/web",
+            "${state.o.person}/Projects/api/"
+          ],
+          "id": "11111111-2222-4333-8444-555555555555"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "folders-6-both-the-same-once",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "FOLDERS-6"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.first.body.conversation}",
+                "folders": [
+                  {
+                    "$matches": "/env-home/Projects/api$"
+                  },
+                  {
+                    "$matches": "/env-home/Projects/web$"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "later",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY and the tests",
+          "conversation": "${state.first.body.conversation}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "folders-6-later-words-keep-both",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "FOLDERS-6"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.first.body.conversation}",
+                "folders": [
+                  {
+                    "$matches": "/env-home/Projects/api$"
+                  },
+                  {
+                    "$matches": "/env-home/Projects/web$"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "folders-6-patch-replaces",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "FOLDERS-6"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/conversations/${state.first.body.conversation}",
+        "body": {
+          "folders": [
+            "${state.o.person}/Projects/web"
+          ]
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "folders": [
+              {
+                "$matches": "/env-home/Projects/web$"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "next",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY only web",
+          "conversation": "${state.first.body.conversation}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "folders-6-the-next-works-only-in-web",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "FOLDERS-6"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.first.body.conversation}",
+                "folders": [
+                  {
+                    "$matches": "/env-home/Projects/web$"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "folders-22-the-same-words-again",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "FOLDERS-22"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY renamed",
+          "new": true,
+          "folders": [
+            "${state.o.person}/Projects/api"
+          ],
+          "id": "11111111-2222-4333-8444-555555555555"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "repeated": true,
+            "conversation": "${state.first.body.conversation}"
+          }
+        }
+      }
+    },
+    {
+      "id": "folders-22-with-a-refused-folder-still-repeated",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "FOLDERS-22"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY renamed",
+          "new": true,
+          "folders": [
+            "/usr"
+          ],
+          "id": "11111111-2222-4333-8444-555555555555"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "repeated": true
+          }
+        }
+      }
+    },
+    {
+      "id": "folders-22-no-second-conversation",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "FOLDERS-22"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "folders-22-folders-unchanged",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "FOLDERS-22"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.first.body.conversation}",
+                "folders": [
+                  {
+                    "$matches": "/env-home/Projects/web$"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "folders-22-no-second-turn",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "FOLDERS-22"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.first.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 6
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "folders-6-an-empty-list-clears",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "FOLDERS-6"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/conversations/${state.first.body.conversation}",
+        "body": {
+          "folders": []
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "folders": []
+          }
+        }
+      }
+    }
+  ]
+}

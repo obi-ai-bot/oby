@@ -1,0 +1,184 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/routines/{id} (one start per check)",
+  "version": "1.0.0",
+  "description": "A check starts at most one routine's job: another one due then waits for the next check, a minute on, and runs then for the same time, as late as it was at the first check, never missed (ROUTINES-4).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/routines/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "clock",
+      "use": "runtime.rust:clock",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "files": {
+          "routines/a4000001.json": {
+            "id": "a4000001",
+            "name": "Check a4000001",
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "Say what the README covers.",
+            "agent": "auto",
+            "account": "auto",
+            "mode": null,
+            "check": null,
+            "rounds": 1,
+            "schedule": {
+              "every": "daily",
+              "at": "00:00"
+            },
+            "zone": "UTC",
+            "enabled": true,
+            "created": "${state.clock.tenDaysAgo}",
+            "createdBy": "mac",
+            "conversation": null,
+            "lastFire": "${state.clock.yesterday}",
+            "failuresInARow": 0,
+            "runs": []
+          },
+          "routines/a4000002.json": {
+            "id": "a4000002",
+            "name": "Check a4000002",
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "Say what the README covers.",
+            "agent": "auto",
+            "account": "auto",
+            "mode": null,
+            "check": null,
+            "rounds": 1,
+            "schedule": {
+              "every": "daily",
+              "at": "00:00"
+            },
+            "zone": "UTC",
+            "enabled": true,
+            "created": "${state.clock.tenDaysAgo}",
+            "createdBy": "mac",
+            "conversation": null,
+            "lastFire": "${state.clock.yesterday}",
+            "failuresInARow": 0,
+            "runs": []
+          }
+        }
+      }
+    },
+    {
+      "id": "first-started",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/routines/a4000001",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "runs": {
+              "$len": 1
+            },
+            "runs.0.outcome": "started"
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-4-the-other-waits-for-the-next-check",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-4"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/routines/a4000002",
+        "expect": {
+          "status": 200,
+          "body": {
+            "runs": []
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-4-one-job-at-a-check",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-4"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-4-it-runs-at-the-next-check",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-4"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/routines/a4000002",
+        "within": 90,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "runs": {
+              "$len": 1
+            },
+            "runs.0.outcome": "started"
+          }
+        }
+      }
+    },
+    {
+      "id": "routines-4-for-the-same-time-not-missed",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "ROUTINES-4"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/routines/a4000002",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "runs.0.scheduled": "${state.first-started.body.runs.0.scheduled}",
+            "runs.0.catchUp": "${state.first-started.body.runs.0.catchUp}"
+          }
+        }
+      }
+    }
+  ]
+}

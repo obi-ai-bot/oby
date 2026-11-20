@@ -1,0 +1,428 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/github/work/refresh (githubEveryRepo turned off)",
+  "version": "1.0.0",
+  "description": "With githubEveryRepo on, a review request in a repository obid doesn't work in is offered and stays open across reads; turned off, the next whole read settles that offer with no answer and drops the item from the feed (GITHUBWORK-4).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/github/work/refresh"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "person": {
+          "github/work.json": {
+            "data": {
+              "reviews": {
+                "issueCount": 1,
+                "nodes": [
+                  {
+                    "number": 702,
+                    "title": "Thing 702",
+                    "updatedAt": "2026-10-18T08:42:00Z",
+                    "state": "OPEN",
+                    "author": {
+                      "login": "sangam"
+                    },
+                    "repository": {
+                      "nameWithOwner": "obi-e2e/fixture-app"
+                    },
+                    "labels": {
+                      "nodes": [
+                        {
+                          "name": "bug"
+                        }
+                      ]
+                    },
+                    "isDraft": false,
+                    "reviewDecision": "REVIEW_REQUIRED",
+                    "commits": {
+                      "nodes": [
+                        {
+                          "commit": {
+                            "statusCheckRollup": {
+                              "state": "PENDING"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              "assigned": {
+                "issueCount": 0,
+                "nodes": []
+              },
+              "mine": {
+                "issueCount": 0,
+                "nodes": []
+              },
+              "rateLimit": {
+                "remaining": 4900,
+                "resetAt": "2030-10-18T10:00:00Z"
+              },
+              "viewer": {
+                "login": "alex"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "first-read-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/github/work",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "nextCheck": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "every-repo-on",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "githubEveryRepo": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "githubEveryRepo": true
+          }
+        }
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/refresh",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-review-elsewhere",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "github/work.json",
+        "content": {
+          "data": {
+            "reviews": {
+              "issueCount": 2,
+              "nodes": [
+                {
+                  "number": 702,
+                  "title": "Thing 702",
+                  "updatedAt": "2026-10-18T08:42:00Z",
+                  "state": "OPEN",
+                  "author": {
+                    "login": "sangam"
+                  },
+                  "repository": {
+                    "nameWithOwner": "obi-e2e/fixture-app"
+                  },
+                  "labels": {
+                    "nodes": [
+                      {
+                        "name": "bug"
+                      }
+                    ]
+                  },
+                  "isDraft": false,
+                  "reviewDecision": "REVIEW_REQUIRED",
+                  "commits": {
+                    "nodes": [
+                      {
+                        "commit": {
+                          "statusCheckRollup": {
+                            "state": "PENDING"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "number": 9,
+                  "title": "Thing 9",
+                  "updatedAt": "2026-10-18T08:44:00Z",
+                  "state": "OPEN",
+                  "author": {
+                    "login": "sangam"
+                  },
+                  "repository": {
+                    "nameWithOwner": "someone/else"
+                  },
+                  "labels": {
+                    "nodes": [
+                      {
+                        "name": "bug"
+                      }
+                    ]
+                  },
+                  "isDraft": false,
+                  "reviewDecision": "REVIEW_REQUIRED",
+                  "commits": {
+                    "nodes": [
+                      {
+                        "commit": {
+                          "statusCheckRollup": {
+                            "state": "PENDING"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "assigned": {
+              "issueCount": 0,
+              "nodes": []
+            },
+            "mine": {
+              "issueCount": 0,
+              "nodes": []
+            },
+            "rateLimit": {
+              "remaining": 4900,
+              "resetAt": "2030-10-18T10:00:00Z"
+            },
+            "viewer": {
+              "login": "alex"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "read",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/refresh",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "reviews": {
+              "$any": {
+                "repo": "someone/else",
+                "number": 9
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "githubwork-4-offered-while-on",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-4"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox?state=open&limit=1000",
+        "pick": {
+          "where": {
+            "kind": "github",
+            "github": {
+              "repo": "someone/else",
+              "number": 9
+            }
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "read-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/refresh",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "githubwork-4-stays-open",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-4"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox?state=open&limit=1000",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.githubwork-4-offered-while-on.picked.id}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "every-repo-off",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "githubEveryRepo": false
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "githubEveryRepo": false
+          }
+        }
+      }
+    },
+    {
+      "id": "githubwork-4-the-next-read-drops-it",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-4"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/refresh",
+        "expect": {
+          "status": 200,
+          "body": {
+            "reviews": [
+              {
+                "repo": "obi-e2e/fixture-app",
+                "number": 702
+              }
+            ]
+          },
+          "paths": {
+            "reviews": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "githubwork-4-no-longer-open",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-4"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox?state=open&limit=1000",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "id": "${state.githubwork-4-offered-while-on.picked.id}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "githubwork-4-done-with-no-answer",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-4"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox?state=done&limit=1000",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.githubwork-4-offered-while-on.picked.id}",
+                "answer": null
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "githubwork-4-gone-from-the-feed",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "GITHUBWORK-4"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/github/work",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "reviews": {
+              "$none": {
+                "repo": "someone/else"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
