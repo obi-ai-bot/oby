@@ -336,12 +336,12 @@ fn attach_12_an_upload_whose_words_never_went_can_go() {
     let unused = kept(&obid, "a.txt", b"a");
     assert_eq!(unload(&unused).status, 204);
     assert!(!Path::new(&unused).parent().unwrap().exists());
-    assert_eq!(
-        unload(&unused).status,
-        422,
-        "gone, so not an upload any more"
-    );
+    // Taken back again, as an app retrying after a lost answer does: done already (#2544).
+    assert_eq!(unload(&unused).status, 204, "a repeated take-back is 204");
     assert_eq!(unload("/etc/hosts").status, 422);
+    let app = obid.home.join("attachments/app");
+    let not_hex = app.join("not-an-upload/a.txt");
+    assert_eq!(unload(not_hex.to_str().unwrap()).status, 422);
     let used = kept(&obid, "b.txt", b"b");
     plan(
         &obid,
