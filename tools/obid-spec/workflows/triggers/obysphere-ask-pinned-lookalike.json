@@ -1,0 +1,278 @@
+{
+  "schemaVersion": "2",
+  "name": "Asking: an owner obid pinned counts as a look-alike",
+  "version": "1.0.0",
+  "description": "An owner obid pinned once counts as a look-alike though no longer in the directory: with dima pinned and gone, d1ma looks like dima, and asking d1ma waits for a Confirm naming both (ASK-36).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "dima",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dima",
+        "owner": "dima",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dima-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dima-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dima}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dima-key}",
+        "name": "Dima's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dima}",
+            "ownerKey": "${state.dima-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "alex-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.alex}"
+      }
+    },
+    {
+      "id": "dima-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.dima}"
+      }
+    },
+    {
+      "id": "dima-pinned",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/pins",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "owner": "dima"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "dima-out",
+      "use": "runtime.rust:sphere-owner",
+      "inputs": {
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dima-key}",
+        "owner": "dima",
+        "method": "DELETE",
+        "path": "/v0.1/spheres/${state.sphere.sphere}/members/${state.dima-joined.obiId}",
+        "scope": "directory:read",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "d1ma",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "d1ma",
+        "owner": "d1ma",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "d1ma-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "d1ma-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.d1ma}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.d1ma-key}",
+        "name": "D1ma's Oby"
+      }
+    },
+    {
+      "id": "sealed-again",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.d1ma}",
+            "ownerKey": "${state.d1ma-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "dima-gone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "within": 70,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "owner": "dima"
+              }
+            },
+            "0.owner": {
+              "$exists": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "ask-36-a-pinned-id-counts",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "owner": "d1ma",
+                "lookalike": [
+                  "dima"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-36"
+        ]
+      }
+    },
+    {
+      "id": "asked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_ask {\"to\": \"d1ma\", \"question\": \"Are you new here?\"}",
+          "new": true
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "ask-36-asking-it-waits-for-a-confirm-naming-both",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "confirm",
+                "state": "open",
+                "title": "Ask d1ma's Oby, not dima's"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-36"
+        ]
+      }
+    },
+    {
+      "id": "ask-36-nothing-went",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.d1ma}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-36"
+        ]
+      }
+    }
+  ]
+}

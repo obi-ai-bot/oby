@@ -1,0 +1,301 @@
+{
+  "schemaVersion": "2",
+  "name": "Asking: what a conversation is told",
+  "version": "1.0.0",
+  "description": "In an Obysphere a conversation's orientation tells it to ask rather than say it can't, naming no one, and oby_members lists who is there afresh, marking the conversation (ASK-1); outside one it isn't told to ask (ASK-14).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "zeph",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "zeph",
+        "owner": "zeph",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "zeph-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "zeph-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.zeph}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.zeph-key}",
+        "name": "Zephyrine's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.zeph}",
+            "ownerKey": "${state.zeph-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "alex-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.alex}"
+      }
+    },
+    {
+      "id": "zeph-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.zeph}"
+      }
+    },
+    {
+      "id": "hi",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY hello",
+          "new": true
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "ask-1-the-orientation-tells-it-to-ask",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.alex}",
+        "path": "conversations/${state.hi.body.conversation}/config/turns.jsonl",
+        "within": 20,
+        "expect": {
+          "text": {
+            "$contains": "You are in an Obysphere with other people's Obys. When the owner asks about someone there or what they're working on, or to ask them something, ask that person's Oby with oby_ask: never say you can't and never guess."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-1"
+        ]
+      }
+    },
+    {
+      "id": "ask-1-and-names-no-one",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.alex}",
+        "path": "conversations/${state.hi.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$not": {
+              "$contains": "zeph"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-1"
+        ]
+      }
+    },
+    {
+      "id": "ask-1-not-by-their-card-either",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.alex}",
+        "path": "conversations/${state.hi.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$not": {
+              "$contains": "Zephyrine"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-1"
+        ]
+      }
+    },
+    {
+      "id": "not-marked-yet",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.alex}",
+        "path": "conversations/${state.hi.body.conversation}.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "foreign": null
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "members",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_members {}",
+          "conversation": "${state.hi.body.conversation}"
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$matches": "(?s)^oby: .*zeph"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-1"
+        ]
+      }
+    },
+    {
+      "id": "ask-1-oby-members-marks-the-conversation",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.alex}",
+        "path": "conversations/${state.hi.body.conversation}.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "foreign": {
+                "$type": "string"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-1"
+        ]
+      }
+    },
+    {
+      "id": "lone",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "lone",
+        "owner": "lone",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "lone-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.lone}"
+      }
+    },
+    {
+      "id": "lone-hi",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.lone}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY hello",
+          "new": true
+        },
+        "device": "${state.lone-device}",
+        "as": "device",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "lone-ran",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.lone}",
+        "path": "conversations/${state.lone-hi.body.conversation}/config/turns.jsonl",
+        "within": 20,
+        "expect": {
+          "text": {
+            "$contains": "SAY hello"
+          }
+        }
+      }
+    },
+    {
+      "id": "ask-14-outside-a-sphere-it-isnt-told-to-ask",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.lone}",
+        "path": "conversations/${state.lone-hi.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$not": {
+              "$contains": "Obysphere with other people"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-14"
+        ]
+      }
+    }
+  ]
+}

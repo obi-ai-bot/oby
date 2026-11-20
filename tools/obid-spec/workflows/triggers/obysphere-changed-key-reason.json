@@ -1,0 +1,255 @@
+{
+  "schemaVersion": "2",
+  "name": "A changed key, on a Sphere without owner events",
+  "version": "1.0.0",
+  "description": "A member's owner key changes on an Obysphere that has no owner-events route (the pinned obi-sphere): the trust_key card still asks to compare the fingerprint, with Confirm and Cancel, nothing trusted by itself, and carries no reason and none of obid's sentences for one (SPHERE-23, the half the pinned Sphere can show).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "real-sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-liar",
+      "inputs": {
+        "sphere": "${state.real-sphere}"
+      }
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "alex-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.alex}"
+      }
+    },
+    {
+      "id": "dana-trusted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "owner": "dana"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "owner-events-absent",
+      "use": "runtime.rust:sphere-owner",
+      "inputs": {
+        "sphere": "${state.real-sphere}",
+        "ownerKey": "${state.alex-key}",
+        "owner": "alex",
+        "method": "GET",
+        "path": "/v0.1/spheres/${state.sphere.sphere}/owner-events",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "key-2",
+      "use": "runtime.rust:sphere-lie",
+      "inputs": {
+        "sphere": "${state.sphere}",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "read",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "sphere-23-a-sphere-without-the-route-gives-no-reason",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 20,
+        "pick": {
+          "where": {
+            "kind": "confirm",
+            "state": "open",
+            "confirm": {
+              "action": "trust_key"
+            }
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "confirm",
+                "state": "open",
+                "options": [
+                  "Confirm",
+                  "Cancel"
+                ],
+                "confirm": {
+                  "action": "trust_key",
+                  "payload": {
+                    "owner": "dana",
+                    "fingerprint": "${state.key-2.keyId}"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-23"
+        ]
+      }
+    },
+    {
+      "id": "sphere-23-no-reason-in-its-payload",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.sphere-23-a-sphere-without-the-route-gives-no-reason.picked}",
+        "expect": {
+          "paths": {
+            "confirm.payload.reason": {
+              "$exists": false
+            },
+            "confirm.payload.owner": "dana"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-23"
+        ]
+      }
+    },
+    {
+      "id": "sphere-23-and-no-sentence-of-the-spheres",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.sphere-23-a-sphere-without-the-route-gives-no-reason.picked}",
+        "expect": {
+          "paths": {
+            "text": {
+              "$not": {
+                "$contains": "The Obysphere says"
+              }
+            },
+            "title": "New key for dana: compare with them (${state.key-2.keyId})"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-23"
+        ]
+      }
+    },
+    {
+      "id": "sphere-23-nothing-trusted-by-itself",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/pins",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "owner": "dana",
+                "fingerprint": "${state.dana-key.keyId}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-23"
+        ]
+      }
+    }
+  ]
+}

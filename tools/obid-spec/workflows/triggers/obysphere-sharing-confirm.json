@@ -1,0 +1,885 @@
+{
+  "schemaVersion": "2",
+  "name": "Sharing: the owner's Confirm",
+  "version": "1.0.0",
+  "description": "Nothing is shared by a tick or the token alone; the card lists the owner's repositories with nothing ticked, a tick names exactly what it ticks, a signature for other ticks or none is refused (PEER-38); the device's Confirm makes one rule of status and progress that opens no room, and the question that waited goes by it, off the owner's list (PEER-17); after the yes the Oby answers by itself with no question in the owner's inbox, a job with no title telling nothing of its prompt (ASK-11).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana",
+        "agent": "fake-answerer"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "alex-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.alex}"
+      }
+    },
+    {
+      "id": "dana-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.dana}"
+      }
+    },
+    {
+      "id": "dana-job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "Billing retries, do the secret part"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "dana-job-ended",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.dana-job.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "peer-17-the-token-alone-makes-no-rule",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/obid/sharing/rules",
+        "body": {
+          "for": "*",
+          "repos": "*",
+          "tells": [
+            "jobStatus"
+          ]
+        },
+        "expect": {
+          "status": 403
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-17"
+        ]
+      }
+    },
+    {
+      "id": "peer-38-a-tick-never-opens-a-card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/obid/sharing/offer",
+        "body": {
+          "repos": [
+            "obi-e2e/fixture-app"
+          ]
+        },
+        "expect": {
+          "status": 409
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-38"
+        ]
+      }
+    },
+    {
+      "id": "peer-38-still-no-card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "kind": "confirm",
+                  "state": "open",
+                  "confirm": {
+                    "action": "share_status"
+                  }
+                },
+                0
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-38"
+        ]
+      }
+    },
+    {
+      "id": "q1",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/peers/dana/ask",
+        "body": {
+          "text": "How is the billing work going?"
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 202
+        }
+      }
+    },
+    {
+      "id": "q1-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "pick": {
+          "where": {
+            "kind": "obiRequest",
+            "state": "open",
+            "obi": {
+              "quoted": {
+                "text": "How is the billing work going?"
+              }
+            }
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "peer-38-the-card-lists-their-repositories-nothing-ticked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 20,
+        "pick": {
+          "where": {
+            "kind": "confirm",
+            "state": "open",
+            "confirm": {
+              "action": "share_status"
+            }
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "kind": "confirm",
+                  "state": "open",
+                  "confirm": {
+                    "action": "share_status"
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-38"
+        ]
+      }
+    },
+    {
+      "id": "peer-38-nothing-ticked",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.peer-38-the-card-lists-their-repositories-nothing-ticked.picked.confirm.payload}",
+        "expect": {
+          "body": {
+            "offered": [
+              "obi-e2e/fixture-app"
+            ],
+            "repos": []
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-38"
+        ]
+      }
+    },
+    {
+      "id": "peer-38-nothing-ticked-does-nothing-signed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.peer-38-the-card-lists-their-repositories-nothing-ticked.picked.id}/answer",
+        "confirm": {
+          "device": "${state.dana-device}",
+          "item": "${state.peer-38-the-card-lists-their-repositories-nothing-ticked.picked.id}"
+        },
+        "expect": {
+          "status": 409
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-38"
+        ]
+      }
+    },
+    {
+      "id": "peer-38-the-card-stays",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 20,
+        "pick": {
+          "where": {
+            "kind": "confirm",
+            "state": "open",
+            "confirm": {
+              "action": "share_status"
+            }
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "kind": "confirm",
+                  "state": "open",
+                  "confirm": {
+                    "action": "share_status"
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-38"
+        ]
+      }
+    },
+    {
+      "id": "peer-38-a-strangers-repository-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/obid/sharing/offer",
+        "body": {
+          "repos": [
+            "mallory/elsewhere"
+          ]
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-38"
+        ]
+      }
+    },
+    {
+      "id": "peer-38-every-repository-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/obid/sharing/offer",
+        "body": {
+          "repos": [
+            "*"
+          ]
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-38"
+        ]
+      }
+    },
+    {
+      "id": "peer-38-a-tick-names-exactly-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/obid/sharing/offer",
+        "body": {
+          "repos": [
+            "obi-e2e/fixture-app"
+          ]
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "id": "${state.peer-38-the-card-lists-their-repositories-nothing-ticked.picked.id}",
+            "title": "Can I tell people in your Obysphere how your tasks are going, with each one's current step and latest report line, in obi-e2e/fixture-app?",
+            "confirm": {
+              "payload": {
+                "repos": [
+                  "obi-e2e/fixture-app"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-38"
+        ]
+      }
+    },
+    {
+      "id": "peer-17-a-tick-shares-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/obid/sharing",
+        "expect": {
+          "status": 200,
+          "body": {
+            "rules": []
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-17",
+          "PEER-38"
+        ]
+      }
+    },
+    {
+      "id": "peer-38-a-signature-for-other-ticks-fails",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.peer-38-the-card-lists-their-repositories-nothing-ticked.picked.id}/answer",
+        "confirm": {
+          "device": "${state.dana-device}",
+          "item": "${state.peer-38-the-card-lists-their-repositories-nothing-ticked.picked.id}",
+          "title": "${state.peer-38-the-card-lists-their-repositories-nothing-ticked.picked.title}"
+        },
+        "expect": {
+          "status": 403
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-38"
+        ]
+      }
+    },
+    {
+      "id": "peer-17-an-unsigned-confirm-403",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.peer-38-the-card-lists-their-repositories-nothing-ticked.picked.id}/answer",
+        "body": {
+          "answer": "Confirm"
+        },
+        "expect": {
+          "status": 403
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-17"
+        ]
+      }
+    },
+    {
+      "id": "peer-17-no-rule-yet",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/obid/sharing",
+        "expect": {
+          "status": 200,
+          "body": {
+            "rules": []
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-17"
+        ]
+      }
+    },
+    {
+      "id": "ask-11-before-the-yes-it-waits-on-the-owner",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/peers/dana",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "posts": {
+              "$none": {
+                "kind": "answer"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-11"
+        ]
+      }
+    },
+    {
+      "id": "signed-yes",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.peer-38-the-card-lists-their-repositories-nothing-ticked.picked.id}/answer",
+        "confirm": {
+          "device": "${state.dana-device}",
+          "item": "${state.peer-38-the-card-lists-their-repositories-nothing-ticked.picked.id}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "done",
+            "answer": "Confirm"
+          }
+        }
+      }
+    },
+    {
+      "id": "peer-17-one-rule-of-status-and-progress",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/obid/sharing",
+        "expect": {
+          "status": 200,
+          "body": {
+            "rules": [
+              {
+                "for": "*",
+                "repos": [
+                  "obi-e2e/fixture-app"
+                ],
+                "tells": [
+                  "jobStatus",
+                  "jobProgress"
+                ],
+                "starter": true
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-17",
+          "PEER-38"
+        ]
+      }
+    },
+    {
+      "id": "peer-17-it-opens-no-room",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/obid/sharing",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "rules": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-17"
+        ]
+      }
+    },
+    {
+      "id": "peer-17-the-waiting-question-goes-by-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/peers/dana",
+        "within": 40,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "posts": {
+              "$any": {
+                "kind": "answer",
+                "by": "obi",
+                "replyTo": "${state.q1.body.id}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-17",
+          "ASK-11"
+        ]
+      }
+    },
+    {
+      "id": "peer-17-off-the-owners-list",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "kind": "obiRequest",
+                "state": "open"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-17"
+        ]
+      }
+    },
+    {
+      "id": "ask-11-a-job-with-no-title-tells-nothing-of-its-prompt",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/peers/dana",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "posts": {
+              "$any": {
+                "kind": "answer",
+                "text": {
+                  "$contains": "An Oby task"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-11"
+        ]
+      }
+    },
+    {
+      "id": "ask-11-and-none-of-its-prompt",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/peers/dana",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "posts": {
+              "$none": {
+                "text": {
+                  "$contains": "secret part"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-11"
+        ]
+      }
+    },
+    {
+      "id": "q2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/peers/dana/ask",
+        "body": {
+          "text": "And now?"
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 202
+        }
+      }
+    },
+    {
+      "id": "ask-11-answered-by-itself",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/peers/dana",
+        "within": 40,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "posts": {
+              "$any": {
+                "kind": "answer",
+                "by": "obi",
+                "replyTo": "${state.q2.body.id}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-11"
+        ]
+      }
+    },
+    {
+      "id": "ask-11-no-question-in-the-owners-inbox",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "kind": "obiRequest",
+                "obi": {
+                  "quoted": {
+                    "text": "And now?"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-11"
+        ]
+      }
+    },
+    {
+      "id": "peer-38-and-asks-no-more",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "kind": "confirm",
+                  "state": "open",
+                  "confirm": {
+                    "action": "share_status"
+                  }
+                },
+                0
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-38"
+        ]
+      }
+    },
+    {
+      "id": "peer-38-a-tick-with-no-card-open-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/obid/sharing/offer",
+        "body": {
+          "repos": [
+            "obi-e2e/fixture-app"
+          ]
+        },
+        "expect": {
+          "status": 409
+        }
+      },
+      "ui": {
+        "proves": [
+          "PEER-38"
+        ]
+      }
+    },
+    {
+      "id": "ask-11-the-rule-puts-nothing-in-the-room",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/spheres/${state.sphere.sphere}/room",
+        "expect": {
+          "status": [
+            200,
+            404
+          ],
+          "paths": {
+            "posts": {
+              "$none": {
+                "from": "${state.dana-joined.obiId}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-11"
+        ]
+      }
+    }
+  ]
+}
