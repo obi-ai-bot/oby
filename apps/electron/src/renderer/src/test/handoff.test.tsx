@@ -10,14 +10,14 @@ import { ACCEPTS, SCOPES } from '../../../shared/sphere';
 // with the goal quoted and the item's own answers. obid's bridge is stood in for.
 const call = vi.fn();
 let live: typeof import('../live');
-let stack: typeof import('../AskStack');
+let stack: typeof import('../ReviewRequestCard');
 beforeAll(async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('location', { search: '' });
   window.app = { obid: { call } } as never;
   vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {}, removeItem: () => {} });
   live = await import('../live');
-  stack = await import('../AskStack');
+  stack = await import('../ReviewRequestCard');
 });
 afterAll(() => vi.unstubAllGlobals());
 

@@ -845,6 +845,11 @@ pub struct Job {
     /// terminal may open its session: [`Job::resume_command`] (LANES-9).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub own_lane: bool,
+    /// The mode its last own run launched in (crate::jobs, `launched`): an own Codex run asks obid
+    /// only what that mode's settings ask, so a mode that lets it go less far ends its turn
+    /// (LANES-18, `narrowed_own_run`). In its file, never in the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own_mode: Option<String>,
     /// A run of its agent's, or of the job it follows up, launched in the own lane: its check gets
     /// no declared secrets, whatever its mode, tool or account is now (LANE-3a, crate::jobs,
     /// `ran_unproxied`). Never unset, saved before that run. In its file, never in the API.

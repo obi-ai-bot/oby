@@ -1,9 +1,9 @@
 # CODEX-BUILDS: the owner's Codex job that builds runs in Oby's box
 
 - **Date:** 2026-11-15
-- **Status:** In force
+- **Status:** Replaced by [2026-11-19-codex-like-t3.md](2026-11-19-codex-like-t3.md)
 - **Replaced:** Nothing lanes.md names
-- **Changed by:** Nothing
+- **Changed by:** [2026-11-19-codex-like-t3.md](2026-11-19-codex-like-t3.md)
 - **Contracts and scenarios:** [lanes.md](../contracts/lanes.md) (LANES-18, LANES-19)
 
 ## The owner's words

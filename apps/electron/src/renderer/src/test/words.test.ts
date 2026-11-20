@@ -249,6 +249,29 @@ describe('signed words', () => {
     expect(valid('/v1/obid/sphere/pins/dirna')).toBe(false);
   });
 
+  it('words_20_a_new_conversations_workspace_signs_with_its_words', () => {
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const plan = (workspace: unknown, more: Record<string, unknown> = { new: true }) =>
+      ({ said: 'Fix the login', folders: ['/Users/me/api'], ...more, workspace });
+    // the shape: "This folder" or "A new worktree", with new only, never one of the words
+    for (const workspace of ['folder', 'worktree']) {
+      expect(wordsOf('POST', '/v1/plans', plan(workspace))).toEqual(['Fix the login']);
+      expect(owners('POST', '/v1/plans', plan(workspace), ['Fix the login'], [])).toEqual([0]);
+    }
+    for (const workspace of ['local', '', 1, null, ['folder'], { workspace: 'folder' }]) {
+      expect(wordsOf('POST', '/v1/plans', plan(workspace)), JSON.stringify(workspace)).toBeNull();
+    }
+    // with later words, or in a conversation, it isn't a shape the app sends: nothing is signed
+    expect(wordsOf('POST', '/v1/plans', plan('folder', { conversation: 'c1' }))).toBeNull();
+    expect(wordsOf('POST', '/v1/plans', plan('worktree', {}))).toBeNull();
+    expect(wordsOf('PATCH', '/v1/conversations/c1', { workspace: 'folder' })).toBeNull();
+    // main signs it as Home's box sends it: the folders picked in its dialog this run
+    picked(['/Users/me/api']);
+    expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', plan('folder'))).not.toBeNull();
+    expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', plan('worktree'))).not.toBeNull();
+    expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', plan('elsewhere'))).toBeNull();
+  });
+
   it('words_17_the_vault_signs_a_put_by_add_secret_and_a_bodiless_delete_by_remove_secret', () => {
     const path = '/v1/obid/vault/staging-key';
     expect([VAULT_ADD, VAULT_REMOVE]).toEqual(['Add Secret', 'Remove Secret']);

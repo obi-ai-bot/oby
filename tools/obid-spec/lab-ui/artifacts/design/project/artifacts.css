@@ -1,0 +1,193 @@
+/* Oby Artifacts: the new pieces, on the app's own tokens (tokens.css) and patterns. */
+html, body { height: 100%; }
+.proto-root { font-family: var(--font); color: var(--item); background: var(--bg); }
+:where(.proto-root) button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+.proto-window > .app { height: 100%; }
+
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+/* an artifact in a conversation: like a task's card, with its first screen on top */
+.art-card { width: 360px; max-width: 100%; margin-top: 10px; display: flex; flex-direction: column; text-align: left; border: 1px solid var(--line); border-radius: 14px; background: rgba(255, 255, 255, 0.04); overflow: hidden; transition: border-color var(--fade), background-color var(--fade); }
+.art-card:hover { border-color: var(--line-strong); background: rgba(255, 255, 255, 0.06); }
+.art-thumb { height: 104px; display: flex; gap: 8px; padding: 12px; box-sizing: border-box; background: #111112; }
+.art-thumb-a { flex: 2; border-radius: 6px; background: #1d1d1f; border: 1px solid var(--surface-edge); }
+.art-thumb-b { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+.art-thumb-b span { flex: 1; border-radius: 6px; background: #1d1d1f; border: 1px solid var(--surface-edge); }
+.art-card-row { display: flex; align-items: center; gap: 10px; padding: 11px 14px; color: var(--muted); }
+.art-card-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.art-card-title { font-size: var(--text-md); font-weight: 500; color: var(--ink); }
+.art-card-meta { font-size: var(--text-sm); color: var(--muted); }
+.art-quote { margin: 6px 0; padding: 1px 0 1px 12px; border-left: 2px solid var(--line-strong); color: var(--text); }
+.msg-end .art-card + .msg-time { margin-top: 6px; }
+
+/* the Sphere's Shared group */
+.art-row { width: 100%; display: flex; align-items: center; gap: 10px; text-align: left; }
+.art-row-icon { width: 22px; height: 22px; flex: none; display: grid; place-items: center; border-radius: 6px; background: var(--pill); color: var(--text); }
+.art-none { margin: 4px 8px 8px; font-size: var(--text-sm); color: var(--muted); }
+
+/* the viewer: the canvas, and what people said beside it */
+.art-layer { grid-template-rows: 1fr; }
+.art-body { min-height: 0; display: flex; border-top: 1px solid var(--divider); }
+.art-canvas { position: relative; flex: 1; min-width: 0; padding: 28px; box-sizing: border-box; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 28px 24px; align-content: start; background: #070707; background-image: radial-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px); background-size: 20px 20px; overflow: hidden; }
+.art-board { display: flex; flex-direction: column; gap: 6px; }
+.art-board-label { font-size: var(--text-sm); color: var(--muted); }
+.art-board-frame { position: relative; height: 128px; padding: 12px; box-sizing: border-box; display: flex; flex-direction: column; gap: 8px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); }
+.art-board-frame span:first-child { width: 60%; height: 9px; border-radius: 3px; background: rgba(255, 255, 255, 0.45); }
+.art-board-frame span:nth-child(2) { width: 85%; height: 5px; border-radius: 3px; background: rgba(255, 255, 255, 0.14); }
+.art-board-frame span:nth-child(3) { flex: 1; border-radius: 6px; background: var(--chip); }
+.art-board.is-pinned .art-board-frame { border: 2px solid var(--needs); }
+.art-board.is-pinned .art-board-frame::after { content: 'D'; position: absolute; right: -10px; top: -10px; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--needs); color: #111; font-size: 11px; font-weight: 600; }
+.art-tools { position: absolute; left: 20px; bottom: 16px; display: flex; gap: 6px; }
+.art-tool { padding: 4px 10px; border-radius: var(--radius-pill); background: var(--pill); color: var(--text); font-size: var(--text-sm); }
+.art-side { width: 330px; flex: none; display: flex; flex-direction: column; border-left: 1px solid var(--divider); }
+.art-side-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px 4px 20px; font-size: var(--text-sm); color: var(--label); }
+.art-side { animation: art-side-in 260ms var(--warm) both; }
+@keyframes art-side-in { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: none; } }
+.art-talk { position: relative; }
+.art-talk-dot { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--unread); box-shadow: 0 0 0 2px var(--bg); }
+.art-side-list { flex: 1; padding: 0 20px; display: flex; flex-direction: column; gap: 20px; overflow: hidden; }
+.art-said { display: flex; flex-direction: column; gap: 4px; font-size: var(--text-base); line-height: 20px; color: var(--text); }
+.art-said p { margin: 0; }
+.art-said-who { display: flex; gap: 8px; align-items: baseline; font-size: var(--text-md); }
+.art-said-name { color: var(--ink); font-weight: 500; }
+.art-said-when, .art-said-src { font-size: var(--text-sm); color: var(--muted); }
+.art-side-foot { margin: 0; font-size: var(--text-sm); color: var(--muted); }
+.art-said.is-you { align-items: flex-end; }
+.art-said.is-you .art-said-who { flex-direction: row-reverse; }
+.art-said.is-you p { padding: 8px 12px; border-radius: 18px; background: var(--bubble, rgba(255, 255, 255, 0.12)); color: var(--ink); }
+.art-said.is-working p { animation: pulse-text 1.6s ease-in-out infinite; }
+@keyframes pulse-text { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+.art-side-list { overflow-y: auto; scrollbar-width: none; padding-bottom: 12px; }
+.art-compose { padding: 10px 14px 14px; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--divider); }
+.art-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.art-chip { height: 26px; padding: 0 10px; border-radius: var(--radius-pill); background: var(--pill); color: var(--text); font-size: var(--text-sm); transition: background-color var(--fade), color var(--fade); }
+.art-chip:hover { background: var(--active); color: var(--ink); }
+.art-field { display: flex; align-items: flex-end; gap: 8px; padding: 8px 8px 8px 14px; border: 1px solid var(--line); border-radius: 18px; background: var(--field); transition: border-color var(--fade); }
+.art-field:focus-within { border-color: var(--field-edge-on); }
+.art-field-label { flex: 1; display: flex; }
+.art-input { flex: 1; min-width: 0; resize: none; border: 0; outline: none; background: transparent; color: var(--ink); font: inherit; font-size: var(--text-base); line-height: 20px; }
+.art-input::placeholder { color: var(--muted); }
+.art-send { width: 28px; height: 28px; flex: none; display: grid; place-items: center; border-radius: 50%; color: var(--muted); opacity: 0.4; cursor: default; transition: opacity var(--fade), color var(--fade); }
+.art-send.is-ready { opacity: 1; color: var(--ink); cursor: pointer; }
+
+/* the bar's Share button and who sees it */
+.art-who { font-size: var(--text-md); color: var(--muted); }
+.art-share { height: 28px; padding: 0 12px; display: inline-flex; align-items: center; gap: 6px; border-radius: 8px; background: var(--ink) ; color: var(--on-ink, #111) ; font-size: var(--text-md); font-weight: 500; }
+.art-share.is-on { box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.15); }
+
+/* the Share menu, as Claude has it: people, who has access, the version, Copy link; Export */
+.share-pop { position: absolute; z-index: 20; top: 4px; right: 20px; width: 400px; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--surface-edge); border-radius: 16px; box-shadow: var(--shadow-menu, 0 10px 28px rgba(0, 0, 0, 0.45)); overflow: hidden; animation: fade-in 200ms var(--warm) both; }
+.share-tabs { display: flex; align-items: center; gap: 18px; padding: 0 10px 0 18px; border-bottom: 1px solid var(--surface-edge); }
+.share-tab { padding: 12px 0 10px; font-size: var(--text-base); color: var(--muted) ; border-bottom: 2px solid transparent ; }
+.share-tab.is-on { color: var(--ink) ; border-bottom-color: var(--ink) ; }
+.share-close { margin-left: auto; }
+.share-body { padding: 14px 18px 16px; display: flex; flex-direction: column; gap: 12px; }
+.share-field { display: flex; }
+.share-input { flex: 1; min-width: 0; height: 34px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); color: var(--ink); font: inherit; font-size: var(--text-md); outline: none; }
+.share-input:focus { border-color: var(--field-edge-on); }
+.share-suggest { display: flex; flex-direction: column; gap: 2px; padding: 4px; border: 1px solid var(--surface-edge); border-radius: 10px; }
+.share-suggest-head { margin: 4px 8px 4px; font-size: var(--text-sm); color: var(--label); }
+.share-suggest-row { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 6px; font-size: var(--text-base); color: var(--item) ; text-align: left; }
+.share-suggest-row:hover { background: var(--hover) ; }
+.share-add { margin-left: auto; font-size: var(--text-sm); color: var(--muted); }
+.share-people { display: flex; flex-direction: column; gap: 8px; }
+.share-person { display: flex; align-items: center; gap: 10px; font-size: var(--text-base); }
+.share-me { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: #3a3a3c; color: var(--ink); font-size: 11px; }
+.share-name { flex: 1; color: var(--ink); }
+.share-role { font-size: var(--text-md); color: var(--muted); }
+.share-x { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 6px; color: var(--muted) ; }
+.share-access { margin: 0; padding: 0; border: 0; display: flex; flex-direction: column; gap: 2px; }
+.share-access legend { margin-bottom: 6px; font-size: var(--text-sm); color: var(--label); }
+.share-opt { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border-radius: 10px; border: 1px solid transparent; cursor: pointer; transition: border-color var(--fade), background-color var(--fade); }
+.share-opt:hover { background: rgba(255, 255, 255, 0.04); }
+.share-opt:has(.pick:checked) { border-color: rgba(255, 255, 255, 0.6); background: var(--chip-hover); }
+.share-opt-text { display: flex; flex-direction: column; }
+.share-opt-title { font-size: var(--text-base); color: var(--ink); display: block; }
+.share-opt-about { font-size: var(--text-sm); color: var(--muted); display: block; }
+.share-latest { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; border-top: 1px solid var(--surface-edge); }
+.share-foot { display: flex; justify-content: space-between; align-items: center; }
+.share-copy { height: 30px; padding: 0 12px; border: 1px solid var(--line-strong) ; border-radius: 8px; font-size: var(--text-md); color: var(--ink) ; }
+.share-go { height: 30px; padding: 0 14px; border-radius: 8px; font-size: var(--text-md); font-weight: 500; background: var(--pill) ; color: var(--muted) ; cursor: default; }
+.share-go.is-ready { background: var(--ink) ; color: #111 ; cursor: pointer; }
+.share-export { gap: 2px; padding-top: 8px; }
+.share-sec { margin: 8px 8px 4px; font-size: var(--text-sm); color: var(--label); }
+.share-item { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 7px 8px; border-radius: 6px; font-size: var(--text-base); color: var(--ink) ; text-align: left; }
+.share-item:hover { background: var(--hover) ; }
+
+/* a choice of one: a ring that fills, on a card that lights up (never white on white) */
+.pick { appearance: none; -webkit-appearance: none; flex: none; width: 18px; height: 18px; margin: 1px 0 0; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.3); background: transparent; cursor: pointer; transition: border-width 200ms ease; }
+.pick:checked { border: 5px solid var(--ink); background: #111; }
+.pick:focus-visible { outline: 2px solid #64a8ff; outline-offset: 3px; }
+
+/* Settings › Artifacts */
+.art-picks { display: flex; flex-direction: column; gap: 10px; }
+.art-pick-card { display: flex; gap: 14px; align-items: flex-start; padding: 16px 18px; border-radius: 16px; border: 1px solid var(--surface-edge); background: var(--surface); cursor: pointer; transition: border-color var(--fade), background-color var(--fade); }
+.art-pick-card:hover { border-color: var(--line-strong); }
+.art-pick-card:has(.pick:checked) { border-color: rgba(255, 255, 255, 0.6); background: var(--chip-hover); }
+.art-pick-card .pick { width: 20px; height: 20px; }
+.art-pick-card .pick:checked { border-width: 6px; }
+.art-pick-text { display: flex; flex-direction: column; gap: 6px; font-size: var(--text-base); line-height: 20px; }
+.art-pick-title { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; color: var(--ink); }
+.art-default { padding: 1px 8px; border-radius: var(--radius-pill); background: var(--ink); color: #111; font-size: var(--text-sm); font-weight: 500; }
+.art-pick-note { margin-top: 4px; padding: 10px 12px; border-radius: 10px; background: rgba(255, 255, 255, 0.03); font-size: var(--text-md); line-height: 19px; color: var(--text); }
+
+/* the prototype's own switch: whose Oby you're looking at */
+.proto-switch { position: absolute; z-index: 30; left: 50%; bottom: 10px; transform: translateX(-50%); display: flex; align-items: center; gap: 4px; padding: 4px 4px 4px 12px; border-radius: var(--radius-pill); background: rgba(10, 132, 255, 0.16); border: 1px solid rgba(10, 132, 255, 0.45); }
+.proto-label { margin-right: 6px; font-size: var(--text-sm); color: #8cbcff; }
+.proto-opt { height: 24px; padding: 0 10px; border-radius: var(--radius-pill); font-size: var(--text-sm); color: #8cbcff ; }
+.proto-opt.is-on { background: #0a84ff ; color: #fff ; }
+
+/* the public link's warning, acknowledged before it can be shared (as Claude asks) */
+.share-warn { display: flex; gap: 10px; padding: 12px; border-radius: 10px; background: rgba(255, 159, 10, 0.1); border: 1px solid rgba(255, 159, 10, 0.35); color: var(--needs); }
+.share-warn svg { flex: none; margin-top: 1px; }
+.share-warn-text { display: flex; flex-direction: column; gap: 6px; font-size: var(--text-md); line-height: 18px; color: var(--text); }
+.share-warn-text p { margin: 0; }
+.share-warn-head { color: var(--ink); font-weight: 500; }
+.share-warn-ok { display: flex; align-items: center; gap: 8px; color: var(--ink); cursor: pointer; }
+.share-warn-ok input { width: 16px; height: 16px; margin: 0; accent-color: var(--needs); }
+
+/* an artifact nested under the conversation that made it, as tasks are */
+.art-nest { box-sizing: border-box; width: auto !important; margin: 2px 0 6px 18px !important; display: flex; align-items: center; gap: 8px; text-align: left; }
+.art-nest-icon { width: 20px; height: 20px; flex: none; display: grid; place-items: center; border-radius: 6px; background: var(--pill); color: var(--text); }
+.art-nest .connector-about { white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
+/* the chat's title says which conversation it's part of */
+.art-side-title { display: flex; flex-direction: column; min-width: 0; padding-top: 6px; }
+.art-side-title > span { font-size: var(--text-md); color: var(--ink); }
+.art-side-from { align-self: flex-start; max-width: 230px; font-size: var(--text-sm); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+.art-side-from:hover { color: var(--text); text-decoration: underline; }
+.art-side-head { gap: 4px; }
+.art-side-head .icon-button:first-of-type { margin-left: auto; }
+/* in the conversation: a turn said from the artifact's chat */
+.art-ref { display: inline-flex; align-items: center; gap: 4px; margin-bottom: 4px; font-size: var(--text-sm); color: var(--muted); }
+.art-ref svg { width: 12px; height: 12px; }
+
+/* who makes the change: the conversation's agent and account, as in the message box */
+.art-field { flex-wrap: wrap; }
+.art-field-label { flex: 1 1 0; }
+.art-agent { position: relative; order: 3; flex-basis: 100%; margin: 2px 0 -2px -6px; }
+.art-agent-pick { height: 28px; padding: 0 8px; display: inline-flex; align-items: center; gap: 4px; border-radius: 8px; font-size: var(--text-sm); color: var(--muted); white-space: nowrap; transition: color var(--fade), background-color var(--fade); }
+.art-agent-pick:hover { color: var(--text); background: var(--hover); }
+.art-agent-menu { position: absolute; z-index: 25; left: 0; bottom: 34px; width: 250px; padding: 6px; background: var(--surface); border: 1px solid var(--surface-edge); border-radius: 12px; box-shadow: var(--shadow-menu, 0 10px 28px rgba(0, 0, 0, 0.45)); animation: fade-in 160ms var(--warm) both; }
+.art-agent-head { margin: 4px 8px 6px; font-size: var(--text-sm); color: var(--label); }
+.art-agent-item { width: 100%; display: flex; flex-direction: column; align-items: flex-start; padding: 6px 8px; border-radius: 6px; text-align: left; }
+.art-agent-item:hover { background: var(--hover); }
+.art-agent-item.is-on { background: var(--active); }
+.art-agent-name { font-size: var(--text-base); color: var(--ink); }
+.art-agent-about { font-size: var(--text-sm); color: var(--muted); }
+
+/* the artifact as a tab in the app's browser panel */
+.art-br .br-view.art-view { position: relative; overflow: hidden; background: #070707; }
+.art-view .art-canvas { position: absolute; inset: 0; }
+.art-tab-logo { display: grid; place-items: center; color: var(--text); }
+.art-share-btn.is-on { background: var(--active); }
+.art-br .share-pop { top: 8px; right: 12px; }
+.art-kid-icon { width: 14px; height: 14px; flex: none; display: grid; place-items: center; color: var(--text); }
+.convo-kid.art-kid.is-on { background: var(--active); color: var(--ink); }
+.art-ta-wrap { display: flex; width: 100%; }
+.art-ta { flex: 1; min-width: 0; resize: none; border: 0; outline: none; background: transparent; padding: 5px 4px; display: block; min-height: var(--composer-line); field-sizing: content; max-height: calc(5 * var(--composer-line) + 10px); color: var(--ink); font: inherit; font-size: var(--text-lg); line-height: var(--composer-line); }
+.art-ta::placeholder { color: var(--muted); }
+.composer-field { position: relative; }
+.composer-field > .art-agent-menu { right: 56px; left: auto; bottom: calc(100% + 6px); }
+
+.composer-field.is-stacked .art-ta { padding: 10px 12px; max-height: calc(5 * var(--composer-line) + 20px); }
+.art-ta::placeholder { white-space: nowrap; text-overflow: ellipsis; }

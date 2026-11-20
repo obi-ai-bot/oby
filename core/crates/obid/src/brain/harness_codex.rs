@@ -7,9 +7,10 @@
 //! `CODEX_HOME` the conversation's own (`config`, with a copy of the login and nothing else). Oby's
 //! MCP server (and obid's Tetrix server, while Oby is signed in to Tetrix) comes in its `-c`
 //! settings, streamable HTTP with the turn's token in `OBY_MCP_TOKEN`, never an argument. The
-//! owner's own conversation in Bypass on macOS runs in the own lane instead (LANES-13), as an own
-//! Bypass Codex job does (LANES-18): on the account's own `CODEX_HOME`, its shell on in Codex's
-//! own sandbox ([`crate::jobs::Jobs::conversation_own_codex_launch`]).
+//! owner's own conversation runs in the own lane instead, in every mode (LANES-13, the owner's "Yes,
+//! match T3"), as an own Codex job does (LANES-18): on the account's own `CODEX_HOME`, its shell on
+//! under Codex's own sandbox and approvals as the mode sets them
+//! ([`crate::jobs::Jobs::conversation_own_codex_launch`]).
 
 use std::ffi::OsString;
 
@@ -64,7 +65,7 @@ fn off(own: bool) -> impl Iterator<Item = &'static str> {
 }
 
 /// What an own session hears in [`NO_SHELL`]'s place (LANES-13).
-const OWN_SHELL: &str = "Run commands with your own shell: each runs in your room under Codex's own sandbox, writing only your room (repos/ is read-only) and its temporary folder, with no network and no code-host login.";
+const OWN_SHELL: &str = "Run commands with your own shell: each runs in your room under Codex's own sandbox and approvals, as the owner's mode sets them, with no code-host login.";
 
 /// Its other settings: the turn's token never reaches a command's environment.
 const SETTINGS: &[&str] = &[
@@ -93,7 +94,7 @@ fn flags(
     for setting in SETTINGS {
         flags.extend(["-c".into(), (*setting).into()]);
     }
-    // Under `never` Codex asks nobody: Oby's own tools are approved before the run (LANES-21).
+    // Codex may ask nobody (Bypass): Oby's own tools are approved before the run (LANES-21).
     if own {
         flags.extend(crate::codex::OWN_OBY_TOOLS.map(OsString::from));
     }
@@ -136,6 +137,11 @@ pub(super) fn key(
     all.extend([
         OsString::from(&account.id),
         OsString::from(if own { "own" } else { "boxed" }),
+        // An own one runs on its mode's settings (LANES-13): another mode, another `app-server`.
+        OsString::from(match own {
+            true => shared.jobs.default_mode().as_str(),
+            false => "",
+        }),
         OsString::from(instructions(shared, tetrix.is_some(), own, helper)),
     ]);
     super::harness::flags_key(&all)
@@ -145,7 +151,7 @@ pub(super) fn key(
 /// ([`options`]).
 /// Refuses, saying why, a Codex that keeps a feature of [`OFF`] on and a login copy near its end
 /// ([`crate::jobs::codex_copy_ready`]). An `own` one (LANES-13) runs on the account's own folder,
-/// its shell on, and Codex runs no turn on settings that aren't obid's (crate::codex).
+/// its shell on, and Codex runs no turn on settings that aren't its mode's (crate::codex).
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn launch(
     shared: &Shared,
@@ -170,7 +176,7 @@ pub(super) async fn launch(
             account,
             &place.room,
             &place.temp,
-            frozen,
+            shared.jobs.default_mode(),
             flags,
             stderr,
         )?,
@@ -233,6 +239,7 @@ pub(super) async fn options(
         usage: false,
         priced: None,
         chatgpt,
+        own: own.then(|| crate::codex::own::policy(shared.jobs.default_mode())),
     }
 }
 

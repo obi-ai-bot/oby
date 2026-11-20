@@ -60,7 +60,8 @@ The business behavior contract for what milestone R03 ("Delete what has no calle
 
 - **Outcome:** A paired phone can call only routes obid serves, and [runner-api.md](../runner-api.md) promises only those: no speech service, Watch API or Live Activity pushes that obid doesn't have. The routes it stopped serving are listed once, each with the date it went, and a Brain test keeps the allowlist and the doc honest.
 - **Why:** The gateway's allowlist let through 7 routes obid never routed (`POST /v1/jobs/*/proposals/*/file`, `POST /v1/jobs/*/start-when`, `PUT /v1/settings/models`, `POST /v1/activities`, `GET` and `POST /v1/watches`, `DELETE /v1/watches/*`), and runner-api.md still documented them, with `POST /v1/speech` and the Watch API. The Swift runner served them; it was deleted on 2026-11-02 (#1653).
-- **Status:** **implemented** (RETIRED-7 to RETIRED-9, tasks R03-03 and R03-04).
+- **Status:** **implemented** (RETIRED-7 to RETIRED-9, tasks R03-03 and R03-04; RETIRED-10, the owner's "All three CI fixes" of 2026-11-20).
+- **Outcome:** An API doc can describe routes before obid serves them without turning `dev` red: a section marked proposed is listed as "proposed, not yet served", and the mark has to come off once obid serves them. On 2026-11-20 the browser's docs, merged first (#2608) with that mark, left `dev` failing `retired_8` for 10 hours, and every pull request with it.
 - **Scope:** `ROUTES` in `core/crates/obid/src/gateway.rs`, runner-api.md's sections for those routes and its new "Routes obid does not serve" list, and the Brain (`tools/brain`), which reads that list. The Swift client's calls (`apps/shared` and `apps/ios`, not their tests) are in. Out of scope: Android's `Runner.kt` (R03-08), and serving any of these routes again. `mcp/server/Server.swift`'s call left with oby-mcp (R03-05, below). The Watch app, and its calls with it, was removed on 2026-11-13 (docs/decisions/2026-11-13-roadmap-answers.md).
 
 ### Behavior
@@ -68,12 +69,14 @@ The business behavior contract for what milestone R03 ("Delete what has no calle
 - **Actors and ownership:** obid owns its routes and the gateway's allowlist. A phone that calls a route obid doesn't serve gets the gateway's `404` (before, obid's own `404` behind it). Nothing obid serves changes.
 - **The gone list:** runner-api.md's section "Routes obid does not serve" lists each route obid stopped serving as a bullet: the route in backticks (`METHOD /path`, one per pair), `(gone <date>)` and why. Older sections that say a route answers `404` stay; their routes are on the list too.
 - **The Brain's checks:** every backticked `METHOD /path` inside that section (to the next heading of its level or higher) is a gone route. A mention of a gone route anywhere in the doc never counts as documenting it, so it's never `doc-without-route`; a gone route obid routes is `gone-but-routed`. A segment holding `<…>` (`conversation-<id>`) is a placeholder, as `{x}` is, and a mention whose path matches a route obid serves documents it whatever its prefix (`GET /callback`). The Brain also reads every `call("METHOD", "v1/…")` and `send("METHOD", "v1/…")` of the Swift client (`swiftClient` in `brain.config.ts`), each `\(…)` a placeholder segment, and one obid doesn't route is `call-without-route`.
+- **Proposed routes:** a line that opens with `**Proposed: obid doesn't serve` (`proposedMark` in `brain.config.ts`, the browser doc's own words) marks its section, to the next heading of its level or higher, its subsections included; before any heading, the rest of its file. A route mentioned only in marked sections that obid doesn't serve is `proposed-route`, listed and never a miss; one obid serves is `proposed-but-routed`, a miss, until the mark comes off. A mention outside a marked section is read as before.
 - **Failures and recovery:** None at run time: the Brain is a static read of the repository.
 
 ### Invariants
 
 - Every allowlist entry, method and path, matches a route obid serves.
 - Every route runner-api.md documents as served exists in obid, and each one obid stopped serving is on the gone list.
+- No route obid serves is still documented as proposed.
 - Every call the Swift client makes reaches a route obid serves, but the named exceptions in RETIRED-9's test.
 
 ### Interfaces and dependencies
@@ -87,6 +90,7 @@ The business behavior contract for what milestone R03 ("Delete what has no calle
 - **RETIRED-7** (implemented). Given obid's router and the gateway's allowlist, when the Brain generates its checks, then every allowlist entry (method and path) matches a route obid serves. Test: `retired_7_every_phone_route_is_served` (`tools/brain/test/repo.test.ts`).
 - **RETIRED-8** (implemented). Given `docs/runner-api.md` and `docs/api/*.md`, when the Brain generates its checks, then every route documented as served in any of them exists in obid, and each route obid stopped serving is listed as gone, in whichever of them holds the gone list, for a mention in any of them. Tests: `retired_8_every_documented_route_is_served` and `retired_8_reads_every_api_doc` (`tools/brain/test/repo.test.ts`).
 - **RETIRED-9** (implemented). Given `apps/shared` and `apps/ios` (not their tests), when the Brain scans their `call`/`send` calls, then every method and path they call is a route obid serves, except the one named exception in the test (`POST /v1/jobs/{id}/proposals/{index}/file`, the task page's). Test: `retired_9_the_swift_client_calls_only_served_routes` (`tools/brain/test/repo.test.ts`).
+- **RETIRED-10** (implemented). Given an API doc (`docs/runner-api.md`, `docs/api/*.md`) whose section opens with `**Proposed: obid doesn't serve`, when the Brain generates its checks, then each route that section documents and obid doesn't serve is listed as `proposed-route` ("proposed, not yet served") and fails nothing, the doc's other sections are read as before, and a route obid serves that is still documented only as proposed is `proposed-but-routed` and fails `retired_8`'s test file. Tests: `retired_10_routes_documented_ahead_of_obid_are_listed_not_failed` and `retired_10_a_served_route_still_marked_proposed_fails` (`tools/brain/test/repo.test.ts`), and a docs-first change in this scenario's pull request: red on `dev`'s Brain, green with this one.
 
 ## oby-mcp
 

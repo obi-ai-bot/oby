@@ -1,0 +1,267 @@
+/* Oby components: Sangam's design/app (app.css) as shared classes, on the
+   tokens in tokens.json. Names follow his code, so a Swift or web port can
+   be checked against it line by line. iPhone additions are marked. */
+
+.oby, .oby * { box-sizing: border-box; }
+.oby { font-family: var(--font-sans); font-size: 13px; line-height: 1.4; color: var(--text); background: var(--bg); -webkit-font-smoothing: antialiased; }
+:where(.oby) button { appearance: none; border: 0; background: none; padding: 0; font: inherit; color: inherit; cursor: pointer; }
+:where(.oby) :where(p, h1, h2, h3, ol, ul) { margin: 0; }
+:where(.oby) :where(ol, ul) { padding: 0; list-style: none; }
+
+/* motion: the working dot, the stage sheen, a word arriving */
+@keyframes oby-pulse-slow { 0%, 100% { opacity: 0.2; } 50% { opacity: 1; } }
+@keyframes oby-pulse { 50% { opacity: 0.35; } }
+@keyframes oby-sheen { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@keyframes oby-word-in { from { opacity: 0; } }
+@keyframes oby-caret { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .oby *, .oby *::before, .oby *::after { animation: none !important; } }
+
+/* Icon button: 32px, muted, a hover fill (44px hit area on iPhone) */
+.icon-button { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; color: var(--muted); }
+.icon-button:hover, .icon-button.is-on { color: var(--text); background: var(--hover); }
+.icon-button svg { display: block; }
+
+/* Status mark: one 8px dot in a 12px spot. new blue, needs orange, working
+   pulsing, queued nothing, done a grey check */
+.status { flex: none; width: 12px; height: 12px; display: grid; place-items: center; color: var(--mark); }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; }
+.status-dot.is-new { background: var(--unread); }
+.status-dot.is-needs { background: var(--needs); }
+.status-dot.is-queued { box-shadow: inset 0 0 0 1.5px var(--mark); }
+.status-dot.is-failed { background: var(--danger); }
+.status-dot.is-working { background: var(--pulse); animation: oby-pulse-slow 1.6s ease-in-out infinite; }
+
+/* Chips: a kind of work on Home. Blue dot before the name while it holds a
+   new task, orange while something in it needs you */
+.chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.chip { height: 34px; padding: 0 16px; display: inline-flex; align-items: center; gap: 10px; border-radius: 999px; background: var(--pill); color: var(--text); font-size: 14px; white-space: nowrap; }
+.chip-dots { flex: none; display: flex; gap: 4px; margin-right: -2px; }
+.chip-dots > span { width: 6px; height: 6px; border-radius: 50%; }
+.chip-dots .is-fresh { background: var(--unread); }
+.chip-dots .is-needs { background: var(--needs); }
+.attention-label { color: var(--muted); font-size: 14px; text-align: center; }
+.attention-label.is-idle { color: var(--text); }
+
+/* Underlined tabs: Running / Done */
+.line-tabs { position: relative; width: 100%; display: flex; gap: 24px; border-bottom: 1px solid var(--line); }
+.line-tab { position: relative; height: 36px; display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 14px; }
+.line-tab.is-on { color: var(--ink); }
+.line-tab.is-on::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; border-radius: 1px; background: var(--ink); }
+.line-tab-count { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.group-title { color: var(--ink); font-size: 28px; font-weight: 600; line-height: 1.2; }
+
+/* Task card */
+.task-card { position: relative; width: 100%; padding: 18px 20px 20px; display: flex; flex-direction: column; border-radius: 22px; background: var(--chip); }
+.tc-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.tc-head > svg { flex: none; opacity: 0.7; color: var(--ink); }
+.tc-title { flex: 1; min-width: 0; color: var(--ink); font-size: 15px; font-weight: 600; line-height: 20px; white-space: nowrap; overflow: hidden; -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }
+.tc-who { margin-right: 6px; color: var(--text); font-weight: 500; }
+.tc-ago { flex: none; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.tc-dots { position: absolute; left: 4px; top: 22px; display: flex; }
+.tc-meta { margin: 4px 0 0 26px; color: var(--muted); font-size: 13px; }
+.tc-now { margin-top: 14px; display: flex; align-items: center; gap: 10px; color: var(--text); font-size: 13px; min-width: 0; overflow: hidden; }
+.tc-step { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; }
+.tc-round { flex: none; margin-left: auto; color: var(--muted); font-size: 12px; }
+.tc-result { margin-top: 12px; color: var(--muted); font-size: 12px; }
+.tc-result a { color: var(--text); text-decoration: none; }
+/* the step being worked on: a sheen sweeps across it every 1.6s */
+.sheen { background: linear-gradient(90deg, var(--muted) 0%, var(--muted) 35%, var(--ink) 50%, var(--muted) 65%, var(--muted) 100%) 0 0 / 300% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: oby-sheen 1.6s linear infinite; }
+/* the stages as one thin bar of segments */
+.tc-progress { margin-top: 16px; display: flex; gap: 3px; }
+.tc-progress span { flex: 1; height: 3px; border-radius: 2px; background: var(--pill); }
+.tc-progress .is-done { background: var(--stage-done); }
+.tc-progress .is-current { background: var(--stage-done); animation: oby-pulse 1.6s ease-in-out infinite; }
+.tc-progress .is-needs { background: var(--needs); }
+.tc-progress .is-failed { background: var(--danger); }
+
+/* Decision (a task's ask, an inbox item, a confirm) */
+.tc-ask { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--divider); }
+.tc-ask.is-alone { margin: 0; padding: 16px 18px 18px; border: 0; border-radius: 18px; background: var(--chip); }
+.tc-ask-kind { color: var(--needs-ink); font-size: 12px; font-weight: 500; }
+.tc-ask-kind.is-failed { color: var(--danger); }
+.tc-ask-head { margin-top: 4px; color: var(--ink); font-size: 14px; font-weight: 500; line-height: 20px; }
+.tc-ask-text { margin-top: 4px; color: var(--text); font-size: 13px; line-height: 19px; }
+.tc-code { margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: var(--code-bg); color: var(--text); font: 12px/18px var(--font-mono); white-space: pre-wrap; word-break: break-word; }
+.tc-options { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px; }
+.tc-option { height: 32px; padding: 0 14px; border-radius: 999px; background: var(--pill); color: var(--item); font-size: 13px; }
+.tc-option.is-primary { background: var(--ink); color: var(--on-ink); font-weight: 500; }
+.tc-option.is-danger { color: var(--danger); }
+.tc-option.is-quiet { background: none; color: var(--muted); }
+.tc-answered { margin-top: 14px; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+
+/* A task's page: stages with a mark each and a dotted line down */
+.tc-section h3 { margin-bottom: 16px; color: var(--label); font-size: 12px; font-weight: 500; }
+.tc-stages li { display: flex; gap: 12px; }
+.tc-stage-mark { flex: none; width: 16px; display: flex; flex-direction: column; align-items: center; }
+.tc-stages li:not(:last-child) .tc-stage-mark::after { content: ''; flex: 1; width: 2px; min-height: 20px; margin: 4px 0 2px; background: radial-gradient(circle, var(--mark) 0.9px, transparent 1.1px) center top / 2px 6px repeat-y; }
+.tc-stage-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding-bottom: 14px; }
+.tc-stages li:last-child .tc-stage-text { padding-bottom: 0; }
+.tc-stage-title { color: var(--ink); font-size: 14px; font-weight: 500; line-height: 18px; }
+.tc-stage-detail { color: var(--muted); font-size: 14px; line-height: 20px; }
+.tc-stages .is-upcoming .tc-stage-title { color: var(--text); }
+.tc-mark { flex: none; width: 16px; height: 18px; display: grid; place-items: center; }
+.tc-mark .status-dot { width: 10px; height: 10px; }
+.tc-mark-done { width: 14px; height: 14px; display: grid; place-items: center; border-radius: 50%; background: var(--done); color: var(--bg); }
+.tc-facts { display: grid; grid-template-columns: 96px 1fr; gap: 6px 12px; font-size: 14px; line-height: 20px; }
+.tc-facts dt { color: var(--muted); }
+.tc-facts dd { margin: 0; color: var(--text); min-width: 0; overflow-wrap: anywhere; }
+.is-mono { font-family: var(--font-mono); font-size: 13px; }
+
+/* A conversation: your bubbles on the right, Oby's words plain on the left
+   under its face; runs 4px apart, a question and its answer 24px */
+.thread { display: flex; flex-direction: column; }
+.msg { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; margin-top: 24px; }
+.msg:first-child { margin-top: 0; }
+.msg.is-cont { margin-top: 4px; }
+.msg.is-oby { gap: 12px; }
+.msg.is-oby.is-cont { margin-top: 12px; }
+.msg + .msg.is-oby:not(.is-cont) { margin-top: 16px; }
+.msg.is-you, .msg.is-source { align-items: flex-end; }
+.msg-bubble { max-width: 80%; padding: 9px 14px; border-radius: 18px; background: var(--bubble); color: var(--ink); font-size: 14px; line-height: 20px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg-words { width: 100%; color: var(--item); font-size: 14px; line-height: 20px; overflow-wrap: anywhere; }
+.msg-words > * + * { margin-top: 8px; }
+.msg-words ul { padding-left: 18px; list-style: disc; }
+.msg-words li + li { margin-top: 2px; }
+.msg-words .w-new { animation: oby-word-in 240ms ease-out both; }
+.msg-words .w-fresh { opacity: 0.35; }
+.msg-time { margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 14px; font-variant-numeric: tabular-nums; }
+.msg-face { width: 22px; height: 22px; margin-bottom: -4px; }
+.msg-face svg { display: block; }
+.msg-attached { max-width: 80%; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.msg-photo { display: block; width: 180px; height: 132px; border-radius: 14px; object-fit: cover; }
+.msg-file { max-width: 240px; height: 32px; padding: 0 12px; display: inline-flex; align-items: center; gap: 8px; border-radius: 12px; background: var(--bubble); color: var(--ink); font-size: 13px; white-space: nowrap; }
+.msg-quote { position: relative; width: 100%; padding: 2px 0 2px 19px; display: flex; flex-direction: column; gap: 8px; color: var(--text); font-size: 14px; line-height: 20px; }
+.msg-quote::before { content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: 3px; border-radius: 1.5px; background: var(--line); }
+.tok { padding: 1px 3px; border-radius: 4px; }
+.tok-url, .tok-ref { color: var(--tok-link); }
+.tok-mention { padding: 1px 3px; border-radius: 4px; background: var(--tok-mention-bg); color: var(--tok-mention); }
+.tok-path, .tok-code { padding: 1px 3px; border-radius: 4px; background: var(--tok-path-bg); color: var(--tok-path); font-family: var(--font-mono); font-size: 13px; }
+
+/* Oby at work: one shimmering line under its live face; once its words
+   land the steps fold into one muted line over them */
+.msg-step { font-size: 13px; line-height: 20px; }
+.msg-steps { display: flex; flex-direction: column; gap: 6px; }
+.msg-steps-head { align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 13px; line-height: 20px; }
+.msg-steps.is-open .msg-steps-head svg { transform: rotate(90deg); }
+
+/* Tool lines (iPhone addition, docs/conversation-harness.md section 5): each
+   `step` event with a `tool` is one line, a mark and the verb, its detail as
+   a path token. Running: a working dot and the sheen. Done: the grey check */
+.tool-lines { display: flex; flex-direction: column; gap: 4px; }
+.tool-line { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--muted); font-size: 13px; line-height: 20px; }
+.tool-line > .status { color: var(--mark); }
+.tool-line-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }
+.tool-line .tok-path { font-size: 12px; }
+.tool-line.is-running .tool-verb { background: linear-gradient(90deg, var(--muted) 0%, var(--muted) 35%, var(--ink) 50%, var(--muted) 65%, var(--muted) 100%) 0 0 / 300% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: oby-sheen 1.6s linear infinite; }
+.tool-line.is-failed { color: var(--danger); }
+
+/* A task started in the conversation: a small card under Oby's words */
+.msg-task { width: 100%; padding: 10px 12px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 14px; background: var(--card-fill); color: var(--muted); text-align: left; }
+.msg-task > svg:first-child { flex: none; align-self: flex-start; margin-top: 1px; color: var(--ink); opacity: 0.7; }
+.msg-task > .status { align-self: flex-start; margin-top: 3px; }
+.msg-task-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.msg-task-title { color: var(--ink); font-size: 13px; font-weight: 500; line-height: 18px; white-space: nowrap; overflow: hidden; }
+.msg-task-meta { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; }
+.msg-task-now { margin-top: 4px; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text); }
+.msg-task .tc-progress { margin-top: 8px; }
+.msg-task-go { flex: none; align-self: flex-start; margin-top: 2px; opacity: 0.6; color: var(--muted); }
+
+/* An artifact (iPhone addition, conversation-harness section 4): the card
+   under the words that made it, opening the viewer. A preview strip on top */
+.artifact-card { width: 100%; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 14px; background: var(--card-fill); overflow: hidden; text-align: left; }
+.artifact-thumb { height: 116px; position: relative; overflow: hidden; border-bottom: 1px solid var(--line); background: var(--bg); }
+.artifact-row { padding: 10px 12px; display: flex; align-items: center; gap: 10px; }
+.artifact-row > svg:first-child { flex: none; color: var(--muted); }
+.artifact-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.artifact-title { color: var(--ink); font-size: 13px; font-weight: 500; line-height: 18px; white-space: nowrap; overflow: hidden; }
+.artifact-meta { color: var(--muted); font-size: 12px; }
+
+/* The message box: one row (+, text, gauge, voice or send), 46px, a 1px line,
+   23px round; stacked once the text runs past a line */
+.composer-field { position: relative; width: 100%; border: 1px solid var(--line); border-radius: 23px; background: var(--bg); }
+.composer-field.is-focused { border-color: var(--field-edge-on); }
+.composer-grid { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; grid-template-areas: "tags tags tags tags" "plus text usage end"; align-items: end; column-gap: 2px; padding: 6px; }
+.composer-field.is-stacked .composer-grid { grid-template-areas: "tags tags tags tags" "text text text text" "plus . usage end"; }
+.composer-tags { grid-area: tags; margin-bottom: 6px; display: flex; flex-wrap: wrap; gap: 6px; padding: 3px 3px 4px; }
+.composer-tag { height: 24px; max-width: 240px; padding: 0 3px 0 5px; display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; background: var(--chip-hover); color: var(--item); font-size: 12px; }
+.composer-tag > svg { color: var(--muted); }
+.composer-tag-thumb { width: 16px; height: 16px; border-radius: 4px; object-fit: cover; }
+.composer-input { grid-area: text; min-width: 0; min-height: 32px; padding: 5px 4px; color: var(--ink); font-size: 15px; line-height: 22px; white-space: pre-wrap; }
+.composer-field.is-stacked .composer-input { padding: 10px 12px; }
+.composer-placeholder { display: block; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.composer-caret { display: inline-block; width: 2px; height: 20px; margin: 0 1px -5px; border-radius: 1px; background: var(--ink); animation: oby-caret 1s step-end infinite; }
+.composer-button { flex: none; width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; color: var(--muted); position: relative; }
+.composer-button.is-plus { grid-area: plus; }
+.composer-button.is-usage { grid-area: usage; }
+.composer-button.is-end { grid-area: end; }
+.composer-button.is-ready { color: var(--ink); }
+/* iPhone addition: while Oby's turn runs, the end slot is Stop (a small square) */
+.composer-button.is-stop { color: var(--ink); background: var(--hover); }
+.usage-dot { position: absolute; top: 5px; right: 4px; width: 6px; height: 6px; border-radius: 50%; }
+.usage-dot.is-high { background: var(--full); }
+.usage-dot.is-over { background: var(--over); }
+
+/* Menus and the + panel: surface, 1px edge, a soft shadow */
+.add-panel { padding: 4px; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--surface-edge); border-radius: 20px; box-shadow: var(--shadow-menu); }
+.add-panel .add-row { height: 44px; padding: 0 10px; display: flex; align-items: center; gap: 10px; border-radius: 10px; color: var(--text); font-size: 14px; text-align: left; }
+.add-panel .add-row > svg:first-child { flex: none; color: var(--muted); }
+.row-menu { min-width: 148px; padding: 8px; display: flex; flex-direction: column; gap: 2px; background: var(--surface); border: 1px solid var(--surface-edge); border-radius: 16px; box-shadow: var(--shadow-menu); }
+.row-menu button { height: 36px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border-radius: 6px; color: var(--text); font-size: 14px; text-align: left; }
+.row-menu .is-danger { color: var(--danger); }
+.row-menu hr { width: auto; height: 1px; margin: 4px 6px; border: 0; background: var(--surface-edge); }
+
+/* Rows: a task on Home (logo, name, mark) and a conversation (name, its last
+   line, when) */
+.task-row { width: 100%; height: 44px; padding: 0 10px; display: flex; align-items: center; gap: 10px; border-radius: 6px; color: var(--muted); text-align: left; }
+.task-row > svg:first-child { flex: none; color: var(--ink); opacity: 0.7; }
+.task-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.task-row-title { color: var(--item); font-size: 14px; white-space: nowrap; overflow: hidden; -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }
+.task-row-step { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; }
+.task-row.is-done .task-row-title { color: var(--label); }
+.convo-row { width: 100%; min-height: 52px; padding: 6px 10px; display: flex; align-items: center; gap: 12px; border-radius: 6px; text-align: left; }
+.convo-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.convo-name { color: var(--item); font-size: 14px; white-space: nowrap; overflow: hidden; -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }
+.convo-about { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }
+.convo-ago { flex: none; align-self: flex-start; margin-top: 6px; color: var(--muted); font-size: 12px; }
+.convo-dot { flex: none; width: 6px; height: 6px; margin-left: -8px; border-radius: 50%; background: var(--unread); }
+.list-label { height: 26px; padding: 0 10px; display: flex; align-items: center; justify-content: space-between; color: var(--label); font-size: 12px; }
+
+/* Settings: titled groups of cards, a row per setting */
+.set-group { display: flex; flex-direction: column; }
+.set-head { margin-bottom: 8px; padding: 0 16px; color: var(--item); font-size: 13px; font-weight: 500; }
+.set-card { border: 1px solid var(--surface-edge); border-radius: 16px; background: var(--surface); }
+.set-foot { margin-top: 8px; padding: 0 16px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.set-row { min-height: 56px; padding: 12px 16px; display: flex; align-items: center; gap: 16px; }
+.set-row + .set-row { border-top: 1px solid var(--divider); }
+.set-label { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; color: var(--ink); font-size: 14px; }
+.set-about { color: var(--muted); font-size: 12px; line-height: 1.45; }
+.set-value { color: var(--text); font-size: 14px; display: inline-flex; align-items: center; gap: 6px; }
+.set-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--done); }
+.set-switch { position: relative; flex: none; width: 32px; height: 18px; border-radius: 9px; background: var(--track); }
+.set-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--text); }
+.set-switch[aria-checked="true"] { background: var(--ink); }
+.set-switch[aria-checked="true"]::after { transform: translateX(14px); background: var(--bg); }
+.set-segmented { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--chip); border: 1px solid var(--line); }
+.set-segmented button { height: 26px; padding: 0 12px; border-radius: 6px; color: var(--text); font-size: 13px; }
+.set-segmented button.is-on { background: var(--bubble); color: var(--ink); }
+.set-select { height: 32px; padding: 0 12px 0 14px; display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); color: var(--ink); font-size: 14px; }
+.set-select svg { color: var(--muted); }
+.set-button { height: 32px; padding: 0 14px; display: inline-flex; align-items: center; gap: 6px; border-radius: 8px; background: var(--chip-hover); border: 1px solid var(--line); color: var(--ink); font-size: 14px; }
+.set-button.is-danger { color: var(--danger); }
+.set-button.is-primary { background: var(--ink); border-color: var(--ink); color: var(--on-ink); font-weight: 500; }
+.set-field { height: 44px; padding: 0 14px; display: flex; align-items: center; border: 1px solid var(--line); border-radius: 12px; background: var(--field); color: var(--ink); font-size: 14px; }
+.set-meter { display: block; width: 100%; height: 4px; margin-top: 6px; border-radius: 2px; background: var(--meter); overflow: hidden; }
+.set-meter > span { display: block; height: 100%; border-radius: 2px; background: var(--text); }
+.set-meter > span.is-high { background: var(--full); }
+.set-meter > span.is-over { background: var(--over); }
+
+/* iPhone chrome (additions): the top bar under the safe area, a bottom sheet */
+.phone { position: relative; width: 402px; height: 874px; overflow: hidden; display: flex; flex-direction: column; padding-top: 62px; background: var(--bg); }
+.phone-bar { flex: none; height: 44px; padding: 0 8px; display: flex; align-items: center; gap: 4px; }
+.phone-bar-title { flex: 1; min-width: 0; color: var(--text); font-size: 15px; font-weight: 500; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.phone-bar .icon-button { width: 44px; height: 44px; border-radius: 10px; }
+.phone-scroll { flex: 1; min-height: 0; overflow: hidden; position: relative; }
+.phone-foot { flex: none; padding: 8px 16px 42px; }
+.sheet { position: absolute; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; border-radius: 20px 20px 0 0; background: var(--surface); border-top: 1px solid var(--surface-edge); box-shadow: var(--shadow-modal); }
+.sheet-grabber { width: 36px; height: 5px; margin: 6px auto 0; border-radius: 3px; background: var(--line-strong); }
+.scrim { position: absolute; inset: 0; background: var(--scrim); }

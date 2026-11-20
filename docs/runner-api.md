@@ -2,6 +2,8 @@
 
 The runner API is documented per area in `docs/api/<area>.md`. A change to the API changes the area file whose routes it touches, in the same pull request as the code. The list below keeps every heading this file had, each linked to the area file that now holds its section.
 
+Routes documented before obid serves them go in a section that opens with **Proposed: obid doesn't serve these routes yet.**: the Brain lists them as proposed instead of failing, and fails once obid serves one still marked (docs/contracts/retired.md, RETIRED-10).
+
 - [Check workflow](api/ci.md)
 - [Reaching it](api/overview.md)
 - [LAN gateway (#284)](api/phone-pairing.md)

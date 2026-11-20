@@ -181,6 +181,63 @@ pub struct Tab {
     pub ask: Option<Ask>,
     /// The dialog the page shows (an alert's words, the page's), if any.
     pub dialog: Option<String>,
+    /// What the tab shows (add-only: a tab without it is a `page`). An `artifact` tab is drawn by
+    /// the app itself from Oby's artifact, never streamed, and never an agent's.
+    #[serde(default)]
+    pub kind: TabKind,
+    /// The artifact an `artifact` tab shows; absent on a page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<ArtifactRef>,
+}
+
+/// What a tab shows (Oby Artifacts, plan §3.3): a web page, or one of Oby's artifacts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TabKind {
+    #[default]
+    Page,
+    Artifact,
+}
+
+pub const TAB_KINDS: &[&str] = &["page", "artifact"];
+
+/// Which artifact an `artifact` tab shows, and whether it follows the newest version (`latest`) or
+/// stays on the one the person pinned.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactRef {
+    pub id: String,
+    pub version: u32,
+    pub latest: bool,
+}
+
+/// `POST` an [`OpenArtifactBody`] to [`PATH_TABS`], signed: opens the artifact's tab, or brings its
+/// open one forward, and answers the [`Tab`]. The person's only; an agent asks the app with
+/// `oby_artifact_open`.
+///
+/// `POST` a [`VersionBody`], signed: pins an artifact tab to a version, or back to the latest.
+pub const VERB_VERSION: &str = "version";
+/// `POST` `{}`, signed: closes an artifact tab.
+pub const VERB_CLOSE: &str = "close";
+
+/// The artifact tab's routes, apart from [`ROUTES`] (the page tabs' API answers those).
+pub const ARTIFACT_TAB_ROUTES: &[&str] = &[
+    "POST /v1/browser/tabs",
+    "POST /v1/browser/tabs/{id}/version",
+    "POST /v1/browser/tabs/{id}/close",
+];
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OpenArtifactBody {
+    pub artifact: String,
+}
+
+/// `version` null: follow the latest again.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VersionBody {
+    pub version: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -503,6 +560,9 @@ pub struct Event {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
+// A `Tab` event carries the whole tab, and the artifact tab's two keys made it the largest
+// variant by far; events are few, so it stays unboxed (boxing it changes every sender).
+#[allow(clippy::large_enum_variant)]
 pub enum EventBody {
     /// A tab opened or changed (its URL, title, state, hold, ask or dialog).
     Tab {
@@ -625,6 +685,8 @@ pub const REASONS: &[&str] = &[
     "bad_request",
     "browser_starting",
     "no_dialog",
+    // An artifact tab: drawn by the app, never streamed, taken or driven (Oby Artifacts).
+    "artifact_tab",
 ];
 
 // ── The agents' tools (MCP) ─────────────────────────────────────────────────────────────────────
@@ -794,6 +856,10 @@ mod tests {
         assert_eq!(twin_list("REASONS"), REASONS);
         assert_eq!(twin_list("MCP_TOOLS"), MCP_TOOLS);
         assert_eq!(twin_list("BROWSER_STATES"), BROWSER_STATES);
+        assert_eq!(twin_list("TAB_KINDS"), TAB_KINDS);
+        assert_eq!(twin_list("ARTIFACT_TAB_ROUTES"), ARTIFACT_TAB_ROUTES);
+        assert_eq!(twin_const("VERB_VERSION"), VERB_VERSION);
+        assert_eq!(twin_const("VERB_CLOSE"), VERB_CLOSE);
         assert!(TWIN.contains("export const BROWSER_START_ALLOWANCE_MS = 60_000;"));
         assert_eq!(BROWSER_START_ALLOWANCE_MS, 60_000);
         assert_eq!(twin_const("WORDS_HEADER"), WORDS_HEADER);
@@ -815,6 +881,21 @@ mod tests {
         // Every field the wire carries is named in the twin.
         let wire = [
             serde_json::to_value(sample_tab()).unwrap(),
+            serde_json::to_value(Tab {
+                kind: TabKind::Artifact,
+                artifact: Some(ArtifactRef {
+                    id: "a".into(),
+                    version: 1,
+                    latest: true,
+                }),
+                ..sample_tab()
+            })
+            .unwrap(),
+            serde_json::to_value(OpenArtifactBody {
+                artifact: "a".into(),
+            })
+            .unwrap(),
+            serde_json::to_value(VersionBody { version: Some(1) }).unwrap(),
             serde_json::to_value(Event {
                 seq: 1,
                 body: EventBody::ScriptRun {
@@ -913,7 +994,23 @@ mod tests {
                 choice: None,
             }),
             dialog: None,
+            kind: TabKind::Page,
+            artifact: None,
         }
+    }
+
+    #[test]
+    fn a_tab_without_kind_is_a_page() {
+        let mut v = serde_json::to_value(sample_tab()).unwrap();
+        v.as_object_mut().unwrap().remove("kind");
+        let t: Tab = serde_json::from_value(v).unwrap();
+        assert_eq!(t.kind, TabKind::Page);
+        assert!(t.artifact.is_none());
+        let page = serde_json::to_value(sample_tab()).unwrap();
+        assert!(
+            page.get("artifact").is_none(),
+            "a page carries no artifact key"
+        );
     }
 
     #[test]

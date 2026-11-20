@@ -80,7 +80,11 @@
             "PEER-14": "— Electron quote rendering.",
             "PEER-15": "— Electron state words/timers.",
             "PEER-24": "— Electron look-alike display.",
-            "PEER-42": "— Electron Obysphere settings list/Change button."
+            "PEER-42": "— Electron Obysphere settings list/Change button.",
+            "PEER-46": "— Electron review request card on Home and in the thread (apps/electron personCard.test.tsx).",
+            "PEER-47": "— Electron review request Accept and the thread's words (apps/electron personCard.test.tsx).",
+            "PEER-48": "— Electron remembered answer's click (apps/electron personCard.test.tsx); obid's half is sphere_api.rs.",
+            "PEER-49": "— Electron closed review request card (apps/electron personCard.test.tsx)."
           }
         },
         "ask-an-oby.md": {
@@ -130,6 +134,17 @@
             "ASK-38": "the Electron message box's @ list (apps/electron askByMention.test.tsx)",
             "ASK-39": "the Electron app sends ask and main signs it (apps/electron askByMention and ipc tests)"
           }
+        },
+        "obi-requests.md": {
+          "obid": [
+            "OBIREQ-1",
+            "OBIREQ-2",
+            "OBIREQ-3",
+            "OBIREQ-4",
+            "OBIREQ-5",
+            "OBIREQ-6"
+          ],
+          "elsewhere": {}
         },
         "rooms.md": {
           "obid": [
@@ -1169,7 +1184,6 @@
             "LANES-12",
             "LANES-13",
             "LANES-18",
-            "LANES-19",
             "LANES-21",
             "LANES-23",
             "LANES-24"
@@ -1181,6 +1195,7 @@
             "LANES-15": "unit test.",
             "LANES-16": "unit/process test (could be obid via leftover pid check).",
             "LANES-17": "unit test.",
+            "LANES-19": "retired by the owner's \"Yes, match T3\" (docs/decisions/2026-11-19-codex-like-t3.md): builds aren't boxed.",
             "LANES-20": "real network/listen behaviour.",
             "LANES-22": "unit (process::tests).",
             "LANES-25": "unit test (jobs::lanes): what a job's launch fixes is its own; nothing black-box to see.",
@@ -1280,7 +1295,12 @@
             "FOLDERS-7",
             "FOLDERS-9",
             "FOLDERS-10",
-            "FOLDERS-22"
+            "FOLDERS-22",
+            "WORKSPACE-2",
+            "WORKSPACE-3",
+            "WORKSPACE-4",
+            "WORKSPACE-5",
+            "WORKSPACE-6"
           ],
           "elsewhere": {
             "FOLDERS-11": "Electron folders gate (obid half: status folders-v1).",
@@ -1300,7 +1320,8 @@
             "FOLDERS-19": "not built: proposed (folders for jobs, trust, failures).",
             "FOLDERS-20": "not built: proposed (folders for jobs, trust, failures).",
             "FOLDERS-21": "not built: proposed (folders for jobs, trust, failures).",
-            "FOLDERS-23": "not built: proposed (folders for jobs, trust, failures)."
+            "FOLDERS-23": "not built: proposed (folders for jobs, trust, failures).",
+            "WORKSPACE-1": "not built: proposed (the lanes wire the write list; its builder is proved by Kani in workspace/writes.rs)."
           }
         },
         "setup.md": {
@@ -1382,6 +1403,13 @@
             "WIRE-3": "Electron.",
             "WIRE-4": "Electron.",
             "WIRE-5": "Electron."
+          }
+        },
+        "remote.md": {
+          "obid": [],
+          "elsewhere": {
+            "COMPUTERS-1..13": "obid's unit tests (computers_<n>_…, src/remote/, src/gateway.rs, src/main.rs) and core/crates/obid/tests/remote.rs, on a real obid; end to end, the lab's lab-remote workflows (LAB-REMOTE-n), which coverage doesn't count (OBIDSPEC-16).",
+            "COMPUTERS-14..18": "proposed: proven by the lab's lab-remote workflows (LAB-REMOTE-n) until obid's side is ported, then by its tests in core/crates/obid (docs/contracts/remote.md, Status)."
           }
         }
       }
@@ -1576,7 +1604,8 @@
             "RETIRED-6": "install.sh, the cloud Worker and tools/brain checks.",
             "RETIRED-7": "install.sh, the cloud Worker and tools/brain checks.",
             "RETIRED-8": "install.sh, the cloud Worker and tools/brain checks.",
-            "RETIRED-9": "install.sh, the cloud Worker and tools/brain checks."
+            "RETIRED-9": "install.sh, the cloud Worker and tools/brain checks.",
+            "RETIRED-10": "tools/brain checks (repo.test.ts)."
           }
         },
         "ci.md": {
@@ -1874,7 +1903,8 @@
             "WORDS-16": "the Electron main's signing.",
             "WORDS-17": "the Electron main's signing.",
             "WORDS-18": "the Electron main's signing.",
-            "WORDS-19": "the Electron main's signing."
+            "WORDS-19": "the Electron main's signing.",
+            "WORDS-20": "the Electron main's signing."
           }
         },
         "sphere-app.md": {
@@ -2126,8 +2156,8 @@
             "BROWSERAPP-16": "the Electron app's downloads shelf, Save a copy signed (shared/words.ts) and Show in Finder (main/browser.ts browser-reveal): browserLive.test.ts, ipc.test.ts; in the real app workflows/app/browser-12-downloads.json; no obid API of its own",
             "BROWSERAPP-17": "the Electron app's browser on another computer (browser/BrowserPane.tsx): in the real app workflows/app/browser-14-another-computer.json; no obid API of its own",
             "BROWSERAPP-18": "the Electron app's Settings › General Browser group (browser/Settings.tsx), switches signed by their labels (shared/words.ts, the preload's switch label): browserLive.test.ts, preload.test.ts; in the real app workflows/app/browser-13-settings.json; no obid API of its own",
-            "BROWSERAPP-19": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
-            "BROWSERAPP-20": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/"
+            "BROWSERAPP-19": "the Electron app's Mac pill and frame (main/macPill.ts, its own windows) and the card in Oby (browser/Mac.tsx), on the demo data until desktop control's own contract: browserApp.test.tsx, ipc.test.ts; in the real app workflows/app/browser-15-the-mac.json; no obid API yet",
+            "BROWSERAPP-20": "the Electron app's first-time sheet (browser/Mac.tsx), on the demo data until desktop control's own contract: browserApp.test.tsx; in the real app workflows/app/browser-16-first-time-mac.json; no obid API yet"
           }
         },
         "computers-app.md": {

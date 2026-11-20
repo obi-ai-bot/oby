@@ -113,6 +113,9 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
       ask: (a) => strings(a) && (a as string[]).length > 0 && (a as string[]).every((o) => named(body.said as string, o)),
       // the skill picked in the box (COMPOSER-27): signed with the body, never one of the words
       skill: text,
+      // where the conversation the words start works (WORKSPACE-3, WORDS-20): "This folder" or
+      // "A new worktree", with new only; signed with the body, never one of the words
+      workspace: (w) => (w === 'folder' || w === 'worktree') && body.new === true,
     });
     // an answer to Oby's question: the words it answers, and the owner's answer
     return ok ? [body.said as string, ...(isBody(answer) ? [answer.option as string] : [])] : null;

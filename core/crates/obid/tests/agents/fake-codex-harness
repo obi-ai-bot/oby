@@ -64,8 +64,8 @@ if (process.argv[2] === "debug" && process.argv[3] === "models") {
 //   anything else      "Nothing to do."
 // It fails the turn when its environment holds a Claude Code, Anthropic or GitHub variable, or
 // obid's API token, and when a thread isn't danger-full-access with untrusted approvals, or, in an
-// own run (LANES-13: `-c` settings for `approval_policy="never"` and obid's permission profile), a
-// thread that sets no sandbox, asks for `never` and names that profile. It answers `config/read`
+// own run (LANES-13, "Yes, match T3": `-c` settings for an `approval_policy` and a built-in
+// permission profile), a thread that sets no sandbox and names both in its `config`. It answers `config/read`
 // with its `-c` settings, each from `sessionFlags`, as fake-codex does, and a thread's start with
 // the policy and profile it was asked for. Each turn's line goes to the conversation's `config`
 // folder beside its room, which is its CODEX_HOME when it's boxed, in either lane.
@@ -105,13 +105,19 @@ if (argv[argv.length - 1] !== "app-server") {
   process.stderr.write("fake-codex-harness: run as `fake-codex-harness [-c k=v]… app-server`\n");
   process.exit(2);
 }
+// A `-c` value: JSON, or TOML's inline tables read as JSON, or the text as it is.
+const toml = (text) => {
+  try { return JSON.parse(text); } catch {}
+  try { return JSON.parse(text.replace(/"\s*=\s*/g, '":').replace(/([{,]\s*)([A-Za-z_]+)\s*=\s*/g, '$1"$2":')); } catch {}
+  return text;
+};
 const setting = (key) => {
   for (let at = 0; at < argv.length - 1; at++) {
-    if (argv[at] === "-c" && argv[at + 1].startsWith(`${key}=`)) return JSON.parse(argv[at + 1].slice(key.length + 1));
+    if (argv[at] === "-c" && argv[at + 1].startsWith(`${key}=`)) return toml(argv[at + 1].slice(key.length + 1));
   }
   return null;
 };
-const own = setting("approval_policy") === "never" && setting("default_permissions") === "oby_own";
+const own = setting("approval_policy") !== null && /^:/.test(setting("default_permissions") ?? "");
 // Its `-c` settings as `config/read` gives them: the merged config, and where each key came from.
 const configRead = () => {
   const config = {}, origins = {};
@@ -121,9 +127,7 @@ const configRead = () => {
   argv.forEach((arg, at) => {
     if (argv[at - 1] !== "-c") return;
     const [key, text] = [arg.slice(0, arg.indexOf("=")), arg.slice(arg.indexOf("=") + 1)];
-    let value = text;
-    // TOML's inline tables, read as JSON.
-    try { value = JSON.parse(text.replace(/"\s*=\s*/g, '":').replace(/([{,]\s*)([A-Za-z_]+)\s*=\s*/g, '$1"$2":')); } catch {}
+    const value = toml(text);
     const path = key.split(".");
     let table = config;
     for (const part of path.slice(0, -1)) table = table[part] ??= {};
@@ -179,8 +183,9 @@ async function oby(method, params) {
   return answer.json();
 }
 
-// Under `approval_policy="never"` (an own run), as codex-cli 0.163: Codex asks nobody, so a tool
-// of a server not approved before the run is refused, and one approved runs without asking.
+// In an own run that asks nobody (Bypass: T3's full access, a `granular` policy), as codex-cli 0.163
+// under `never`: a tool of a server not approved before the run is refused, and one approved runs
+// without asking.
 const NEVER = "MCP tool call requires approval, but approval policy is never";
 const approvedBefore = (server) => setting(`mcp_servers.${server}.default_tools_approval_mode`) === "approve";
 
@@ -188,7 +193,7 @@ const approvedBefore = (server) => setting(`mcp_servers.${server}.default_tools_
 async function mcpCall(turnId, server, tool, args, asked = tool) {
   const item = { type: "mcpToolCall", id: randomUUID(), server, tool, arguments: args, status: "inProgress" };
   event("item/started", turnId, { item });
-  const approved = state.approvalPolicy === "never"
+  const approved = typeof state.approvalPolicy === "object" && state.approvalPolicy !== null
     ? (approvedBefore(server) ? { action: "accept" } : { action: NEVER })
     : await ask("mcpServer/elicitation/request", { threadId: thread, turnId, serverName: server, mode: "form",
     _meta: { codex_approval_kind: "mcp_tool_call", tool_params: args }, message: `Allow the ${server} MCP server to run tool "${asked}"?`, requestedSchema: { type: "object", properties: {} } });
@@ -233,7 +238,8 @@ async function relayed() {
 
 async function runTurn(turnId, prompt) {
   if (leaked.length) return complete(turnId, null, "failed", { message: `leaked: ${leaked.join(", ")}` });
-  if (own ? state.sandbox !== undefined || state.approvalPolicy !== "never" || state.permissions !== "oby_own"
+  if (own ? state.sandbox !== undefined || JSON.stringify(state.approvalPolicy) !== JSON.stringify(setting("approval_policy"))
+      || state.permissions !== setting("default_permissions")
     : state.sandbox !== "danger-full-access" || state.approvalPolicy !== "untrusted")
     return complete(turnId, null, "failed", { message: `started with ${state.sandbox} / ${state.approvalPolicy} / ${state.permissions}` });
   // As Codex 0.162.1: a ChatGPT login whose tokens have no refresh_token key isn't one at all.
@@ -474,7 +480,7 @@ rl.on("line", (line) => {
         thread = randomUUID();
         state = {};
       }
-      Object.assign(state, { sandbox: params.sandbox, approvalPolicy: params.approvalPolicy, instructions: params.developerInstructions ?? null,
+      Object.assign(state, { sandbox: params.sandbox, approvalPolicy: params.approvalPolicy ?? params.config?.approval_policy, instructions: params.developerInstructions ?? null,
         permissions: params.config?.default_permissions });
       save();
       return send({ id, result: { thread: { id: thread }, approvalPolicy: state.approvalPolicy,

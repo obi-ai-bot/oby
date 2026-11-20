@@ -1,0 +1,472 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab artifact view: an artifact tab opens, isn't streamed, can't be taken or driven, and keeps its place over a restart",
+  "version": "1.0.0",
+  "description": "LAB-ARTVIEW-9 (src/lab/artifactview.rs: ArtifactTabs; the browser contract's kind and artifact). The owner opens an artifact as a tab, signed: a tab of kind artifact, the person's, on the latest version at oby-artifact://<id>-v1/__canvas.html; opening it again brings the same tab, and unsigned it's refused. Taking it, streaming it and sending it input are each refused artifact_tab: the app draws it and nobody drives it. Another token (an agent's) reaches nothing. A new version moves it along; pinned to version 1 it stays there through version 3. Restarted, the view server has the same tab where it was; closed, it's gone.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.artifacts.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "view",
+      "use": "runtime.rust:lab.artifactview.up",
+      "inputs": {
+        "artifacts": "${state.up}",
+        "expect": {
+          "paths": {
+            "port": {
+              "$type": "number"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "fx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "claude-design"
+      }
+    },
+    {
+      "id": "design",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab design",
+        "conversation": "c1",
+        "job": "j1",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:lab.artifactview.device",
+      "inputs": {}
+    },
+    {
+      "id": "9-opened",
+      "use": "runtime.rust:lab.artifactview.call",
+      "inputs": {
+        "api": "${state.view.api}",
+        "method": "POST",
+        "path": "/v1/browser/tabs",
+        "device": "${state.d1}",
+        "as": "device",
+        "body": {
+          "artifact": "${state.design.id}"
+        },
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.kind": "artifact",
+            "body.owner.kind": "person",
+            "body.state": "ready",
+            "body.artifact": {
+              "id": "${state.design.id}",
+              "version": 1,
+              "latest": true
+            },
+            "body.url": {
+              "$matches": "^oby-artifact://[0-9a-f-]{36}-v1/__canvas\\.html$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-9"
+        ]
+      }
+    },
+    {
+      "id": "9-again-the-same-tab",
+      "use": "runtime.rust:lab.artifactview.call",
+      "inputs": {
+        "api": "${state.view.api}",
+        "method": "POST",
+        "path": "/v1/browser/tabs",
+        "device": "${state.d1}",
+        "as": "device",
+        "body": {
+          "artifact": "${state.design.id}"
+        },
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.id": "${state.9-opened.body.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-9"
+        ]
+      }
+    },
+    {
+      "id": "9-unsigned-refused",
+      "use": "runtime.rust:lab.artifactview.call",
+      "inputs": {
+        "api": "${state.view.api}",
+        "method": "POST",
+        "path": "/v1/browser/tabs",
+        "device": "${state.d1}",
+        "as": "unsigned",
+        "body": {
+          "artifact": "${state.design.id}"
+        },
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "unsigned"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-9"
+        ]
+      }
+    },
+    {
+      "id": "9-listed",
+      "use": "runtime.rust:lab.artifactview.call",
+      "inputs": {
+        "api": "${state.view.api}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "device": "${state.d1}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.tabs": {
+              "$len": 1
+            },
+            "body.tabs.0.kind": "artifact"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-9"
+        ]
+      }
+    },
+    {
+      "id": "9-not-taken",
+      "use": "runtime.rust:lab.artifactview.call",
+      "inputs": {
+        "api": "${state.view.api}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.9-opened.body.id}/take",
+        "device": "${state.d1}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 409,
+            "body.reason": "artifact_tab"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-9"
+        ]
+      }
+    },
+    {
+      "id": "9-not-streamed",
+      "use": "runtime.rust:lab.artifactview.call",
+      "inputs": {
+        "api": "${state.view.api}",
+        "method": "GET",
+        "path": "/v1/browser/tabs/${state.9-opened.body.id}/stream",
+        "device": "${state.d1}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 409,
+            "body.reason": "artifact_tab"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-9"
+        ]
+      }
+    },
+    {
+      "id": "9-not-driven",
+      "use": "runtime.rust:lab.artifactview.call",
+      "inputs": {
+        "api": "${state.view.api}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.9-opened.body.id}/input",
+        "device": "${state.d1}",
+        "as": "device",
+        "body": {
+          "type": "click",
+          "x": 1,
+          "y": 1
+        },
+        "expect": {
+          "paths": {
+            "status": 409,
+            "body.reason": "artifact_tab"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-9"
+        ]
+      }
+    },
+    {
+      "id": "9-an-agents-token-reaches-nothing",
+      "use": "runtime.rust:lab.artifactview.call",
+      "inputs": {
+        "api": "${state.view.api}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "device": "${state.d1}",
+        "as": "job",
+        "token": "a-job-token",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "bad_token"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-9"
+        ]
+      }
+    },
+    {
+      "id": "v2",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab design",
+        "conversation": "c1",
+        "job": "j2",
+        "artifact": "${state.design.id}",
+        "write": {
+          "lab.css": ".card{background:#202022}\n"
+        },
+        "expect": {
+          "paths": {
+            "ok": true,
+            "version": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "9-follows-the-latest",
+      "use": "runtime.rust:lab.artifactview.call",
+      "inputs": {
+        "api": "${state.view.api}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "device": "${state.d1}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "body.tabs.0.artifact.version": 2,
+            "body.tabs.0.url": {
+              "$contains": "-v2/"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-9"
+        ]
+      }
+    },
+    {
+      "id": "9-pinned",
+      "use": "runtime.rust:lab.artifactview.call",
+      "inputs": {
+        "api": "${state.view.api}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.9-opened.body.id}/version",
+        "device": "${state.d1}",
+        "as": "device",
+        "body": {
+          "version": 1
+        },
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.artifact.version": 1,
+            "body.artifact.latest": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-9"
+        ]
+      }
+    },
+    {
+      "id": "v3",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab design",
+        "conversation": "c1",
+        "job": "j3",
+        "artifact": "${state.design.id}",
+        "write": {
+          "lab.css": ".card{background:#242426}\n"
+        },
+        "expect": {
+          "paths": {
+            "ok": true,
+            "version": 3
+          }
+        }
+      }
+    },
+    {
+      "id": "9-pinned-stays",
+      "use": "runtime.rust:lab.artifactview.call",
+      "inputs": {
+        "api": "${state.view.api}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "device": "${state.d1}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "body.tabs.0.artifact.version": 1
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-9"
+        ]
+      }
+    },
+    {
+      "id": "restarted",
+      "use": "runtime.rust:lab.artifactview.restart",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "port": {
+              "$ne": "${state.view.port}"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "d2",
+      "use": "runtime.rust:lab.artifactview.device",
+      "inputs": {}
+    },
+    {
+      "id": "9-kept-over-a-restart",
+      "use": "runtime.rust:lab.artifactview.call",
+      "inputs": {
+        "api": "${state.restarted.api}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "device": "${state.d1}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.tabs.0.id": "${state.9-opened.body.id}",
+            "body.tabs.0.artifact": {
+              "id": "${state.design.id}",
+              "version": 1,
+              "latest": false
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-9"
+        ]
+      }
+    },
+    {
+      "id": "9-closed",
+      "use": "runtime.rust:lab.artifactview.call",
+      "inputs": {
+        "api": "${state.restarted.api}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.9-opened.body.id}/close",
+        "device": "${state.d2}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 204
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-9"
+        ]
+      }
+    },
+    {
+      "id": "9-gone",
+      "use": "runtime.rust:lab.artifactview.call",
+      "inputs": {
+        "api": "${state.restarted.api}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "device": "${state.d1}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "body.tabs": {
+              "$len": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-9"
+        ]
+      }
+    }
+  ]
+}

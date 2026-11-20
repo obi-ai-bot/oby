@@ -66,6 +66,13 @@ declare global {
       // Add sign-in: whether one is linked, and linking one (preload, main/sphere.ts, SPHEREAPP-13)
       sphereSigninStatus?(): Promise<import('../../shared/sphere').SigninStatus | null>;
       sphereAddSignin?(provider: string): Promise<string | null>;
+      // an agent using the Mac: main's pill and frame (preload, main/macPill.ts, BROWSERAPP-19)
+      mac?: {
+        pill(use: { agent: string; action: string } | null): Promise<boolean | null>;
+        onStopped(fn: () => void): () => void;
+        onPill(fn: (use: import('./browser/Mac').MacUse) => void): () => void;
+        stop(): void;
+      };
       // obid's browser, followed by main (preload, main/browser.ts, BROWSERAPP-8): its events, and a
       // tab's frames; each a function that stops listening
       browser?: {
@@ -83,6 +90,8 @@ declare global {
         publish(job: string, action: string, choices: { anyway?: boolean; force?: boolean; to?: string }): Promise<{ status: number; text: string }>;
         // Undo this round: main asks in its own dialog and signs obid's sentence (CHANGES-14)
         undo(job: string, action: string): Promise<{ status: number; text: string }>;
+        // A finishing action in a conversation's folder: main asks in its own dialog and signs obid's sentence (WORKSPACE-4, 5)
+        finish(conversation: string, folder: string, action: string): Promise<{ status: number; text: string }>;
         limitAnswer(item: string, revision: number, choice: string, account?: string): Promise<{ status: number; text: string }>;
         pairInvite(): Promise<{ status: number; text: string }>;
         live(onSnapshot: (s: LiveSnapshot) => void, onMessage: (m: LiveMessage) => void): () => void;

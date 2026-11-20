@@ -4,7 +4,7 @@ import { useScrollThumb } from './useScrollThumb';
 import { agentOf, ago } from './view';
 import { useChats } from './chats';
 import { allowWaiting, answerWaiting, approvingTools, homeAsk, itemAsk, mergeWaiting, prChecksOf, projectOf, questionOf, reviewOf, shownId, useLive, waitingOf } from './live';
-import { ReviewBlock } from './AskStack';
+import { ReviewBlock } from './ReviewRequestCard';
 import { QuestionBlock } from './QuestionCard';
 import { AskBlock, startsOnClick } from './TaskCard';
 import { ALLOW_ONCE } from '../../shared/words';

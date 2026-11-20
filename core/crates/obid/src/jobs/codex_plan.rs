@@ -46,15 +46,6 @@ pub fn waits_on_plan(end: PlanEnd) -> bool {
     end.codex && end.plan && !end.read_only && !end.unwatched && !end.changed && end.said
 }
 
-/// LANES-18: the run a Codex plan card's answer resumes stays in Oby's box, where its thread is
-/// (the box's `CODEX_HOME`). [`Jobs::drop_asks`] clears that `parked` as the run ends, so the job's
-/// next run takes its lane from its mode again.
-pub(super) fn resumes_plan(job: &Job) -> bool {
-    job.parked
-        .as_ref()
-        .is_some_and(|p| p.ended_turn && p.answered)
-}
-
 impl Jobs {
     /// Whether job `id`'s turn that ended well after `round`, saying `said`, waits on the owner's
     /// plan card ([`waits_on_plan`]).

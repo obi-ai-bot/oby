@@ -87,7 +87,7 @@ mod keep;
 pub use keep::NotMade;
 mod lanes;
 pub(crate) use lanes::claude_place;
-use lanes::{own_codex_settings, own_run_env, owners_for};
+use lanes::{own_run_env, owners_for};
 mod logins;
 mod merge_by_owner;
 mod metering;
@@ -1558,7 +1558,8 @@ impl Jobs {
     fn tetrix_mcp(&self, job: &Job) -> Option<(String, String)> {
         self.tetrix_for(job)?;
         let (url, token) = self.connections.get()?.open_tetrix(&job.id);
-        let own = matches!(self.job_account(job), Ok((tool, _)) if Self::own_lane(job, tool));
+        let own =
+            matches!(self.job_account(job), Ok((tool, a)) if lanes::launches_own(job, tool, &a));
         Some((Self::agent_api(&url, own), token))
     }
 

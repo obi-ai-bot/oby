@@ -121,6 +121,7 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'obid-publish': { args: ['j1', 'Publish this', {}], refusal: FORBIDDEN },
   'obid-limit-answer': { args: ['d1', 1, 'stop'], refusal: FORBIDDEN },
   'obid-undo': { args: ['j1', 'Undo this'], refusal: FORBIDDEN },
+  'obid-finish': { args: ['c1', '/Users/me/api', 'commit'], refusal: FORBIDDEN },
   'open-worktree': { args: ['j1', 'terminal'], refusal: false },
   'worktree-editor': { args: [], refusal: null },
   'open-task-server': { args: ['j1', 3000], refusal: false },
@@ -155,6 +156,9 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'browser-unwatch': { args: ['t1'], refusal: null },
   'browser-fill': { args: ['t1', '#pw', 'x', '', true], refusal: 'Not this app’s page.' },
   'browser-reveal': { args: ['statement-oct.pdf'], refusal: false },
+  'mac-pill': { args: [null], refusal: null },
+  'mac-pill-stop': { args: [], refusal: undefined },
+  'mac-pill-now': { args: [], refusal: null },
 };
 
 const UNSET = Symbol('unset');
