@@ -1,0 +1,253 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser screens 3: the side panel and the browser together, several agents' tabs",
+  "version": "1.0.0",
+  "description": "Board 3 (Together.dc.html): the side panel (362px, as dragged) docked beside the conversation and the browser (600px) in a 1440×900 window; four tabs, each with its agent's logo and working dot (Claude Code, Codex, Cursor) or your mark. A click on another tab makes it the one shown.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "serve",
+      "use": "runtime.rust:lab.ui.serve",
+      "inputs": {}
+    },
+    {
+      "id": "screen",
+      "use": "runtime.rust:lab.ui.open",
+      "inputs": {
+        "server": "${state.serve}",
+        "board": 3
+      }
+    },
+    {
+      "id": "side-panel",
+      "use": "runtime.rust:lab.ui.measure",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".sidebar-slot"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 362,
+            "box.x": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "browser-600",
+      "use": "runtime.rust:lab.ui.measure",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "aside.br"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 600,
+            "box.x": 840
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-3"
+        ]
+      }
+    },
+    {
+      "id": "claude-tab",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-tab .logo[aria-label='Claude Code’s']"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "codex-tab",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-tab .logo[aria-label='Codex’s']"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "cursor-tab",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-tab .logo[aria-label='Cursor’s']"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "your-tab",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-tab .you-mark[aria-label='Yours']"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "working-dots",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-tab .status-dot.is-working"
+        },
+        "expect": {
+          "paths": {
+            "count": 3
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-3"
+        ]
+      }
+    },
+    {
+      "id": "kid-in-browser",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".convo-kid",
+          "hasText": "Pricing page"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Pricing page matches the plans · in the browser"
+          }
+        }
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:lab.ui.compare",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Together",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-3"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:lab.ui.screenshot",
+      "inputs": {
+        "screen": "${state.screen}",
+        "name": "lab-ui-03"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:lab.ui.sidebyside",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Together",
+        "name": "lab-ui-03-beside-board",
+        "label": "board 3"
+      }
+    },
+    {
+      "id": "codex-tab-click",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "tab",
+          "name": "Codex’s Sign in · Acme",
+          "exact": false
+        }
+      }
+    },
+    {
+      "id": "codex-tab-on",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "tab",
+          "name": "Codex’s Sign in · Acme",
+          "exact": false
+        },
+        "expect": {
+          "paths": {
+            "attributes.aria-selected": "true"
+          }
+        },
+        "attributes": [
+          "aria-selected"
+        ]
+      }
+    },
+    {
+      "id": "codex-strip",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-control-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Codex is using this tab · Clicking Sign in"
+          }
+        }
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:lab.ui.close",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    }
+  ]
+}

@@ -1,0 +1,254 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser screens 7: the agent asks you to sign in, and the password card",
+  "version": "1.0.0",
+  "description": "Board 7 (AsksYou.dc.html): Codex asks over the message box (the decision card: Sign in, Take control, Type the password, Skip), the strip turns orange and says so, the tab's dot is orange (--needs). Type the password turns the card into board 8's password card; what is typed goes into the page's Password field on Fill in, and appears nowhere else on the screen.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "serve",
+      "use": "runtime.rust:lab.ui.serve",
+      "inputs": {}
+    },
+    {
+      "id": "screen",
+      "use": "runtime.rust:lab.ui.open",
+      "inputs": {
+        "server": "${state.serve}",
+        "board": 7
+      }
+    },
+    {
+      "id": "ask-head",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".tc-ask-line"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Sign in Sign in to the staging admin · Codex 1 of 1"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-7"
+        ]
+      }
+    },
+    {
+      "id": "orange-strip",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-control-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Codex asks you to sign in here"
+          }
+        }
+      }
+    },
+    {
+      "id": "tab-dot-orange",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-tab .status-dot.is-needs"
+        },
+        "expect": {
+          "paths": {
+            "styles.background-color.matches": true
+          }
+        },
+        "styles": {
+          "background-color": "--needs"
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-7"
+        ]
+      }
+    },
+    {
+      "id": "kind-orange",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".tc-ask-kind"
+        },
+        "expect": {
+          "paths": {
+            "styles.color.matches": true
+          }
+        },
+        "styles": {
+          "color": "--needs"
+        }
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:lab.ui.compare",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "AsksYou",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-7"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:lab.ui.screenshot",
+      "inputs": {
+        "screen": "${state.screen}",
+        "name": "lab-ui-07"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:lab.ui.sidebyside",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "AsksYou",
+        "name": "lab-ui-07-beside-board",
+        "label": "board 7"
+      }
+    },
+    {
+      "id": "type-the-password",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Type the password"
+        }
+      }
+    },
+    {
+      "id": "filling",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-control-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "You’re filling the password. Codex waits."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-7"
+        ]
+      }
+    },
+    {
+      "id": "type",
+      "use": "runtime.rust:lab.ui.type",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=secret-input]"
+        },
+        "text": "0123456789"
+      }
+    },
+    {
+      "id": "now-board-8",
+      "use": "runtime.rust:lab.ui.compare",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Secret",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        }
+      }
+    },
+    {
+      "id": "fill-in",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Fill in"
+        }
+      }
+    },
+    {
+      "id": "page-field",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=page-password]"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "•••••••••• From Oby"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-7"
+        ]
+      }
+    },
+    {
+      "id": "card-gone",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".decision-card"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        },
+        "within": 5
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:lab.ui.close",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    }
+  ]
+}

@@ -1,0 +1,279 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser screens 101: live: the agent's page, its tab and what it's doing, on the stream",
+  "version": "1.0.0",
+  "description": "Live (board 2's screen) on lane A's browser API: the agent's tab comes from GET /v1/browser, the page is agent-browser's own stream, and while the agent types into the page the strip says Typing into Name; once it's done the tab is idle.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.browserapi.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:lab.browserapi.device",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "id": {
+              "$contains": "device-"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "j1",
+      "use": "runtime.rust:lab.browserapi.job",
+      "inputs": {
+        "api": "${state.up}",
+        "job": "j1",
+        "agent": "codex",
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        },
+        "commitDelayMs": 2500
+      }
+    },
+    {
+      "id": "open-site",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.up.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "serve",
+      "use": "runtime.rust:lab.ui.serve",
+      "inputs": {
+        "api": "${state.up}",
+        "device": "${state.device}",
+        "expect": {
+          "paths": {
+            "live": true,
+            "signs": true
+          }
+        }
+      }
+    },
+    {
+      "id": "screen",
+      "use": "runtime.rust:lab.ui.open",
+      "inputs": {
+        "server": "${state.serve}",
+        "board": 2,
+        "live": true
+      }
+    },
+    {
+      "id": "live-frame",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=frame]"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        },
+        "within": 20
+      }
+    },
+    {
+      "id": "tab-title",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-tab.is-on .br-tab-name"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Sign in to the lab"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-LIVE-1"
+        ]
+      }
+    },
+    {
+      "id": "address",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-address"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": {
+              "$contains": "127.0.0.1"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "snap",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "meanwhile-type",
+      "use": "runtime.rust:lab.ui.meanwhile",
+      "inputs": {
+        "node": "lab.browserapi.mcp",
+        "inputs": {
+          "api": "${state.up}",
+          "token": "${state.j1.token}",
+          "tool": "oby_browser_act",
+          "args": {
+            "action": "type",
+            "text": "a slow agent typing its words into the page, one key at a time, so the screen can watch it"
+          },
+          "refFor": {
+            "role": "textbox",
+            "name": "Name"
+          },
+          "snapshot": "${state.snap}"
+        }
+      }
+    },
+    {
+      "id": "strip-while-typing",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-control-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Codex is using this tab · Typing into Name"
+          }
+        },
+        "within": 10
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-LIVE-1"
+        ]
+      }
+    },
+    {
+      "id": "typed",
+      "use": "runtime.rust:lab.ui.wait",
+      "inputs": {
+        "screen": "${state.screen}",
+        "meanwhile": "${state.meanwhile-type}",
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "idle-after",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-control-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Codex opened this tab · idle"
+          }
+        },
+        "within": 10
+      }
+    },
+    {
+      "id": "reload",
+      "use": "runtime.rust:lab.ui.reload",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    },
+    {
+      "id": "same-tab-after-reload",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-tab.is-on .br-tab-name"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Sign in to the lab"
+          }
+        },
+        "within": 10
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:lab.ui.screenshot",
+      "inputs": {
+        "screen": "${state.screen}",
+        "name": "lab-ui-live-1"
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:lab.ui.close",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    }
+  ]
+}

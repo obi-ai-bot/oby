@@ -1,0 +1,201 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser screens 10: page states: loading, failed, timed out, a dialog, certificate, crashed",
+  "version": "1.0.0",
+  "description": "Board 10 (PageStates.dc.html): each state in its small browser, each with its own way out (Try again, Take control to answer, Go back or Go on anyway, Reload) and the line the agent's log shows. A page's question waits for whoever holds the tab: Take control to answer makes Leave and Stay answerable.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "serve",
+      "use": "runtime.rust:lab.ui.serve",
+      "inputs": {}
+    },
+    {
+      "id": "screen",
+      "use": "runtime.rust:lab.ui.open",
+      "inputs": {
+        "server": "${state.serve}",
+        "board": 10
+      }
+    },
+    {
+      "id": "failed",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=state-failed] .br-state"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "This page didn’t load localhost:3000 refused to connect. Is the app running? Try again"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-10"
+        ]
+      }
+    },
+    {
+      "id": "timed-out",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=state-timedOut] .br-state"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "The page took too long Nothing came back from api.acme.dev in 30 seconds. Try again"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-10"
+        ]
+      }
+    },
+    {
+      "id": "certificate",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=state-certificate] .br-state"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "This connection isn’t private The certificate for staging.acme.dev isn’t trusted. Codex stopped here and won’t go on by itself. Go back Go on anyway"
+          }
+        }
+      }
+    },
+    {
+      "id": "crashed",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=state-crashed] .br-state"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "This page stopped working Its tab crashed, out of memory. Cursor was told and can open it again. Reload"
+          }
+        }
+      }
+    },
+    {
+      "id": "dialog-waits",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Leave"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "attributes.disabled": ""
+          }
+        },
+        "attributes": [
+          "disabled"
+        ]
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:lab.ui.compare",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "PageStates",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-10"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:lab.ui.screenshot",
+      "inputs": {
+        "screen": "${state.screen}",
+        "name": "lab-ui-10"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:lab.ui.sidebyside",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "PageStates",
+        "name": "lab-ui-10-beside-board",
+        "label": "board 10"
+      }
+    },
+    {
+      "id": "take-to-answer",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Take control to answer"
+        }
+      }
+    },
+    {
+      "id": "dialog-answerable",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Leave"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "attributes.disabled": null
+          }
+        },
+        "attributes": [
+          "disabled"
+        ]
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-10"
+        ]
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:lab.ui.close",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    }
+  ]
+}

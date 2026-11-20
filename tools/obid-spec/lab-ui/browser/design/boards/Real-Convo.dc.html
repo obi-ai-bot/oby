@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Today: a conversation, side panel hidden</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="oby.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>body{margin:0;background:#0b0b0b}</style>
+</helmet>
+<div class="oby win {{theme}}" style="width: 1200px; height: 780px; --column: 663.6px">
+<span class="lights" aria-hidden="true"><i></i><i></i><i></i></span>
+<button class="icon-button panel-toggle" aria-label="Show sidebar"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M9 3v18"></path></svg></button>
+<div class="home">
+<div class="bar is-bare">
+<span class="crumb">Splitting up Engine/Jobs.swift</span>
+<button class="project-chip"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg>Oby app<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button>
+<button class="icon-button bar-more" aria-label="Conversation options"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="1"></circle><circle cx="12" cy="5" r="1"></circle><circle cx="12" cy="19" r="1"></circle></svg></button>
+</div>
+<div class="view"><div class="chat-layer">
+<div class="chat-scroll"><div class="chat"><div class="chat-column">
+<ul class="chat-thread">
+<li class="msg is-oby"><div class="msg-task-work">
+<div class="msg-task"><img class="logo logo-w" src="/_blob/b6a520d0d66c6d8e93fb0c106328e021" width="16" height="16" alt=""><span class="msg-task-text"><span class="msg-task-title">Blast radius of the jobs refactor</span><span class="msg-task-meta">Running · Codex · oby</span><span class="tc-progress"><span class="is-done"></span><span class="is-current"></span></span></span><span class="status" style="margin-right: 28px"><span class="status-dot is-working"></span></span></div>
+</div><p class="chat-live" style="margin: 0 0 0 12px; color: var(--muted)">Asking Tetrix for callers of <span style="color: var(--text)">Job.line</span></p></li>
+<li class="msg is-oby" style="margin-top: 40px"><div class="msg-end"><div class="msg-bubble"><p>Tetrix found 14 callers of Job.line across 6 files. The ones that would break:</p><ul><li><span class="tok-code">Mac/App/LivePanel.swift</span> reads line and status together</li><li><span class="tok-code">Engine/Inbox.swift</span> builds its asks from line</li><li><span class="tok-code">Runner/API.swift</span> encodes the whole Job</li></ul><p>The other 3 files only read id and title, so they’d be fine.</p></div><span class="msg-time">7:53 PM</span></div></li>
+<li class="msg is-you"><div class="msg-end"><p class="msg-bubble">how bad is <span class="tok-code">Runner/API.swift</span>?</p><span class="msg-time">7:55 PM</span></div></li>
+<li class="msg is-oby"><img class="msg-face" src="/_blob/3446da5a8daa6f8aa4ff0d9358936562" alt=""><div class="msg-end"><div class="msg-bubble"><p>Medium. It sends Job as one JSON object, so splitting it changes what the API returns. Two clients read it, the watch app and the CLI, and both would need a version bump.</p></div><span class="msg-time">7:56 PM</span></div></li>
+<li class="msg is-you"><div class="msg-end"><p class="msg-bubble">ok, keep going, I want the full list</p><span class="msg-time">7:59 PM</span></div></li>
+<li class="msg is-oby"><img class="msg-face" src="/_blob/3446da5a8daa6f8aa4ff0d9358936562" alt=""><div class="msg-end"><div class="msg-bubble"><p>Will do. Codex is going through the other 8 callers now.</p></div><span class="msg-time">7:59 PM</span></div></li>
+</ul>
+</div></div></div>
+<div class="chat-composer"><div class="composer-field"><div class="composer-grid">
+<button class="composer-button" aria-label="Add"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg></button>
+<div class="composer-input">Reply to Oby…</div>
+<div class="composer-talk"><span class="talk-chip"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path><path d="m9 12 2 2 4-4"></path></svg>Default<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></span><span class="talk-chip is-ink">Auto<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></span></div>
+<button class="composer-button composer-usage" aria-label="Usage"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 14 4-4"></path><path d="M3.34 19a10 10 0 1 1 17.32 0"></path></svg></button>
+<button class="composer-button composer-send" aria-label="Send"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"></path><path d="M12 19V5"></path></svg></button>
+</div></div></div>
+</div></div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"light":{"editor":"boolean","default":false},"$preview":{"width":1200,"height":780}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { theme: this.props.light ? 'is-light' : '' };
+  }
+}
+</script>
+</body>
+</html>

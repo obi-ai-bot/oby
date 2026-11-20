@@ -1,0 +1,210 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser screens 16: the first time: why macOS will ask, once",
+  "version": "1.0.0",
+  "description": "Board 16 (DesktopPermission.dc.html), drawn as its own page: Oby's modal explains (it sees the screen, clicks and types, you stop it any time) and that macOS asks next for agent-desktop; Continue and Not now each close it.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "serve",
+      "use": "runtime.rust:lab.ui.serve",
+      "inputs": {}
+    },
+    {
+      "id": "screen",
+      "use": "runtime.rust:lab.ui.open",
+      "inputs": {
+        "server": "${state.serve}",
+        "board": 16
+      }
+    },
+    {
+      "id": "title",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".modal-title"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Let agents use your Mac?"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-16"
+        ]
+      }
+    },
+    {
+      "id": "three-points",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".modal-list li"
+        },
+        "expect": {
+          "paths": {
+            "count": 3
+          }
+        }
+      }
+    },
+    {
+      "id": "macos-next",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".steps"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Next, macOS asks you, once. Allow agent-desktop in System Settings › Privacy & Security, under Accessibility and then Screen Recording. Oby never asks macOS for these itself."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-16"
+        ]
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:lab.ui.compare",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "DesktopPermission",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-16"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:lab.ui.screenshot",
+      "inputs": {
+        "screen": "${state.screen}",
+        "name": "lab-ui-16"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:lab.ui.sidebyside",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "DesktopPermission",
+        "name": "lab-ui-16-beside-board",
+        "label": "board 16"
+      }
+    },
+    {
+      "id": "continue",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Continue"
+        }
+      }
+    },
+    {
+      "id": "closed",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=scrim]"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        },
+        "within": 5
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-16"
+        ]
+      }
+    },
+    {
+      "id": "answered",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=answer]"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "continue"
+          }
+        }
+      }
+    },
+    {
+      "id": "reload",
+      "use": "runtime.rust:lab.ui.reload",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    },
+    {
+      "id": "not-now",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Not now"
+        }
+      }
+    },
+    {
+      "id": "closed-again",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=scrim]"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        },
+        "within": 5
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:lab.ui.close",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    }
+  ]
+}

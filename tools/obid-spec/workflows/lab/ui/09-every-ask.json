@@ -1,0 +1,179 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser screens 9: every ask: CAPTCHA, a choice, a code, a passkey; who has the tab",
+  "version": "1.0.0",
+  "description": "Board 9 (Asks.dc.html): the decision cards for a CAPTCHA, a choice, a one-time code and a passkey (orange kinds the app's, Code in blue as yours to type), and the strip's five ways a tab can be held, plus the side panel's rows.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "serve",
+      "use": "runtime.rust:lab.ui.serve",
+      "inputs": {}
+    },
+    {
+      "id": "screen",
+      "use": "runtime.rust:lab.ui.open",
+      "inputs": {
+        "server": "${state.serve}",
+        "board": 9
+      }
+    },
+    {
+      "id": "four-cards",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".decision-card"
+        },
+        "expect": {
+          "paths": {
+            "count": 4
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-9"
+        ]
+      }
+    },
+    {
+      "id": "captcha",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".decision-card",
+          "nth": 0
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Check The page wants to know you’re a person · Codex Codex can’t answer this. Take control and solve it; Codex goes on when you give the tab back. Take control Skip this page"
+          }
+        }
+      }
+    },
+    {
+      "id": "code-boxes",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".code-boxes > span"
+        },
+        "expect": {
+          "paths": {
+            "count": 6
+          }
+        }
+      }
+    },
+    {
+      "id": "code-blue",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".tc-ask-kind.is-blue"
+        },
+        "expect": {
+          "paths": {
+            "styles.color.matches": true
+          }
+        },
+        "styles": {
+          "color": "--unread"
+        }
+      }
+    },
+    {
+      "id": "five-strips",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".strip-box .br-control"
+        },
+        "expect": {
+          "paths": {
+            "count": 5
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-9"
+        ]
+      }
+    },
+    {
+      "id": "held-strip",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".strip-box .br-control.is-held"
+        },
+        "expect": {
+          "paths": {
+            "styles.background-color.matches": true
+          }
+        },
+        "styles": {
+          "background-color": "--held"
+        }
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:lab.ui.compare",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Asks",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-9"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:lab.ui.screenshot",
+      "inputs": {
+        "screen": "${state.screen}",
+        "name": "lab-ui-09"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:lab.ui.sidebyside",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Asks",
+        "name": "lab-ui-09-beside-board",
+        "label": "board 9"
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:lab.ui.close",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    }
+  ]
+}

@@ -1,0 +1,185 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser screens 15: Stop takes the Mac back from the agent, on agent-desktop",
+  "version": "1.0.0",
+  "description": "Board 15's Stop, for real: a conversation drives the lab's own test app through agent-desktop (an invisible AppKit window, never activated); Stop is the person taking the desktop, after which the agent's click and keys are refused (human_control) while its reads go on; giving it back lets it act again. Skipped off macOS, without agent-desktop or without its Accessibility and Screen Recording permissions.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "app",
+      "use": "runtime.rust:lab.desktop.app",
+      "inputs": {}
+    },
+    {
+      "id": "grant",
+      "use": "runtime.rust:lab.desktop.grant",
+      "inputs": {
+        "conversation": "c1",
+        "app": "${state.app}"
+      }
+    },
+    {
+      "id": "snap",
+      "use": "runtime.rust:lab.desktop.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_desktop_snapshot",
+        "app": "${state.app}",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "agent-acts",
+      "use": "runtime.rust:lab.desktop.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_desktop_click",
+        "app": "${state.app}",
+        "args": {},
+        "refFor": {
+          "role": "button",
+          "name": "Count"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "stop",
+      "use": "runtime.rust:lab.desktop.take",
+      "inputs": {
+        "person": "owner",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-15"
+        ]
+      }
+    },
+    {
+      "id": "snap-stopped",
+      "use": "runtime.rust:lab.desktop.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_desktop_snapshot",
+        "app": "${state.app}",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "click-refused",
+      "use": "runtime.rust:lab.desktop.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_desktop_click",
+        "app": "${state.app}",
+        "args": {},
+        "refFor": {
+          "role": "button",
+          "name": "Count"
+        },
+        "snapshot": "${state.snap-stopped}",
+        "expect": {
+          "paths": {
+            "ok": false,
+            "error.code": "human_control"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-15"
+        ]
+      }
+    },
+    {
+      "id": "keys-refused",
+      "use": "runtime.rust:lab.desktop.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_desktop_press",
+        "app": "${state.app}",
+        "args": {
+          "keys": "cmd+k"
+        },
+        "expect": {
+          "paths": {
+            "ok": false,
+            "error.code": "human_control"
+          }
+        }
+      }
+    },
+    {
+      "id": "give-back",
+      "use": "runtime.rust:lab.desktop.release",
+      "inputs": {
+        "person": "owner",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "snap-again",
+      "use": "runtime.rust:lab.desktop.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_desktop_snapshot",
+        "app": "${state.app}",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "acts-again",
+      "use": "runtime.rust:lab.desktop.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_desktop_click",
+        "app": "${state.app}",
+        "args": {},
+        "refFor": {
+          "role": "button",
+          "name": "Count"
+        },
+        "snapshot": "${state.snap-again}",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    }
+  ]
+}

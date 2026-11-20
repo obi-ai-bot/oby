@@ -1,0 +1,329 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser screens 2: open beside the conversation, the agent drives and you watch",
+  "version": "1.0.0",
+  "description": "Board 2 (Main.dc.html): the browser runs the window's full height beside the conversation (640px of a 1280×800 window), its tabs in the title bar's row, the address, the strip saying Codex is using the tab and what it's doing, its pointer over the page. Every browser piece within 4px of the board and the same words; colours from the app's tokens; Full width and back.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "serve",
+      "use": "runtime.rust:lab.ui.serve",
+      "inputs": {}
+    },
+    {
+      "id": "screen",
+      "use": "runtime.rust:lab.ui.open",
+      "inputs": {
+        "server": "${state.serve}",
+        "board": 2
+      }
+    },
+    {
+      "id": "panel-640",
+      "use": "runtime.rust:lab.ui.measure",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "aside.br"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 640,
+            "box.height": 800,
+            "box.x": 640,
+            "box.y": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-2"
+        ]
+      }
+    },
+    {
+      "id": "conversation-640",
+      "use": "runtime.rust:lab.ui.measure",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".home"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 640
+          }
+        }
+      }
+    },
+    {
+      "id": "tabs-in-title-row",
+      "use": "runtime.rust:lab.ui.measure",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-tabs"
+        },
+        "expect": {
+          "paths": {
+            "box.height": 48,
+            "box.y": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "address-row",
+      "use": "runtime.rust:lab.ui.measure",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-nav"
+        },
+        "expect": {
+          "paths": {
+            "box.height": 44
+          }
+        }
+      }
+    },
+    {
+      "id": "strip",
+      "use": "runtime.rust:lab.ui.measure",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-control"
+        },
+        "expect": {
+          "paths": {
+            "box.height": 40
+          }
+        }
+      }
+    },
+    {
+      "id": "strip-words",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-control-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Codex is using this tab · Clicking Sign in"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-2"
+        ]
+      }
+    },
+    {
+      "id": "pointer-says",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".agent-label"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Clicking Sign in"
+          }
+        }
+      }
+    },
+    {
+      "id": "tabs-with-logos",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-tab .logo[aria-label='Codex’s']"
+        },
+        "expect": {
+          "paths": {
+            "count": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "on-tab-ink",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-tab.is-on"
+        },
+        "expect": {
+          "paths": {
+            "styles.color.matches": true
+          }
+        },
+        "styles": {
+          "color": "--ink"
+        }
+      }
+    },
+    {
+      "id": "globe-lit",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Hide the browser"
+        },
+        "expect": {
+          "paths": {
+            "styles.color.matches": true
+          }
+        },
+        "styles": {
+          "color": "--text"
+        }
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:lab.ui.compare",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Main",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-2"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:lab.ui.screenshot",
+      "inputs": {
+        "screen": "${state.screen}",
+        "name": "lab-ui-02"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:lab.ui.sidebyside",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Main",
+        "name": "lab-ui-02-beside-board",
+        "label": "board 2"
+      }
+    },
+    {
+      "id": "full-width",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Full width"
+        }
+      }
+    },
+    {
+      "id": "full-width-panel",
+      "use": "runtime.rust:lab.ui.measure",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "aside.br.is-full"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 1280,
+            "box.x": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-folds",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".home"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        },
+        "within": 5
+      }
+    },
+    {
+      "id": "peek",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".peek-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Sign-up flow works end to end · Signed up and in; now inviting a teammate"
+          }
+        }
+      }
+    },
+    {
+      "id": "back-beside",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Back beside the conversation"
+        }
+      }
+    },
+    {
+      "id": "back-640",
+      "use": "runtime.rust:lab.ui.measure",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "aside.br"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 640
+          }
+        }
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:lab.ui.close",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    }
+  ]
+}

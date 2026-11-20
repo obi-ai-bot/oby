@@ -1,0 +1,74 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser screens: every process the screens started is gone at the cleanup",
+  "version": "1.0.0",
+  "description": "What lab.ui starts it stops (src/lab/ui.rs, cleanup): the screens' server, two screens' helpers and their Chrome for Testing (with its own helper processes) are alive while they work, found by PID and by the workflow's folder in their command lines, and none is left after lab.ui.down, the same code the suite's cleanup runs whatever a workflow ended in.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "serve",
+      "use": "runtime.rust:lab.ui.serve",
+      "inputs": {}
+    },
+    {
+      "id": "screen",
+      "use": "runtime.rust:lab.ui.open",
+      "inputs": {
+        "server": "${state.serve}",
+        "board": 2
+      }
+    },
+    {
+      "id": "screen-2",
+      "use": "runtime.rust:lab.ui.open",
+      "inputs": {
+        "server": "${state.serve}",
+        "board": 6,
+        "name": "second"
+      }
+    },
+    {
+      "id": "alive",
+      "use": "runtime.rust:lab.ui.processes",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "servers": 1,
+            "helpers": 2,
+            "chromes": {
+              "$ne": 0
+            },
+            "any": true
+          }
+        }
+      }
+    },
+    {
+      "id": "down",
+      "use": "runtime.rust:lab.ui.down",
+      "inputs": {}
+    },
+    {
+      "id": "none-left",
+      "use": "runtime.rust:lab.ui.processes",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "alive": 0,
+            "any": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-CLEANUP"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Browser on another computer</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="oby.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>body{margin:0;background:#0b0b0b}
+.dash{position:absolute;inset:0;background:#0f1115;color:#e6e8ee;font:14px/1.45 -apple-system,system-ui,Inter,sans-serif}
+.dash-top{height:48px;padding:0 20px;display:flex;align-items:center;gap:10px;border-bottom:1px solid #1f232b;font-weight:600}
+.dash-top i{width:18px;height:18px;border-radius:5px;background:#22c55e}
+.dash-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;padding:18px 20px}
+.kpi{padding:14px;border:1px solid #1f232b;border-radius:12px;background:#141821}
+.kpi span{display:block;color:#8b93a3;font-size:12px}
+.kpi b{display:block;margin-top:6px;font-size:22px;letter-spacing:-.02em}
+.chart{margin:0 20px;height:150px;border:1px solid #1f232b;border-radius:12px;background:linear-gradient(180deg,#141821,#11141b);position:relative;overflow:hidden}
+.chart svg{position:absolute;inset:0}
+.where-bar{flex:none;height:30px;padding:0 14px;display:flex;align-items:center;gap:7px;border-bottom:1px solid var(--divider);color:var(--muted);font-size:12px}
+.where-bar b{font-weight:500;color:var(--text)}</style>
+</helmet>
+<div class="oby win {{theme}}" style="width: 1280px; height: 800px; --column: 711px">
+<span class="lights" aria-hidden="true"><i></i><i></i><i></i></span>
+<button class="icon-button panel-toggle" aria-label="Show sidebar"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M9 3v18"></path></svg></button>
+<div class="home">
+<div class="bar is-bare">
+<span class="crumb">Dashboard on devbox</span>
+<button class="project-chip"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg>acme-web<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button>
+<button class="project-chip is-machine" aria-label="Computer: devbox, Linux. Switch computer"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"></rect><rect width="20" height="8" x="2" y="14" rx="2" ry="2"></rect><line x1="6" x2="6.01" y1="6" y2="6"></line><line x1="6" x2="6.01" y1="18" y2="18"></line></svg><b>devbox</b> · Linux<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button>
+<button class="icon-button bar-more" aria-label="Conversation options"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="1"></circle><circle cx="12" cy="5" r="1"></circle><circle cx="12" cy="19" r="1"></circle></svg></button>
+<div class="bar-end"><button class="icon-button is-on" aria-label="Hide the browser" aria-pressed="true"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"></path><path d="M2 12h20"></path></svg></button></div>
+</div>
+<div class="view">
+<div class="chat-layer">
+<div class="chat-scroll"><div class="chat"><div class="chat-column">
+<ul class="chat-thread">
+<li class="msg is-you"><div class="msg-end"><p class="msg-bubble">Start the dev server on devbox and check the dashboard loads.</p><span class="msg-time">11:05 AM</span></div></li>
+<li class="msg is-oby"><img class="msg-face" src="/_blob/3446da5a8daa6f8aa4ff0d9358936562" alt=""><div class="msg-end"><div class="msg-bubble"><p>Claude Code is on it, on devbox.</p></div><span class="msg-time">11:05 AM</span></div></li>
+<li class="msg is-oby" style="margin-top: 12px"><div class="msg-task-work">
+<div class="msg-task"><img class="logo" src="/_blob/b9591b423efbb6b607314ffefffd24be" width="16" height="16" alt=""><span class="msg-task-text"><span class="msg-task-title">Dashboard loads on devbox</span><span class="msg-task-meta">Running · Claude Code · acme-web · devbox</span><span class="tc-progress"><span class="is-done"></span><span class="is-current"></span></span></span><span class="status"><span class="status-dot is-working"></span></span></div>
+<div class="lt-log">
+<div class="ss-tool"><div class="ss-tool-row"><span class="ss-tool-mark"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg></span><span class="ss-tool-text">Ran <code>npm run dev</code> on devbox</span><span class="ss-tool-meta">6s</span></div></div>
+<div class="ss-tool"><div class="ss-tool-row"><span class="ss-tool-mark"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg></span><span class="ss-tool-text">Opened <code>localhost:3000</code> on devbox in the browser</span></div></div>
+<div class="ss-tool"><div class="ss-tool-row"><span class="ss-tool-mark"><span class="status-dot is-working" style="width: 6px; height: 6px"></span></span><span class="ss-tool-text"><span class="sheen">Reading the dashboard</span></span></div></div>
+</div>
+</div></li>
+</ul>
+</div></div></div>
+<div class="chat-composer"><div class="composer-field"><div class="composer-grid">
+<button class="composer-button" aria-label="Add"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg></button>
+<div class="composer-input">Reply to Oby…</div>
+<button class="composer-button composer-usage" aria-label="Usage"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 14 4-4"></path><path d="M3.34 19a10 10 0 1 1 17.32 0"></path></svg></button>
+<button class="composer-button composer-send" aria-label="Send"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"></path><path d="M12 19V5"></path></svg></button>
+</div></div></div>
+</div>
+</div>
+</div>
+<aside class="br" style="width: 620px" aria-label="Browser on devbox">
+<div class="br-tabs" role="tablist" aria-label="Tabs">
+<button class="br-tab is-on" role="tab" aria-selected="true"><img class="logo" src="/_blob/b9591b423efbb6b607314ffefffd24be" width="14" height="14" alt="Claude Code’s"><span class="br-tab-name">Dashboard · Acme</span><span class="br-tab-x"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg></span></button>
+<div class="br-tabs-end">
+<button class="icon-button is-28" aria-label="New tab on devbox"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg></button>
+<button class="icon-button is-28" aria-label="Close the browser"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg></button>
+</div>
+</div>
+<div class="where-bar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"></rect><rect width="20" height="8" x="2" y="14" rx="2" ry="2"></rect><line x1="6" x2="6.01" y1="6" y2="6"></line><line x1="6" x2="6.01" y1="18" y2="18"></line></svg><span>This browser runs on <b>devbox</b>. Its localhost is devbox’s, not this Mac’s.</span></div>
+<div class="br-nav">
+<button class="icon-button is-28" aria-label="Back"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"></path><path d="M19 12H5"></path></svg></button>
+<button class="icon-button is-28" aria-label="Forward" disabled><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="m12 5 7 7-7 7"></path></svg></button>
+<button class="icon-button is-28" aria-label="Reload"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path></svg></button>
+<div class="br-address"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"></path><path d="M2 12h20"></path></svg><span class="br-path"><b>localhost:3000</b>/dashboard</span><span class="br-where"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"></rect><rect width="20" height="8" x="2" y="14" rx="2" ry="2"></rect></svg>on <b>devbox</b></span></div>
+</div>
+<div class="br-control" role="status">
+<span class="br-control-text"><img class="logo" src="/_blob/b9591b423efbb6b607314ffefffd24be" width="14" height="14" alt=""><span><b>Claude Code</b> is using this tab · <span class="sheen">Reading the dashboard</span></span></span>
+<button class="tc-option is-sm">Take control</button>
+</div>
+<div class="br-view is-dark-page" role="img" aria-label="The dashboard running on devbox">
+<div class="dash">
+<div class="dash-top"><i></i>Acme · Dashboard<span style="margin-left: auto; color: #8b93a3; font-weight: 400; font-size: 12px">dev build</span></div>
+<div class="dash-grid">
+<div class="kpi"><span>Active users</span><b>1,284</b></div>
+<div class="kpi"><span>Sign-ups today</span><b>37</b></div>
+<div class="kpi"><span>Errors</span><b>0</b></div>
+</div>
+<div class="chart"><svg viewBox="0 0 560 150" preserveAspectRatio="none" aria-hidden="true"><polyline points="0,120 60,110 120,112 180,90 240,96 300,70 360,78 420,52 480,60 560,38" fill="none" stroke="#22c55e" stroke-width="2"></polyline></svg></div>
+</div>
+</div>
+</aside>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"light":{"editor":"boolean","default":false},"$preview":{"width":1280,"height":800}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { theme: this.props.light ? 'is-light' : '' };
+  }
+}
+</script>
+</body>
+</html>

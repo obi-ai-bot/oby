@@ -1,0 +1,329 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser screens 104: live: a page that didn't load, a page's question, a page that took too long",
+  "version": "1.0.0",
+  "description": "Live (board 2's screen) on lane A's API, the states board 10 draws: the agent opens a port nothing listens on (127.0.0.1:2) (This page didn't load, Try again); back on a page, the page's own alert waits for whoever holds the tab (… asks, Take control to answer); a page that answers in 8 s given 2 s (The page took too long).",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "slow-site",
+      "use": "runtime.rust:lab.browser.site",
+      "inputs": {}
+    },
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.browserapi.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:lab.browserapi.device",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "id": {
+              "$contains": "device-"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "j1",
+      "use": "runtime.rust:lab.browserapi.job",
+      "inputs": {
+        "api": "${state.up}",
+        "job": "j1",
+        "agent": "codex",
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "open-site",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.up.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "serve",
+      "use": "runtime.rust:lab.ui.serve",
+      "inputs": {
+        "api": "${state.up}",
+        "device": "${state.device}",
+        "expect": {
+          "paths": {
+            "live": true,
+            "signs": true
+          }
+        }
+      }
+    },
+    {
+      "id": "screen",
+      "use": "runtime.rust:lab.ui.open",
+      "inputs": {
+        "server": "${state.serve}",
+        "board": 2,
+        "live": true
+      }
+    },
+    {
+      "id": "live-frame",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=frame]"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        },
+        "within": 20
+      }
+    },
+    {
+      "id": "refused",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "http://127.0.0.1:2/",
+          "tab": "${state.open-site.structured.result.tab}"
+        },
+        "expect": {
+          "paths": {
+            "isError": true
+          }
+        }
+      }
+    },
+    {
+      "id": "didnt-load",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=page-failed]"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": {
+              "$contains": "This page didn’t load"
+            }
+          }
+        },
+        "within": 10
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-LIVE-4"
+        ]
+      }
+    },
+    {
+      "id": "back",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "${state.slow-site.url}/",
+          "tab": "${state.open-site.structured.result.tab}"
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "snap-home",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "alert",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "click"
+        },
+        "refFor": {
+          "role": "button",
+          "name": "Alert me"
+        },
+        "snapshot": "${state.snap-home}",
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "page-asks",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=page-dialog] .br-over-kind"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": {
+              "$contains": "asks"
+            }
+          }
+        },
+        "within": 10
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-LIVE-4"
+        ]
+      }
+    },
+    {
+      "id": "take-to-answer",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Take control to answer"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "answer-dialog",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_dialog",
+        "args": {
+          "accept": true
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "slow",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "${state.slow-site.url}/slow?ms=8000",
+          "deadlineMs": 2000,
+          "tab": "${state.open-site.structured.result.tab}"
+        },
+        "expect": {
+          "paths": {
+            "isError": true
+          }
+        }
+      }
+    },
+    {
+      "id": "too-long",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=page-timedOut]"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": {
+              "$contains": "The page took too long"
+            }
+          }
+        },
+        "within": 10
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-LIVE-4"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:lab.ui.screenshot",
+      "inputs": {
+        "screen": "${state.screen}",
+        "name": "lab-ui-live-4"
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:lab.ui.close",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    }
+  ]
+}

@@ -1,0 +1,226 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser screens 15: an agent has the Mac: the pill, the frame, Stop and Esc twice",
+  "version": "1.0.0",
+  "description": "Board 15 (Desktop.dc.html), drawn as its own page: Oby's pill over the screen (Claude Code is using your Mac · Typing in TextEdit, esc esc, Stop), an orange frame, and the card in Oby. Stop ends it (pill and frame go); so does Esc pressed twice. The real Stop, on agent-desktop, is 15-the-mac-stop.json.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "serve",
+      "use": "runtime.rust:lab.ui.serve",
+      "inputs": {}
+    },
+    {
+      "id": "screen",
+      "use": "runtime.rust:lab.ui.open",
+      "inputs": {
+        "server": "${state.serve}",
+        "board": 15
+      }
+    },
+    {
+      "id": "pill",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=pill]"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Claude Code is using your Mac · Typing in TextEdit esc esc Stop"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-15"
+        ]
+      }
+    },
+    {
+      "id": "orange-frame",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=glow]"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "card",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".decision-card"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Claude Code has your Mac. Press Esc twice to stop it. Stop"
+          }
+        }
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:lab.ui.compare",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Desktop",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-15"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:lab.ui.screenshot",
+      "inputs": {
+        "screen": "${state.screen}",
+        "name": "lab-ui-15"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:lab.ui.sidebyside",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Desktop",
+        "name": "lab-ui-15-beside-board",
+        "label": "board 15"
+      }
+    },
+    {
+      "id": "stop",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Stop",
+          "within": {
+            "css": "[data-lab=pill]"
+          }
+        }
+      }
+    },
+    {
+      "id": "pill-gone",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=pill]"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        },
+        "within": 5
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-15"
+        ]
+      }
+    },
+    {
+      "id": "frame-gone",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=glow]"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        },
+        "within": 5
+      }
+    },
+    {
+      "id": "reload",
+      "use": "runtime.rust:lab.ui.reload",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    },
+    {
+      "id": "pill-back",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=pill]"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "esc-twice",
+      "use": "runtime.rust:lab.ui.press",
+      "inputs": {
+        "screen": "${state.screen}",
+        "keys": "Escape",
+        "times": 2
+      }
+    },
+    {
+      "id": "esc-stops",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=pill]"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        },
+        "within": 5
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-15"
+        ]
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:lab.ui.close",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    }
+  ]
+}

@@ -1,0 +1,361 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser screens 102: live: Take control and Give back, the agent refused while you hold the tab",
+  "version": "1.0.0",
+  "description": "Live (board 2's screen) on lane A's API: Take control in the strip is the owner's signed take (the screens' server signs it, as the app's main will), so the API holds the tab for this device and refuses the agent's act with human_control while the screen shows the blue strip and the ring; your click and keys on the page reach it (POST …/input: the Name field gets your words); Give back releases it and the agent acts again.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.browserapi.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:lab.browserapi.device",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "id": {
+              "$contains": "device-"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "j1",
+      "use": "runtime.rust:lab.browserapi.job",
+      "inputs": {
+        "api": "${state.up}",
+        "job": "j1",
+        "agent": "codex",
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "open-site",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.up.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "serve",
+      "use": "runtime.rust:lab.ui.serve",
+      "inputs": {
+        "api": "${state.up}",
+        "device": "${state.device}",
+        "expect": {
+          "paths": {
+            "live": true,
+            "signs": true
+          }
+        }
+      }
+    },
+    {
+      "id": "screen",
+      "use": "runtime.rust:lab.ui.open",
+      "inputs": {
+        "server": "${state.serve}",
+        "board": 2,
+        "live": true
+      }
+    },
+    {
+      "id": "live-frame",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=frame]"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        },
+        "within": 20
+      }
+    },
+    {
+      "id": "snap",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "take-control",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Take control"
+        }
+      }
+    },
+    {
+      "id": "held-strip",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-control-text > span:last-child"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "You have this tab. Codex waits until you give it back."
+          }
+        },
+        "within": 10
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-LIVE-2"
+        ]
+      }
+    },
+    {
+      "id": "api-holds",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.tabs.0.heldBy": "${state.device.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-LIVE-2"
+        ]
+      }
+    },
+    {
+      "id": "ring",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-view.is-held"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "agent-refused",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "type",
+          "text": "agent"
+        },
+        "refFor": {
+          "role": "textbox",
+          "name": "Name"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.code": "human_control"
+          }
+        }
+      }
+    },
+    {
+      "id": "you-click-the-field",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=frame-input]"
+        },
+        "position": {
+          "x": 60,
+          "y": 18
+        }
+      }
+    },
+    {
+      "id": "you-type",
+      "use": "runtime.rust:lab.ui.type",
+      "inputs": {
+        "screen": "${state.screen}",
+        "text": "Ada"
+      }
+    },
+    {
+      "id": "your-words-in-the-page",
+      "use": "runtime.rust:lab.browser.read",
+      "inputs": {
+        "conversation": "j1",
+        "selector": "#name",
+        "within": 10,
+        "expect": {
+          "paths": {
+            "value": "Ada"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-LIVE-2"
+        ]
+      }
+    },
+    {
+      "id": "give-back",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Give back"
+        }
+      }
+    },
+    {
+      "id": "api-free",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.tabs.0.heldBy": null
+          }
+        },
+        "within": 5
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-LIVE-2"
+        ]
+      }
+    },
+    {
+      "id": "ring-gone",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-view.is-held"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        },
+        "within": 5
+      }
+    },
+    {
+      "id": "snap-again",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "agent-acts",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "type",
+          "text": "agent"
+        },
+        "refFor": {
+          "role": "textbox",
+          "name": "Name"
+        },
+        "snapshot": "${state.snap-again}",
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:lab.ui.screenshot",
+      "inputs": {
+        "screen": "${state.screen}",
+        "name": "lab-ui-live-2"
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:lab.ui.close",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    }
+  ]
+}

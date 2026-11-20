@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Side panel and browser together, several agents</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="oby.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>body{margin:0;background:#0b0b0b}
+.docs{position:absolute;inset:0;display:flex;font:14px/1.5 -apple-system,system-ui,Inter,sans-serif;color:#1a1b1f;background:#fff}
+.docs-nav{width:150px;flex:none;padding:18px 14px;border-right:1px solid #eceef2;display:flex;flex-direction:column;gap:9px;color:#5b5f6b;font-size:12px}
+.docs-nav b{color:#1a1b1f;font-size:12px}
+.docs-main{flex:1;padding:22px 24px;min-width:0}
+.docs-main h2{margin:0 0 6px;font-size:22px;letter-spacing:-.02em}
+.plans{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:18px}
+.plan{padding:14px;border:1px solid #e6e8ee;border-radius:12px}
+.plan b{display:block;font-size:13px}
+.plan .price{display:block;margin:6px 0 10px;font-size:20px;font-weight:700;letter-spacing:-.02em}
+.plan i{display:block;height:7px;margin-top:7px;border-radius:4px;background:#eef0f4}
+.plan.is-read{outline:2px solid rgba(217,119,87,.55);outline-offset:2px}</style>
+</helmet>
+<div class="oby win {{theme}}" style="width: 1440px; height: 900px; --column: 807px">
+<span class="lights" aria-hidden="true"><i></i><i></i><i></i></span>
+<button class="icon-button panel-toggle" aria-label="Hide sidebar"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M9 3v18"></path></svg></button>
+<div class="sidebar-slot">
+<nav class="rail" aria-label="Sections">
+<button class="rail-button is-on has-dot is-needs" aria-label="Chats"><svg width="17" height="17" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M232.07,186.76a80,80,0,0,0-62.5-114.17A80,80,0,1,0,23.93,138.76l-7.27,24.71a16,16,0,0,0,19.87,19.87l24.71-7.27a80.39,80.39,0,0,0,25.18,7.35,80,80,0,0,0,108.34,40.65l24.71,7.27a16,16,0,0,0,19.87-19.86ZM62,159.5a8.28,8.28,0,0,0-2.26.32L32,168l8.17-27.76a8,8,0,0,0-.63-6,64,64,0,1,1,26.26,26.26A8,8,0,0,0,62,159.5Zm153.79,28.73L224,216l-27.76-8.17a8,8,0,0,0-6,.63,64.05,64.05,0,0,1-85.87-24.88A79.93,79.93,0,0,0,174.7,89.71a64,64,0,0,1,41.75,92.48A8,8,0,0,0,215.82,188.23Z"></path></svg></button>
+<span class="rail-sep" role="separator"></span>
+<button class="rail-button" aria-label="Acme, an Obysphere"><span class="sphere-tile">A</span></button>
+<button class="rail-button" aria-label="Create an Obysphere"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg></button>
+<button class="rail-button rail-settings" aria-label="Settings"><svg width="20" height="20" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M128,80a48,48,0,1,0,48,48A48.050,48.050,0,0,0,128,80Zm0,80a32,32,0,1,1,32-32A32,32,0,0,1,128,160Zm109.94-52.79a8,8,0,0,0-3.89-5.4l-29.83-17-.12-33.62a8,8,0,0,0-2.83-6.08,111.91,111.91,0,0,0-36.72-20.670,8,8,0,0,0-6.46.59L128,41.85,97.88,25a8,8,0,0,0-6.47-.6A112.1,112.1,0,0,0,54.73,45.15a8,8,0,0,0-2.83,6.07l-.15,33.65-29.83,17a8,8,0,0,0-3.89,5.4,106.47,106.47,0,0,0,0,41.56,8,8,0,0,0,3.89,5.4l29.83,17,.12,33.62a8,8,0,0,0,2.83,6.08,111.91,111.91,0,0,0,36.72,20.67,8,8,0,0,0,6.46-.59L128,214.15,158.12,231a7.91,7.91,0,0,0,3.9,1,8.09,8.09,0,0,0,2.57-.42,112.1,112.1,0,0,0,36.68-20.73,8,8,0,0,0,2.83-6.07l.15-33.65,29.83-17a8,8,0,0,0,3.89-5.4A106.47,106.47,0,0,0,237.94,107.21Zm-15,34.91-28.57,16.25a8,8,0,0,0-3,3c-.58,1-1.19,2.06-1.81,3.06a7.94,7.94,0,0,0-1.22,4.21l-.15,32.25a95.89,95.89,0,0,1-25.37,14.3L134,199.13a8,8,0,0,0-3.91-1h-.19c-1.21,0-2.43,0-3.64,0a8.080,8.080,0,0,0-4.1,1l-28.84,16.1A96,96,0,0,1,67.88,201l-.11-32.2a8,8,0,0,0-1.22-4.22c-.62-1-1.23-2-1.8-3.06a8.090,8.090,0,0,0-3-3.06l-28.6-16.29a90.49,90.49,0,0,1,0-28.26L61.670,97.63a8,8,0,0,0,3-3c.58-1,1.19-2.06,1.81-3.06a7.94,7.94,0,0,0,1.22-4.21l.15-32.25a95.89,95.89,0,0,1,25.37-14.3L122,56.87a8,8,0,0,0,4.1,1c1.21,0,2.43,0,3.64,0a8.080,8.080,0,0,0,4.1-1l28.84-16.1A96,96,0,0,1,188.12,55l.11,32.2a8,8,0,0,0,1.22,4.22c.62,1,1.23,2,1.8,3.06a8.090,8.090,0,0,0,3,3.06l28.6,16.29A90.49,90.49,0,0,1,222.9,142.12Z"></path></svg></button>
+</nav>
+<div class="sidebar-content">
+<div class="sidebar-top"><button class="icon-button" aria-label="Search"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21 21-4.34-4.34"></path><circle cx="11" cy="11" r="8"></circle></svg></button></div>
+<div class="sidebar-title-row"><h2 class="sidebar-title"><button class="sidebar-title-button" aria-haspopup="menu">Default<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button></h2></div>
+<button class="connector chat-own"><img src="/_blob/3446da5a8daa6f8aa4ff0d9358936562" width="32" height="32" alt=""><span class="connector-text"><span class="connector-name">Oby</span><span class="connector-about">Three agents on it. You can watch them in the browser.</span></span></button>
+<button class="sidebar-new chat-new"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg>New conversation</button>
+<div class="sidebar-scroll">
+<section class="sidebar-group">
+<button class="sidebar-group-head"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg><span style="margin-left: 2px">acme-web</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button>
+<div class="sidebar-group-body">
+<div class="convo-row is-active"><span class="convo-twist"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></span><span class="connector-text"><span class="connector-name">Launch checklist</span><span class="connector-about">3 agents working</span></span><span class="sidebar-item-ago">1m</span><span class="status"><span class="status-dot is-working"></span></span></div>
+<div class="convo-kids">
+<div class="convo-kid"><img class="logo" src="/_blob/b9591b423efbb6b607314ffefffd24be" width="16" height="16" alt=""><span class="convo-kid-text">Pricing page matches the plans <em>· in the browser</em></span><span class="status"><span class="status-dot is-working"></span></span></div>
+<div class="convo-kid"><img class="logo logo-w" src="/_blob/b6a520d0d66c6d8e93fb0c106328e021" width="16" height="16" alt=""><span class="convo-kid-text">Sign-up flow works end to end <em>· in the browser</em></span><span class="status"><span class="status-dot is-working"></span></span></div>
+<div class="convo-kid"><img class="logo logo-w" src="/_blob/e57918fdb33aeaf1d73c6e7aeb4175ae" width="16" height="16" alt=""><span class="convo-kid-text">Button stories look right <em>· in the browser</em></span><span class="status"><span class="status-dot is-working"></span></span></div>
+</div>
+<div class="convo-row"><span class="convo-twist"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg></span><span class="connector-text"><span class="connector-name">Dark mode for the dashboard</span><span class="connector-about">Done. The PR is open, checks are green.</span></span><span class="sidebar-item-ago">2h</span><span class="status"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg></span></div>
+</div>
+</section>
+<section class="sidebar-group">
+<button class="sidebar-group-head"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg><span style="margin-left: 2px">acme-api</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button>
+<div class="sidebar-group-body">
+<div class="convo-row"><span class="convo-twist"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg></span><span class="connector-text"><span class="connector-name">Webhook retries</span><span class="connector-about">Codex asks to run a command</span></span><span class="sidebar-item-ago">14m</span><span class="status"><span class="status-dot is-needs"></span></span></div>
+<div class="convo-row"><span class="convo-twist"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg></span><span class="connector-text"><span class="connector-name">Invite links expire too soon</span><span class="connector-about">No. Old links keep their expiry; only new links change.</span></span><span class="sidebar-item-ago">6h</span><span class="status"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg></span></div>
+</div>
+</section>
+</div>
+<div class="sidebar-archived"><span>Archived</span><span style="font-size: 12px">11</span></div>
+</div>
+</div>
+<div class="home">
+<div class="bar">
+<span class="crumb">Launch checklist</span>
+<button class="project-chip"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg>acme-web<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button>
+<button class="icon-button bar-more" aria-label="Conversation options"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="1"></circle><circle cx="12" cy="5" r="1"></circle><circle cx="12" cy="19" r="1"></circle></svg></button>
+<div class="bar-end"><button class="icon-button is-on" aria-label="Hide the browser" aria-pressed="true"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"></path><path d="M2 12h20"></path></svg></button></div>
+</div>
+<div class="view">
+<div class="chat-layer">
+<div class="chat-scroll"><div class="chat"><div class="chat-column">
+<ul class="chat-thread">
+<li class="msg is-you"><div class="msg-end"><p class="msg-bubble">Before launch: check sign-up, the pricing page and the button stories.</p><span class="msg-time">3:02 PM</span></div></li>
+<li class="msg is-oby"><img class="msg-face" src="/_blob/3446da5a8daa6f8aa4ff0d9358936562" alt=""><div class="msg-end"><div class="msg-bubble"><p>Three agents on it. You can watch them in the browser.</p></div><span class="msg-time">3:02 PM</span></div></li>
+<li class="msg is-oby" style="margin-top: 12px; gap: 8px">
+<div class="msg-task"><img class="logo" src="/_blob/b9591b423efbb6b607314ffefffd24be" width="16" height="16" alt=""><span class="msg-task-text"><span class="msg-task-title">Pricing page matches the plans</span><span class="msg-task-meta">Running · Claude Code · acme-web</span><span class="tc-progress"><span class="is-current"></span><span></span></span></span><span class="status"><span class="status-dot is-working"></span></span></div>
+<div class="msg-task"><img class="logo logo-w" src="/_blob/b6a520d0d66c6d8e93fb0c106328e021" width="16" height="16" alt=""><span class="msg-task-text"><span class="msg-task-title">Sign-up flow works end to end</span><span class="msg-task-meta">Running · Codex · acme-web</span><span class="tc-progress"><span class="is-done"></span><span class="is-current"></span><span></span></span></span><span class="status"><span class="status-dot is-working"></span></span></div>
+<div class="msg-task"><img class="logo logo-w" src="/_blob/e57918fdb33aeaf1d73c6e7aeb4175ae" width="16" height="16" alt=""><span class="msg-task-text"><span class="msg-task-title">Button stories look right</span><span class="msg-task-meta">Running · Cursor · acme-web</span><span class="tc-progress"><span class="is-current"></span><span></span></span></span><span class="status"><span class="status-dot is-working"></span></span></div>
+<div class="lt-log" style="margin-top: 4px"><div class="ss-tool"><div class="ss-tool-row"><span class="ss-tool-mark"><span class="status-dot is-working" style="width: 6px; height: 6px"></span></span><span class="ss-tool-text">Claude Code: <span class="sheen">Reading the Plans section</span></span></div></div></div>
+</li>
+</ul>
+</div></div></div>
+<div class="chat-composer"><div class="composer-field"><div class="composer-grid">
+<button class="composer-button" aria-label="Add"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg></button>
+<div class="composer-input">Reply to Oby…</div>
+<button class="composer-button composer-usage" aria-label="Usage"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 14 4-4"></path><path d="M3.34 19a10 10 0 1 1 17.32 0"></path></svg></button>
+<button class="composer-button composer-send" aria-label="Send"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"></path><path d="M12 19V5"></path></svg></button>
+</div></div></div>
+</div>
+</div>
+</div>
+<aside class="br" style="width: 600px" aria-label="Browser">
+<span class="br-resize" aria-hidden="true"></span>
+<div class="br-tabs" role="tablist" aria-label="Tabs">
+<button class="br-tab is-on" role="tab" aria-selected="true"><img class="logo" src="/_blob/b9591b423efbb6b607314ffefffd24be" width="14" height="14" alt="Claude Code’s"><span class="br-tab-name">Pricing · Acme</span><span class="status"><span class="status-dot is-working"></span></span></button>
+<button class="br-tab" role="tab" aria-selected="false"><img class="logo logo-w" src="/_blob/b6a520d0d66c6d8e93fb0c106328e021" width="14" height="14" alt="Codex’s"><span class="br-tab-name">Sign in · Acme</span><span class="status"><span class="status-dot is-working"></span></span></button>
+<button class="br-tab" role="tab" aria-selected="false"><img class="logo logo-w" src="/_blob/e57918fdb33aeaf1d73c6e7aeb4175ae" width="14" height="14" alt="Cursor’s"><span class="br-tab-name">Button · Storybook</span><span class="status"><span class="status-dot is-working"></span></span></button>
+<button class="br-tab" role="tab" aria-selected="false" style="flex-basis: 130px"><span class="you-mark" aria-label="Yours">Y</span><span class="br-tab-name">Status · Acme</span></button>
+<div class="br-tabs-end">
+<button class="icon-button is-28" aria-label="New tab"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg></button>
+<button class="icon-button is-28" aria-label="Close the browser"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg></button>
+</div>
+</div>
+<div class="br-nav">
+<button class="icon-button is-28" aria-label="Back"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"></path><path d="M19 12H5"></path></svg></button>
+<button class="icon-button is-28" aria-label="Forward" disabled><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="m12 5 7 7-7 7"></path></svg></button>
+<button class="icon-button is-28" aria-label="Reload"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path></svg></button>
+<div class="br-address"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg><span class="br-path"><b>staging.acme.dev</b>/pricing</span></div>
+<button class="icon-button is-28" aria-label="Page options"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle><circle cx="5" cy="12" r="1"></circle></svg></button>
+</div>
+<div class="br-control" role="status">
+<span class="br-control-text"><img class="logo" src="/_blob/b9591b423efbb6b607314ffefffd24be" width="14" height="14" alt=""><span><b>Claude Code</b> is using this tab · <span class="sheen">Scrolling to Plans</span></span></span>
+<button class="tc-option is-sm"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"></path><path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"></path><path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"></path><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"></path></svg>Take control</button>
+</div>
+<div class="br-view" role="img" aria-label="Acme’s pricing page, which Claude Code is reading">
+<div class="docs">
+<div class="docs-nav"><b>Acme</b><span>Overview</span><span>Features</span><span style="color: #1a1b1f; font-weight: 600">Pricing</span><span>Customers</span><span>Changelog</span></div>
+<div class="docs-main">
+<h2>Pricing</h2>
+<div style="color: #6b6f7b; font-size: 13px">Simple plans that grow with your team.</div>
+<div class="plans">
+<div class="plan"><b>Starter</b><span class="price">$0</span><i></i><i style="width: 70%"></i></div>
+<div class="plan is-read"><b>Team</b><span class="price">$12</span><i></i><i style="width: 60%"></i></div>
+<div class="plan"><b>Business</b><span class="price">$29</span><i></i><i style="width: 80%"></i></div>
+</div>
+<div style="margin-top: 22px; height: 8px; width: 80%; border-radius: 4px; background: #eef0f4"></div>
+<div style="margin-top: 10px; height: 8px; width: 64%; border-radius: 4px; background: #eef0f4"></div>
+<div style="margin-top: 10px; height: 8px; width: 72%; border-radius: 4px; background: #eef0f4"></div>
+</div>
+</div>
+<div class="agent-pointer" style="left: 330px; top: 160px">
+<svg width="20" height="20" viewBox="0 0 24 24" fill="#111" stroke="#fff" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z"></path></svg>
+<span class="agent-label"><img class="logo" src="/_blob/b9591b423efbb6b607314ffefffd24be" width="14" height="14" alt="">Scrolling to Plans</span>
+</div>
+</div>
+</aside>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"light":{"editor":"boolean","default":false},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { theme: this.props.light ? 'is-light' : '' };
+  }
+}
+</script>
+</body>
+</html>

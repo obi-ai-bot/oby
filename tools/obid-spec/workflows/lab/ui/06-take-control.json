@@ -1,0 +1,333 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser screens 6: take control: you hold the tab, the agent waits, its click refused, give back",
+  "version": "1.0.0",
+  "description": "Board 6 (Hold.dc.html), both its states: held, the strip turns blue (--held) with your mark and Give back, the page gets a 2px ring, the tab a blue dot, the agent's next click shows Refused in its log and its card reads Waiting for you; Give back returns the tab (the log says so) and Codex goes on; Take control holds it again.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "serve",
+      "use": "runtime.rust:lab.ui.serve",
+      "inputs": {}
+    },
+    {
+      "id": "screen",
+      "use": "runtime.rust:lab.ui.open",
+      "inputs": {
+        "server": "${state.serve}",
+        "board": 6
+      }
+    },
+    {
+      "id": "held-strip",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-control-text > span:last-child"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "You have this tab. Codex waits until you give it back."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-6"
+        ]
+      }
+    },
+    {
+      "id": "held-blue",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-control.is-held"
+        },
+        "expect": {
+          "paths": {
+            "styles.background-color.matches": true
+          }
+        },
+        "styles": {
+          "background-color": "--held"
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-6"
+        ]
+      }
+    },
+    {
+      "id": "ringed-page",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-view.is-held"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "tab-dot-blue",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-tab .status-dot.is-held"
+        },
+        "expect": {
+          "paths": {
+            "styles.background-color.matches": true
+          }
+        },
+        "styles": {
+          "background-color": "--unread"
+        }
+      }
+    },
+    {
+      "id": "refused",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".ss-tool.is-refused .ss-tool-row"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Click Sign in · you have the tab Refused"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-6"
+        ]
+      }
+    },
+    {
+      "id": "card-waits",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".msg-task-meta"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Waiting for you · Codex · acme-web"
+          }
+        }
+      }
+    },
+    {
+      "id": "agent-waits",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".chat-live"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Codex waits for the tab"
+          }
+        }
+      }
+    },
+    {
+      "id": "matches-board-held",
+      "use": "runtime.rust:lab.ui.compare",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Hold",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        },
+        "state": "held"
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-6"
+        ]
+      }
+    },
+    {
+      "id": "shot-held",
+      "use": "runtime.rust:lab.ui.screenshot",
+      "inputs": {
+        "screen": "${state.screen}",
+        "name": "lab-ui-06-held"
+      }
+    },
+    {
+      "id": "beside-board-held",
+      "use": "runtime.rust:lab.ui.sidebyside",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Hold",
+        "name": "lab-ui-06-held-beside-board",
+        "label": "board 6",
+        "state": "held"
+      }
+    },
+    {
+      "id": "give-back",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Give back"
+        }
+      }
+    },
+    {
+      "id": "agent-again",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-control-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Codex is using this tab · Clicking Sign in"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-6"
+        ]
+      }
+    },
+    {
+      "id": "gave-back-line",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".lt-answered"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "You gave the tab back · 2:17 PM"
+          }
+        }
+      }
+    },
+    {
+      "id": "ring-gone",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-view.is-held"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        },
+        "within": 5
+      }
+    },
+    {
+      "id": "matches-board-gaveBack",
+      "use": "runtime.rust:lab.ui.compare",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Hold",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        },
+        "state": "gaveBack"
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-6"
+        ]
+      }
+    },
+    {
+      "id": "shot-gaveBack",
+      "use": "runtime.rust:lab.ui.screenshot",
+      "inputs": {
+        "screen": "${state.screen}",
+        "name": "lab-ui-06-gaveBack"
+      }
+    },
+    {
+      "id": "beside-board-gaveBack",
+      "use": "runtime.rust:lab.ui.sidebyside",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Hold",
+        "name": "lab-ui-06-gaveBack-beside-board",
+        "label": "board 6",
+        "state": "gaveBack"
+      }
+    },
+    {
+      "id": "take-again",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Take control"
+        }
+      }
+    },
+    {
+      "id": "held-again",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-control-text > span:last-child"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "You have this tab. Codex waits until you give it back."
+          }
+        }
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:lab.ui.close",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    }
+  ]
+}
