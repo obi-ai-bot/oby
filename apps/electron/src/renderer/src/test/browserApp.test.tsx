@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { browserFit, CONVERSATION_MIN } from '../browser/fit';
 import { PANEL_DEFAULT, PANEL_MIN, BrowserProvider, demoNumber } from '../browser/store';
 import { BrowserGlobe, BrowserPane } from '../browser/BrowserPane';
+import { BrowserAsks } from '../browser/Asks';
+import { headOf } from '../browser/cards';
 
 // The browser in the app (docs/contracts/browser-app.md): how the panel fits beside the
 // conversation, and that it isn't offered on obid until main follows obid's browser.
@@ -82,5 +84,39 @@ describe('BROWSERAPP-7: offered on obid only once obid answers GET /v1/browser',
     draw(2);
     expect(host.querySelector('[data-browser="globe"]')?.getAttribute('aria-label')).toBe('Hide the browser');
     expect(host.querySelector('aside.br .br-control-text')?.textContent).toBe('Codex is using this tab · Clicking Sign in');
+  });
+});
+
+describe('BROWSERAPP-11 to 13: the agent\'s asks over the message box', () => {
+  let root: Root, host: HTMLDivElement;
+  beforeEach(() => { vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); host = document.createElement('div'); document.body.append(host); root = createRoot(host); });
+  afterEach(() => { act(() => root.unmount()); host.remove(); });
+  const text = (css: string) => host.querySelector(css)?.textContent ?? null;
+  const press = (label: string) => act(() => ([...host.querySelectorAll('button')].find((b) => b.textContent === label) as HTMLButtonElement).click());
+
+  it('browserapp_11: an agent\'s first sentence heads its card, a question keeps its mark', () => {
+    expect(headOf('Sign in to the staging admin. The mail log is behind a sign-in.', 'x')).toEqual({ head: 'Sign in to the staging admin', lead: 'The mail log is behind a sign-in.' });
+    expect(headOf('Which plan? Both work.', 'x')).toEqual({ head: 'Which plan?', lead: 'Both work.' });
+    expect(headOf(undefined, 'Sign in to a.dev')).toEqual({ head: 'Sign in to a.dev', lead: '' });
+  });
+  it('browserapp_12: Type the password opens the password card; Fill in fills the page and the card goes', () => {
+    act(() => root.render(<BrowserProvider board={7}><BrowserAsks /><BrowserPane width={640} /></BrowserProvider>));
+    expect(text('.tc-ask-head')).toBe('Sign in to the staging admin · Codex');
+    press('Type the password');
+    expect(text('.br-control-text')).toBe('You’re filling the password. Codex waits.');
+    const input = host.querySelector('[data-browser="secret-input"]') as HTMLInputElement;
+    act(() => { const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!; set.call(input, 'hunter22'); input.dispatchEvent(new Event('input', { bubbles: true })); });
+    press('Fill in');
+    expect(host.querySelector('[data-browser="asks"]')).toBeNull();
+    expect(text('[data-browser="page-password"]')).toBe('••••••••From Oby');
+  });
+  it('browserapp_13: every ask shows one at a time; Skip answers the one shown', () => {
+    act(() => root.render(<BrowserProvider board={9}><BrowserAsks /></BrowserProvider>));
+    expect(text('.tc-ask-kind')).toBe('Check');
+    act(() => (host.querySelector('[aria-label="Next decision"]') as HTMLButtonElement).click());
+    expect(text('.tc-ask-head')).toBe('Which plan should I pick at checkout? · Claude Code');
+    expect([...host.querySelectorAll('.tc-option')].map((b) => b.textContent)).toEqual(['Team · $12', 'Business · $29', 'I’ll choose in the page']);
+    press('Team · $12');
+    expect(text('.decision-count')).toBe('2 of 3');
   });
 });
