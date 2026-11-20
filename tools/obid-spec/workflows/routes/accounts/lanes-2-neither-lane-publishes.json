@@ -1,0 +1,237 @@
+{
+  "schemaVersion": "2",
+  "name": "LANES-2: neither lane's agent can publish",
+  "version": "1.0.0",
+  "description": "In both lanes the agent's gh has an empty config folder (no login), its git's push URL is obid's invalid one, and the clone obid readied holds only that push URL: the branch reaches the code host only when obid publishes it.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "own",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "REPORT"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "own-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.own.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "marked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "READREPO OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"REPORT\", \"kind\": \"research\"}",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "jobs.0.id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "foreign-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.marked.body.jobs.0.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "untrusted": true
+          }
+        }
+      }
+    },
+    {
+      "id": "lanes-2-the-own-runs-gh-has-no-login",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.own.body.id}/.obi/report.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "env.GH_CONFIG_DIR": {
+                "$matches": "/gh-none$"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-2"
+        ]
+      }
+    },
+    {
+      "id": "lanes-2-the-own-runs-push-url-is-obids-invalid-one",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.own.body.id}/.obi/report.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "env.GIT_CONFIG_PARAMETERS": {
+                "$contains": "'remote.origin.pushurl=obid-agents-cannot-push:///'"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-2"
+        ]
+      }
+    },
+    {
+      "id": "lanes-2-the-foreign-runs-gh-has-no-login",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.marked.body.jobs.0.id}/.obi/report.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "env.GH_CONFIG_DIR": {
+                "$matches": "/gh-none$"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-2"
+        ]
+      }
+    },
+    {
+      "id": "lanes-2-the-foreign-runs-push-url-is-obids-invalid-one",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.marked.body.jobs.0.id}/.obi/report.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "env.GIT_CONFIG_PARAMETERS": {
+                "$contains": "'remote.origin.pushurl=obid-agents-cannot-push:///'"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-2"
+        ]
+      }
+    },
+    {
+      "id": "pushurl",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "clones/obi-e2e/fixture-app",
+        "args": [
+          "config",
+          "--get-all",
+          "remote.origin.pushurl"
+        ]
+      }
+    },
+    {
+      "id": "lanes-2-the-clone-holds-only-obids-push-url",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.pushurl.out}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$matches": "^obid-agents-cannot-push:///\\s*$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-2"
+        ]
+      }
+    },
+    {
+      "id": "lanes-2-the-branch-reaches-the-code-host-when-obid-publishes",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.own.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "canPublish": false,
+            "commits": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-2"
+        ]
+      }
+    }
+  ]
+}

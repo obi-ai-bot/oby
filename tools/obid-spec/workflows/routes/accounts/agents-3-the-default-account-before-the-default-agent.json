@@ -1,0 +1,219 @@
+{
+  "schemaVersion": "2",
+  "name": "AGENTS-3: the default account comes before the default agent",
+  "version": "1.0.0",
+  "description": "`defaultAgent` (a tool) keeps working for whoever sets it, beside `defaultAccount`; a conversation's plan with no agent or account named goes to the default account while it can take the work, and to the default agent once it can't. Expected red (#2697): the conversation's agent is never told which account new tasks go to, though AGENTS-3 says the brain's briefing marks it.",
+  "trigger": {
+    "http": {
+      "method": "PUT",
+      "path": "/v1/settings/default-agent"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": [
+                {
+                  "id": "cx",
+                  "name": "Work"
+                }
+              ]
+            }
+          }
+        },
+        "person": {
+          ".codex/auth.json": "{\"OPENAI_API_KEY\": \"fake-codex\"}"
+        }
+      }
+    },
+    {
+      "id": "agents-3-default-agent-still-works-for-whoever-sets-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/default-agent",
+        "body": {
+          "defaultAgent": "claude"
+        },
+        "expect": {
+          "status": 200
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-3"
+        ]
+      }
+    },
+    {
+      "id": "default-codex",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "defaultAccount": "cx"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "agents-3-both-are-kept",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "body": {
+            "defaultAccount": "cx",
+            "defaultAgent": "claude"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-3"
+        ]
+      }
+    },
+    {
+      "id": "planned",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Say hello.\", \"kind\": \"research\"}",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "jobs.0.id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "agents-3-the-default-account-comes-first-for-a-plan",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.planned.body.jobs.0}",
+        "expect": {
+          "paths": {
+            "agent": "codex",
+            "account": "cx"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-3"
+        ]
+      }
+    },
+    {
+      "id": "agents-3-the-conversations-agent-is-told-the-default",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.planned.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$contains": "new tasks go here unless the user names another agent"
+          }
+        }
+      },
+      "ui": {
+        "expectedRed": "#2697: a conversation's agent is never told which account new tasks go to (Briefing::text has no caller)"
+      }
+    },
+    {
+      "id": "added",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex",
+          "name": "Second"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "default-signed-out",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "defaultAccount": "${state.added.body.id}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "next",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Say hello.\", \"kind\": \"research\"}",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "jobs.0.id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "agents-3-a-default-that-cant-take-it-and-default-agent-is-tried-next",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.next.body.jobs.0}",
+        "expect": {
+          "paths": {
+            "agent": "claude",
+            "account": "stand-in"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-3"
+        ]
+      }
+    }
+  ]
+}

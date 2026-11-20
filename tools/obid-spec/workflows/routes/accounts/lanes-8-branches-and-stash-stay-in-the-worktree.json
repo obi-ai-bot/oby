@@ -1,0 +1,353 @@
+{
+  "schemaVersion": "2",
+  "name": "LANES-8: an own job's branches and stash stay its own",
+  "version": "1.0.0",
+  "description": "An own job runs git stash, stash pop, git switch -c try and commits on try: all of it works, obid sets no sandbox; the clone's stash stays the owner's and its branches hold no try (only obid's branch for the job); try is in the job's own git folder; another job sees neither its branch nor its stash.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "Look around."
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "first-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.first.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "head",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "clones/obi-e2e/fixture-app",
+        "args": [
+          "rev-parse",
+          "HEAD"
+        ]
+      }
+    },
+    {
+      "id": "owners-stash",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "clones/obi-e2e/fixture-app",
+        "args": [
+          "update-ref",
+          "--create-reflog",
+          "-m",
+          "owner's",
+          "refs/stash",
+          "${state.head.out}"
+        ]
+      }
+    },
+    {
+      "id": "stash-before",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "clones/obi-e2e/fixture-app",
+        "args": [
+          "rev-parse",
+          "refs/stash"
+        ]
+      }
+    },
+    {
+      "id": "j",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "STASH AND BRANCH"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "lanes-8-stash-pop-and-a-branch-all-work",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "summary": {
+              "$matches": "stash=ok entries=1.*switch=ok|switch=ok.*stash=ok entries=1"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-8"
+        ]
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "summary": {
+              "$contains": "sandbox=none"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-8"
+        ]
+      }
+    },
+    {
+      "id": "stash-after",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "clones/obi-e2e/fixture-app",
+        "args": [
+          "rev-parse",
+          "refs/stash"
+        ]
+      }
+    },
+    {
+      "id": "lanes-8-the-clones-stash-is-still-the-owners",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.stash-after.out}",
+        "expect": {
+          "paths": {
+            "$": "${state.stash-before.out}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-8"
+        ]
+      }
+    },
+    {
+      "id": "heads",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "clones/obi-e2e/fixture-app",
+        "args": [
+          "for-each-ref",
+          "--format=%(refname)",
+          "refs/heads"
+        ]
+      }
+    },
+    {
+      "id": "try",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "clones/obi-e2e/fixture-app",
+        "args": [
+          "for-each-ref",
+          "refs/heads/try"
+        ]
+      }
+    },
+    {
+      "id": "lanes-8-the-clone-holds-no-try",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.try.out}",
+        "expect": {
+          "paths": {
+            "$": ""
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-8"
+        ]
+      }
+    },
+    {
+      "id": "lanes-8-but-obids-branch-for-the-job",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.heads.out}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$contains": "refs/heads/${state.j.body.branch}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-8"
+        ]
+      }
+    },
+    {
+      "id": "lanes-8-try-is-in-the-jobs-own-git-folder",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "clones/obi-e2e/fixture-app/.git/worktrees/${state.j.body.id}/oby-refs/heads/try",
+        "expect": {
+          "exists": true,
+          "text": {
+            "$matches": "^[0-9a-f]{40}\\s*$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-8"
+        ]
+      }
+    },
+    {
+      "id": "lanes-8-no-hook-planted-in-the-clone",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "clones/obi-e2e/fixture-app/.git/hooks/pre-commit",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-8"
+        ]
+      }
+    },
+    {
+      "id": "other",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "STASH AND BRANCH"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "lanes-8-another-job-sees-neither-its-branch-nor-its-stash",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.other.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "summary": {
+              "$matches": "stash=ok entries=1"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-8"
+        ]
+      }
+    },
+    {
+      "id": "lanes-8-no-try-among-its-branches-so-it-makes-its-own",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.other.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "summary": {
+              "$contains": "switch=ok"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-8"
+        ]
+      }
+    }
+  ]
+}
