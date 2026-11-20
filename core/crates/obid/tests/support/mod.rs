@@ -1403,7 +1403,10 @@ pub struct SphereState {
     pub members_down: bool,
     /// The next read of the directory is answered as the directory is when it arrives, but only
     /// once the test lets it go: a slow read ([`FakeSphere::hold_next_members`]).
-    pub members_hold: Option<(std::sync::mpsc::Sender<()>, tokio::sync::oneshot::Receiver<()>)>,
+    pub members_hold: Option<(
+        std::sync::mpsc::Sender<()>,
+        tokio::sync::oneshot::Receiver<()>,
+    )>,
     /// A Sphere away for now: every path but its health answers `503` ([`sphere_away`]).
     pub down: bool,
     /// Every send's body as it arrived, with its sender and the status answered.
@@ -1585,7 +1588,10 @@ impl FakeSphere {
     /// once the test sends on what this returns. The receiver hears when the read has arrived.
     pub fn hold_next_members(
         &self,
-    ) -> (std::sync::mpsc::Receiver<()>, tokio::sync::oneshot::Sender<()>) {
+    ) -> (
+        std::sync::mpsc::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
         let (arrived, heard) = std::sync::mpsc::channel();
         let (release, held) = tokio::sync::oneshot::channel();
         self.lock().members_hold = Some((arrived, held));
@@ -1920,7 +1926,10 @@ async fn members(State(state): State<Arc<Mutex<SphereState>>>, headers: HeaderMa
 }
 
 /// The directory as it is now, and the hold on this read, if the test set one.
-type MembersHold = (std::sync::mpsc::Sender<()>, tokio::sync::oneshot::Receiver<()>);
+type MembersHold = (
+    std::sync::mpsc::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+);
 fn members_now(state: &mut SphereState, headers: &HeaderMap) -> (Response, Option<MembersHold>) {
     let answer = members_answer(state, headers);
     let hold = state.members_hold.take();
