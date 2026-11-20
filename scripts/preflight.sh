@@ -66,7 +66,11 @@ brain_step() {
     say "preflight: brain: the Brain's repo checks (the first run builds its extractor with cargo)"
     local out
     out=$(cd tools/brain && NO_COLOR=1 FORCE_COLOR=0 npx --no-install vitest run test/repo.test.ts 2>&1)
-    if [[ $? -eq 0 ]]; then
+    local code=$?
+    # Routes a doc proposes ahead of obid (RETIRED-10): listed, never a failure.
+    (cd tools/brain && NO_COLOR=1 npx --no-install tsx -e "import { generateBrain } from './generator/index.ts'; import { config } from './brain.config.ts'; for (const c of generateBrain(config).checks) if (c.kind === 'proposed-route') console.log(c.message);" 2>/dev/null) |
+        sed 's/^/- listed, not a failure: /'
+    if [[ $code -eq 0 ]]; then
         record brain passed
         return
     fi
@@ -74,10 +78,14 @@ brain_step() {
     # Each message the Brain's checks print names what to change: say how, one line each.
     printf '%s\n' "$out" | sed -nE 's/^[[:space:]]*[+-]?[[:space:]]*"(.*)",?$/\1/p' | sort -u | while IFS= read -r m; do
         case "$m" in
+            *" documents "*" as proposed, but obid routes it")
+                file=${m%% documents *}; route=${m#* documents }; route=${route% as proposed*}
+                say "- $file still marks $route as proposed, but obid serves it now."
+                fix "take the \"**Proposed: obid doesn't serve\" line off its section in $file, or move $route out of that section" ;;
             *" documents "*", which obid doesn't route")
                 file=${m%% documents *}; route=${m#* documents }; route=${route%, which obid*}
                 say "- $file documents $route, but obid doesn't serve it."
-                fix "serve $route in obid in this change, or take it out of $file until obid serves it" ;;
+                fix "serve $route in obid in this change, take it out of $file, or document it in a section that opens with \"**Proposed: obid doesn't serve these routes yet.**\" until obid serves it (RETIRED-10)" ;;
             *" lists "*" as gone, but obid routes it")
                 file=${m%% lists *}; route=${m#* lists }; route=${route% as gone*}
                 say "- $file lists $route under \"Routes obid does not serve\", but obid serves it."

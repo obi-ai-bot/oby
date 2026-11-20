@@ -47,7 +47,22 @@ Also `GET /v1/preflight-nowhere`.
 ' docs/runner-api.md && rm docs/runner-api.md.bak
 check "CI-69 retired_8" brain 1 \
     "docs/runner-api.md documents GET /v1/preflight-nowhere, but obid doesn't serve it." \
-    "fix: serve GET /v1/preflight-nowhere in obid in this change, or take it out of docs/runner-api.md"
+    "fix: serve GET /v1/preflight-nowhere in obid in this change, take it out of docs/runner-api.md, or document it in a section that opens with"
+
+# CI-69 red: a route obid serves, still documented as proposed (RETIRED-10).
+sed -i.bak '0,/^### /{/^### /a\
+\
+**Proposed: obid doesn'"'"'t serve these routes yet.**
+}' docs/api/browser.md && rm docs/api/browser.md.bak
+check "CI-69 proposed but served" brain 1 \
+    "docs/api/browser.md still marks GET /v1/browser as proposed, but obid serves it now." \
+    "fix: take the \"**Proposed: obid doesn't serve\" line off its section in docs/api/browser.md"
+
+# CI-69 green: a route documented ahead of obid, in a section marked proposed, is listed, not a failure.
+printf '\n### A docs-first section\n\n**Proposed: obid doesn'"'"'t serve these routes yet.**\n\n- `GET /v1/preflight-ahead` lists them.\n' >>docs/api/settings.md
+check "CI-69 proposed, not yet served" brain 0 \
+    "- listed, not a failure: docs/api/settings.md proposes GET /v1/preflight-ahead, not yet served" \
+    "brain     passed"
 
 # CI-69 red: a top-level module of obid in no area of the Brain's map.
 printf '//! preflight-test: a module in no area.\n' >core/crates/obid/src/preflight_probe.rs
